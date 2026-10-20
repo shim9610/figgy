@@ -1,12 +1,14 @@
-//! A dragged tick-label set keeps its selection box and hit region on the
-//! drawn labels: after a drag along or across the axis, the drawn labels, the
-//! box and the hit-map answer all move by the drag.
+//! Tick-label selection and hit testing follow the drawn labels. The bounds
+//! are the union of the labels the raster draws, the hit region is the
+//! selection box around them, and a drag along or across the axis moves the
+//! drawn labels, the box and the hit-map answer together.
 
 use renderer::axis_render::try_raster_chart_to_rgba;
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side};
 use renderer::{
-    AxisLabelElement, ColorBarLabelElement, Config, CpuTextMeasure, Draggable, HitMap, Selectable,
+    AxisLabelElement, ColorBarLabelElement, Config, CpuTextMeasure, Draggable, HitMap, MeasureText,
+    Selectable,
 };
 
 const WIDTH: u32 = 640;
@@ -255,4 +257,158 @@ fn a_drag_along_the_axis_moves_the_hit_region() {
         );
         assert_ne!(hit(&cfg, left.0, left.1), Some(labels.name()), "{labels:?}");
     }
+}
+
+/// Clip `r` to the canvas: a label drawn past the chart edge inks only the
+/// part on the canvas.
+fn on_canvas(r: RectF) -> RectF {
+    let x0 = r.x.max(0.0);
+    let y0 = r.y.max(0.0);
+    let x1 = (r.x + r.width).min(WIDTH as f32);
+    let y1 = (r.y + r.height).min(HEIGHT as f32);
+    RectF {
+        x: x0,
+        y: y0,
+        width: x1 - x0,
+        height: y1 - y0,
+    }
+}
+
+/// Configs whose labels differ from a short decimal sample: wide negative
+/// values on every axis and a long colourbar range.
+fn wide_label_config(colorbar: bool) -> Config {
+    let mut cfg = bare_config(colorbar);
+    for axis in [
+        &mut cfg.top_x,
+        &mut cfg.bottom_x,
+        &mut cfg.left_y,
+        &mut cfg.right_y,
+    ] {
+        axis.min = -123_456.0;
+        axis.max = 98_765.0;
+    }
+    if let Some(bar) = cfg.colorbar.as_mut() {
+        bar.axis.min = -0.000_25;
+        bar.axis.max = 1_250_000.0;
+    }
+    cfg
+}
+
+// The bounds are the drawn labels, not an estimate: every edge lies within a
+// pixel of the ink (whole-pixel ink against sub-pixel glyph extents), so the
+// end labels are inside the box and no empty strip is selectable beside them.
+#[test]
+fn tick_label_bounds_are_the_drawn_labels() {
+    for (labels, colorbar) in cases() {
+        for (name, cfg) in [
+            ("default", bare_config(colorbar)),
+            ("wide labels", wide_label_config(colorbar)),
+        ] {
+            let ink = label_ink(&cfg, &labels);
+            let b = on_canvas(bounds(&cfg, &labels));
+            let edges = [
+                (b.x, ink.x),
+                (b.y, ink.y),
+                (b.x + b.width, ink.x + ink.width),
+                (b.y + b.height, ink.y + ink.height),
+            ];
+            for (bound, inked) in edges {
+                assert!(
+                    (bound - inked).abs() <= 1.0,
+                    "{labels:?} ({name}): bounds {b:?} against ink {ink:?}"
+                );
+            }
+        }
+    }
+}
+
+// The hit region is the selection box: a click inside the box selects the
+// labels, a click just outside it does not.
+#[test]
+fn the_hit_region_is_the_selection_box() {
+    for (labels, colorbar) in cases() {
+        let cfg = bare_config(colorbar);
+        let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+        let selection = labels.element().selection_box(&cfg, &measure).unwrap().rect;
+        let (cx, cy) = (
+            selection.x + selection.width * 0.5,
+            selection.y + selection.height * 0.5,
+        );
+        let inside = [
+            (selection.x + 0.5, cy),
+            (selection.x + selection.width - 0.5, cy),
+            (cx, selection.y + 0.5),
+            (cx, selection.y + selection.height - 0.5),
+        ];
+        let outside = [
+            (selection.x - 1.0, cy),
+            (selection.x + selection.width + 1.0, cy),
+            (cx, selection.y - 1.0),
+            (cx, selection.y + selection.height + 1.0),
+        ];
+        for (x, y) in inside {
+            if (0.0..WIDTH as f32).contains(&x) && (0.0..HEIGHT as f32).contains(&y) {
+                assert_eq!(
+                    hit(&cfg, x, y),
+                    Some(labels.name()),
+                    "{labels:?} at ({x}, {y})"
+                );
+            }
+        }
+        for (x, y) in outside {
+            assert_ne!(
+                hit(&cfg, x, y),
+                Some(labels.name()),
+                "{labels:?} at ({x}, {y})"
+            );
+        }
+    }
+}
+
+// Polar labels hit where each one is outlined: on every drawn label, and not
+// in the empty ring between two angle labels.
+#[test]
+fn polar_tick_labels_hit_each_drawn_label() {
+    let mut cfg = bare_config(false);
+    cfg.polar = Some(renderer::polar::PolarOptions::default());
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    for side in [Side::Bottom, Side::Left] {
+        let element = renderer::layout::Element::AxisLabel(side.clone());
+        let mut rects = Vec::new();
+        assert!(measure.tick_label_rects(&cfg, &element, &mut |r| rects.push(r)));
+        assert!(rects.len() >= 4, "{side:?}: {} labels", rects.len());
+        let name = AxisLabelElement { side: side.clone() }.element_id();
+        for r in &rects {
+            let (x, y) = (r.x + r.width * 0.5, r.y + r.height * 0.5);
+            assert_eq!(hit(&cfg, x, y), Some(name.clone()), "{side:?}: label {r:?}");
+        }
+    }
+    // The ring the angle labels sit on is not hittable between them: sample
+    // it, and every point outside all padded label boxes misses the labels.
+    let element = renderer::layout::Element::AxisLabel(Side::Bottom);
+    let mut rects = Vec::new();
+    measure.tick_label_rects(&cfg, &element, &mut |r| rects.push(r));
+    let geometry = cfg.polar_geometry().unwrap();
+    let (cx, cy) = (geometry.center[0], geometry.center[1]);
+    let radius = rects
+        .iter()
+        .map(|r| (r.x + r.width * 0.5 - cx).hypot(r.y + r.height * 0.5 - cy))
+        .sum::<f32>()
+        / rects.len() as f32;
+    let name = AxisLabelElement { side: Side::Bottom }.element_id();
+    let mut gaps = 0;
+    for step in 0..720 {
+        let angle = step as f32 * std::f32::consts::TAU / 720.0;
+        let (x, y) = (cx + radius * angle.cos(), cy + radius * angle.sin());
+        let covered = rects.iter().any(|r| r.expanded(2.0).contains(x, y));
+        if !covered {
+            gaps += 1;
+            assert_ne!(
+                hit(&cfg, x, y),
+                Some(name.clone()),
+                "the ring at ({x}, {y})"
+            );
+        }
+    }
+    assert!(gaps > 0, "the angle labels leave no gap on their ring");
 }

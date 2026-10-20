@@ -10,17 +10,29 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased — tick-label drag hotfix
+## Unreleased — tick-label selection hotfix
 
-- A drag of Cartesian or colourbar tick labels along their axis moves the
-  selection box and the hit region with the drawn labels again. Since
-  17d5d9b (2026-08-17) the bounds kept the data area (or the bar) along the
-  axis and dropped `label_offset_x` on top and bottom labels and
-  `label_offset_y` on left and right labels, so the labels moved and their
-  box stayed. Overlay and subplot axis labels share the fix. No public API
-  or serialized field changes. Other places where interaction geometry is
-  re-derived instead of read from the draw are tracked in
-  [#37](https://github.com/shim9610/figgy/issues/37).
+- Tick-label selection and hit testing follow the drawn labels. For axis and
+  colourbar tick labels, `bounds` is now the union of the labels the raster
+  draws, and the hit region is the selection box around them, so a click
+  inside the box always selects the labels and a click beside it does not.
+  Before, both came from a representative strip: a sample-width band across
+  the axis and the data area (or the bar) along it. End labels hung outside
+  it, wide labels left it, and an empty band beside narrow labels was
+  selectable. Polar angle and radius labels hit on each drawn label, where
+  their outline is drawn, instead of on an estimated ring and strip.
+- A drag along the axis moves the selection box and the hit region with the
+  labels again. Since 17d5d9b (2026-08-17) the strip dropped `label_offset_x`
+  on top and bottom labels and `label_offset_y` on left and right labels.
+  Overlay and subplot axis labels share the fix.
+- The axis raster draws its tick labels and reports their rectangles from one
+  walk and one placement function, so the two cannot disagree.
+- `MeasureText` gains a provided method, `tick_label_rects`, through which
+  the renderer's `CpuTextMeasure` lays out the drawn labels. Its default
+  returns `false`, so other implementations compile unchanged and keep the
+  representative strip. No serialized field changes. Other places where
+  interaction geometry is re-derived instead of read from the draw are
+  tracked in [#37](https://github.com/shim9610/figgy/issues/37).
 
 <a id="release-0180"></a>
 

@@ -218,6 +218,26 @@ impl TextExtents {
 /// this with its skia text stack and injects it; tests use fixed stubs.
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
+
+    /// Lay out the tick labels of `labels` the way a renderer draws them
+    /// under `cfg`: call `each` with the rectangle of every drawn label, in
+    /// `cfg`'s chart frame, and return `true`. `labels` is an
+    /// [`Element::AxisLabel`](crate::layout::Element::AxisLabel) or
+    /// [`Element::ColorBarLabel`](crate::layout::Element::ColorBarLabel).
+    ///
+    /// Tick generation, formatting and pruning belong to the renderer, so the
+    /// model cannot know which labels are drawn. A measure that lays them out
+    /// lets tick-label selection and hit testing follow the drawn labels. The
+    /// default lays out nothing and returns `false`; tick labels then fall
+    /// back to a representative strip.
+    fn tick_label_rects(
+        &self,
+        _cfg: &crate::config::Config,
+        _labels: &crate::layout::Element,
+        _each: &mut dyn FnMut(crate::layout::RectF),
+    ) -> bool {
+        false
+    }
 }
 
 /// One plain `RichSegment` per char, mapping Unicode super/subscript chars to

@@ -1241,6 +1241,17 @@ impl crate::text::MeasureText for CpuTextMeasure {
     fn measure_rich(&self, rt: &RichText) -> crate::text::TextExtents {
         measure_rich_text(rt, self.policy)
     }
+
+    /// The tick labels the axis raster draws, from the same walk and
+    /// placement it draws them with.
+    fn tick_label_rects(
+        &self,
+        cfg: &crate::config::Config,
+        labels: &crate::layout::Element,
+        each: &mut dyn FnMut(crate::layout::RectF),
+    ) -> bool {
+        crate::axis_render::tick_label_rects(cfg, labels, self.policy, each)
+    }
 }
 
 /// Compute the real rendered bounding box of `rt` using glyph measurements.

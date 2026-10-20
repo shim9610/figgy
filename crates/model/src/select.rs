@@ -572,6 +572,67 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     }
 }
 
+/// The union of the tick labels `labels` the renderer draws under `cfg`,
+/// laid out through `measure` ([`MeasureText::tick_label_rects`]):
+/// `Some(None)` when it draws none, `None` when `measure` cannot lay tick
+/// labels out.
+fn drawn_label_union(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    labels: &Element,
+) -> Option<Option<RectF>> {
+    let mut union: Option<RectF> = None;
+    let laid_out = measure.tick_label_rects(cfg, labels, &mut |r| {
+        union = Some(match union {
+            None => r,
+            Some(u) => {
+                let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
+                let x1 = (u.x + u.width).max(r.x + r.width);
+                let y1 = (u.y + u.height).max(r.y + r.height);
+                RectF {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                }
+            }
+        });
+    });
+    laid_out.then_some(union)
+}
+
+/// Whether `(x, y)` falls on one of the drawn tick labels of `labels`, each
+/// grown by [`SELECTION_PADDING`] as its selection outline is, or `None` when
+/// `measure` cannot lay tick labels out.
+fn drawn_label_hit(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    labels: &Element,
+    x: f32,
+    y: f32,
+) -> Option<bool> {
+    let mut hit = false;
+    let laid_out = measure.tick_label_rects(cfg, labels, &mut |r| {
+        hit |= r.expanded(SELECTION_PADDING).contains(x, y);
+    });
+    laid_out.then_some(hit)
+}
+
+/// Whether `(x, y)` falls inside the selection box around the drawn tick
+/// labels of `labels`, or `None` when `measure` cannot lay tick labels out.
+/// The hit region is the box the selection draws, so a click inside the box
+/// always selects the labels.
+fn drawn_label_box_hit(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    labels: &Element,
+    x: f32,
+    y: f32,
+) -> Option<bool> {
+    let union = drawn_label_union(cfg, measure, labels)?;
+    Some(union.is_some_and(|r| r.expanded(SELECTION_PADDING).contains(x, y)))
+}
+
 fn representative_label_extents(
     axis: &AxisOptions,
     measure: &dyn MeasureText,
@@ -767,10 +828,11 @@ impl Selectable for AxisElement {
 }
 
 impl Selectable for AxisLabelElement {
-    /// Approximate interaction strip for representative label glyphs. It uses
-    /// the renderer's placement formula and a decimal/timestamp sample, but
-    /// does not reproduce the renderer-owned tick set, formatting, pruning,
-    /// or exact rendered-label union.
+    /// The union of the labels the renderer draws, when `measure` lays tick
+    /// labels out ([`MeasureText::tick_label_rects`]). Otherwise an
+    /// approximate strip for representative label glyphs: it uses the
+    /// renderer's placement formula and a decimal/timestamp sample, but does
+    /// not reproduce the renderer-owned tick set, formatting or pruning.
     fn element_id(&self) -> String {
         format!("tick_labels_{}", side_str(&self.side))
     }
@@ -780,6 +842,10 @@ impl Selectable for AxisLabelElement {
         let ls = &axis.label_style;
         if !ls.visible || !ls.label_visible {
             return None;
+        }
+        if let Some(drawn) = drawn_label_union(cfg, measure, &Element::AxisLabel(self.side.clone()))
+        {
+            return drawn;
         }
         if cfg.polar.is_some() {
             // The angle labels ring the plot, the radius labels line the
@@ -853,6 +919,17 @@ impl Selectable for AxisLabelElement {
     }
 
     fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        // Drawn labels: polar labels hit where each one is outlined, Cartesian
+        // labels inside the one box around them.
+        let labels = Element::AxisLabel(self.side.clone());
+        let drawn = if cfg.polar.is_some() {
+            drawn_label_hit(cfg, measure, &labels, x, y)
+        } else {
+            drawn_label_box_hit(cfg, measure, &labels, x, y)
+        };
+        if let Some(hit) = drawn {
+            return hit;
+        }
         if cfg.polar.is_some() && self.bounds(cfg, measure).is_some() {
             return match self.side {
                 Side::Bottom => {
@@ -1021,6 +1098,9 @@ impl Selectable for ColorBarLabelElement {
         if !ls.visible || !ls.label_visible {
             return None;
         }
+        if let Some(drawn) = drawn_label_union(cfg, measure, &Element::ColorBarLabel) {
+            return drawn;
+        }
 
         let m = representative_label_extents(axis, measure);
         let tick_position = point_on_rect_side(0.0, &bar.side, &rect);
@@ -1046,6 +1126,13 @@ impl Selectable for ColorBarLabelElement {
         }
         let (dx, dy) = axis_offset(bar.side.clone(), axis.line_offset);
         Some(strip.translated(dx, dy))
+    }
+
+    /// Inside the selection box around the drawn labels, when `measure` lays
+    /// them out; inside the bounds otherwise.
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        drawn_label_box_hit(cfg, measure, &Element::ColorBarLabel, x, y)
+            .unwrap_or_else(|| self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y)))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {

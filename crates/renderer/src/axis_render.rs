@@ -619,18 +619,10 @@ fn draw_colorbar(
         }
     }
 
-    // Tick labels. Timestamps are not offered: a z value is a magnitude, and the
-    // timestamp planner needs an axis pixel length and collision pruning that
-    // belong to a time axis. `LabelFormat::Timestamp` on a colourbar therefore
-    // formats through the numeric path rather than being silently dropped.
-    let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
-            point_on_rect_side(axis_fraction(value, axis), &side, &rect)
-        }) {
-            label.draw(canvas, side.clone(), axis, fp);
-        }
-    }
+    // Tick labels, through the walk `tick_label_rects` reports.
+    each_colorbar_tick_label(axis, side.clone(), &rect, fp, &majors, |text, pos| {
+        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
+    });
 
     if detached {
         canvas.restore();
@@ -1273,21 +1265,9 @@ fn draw_axis(
     }
 
     // 3) Major tick labels
-    let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        if let LabelFormat::Timestamp(_) = &ls.format {
-            for label in visible_timestamp_labels(axis, side.clone(), da, fp, &majors) {
-                let pos = value_to_screen(label.value, axis, side.clone(), da);
-                draw_tick_label(canvas, &label.text, pos, side.clone(), axis, fp);
-            }
-        } else {
-            for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
-                value_to_screen(value, axis, side.clone(), da)
-            }) {
-                label.draw(canvas, side.clone(), axis, fp);
-            }
-        }
-    }
+    each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
+        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
+    });
 
     if detached {
         canvas.restore();
@@ -1930,15 +1910,11 @@ struct NumericTickLabel {
     text: NumericTickText,
 }
 
-impl NumericTickLabel {
-    fn draw(&self, canvas: &mut Canvas, side: Side, axis: &AxisOptions, fp: FontPolicy) {
-        match &self.text {
-            NumericTickText::Plain(text) => {
-                draw_tick_label(canvas, text, self.position, side, axis, fp)
-            }
-            NumericTickText::Power(text) => {
-                draw_tick_label_rich(canvas, text, self.position, side, axis, fp)
-            }
+impl NumericTickText {
+    fn as_tick_text(&self) -> TickText<'_> {
+        match self {
+            NumericTickText::Plain(text) => TickText::Plain(text),
+            NumericTickText::Power(text) => TickText::Power(text),
         }
     }
 }
@@ -2190,50 +2166,31 @@ fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     style_from(segs)
 }
 
-fn draw_tick_label(
-    canvas: &mut Canvas,
-    text: &str,
-    tick_pos: (f32, f32),
-    side: Side,
-    axis: &AxisOptions,
-    fp: FontPolicy,
-) {
-    let ls: &LabelStyle = &axis.label_style;
-    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
-
-    let (origin_x, origin_y) = label_origin(
-        side,
-        tick_pos,
-        axis.major_tick_length,
-        (ls.label_offset_x, ls.label_offset_y),
-        m,
-    );
-
-    draw_plain_text(
-        canvas,
-        text,
-        (origin_x, origin_y),
-        ls.color,
-        &ls.label_font,
-        ls.font_size,
-        false,
-        false,
-        fp,
-    );
+/// The text of one drawn tick label: plain, or a Power-format `RichText`
+/// with its exponent.
+enum TickText<'a> {
+    Plain(&'a str),
+    Power(&'a RichText),
 }
 
-/// Draw a Power-format RichText label, following the same placement rules as
-/// `draw_tick_label` but with `measure_rich_text` measurements.
-fn draw_tick_label_rich(
-    canvas: &mut Canvas,
-    rt: &RichText,
+/// Where a tick label at `tick_pos` is drawn: its baseline origin and its
+/// glyph extents. [`draw_tick_text`] draws there and [`tick_label_rects`]
+/// reports the same rectangle, so a label's selection and hit geometry
+/// cannot leave the drawn text.
+fn tick_label_placement(
+    text: &TickText<'_>,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
     fp: FontPolicy,
-) {
-    let m = measure_rich_text(rt, fp);
-    let ls = &axis.label_style;
+) -> ((f32, f32), crate::text::TextExtents) {
+    let ls: &LabelStyle = &axis.label_style;
+    let m = match text {
+        TickText::Plain(text) => {
+            measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp)
+        }
+        TickText::Power(rt) => measure_rich_text(rt, fp),
+    };
     let origin = label_origin(
         side,
         tick_pos,
@@ -2241,8 +2198,145 @@ fn draw_tick_label_rich(
         (ls.label_offset_x, ls.label_offset_y),
         m,
     );
+    (origin, m)
+}
 
-    draw_rich_text(canvas, rt, origin, fp);
+fn draw_tick_text(
+    canvas: &mut Canvas,
+    text: &TickText<'_>,
+    tick_pos: (f32, f32),
+    side: Side,
+    axis: &AxisOptions,
+    fp: FontPolicy,
+) {
+    let (origin, _) = tick_label_placement(text, tick_pos, side, axis, fp);
+    let ls: &LabelStyle = &axis.label_style;
+    match text {
+        TickText::Plain(text) => draw_plain_text(
+            canvas,
+            text,
+            origin,
+            ls.color,
+            &ls.label_font,
+            ls.font_size,
+            false,
+            false,
+            fp,
+        ),
+        TickText::Power(rt) => draw_rich_text(canvas, rt, origin, fp),
+    }
+}
+
+/// Every tick label [`draw_axis`] draws on `side`, with its tick position,
+/// in draw order. Drawing and [`tick_label_rects`] both walk this, so the
+/// labels a selection boxes are the labels on screen.
+fn each_axis_tick_label(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(TickText<'_>, (f32, f32)),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    if let LabelFormat::Timestamp(_) = &ls.format {
+        for label in visible_timestamp_labels(axis, side.clone(), da, fp, majors) {
+            let pos = value_to_screen(label.value, axis, side.clone(), da);
+            each(TickText::Plain(&label.text), pos);
+        }
+    } else {
+        for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+            value_to_screen(value, axis, side.clone(), da)
+        }) {
+            each(label.text.as_tick_text(), label.position);
+        }
+    }
+}
+
+/// Every tick label [`draw_colorbar`] draws along the strip `rect`, with its
+/// tick position, in draw order. Timestamps are not offered: a z value is a
+/// magnitude, and the timestamp planner needs an axis pixel length and
+/// collision pruning that belong to a time axis. `LabelFormat::Timestamp` on a
+/// colourbar therefore formats through the numeric path rather than being
+/// silently dropped.
+fn each_colorbar_tick_label(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(TickText<'_>, (f32, f32)),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+        point_on_rect_side(axis_fraction(value, axis), &side, rect)
+    }) {
+        each(label.text.as_tick_text(), label.position);
+    }
+}
+
+/// Call `each` with the rectangle of every tick label `labels` that
+/// [`draw_decoration_layer`] draws for `config`, in `config`'s chart frame
+/// with the detached-axis offset applied, and return `true`. `labels` other
+/// than an axis' or the colourbar's tick labels return `false`. This is the
+/// renderer's [`crate::text::MeasureText::tick_label_rects`].
+pub(crate) fn tick_label_rects(
+    config: &Config,
+    labels: &crate::layout::Element,
+    fp: FontPolicy,
+    each: &mut dyn FnMut(RectF),
+) -> bool {
+    use crate::layout::{Element, label_rect};
+
+    let Ok(da) = config.data_area() else {
+        return matches!(labels, Element::AxisLabel(_) | Element::ColorBarLabel);
+    };
+    match labels {
+        Element::AxisLabel(side) if config.polar.is_some() => {
+            polar::polar_tick_label_rects(config, side.clone(), fp, |r| each(r));
+        }
+        Element::AxisLabel(side) => {
+            let axis = match side {
+                Side::Top => &config.top_x,
+                Side::Bottom => &config.bottom_x,
+                Side::Left => &config.left_y,
+                Side::Right => &config.right_y,
+            };
+            let majors = major_tick_values_for_axis(axis, side.clone(), &da, fp);
+            let (dx, dy) = axis_offset(side.clone(), axis.line_offset);
+            each_axis_tick_label(axis, side.clone(), &da, fp, &majors, |text, pos| {
+                let (origin, m) = tick_label_placement(&text, pos, side.clone(), axis, fp);
+                each(label_rect(origin, m).translated(dx, dy));
+            });
+        }
+        Element::ColorBarLabel => {
+            if let Some((bar, rect)) = drawn_colorbar(config, &da) {
+                let axis = &bar.axis;
+                let majors = major_tick_values(axis);
+                let (dx, dy) = axis_offset(bar.side.clone(), axis.line_offset);
+                each_colorbar_tick_label(
+                    axis,
+                    bar.side.clone(),
+                    &rect,
+                    fp,
+                    &majors,
+                    |text, pos| {
+                        let (origin, m) =
+                            tick_label_placement(&text, pos, bar.side.clone(), axis, fp);
+                        each(label_rect(origin, m).translated(dx, dy));
+                    },
+                );
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 // Axis title (RichText).
