@@ -10,6 +10,18 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+## Unreleased — tick-label drag hotfix
+
+- A drag of Cartesian or colourbar tick labels along their axis moves the
+  selection box and the hit region with the drawn labels again. Since
+  17d5d9b (2026-08-17) the bounds kept the data area (or the bar) along the
+  axis and dropped `label_offset_x` on top and bottom labels and
+  `label_offset_y` on left and right labels, so the labels moved and their
+  box stayed. Overlay and subplot axis labels share the fix. No public API
+  or serialized field changes. Other places where interaction geometry is
+  re-derived instead of read from the draw are tracked in
+  [#37](https://github.com/shim9610/figgy/issues/37).
+
 <a id="release-0180"></a>
 
 ## crates.io release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0 (2026-10-20)
