@@ -1545,7 +1545,7 @@ fn constellation_pair(
     star_opacity: f32,
     line_opacity: f32,
     keep: &[usize],
-    tweak: fn(&mut Config),
+    x_offset: f64,
     chunk: u64,
 ) -> (Vec<u8>, Vec<u8>) {
     const N: usize = 19;
@@ -1597,7 +1597,11 @@ fn constellation_pair(
         star_opacity,
         line_opacity,
     }));
-    tweak(&mut config);
+    if x_offset != 0.0 {
+        let mut chart = Chart::new(config.clone());
+        chart.set_x_range(x_offset, 1.0 + x_offset);
+        config = chart.config().clone();
+    }
     let view = r
         .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
         .unwrap();
@@ -1680,103 +1684,57 @@ fn temporary_metal_constellation_diagnostic() {
     let _font = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let none: fn(&mut Config) = |_| {};
-    let cases: [(&str, f32, f32, &[usize], fn(&mut Config), u64); 9] = [
-        ("as-is", 0.79, 0.37, &[0, 1], none, 1),
-        ("as-is chunk 7", 0.79, 0.37, &[0, 1], none, 7),
-        (
-            "old right margin",
-            0.79,
-            0.37,
-            &[0, 1],
-            |c| c.right_y.out_margin = 8.0,
-            1,
-        ),
-        ("front only", 0.79, 0.37, &[0], none, 1),
-        ("back only", 0.79, 0.37, &[1], none, 1),
-        ("lines only", 0.0, 0.37, &[0, 1], none, 1),
-        ("stars only", 0.79, 0.0, &[0, 1], none, 1),
-        (
-            "no grid",
-            0.79,
-            0.37,
-            &[0, 1],
-            |c| {
-                c.grid.show_major_x = false;
-                c.grid.show_major_y = false;
-                c.grid.show_minor_x = false;
-                c.grid.show_minor_y = false;
-            },
-            1,
-        ),
-        (
-            "x shifted",
-            0.79,
-            0.37,
-            &[0, 1],
-            |c| {
-                let mut chart = Chart::new(c.clone());
-                chart.set_x_range(0.003, 1.003);
-                *c = chart.config().clone();
-            },
-            1,
-        ),
+    // Sweep the geometry in sub-pixel steps. A difference with a single
+    // primitive kind of a single series (nothing overlaps another layer)
+    // means the two paths compute a primitive differently; differences only
+    // where layers overlap mean composition rounding.
+    let cases: [(&str, f32, f32, &[usize]); 5] = [
+        ("front line only", 0.0, 0.37, &[0]),
+        ("front stars only", 0.79, 0.0, &[0]),
+        ("front line+stars", 0.79, 0.37, &[0]),
+        ("both lines only", 0.0, 0.37, &[0, 1]),
+        ("both series", 0.79, 0.37, &[0, 1]),
     ];
-    let probe = std::env::var_os("FIGGY_PROBE_DIR").map(std::path::PathBuf::from);
-    for (name, star, line, keep, tweak, chunk) in cases {
-        let (resident, streamed) = constellation_pair(star, line, keep, tweak, chunk);
-        let differing: Vec<usize> = resident
-            .chunks_exact(4)
-            .zip(streamed.chunks_exact(4))
-            .enumerate()
-            .filter(|(_, (a, b))| a != b)
-            .map(|(i, _)| i)
-            .collect();
-        let max = resident
-            .iter()
-            .zip(&streamed)
-            .map(|(a, b)| a.abs_diff(*b))
-            .max()
-            .unwrap_or(0);
-        let at = (105 * 320 + 175) * 4;
-        let shown: Vec<String> = differing
-            .iter()
-            .take(6)
-            .map(|&i| {
-                format!(
-                    "({},{}) r{:?} s{:?}",
-                    i % 320,
-                    i / 320,
-                    &resident[i * 4..i * 4 + 4],
-                    &streamed[i * 4..i * 4 + 4]
-                )
-            })
-            .collect();
-        println!(
-            "DIAG constellation [{name}]: {} differing pixels, max delta {max}; at (175,105) r{:?} s{:?}; {}",
-            differing.len(),
-            &resident[at..at + 4],
-            &streamed[at..at + 4],
-            shown.join(" ")
-        );
-        if let (Some(dir), false) = (&probe, differing.is_empty()) {
-            let file: String = name
-                .chars()
-                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+    for (name, star, line, keep) in cases {
+        let mut shifts_with_diff = 0;
+        let mut pixels = 0;
+        let mut max = 0u8;
+        let mut first = String::new();
+        for step in 0..60 {
+            let offset = step as f64 * 0.000_7;
+            let (resident, streamed) = constellation_pair(star, line, keep, offset, 1);
+            let differing: Vec<usize> = resident
+                .chunks_exact(4)
+                .zip(streamed.chunks_exact(4))
+                .enumerate()
+                .filter(|(_, (a, b))| a != b)
+                .map(|(i, _)| i)
                 .collect();
-            for (suffix, rgba) in [("resident", &resident), ("streamed", &streamed)] {
-                let png = encode_png(&RasterImage {
-                    width: 320,
-                    height: 240,
-                    rgba: rgba.clone(),
-                })
-                .unwrap();
-                std::fs::write(
-                    dir.join(format!("diag-constellation-{file}-{suffix}.png")),
-                    png,
-                )
-                .unwrap();
+            if !differing.is_empty() {
+                shifts_with_diff += 1;
+                pixels += differing.len();
+                if first.is_empty() {
+                    let i = differing[0];
+                    first = format!(
+                        "step {step} ({},{}) r{:?} s{:?}",
+                        i % 320,
+                        i / 320,
+                        &resident[i * 4..i * 4 + 4],
+                        &streamed[i * 4..i * 4 + 4]
+                    );
+                }
             }
+            max = max.max(
+                resident
+                    .iter()
+                    .zip(&streamed)
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max()
+                    .unwrap_or(0),
+            );
         }
+        println!(
+            "DIAG sweep [{name}]: {shifts_with_diff}/60 offsets differ, {pixels} pixels, max delta {max}; first {first}"
+        );
     }
 }
