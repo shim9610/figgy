@@ -1018,7 +1018,9 @@ annotation methods keep working on every layer.
 ### Cartesian selection helpers (`FiggyChart`)
 
 `FiggyChart.decoration_bounds(id)` returns measured bounds
-and resize handles in physical canvas pixels. `step_selection(dx, dy)` navigates
+and resize handles in physical canvas pixels. For polar angle or radius tick
+labels, whose selection outlines each drawn label, it also returns `labels`:
+one `[x, y, width, height]` box per drawn label, the boxes the canvas draws. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices, without
 copying arrays. For a point, `dx` moves the source index and `dy` switches
 between the series that draw points or lines; a selected point-vector arrow

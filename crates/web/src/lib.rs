@@ -5873,7 +5873,33 @@ mod web {
                 return serde_json::to_string(&value).map_err(js_err);
             }
             let id = self.hitmap.find(target);
-            let value=id.and_then(|id|self.hitmap.selection_box(id,&config,&CpuTextMeasure::for_style(&config.draw_style))).map(|b|serde_json::json!({"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}));
+            let measure = CpuTextMeasure::for_style(&config.draw_style);
+            let value = id
+                .and_then(|id| self.hitmap.selection_box(id, &config, &measure))
+                .map(|b| {
+                    let mut value = serde_json::json!({
+                        "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
+                        "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                    });
+                    // Polar tick labels are outlined one box per drawn label;
+                    // the host gets the same boxes the canvas draws.
+                    if let renderer::SelectionOutline::TickLabels(side) = &b.outline {
+                        let mut labels = Vec::new();
+                        renderer::MeasureText::drawn_parts(
+                            &measure,
+                            &config,
+                            &renderer::layout::Element::AxisLabel(side.clone()),
+                            &mut |part| {
+                                if let renderer::layout::DrawnPart::Text(r) = part {
+                                    let r = r.expanded(renderer::select::SELECTION_PADDING);
+                                    labels.push(vec![r.x, r.y, r.width, r.height]);
+                                }
+                            },
+                        );
+                        value["labels"] = serde_json::json!(labels);
+                    }
+                    value
+                });
             serde_json::to_string(&value).map_err(js_err)
         }
         // Copy only the selected scalar pairs out of the resident GPU pool.

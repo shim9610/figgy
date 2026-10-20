@@ -1039,7 +1039,7 @@ fn draw_legend(
     // outline; the fill stays a precise rect — perturbing the fill too
     // would visibly disagree with the independently wobbled border.
     canvas.draw_rect(box_x, box_y, box_w, box_h, &Paint::fill(&lg.bg_color));
-    let border = Paint::stroke(&lg.border_color, 1.0);
+    let border = Paint::stroke(&lg.border_color, crate::layout::LEGEND_BORDER_WIDTH);
     stroker.stroke_rect_outline(canvas, box_x, box_y, box_w, box_h, &border, "legend_box");
 
     // Content: first baseline sits `ascent` below the padded top-left corner.

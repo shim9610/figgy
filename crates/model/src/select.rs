@@ -1152,6 +1152,15 @@ impl Selectable for ColorBarElement {
         visible_colorbar_rect(cfg).map(|(_, rect)| rect)
     }
 
+    /// The strip with the outer half of its border, which is stroked centred
+    /// on the strip's edge.
+    fn contains(&self, cfg: &Config, _measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        visible_colorbar_rect(cfg).is_some_and(|(bar, rect)| {
+            rect.expanded(bar.border_width.max(0.0) * 0.5)
+                .contains(x, y)
+        })
+    }
+
     fn as_draggable(&self) -> Option<&dyn Draggable> {
         Some(self)
     }
@@ -1298,6 +1307,15 @@ impl Selectable for LegendElement {
             (lg.offset_x, lg.offset_y),
             m,
         ))
+    }
+
+    /// The box with the outer half of its border, which is stroked centred
+    /// on the box edge.
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        self.bounds(cfg, measure).is_some_and(|b| {
+            b.expanded(crate::layout::LEGEND_BORDER_WIDTH * 0.5)
+                .contains(x, y)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
