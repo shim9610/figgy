@@ -1959,3 +1959,115 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         );
     }
 }
+
+/// G14: a contour stroke picks within its anti-aliasing fringe wherever it
+/// paints (coverage `half_width - d + 0.5` reaches half a pixel past the
+/// half width, where the pick distance is under half a pixel), and picks at
+/// distance zero only where it covers at least half the pixel. At 1x and 2x.
+#[test]
+fn contour_strokes_pick_where_they_paint() {
+    use renderer::data_config::{
+        ContourConfig, DataLineStyleConfig, GridLayout, MatrixOrientation, MatrixRef,
+    };
+    let mut renderer = renderer();
+    renderer
+        .add_columns(&[
+            (
+                "sgx",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "sgy",
+                &col(vec![0.0, 5.0, 10.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "s0",
+                &col(vec![0.0, 4.0, 9.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "s1",
+                &col(vec![6.0, 11.0, 15.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "s2",
+                &col(vec![10.0, 16.0, 20.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let series = [SeriesConfig {
+        series_id: "iso".into(),
+        source_id: None,
+        label: None,
+        x_column: "sgx".into(),
+        y_column: "sgy".into(),
+        render_type: DataRenderType::Contour {
+            matrix: MatrixRef {
+                columns: vec!["s0".into(), "s1".into(), "s2".into()],
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            contour: ContourConfig {
+                levels: vec![7.0, 12.5],
+                line: DataLineStyleConfig {
+                    line_style: renderer::line::LineStylePreset::Solid,
+                    line_color: RED,
+                    line_width: 2.5,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: renderer::data_config::LineInterpolation::Linear,
+                },
+                per_level_color: None,
+                labels: None,
+            },
+        },
+    }];
+    let mut chart = bare_chart();
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.visible = false;
+    bar.axis.min = 0.0;
+    bar.axis.max = 20.0;
+    bar.axis.major_spacing = 5.0;
+    chart.config_mut().colorbar = Some(bar);
+    for scale in [1.0, 2.0] {
+        let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+        let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+        // The frame draws over the data area's outer pixels.
+        let border = (2.0 * scale) as u32;
+        let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+        let (x0, y0) = (x0.max(border), y0.max(border));
+        let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
+        let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let mut painted = 0usize;
+        let mut failures = Vec::new();
+        for y in (y0..y1).step_by(2) {
+            for x in (x0..x1).step_by(2) {
+                let ink = difference(&with, &without, x, y);
+                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                let distance = match &hit {
+                    Some(renderer::PickedData::ContourLevel { distance_px, .. }) => {
+                        Some(*distance_px)
+                    }
+                    None => None,
+                    Some(other) => panic!("({x}, {y}) picked {other:?}"),
+                };
+                if ink >= PAINTED {
+                    painted += 1;
+                    if distance.is_none() {
+                        failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                    }
+                }
+                if distance == Some(0.0) && ink < STRICT.zero_ink {
+                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                }
+            }
+        }
+        renderer.remove_chart(probe.id).unwrap();
+        assert!(
+            failures.is_empty(),
+            "at {scale}x: {} disagreements, first {:?}",
+            failures.len(),
+            &failures[..failures.len().min(12)]
+        );
+        assert!(painted > 50, "at {scale}x: {painted}");
+    }
+}
