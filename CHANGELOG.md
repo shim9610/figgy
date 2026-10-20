@@ -57,8 +57,29 @@ serialized field changes.
     surface scale, so hits match the canvas between frames.
   - `decoration_bounds` returns the per-label boxes of polar tick labels as
     `labels`.
+- **Data picks.** The GPU pick runs the draw's own shape functions, so a
+  pick lands where the series paints:
+  - markers use the scatter shader's distance for all 26 shapes, and
+    zero-size markers, which draw a dot, pick and get the selection ring;
+  - lines pick on the drawn stroke, with its minimum width, square caps and
+    dash gaps;
+  - sketch strokes and markers pick on what their style draws, and
+    Milkyway and Constellation markers on their documented envelope;
+  - point and grid vectors pick on the drawn arrow, and arrows that are not
+    drawn do not pick;
+  - the selection ring sits `radius_extra_px` outside the drawn marker, at
+    every display scale;
+  - subpixel histogram bins pick and outline as the envelope paints them,
+    and the envelope fills from `bar.baseline`;
+  - heatmap cells pick at the painted pixel centre and only where the fill
+    is visible;
+  - contour label gaps neither pick nor highlight.
+- **Pick compile time.** The pick shader is assembled from fragments, and
+  only the exact variant a series needs is compiled, on its first pick.
+  Enabling GPU picking compiles only the gate pipelines.
 - **Tests.** Each element above has a test that compares its drawn pixels
-  with its hit region and selection box. `scale_consistency.rs` checks
+  with its hit region and selection box. `pick_draw_agreement.rs` does the
+  same for every data family at 1x and 2x. `scale_consistency.rs` checks
   bounds, label sets and box-filtered images at 1x, 2x and 3x.
 
 Additions:
@@ -80,6 +101,11 @@ needs a public type to change:
 - masking a lifted radial label to its slice;
 - drag containment measured on drawn bounds;
 - annotation label gaps proportional to the Cartesian display scale.
+
+Still approximate after this release: a selected grid-vector cell is
+outlined as a whole cell; band fills pick by opacity only; histogram columns
+with mixed signs may pick a bin the envelope does not paint; streamed
+sources keep their existing pick behaviour.
 
 <a id="release-0180"></a>
 
