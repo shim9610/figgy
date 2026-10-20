@@ -18197,6 +18197,21 @@ impl<'w> WindowedRenderer<'w> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Wait until every retired GPU charge of `renderer` has completed. A
+    /// completion callback can run on another test's polling thread on the
+    /// shared device, so one `poll(Wait)` does not guarantee it has run yet.
+    fn settle_gpu_retirement(renderer: &mut Renderer) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while renderer.gpu_memory_usage().retired_bytes() != 0 {
+            renderer.service_gpu_completions().unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retirement callback timeout"
+            );
+            std::thread::yield_now();
+        }
+    }
     use crate::data::Column;
     use crate::data_config::{DataErrorBarPointStyleOverride, DataScatterPointStyleOverride};
 
@@ -26172,6 +26187,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -26382,19 +26398,21 @@ mod tests {
             "cache removal must retire the replacement charge too"
         );
         renderer.end_gpu_frame();
-        renderer
-            .device
-            .poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: Some(std::time::Duration::from_secs(30)),
-            })
-            .expect("retired GPU work completes");
-        assert_eq!(
-            renderer
-                .gpu_memory_usage()
-                .bytes_of(GpuResourceKind::ContourScratch),
-            0
-        );
+        // The completion callback can run on another test's polling thread
+        // on the shared device, so wait for it rather than for one poll.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while renderer
+            .gpu_memory_usage()
+            .bytes_of(GpuResourceKind::ContourScratch)
+            != 0
+        {
+            renderer.service_gpu_completions().unwrap();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "retirement callback timeout"
+            );
+            std::thread::yield_now();
+        }
     }
 
     #[test]
@@ -27375,6 +27393,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut r);
         assert_eq!(
             r.gpu_memory_usage()
                 .retired_bytes_of(GpuResourceKind::ArcScan),
@@ -28196,6 +28215,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let after = renderer.gpu_memory_usage();
 
         assert_eq!(
@@ -28282,6 +28302,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -28445,6 +28466,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -28498,6 +28520,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         assert_eq!(
             renderer
                 .gpu_memory_usage()
@@ -28914,6 +28937,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
 
         let before = renderer.gpu_memory_usage();
         assert_eq!(before.pool_bytes(), pool_bytes_held(&renderer));
@@ -28957,6 +28981,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let after = renderer.gpu_memory_usage();
         assert_eq!(after.retired_bytes(), 0);
         assert_eq!(after.pool_bytes(), pool_bytes_held(&renderer));
@@ -28980,6 +29005,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
 
         // No ceiling: the context carries no budget at all, so there is no
         // out-of-pool total to compute and none to misread. `GpuBudget` fusing
@@ -29031,6 +29057,7 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .expect("retired GPU work completes");
+        settle_gpu_retirement(&mut renderer);
         let total = renderer.gpu_memory_usage().total_bytes();
 
         // A ceiling with room says nothing.
