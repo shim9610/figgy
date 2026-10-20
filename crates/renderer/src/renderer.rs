@@ -531,7 +531,8 @@ struct VectorScratch {
     vector_bg: wgpu::BindGroup,
     charge: crate::gpu_memory::SharedCharge,
     /// Grid form only: the `u` grid as a field's group 2, so the selected
-    /// cell highlight and the cell pick run the field pipelines unchanged.
+    /// cell highlight runs the field pipeline unchanged. The grid's arrow
+    /// pick binds `vector_bg` (`pick_vector_cell`).
     field: Option<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)>,
     sources: Arc<GridSources>,
     /// Arrows the draw issues; zero draws nothing.
@@ -1838,11 +1839,11 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1868,11 +1869,11 @@ impl RendererPicker {
                     device,
                     queue,
                     gpu_ledger,
-                    bar_shader,
-                    field_shader,
+                    shaders,
                     transform_bgl,
                     field_bgl,
                     bar_style_bgl,
+                    vector_bgl,
                     observer,
                 );
                 self.pipeline_state = PickerPipelineState::Ready { point, data };
@@ -1891,11 +1892,11 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1923,11 +1924,11 @@ impl RendererPicker {
                     device,
                     queue,
                     gpu_ledger,
-                    bar_shader,
-                    field_shader,
+                    shaders,
                     transform_bgl,
                     field_bgl,
                     bar_style_bgl,
+                    vector_bgl,
                     observer,
                 )
                 .await
@@ -7336,11 +7337,15 @@ impl Renderer {
             Arc::clone(&self.device),
             Arc::clone(&self.queue),
             Arc::clone(&self.gpu_ledger),
-            &self.pipelines.shaders.bar,
-            &self.pipelines.shaders.field,
+            crate::gpu_data_pick::DataPickShaders {
+                bar: &self.pipelines.shaders.bar,
+                field: &self.pipelines.shaders.field,
+                vector_grid: &self.pipelines.shaders.vector_grid,
+            },
             &self.transform_bgl,
             &self.field_bgl,
             &self.per_point_style_map_bgl,
+            &self.vector_bgl,
             observer,
         )
     }
@@ -7361,11 +7366,15 @@ impl Renderer {
                 Arc::clone(&self.device),
                 Arc::clone(&self.queue),
                 Arc::clone(&self.gpu_ledger),
-                &self.pipelines.shaders.bar,
-                &self.pipelines.shaders.field,
+                crate::gpu_data_pick::DataPickShaders {
+                    bar: &self.pipelines.shaders.bar,
+                    field: &self.pipelines.shaders.field,
+                    vector_grid: &self.pipelines.shaders.vector_grid,
+                },
                 &self.transform_bgl,
                 &self.field_bgl,
                 &self.per_point_style_map_bgl,
+                &self.vector_bgl,
                 observer,
             )
             .await
@@ -7602,26 +7611,23 @@ impl Renderer {
             }
 
             if primitives.vector {
-                // A grid vector's cells are picked exactly as a heatmap's: the
-                // `u` grid is bound as a field for the cell lookup.
+                // A grid vector picks the arrows it draws, as the cells they
+                // are drawn for: the vector shader's own pick entry walks
+                // them with the draw's group 2 at the pick's display scale.
+                // A point vector is a point pick (`pick_chart`).
                 self.ensure_vector_scratch(&config, cfg, request.display_scale)?;
                 let scratch = self
                     .vector_cache
                     .get(cfg.series_id.as_str())
                     .expect("vector scratch was just ensured");
-                if let Some((field_bg, charge)) = scratch.field.as_ref()
-                    && scratch.count != 0
-                {
+                if scratch.input == data_render::vector::VectorInput::Grid && scratch.count != 0 {
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
                         series_id: cfg.series_id.clone(),
                         paint_order,
-                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Field {
-                            field_bg: field_bg.clone(),
-                            charge: Arc::clone(charge),
-                            has_fill: true,
-                            has_contour: false,
-                            contour_width_px: 0.0,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::VectorGrid {
+                            vector_bg: scratch.vector_bg.clone(),
+                            charge: Arc::clone(&scratch.charge),
                         },
                     });
                 }
@@ -14181,7 +14187,7 @@ impl PrepareContext<'_> {
     }
 
     /// Build or reuse one vector series' group-2 bind group (and, for the grid
-    /// form, the field bind group its cell highlight and cell pick use).
+    /// form, the field bind group its cell highlight uses).
     ///
     /// Same contract as `ensure_field_scratch`: the signature is compared
     /// before anything is created, so a steady frame uploads nothing, and a
@@ -14272,7 +14278,7 @@ impl PrepareContext<'_> {
         let mut ids = Vec::new();
         let mut epochs = Vec::new();
         // Grid form: the `u` grid's field params and its table length, for
-        // the field bind group the selection and the cell pick reuse.
+        // the field bind group the selection reuses.
         let mut field_params = None;
         let input = match components {
             VectorComponents::Points { u, v } => {
@@ -14366,8 +14372,8 @@ impl PrepareContext<'_> {
                     params.flags |= vector_render::VECTOR_FLAG_CENTERS;
                     field_flags |= data_render::FIELD_FLAG_CENTERS;
                 }
-                // The `u` grid's lattice as a field, for the cell pick and the
-                // selected-cell outline; those passes read only the lattice.
+                // The `u` grid's lattice as a field, for the selected-cell
+                // outline; that pass reads only the lattice.
                 field_params = Some(data_render::FieldParamsGpu::cell_geometry(
                     params.x_base,
                     params.y_base,
@@ -19245,7 +19251,7 @@ mod tests {
     }
 
     #[test]
-    fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
+    fn renderer_gpu_picker_activation_creates_seven_pipelines_once() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
         };
@@ -19284,7 +19290,10 @@ mod tests {
             .filter(|event| {
                 event.scope == "renderer.gpu_data_pick"
                     && event.phase == crate::init::InitPhase::Started
-                    && matches!(event.stage, "pick_histogram_bin" | "pick_field_data")
+                    && matches!(
+                        event.stage,
+                        "pick_histogram_bin" | "pick_field_data" | "pick_vector_cell"
+                    )
             })
             .count();
         let data_setup_starts = events
@@ -19297,7 +19306,7 @@ mod tests {
             .count();
         assert_eq!(pipeline_starts, 4);
         assert_eq!(setup_starts, 1);
-        assert_eq!(data_pipeline_starts, 2);
+        assert_eq!(data_pipeline_starts, 3);
         assert_eq!(data_setup_starts, 1);
         assert!(renderer.picker.active.is_none());
     }

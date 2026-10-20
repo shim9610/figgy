@@ -191,7 +191,8 @@ const _: () = assert!(std::mem::size_of::<VectorParamsGpu>() == 128);
 /// params uniform. The pool is bound whole, as the field shader binds it;
 /// the params carry the lane bases.
 pub fn create_vector_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
-    let visibility = wgpu::ShaderStages::VERTEX_FRAGMENT;
+    // The grid form's arrow pick (`pick_vector_cell`) binds the same group.
+    let visibility = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
     let storage = |binding| wgpu::BindGroupLayoutEntry {
         binding,
         visibility,
@@ -238,9 +239,9 @@ pub struct VectorTables<'a> {
 }
 
 /// One vector series' group 2: the bind group, the grid table buffer it
-/// binds (a grid vector's cell pick and selected-cell outline bind the same
-/// buffer as a field's grid, so the table is uploaded once) and the charge
-/// for all three buffers.
+/// binds (a grid vector's selected-cell outline binds the same buffer as a
+/// field's grid, so the table is uploaded once; its arrow pick binds this
+/// group itself) and the charge for all three buffers.
 pub struct VectorDataBindGroup {
     /// Group 2 of the vector pipeline.
     pub bind_group: wgpu::BindGroup,

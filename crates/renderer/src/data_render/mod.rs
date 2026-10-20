@@ -3938,7 +3938,7 @@ pub struct FieldParamsGpu {
 
 impl FieldParamsGpu {
     /// Params for a field group that serves cell geometry only (a grid
-    /// vector's cell pick and selected-cell outline): the grid lattice and
+    /// vector's selected-cell outline): the grid lattice and
     /// its flags are real; the z range, levels, stops and colours are unread
     /// by those passes and are left at neutral values.
     pub fn cell_geometry(
@@ -4055,8 +4055,8 @@ pub struct FieldTables<'a> {
 }
 
 /// The group-2 tables a field bind group needs beyond its grid and params
-/// when it serves cell geometry only: a grid vector's cell pick and
-/// selected-cell outline run the field pipelines, which read the grid table
+/// when it serves cell geometry only: a grid vector's selected-cell outline
+/// runs the field pipeline, which reads the grid table
 /// and `FieldParams` and nothing of the levels, stops, level colours or
 /// lookup metadata. Those four bindings must still exist, so one padding set
 /// (an empty level list, one stop, one colour, one zero lookup record) is

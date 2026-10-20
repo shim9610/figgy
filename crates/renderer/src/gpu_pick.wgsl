@@ -1080,7 +1080,7 @@ const ARROW_PIVOT_MIDDLE: u32 = 1u;
 const ARROW_PIVOT_TIP: u32 = 2u;
 // A shaft shorter than this (pixels) is no shaft. The head takes the whole
 // length of an arrow shorter than the head; the fragment stage recomputes
-// that length from the interpolated tail and tip, and the rounding must not
+// that length from the pivot-shifted tail and tip, and the rounding must not
 // turn the missing shaft into a round dot at the tail.
 const ARROW_SHAFT_MIN_PX: f32 = 0.01;
 

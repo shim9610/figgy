@@ -1056,55 +1056,85 @@ fn point_vectors_pick_on_the_drawn_arrow() {
     );
 }
 
-/// A grid vector is picked by cell, like a heatmap: anywhere inside the cell,
-/// on the arrow or not, answers the cell's indices; outside the grid nothing.
+/// A grid vector picks the arrow it draws, answered as the cell the arrow is
+/// drawn for: on the shaft or head it hits at distance 0, beside it the
+/// distance counts from the glyph's edge, and in the cell off the arrow
+/// nothing hits. Both orientations report the cell's x and y indices.
 #[test]
-fn grid_vectors_pick_by_cell_containment() {
+fn grid_vectors_pick_the_arrow_drawn_for_each_cell() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
     grid_fixture(&mut renderer, &GridLayout::Edges);
     let mut chart = grid_chart();
     chart.set_x_range(0.0, 4.0);
-    let id = renderer
-        .register_chart(
-            chart.config().clone(),
-            vec![grid(
-                &["ux0", "ux1", "ux2"],
-                &["vx0", "vx1", "vx2"],
-                &MatrixOrientation::ColumnsAreX,
-                &GridLayout::Edges,
-                pixels(1.0),
-            )],
-        )
-        .unwrap();
-    renderer.enable_gpu_picking().unwrap();
-    let pick = |renderer: &mut Renderer, request| {
-        pollster::block_on(renderer.pick_chart_data(id, request).unwrap().resolve()).unwrap()
-    };
-    let cell = |x_index, y_index| PickedData::MatrixCell {
+    let cell = |x_index, y_index, distance_px| PickedData::MatrixCell {
         source_id: None,
         series_id: "quiver".into(),
         x_index,
         y_index,
-        distance_px: 0.0,
+        distance_px,
     };
+    for (u, v, orientation) in [
+        (
+            ["ux0", "ux1", "ux2"].as_slice(),
+            ["vx0", "vx1", "vx2"].as_slice(),
+            &MatrixOrientation::ColumnsAreX,
+        ),
+        (
+            ["uy0", "uy1"].as_slice(),
+            ["vy0", "vy1"].as_slice(),
+            &MatrixOrientation::ColumnsAreY,
+        ),
+    ] {
+        let id = renderer
+            .register_chart(
+                chart.config().clone(),
+                vec![grid(u, v, orientation, &GridLayout::Edges, pixels(1.0))],
+            )
+            .unwrap();
+        renderer.enable_gpu_picking().unwrap();
+        let pick = |renderer: &mut Renderer, request| {
+            pollster::block_on(renderer.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+        };
+        let what = format!("{orientation:?}");
 
-    assert_eq!(
-        pick(&mut renderer, pick_request(&chart, 1.5, 0.5, 8.0, 0.0, 0.0)),
-        Some(cell(1, 0)),
-        "on the arrow"
-    );
-    assert_eq!(
-        pick(&mut renderer, pick_request(&chart, 0.2, 1.8, 0.0, 0.0, 0.0)),
-        Some(cell(0, 1)),
-        "in the cell, off the arrow"
-    );
-    assert_eq!(
-        pick(&mut renderer, pick_request(&chart, 3.5, 1.0, 0.0, 0.0, 0.0)),
-        None,
-        "outside the grid"
-    );
+        assert_eq!(
+            pick(&mut renderer, pick_request(&chart, 1.5, 0.5, 8.0, 0.0, 0.0)),
+            Some(cell(1, 0, 0.0)),
+            "{what}: on the shaft"
+        );
+        assert_eq!(
+            pick(
+                &mut renderer,
+                pick_request(&chart, 2.5, 1.5, 15.0, 2.0, 0.0)
+            ),
+            Some(cell(2, 1, 0.0)),
+            "{what}: on the head"
+        );
+        let beside = pick(&mut renderer, pick_request(&chart, 0.5, 1.5, 8.0, 3.0, 2.0));
+        let Some(PickedData::MatrixCell {
+            x_index: 0,
+            y_index: 1,
+            distance_px,
+            ..
+        }) = beside
+        else {
+            panic!("{what}: beside the shaft {beside:?}");
+        };
+        assert!((distance_px - 1.0).abs() < 0.01, "{what}: {distance_px}");
+        assert_eq!(
+            pick(&mut renderer, pick_request(&chart, 0.2, 1.8, 0.0, 0.0, 0.0)),
+            None,
+            "{what}: in the cell, off the arrow"
+        );
+        assert_eq!(
+            pick(&mut renderer, pick_request(&chart, 3.5, 1.0, 0.0, 0.0, 0.0)),
+            None,
+            "{what}: outside the grid"
+        );
+        renderer.remove_chart(id).unwrap();
+    }
 }
 
 /// The picked ring draws around a point vector's anchor at the glyph radius.

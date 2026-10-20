@@ -1187,3 +1187,112 @@ fn point_vectors_pick_the_arrow_they_draw() {
         renderer.remove_chart(probe.id).unwrap();
     }
 }
+
+/// G6: a grid vector picks (as its cell) exactly the arrow it draws: every
+/// painted pixel picks a cell of the series within the fringe, nothing picks
+/// at distance zero where less than half is covered, and a zero vector's
+/// cell picks nowhere — in both scale modes, at 1x and 2x.
+#[test]
+fn grid_vectors_pick_the_arrow_they_draw() {
+    use renderer::data_config::{
+        GridLayout, MatrixOrientation, MatrixRef, VectorComponents, VectorPivot, VectorScale,
+        VectorStyle,
+    };
+    let mut renderer = renderer();
+    // A 3 x 2 edge grid over x 2..8, y 2..8; column k runs along x.
+    let u = [[24.0, -18.0], [0.0, 30.0], [-12.0, 8.0]];
+    let v = [[10.0, 20.0], [0.0, -14.0], [16.0, 3.0]];
+    let mut columns: Vec<(String, Column<f64>)> = vec![
+        ("gx".into(), col(vec![2.0, 4.0, 6.0, 8.0])),
+        ("gy".into(), col(vec![2.0, 5.0, 8.0])),
+    ];
+    for k in 0..3 {
+        columns.push((format!("u{k}"), col(u[k].to_vec())));
+        columns.push((format!("v{k}"), col(v[k].to_vec())));
+    }
+    let sources: Vec<(&str, &dyn renderer::ColumnSource)> = columns
+        .iter()
+        .map(|(id, column)| (id.as_str(), column as &dyn renderer::ColumnSource))
+        .collect();
+    renderer.add_columns(&sources).expect("upload");
+    let matrix = |prefix: &str| MatrixRef {
+        columns: (0..3).map(|k| format!("{prefix}{k}")).collect(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Edges,
+    };
+    let chart = bare_chart();
+    for scale_mode in [
+        VectorScale::Pixels { px_per_unit: 1.0 },
+        VectorScale::Data { factor: 0.06 },
+    ] {
+        let series = [SeriesConfig {
+            series_id: "quiver".into(),
+            source_id: None,
+            label: None,
+            x_column: "gx".into(),
+            y_column: "gy".into(),
+            render_type: DataRenderType::Vector {
+                components: VectorComponents::Grid {
+                    u: matrix("u"),
+                    v: matrix("v"),
+                },
+                style: VectorStyle {
+                    color: RED,
+                    width_px: 3.0,
+                    scale: scale_mode.clone(),
+                    pivot: VectorPivot::Middle,
+                    head_length_px: 8.0,
+                    head_width_px: 7.0,
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            },
+        }];
+        for scale in [1.0, 2.0] {
+            let what = format!("{scale_mode:?} at {scale}x");
+            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 3);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
+            let mut failures = Vec::new();
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let ink = difference(&with, &without, x, y);
+                    let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                    let distance = match &hit {
+                        Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
+                            Some(*distance_px)
+                        }
+                        None => None,
+                        Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
+                    };
+                    if ink >= STRICT.painted {
+                        painted += 1;
+                        if distance.is_none() {
+                            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                        }
+                    }
+                    if distance == Some(0.0) && ink < STRICT.zero_ink {
+                        failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                    }
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(painted > 80, "{what}: {painted}");
+            // The zero vector of cell (1, 0) draws nothing and picks nothing.
+            let (cx, cy) = data_to_px(&chart, 5.0, 3.5, scale);
+            assert_eq!(
+                probe.pick_data(&mut renderer, cx as u32, cy as u32, 0.0),
+                None,
+                "{what}: the zero vector's cell"
+            );
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}

@@ -923,9 +923,19 @@ arrow takes the colour a heatmap cell of the same value would.
 The glyph fragment owns nothing but pixel geometry: `arrow_place` applies the
 pivot and the minimum length and scales the head down to a short arrow,
 `arrow_quad_corner` places the six vertices of the covering quad, and
-`arrow_coverage` evaluates the signed distance to shaft ∪ head per fragment.
-Nothing derived per arrow is uploaded: every draw recomputes the placement
-from the bound columns.
+`arrow_coverage` evaluates the signed distance to shaft ∪ head
+(`arrow_distance`) per fragment. The quad reaches half the shaft width plus
+the margin past both ends, so the shaft's round end is never cut. Nothing
+derived per arrow is uploaded: every draw recomputes the placement from the
+bound columns.
+
+Picking follows the draw. A grid vector's typed data pick is the grid input
+fragment's compute entry `pick_vector_cell` (bound like the draw, group 0 the
+pick transform, group 1 the typed pick query and output, group 2 this
+series' group): it walks every instance through `vector_sample`,
+`project_arrow`, `arrow_place` and `arrow_distance` and answers the matrix
+cell of the nearest drawn arrow, a later instance winning an exact tie. A
+point vector is a point pick (§5.8).
 
 ### 5.4 Colour ramp and size-map radius — function twins
 
@@ -1521,7 +1531,7 @@ non-finite end are not drawn and do not pick.
 
 `ARROW_SHAFT_MIN_PX` keeps the head-only arrow (shorter than its head) from
 growing a round dot at the tail: the fragment stage recomputes the length from
-the interpolated tail and tip, and that rounding used to leave a shaft of a
+the pivot-shifted tail and tip, and that rounding used to leave a shaft of a
 few ulps whose round end the draw painted and the pick did not.
 
 The items below are copied byte-for-byte into `vector/glyph_arrow.wgsl` (the

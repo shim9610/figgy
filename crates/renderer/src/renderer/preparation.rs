@@ -174,11 +174,15 @@ impl PipelinePreparation {
                     self.device.clone(),
                     self.queue.clone(),
                     self.ledger.clone(),
-                    &self.pipelines.shaders.bar,
-                    &self.pipelines.shaders.field,
+                    crate::gpu_data_pick::DataPickShaders {
+                        bar: &self.pipelines.shaders.bar,
+                        field: &self.pipelines.shaders.field,
+                        vector_grid: &self.pipelines.shaders.vector_grid,
+                    },
                     &self.transform,
                     &self.field,
                     &self.mapped,
+                    &self.vector,
                     observer,
                 )
                 .await

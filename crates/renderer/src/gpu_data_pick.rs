@@ -3,7 +3,9 @@
 //! The compute entry points live in the same WGSL modules as the render entry
 //! points. Histogram picking calls the bar renderer's rectangle helper;
 //! heatmap/contour picking calls the field renderer's `locate`,
-//! `contour_sample`, and quadratic contour-distance helpers. The CPU submits
+//! `contour_sample`, and quadratic contour-distance helpers; grid vector
+//! picking runs the assembled vector shader's `pick_vector_cell`, which walks
+//! the arrows with the draw's own sample, projection and glyph functions. The CPU submits
 //! only transforms, lane bases, style scalars, and identity indices. It never
 //! reads or mirrors source values from [`ColumnPool`](crate::data_render::ColumnPool).
 
@@ -78,6 +80,13 @@ pub(crate) enum GpuDataPickGeometry {
         has_fill: bool,
         has_contour: bool,
         contour_width_px: f32,
+    },
+    /// A grid vector's arrows, picked as the cells they are drawn for: the
+    /// series' vector group 2 (pool, grid table, stops, params at the pick's
+    /// display scale).
+    VectorGrid {
+        vector_bg: wgpu::BindGroup,
+        charge: SharedCharge,
     },
 }
 
@@ -511,6 +520,16 @@ fn compute_uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// The shader modules the typed data pick's compute entries live in, next to
+/// the render entries they share geometry with.
+#[derive(Clone, Copy)]
+pub(crate) struct DataPickShaders<'a> {
+    pub(crate) bar: &'a wgpu::ShaderModule,
+    pub(crate) field: &'a wgpu::ShaderModule,
+    /// The assembled grid vector module (`VectorInput::Grid`).
+    pub(crate) vector_grid: &'a wgpu::ShaderModule,
+}
+
 /// Immutable pipelines shared by every chart and pick query on one renderer.
 pub(crate) struct DataPickPipelineBundle {
     device: Arc<wgpu::Device>,
@@ -519,6 +538,7 @@ pub(crate) struct DataPickPipelineBundle {
     query_bgl: wgpu::BindGroupLayout,
     histogram: wgpu::ComputePipeline,
     field: wgpu::ComputePipeline,
+    vector_cell: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
     stream_reduce_bgl: wgpu::BindGroupLayout,
     stream_reduce_data: wgpu::ComputePipeline,
@@ -531,13 +551,18 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
+        let DataPickShaders {
+            bar: bar_shader,
+            field: field_shader,
+            vector_grid: vector_grid_shader,
+        } = shaders;
         started(observer, INIT_SCOPE, "setup");
         let query_bgl = crate::gpu_compile::bind_group_layout(
             &device,
@@ -566,6 +591,14 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        let vector_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy vector grid data pick layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(vector_bgl)],
+                immediate_size: 0,
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
 
         let histogram = observe_value(observer, INIT_SCOPE, "pick_histogram_bin", || {
@@ -589,6 +622,19 @@ impl DataPickPipelineBundle {
                     layout: Some(&field_layout),
                     module: field_shader,
                     entry_point: Some("pick_field_data"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let vector_cell = observe_value(observer, INIT_SCOPE, "pick_vector_cell", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy vector grid data pick pipeline"),
+                    layout: Some(&vector_layout),
+                    module: vector_grid_shader,
+                    entry_point: Some("pick_vector_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 },
@@ -648,6 +694,7 @@ impl DataPickPipelineBundle {
             query_bgl,
             histogram,
             field,
+            vector_cell,
             empty_bar_style_map,
             stream_reduce_bgl,
             stream_reduce_data,
@@ -660,11 +707,11 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         #[cfg(target_arch = "wasm32")]
@@ -699,16 +746,27 @@ impl DataPickPipelineBundle {
             )
             .await
             .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
+            crate::init::prewarm_compute_entries_js(
+                &device,
+                "gpu.data_pick.vector.async",
+                &crate::data_render::vector::assemble(
+                    crate::data_render::vector::VectorInput::Grid,
+                ),
+                &[("pick_vector_cell", "pick_vector_cell")],
+                observer,
+            )
+            .await
+            .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
         }
         Ok(Self::new_observed(
             device,
             queue,
             ledger,
-            bar_shader,
-            field_shader,
+            shaders,
             transform_bgl,
             field_bgl,
             bar_style_bgl,
+            vector_bgl,
             observer,
         ))
     }
@@ -834,6 +892,7 @@ impl DataPickPipelineBundle {
         enum PreparedKind {
             Histogram(wgpu::BindGroup),
             Field(wgpu::BindGroup),
+            VectorGrid(wgpu::BindGroup),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -903,6 +962,19 @@ impl DataPickPipelineBundle {
                         PreparedKind::Field(field_bg),
                     )
                 }
+                GpuDataPickGeometry::VectorGrid { vector_bg, charge } => {
+                    field_charges.push(charge);
+                    (
+                        DataPickQueryGpu {
+                            cursor_ndc_t: cursor,
+                            limits: [query.max_distance_px, 0.0, 0.0, 0.0],
+                            data: [0, item.paint_order, 0, 0],
+                            bases: [0; 4],
+                            baseline: [0.0; 4],
+                        },
+                        PreparedKind::VectorGrid(vector_bg),
+                    )
+                }
             };
             let query_buffer = charged_buffer_init(
                 &scratch_tally,
@@ -969,6 +1041,10 @@ impl DataPickPipelineBundle {
                     PreparedKind::Field(field_bg) => {
                         pass.set_pipeline(&self.field);
                         pass.set_bind_group(2, field_bg, &[]);
+                    }
+                    PreparedKind::VectorGrid(vector_bg) => {
+                        pass.set_pipeline(&self.vector_cell);
+                        pass.set_bind_group(2, vector_bg, &[]);
                     }
                 }
                 pass.set_bind_group(1, &item.query_bg, &[]);
@@ -1304,18 +1380,25 @@ mod stream_tests {
                 ),
             },
         );
+        let vector_grid =
+            data_render::vector::shader_module(&device, data_render::vector::VectorInput::Grid);
         let transform = data_render::create_scatter_transform_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
+        let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         DataPickPipelineBundle::new_observed(
             device,
             queue,
             Arc::new(GpuLedger::new()),
-            &bar,
-            &field,
+            DataPickShaders {
+                bar: &bar,
+                field: &field,
+                vector_grid: &vector_grid,
+            },
             &transform,
             &field_bgl,
             &style,
+            &vector_bgl,
             &mut |_| {},
         )
     }
