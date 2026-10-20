@@ -824,14 +824,16 @@ impl Selectable for AxisLabelElement {
             (ls.label_offset_x, ls.label_offset_y),
             m,
         );
+        // The strip spans the data area along the axis and moves with the
+        // label offset on both axes, as the drawn labels do.
         let mut strip = label_rect(origin, m);
         match self.side {
             Side::Top | Side::Bottom => {
-                strip.x = dax;
+                strip.x = dax + ls.label_offset_x;
                 strip.width = daw;
             }
             Side::Left | Side::Right => {
-                strip.y = day;
+                strip.y = day + ls.label_offset_y;
                 strip.height = dah;
             }
         }
@@ -1029,14 +1031,16 @@ impl Selectable for ColorBarLabelElement {
             (ls.label_offset_x, ls.label_offset_y),
             m,
         );
+        // The strip spans the bar along its axis and moves with the label
+        // offset on both axes, as the drawn labels do.
         let mut strip = label_rect(origin, m);
         match bar.side {
             Side::Top | Side::Bottom => {
-                strip.x = rect.x;
+                strip.x = rect.x + ls.label_offset_x;
                 strip.width = rect.width;
             }
             Side::Left | Side::Right => {
-                strip.y = rect.y;
+                strip.y = rect.y + ls.label_offset_y;
                 strip.height = rect.height;
             }
         }
