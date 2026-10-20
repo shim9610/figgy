@@ -380,7 +380,7 @@ fn polar_tick_labels_hit_each_drawn_label() {
     for side in [Side::Bottom, Side::Left] {
         let element = renderer::layout::Element::AxisLabel(side.clone());
         let mut rects = Vec::new();
-        assert!(measure.tick_label_rects(&cfg, &element, &mut |r| rects.push(r)));
+        assert!(measure.drawn_parts(&cfg, &element, &mut |p| rects.push(text_rect(p))));
         assert!(rects.len() >= 4, "{side:?}: {} labels", rects.len());
         let name = AxisLabelElement { side: side.clone() }.element_id();
         for r in &rects {
@@ -392,7 +392,7 @@ fn polar_tick_labels_hit_each_drawn_label() {
     // it, and every point outside all padded label boxes misses the labels.
     let element = renderer::layout::Element::AxisLabel(Side::Bottom);
     let mut rects = Vec::new();
-    measure.tick_label_rects(&cfg, &element, &mut |r| rects.push(r));
+    measure.drawn_parts(&cfg, &element, &mut |p| rects.push(text_rect(p)));
     let geometry = cfg.polar_geometry().unwrap();
     let (cx, cy) = (geometry.center[0], geometry.center[1]);
     let radius = rects
@@ -416,4 +416,12 @@ fn polar_tick_labels_hit_each_drawn_label() {
         }
     }
     assert!(gaps > 0, "the angle labels leave no gap on their ring");
+}
+
+/// The glyph block of a drawn tick label.
+fn text_rect(part: renderer::layout::DrawnPart) -> RectF {
+    match part {
+        renderer::layout::DrawnPart::Text(r) => r,
+        other => panic!("a tick label reported {other:?}"),
+    }
 }

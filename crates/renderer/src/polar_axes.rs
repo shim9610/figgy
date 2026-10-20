@@ -244,7 +244,6 @@ pub(super) fn draw_polar_axes(
         return;
     };
     let (start, sweep) = sweep(polar, &config.bottom_x);
-    let inner = geometry.inner_radius;
 
     // Angle axis.
     let axis = &config.bottom_x;
@@ -308,52 +307,18 @@ pub(super) fn draw_polar_axes(
         },
     );
 
-    // Radius axis along the radial label ray.
+    // Radius axis along the radial label ray, from the walk
+    // `polar_axis_segments` reports.
     let axis = &config.left_y;
-    let ray = polar.radial_label_angle_degrees.to_radians();
-    let dir = (ray.cos() as f32, -(ray.sin() as f32));
-    // Labels sit on the left of the ray seen from the centre.
-    let side = (dir.1, -dir.0);
     let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-    if axis.line_visible {
-        stroker.stroke_segment(
-            canvas,
-            point(&geometry, ray, inner),
-            point(&geometry, ray, geometry.radius),
-            &paint,
-            "axis_left",
-        );
-    }
     let majors = major_tick_values_for_axis(axis, Side::Left, da, fp);
-    let minors = minor_tick_values_for_axis(axis, Side::Left, da, fp);
-    if axis.tick != TickVisibility::None {
-        for (i, (value, length)) in majors
-            .iter()
-            .map(|v| (*v, axis.major_tick_length))
-            .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)))
-            .enumerate()
-        {
-            let radius = ring_radius(polar, &geometry, axis, value);
-            if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
-                continue;
-            }
-            let at = point(&geometry, ray, radius);
-            let (a, b) = match axis.tick {
-                TickVisibility::None => continue,
-                TickVisibility::Outside => (0.0, length),
-                TickVisibility::Inside => (-length, 0.0),
-                TickVisibility::Both => (-length, length),
-            };
-            let tag = format!("tick_left_{i}");
-            stroker.stroke_segment(
-                canvas,
-                (at.0 + side.0 * a, at.1 + side.1 * a),
-                (at.0 + side.0 * b, at.1 + side.1 * b),
-                &paint,
-                &tag,
-            );
-        }
-    }
+    each_radius_axis_stroke(polar, &geometry, axis, da, fp, &majors, |tick, a, b| {
+        let tag = match tick {
+            None => "axis_left".to_string(),
+            Some(i) => format!("tick_left_{i}"),
+        };
+        stroker.stroke_segment(canvas, a, b, &paint, &tag);
+    });
     let ls = &axis.label_style;
     each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
         draw_centered(canvas, text, center, (0.0, 0.0), m, ls, fp);
@@ -464,6 +429,85 @@ fn each_radius_label(
         );
         place(&label.text, (center.0 + offset[0], center.1 + offset[1]), m);
     }
+}
+
+/// Every segment the radius axis is stroked along: the ray from the inner
+/// radius to the rim (`None`), then tick `i` across it on the label side
+/// (`Some(i)`, majors first). Drawing and [`polar_axis_segments`] both walk
+/// this.
+fn each_radius_axis_stroke(
+    polar: &crate::polar::PolarOptions,
+    geometry: &crate::polar::PolarGeometry,
+    axis: &crate::config::AxisOptions,
+    da: &DataArea,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(Option<usize>, (f32, f32), (f32, f32)),
+) {
+    let inner = geometry.inner_radius;
+    let ray = polar.radial_label_angle_degrees.to_radians();
+    let dir = (ray.cos() as f32, -(ray.sin() as f32));
+    // Labels sit on the left of the ray seen from the centre.
+    let side = (dir.1, -dir.0);
+    if axis.line_visible {
+        each(
+            None,
+            point(geometry, ray, inner),
+            point(geometry, ray, geometry.radius),
+        );
+    }
+    if axis.tick == TickVisibility::None {
+        return;
+    }
+    let minors = minor_tick_values_for_axis(axis, Side::Left, da, fp);
+    for (i, (value, length)) in majors
+        .iter()
+        .map(|v| (*v, axis.major_tick_length))
+        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)))
+        .enumerate()
+    {
+        let radius = ring_radius(polar, geometry, axis, value);
+        if radius < inner - 0.5 || radius > geometry.radius + 0.5 {
+            continue;
+        }
+        let at = point(geometry, ray, radius);
+        let (a, b) = match axis.tick {
+            TickVisibility::None => continue,
+            TickVisibility::Outside => (0.0, length),
+            TickVisibility::Inside => (-length, 0.0),
+            TickVisibility::Both => (-length, length),
+        };
+        each(
+            Some(i),
+            (at.0 + side.0 * a, at.1 + side.1 * a),
+            (at.0 + side.0 * b, at.1 + side.1 * b),
+        );
+    }
+}
+
+/// The segments `draw_polar_axes` strokes for the axis on `side`, with their
+/// stroke width: the radius axis' ray and ticks for `Left`; nothing for the
+/// angle axis, whose ring is not a selectable segment.
+pub(super) fn polar_axis_segments(
+    config: &Config,
+    side: Side,
+    fp: FontPolicy,
+    mut each: impl FnMut((f32, f32), (f32, f32), f32),
+) {
+    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+        return;
+    };
+    let Ok(da) = config.data_area() else {
+        return;
+    };
+    if side != Side::Left {
+        return;
+    }
+    let axis = &config.left_y;
+    let majors = major_tick_values_for_axis(axis, Side::Left, &da, fp);
+    each_radius_axis_stroke(polar, &geometry, axis, &da, fp, &majors, |_, a, b| {
+        each(a, b, axis.line_width);
+    });
 }
 
 /// The box of each tick label on `side` of a polar chart, laid out exactly

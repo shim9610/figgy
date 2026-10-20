@@ -1242,15 +1242,15 @@ impl crate::text::MeasureText for CpuTextMeasure {
         measure_rich_text(rt, self.policy)
     }
 
-    /// The tick labels the axis raster draws, from the same walk and
-    /// placement it draws them with.
-    fn tick_label_rects(
+    /// The tick labels, axis lines and ticks the axis raster draws, from the
+    /// same walks and placement it draws them with.
+    fn drawn_parts(
         &self,
         cfg: &crate::config::Config,
-        labels: &crate::layout::Element,
-        each: &mut dyn FnMut(crate::layout::RectF),
+        element: &crate::layout::Element,
+        each: &mut dyn FnMut(crate::layout::DrawnPart),
     ) -> bool {
-        crate::axis_render::tick_label_rects(cfg, labels, self.policy, each)
+        crate::axis_render::drawn_parts(cfg, element, self.policy, each)
     }
 }
 

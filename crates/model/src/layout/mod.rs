@@ -16,6 +16,20 @@ pub use geometry::{
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF};
 
+/// One part of a decoration as a renderer draws it, in the chart frame:
+/// what [`crate::text::MeasureText::drawn_parts`] reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawnPart {
+    /// A block of glyphs: one tick label.
+    Text(RectF),
+    /// A stroked segment `width` across: an axis line or one tick.
+    Segment {
+        a: [f32; 2],
+        b: [f32; 2],
+        width: f32,
+    },
+}
+
 // Support types.
 
 #[derive(Debug, Clone, PartialEq)]

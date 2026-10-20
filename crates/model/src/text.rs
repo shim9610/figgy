@@ -219,22 +219,30 @@ impl TextExtents {
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
 
-    /// Lay out the tick labels of `labels` the way a renderer draws them
-    /// under `cfg`: call `each` with the rectangle of every drawn label, in
-    /// `cfg`'s chart frame, and return `true`. `labels` is an
-    /// [`Element::AxisLabel`](crate::layout::Element::AxisLabel) or
-    /// [`Element::ColorBarLabel`](crate::layout::Element::ColorBarLabel).
+    /// The parts of decoration `element` a renderer draws under `cfg`: call
+    /// `each` with every one, in `cfg`'s chart frame, and return `true`.
+    /// Tick labels ([`Element::AxisLabel`], [`Element::ColorBarLabel`])
+    /// report one [`DrawnPart::Text`] per drawn label; axes
+    /// ([`Element::Axis`], [`Element::ColorBarAxis`]) report their line and
+    /// ticks as [`DrawnPart::Segment`]s.
     ///
     /// Tick generation, formatting and pruning belong to the renderer, so the
-    /// model cannot know which labels are drawn. A measure that lays them out
-    /// lets tick-label selection and hit testing follow the drawn labels. The
-    /// default lays out nothing and returns `false`; tick labels then fall
-    /// back to a representative strip.
-    fn tick_label_rects(
+    /// model cannot know which labels and ticks are drawn. A measure that
+    /// lays them out lets selection and hit testing follow the drawn parts.
+    /// The default lays out nothing and returns `false`, and the elements
+    /// fall back to a representative strip.
+    ///
+    /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
+    /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel
+    /// [`Element::Axis`]: crate::layout::Element::Axis
+    /// [`Element::ColorBarAxis`]: crate::layout::Element::ColorBarAxis
+    /// [`DrawnPart::Text`]: crate::layout::DrawnPart::Text
+    /// [`DrawnPart::Segment`]: crate::layout::DrawnPart::Segment
+    fn drawn_parts(
         &self,
         _cfg: &crate::config::Config,
-        _labels: &crate::layout::Element,
-        _each: &mut dyn FnMut(crate::layout::RectF),
+        _element: &crate::layout::Element,
+        _each: &mut dyn FnMut(crate::layout::DrawnPart),
     ) -> bool {
         false
     }
