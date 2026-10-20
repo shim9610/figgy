@@ -12,11 +12,9 @@ at the time. The first crates.io publication is recorded below.
 
 <a id="release-0180"></a>
 
-## Release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0
+## crates.io release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0 (2026-10-20)
 
-Not yet published; the date is added at publication.
-
-Renderer 0.18.0 and model 0.12.0 are new 0.x minor versions. Cartesian charts
+Renderer 0.18.0 and model 0.12.0 are new 0.x minor versions on crates.io. Cartesian charts
 gain polar coordinates, vector fields, point colour and size maps, area fills
 and step lines, secondary Y axes on overlay layers, and subplots. A radar
 family joins the radial, categorical and box plot families, every chart
