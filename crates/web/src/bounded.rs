@@ -501,7 +501,8 @@ impl FiggyBoundedChart {
         .map_err(js_err)?;
         let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
         let mut renderer = DocumentRenderer::new_async(gpu.clone(), &chart, config.format).await?;
-        let (frame, annotations) = renderer.prepare(&chart, (width, height), 1.)?;
+        let scale = surface_scale(&config, (width, height));
+        let (frame, annotations) = renderer.prepare(&chart, (width, height), scale)?;
         Ok(Self {
             surface,
             _instance: instance,
@@ -532,7 +533,8 @@ impl FiggyBoundedChart {
             width,
             height,
         })?;
-        let (frame, annotations) = self.renderer.prepare(&next, (width, height), 1.)?;
+        let scale = surface_scale(&self.surface_config, (width, height));
+        let (frame, annotations) = self.renderer.prepare(&next, (width, height), scale)?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -545,10 +547,13 @@ impl FiggyBoundedChart {
         self.surface
             .configure(self.gpu.device(), &self.surface_config);
     }
+    /// The scale the surface shows the chart at; every frame, and the hit
+    /// maps an edit answers from until the next frame, are prepared at it.
+    fn surface_scale(&self) -> f32 {
+        surface_scale(&self.surface_config, self.size)
+    }
     pub fn frame(&mut self) -> Result<(), JsValue> {
-        let scale = (self.surface_config.width as f32 / self.size.0 as f32)
-            .min(self.surface_config.height as f32 / self.size.1 as f32)
-            .clamp(0.5, 4.);
+        let scale = self.surface_scale();
         let (frame, annotations) = self.renderer.prepare(&self.chart, self.size, scale)?;
         self.frame = frame;
         self.annotations = annotations;
@@ -723,7 +728,9 @@ impl FiggyBoundedChart {
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }
-        let (frame, annotations) = self.renderer.prepare(&next, self.size, 1.)?;
+        let (frame, annotations) = self
+            .renderer
+            .prepare(&next, self.size, self.surface_scale())?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -738,7 +745,9 @@ impl FiggyBoundedChart {
             width: self.size.0,
             height: self.size.1,
         })?;
-        let (frame, annotations) = self.renderer.prepare(&next, self.size, 1.)?;
+        let (frame, annotations) = self
+            .renderer
+            .prepare(&next, self.size, self.surface_scale())?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -942,4 +951,11 @@ impl FiggyBoundedChart {
     pub fn step_selection(&mut self, backwards: bool) {
         self.chart.step(backwards);
     }
+}
+
+/// The scale a surface of `config`'s size shows a chart of logical `size` at.
+fn surface_scale(config: &wgpu::SurfaceConfiguration, size: (u32, u32)) -> f32 {
+    (config.width as f32 / size.0.max(1) as f32)
+        .min(config.height as f32 / size.1.max(1) as f32)
+        .clamp(0.5, 4.)
 }

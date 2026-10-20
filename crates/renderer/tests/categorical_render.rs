@@ -721,3 +721,59 @@ fn maximum_512_bars_render_pick_and_reject_over_limit_transactionally() {
         assert_eq!(r.gpu_memory_usage().total_bytes(), 0);
     }
 }
+
+// A bar is picked exactly where the shader paints it: in the plot interior,
+// every pixel that differs from the background picks a bar, every background
+// pixel picks none, and where two stacked bars meet the pixel picks the bar
+// that owns that edge. Checked at 1x and 2x, grouped and stacked, with
+// rounded corners so the anti-aliased silhouette is curved.
+#[test]
+fn bars_are_picked_where_they_are_painted() {
+    let _guard = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = renderer();
+    for mode in [CategoryBarMode::Grouped, CategoryBarMode::Stacked] {
+        let mut c = chart();
+        c.mode = mode;
+        c.style.material = CategoryBarMaterial::Flat;
+        c.style.corner_radius = 6.0;
+        for scale in [1., 2.] {
+            let frame = r.prepare(&c, (640, 440), scale).unwrap();
+            let image = r.export_rgba(&c, (640, 440), scale).unwrap();
+            let plot = frame.annotation_space().plot;
+            let (w, h) = (image.width, image.height);
+            let background = [
+                (c.background.r * 255.).round() as u8,
+                (c.background.g * 255.).round() as u8,
+                (c.background.b * 255.).round() as u8,
+            ];
+            // Physical pixels strictly inside the plot, clear of the axis
+            // lines on its edges.
+            let x0 = ((plot.x + 3.) * scale).ceil() as u32;
+            let x1 = ((plot.x + plot.width - 3.) * scale).floor() as u32;
+            let y0 = ((plot.y + 3.) * scale).ceil() as u32;
+            let y1 = ((plot.y + plot.height - 3.) * scale).floor() as u32;
+            let mut painted = 0;
+            for y in y0..y1.min(h) {
+                for x in x0..x1.min(w) {
+                    let i = ((y * w + x) * 4) as usize;
+                    let px = &image.rgba[i..i + 3];
+                    let p = [(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale];
+                    let hit = frame.hit_test(p);
+                    if px == background {
+                        assert_eq!(hit, None, "{mode:?} {scale}x: background at {p:?} picks");
+                    } else {
+                        painted += 1;
+                        assert!(
+                            hit.is_some(),
+                            "{mode:?} {scale}x: painted {px:?} at {p:?} picks nothing"
+                        );
+                    }
+                }
+            }
+            assert!(painted > 0, "{mode:?} {scale}x painted nothing");
+        }
+    }
+    r.end_frame();
+}

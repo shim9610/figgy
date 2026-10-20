@@ -192,10 +192,16 @@ impl BoxPlotFrame {
             .zip(&self.targets)
             .rev()
             .find(|(b, _)| {
-                let d = distance(b, p);
-                d <= 0.0
-                    && (b.color[3] > 0.0
-                        || (b.outline[0] > 0.5 && b.outline_color[3] > 0.0 && d >= -b.outline[1]))
+                // Any of the shader's four subpixel samples, as `boxplot.wgsl`
+                // covers a fragment.
+                crate::categorical::SUBPIXEL_SAMPLES.iter().any(|o| {
+                    let d = distance(b, [p[0] + o[0], p[1] + o[1]]);
+                    d <= 0.0
+                        && (b.color[3] > 0.0
+                            || (b.outline[0] > 0.5
+                                && b.outline_color[3] > 0.0
+                                && d >= -b.outline[1]))
+                })
             })
             .map(|(_, t)| t.clone())
     }
