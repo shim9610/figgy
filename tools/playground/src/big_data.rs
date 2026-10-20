@@ -264,7 +264,9 @@ pub struct BigData {
     pub upload_time: Option<Duration>,
     /// Why the last upload failed, shown until the next one succeeds.
     pub upload_error: Option<String>,
-    /// Wait for the GPU after every frame and show the timing.
+    /// Wait for the GPU after every frame and show the timing. Off by
+    /// default: the wait blocks the event loop on every repaint, which adds
+    /// input lag of its own.
     pub time_frames: bool,
     pub last: Option<FrameTime>,
     /// Running benchmark: the X range it started from and the frames so far.
@@ -281,7 +283,7 @@ impl BigData {
             mode: Mode::Line,
             upload_time: None,
             upload_error: None,
-            time_frames: true,
+            time_frames: false,
             last: None,
             bench: None,
             bench_ms: [0.0; BENCH_FRAMES],
