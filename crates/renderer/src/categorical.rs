@@ -155,7 +155,7 @@ impl CategoricalFrame {
         self.background
     }
     /// Pick a visible nonzero bar in chart-local logical pixels: the topmost
-    /// bar the shader gives any coverage at that point ([`covers`]), so a
+    /// bar the shader gives any coverage at that point (`covers`), so a
     /// drawn edge pixel picks and a shared stack edge picks its owner. IDs
     /// remain stable across category/series reordering. Zero and missing
     /// values have no surface.

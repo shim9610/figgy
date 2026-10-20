@@ -712,7 +712,7 @@ impl Selectable for AxisElement {
     /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]):
     /// a polar chart's angle axis is the outer ring, which is the data
     /// boundary and not selectable, and its radius ray is grabbed at least
-    /// [`POLAR_RAY_HIT_HALF_WIDTH`] either side. `None` when nothing is
+    /// 4 px either side. `None` when nothing is
     /// drawn or `measure` does not lay the axis out.
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
         if cfg.polar.is_some() && self.side != Side::Left {

@@ -1003,7 +1003,7 @@ pub enum AnnotationShape {
 
 impl AnnotationShape {
     /// Whether `p` is on the shape, within the grab slack: a stroke within
-    /// half its width and at least [`LINE_HIT_HALF_WIDTH`], a filled shape
+    /// half its width and at least 3 px, a filled shape
     /// within [`SELECTION_PADDING`] of its edge.
     pub fn contains(&self, p: [f32; 2]) -> bool {
         match *self {
