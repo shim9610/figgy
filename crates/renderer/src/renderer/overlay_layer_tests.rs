@@ -237,6 +237,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
         color: crate::select::SELECTION_COLOR,
         stroke_width: crate::select::SELECTION_STROKE_WIDTH,
         handles: Vec::new(),
+        outline: crate::select::SelectionOutline::Rect,
     }];
     refresh(&mut r, id, &mut view, &boxes);
     check(

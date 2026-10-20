@@ -226,14 +226,18 @@ pub fn rebuild_legends(config: &mut Config, series: &[SeriesConfig]) {
         .iter()
         .flat_map(|s| s.series.iter().map(String::as_str))
         .collect();
-    let fill = |content: &mut RichText, ids: &mut dyn Iterator<Item = &SeriesConfig>| {
+    // A heatmap's mark is a swatch of its chart's colourbar map.
+    let fill = |content: &mut RichText,
+                colormap: Option<&ColorMap>,
+                ids: &mut dyn Iterator<Item = &SeriesConfig>| {
         content.segments.clear();
         for s in ids {
-            append_legend_entry(content, series_symbol_segments(s), &s.series_id);
+            append_legend_entry(content, series_symbol_segments(s, colormap), &s.series_id);
         }
     };
     fill(
         &mut config.legend.content,
+        config.colorbar.as_ref().map(|bar| &bar.colormap),
         &mut series
             .iter()
             .filter(|s| !claimed.contains(&s.series_id.as_str())),
@@ -243,6 +247,7 @@ pub fn rebuild_legends(config: &mut Config, series: &[SeriesConfig]) {
             let own = sub.series.clone();
             fill(
                 &mut sub.config.legend.content,
+                sub.config.colorbar.as_ref().map(|bar| &bar.colormap),
                 &mut series.iter().filter(|s| own.contains(&s.series_id)),
             );
         }

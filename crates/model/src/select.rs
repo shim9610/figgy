@@ -39,6 +39,20 @@ pub const SELECTION_STROKE_WIDTH: f32 = 1.5;
 /// Gap between the element bounds and the highlight box, px.
 pub const SELECTION_PADDING: f32 = 2.0;
 
+/// What a selection highlight outlines.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum SelectionOutline {
+    /// The box [`SelectionBox::rect`].
+    #[default]
+    Rect,
+    /// Each tick label of the axis on this side, boxed where the renderer
+    /// draws it, in place of `rect`, which still bounds them. Polar tick
+    /// labels ring the plot or line the ray, so one box around them would
+    /// cover the chart. The model does not lay out tick labels; a consumer
+    /// without that layout draws `rect`.
+    TickLabels(Side),
+}
+
 /// The blue box drawn around a selected element. Produced by
 /// [`Selectable::selection_box`]; consumed by the renderer's skia pass.
 #[derive(Debug, Clone, PartialEq)]
@@ -50,6 +64,8 @@ pub struct SelectionBox {
     /// Resize handle squares (empty for non-resizable elements). Drawn as
     /// filled squares on top of the box outline.
     pub handles: Vec<RectF>,
+    /// What the highlight outlines: `rect`, or each tick label of an axis.
+    pub outline: SelectionOutline,
 }
 
 /// An object the user can select on the chart.
@@ -82,7 +98,14 @@ pub trait Selectable<C: DragConfig = Config> {
             color: SELECTION_COLOR,
             stroke_width: SELECTION_STROKE_WIDTH,
             handles,
+            outline: self.selection_outline(cfg),
         })
+    }
+
+    /// What the highlight outlines; every element but polar tick labels
+    /// outlines its bounds.
+    fn selection_outline(&self, _cfg: &C) -> SelectionOutline {
+        SelectionOutline::Rect
     }
 
     /// Default hit test: point-in-bounds.
@@ -814,6 +837,17 @@ impl Selectable for AxisLabelElement {
         }
         let (dx, dy) = axis_offset(self.side.clone(), axis.line_offset);
         Some(strip.translated(dx, dy))
+    }
+
+    /// Polar tick labels ring the plot (angle) or line the ray (radius):
+    /// outline each label rather than the box around all of them.
+    fn selection_outline(&self, cfg: &Config) -> SelectionOutline {
+        match self.side {
+            Side::Bottom | Side::Left if cfg.polar.is_some() => {
+                SelectionOutline::TickLabels(self.side.clone())
+            }
+            _ => SelectionOutline::Rect,
+        }
     }
 
     fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {

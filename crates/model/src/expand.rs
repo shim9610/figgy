@@ -128,6 +128,39 @@ impl Config {
         }
     }
 
+    /// Whether series `series_id` takes part in fitting `layer`'s X and Y
+    /// axes, as `(x, y)`. `Annotations` fits the base axes.
+    ///
+    /// `Base` and `Subplot(i)` fit that chart's `bottom_x` and `left_y`. A
+    /// linked axis is one axis shared by its link group, so the X axis fits
+    /// every series drawn against it: the series of every chart in its X link
+    /// group, overlays included, since an overlay shares its chart's X axis.
+    /// The Y axis fits the base-layer series of every chart in its Y link
+    /// group; an overlay has a Y axis of its own. `Overlay(n)` and
+    /// `SubplotOverlay(i, n)` fit only that overlay's Y axis, from that
+    /// overlay's series.
+    pub fn series_fit_roles(&self, layer: LayerRef, series_id: &str) -> (bool, bool) {
+        let cell = |layer: LayerRef| match layer {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                CellRef::Subplot(index)
+            }
+            _ => CellRef::Parent,
+        };
+        let root = |cell: CellRef, x: bool| match cell {
+            CellRef::Parent => CellRef::Parent,
+            CellRef::Subplot(index) => self.subplot_link_root(index, x),
+        };
+        let own = self.layer_of_series(series_id);
+        match layer {
+            LayerRef::Base | LayerRef::Subplot(_) | LayerRef::Annotations => (
+                root(cell(own), true) == root(cell(layer), true),
+                matches!(own, LayerRef::Base | LayerRef::Subplot(_))
+                    && root(cell(own), false) == root(cell(layer), false),
+            ),
+            LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..) => (false, own == layer),
+        }
+    }
+
     /// The subplot rules: one level of nesting, one annotation layer per
     /// document (the parent's), links pointing at the parent or an earlier
     /// subplot, and every series id drawn by at most one subplot and no
@@ -1051,6 +1084,71 @@ mod tests {
             ..Default::default()
         });
         assert!(parent_overlay.validate_subplots().is_err());
+    }
+
+    // A linked axis fits every series drawn against its link group; an
+    // overlay's Y axis fits only its own series.
+    #[test]
+    fn fit_roles_follow_layers_and_link_groups() {
+        use crate::layer::Subplot;
+
+        // Parent: base `p`, overlay `po`. Subplot 0: own axes, base `s0`,
+        // overlay `s0o`. Subplot 1: X linked to the parent, Y to subplot 0,
+        // base `s1`. Subplot 2: X linked to subplot 1 (so to the parent).
+        let mut config = default_config();
+        let mut overlay = OverlayLayer::default();
+        overlay.series = vec!["po".into()];
+        config.overlays.push(overlay);
+        let mut first = default_config();
+        let mut first_overlay = OverlayLayer::default();
+        first_overlay.series = vec!["s0o".into()];
+        first.overlays.push(first_overlay);
+        config.subplots = vec![
+            Subplot {
+                config: first,
+                series: vec!["s0".into(), "s0o".into()],
+                ..Subplot::default()
+            },
+            Subplot {
+                series: vec!["s1".into()],
+                link_x: Some(CellRef::Parent),
+                link_y: Some(CellRef::Subplot(0)),
+                ..Subplot::default()
+            },
+            Subplot {
+                series: vec!["s2".into()],
+                link_x: Some(CellRef::Subplot(1)),
+                ..Subplot::default()
+            },
+        ];
+        let roles = |fit, id| config.series_fit_roles(fit, id);
+
+        // Base: X from every chart linked to the parent's X, overlay series
+        // included; Y from the parent's base series only.
+        assert_eq!(roles(LayerRef::Base, "p"), (true, true));
+        assert_eq!(roles(LayerRef::Base, "po"), (true, false));
+        assert_eq!(roles(LayerRef::Base, "s0"), (false, false));
+        assert_eq!(roles(LayerRef::Base, "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::Base, "s1"), (true, false));
+        assert_eq!(roles(LayerRef::Base, "s2"), (true, false));
+        // The annotation layer fits the base axes.
+        assert_eq!(roles(LayerRef::Annotations, "s1"), (true, false));
+        // Subplot 1 fits the same X group as the parent, and the Y group it
+        // shares with subplot 0.
+        assert_eq!(roles(LayerRef::Subplot(1), "p"), (true, false));
+        assert_eq!(roles(LayerRef::Subplot(1), "s0"), (false, true));
+        assert_eq!(roles(LayerRef::Subplot(1), "s0o"), (false, false));
+        assert_eq!(roles(LayerRef::Subplot(1), "s1"), (true, true));
+        assert_eq!(roles(LayerRef::Subplot(1), "s2"), (true, false));
+        // Subplot 0 owns its X axis; its overlay shares that X axis.
+        assert_eq!(roles(LayerRef::Subplot(0), "s0o"), (true, false));
+        assert_eq!(roles(LayerRef::Subplot(0), "s1"), (false, true));
+        assert_eq!(roles(LayerRef::Subplot(0), "p"), (false, false));
+        // Overlay layers fit only their own Y axis.
+        assert_eq!(roles(LayerRef::Overlay(0), "po"), (false, true));
+        assert_eq!(roles(LayerRef::Overlay(0), "p"), (false, false));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0o"), (false, true));
+        assert_eq!(roles(LayerRef::SubplotOverlay(0, 0), "s0"), (false, false));
     }
 
     // Axes are a subplot's own unless linked; a linked axis follows its

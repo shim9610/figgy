@@ -1674,6 +1674,10 @@ fn layer_columns<'a>(
     )
 }
 
+/// Padding ratio of both fit buttons, so "fit" and "fit group" differ only in
+/// which series take part.
+const PADDING: f64 = 0.05;
+
 /// Fit the axes a layer owns to the series it draws. No-op for an empty layer.
 fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: LayerRef) {
     let (xs, ys) = layer_columns(config, series, layer);
@@ -1683,17 +1687,17 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
     let pool = r.pool();
     let mut chart = Chart::new(config.clone());
     let result = match layer {
-        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, 0.1),
+        LayerRef::Overlay(i) => chart.auto_fit_overlay_y_union(pool, i, &ys, PADDING),
         LayerRef::Subplot(j) => chart
-            .auto_fit_subplot_x_union(pool, j, &xs, 0.05)
-            .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, 0.1)),
+            .auto_fit_subplot_x_union(pool, j, &xs, PADDING)
+            .and_then(|_| chart.auto_fit_subplot_y_union(pool, j, &ys, PADDING)),
         LayerRef::SubplotOverlay(j, k) => {
             // No document-level helper: fit the subplot's own chart, copy the axis back.
             let Some(sub) = config.subplots.get(j) else {
                 return;
             };
             let mut inner = Chart::new(sub.config.clone());
-            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, 0.1);
+            let fitted = inner.auto_fit_overlay_y_union(pool, k, &ys, PADDING);
             if fitted.is_ok() {
                 let axis = inner.config().overlays[k].y_axis.clone();
                 chart.with_axis_range_change(|c| c.subplots[j].config.overlays[k].y_axis = axis);
@@ -1701,10 +1705,22 @@ fn fit_layer(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: 
             fitted
         }
         _ => chart
-            .auto_fit_x_union(pool, &xs, 0.05)
-            .and_then(|_| chart.auto_fit_y_union(pool, &ys, 0.1)),
+            .auto_fit_x_union(pool, &xs, PADDING)
+            .and_then(|_| chart.auto_fit_y_union(pool, &ys, PADDING)),
     };
     if result.is_ok() {
+        *config = chart.config().clone();
+    }
+}
+
+/// Fit a layer's axes to every series of its link groups, so a linked axis
+/// keeps the data of every chart that shares it.
+fn fit_link_group(config: &mut Config, series: &[SeriesConfig], r: &Renderer, layer: LayerRef) {
+    let mut chart = Chart::new(config.clone());
+    if chart
+        .auto_fit_layer_union(r.pool(), layer, series, PADDING)
+        .is_ok()
+    {
         *config = chart.config().clone();
     }
 }
@@ -1911,8 +1927,19 @@ fn layers_controls(
             let sub = &mut config.subplots[j];
             ui.horizontal(|ui| {
                 ui.label(format!("Subplot {j}: {} series", sub.series.len()));
-                if ui.small_button("fit").clicked() {
-                    fit_subplot = Some(j);
+                if ui
+                    .small_button("fit")
+                    .on_hover_text("This chart's series only")
+                    .clicked()
+                {
+                    fit_subplot = Some((j, false));
+                }
+                if ui
+                    .small_button("fit group")
+                    .on_hover_text("Every series of its link groups (Chart::auto_fit_layer_union)")
+                    .clicked()
+                {
+                    fit_subplot = Some((j, true));
                 }
                 if ui.small_button("+ overlay").clicked() {
                     let k = sub.config.overlays.len();
@@ -1948,8 +1975,10 @@ fn layers_controls(
             }
         });
     }
-    if let Some(j) = fit_subplot {
-        fit_layer(config, series, r, LayerRef::Subplot(j));
+    match fit_subplot {
+        Some((j, false)) => fit_layer(config, series, r, LayerRef::Subplot(j)),
+        Some((j, true)) => fit_link_group(config, series, r, LayerRef::Subplot(j)),
+        None => {}
     }
     if let Some(j) = remove_subplot {
         config.subplots.remove(j);

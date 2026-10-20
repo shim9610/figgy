@@ -54,7 +54,7 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SubplotElement,
+    OverlayLegendElement, Selectable, SelectionBox, SelectionOutline, SubplotElement,
 };
 pub use text::{MeasureText, TextAlign, TextExtents};
 

@@ -63,7 +63,12 @@ example advances to 0.15.0 with the renderer dependency and is not published
   (`radial_label_angle_degrees`), the angle labels move along their spokes
   (`bottom_x` `label_offset_y`, outward positive) and the radius labels in
   the ray frame (`left_y` `label_offset_x` along, `label_offset_y` across);
-  the ring and the top and right axes register nothing. New
+  the ring and the top and right axes register nothing. A selection of the
+  angle or radius tick labels outlines each label where it is drawn, not one
+  box around the whole circle: `SelectionBox` gains `outline`
+  (`SelectionOutline::Rect`, or `TickLabels(side)`, which
+  `AxisLabelElement` reports in polar mode), and the renderer boxes every
+  label of that side from the same layout the axes draw. New
   `Draggable::drag_from` and `Config::nudge_from` carry the pointer
   position these rules read (`DragConfig::nudge_at` for state types); the
   defaults fall back to `drag_by` / `nudge`, and `FiggyChart::on_move`
@@ -365,6 +370,17 @@ example advances to 0.15.0 with the renderer dependency and is not published
   link their X axis to the parent) and `mixed-axes.png` (one linked X axis, a
   chart with a different X column and a twin Y axis from an overlay inside a
   subplot).
+- Fitting a whole link group: `Chart::auto_fit_layer_union(pool, layer,
+  series, padding)` fits the axes `layer` owns to every series drawn against
+  them, so a linked axis covers the data of every chart in its group, and
+  `Chart::auto_fit_layer_extent(layer, x, y, padding)` does the same from
+  exact extents. `Config::series_fit_roles(layer, series_id)` names whether a
+  series counts towards that layer's X and Y fit (X: every chart of the X
+  link group, overlays included; Y: the base series of the Y link group; an
+  overlay layer: its own series only). The WASM `auto_fit_all` now uses
+  both instead of its private copy of the rule, so its results are
+  unchanged. The playground's subplot rows offer "fit" (that chart's series)
+  and "fit group" (the link group).
 - See the configuration reference (`Subplot`), the interaction guide
   (subplots) and the WASM guide.
 
@@ -489,6 +505,16 @@ example advances to 0.15.0 with the renderer dependency and is not published
   without a background are unchanged; axis-aligned box edges gain the same
   one-texel antialiasing.
 - No API, model or serialization change.
+
+### Heatmap legend swatch
+
+- A heatmap's legend entry shows a swatch of the chart's colour map (six
+  bands sampled from `colorbar.colormap`) instead of an empty symbol field.
+  `series_symbol_segments` and `update_legend_symbols_preserving_text` take
+  the colour map as a trailing `Option<&ColorMap>`; a heatmap without one
+  keeps the empty field. The swatch sits inside the fixed-width symbol field,
+  so legend hit bounds do not change. The web wrapper refreshes
+  auto-managed legend symbols when `set_config` changes the colour map.
 
 ### Default layout
 
@@ -637,6 +663,13 @@ Model types (figgy-model 0.12.0):
   `Default`).
 - Exhaustive `DataScatterStyleConfig` literals need `point_color_map: None`
   and `point_size_map: None`.
+- Exhaustive `SelectionBox` literals need `outline: SelectionOutline::Rect`
+  (the box drawn as before).
+- `series_symbol_segments(cfg)` and
+  `update_legend_symbols_preserving_text(content, series)` take a trailing
+  `colormap: Option<&ColorMap>`. Pass the chart's
+  `config.colorbar.as_ref().map(|bar| &bar.colormap)`, or `None` for the
+  previous output.
 - Exhaustive `RichSegment` literals need `rule_band: None`. `RichSegment`
   does not implement `Default`; `..RichSegment::plain(c)` also works.
 - Exhaustive `LabelFormat` matches need `Degrees` and `Radians` arms.
