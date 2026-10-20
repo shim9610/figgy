@@ -1050,3 +1050,140 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
         }
     }
 }
+
+fn arrows(
+    id: &str,
+    scale: renderer::data_config::VectorScale,
+    pivot: renderer::data_config::VectorPivot,
+) -> SeriesConfig {
+    use renderer::data_config::VectorComponents;
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Vector {
+            components: VectorComponents::Points {
+                u: "u".into(),
+                v: "v".into(),
+            },
+            style: renderer::data_config::VectorStyle {
+                color: RED,
+                width_px: 3.0,
+                scale,
+                pivot,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+                min_length_px: 6.0,
+                color_map: None,
+            },
+        },
+    }
+}
+
+/// G5: a point vector picks the arrow it draws — shaft and head, after the
+/// pivot, the scale mode and the head scaled down on a short arrow — and an
+/// arrow that is not drawn (a zero vector, one under the minimum length)
+/// picks nowhere, at 1x and 2x.
+#[test]
+fn point_vectors_pick_the_arrow_they_draw() {
+    use renderer::data_config::{VectorPivot, VectorScale};
+    let mut renderer = renderer();
+    // Long diagonal, short (head scaled down), zero, and under min length.
+    let xs = vec![2.0, 6.5, 8.0, 3.0];
+    let ys = vec![2.0, 6.5, 2.5, 8.0];
+    let us = vec![30.0, -6.0, 0.0, 2.0];
+    let vs = vec![18.0, 4.0, 0.0, 2.0];
+    let f32s = |values: &[f64]| values.iter().map(|v| *v as f32).collect::<Vec<_>>();
+    let columns = F32Columns(vec![
+        ("x".into(), f32s(&xs)),
+        ("y".into(), f32s(&ys)),
+        ("u".into(), f32s(&us)),
+        ("v".into(), f32s(&vs)),
+    ]);
+    renderer
+        .add_columns(&[
+            ("x", &col(xs) as &dyn renderer::ColumnSource),
+            ("y", &col(ys) as &dyn renderer::ColumnSource),
+            ("u", &col(us) as &dyn renderer::ColumnSource),
+            ("v", &col(vs) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    for (scale_mode, pivot) in [
+        (VectorScale::Pixels { px_per_unit: 1.0 }, VectorPivot::Tail),
+        (
+            VectorScale::Pixels { px_per_unit: 1.0 },
+            VectorPivot::Middle,
+        ),
+        (VectorScale::Data { factor: 0.05 }, VectorPivot::Tip),
+    ] {
+        for scale in [1.0, 2.0] {
+            let series = [arrows("quiver", scale_mode.clone(), pivot.clone())];
+            let what = format!("{scale_mode:?} {pivot:?}");
+            let painted = assert_pick_matches_paint(
+                &mut renderer,
+                &chart,
+                &series,
+                "quiver",
+                scale,
+                None,
+                &what,
+            );
+            assert!(painted > 60, "{what}: {painted}");
+            let hidden = [
+                data_to_px(&chart, 8.0, 2.5, scale),
+                data_to_px(&chart, 3.0, 8.0, scale),
+            ];
+            assert_nothing_picks_at(
+                &mut renderer,
+                &chart,
+                &series,
+                "quiver",
+                scale,
+                &hidden,
+                &format!("{what}: undrawn arrows"),
+            );
+        }
+
+        // The CPU twin answers what the GPU picker answers.
+        let series = [arrows("quiver", scale_mode.clone(), pivot.clone())];
+        let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+        let (x0, y0) = data_to_px(&chart, 1.0, 9.0, 1.0);
+        let (x1, y1) = data_to_px(&chart, 8.0, 1.0, 1.0);
+        let mut compared = 0;
+        for y in (y0 as u32..y1 as u32).step_by(3) {
+            for x in (x0 as u32..x1 as u32).step_by(3) {
+                let gpu = probe.pick(&mut renderer, x, y, 3.0);
+                let cpu = renderer::pick_nearest_point(
+                    chart.config(),
+                    &series,
+                    &columns,
+                    x as f32 + 0.5,
+                    y as f32 + 0.5,
+                    renderer::PointPickOptions {
+                        max_distance_px: 3.0,
+                    },
+                );
+                match (&cpu, &gpu) {
+                    (Some(cpu), Some(gpu)) => {
+                        assert!(
+                            (cpu.distance_px - gpu.distance_px).abs() < 0.05
+                                && cpu.point_index == gpu.point_index,
+                            "{scale_mode:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
+                        );
+                        compared += 1;
+                    }
+                    (None, None) => {}
+                    (Some(hit), None) | (None, Some(hit)) => assert!(
+                        hit.distance_px > 2.9,
+                        "{scale_mode:?} ({x}, {y}): CPU {cpu:?} GPU {gpu:?}"
+                    ),
+                }
+            }
+        }
+        assert!(compared > 20, "{scale_mode:?}: {compared} hits compared");
+        renderer.remove_chart(probe.id).unwrap();
+    }
+}

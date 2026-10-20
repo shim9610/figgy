@@ -263,12 +263,12 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             }
         }
 
-        // A point vector is picked at its anchors with the head's radius. It
-        // draws only in precise mode, so it is picked only there.
+        // A point vector is picked on the arrow it draws from each anchor:
+        // the shaft and head the vector shader paints. It draws only in
+        // precise mode, so it is picked only there.
         if let Some(style) = extract_vector_points(&cfg.render_type)
             && use_scatter_style_mapping
         {
-            let radius_px = vector_anchor_radius_px(style);
             let DataRenderType::Vector {
                 components: crate::data_config::VectorComponents::Points { u, v },
                 ..
@@ -276,31 +276,47 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             else {
                 unreachable!("extract_vector_points matched the points form");
             };
+            let us = columns.get_f32_column(u).unwrap_or(&[]);
+            let vs = columns.get_f32_column(v).unwrap_or(&[]);
+            // The vector shader draws as many arrows as its shortest column.
+            let colors = match style.color_map.as_ref() {
+                Some(crate::data_config::VectorColorMap::Column(column)) => {
+                    columns.get_f32_column(column).map_or(0, <[f32]>::len)
+                }
+                _ => usize::MAX,
+            };
             let count = xs
                 .len()
                 .min(ys.len())
-                .min(columns.get_f32_column(u).map_or(0, |u| u.len()))
-                .min(columns.get_f32_column(v).map_or(0, |v| v.len()));
-            if radius_px > 0.0 {
-                for i in 0..count {
-                    pick_anchor(
-                        &mut best,
-                        series_index,
-                        cfg,
-                        config,
-                        &transform,
-                        i,
-                        (xs[i], ys[i]),
-                        &|center| {
-                            let dx = center[0] - canvas_x;
-                            let dy = center[1] - canvas_y;
-                            (dx.mul_add(dx, dy * dy).sqrt() - radius_px)
-                                .max(0.0)
-                                .max(clip_distance)
-                        },
-                        max_dist_sq,
-                    );
+                .min(us.len())
+                .min(vs.len())
+                .min(colors);
+            for i in 0..count {
+                let Some(hit_dist) = vector_arrow_distance(
+                    config,
+                    &transform,
+                    style,
+                    [xs[i], ys[i], us[i], vs[i]],
+                    [canvas_x, canvas_y],
+                ) else {
+                    continue;
+                };
+                let dist_sq = hit_dist * hit_dist;
+                if !dist_sq.is_finite() || dist_sq > max_dist_sq {
+                    continue;
                 }
+                maybe_replace_best(
+                    &mut best,
+                    series_index,
+                    PrimitiveKind::Marker,
+                    dist_sq,
+                    PickedPoint {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        point_index: i,
+                        distance_px: hit_dist,
+                    },
+                );
             }
         }
 
@@ -493,6 +509,166 @@ fn maybe_replace_best(
 /// picker and the selection ring use the same number.
 pub(crate) fn vector_anchor_radius_px(style: &crate::data_config::VectorStyle) -> f32 {
     (style.head_width_px.max(style.width_px) * 0.5).max(0.0)
+}
+
+/// An arrow placed on its anchor (`glyph_arrow.wgsl::ArrowPlacement`).
+#[derive(Clone, Copy, Debug)]
+struct ArrowPlacement {
+    tail: [f32; 2],
+    tip: [f32; 2],
+    head_length_px: f32,
+    head_width_px: f32,
+}
+
+/// Twin of `glyph_arrow.wgsl::arrow_place`: the pivot shift and the head
+/// sized to the arrow; `None` for an arrow that is not drawn.
+fn arrow_place(
+    tail: [f32; 2],
+    tip: [f32; 2],
+    style: &crate::data_config::VectorStyle,
+) -> Option<ArrowPlacement> {
+    let delta = [tip[0] - tail[0], tip[1] - tail[1]];
+    let len = delta[0].hypot(delta[1]);
+    if !len.is_finite() || len <= 0.0 || len < style.min_length_px {
+        return None;
+    }
+    let shift = match style.pivot {
+        crate::data_config::VectorPivot::Tail => 0.0,
+        crate::data_config::VectorPivot::Middle => -0.5,
+        crate::data_config::VectorPivot::Tip => -1.0,
+    };
+    let head_length = style.head_length_px.max(0.0).min(len);
+    Some(ArrowPlacement {
+        tail: [tail[0] + delta[0] * shift, tail[1] + delta[1] * shift],
+        tip: [tip[0] + delta[0] * shift, tip[1] + delta[1] * shift],
+        head_length_px: head_length,
+        head_width_px: if style.head_length_px > 0.0 {
+            style.head_width_px.max(0.0) * (head_length / style.head_length_px)
+        } else {
+            0.0
+        },
+    })
+}
+
+/// Twin of `glyph_arrow.wgsl::arrow_sd_segment`.
+fn arrow_sd_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let pa = [p[0] - a[0], p[1] - a[1]];
+    let ba = [b[0] - a[0], b[1] - a[1]];
+    let h = ((pa[0] * ba[0] + pa[1] * ba[1]) / (ba[0] * ba[0] + ba[1] * ba[1]).max(1e-12))
+        .clamp(0.0, 1.0);
+    (pa[0] - ba[0] * h).hypot(pa[1] - ba[1] * h)
+}
+
+/// Twin of `glyph_arrow.wgsl::arrow_sd_triangle` (negative inside).
+fn arrow_sd_triangle(p: [f32; 2], p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> f32 {
+    let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
+    let dot = |a: [f32; 2], b: [f32; 2]| a[0] * b[0] + a[1] * b[1];
+    let cross = |a: [f32; 2], b: [f32; 2]| a[0] * b[1] - a[1] * b[0];
+    let edges = [sub(p1, p0), sub(p2, p1), sub(p0, p2)];
+    let starts = [p0, p1, p2];
+    let s = wgsl_sign(cross(edges[0], edges[2]));
+    let mut d = (f32::INFINITY, f32::INFINITY);
+    for (e, start) in edges.into_iter().zip(starts) {
+        let v = sub(p, start);
+        let h = (dot(v, e) / dot(e, e).max(1e-12)).clamp(0.0, 1.0);
+        let pq = [v[0] - e[0] * h, v[1] - e[1] * h];
+        d.0 = d.0.min(dot(pq, pq));
+        d.1 = d.1.min(s * cross(v, e));
+    }
+    -d.0.sqrt() * wgsl_sign(d.1)
+}
+
+/// Twin of `glyph_arrow.wgsl::arrow_distance`: signed distance from `p` to
+/// the shaft and head of the placed arrow.
+fn arrow_distance(p: [f32; 2], placed: ArrowPlacement, width_px: f32) -> f32 {
+    let delta = [
+        placed.tip[0] - placed.tail[0],
+        placed.tip[1] - placed.tail[1],
+    ];
+    let len = delta[0].hypot(delta[1]);
+    let dir = [delta[0] / len.max(1e-12), delta[1] / len.max(1e-12)];
+    let nrm = [-dir[1], dir[0]];
+    let head_base = [
+        placed.tip[0] - dir[0] * placed.head_length_px,
+        placed.tip[1] - dir[1] * placed.head_length_px,
+    ];
+    let mut distance = 1e20f32;
+    // `ARROW_SHAFT_MIN_PX`: a head as long as the arrow leaves no shaft.
+    if len - placed.head_length_px > 0.01 && width_px > 0.0 {
+        distance = distance.min(arrow_sd_segment(p, placed.tail, head_base) - width_px * 0.5);
+    }
+    if placed.head_length_px > 0.0 && placed.head_width_px > 0.0 {
+        let half = [
+            nrm[0] * placed.head_width_px * 0.5,
+            nrm[1] * placed.head_width_px * 0.5,
+        ];
+        distance = distance.min(arrow_sd_triangle(
+            p,
+            placed.tip,
+            [head_base[0] + half[0], head_base[1] + half[1]],
+            [head_base[0] - half[0], head_base[1] - half[1]],
+        ));
+    }
+    distance
+}
+
+/// Twin of `project_cartesian2d.wgsl::axis_px_per_unit`: pixels per data
+/// unit along `axis` at `value`.
+fn axis_px_per_unit(transform: &data_render::ScatterTransform, axis: usize, value: f32) -> f32 {
+    let range = (transform.data_max[axis] - transform.data_min[axis])
+        + (transform.data_max_lo[axis] - transform.data_min_lo[axis]);
+    let linear = 2.0 * transform.data_to_panel_scale[axis] / (range * transform.pixel_to_ndc[axis]);
+    let log_slope = linear / (value * std::f32::consts::LN_10);
+    linear + (log_slope - linear) * transform.scale_log[axis]
+}
+
+/// The pick distance from `cursor` to the arrow the vector shader draws for
+/// the sample `[x, y, u, v]` (`vector_sample`, `project_arrow`, `arrow_place`
+/// and `arrow_distance`), or `None` where no arrow is drawn. Canvas pixels
+/// run y-down here and y-up in the shader; the mirror keeps distances.
+fn vector_arrow_distance(
+    config: &Config,
+    transform: &data_render::ScatterTransform,
+    style: &crate::data_config::VectorStyle,
+    [x, y, u, v]: [f32; 4],
+    cursor: [f32; 2],
+) -> Option<f32> {
+    if !x.is_finite() || !y.is_finite() || !u.is_finite() || !v.is_finite() {
+        return None;
+    }
+    let (tx, ty) = project_data_to_canvas_px(config, transform, x, y)?;
+    let tail = [tx, ty];
+    let tip = match style.scale {
+        crate::data_config::VectorScale::Pixels { px_per_unit } => {
+            // y-up direction, flipped into the canvas.
+            let direction = [
+                axis_px_per_unit(transform, 0, x) * u,
+                -(axis_px_per_unit(transform, 1, y) * v),
+            ];
+            let direction_len = direction[0].hypot(direction[1]);
+            let len_px = px_per_unit as f32 * u.hypot(v);
+            if !direction_len.is_finite() || !len_px.is_finite() {
+                return None;
+            }
+            if direction_len > 0.0 && len_px != 0.0 {
+                let k = len_px / direction_len;
+                [tail[0] + direction[0] * k, tail[1] + direction[1] * k]
+            } else {
+                tail
+            }
+        }
+        crate::data_config::VectorScale::Data { factor } => {
+            let factor = factor as f32;
+            let (px, py) =
+                project_data_to_canvas_px(config, transform, x + factor * u, y + factor * v)?;
+            [px, py]
+        }
+    };
+    if !tip[0].is_finite() || !tip[1].is_finite() {
+        return None;
+    }
+    let placed = arrow_place(tail, tip, style)?;
+    Some(arrow_distance(cursor, placed, style.width_px).max(0.0))
 }
 
 /// The style of a point vector series: its anchors are picked like markers.
@@ -1716,29 +1892,42 @@ mod tests {
         }
     }
 
-    /// A point vector is picked at its anchor with half the wider of head and
-    /// shaft as its radius, and only as far as its component columns reach.
+    /// A point vector is picked on the arrow it draws: the shaft (4 px wide,
+    /// round-ended like the draw's segment distance) and the head, not a disc
+    /// at the anchor. An arrow that is not drawn — a zero vector, or one past
+    /// the shortest component column — does not pick.
     #[test]
-    fn vector_points_pick_at_their_anchors_with_the_glyph_radius() {
+    fn vector_points_pick_on_the_drawn_arrow() {
         let config = config();
         let columns = Columns::new(&[
             ("x", &[2.0, 8.0]),
             ("y", &[5.0, 5.0]),
-            ("u", &[1.0, 1.0]),
+            ("u", &[20.0, 0.0]),
             ("v", &[0.0, 0.0]),
-            ("u_short", &[1.0]),
+            ("u_short", &[20.0]),
+            ("u_long", &[20.0, 20.0]),
         ]);
         let series = [vector_points_series("arrows", "u", "v")];
 
-        // Anchors at (30, 70) and (90, 70); the 10 px head gives a 5 px radius.
-        let inside = pick(&config, &series, &columns, 34.5, 70.0, 0.0).unwrap();
-        assert_eq!((inside.point_index, inside.distance_px), (0, 0.0));
-        assert_eq!(pick(&config, &series, &columns, 36.0, 70.0, 0.0), None);
-        let near = pick(&config, &series, &columns, 37.0, 70.0, 3.0).unwrap();
-        assert_eq!(near.point_index, 0);
-        assert!((near.distance_px - 2.0).abs() < 1e-4);
+        // Anchor 0 at (30, 70): a 20 px arrow to (50, 70) whose 10 px head
+        // starts at x = 40.
+        let shaft = pick(&config, &series, &columns, 35.0, 71.5, 0.0).unwrap();
+        assert_eq!((shaft.point_index, shaft.distance_px), (0, 0.0));
+        assert_eq!(pick(&config, &series, &columns, 35.0, 73.0, 0.0), None);
+        let beside = pick(&config, &series, &columns, 35.0, 73.0, 2.0).unwrap();
+        assert!((beside.distance_px - 1.0).abs() < 1e-4);
+        let head = pick(&config, &series, &columns, 45.0, 72.0, 0.0).unwrap();
+        assert_eq!((head.point_index, head.distance_px), (0, 0.0));
+        // Past the tip, and behind the tail beyond the shaft's half width.
+        assert_eq!(pick(&config, &series, &columns, 52.0, 70.0, 0.0), None);
+        let behind = pick(&config, &series, &columns, 27.0, 70.0, 2.0).unwrap();
+        assert!((behind.distance_px - 1.0).abs() < 1e-4);
+
+        // Anchor 1 at (90, 70) is a zero vector: nothing is drawn there.
+        assert_eq!(pick(&config, &series, &columns, 90.0, 70.0, 0.0), None);
+        let long = [vector_points_series("arrows", "u_long", "v")];
         assert_eq!(
-            pick(&config, &series, &columns, 90.0, 70.0, 0.0)
+            pick(&config, &long, &columns, 95.0, 70.0, 0.0)
                 .unwrap()
                 .point_index,
             1
@@ -1747,12 +1936,12 @@ mod tests {
         // A component column shorter than the anchors hides the surplus.
         let short = [vector_points_series("arrows", "u_short", "v")];
         assert_eq!(
-            pick(&config, &short, &columns, 30.0, 70.0, 0.0)
+            pick(&config, &short, &columns, 35.0, 70.0, 0.0)
                 .unwrap()
                 .point_index,
             0
         );
-        assert_eq!(pick(&config, &short, &columns, 90.0, 70.0, 0.0), None);
+        assert_eq!(pick(&config, &short, &columns, 95.0, 70.0, 0.0), None);
     }
 
     #[test]

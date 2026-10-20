@@ -994,12 +994,11 @@ fn pick_request(chart: &Chart, x: f64, y: f64, dx: f64, dy: f64, max: f32) -> Gp
     }
 }
 
-/// A point vector is picked at its anchor with the glyph's radius (half the
-/// wider of head and shaft): inside it the hit is at distance 0, outside it
-/// the distance counts from the radius, and past `max_distance_px` nothing
-/// hits.
+/// A point vector is picked on the arrow it draws, shaft and head: inside the
+/// glyph the hit is at distance 0, outside it the distance counts from the
+/// glyph's edge, and past the tip or `max_distance_px` nothing hits.
 #[test]
-fn point_vectors_pick_at_their_anchors_with_the_glyph_radius() {
+fn point_vectors_pick_on_the_drawn_arrow() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -1013,30 +1012,48 @@ fn point_vectors_pick_at_their_anchors_with_the_glyph_radius() {
         pollster::block_on(renderer.pick_chart(id, request).unwrap().resolve()).unwrap()
     };
 
+    // A 40 px arrow along +x: a 4 px shaft to x = 30, then a 10 px head.
     let hit = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 0.0, 0.0)).expect("hit");
     assert_eq!((hit.series_id.as_str(), hit.point_index), ("arrows", 1));
-    assert_eq!(hit.distance_px, 0.0, "inside the 5 px radius");
+    assert_eq!(hit.distance_px, 0.0, "on the shaft");
+    let shaft = pick(
+        &mut renderer,
+        pick_request(&chart, 1.0, 1.0, 25.0, 1.5, 0.0),
+    )
+    .expect("hit");
+    assert_eq!((shaft.point_index, shaft.distance_px), (0, 0.0));
+    let head = pick(
+        &mut renderer,
+        pick_request(&chart, 1.0, 1.0, 35.0, 2.0, 0.0),
+    )
+    .expect("hit");
+    assert_eq!((head.point_index, head.distance_px), (0, 0.0));
 
-    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 7.0, 0.0, 0.0));
-    assert!(
-        miss.is_none(),
-        "7 px off an anchor with a 5 px radius: {miss:?}"
-    );
-
-    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 7.0, 0.0, 3.0)).expect("hit");
+    let miss = pick(&mut renderer, pick_request(&chart, 3.0, 3.0, 4.0, 3.0, 0.0));
+    assert!(miss.is_none(), "1 px beside a 4 px shaft: {miss:?}");
+    let near = pick(&mut renderer, pick_request(&chart, 1.0, 1.0, 4.0, 3.0, 3.0)).expect("hit");
     assert_eq!(near.point_index, 0);
     assert!(
-        (near.distance_px - 2.0).abs() < 0.01,
+        (near.distance_px - 1.0).abs() < 0.01,
         "{}",
         near.distance_px
     );
 
-    // The shaft is not pickable: 25 px along the arrow is past the radius.
-    let shaft = pick(
+    let past_tip = pick(
         &mut renderer,
-        pick_request(&chart, 1.0, 1.0, 25.0, 0.0, 3.0),
+        pick_request(&chart, 1.0, 1.0, 43.0, 0.0, 0.0),
     );
-    assert!(shaft.is_none(), "{shaft:?}");
+    assert!(past_tip.is_none(), "3 px past the tip: {past_tip:?}");
+    let behind = pick(
+        &mut renderer,
+        pick_request(&chart, 1.0, 1.0, -3.0, 0.0, 3.0),
+    )
+    .expect("hit");
+    assert!(
+        (behind.distance_px - 1.0).abs() < 0.01,
+        "{}",
+        behind.distance_px
+    );
 }
 
 /// A grid vector is picked by cell, like a heatmap: anywhere inside the cell,

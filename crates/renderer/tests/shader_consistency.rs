@@ -476,6 +476,84 @@ fn styled_marker_twins_match_the_ssot() {
     }
 }
 
+/// One `struct NAME { ... };` declaration of a WGSL source.
+fn wgsl_struct(source: &str, name: &str) -> String {
+    let needle = format!("struct {name} {{");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing WGSL struct `{name}`"));
+    let end = source[start..]
+        .find("};")
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("WGSL struct `{name}` has no terminator"));
+    source[start..end + 2].to_string()
+}
+
+/// The arrow glyph is a function twin (SHADER_COMMON.md §5.8): the vector
+/// shader draws a point vector's arrow with it and the pick shader picks
+/// that arrow with it.
+#[test]
+fn arrow_glyph_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let pick = read("src/gpu_pick.wgsl");
+    let glyph = read("src/data_render/vector/glyph_arrow.wgsl");
+    let projection = read("src/data_render/vector/project_cartesian2d.wgsl");
+    let copies = [
+        ("src/data_render/vector/glyph_arrow.wgsl", &glyph, true),
+        (
+            "src/data_render/vector/project_cartesian2d.wgsl",
+            &projection,
+            false,
+        ),
+        ("src/gpu_pick.wgsl", &pick, true),
+    ];
+    for (path, shader, has_glyph) in copies {
+        if has_glyph {
+            for function in [
+                "arrow_finite",
+                "arrow_place",
+                "arrow_sd_segment",
+                "arrow_sd_triangle",
+                "arrow_distance",
+            ] {
+                assert_eq!(
+                    wgsl_function(shader, function),
+                    wgsl_function(&ssot, function),
+                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+            for structure in ["ArrowStyle", "ArrowPlacement"] {
+                assert_eq!(
+                    wgsl_struct(shader, structure),
+                    wgsl_struct(&ssot, structure),
+                    "{path} must declare `{structure}` as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+            for constant in [
+                "ARROW_PIVOT_TAIL",
+                "ARROW_PIVOT_MIDDLE",
+                "ARROW_PIVOT_TIP",
+                "ARROW_SHAFT_MIN_PX",
+            ] {
+                assert_eq!(
+                    wgsl_const(shader, constant),
+                    wgsl_const(&ssot, constant),
+                    "{path} must carry `{constant}` as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+        }
+        if path != "src/data_render/vector/glyph_arrow.wgsl" {
+            for function in ["pair_add", "axis_px_per_unit_at"] {
+                assert_eq!(
+                    wgsl_function(shader, function),
+                    wgsl_function(&ssot, function),
+                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+        }
+    }
+}
+
 /// The pick shader applies the draw shaders' polar fragment clip at the
 /// cursor with the common block's own `polar_fragment_visible`.
 #[test]

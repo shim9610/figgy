@@ -52,6 +52,10 @@ const FLAG_STYLE_INDEX: u32 = 8;
 const FLAG_SIZE_MAP: u32 = 16;
 /// The size map scales marker area rather than radius.
 const FLAG_SIZE_AREA: u32 = 32;
+/// The scatter primitive is a point vector's arrows (`PICK_FLAG_VECTOR`).
+const FLAG_VECTOR: u32 = 64;
+/// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
+const VECTOR_SCALE_PIXELS: u32 = 256;
 const STYLE_MASK_RADIUS: u32 = 2;
 const STYLE_MASK_SHAPE: u32 = 4;
 /// The pick shader's marker draw modes (`PICK_MARKER_*`).
@@ -236,6 +240,31 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// The line's dash preset: the picker walks the same dash phase the line
     /// shader draws, so a dash gap does not pick.
     pub(crate) line_style: crate::line::LineStylePreset,
+    /// A point vector series: its markers are the arrows drawn from each
+    /// anchor (`scatter` must be set too, for the scatter primitive slot).
+    pub(crate) vector: Option<GpuPickVector>,
+}
+
+/// The arrows of a point vector series, as the vector shader draws them
+/// (`vector.rs::VectorParamsGpu`): the component columns, the columns that
+/// bound how many arrows are drawn, and the style in logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GpuPickVector {
+    pub(crate) u_column: ColumnId,
+    pub(crate) v_column: ColumnId,
+    /// A colour column: the vector shader draws only as many arrows as it
+    /// has values.
+    pub(crate) color_column: Option<ColumnId>,
+    /// `VectorScale::Pixels` (else `Data`).
+    pub(crate) scale_pixels: bool,
+    /// The `Data` factor, or `px_per_unit` in logical pixels.
+    pub(crate) scale: f32,
+    /// `VECTOR_PIVOT_*`.
+    pub(crate) pivot: u32,
+    pub(crate) width_px: f32,
+    pub(crate) head_length_px: f32,
+    pub(crate) head_width_px: f32,
+    pub(crate) min_length_px: f32,
 }
 
 /// What the chart's draw style draws for markers and lines, as the pick
@@ -297,6 +326,8 @@ pub(crate) struct GpuStreamPickColumns {
     pub(crate) style_index: Option<ColumnHandle>,
     /// The `point_size_map` value column, resident series only.
     pub(crate) size_value: Option<ColumnHandle>,
+    /// A point vector's `u`, `v` and colour columns, resident series only.
+    pub(crate) vector: [Option<ColumnHandle>; 3],
 }
 
 pub(crate) fn validate_stream_handle(
@@ -811,6 +842,40 @@ fn query_params(
             crate::sketch::fnv1a(series_id),
             dash_count,
         ],
+        vector: [
+            series.vector_base[0],
+            series.vector_base[1],
+            series.vector_count,
+            series.vector.as_ref().map_or(0, |vector| {
+                vector.pivot
+                    | if vector.scale_pixels {
+                        VECTOR_SCALE_PIXELS
+                    } else {
+                        0
+                    }
+            }),
+        ],
+        vector_px: series.vector.as_ref().map_or([0.0; 4], |vector| {
+            [
+                if vector.scale_pixels {
+                    vector.scale * display_scale
+                } else {
+                    vector.scale
+                },
+                vector.width_px * display_scale,
+                vector.head_length_px * display_scale,
+                vector.head_width_px * display_scale,
+            ]
+        }),
+        vector_min: [
+            series
+                .vector
+                .as_ref()
+                .map_or(0.0, |vector| vector.min_length_px * display_scale),
+            0.0,
+            0.0,
+            0.0,
+        ],
     }
 }
 
@@ -861,6 +926,12 @@ struct PickQueryParamsGpu {
     line_dash: [[f32; 4]; 2],
     /// `(marker mode, line mode, series salt, dash count)`.
     styled: [u32; 4],
+    /// `(u lane base, v lane base, arrow count, pivot | scale-pixels bit)`.
+    vector: [u32; 4],
+    /// `(scale, shaft width, head length, head width)`, canvas pixels.
+    vector_px: [f32; 4],
+    /// `(minimum length, 0, 0, 0)`, canvas pixels.
+    vector_min: [f32; 4],
 }
 
 #[repr(C)]
@@ -876,7 +947,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 384);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 432);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -925,6 +996,14 @@ struct PickSeriesGpu {
     size_column: Option<ColumnId>,
     size_handle: Option<ColumnHandle>,
     size_allocation_epoch: Option<u64>,
+    /// A point vector's arrows: the style, the `u` / `v` / colour columns
+    /// with their handles and allocation epochs, the component lane bases
+    /// and the arrow count.
+    vector: Option<GpuPickVector>,
+    vector_handles: [Option<ColumnHandle>; 3],
+    vector_epochs: [Option<u64>; 3],
+    vector_base: [u32; 2],
+    vector_count: u32,
     size_base: u32,
     size_len: u32,
     size_domain: [f32; 4],
@@ -1851,6 +1930,21 @@ impl GpuPickEngine {
                     .ok_or_else(|| GpuPickError::MissingColumn(map.column.clone()))
             })
             .transpose()?;
+        let mut vector = [None; 3];
+        if let Some(arrows) = descriptor.vector.as_ref() {
+            for (slot, id) in vector.iter_mut().zip([
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ]) {
+                if let Some(id) = id {
+                    *slot = Some(
+                        pool.handle_for(id)
+                            .ok_or_else(|| GpuPickError::MissingColumn(id.clone()))?,
+                    );
+                }
+            }
+        }
         self.prepare_series_buffer(
             pool.buffer(),
             descriptor,
@@ -1859,6 +1953,7 @@ impl GpuPickEngine {
                 y: y_handle,
                 style_index: style_index_handle,
                 size_value: size_value_handle,
+                vector,
             },
             Some(pool),
         )
@@ -1886,6 +1981,9 @@ impl GpuPickEngine {
             Some(y_handle),
             columns.style_index,
             columns.size_value,
+            columns.vector[0],
+            columns.vector[1],
+            columns.vector[2],
         ]
         .into_iter()
         .flatten()
@@ -1992,6 +2090,43 @@ impl GpuPickEngine {
             }
         }
 
+        // A point vector's arrows: every component column is resident and
+        // the arrow count is the shortest column the vector shader reads.
+        let mut vector_handles = [None; 3];
+        let mut vector_epochs = [None; 3];
+        let mut vector_base = [0u32; 2];
+        let mut vector_count = 0u32;
+        if let Some(arrows) = descriptor.vector.as_ref() {
+            if descriptor.scatter.is_none() {
+                return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
+            }
+            flags |= FLAG_VECTOR;
+            let ids = [
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ];
+            let mut count = paired_len;
+            for (index, id) in ids.into_iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let handle =
+                    columns.vector[index].ok_or_else(|| GpuPickError::MissingColumn(id.clone()))?;
+                count = count.min(handle.len_values);
+                vector_handles[index] = Some(handle);
+                vector_epochs[index] = Some(
+                    resident
+                        .and_then(|pool| pool.allocation_epoch(id))
+                        .unwrap_or(0),
+                );
+                if index < 2 {
+                    vector_base[index] = lane_base(handle, &descriptor.series_id)?;
+                }
+            }
+            vector_count = u32::try_from(count).unwrap_or(u32::MAX);
+        }
+
         let line_half_width_px = descriptor
             .line_width_px
             .map(|width| nonnegative(width) * 0.5)
@@ -2015,7 +2150,9 @@ impl GpuPickEngine {
         let _ = lane_base(y_handle, &descriptor.series_id)?;
         let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
             gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
-        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS;
+        // An arrow reaches as far from its anchor as its component says, so
+        // no per-axis gate bounds it: a vector series scans every point.
+        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS || flags & FLAG_VECTOR != 0;
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
             .checked_mul(GATE_MASK_BYTES)
@@ -2210,6 +2347,11 @@ impl GpuPickEngine {
                 size_column,
                 size_handle,
                 size_allocation_epoch,
+                vector: descriptor.vector,
+                vector_handles,
+                vector_epochs,
+                vector_base,
+                vector_count,
                 size_base,
                 size_len,
                 size_domain,
@@ -2346,6 +2488,30 @@ impl GpuPickEngine {
             (None, 0, 0)
         };
 
+        let mut vector_handles = [None; 3];
+        let mut vector_base = [0u32; 2];
+        if let Some(arrows) = series.vector.as_ref() {
+            let ids = [
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ];
+            for (index, id) in ids.into_iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let expected =
+                    series.vector_handles[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                let expected_epoch =
+                    series.vector_epochs[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                let current = relocated(id, expected, expected_epoch)?;
+                if index < 2 {
+                    vector_base[index] = lane_base(current, next_series_id)?;
+                }
+                vector_handles[index] = Some(current);
+            }
+        }
+
         let storage_unchanged = pool.layout_generation() == series.pool_layout_generation
             && same_storage(x_handle, series.x_handle)
             && same_storage(y_handle, series.y_handle)
@@ -2356,7 +2522,15 @@ impl GpuPickEngine {
             && size_handle
                 .zip(series.size_handle)
                 .is_none_or(|(current, expected)| same_storage(current, expected))
-            && size_handle.is_some() == series.size_handle.is_some();
+            && size_handle.is_some() == series.size_handle.is_some()
+            && vector_handles
+                .iter()
+                .zip(&series.vector_handles)
+                .all(|(current, expected)| match (current, expected) {
+                    (Some(current), Some(expected)) => same_storage(*current, *expected),
+                    (None, None) => true,
+                    _ => false,
+                });
         if storage_unchanged {
             return Ok(series.clone());
         }
@@ -2395,6 +2569,8 @@ impl GpuPickEngine {
         rebound.size_handle = size_handle;
         rebound.size_base = size_base;
         rebound.size_len = size_len;
+        rebound.vector_handles = vector_handles;
+        rebound.vector_base = vector_base;
         rebound.query_data_bg = query_data_bg;
         Ok(rebound)
     }
@@ -2687,6 +2863,24 @@ impl GpuPickEngine {
                 series.size_column.as_ref(),
                 series.size_handle,
                 series.size_allocation_epoch,
+            ),
+            (
+                series.vector.as_ref().map(|vector| &vector.u_column),
+                series.vector_handles[0],
+                series.vector_epochs[0],
+            ),
+            (
+                series.vector.as_ref().map(|vector| &vector.v_column),
+                series.vector_handles[1],
+                series.vector_epochs[1],
+            ),
+            (
+                series
+                    .vector
+                    .as_ref()
+                    .and_then(|vector| vector.color_column.as_ref()),
+                series.vector_handles[2],
+                series.vector_epochs[2],
             ),
         ]
         .into_iter()
@@ -3316,6 +3510,7 @@ mod tests {
             line_width_px: None,
             line_interpolation: crate::data_config::LineInterpolation::Linear,
             line_style: crate::line::LineStylePreset::Solid,
+            vector: None,
         }
     }
 
@@ -3581,6 +3776,7 @@ mod tests {
             line_width_px: Some(2.0),
             line_interpolation: crate::data_config::LineInterpolation::Linear,
             line_style: crate::line::LineStylePreset::Solid,
+            vector: None,
         };
         for logarithmic in [false, true] {
             let origin = if logarithmic {
@@ -3695,6 +3891,7 @@ mod tests {
                                             y: handle(1),
                                             style_index: scatter.then(|| handle(2)),
                                             size_value: None,
+                                            vector: [None; 3],
                                         },
                                         order as u32,
                                         start as u32,
@@ -3761,6 +3958,7 @@ mod tests {
             },
             style_index: None,
             size_value: None,
+            vector: [None; 3],
         };
         let bundle = PickPipelineBundle::new_observed(
             Arc::clone(&device),
@@ -3799,6 +3997,7 @@ mod tests {
                 line_width_px: line.then_some(0.0),
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
+                vector: None,
             };
             let query = test_query(cursor);
             let mut stream = bundle
@@ -4206,6 +4405,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4314,6 +4514,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4413,6 +4614,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4443,6 +4645,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4458,6 +4661,7 @@ mod tests {
                     line_width_px: Some(6.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4633,6 +4837,7 @@ mod tests {
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4702,6 +4907,7 @@ mod tests {
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4765,6 +4971,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4848,6 +5055,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4955,6 +5163,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5084,6 +5293,7 @@ mod tests {
                             line_width_px: Some(3.0),
                             line_interpolation: mode,
                             line_style: crate::line::LineStylePreset::Solid,
+                            vector: None,
                         },
                     )
                     .unwrap();
@@ -5279,6 +5489,7 @@ mod tests {
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5316,6 +5527,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5375,6 +5587,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5991,6 +6204,7 @@ mod tests {
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
                     line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();

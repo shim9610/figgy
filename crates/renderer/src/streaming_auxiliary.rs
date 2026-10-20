@@ -360,6 +360,7 @@ impl Renderer {
                         y: handle(&series.y_column)?,
                         style_index: None,
                         size_value: None,
+                        vector: [None; 3],
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
@@ -847,6 +848,7 @@ impl Renderer {
                         y: handles(&cfg.y_column)?,
                         style_index,
                         size_value: None,
+                        vector: [None; 3],
                     },
                     series_index as u32,
                     offset as u32,

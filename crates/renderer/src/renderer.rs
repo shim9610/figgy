@@ -1189,6 +1189,82 @@ struct PickResourceSignature {
     /// The line's dash preset: a dashed path is picked on its dashes.
     line_style: LineStylePreset,
     scatter: Option<PickScatterSignature>,
+    /// A point vector's arrows: picked on the drawn shaft and head.
+    vector: Option<PickVectorSignature>,
+}
+
+/// A point vector's arrows as the pick plan compares them: the component
+/// and colour columns and the style, by bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickVectorSignature {
+    u_column: ColumnId,
+    v_column: ColumnId,
+    color_column: Option<ColumnId>,
+    scale_pixels: bool,
+    scale_bits: u32,
+    pivot: u32,
+    width_bits: u32,
+    head_length_bits: u32,
+    head_width_bits: u32,
+    min_length_bits: u32,
+}
+
+impl PickVectorSignature {
+    fn of(vector: &crate::gpu_pick::GpuPickVector) -> Self {
+        Self {
+            u_column: vector.u_column.clone(),
+            v_column: vector.v_column.clone(),
+            color_column: vector.color_column.clone(),
+            scale_pixels: vector.scale_pixels,
+            scale_bits: vector.scale.to_bits(),
+            pivot: vector.pivot,
+            width_bits: vector.width_px.to_bits(),
+            head_length_bits: vector.head_length_px.to_bits(),
+            head_width_bits: vector.head_width_px.to_bits(),
+            min_length_bits: vector.min_length_px.to_bits(),
+        }
+    }
+
+    fn references_column(&self, id: &str) -> bool {
+        self.u_column == id || self.v_column == id || self.color_column.as_deref() == Some(id)
+    }
+}
+
+/// The arrows the vector shader draws for a point vector series, in the
+/// picker's terms: the same columns, scale mode, pivot and sizes
+/// (`Renderer::ensure_vector_scratch`), in logical pixels.
+fn gpu_pick_vector(
+    components: &crate::data_config::VectorComponents,
+    style: &crate::data_config::VectorStyle,
+) -> Option<crate::gpu_pick::GpuPickVector> {
+    use crate::data_config::{VectorColorMap, VectorComponents, VectorPivot, VectorScale};
+    use data_render::vector as vector_render;
+    let VectorComponents::Points { u, v } = components else {
+        return None;
+    };
+    let (scale_pixels, scale) = match style.scale {
+        VectorScale::Data { factor } => (false, factor as f32),
+        VectorScale::Pixels { px_per_unit } => (true, px_per_unit as f32),
+    };
+    Some(crate::gpu_pick::GpuPickVector {
+        u_column: u.clone(),
+        v_column: v.clone(),
+        color_column: match style.color_map.as_ref() {
+            Some(VectorColorMap::Column(column)) => Some(column.clone()),
+            _ => None,
+        },
+        scale_pixels,
+        scale,
+        pivot: match style.pivot {
+            VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
+            VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
+            VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
+        },
+        width_px: style.width_px,
+        head_length_px: style.head_length_px,
+        head_width_px: style.head_width_px,
+        min_length_px: style.min_length_px,
+    })
 }
 
 impl PickResourceSignature {
@@ -1205,6 +1281,10 @@ impl PickResourceSignature {
                     .as_ref()
                     .is_some_and(|size_map| size_map.column == id)
             })
+            || self
+                .vector
+                .as_ref()
+                .is_some_and(|vector| vector.references_column(id))
     }
 
     fn references_any_column(&self, ids: &[&str]) -> bool {
@@ -1270,6 +1350,7 @@ struct OwnedGpuPickSeriesDescriptor {
     line_width_px: Option<f32>,
     line_interpolation: LineInterpolation,
     line_style: LineStylePreset,
+    vector: Option<crate::gpu_pick::GpuPickVector>,
 }
 
 impl OwnedGpuPickSeriesDescriptor {
@@ -1283,6 +1364,7 @@ impl OwnedGpuPickSeriesDescriptor {
             line_width_px: self.line_width_px,
             line_interpolation: self.line_interpolation,
             line_style: self.line_style,
+            vector: self.vector.clone(),
         }
     }
 }
@@ -1354,10 +1436,12 @@ impl PickChartPlan {
 
         for series in series {
             let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
-            // A point vector is picked at its anchors like a marker series.
-            let vector_points = primitives.vector
-                && extract_vector(&series.render_type)
-                    .is_some_and(|(components, _)| components.grid().is_none());
+            // A point vector is picked on the arrows it draws, through the
+            // scatter primitive slot.
+            let vector = extract_vector(&series.render_type)
+                .filter(|_| primitives.vector)
+                .and_then(|(components, style)| gpu_pick_vector(components, style));
+            let vector_points = vector.is_some();
             if !primitives.line && !primitives.scatter && !vector_points {
                 continue;
             }
@@ -1365,8 +1449,8 @@ impl PickChartPlan {
             let (scatter, scatter_signature) = if let Some((_, style)) =
                 extract_vector(&series.render_type).filter(|_| vector_points)
             {
-                // The anchor is picked as a disc of the glyph radius: the pick
-                // shader's filled circle of that radius.
+                // The marker slot carries the anchor's highlight radius; the
+                // pick itself walks the drawn arrow (`GpuPickVector`).
                 let base_radius_px = crate::pick::vector_anchor_radius_px(style);
                 let base_shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
                 (
@@ -1545,6 +1629,7 @@ impl PickChartPlan {
                 line_step_mode: crate::line_step::step_mode(line_interpolation),
                 line_style,
                 scatter: scatter_signature,
+                vector: vector.as_ref().map(PickVectorSignature::of),
             };
             descriptors.push(OwnedGpuPickSeriesDescriptor {
                 signature: PickSeriesSignature {
@@ -1556,6 +1641,7 @@ impl PickChartPlan {
                 line_width_px,
                 line_interpolation,
                 line_style,
+                vector,
             });
         }
 
