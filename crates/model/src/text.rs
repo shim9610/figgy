@@ -229,8 +229,9 @@ pub trait MeasureText {
     /// Tick generation, formatting and pruning belong to the renderer, so the
     /// model cannot know which labels and ticks are drawn. A measure that
     /// lays them out lets selection and hit testing follow the drawn parts.
-    /// The default lays out nothing and returns `false`, and the elements
-    /// fall back to a representative strip.
+    /// The default lays out nothing and returns `false`; tick labels and axes
+    /// then have no bounds, since nothing tells the model where they are
+    /// drawn.
     ///
     /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
     /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel

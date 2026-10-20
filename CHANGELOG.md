@@ -63,9 +63,11 @@ serialized field changes.
 
 Additions:
 
-- the provided `MeasureText::drawn_parts` method; its default returns
-  `false`, so other implementations compile unchanged and keep the
-  representative strip;
+- the provided `MeasureText::drawn_parts` method. Its default returns
+  `false`, so other implementations compile unchanged. The representative
+  strip is removed: under a measure that does not lay tick labels and axes
+  out, they have no bounds, because only the renderer knows where they are
+  drawn. Every host in this repository uses the renderer's `CpuTextMeasure`;
 - `layout::DrawnPart`;
 - `annotation::AnnotationShape`, `annotation::annotation_shapes` and
   `AnnotationElement::shapes`;
