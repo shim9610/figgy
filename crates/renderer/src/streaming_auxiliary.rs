@@ -250,6 +250,7 @@ impl Renderer {
             data_area_px,
             canvas_position_px: position,
             max_distance_px: distance,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
         };
         // Give each packed page a distinct pick identity. The GPU reports a
         // page-local index; only this one small candidate is read back, then
@@ -286,10 +287,13 @@ impl Renderer {
                 (series.source_id.clone(), series.series_id.clone())
             })
             .collect();
-        let mut pick =
-            self.picker
-                .ready_bundle()?
-                .begin_stream(query, snapshot.display_scale, identities)?;
+        let exact = self.picker.stream_exact()?;
+        let mut pick = self.picker.ready_bundle()?.begin_stream(
+            query,
+            snapshot.display_scale,
+            identities,
+            exact,
+        )?;
         // Each page keeps its own encoder: combining large gated scans and
         // reductions in one encoder can stall the browser WebGPU backend.
         // Submit a bounded set of command buffers together instead.
@@ -359,6 +363,7 @@ impl Renderer {
                         y: handle(&series.y_column)?,
                         style_index: None,
                         size_value: None,
+                        vector: [None; 3],
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
@@ -531,6 +536,7 @@ impl Renderer {
                 0
             };
         self.preflight_auxiliary_gpu_bytes(bytes)?;
+        let stream_exact = self.picker.stream_exact()?;
         let point = self.picker.ready_bundle()?.begin_stream(
             crate::gpu_pick::GpuPickQuery {
                 transform,
@@ -538,9 +544,11 @@ impl Renderer {
                 data_area_px,
                 canvas_position_px: position,
                 max_distance_px: distance,
+                draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
             },
             scale,
             identities(),
+            stream_exact,
         )?;
         let data = if typed {
             Some(self.picker.ready_data_bundle()?.begin_stream(
@@ -845,6 +853,7 @@ impl Renderer {
                         y: handles(&cfg.y_column)?,
                         style_index,
                         size_value: None,
+                        vector: [None; 3],
                     },
                     series_index as u32,
                     offset as u32,

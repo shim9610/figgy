@@ -15,6 +15,11 @@ const ARROW_VERTICES: u32 = 6u;
 const ARROW_PIVOT_TAIL: u32 = 0u;
 const ARROW_PIVOT_MIDDLE: u32 = 1u;
 const ARROW_PIVOT_TIP: u32 = 2u;
+// A shaft shorter than this (pixels) is no shaft. The head takes the whole
+// length of an arrow shorter than the head; the fragment stage recomputes
+// that length from the pivot-shifted tail and tip, and the rounding must not
+// turn the missing shaft into a round dot at the tail.
+const ARROW_SHAFT_MIN_PX: f32 = 0.01;
 
 /// Pixel-space arrow style. Sizes are already multiplied by the render scale.
 struct ArrowStyle {
@@ -73,13 +78,16 @@ fn arrow_place(tail: vec2<f32>, tip: vec2<f32>, style: ArrowStyle) -> ArrowPlace
 
 /// Corner `vertex_index` (0..ARROW_VERTICES) of the quad that covers the
 /// placed arrow plus `margin_px` on every side, in the glyph's pixel space.
+/// The shaft's round end reaches half its width behind the tail, so the quad
+/// reaches that far too: a quad cut at the tail plus the margin clipped the
+/// end the coverage draws (and the picker measures).
 fn arrow_quad_corner(vertex_index: u32, placed: ArrowPlacement, width_px: f32, margin_px: f32) -> vec2<f32> {
     let delta = placed.tip - placed.tail;
     let len = length(delta);
     let dir = delta / max(len, 1e-12);
     let nrm = vec2<f32>(-dir.y, dir.x);
     let center = (placed.tail + placed.tip) * 0.5;
-    let half_len = len * 0.5 + margin_px;
+    let half_len = len * 0.5 + max(width_px, 0.0) * 0.5 + margin_px;
     let half_wid = max(width_px * 0.5, placed.head_width_px * 0.5) + margin_px;
     var cx = -1.0;
     var cy = -1.0;
@@ -124,9 +132,10 @@ fn arrow_sd_triangle(p: vec2<f32>, p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>) 
     return -sqrt(d.x) * sign(d.y);
 }
 
-/// Coverage of pixel `p` by the placed arrow: the signed distance to the
-/// union of shaft and head, anti-aliased over `aa_px`.
-fn arrow_coverage(p: vec2<f32>, placed: ArrowPlacement, width_px: f32, aa_px: f32) -> f32 {
+/// Signed distance from pixel `p` to the placed arrow: the union of the
+/// shaft (a segment `width_px` wide) and the head (a triangle). Negative
+/// inside; `1e20` for an arrow with neither.
+fn arrow_distance(p: vec2<f32>, placed: ArrowPlacement, width_px: f32) -> f32 {
     let delta = placed.tip - placed.tail;
     let len = length(delta);
     let dir = delta / max(len, 1e-12);
@@ -135,13 +144,20 @@ fn arrow_coverage(p: vec2<f32>, placed: ArrowPlacement, width_px: f32, aa_px: f3
     var distance = 1e20;
     // The shaft stops where the head begins. A shaft of zero length draws
     // nothing rather than a dot.
-    if (len - placed.head_length_px > 0.0 && width_px > 0.0) {
+    if (len - placed.head_length_px > ARROW_SHAFT_MIN_PX && width_px > 0.0) {
         distance = min(distance, arrow_sd_segment(p, placed.tail, head_base) - width_px * 0.5);
     }
     if (placed.head_length_px > 0.0 && placed.head_width_px > 0.0) {
         let half = nrm * (placed.head_width_px * 0.5);
         distance = min(distance, arrow_sd_triangle(p, placed.tip, head_base + half, head_base - half));
     }
+    return distance;
+}
+
+/// Coverage of pixel `p` by the placed arrow: `arrow_distance`
+/// anti-aliased over `aa_px`.
+fn arrow_coverage(p: vec2<f32>, placed: ArrowPlacement, width_px: f32, aa_px: f32) -> f32 {
+    let distance = arrow_distance(p, placed, width_px);
     let aa = max(aa_px, 1e-3);
     return clamp(0.5 - distance / aa, 0.0, 1.0);
 }

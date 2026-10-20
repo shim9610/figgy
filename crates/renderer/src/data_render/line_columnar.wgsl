@@ -251,14 +251,107 @@ struct VsOut {
     @location(6) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
+
+// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
+// compares these function bodies and constants with the pick shader) ─────
+
+// Solid strokes grow their quad by this anti-aliasing fringe on every side;
+// dashed strokes keep the bare stroke so the measured dash lengths hold.
 const LINE_AA_EXTENT_PX: f32 = 0.5;
+// Subdivision count S per segment instance: the sketch pipeline draws
+// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
+// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
+const SKETCH_SUBDIV: u32 = 8u;
+
+/// Signed pixel distance from a stroke fragment to the edge of its piece's
+/// square-capped rectangle. `along` runs from the piece start along its
+/// direction, `side` across it; the rectangle is
+/// `[-half_w, len + half_w] x [-half_w, half_w]`. The stroke covers a pixel
+/// where this is below its anti-aliasing width.
+fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
+    let p = vec2<f32>(along - len * 0.5, side);
+    let half_rect = vec2<f32>(len * 0.5 + half_w, half_w);
+    let q = abs(p) - half_rect;
+    let outside = max(q, vec2<f32>(0.0, 0.0));
+    return length(outside) + min(max(q.x, q.y), 0.0);
+}
+
+/// Whether the dash pattern is "on" at arc position `dist_px`. `dash` packs
+/// up to eight sequential `[on, off, ...]` pixel lengths (`dash[0].xyzw`
+/// first) and `count` says how many are used; zero is a solid line, and so is
+/// a pattern whose spans are all zero or negative.
+fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool {
+    if count == 0u {
+        return true;
+    }
+    // A local copy, so the spans can be indexed at run time on every
+    // backend. Clamp to the 8-scalar capacity so a bad CPU-side count cannot
+    // index past the array.
+    var spans = dash;
+    let n = min(count, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    if period <= 0.0 {
+        return true;
+    }
+    // The square-cap extension can push dist_px slightly negative at the
+    // polyline start — wrap into [0, period) with the sign-safe form.
+    let phase = ((dist_px % period) + period) % period;
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
+        acc = end;
+        if phase <= end || i == n - 1u {
+            // Even spans are "on", odd spans are "off". Dash membership is
+            // intentionally binary so the requested pattern length stays
+            // stable; antialiasing is applied to the stroke outline itself.
+            return (i & 1u) == 0u;
+        }
+    }
+    // phase == period can occur from float rounding; that point is the
+    // start of the next repetition, which always opens with an "on" span.
+    return true;
+}
+
+// Deliberately duplicated per data shader (scatter/line/errorbar/pick) and
+// NOT in the SHADER_COMMON.md common block: line_arc.wgsl shares that block
+// but has no use for noise.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
+    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967296.0;
+}
+
+// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
+// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
+// integer boundaries is preserved.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let i = u32(i32(floor(t)));
+    let f = fract(t);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
+}
+
+/// The sketch line's perpendicular displacement at arc position `arc_px`:
+/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
+/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
+/// layers degrade identically.
+fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
+    return select(0.0, wobble, wavelength_px > 0.0);
+}
+
+// ───── end shared line stroke ─────
 
 // ──────────── step interpolation (NOT part of the common block) ────────────
 // A step mode draws every instance (segment a → b) as axis-aligned pieces.
 // Piece corners live in DATA space so every consumer projects the same
 // points: the line, area, sketch, ribbon and star entries here, the
 // arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
+// (gpu_pick/line.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
 // and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
 // and line_arc.wgsl (shader_consistency checks); the CPU twin is
 // `line_step::step_pieces` in the renderer crate.
@@ -496,57 +589,15 @@ fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
-// Pattern scalar i (0..7): style.dash packs 8 sequential [on, off, ...]
-// pixel lengths as two vec4s — dash[0].xyzw first, then dash[1].xyzw.
-fn dash_scalar(i: u32) -> f32 {
-    return style.dash[i / 4u][i % 4u];
-}
-
 fn stroke_alpha(in: VsOut) -> f32 {
     let half_w = max(style.line_width_px, 1.0) * 0.5;
-    let p = vec2<f32>(in.along_px - in.segment_len_px * 0.5, in.side_px);
-    let half_rect = vec2<f32>(in.segment_len_px * 0.5 + half_w, half_w);
-    let q = abs(p) - half_rect;
-    let outside = max(q, vec2<f32>(0.0, 0.0));
-    let signed_dist = length(outside) + min(max(q.x, q.y), 0.0);
+    let signed_dist = line_stroke_distance(in.along_px, in.side_px, in.segment_len_px, half_w);
     let aa = max(fwidth(signed_dist), 0.5);
     return 1.0 - smoothstep(-aa, aa, signed_dist);
 }
 
 fn dash_alpha(in: VsOut) -> f32 {
-    if style.dash_len == 0u {
-        return 1.0;
-    }
-    // Clamp to the 8-scalar capacity so a bad CPU-side count cannot index
-    // past the array.
-    let n = min(style.dash_len, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(dash_scalar(i), 0.0);
-    }
-    // Degenerate pattern (all spans zero/negative) — treat as solid.
-    if period <= 0.0 {
-        return 1.0;
-    }
-    // The square-cap extension can push dist_px slightly negative at the
-    // polyline start — wrap into [0, period) with the sign-safe form.
-    let phase = ((in.dist_px % period) + period) % period;
-    var acc = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let span = max(dash_scalar(i), 0.0);
-        let start = acc;
-        let end = acc + span;
-        acc = end;
-        if phase <= end || i == n - 1u {
-            // Even spans are "on", odd spans are "off". Dash membership is
-            // intentionally binary so the requested pattern length stays
-            // stable; antialiasing is applied to the stroke outline itself.
-            return select(0.0, 1.0, (i & 1u) == 0u);
-        }
-    }
-    // phase == period can occur from float rounding; that point is the
-    // start of the next repetition, which always opens with an "on" span.
-    return 1.0;
+    return select(0.0, 1.0, dash_pattern_on(in.dist_px, style.dash, style.dash_len));
 }
 
 fn line_fragment_color(in: VsOut, color: vec4<f32>) -> vec4<f32> {
@@ -674,30 +725,6 @@ fn fs_area(in: AreaOut) -> @location(0) vec4<f32> {
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
 
-// Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
-// the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep these helpers byte-identical in all three shaders.
-fn sketch_hash01(i: u32, seed: u32) -> f32 {
-    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
-    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
-    h = h ^ (h >> 16u);
-    return f32(h) / 4294967296.0;
-}
-
-// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
-// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
-// integer boundaries is preserved.
-fn sketch_noise(t: f32, seed: u32) -> f32 {
-    let i = u32(i32(floor(t)));
-    let f = fract(t);
-    let u = f * f * (3.0 - 2.0 * f);
-    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
-}
-
-// Subdivision count S per segment instance: the sketch pipeline draws
-// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
-// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
-const SKETCH_SUBDIV: u32 = 8u;
 
 // Subdivide each sketch line segment into S spans (k = vid/2 ∈ 0..=S,
 // side = vid%2, t = k/S), displace the midline perpendicularly by
@@ -750,13 +777,8 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
     let arc_end = select(arc_start + len, arc.arc_b, last_piece);
     let arc_at = mix(arc_start, arc_end, t);
-    let amp = max(transform.style_params[0].x, 0.0);
-    let wav = transform.style_params[0].y;
     let seed = u32(transform.style_params[0].z) ^ style.series_salt;
-    let wobble = amp * sketch_noise(arc_at / max(wav, 1e-6), seed);
-    // wavelength <= 0 disables the wobble — mirrors the CPU stroker's guard
-    // (sketch.rs) so GPU and deco layers degrade identically.
-    let disp = select(0.0, wobble, wav > 0.0);
+    let disp = sketch_line_offset(arc_at, transform.style_params[0].x, transform.style_params[0].y, seed);
 
     let corner_px = center_px + dir * cap + normal_px * (geom_half_w * side + disp);
     let corner_ndc = corner_px * transform.pixel_to_ndc;

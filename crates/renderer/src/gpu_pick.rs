@@ -38,7 +38,10 @@ const GPU_PICK_DIRECT_SCAN_POINTS: u32 = GPU_PICK_GATE_WORD_POINTS * GPU_PICK_WO
 
 const GATE_MASK_BYTES: u64 = 8;
 const CANDIDATE_BYTES: u64 = 32;
-const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
+/// `QUAD_MARGIN_PX` of the shared marker shape (SHADER_COMMON.md §5.5): a
+/// marker draws nothing farther than its visual radius plus this margin from
+/// its centre on either axis.
+const MARKER_QUAD_MARGIN_PX: f32 = crate::pick::MARKER_QUAD_MARGIN_PX;
 
 const FLAG_SCATTER: u32 = 1;
 const FLAG_LINE: u32 = 2;
@@ -49,8 +52,312 @@ const FLAG_STYLE_INDEX: u32 = 8;
 const FLAG_SIZE_MAP: u32 = 16;
 /// The size map scales marker area rather than radius.
 const FLAG_SIZE_AREA: u32 = 32;
+/// The scatter primitive is a point vector's arrows (`PICK_FLAG_VECTOR`).
+const FLAG_VECTOR: u32 = 64;
+/// The exact pass's `PICK_VARIANT` bits (`gpu_pick/core.wgsl`): which
+/// optional paths one `pick_exact_candidates` pipeline carries.
+pub(crate) mod exact_variant {
+    pub(crate) const STYLED_MARKER: u32 = 2;
+    pub(crate) const DASH: u32 = 16;
+    pub(crate) const STYLED_LINE: u32 = 32;
+    pub(crate) const POLAR: u32 = 64;
+    /// Every path: the shader's default, and what a streamed pick uses.
+    pub(crate) const ALL: u32 = STYLED_MARKER | DASH | STYLED_LINE | POLAR;
+    /// The override's name in `gpu_pick/core.wgsl`.
+    pub(crate) const CONSTANT: &str = "PICK_VARIANT";
+}
+
+/// The assembled point-picker shaders (rule 9's pattern, as in
+/// `data_render::vector`): the gate module and one exact module per
+/// primitive class, each the concatenation of its fragments under
+/// `src/gpu_pick/` in the order [`PickShader::fragments`] lists. A pick
+/// compiles only the exact module (and variant) its series need.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PickShader {
+    /// The gate and reduction entries.
+    Gate,
+    /// Exact: a marker series.
+    Marker,
+    /// Exact: a series with markers and a line.
+    MarkerLine,
+    /// Exact: a line series.
+    Line,
+    /// Exact: a point vector series.
+    Vector,
+}
+
+macro_rules! pick_fragment {
+    ($name:literal) => {
+        include_str!(concat!("gpu_pick/", $name))
+    };
+}
+
+macro_rules! pick_module {
+    ($($name:literal),+ $(,)?) => {
+        concat!($(pick_fragment!($name), "\n"),+)
+    };
+}
+
+impl PickShader {
+    #[cfg(test)]
+    pub(crate) const EXACT: [PickShader; 4] = [
+        PickShader::Marker,
+        PickShader::MarkerLine,
+        PickShader::Line,
+        PickShader::Vector,
+    ];
+
+    /// The fragment files, in assembly order.
+    #[cfg(test)]
+    pub(crate) fn fragments(self) -> &'static [&'static str] {
+        match self {
+            PickShader::Gate => &["core.wgsl", "gate_entries.wgsl"],
+            PickShader::Marker => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::MarkerLine => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::Line => &[
+                "core.wgsl",
+                "noise.wgsl",
+                "no_scatter.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ],
+            PickShader::Vector => &[
+                "core.wgsl",
+                "vector.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ],
+        }
+    }
+
+    /// The assembled source: [`Self::fragments`] concatenated, each followed
+    /// by one newline.
+    pub(crate) const fn source(self) -> &'static str {
+        match self {
+            PickShader::Gate => pick_module!("core.wgsl", "gate_entries.wgsl"),
+            PickShader::Marker => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::MarkerLine => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "marker.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::Line => pick_module!(
+                "core.wgsl",
+                "noise.wgsl",
+                "no_scatter.wgsl",
+                "line.wgsl",
+                "exact_entry.wgsl",
+            ),
+            PickShader::Vector => pick_module!(
+                "core.wgsl",
+                "vector.wgsl",
+                "no_line.wgsl",
+                "exact_entry.wgsl",
+            ),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            PickShader::Gate => "figgy GPU pick gate shader",
+            PickShader::Marker => "figgy GPU pick exact marker shader",
+            PickShader::MarkerLine => "figgy GPU pick exact marker-line shader",
+            PickShader::Line => "figgy GPU pick exact line shader",
+            PickShader::Vector => "figgy GPU pick exact vector shader",
+        }
+    }
+
+    fn exact_index(self) -> usize {
+        match self {
+            PickShader::Gate => unreachable!("the gate module has no exact entry"),
+            PickShader::Marker => 0,
+            PickShader::MarkerLine => 1,
+            PickShader::Line => 2,
+            PickShader::Vector => 3,
+        }
+    }
+}
+
+/// One exact pipeline: the module, the `PICK_VARIANT` bits and the
+/// `PICK_SHAPE` the driver specialises it for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct PickExactKey {
+    pub(crate) shader: PickShader,
+    pub(crate) bits: u32,
+    /// A marker shape id, or [`PickExactKey::ANY_SHAPE`].
+    pub(crate) shape: u32,
+}
+
+impl PickExactKey {
+    /// `PICK_SHAPE_ANY`: the shape is read per point.
+    pub(crate) const ANY_SHAPE: u32 = u32::MAX;
+
+    /// What a streamed pick scans every chunk with: the marker-and-line
+    /// module with every path and any shape (streaming is not specialised).
+    pub(crate) const STREAMED: Self = Self {
+        shader: PickShader::MarkerLine,
+        bits: exact_variant::ALL,
+        shape: Self::ANY_SHAPE,
+    };
+}
+
+/// The exact pipelines created so far. Each is created on first use (the
+/// first pick of a series that needs it) and kept for the renderer's
+/// lifetime; owned by the renderer's picker and passed to each pick, so no
+/// lock guards it. `pipelines` grows by one entry per distinct key a chart
+/// has needed (a handful: module x draw-style paths x marker shape).
+#[derive(Default)]
+pub(crate) struct PickExactPipelines {
+    modules: [Option<wgpu::ShaderModule>; 4],
+    pipelines: Vec<(PickExactKey, wgpu::ComputePipeline)>,
+}
+
+impl PickExactPipelines {
+    /// The exact pipeline for `key`, created if it is not yet.
+    pub(crate) fn ensure(
+        &mut self,
+        bundle: &PickPipelineBundle,
+        key: PickExactKey,
+    ) -> Result<&wgpu::ComputePipeline, GpuPickError> {
+        let index = match self.pipelines.iter().position(|(k, _)| *k == key) {
+            Some(index) => index,
+            None => {
+                self.pipelines
+                    .try_reserve(1)
+                    .map_err(|_| GpuPickError::AllocationFailed {
+                        resource: "exact pick pipelines",
+                    })?;
+                let device = &bundle.device;
+                let shader = key.shader;
+                let module = self.modules[shader.exact_index()].get_or_insert_with(|| {
+                    crate::gpu_compile::shader_module(
+                        device,
+                        wgpu::ShaderModuleDescriptor {
+                            label: Some(shader.label()),
+                            source: wgpu::ShaderSource::Wgsl(shader.source().into()),
+                        },
+                    )
+                });
+                let base = crate::gpu_compile::workgroup_options(device);
+                let mut constants = [(exact_variant::CONSTANT, f64::from(key.bits)); 3];
+                let mut count = 1;
+                // Only the marker modules declare the shape override.
+                if key.shape != PickExactKey::ANY_SHAPE
+                    && matches!(shader, PickShader::Marker | PickShader::MarkerLine)
+                {
+                    constants[count] = ("PICK_SHAPE", f64::from(key.shape));
+                    count += 1;
+                }
+                if let Some(&zero) = base.constants.first() {
+                    constants[count] = zero;
+                    count += 1;
+                }
+                let pipeline = crate::gpu_compile::compute_pipeline(
+                    device,
+                    &wgpu::ComputePipelineDescriptor {
+                        label: Some("figgy GPU pick exact candidate pipeline"),
+                        layout: Some(&bundle.exact_layout),
+                        module,
+                        entry_point: Some("pick_exact_candidates"),
+                        compilation_options: wgpu::PipelineCompilationOptions {
+                            constants: &constants[..count],
+                            zero_initialize_workgroup_memory: base.zero_initialize_workgroup_memory,
+                        },
+                        cache: None,
+                    },
+                );
+                self.pipelines.push((key, pipeline));
+                self.pipelines.len() - 1
+            }
+        };
+        Ok(&self.pipelines[index].1)
+    }
+
+    fn get(&self, key: PickExactKey) -> Option<&wgpu::ComputePipeline> {
+        self.pipelines
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, pipeline)| pipeline)
+    }
+}
+
+/// The exact module and variant that pick `series` as the query draws it:
+/// its primitive class, the styled marker and line paths when the draw
+/// style uses them, the dash walk for a dashed line and the polar paths on
+/// polar axes.
+fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
+    let scatter = series.flags & FLAG_SCATTER != 0;
+    let line = series.flags & FLAG_LINE != 0;
+    let shader = if series.flags & FLAG_VECTOR != 0 {
+        PickShader::Vector
+    } else {
+        match (scatter, line) {
+            (true, true) => PickShader::MarkerLine,
+            (false, true) => PickShader::Line,
+            _ => PickShader::Marker,
+        }
+    };
+    let mut bits = 0;
+    if scatter && shader != PickShader::Vector && query.draw_style.marker != PICK_MARKER_PRECISE {
+        bits |= exact_variant::STYLED_MARKER;
+    }
+    if line {
+        if series.line_dash_len > 0 {
+            bits |= exact_variant::DASH;
+        }
+        if query.draw_style.line != PICK_LINE_PRECISE {
+            bits |= exact_variant::STYLED_LINE;
+        }
+    }
+    if query.transform.polar_angle[0] > 0.5 {
+        bits |= exact_variant::POLAR;
+    }
+    // Without a style map every point has the series' shape.
+    let shape = if scatter && series.flags & FLAG_STYLE_MAP == 0 {
+        series.base_shape_id
+    } else {
+        PickExactKey::ANY_SHAPE
+    };
+    PickExactKey {
+        shader,
+        bits,
+        shape,
+    }
+}
+
+/// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
+const VECTOR_SCALE_PIXELS: u32 = 256;
 const STYLE_MASK_RADIUS: u32 = 2;
 const STYLE_MASK_SHAPE: u32 = 4;
+/// The pick shader's marker draw modes (`PICK_MARKER_*`).
+const PICK_MARKER_PRECISE: u32 = 0;
+const PICK_MARKER_SKETCH: u32 = 1;
+const PICK_MARKER_PLANET: u32 = 2;
+const PICK_MARKER_STAR: u32 = 3;
+/// The pick shader's line draw modes (`PICK_LINE_*`).
+const PICK_LINE_PRECISE: u32 = 0;
+const PICK_LINE_SKETCH: u32 = 1;
+const PICK_LINE_RIBBON: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub enum GpuPickError {
@@ -221,6 +528,75 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// How the line connects its samples. A step mode makes the picker walk
     /// the same axis-aligned pieces the line shader draws.
     pub(crate) line_interpolation: crate::data_config::LineInterpolation,
+    /// The line's dash preset: the picker walks the same dash phase the line
+    /// shader draws, so a dash gap does not pick.
+    pub(crate) line_style: crate::line::LineStylePreset,
+    /// A point vector series: its markers are the arrows drawn from each
+    /// anchor (`scatter` must be set too, for the scatter primitive slot).
+    pub(crate) vector: Option<GpuPickVector>,
+}
+
+/// The arrows of a point vector series, as the vector shader draws them
+/// (`vector.rs::VectorParamsGpu`): the component columns, the columns that
+/// bound how many arrows are drawn, and the style in logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct GpuPickVector {
+    pub(crate) u_column: ColumnId,
+    pub(crate) v_column: ColumnId,
+    /// A colour column: the vector shader draws only as many arrows as it
+    /// has values.
+    pub(crate) color_column: Option<ColumnId>,
+    /// `VectorScale::Pixels` (else `Data`).
+    pub(crate) scale_pixels: bool,
+    /// The `Data` factor, or `px_per_unit` in logical pixels.
+    pub(crate) scale: f32,
+    /// `VECTOR_PIVOT_*`.
+    pub(crate) pivot: u32,
+    pub(crate) width_px: f32,
+    pub(crate) head_length_px: f32,
+    pub(crate) head_width_px: f32,
+    pub(crate) min_length_px: f32,
+}
+
+/// What the chart's draw style draws for markers and lines, as the pick
+/// shader's `styled` modes: the precise shapes and quads, the sketch wobble,
+/// Milkyway planets and ribbons, or Constellation stars over precise lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GpuPickDrawStyle {
+    marker: u32,
+    line: u32,
+}
+
+impl GpuPickDrawStyle {
+    pub(crate) const PRECISE: Self = Self {
+        marker: PICK_MARKER_PRECISE,
+        line: PICK_LINE_PRECISE,
+    };
+
+    /// The marker mode, as the scatter shader's picked ring reads it
+    /// (`RING_MARKER_*`, numbered like `PICK_MARKER_*`).
+    pub(crate) fn marker_mode(self) -> u32 {
+        self.marker
+    }
+
+    pub(crate) fn of(style: &crate::config::DrawStyle) -> Self {
+        use crate::config::DrawStyle;
+        match style {
+            DrawStyle::Precise => Self::PRECISE,
+            DrawStyle::Sketch(_) => Self {
+                marker: PICK_MARKER_SKETCH,
+                line: PICK_LINE_SKETCH,
+            },
+            DrawStyle::Milkyway(_) => Self {
+                marker: PICK_MARKER_PLANET,
+                line: PICK_LINE_RIBBON,
+            },
+            DrawStyle::Constellation(_) => Self {
+                marker: PICK_MARKER_STAR,
+                line: PICK_LINE_PRECISE,
+            },
+        }
+    }
 }
 
 /// Query state which integration can derive directly from `Config`.
@@ -235,6 +611,8 @@ pub(crate) struct GpuPickQuery {
     pub(crate) data_area_px: Option<[f32; 4]>,
     pub(crate) canvas_position_px: [f32; 2],
     pub(crate) max_distance_px: f32,
+    /// The draw style the chart is drawn with.
+    pub(crate) draw_style: GpuPickDrawStyle,
 }
 
 /// Handles address only the currently uploaded bounded pair buffer.
@@ -245,6 +623,8 @@ pub(crate) struct GpuStreamPickColumns {
     pub(crate) style_index: Option<ColumnHandle>,
     /// The `point_size_map` value column, resident series only.
     pub(crate) size_value: Option<ColumnHandle>,
+    /// A point vector's `u`, `v` and colour columns, resident series only.
+    pub(crate) vector: [Option<ColumnHandle>; 3],
 }
 
 pub(crate) fn validate_stream_handle(
@@ -268,6 +648,9 @@ pub(crate) fn validate_stream_handle(
 /// upload ring; every encoded chunk is reduced before that slot is reusable.
 pub(crate) struct GpuStreamPick {
     engine: GpuPickEngine,
+    /// The exact pipeline every chunk scans with: the marker-and-line module
+    /// with every path (`exact_variant::ALL`); streaming is not specialised.
+    exact: wgpu::ComputePipeline,
     query: GpuPickQuery,
     display_scale: f32,
     identities: Arc<[PickIdentity]>,
@@ -281,6 +664,7 @@ impl PickPipelineBundle {
         query: GpuPickQuery,
         display_scale: f32,
         identities: Vec<(Option<String>, String)>,
+        exact: wgpu::ComputePipeline,
     ) -> Result<GpuStreamPick, GpuPickError> {
         let reduce = GpuPickEngine::create_reduce_resources(
             &self.device,
@@ -307,6 +691,7 @@ impl PickPipelineBundle {
             });
         Ok(GpuStreamPick {
             engine: GpuPickEngine::from_bundle_and_reduce(Arc::clone(self), reduce),
+            exact,
             query,
             display_scale,
             identities: identities
@@ -505,48 +890,28 @@ impl GpuStreamPick {
             .engine
             .prepare_series_buffer(buffer, descriptor, columns, None)?;
         let series = &slot.gpu;
-        let query = self.query;
-        let [cx, cy] = query.canvas_position_px;
-        let [x, y, w, h] = query.chart_rect_px;
-        let params = PickQueryParamsGpu {
-            transform: query.transform,
-            cursor_chart: [cx, cy, x, y],
-            chart_limits: [w, h, query.max_distance_px, series.max_extent_px],
-            scatter_line: [
-                series.base_radius_px,
-                series.line_half_width_px,
-                self.display_scale,
-                if series.direct_scan { 1.0 } else { 0.0 },
-            ],
-            data: [
+        // Streaming is not extended: a streamed line is picked without its
+        // arc prefix, so its dash gaps pick like its dashes.
+        let params = query_params(
+            series,
+            &slot.identity.series_id,
+            &self.query,
+            self.display_scale,
+            series_order,
+            [
                 series.point_count,
                 lane_base(columns.x, &slot.identity.series_id)?,
                 lane_base(columns.y, &slot.identity.series_id)?,
                 series.style_index_base,
             ],
-            style: [
-                series.flags,
-                series.style_count,
-                series.override_count,
-                series.style_index_len,
-            ],
-            series: [
-                series.gate_word_count,
-                series_order,
-                series.base_shape_id,
-                series.dispatch_x,
-            ],
-            stream: [
+            [
                 global_point_start,
                 owned_points,
                 owned_segments,
                 original_index_word_base,
             ],
-            line: [series.line_step_mode, 0, 0, 0],
-            size_map: [series.size_base, series.size_len, 0, 0],
-            size_domain: series.size_domain,
-            size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
-        };
+            false,
+        );
         self.engine
             .bundle
             .queue
@@ -555,7 +920,7 @@ impl GpuStreamPick {
         for (pipeline, enabled) in [
             (&bundle.gate_x, !series.direct_scan),
             (&bundle.gate_y, !series.direct_scan),
-            (&bundle.exact, true),
+            (&self.exact, true),
         ] {
             if !enabled {
                 continue;
@@ -567,6 +932,7 @@ impl GpuStreamPick {
             pass.set_pipeline(pipeline);
             pass.set_bind_group(0, &series.query_data_bg, &[]);
             pass.set_bind_group(1, &series.query_work_bg, &[]);
+            pass.set_bind_group(2, &bundle.arc_placeholder, &[]);
             pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
         }
         {
@@ -671,6 +1037,172 @@ impl GpuPickSeriesId {
     }
 }
 
+/// `CONSTELLATION_POINT_STAR_GAIN` times the largest per-point size jitter
+/// of `constellation_star_radius` (`0.86 + 0.30`).
+const CONSTELLATION_STAR_MAX_SCALE: f32 = 1.16;
+/// `PLANET_QUAD_EXTENT`: a planet's quad half-extent per unit radius.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+
+/// The pick shader's per-query uniform for one registered series. `data` is
+/// `(point count, x lane base, y lane base, style-index lane base)` and
+/// `stream` the `(global offset, owned scatter count, owned segment count,
+/// row-map base)` of the chunk; a resident series owns every point. `arc`
+/// says whether the exact pass binds this series' arc prefix.
+#[allow(clippy::too_many_arguments)]
+fn query_params(
+    series: &PickSeriesGpu,
+    series_id: &str,
+    query: &GpuPickQuery,
+    display_scale: f32,
+    series_order: u32,
+    data: [u32; 4],
+    stream: [u32; 4],
+    arc: bool,
+) -> PickQueryParamsGpu {
+    let [cursor_x, cursor_y] = query.canvas_position_px;
+    let [chart_x, chart_y, chart_width, chart_height] = query.chart_rect_px;
+    let style = query.draw_style;
+    let params = query.transform.style_params;
+    // Nothing a marker draws lies outside its quad: the visual radius plus
+    // the quad margin on either axis, grown by the styled entry's own quad.
+    let base_radius = series.base_radius_px * display_scale;
+    let marker_reach = match style.marker {
+        PICK_MARKER_SKETCH => {
+            series.max_extent_px * display_scale
+                + MARKER_QUAD_MARGIN_PX
+                + params[0][0].max(0.0) * 0.5
+        }
+        PICK_MARKER_PLANET => base_radius.max(1.0) * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX,
+        PICK_MARKER_STAR => {
+            (base_radius * CONSTELLATION_STAR_MAX_SCALE).max(0.5) * 4.0 + MARKER_QUAD_MARGIN_PX
+        }
+        _ => series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
+    };
+    // The line shader's `max(line_width_px, 1) / 2`.
+    let half_width = (2.0 * series.line_half_width_px * display_scale).max(1.0) * 0.5;
+    let ribbon = milkyway_line_half_extent(&params);
+    let line_extent = match style.line {
+        PICK_LINE_SKETCH => half_width + crate::pick::MARKER_STROKE_HALF_PX + params[0][0].max(0.0),
+        PICK_LINE_RIBBON => ribbon,
+        _ => half_width + crate::pick::MARKER_STROKE_HALF_PX,
+    };
+    let mut line_dash = [[0.0f32; 4]; 2];
+    for (index, length) in series.line_dash.iter().enumerate() {
+        line_dash[index / 4][index % 4] = length * display_scale;
+    }
+    // A milkyway ribbon is never dashed.
+    let dash_count = if style.line == PICK_LINE_RIBBON {
+        0
+    } else {
+        series.line_dash_len
+    };
+    PickQueryParamsGpu {
+        transform: query.transform,
+        cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
+        chart_limits: [
+            chart_width,
+            chart_height,
+            query.max_distance_px,
+            marker_reach,
+        ],
+        scatter_line: [
+            series.base_radius_px,
+            series.line_half_width_px,
+            display_scale,
+            if series.direct_scan { 1.0 } else { 0.0 },
+        ],
+        data,
+        style: [
+            series.flags,
+            series.style_count,
+            series.override_count,
+            series.style_index_len,
+        ],
+        series: [
+            series.gate_word_count,
+            series_order,
+            series.base_shape_id,
+            series.dispatch_x,
+        ],
+        stream,
+        line: [series.line_step_mode, u32::from(arc), 0, 0],
+        size_map: [series.size_base, series.size_len, 0, 0],
+        size_domain: series.size_domain,
+        size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
+        // A square cap's corner reaches √2 times the half extent past the
+        // centreline on either axis.
+        line_px: [
+            half_width,
+            ribbon,
+            line_extent * std::f32::consts::SQRT_2,
+            0.0,
+        ],
+        line_dash,
+        styled: [
+            style.marker,
+            style.line,
+            crate::sketch::fnv1a(series_id),
+            dash_count,
+        ],
+        vector: [
+            series.vector_base[0],
+            series.vector_base[1],
+            series.vector_count,
+            series.vector.as_ref().map_or(0, |vector| {
+                vector.pivot
+                    | if vector.scale_pixels {
+                        VECTOR_SCALE_PIXELS
+                    } else {
+                        0
+                    }
+            }),
+        ],
+        vector_px: series.vector.as_ref().map_or([0.0; 4], |vector| {
+            [
+                if vector.scale_pixels {
+                    vector.scale * display_scale
+                } else {
+                    vector.scale
+                },
+                vector.width_px * display_scale,
+                vector.head_length_px * display_scale,
+                vector.head_width_px * display_scale,
+            ]
+        }),
+        vector_min: [
+            series
+                .vector
+                .as_ref()
+                .map_or(0.0, |vector| vector.min_length_px * display_scale),
+            0.0,
+            0.0,
+            0.0,
+        ],
+    }
+}
+
+/// The half extent of what a Milkyway line draws around its centreline, in
+/// canvas pixels, from the packed style parameters (`pack_milkyway_params`):
+/// the ribbon strip reaches one full ribbon width either side
+/// (`vs_ribbon`'s `max(ribbon_width_px, 1)`), and a star of the arc-driven
+/// star pass (`vs_stars`) lies within its perpendicular scatter
+/// (`1.7 * spread_px`), a binary companion's separation (`4 *
+/// structure_scale`) and its quad (`4 * star_scale * 4.3` at full
+/// brightness) of the path. The star positions are hashed per slot, so this
+/// envelope, not each star, is what picks.
+fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
+    let ribbon = params[0][1].max(1.0);
+    let star_scale = params[1][0].max(0.0);
+    let spread = params[1][1].max(0.0);
+    let structure = params[2][0].max(1e-3);
+    let stars = if params[0][0] > 0.0 {
+        spread * 1.7 + 4.0 * structure + star_scale * (0.9 + 3.4) * 4.0
+    } else {
+        0.0
+    };
+    ribbon.max(stars)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct PickQueryParamsGpu {
@@ -689,6 +1221,19 @@ struct PickQueryParamsGpu {
     size_domain: [f32; 4],
     /// `(min_px, max_px, 0, 0)`, logical pixels.
     size_px: [f32; 4],
+    /// `(stroke half-width, milkyway half extent, line gate reach, 0)`,
+    /// canvas pixels.
+    line_px: [f32; 4],
+    /// The dash pattern in canvas pixels.
+    line_dash: [[f32; 4]; 2],
+    /// `(marker mode, line mode, series salt, dash count)`.
+    styled: [u32; 4],
+    /// `(u lane base, v lane base, arrow count, pivot | scale-pixels bit)`.
+    vector: [u32; 4],
+    /// `(scale, shaft width, head length, head width)`, canvas pixels.
+    vector_px: [f32; 4],
+    /// `(minimum length, 0, 0, 0)`, canvas pixels.
+    vector_min: [f32; 4],
 }
 
 #[repr(C)]
@@ -704,7 +1249,7 @@ struct PickCandidateGpu {
     _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 320);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 432);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -725,8 +1270,14 @@ pub(crate) struct PickPipelineBundle {
     reduce_bgl: wgpu::BindGroupLayout,
     gate_x: wgpu::ComputePipeline,
     gate_y: wgpu::ComputePipeline,
-    exact: wgpu::ComputePipeline,
+    /// The layout every exact pipeline uses ([`PickExactPipelines`]).
+    exact_layout: wgpu::PipelineLayout,
     reduce: wgpu::ComputePipeline,
+    /// The exact pass's group 2: one series' arc prefix (`pick_arc`).
+    arc_bgl: wgpu::BindGroupLayout,
+    /// Group 2 for a series picked without an arc prefix: one zero.
+    arc_placeholder: wgpu::BindGroup,
+    _arc_placeholder_charge: SharedCharge,
 }
 
 #[derive(Clone)]
@@ -748,6 +1299,14 @@ struct PickSeriesGpu {
     size_column: Option<ColumnId>,
     size_handle: Option<ColumnHandle>,
     size_allocation_epoch: Option<u64>,
+    /// A point vector's arrows: the style, the `u` / `v` / colour columns
+    /// with their handles and allocation epochs, the component lane bases
+    /// and the arrow count.
+    vector: Option<GpuPickVector>,
+    vector_handles: [Option<ColumnHandle>; 3],
+    vector_epochs: [Option<u64>; 3],
+    vector_base: [u32; 2],
+    vector_count: u32,
     size_base: u32,
     size_len: u32,
     size_domain: [f32; 4],
@@ -769,6 +1328,9 @@ struct PickSeriesGpu {
     base_shape_id: u32,
     line_half_width_px: f32,
     line_step_mode: u32,
+    /// The dash pattern in logical pixels and how many of its lengths count.
+    line_dash: [f32; 8],
+    line_dash_len: u32,
     max_extent_px: f32,
     style_count: u32,
     override_count: u32,
@@ -879,11 +1441,13 @@ fn create_pipeline_bundle_observed(
     observer: &mut dyn FnMut(InitEvent),
 ) -> Arc<PickPipelineBundle> {
     started(observer, INIT_SCOPE, "setup");
+    // The gate module only: the exact modules compile on first use
+    // (`PickExactPipelines`), the variant a series needs.
     let shader = crate::gpu_compile::shader_module(
         &device,
         wgpu::ShaderModuleDescriptor {
-            label: Some("figgy exact GPU pick shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+            label: Some(PickShader::Gate.label()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.source().into()),
         },
     );
 
@@ -926,6 +1490,23 @@ fn create_pipeline_bundle_observed(
             immediate_size: 0,
         },
     );
+    let arc_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick arc prefix bgl"),
+            entries: &[storage_entry(0, true)],
+        },
+    );
+    let exact_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick exact layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl), Some(&arc_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let (arc_placeholder, arc_placeholder_charge) =
+        create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -943,10 +1524,7 @@ fn create_pipeline_bundle_observed(
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: if matches!(
-                    entry,
-                    "pick_exact_candidates" | "pick_reduce_candidates"
-                ) {
+                compilation_options: if entry == "pick_reduce_candidates" {
                     crate::gpu_compile::workgroup_options(&device)
                 } else {
                     wgpu::PipelineCompilationOptions::default()
@@ -972,13 +1550,7 @@ fn create_pipeline_bundle_observed(
                 "figgy GPU pick Y gate pipeline",
             )
         }),
-        exact: observe_value(observer, INIT_SCOPE, "pick_exact_candidates", || {
-            pipeline(
-                &query_layout,
-                "pick_exact_candidates",
-                "figgy GPU pick exact candidate pipeline",
-            )
-        }),
+        exact_layout,
         reduce: observe_value(observer, INIT_SCOPE, "pick_reduce_candidates", || {
             pipeline(
                 &reduce_layout,
@@ -989,9 +1561,58 @@ fn create_pipeline_bundle_observed(
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
+        arc_bgl,
+        arc_placeholder,
+        _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
     })
+}
+
+/// The exact pass's group 2 for a series without an arc prefix: a one-value
+/// storage buffer the shader never reads (`line.y` is zero).
+fn create_arc_placeholder(
+    device: &wgpu::Device,
+    ledger: &Arc<GpuLedger>,
+    arc_bgl: &wgpu::BindGroupLayout,
+) -> (wgpu::BindGroup, SharedCharge) {
+    let tally = ChargeTally::new();
+    // gpu-alloc: PickScratch
+    let buffer = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy GPU pick arc placeholder"),
+            contents: bytemuck::bytes_of(&0.0f32),
+            usage: wgpu::BufferUsages::STORAGE,
+        },
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy GPU pick arc placeholder bg"),
+        layout: arc_bgl,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: buffer.as_entire_binding(),
+        }],
+    });
+    (
+        bind_group,
+        shared_charge(tally, ledger, GpuResourceKind::PickScratch),
+    )
+}
+
+impl PickPipelineBundle {
+    /// The exact pass's group 2 holding one series' arc prefix.
+    fn arc_bind_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+        self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy GPU pick arc prefix bg"),
+            layout: &self.arc_bgl,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            }],
+        })
+    }
 }
 
 #[cfg_attr(target_arch = "wasm32", allow(clippy::arc_with_non_send_sync))]
@@ -1006,11 +1627,10 @@ async fn create_pipeline_bundle_observed_async(
     crate::init::prewarm_compute_entries_js(
         &device,
         "gpu.pick.async",
-        include_str!("gpu_pick.wgsl"),
+        PickShader::Gate.source(),
         &[
             ("pick_gate_x", "pick_gate_x"),
             ("pick_gate_y", "pick_gate_y"),
-            ("pick_exact_candidates", "pick_exact_candidates"),
             ("pick_reduce_candidates", "pick_reduce_candidates"),
         ],
         observer,
@@ -1018,11 +1638,13 @@ async fn create_pipeline_bundle_observed_async(
     .await
     .map_err(GpuPickError::AsyncCompileFailed)?;
     started(observer, INIT_SCOPE, "setup");
+    // The gate module only: the exact modules compile on first use
+    // (`PickExactPipelines`), the variant a series needs.
     let shader = crate::gpu_compile::shader_module(
         &device,
         wgpu::ShaderModuleDescriptor {
-            label: Some("figgy exact GPU pick shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("gpu_pick.wgsl").into()),
+            label: Some(PickShader::Gate.label()),
+            source: wgpu::ShaderSource::Wgsl(PickShader::Gate.source().into()),
         },
     );
 
@@ -1065,6 +1687,23 @@ async fn create_pipeline_bundle_observed_async(
             immediate_size: 0,
         },
     );
+    let arc_bgl = crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy GPU pick arc prefix bgl"),
+            entries: &[storage_entry(0, true)],
+        },
+    );
+    let exact_layout = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy GPU pick exact layout"),
+            bind_group_layouts: &[Some(&query_data_bgl), Some(&query_work_bgl), Some(&arc_bgl)],
+            immediate_size: 0,
+        },
+    );
+    let (arc_placeholder, arc_placeholder_charge) =
+        create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -1083,10 +1722,7 @@ async fn create_pipeline_bundle_observed_async(
                 layout: Some(layout),
                 module: &shader,
                 entry_point: Some(entry),
-                compilation_options: if matches!(
-                    entry,
-                    "pick_exact_candidates" | "pick_reduce_candidates"
-                ) {
+                compilation_options: if entry == "pick_reduce_candidates" {
                     crate::gpu_compile::workgroup_options(&device)
                 } else {
                     wgpu::PipelineCompilationOptions::default()
@@ -1112,14 +1748,6 @@ async fn create_pipeline_bundle_observed_async(
         )
     })
     .await;
-    let exact = observe_value_async(observer, INIT_SCOPE, "pick_exact_candidates", || {
-        pipeline(
-            &query_layout,
-            "pick_exact_candidates",
-            "figgy GPU pick exact candidate pipeline",
-        )
-    })
-    .await;
     let reduce = observe_value_async(observer, INIT_SCOPE, "pick_reduce_candidates", || {
         pipeline(
             &reduce_layout,
@@ -1132,11 +1760,14 @@ async fn create_pipeline_bundle_observed_async(
     Ok(Arc::new(PickPipelineBundle {
         gate_x,
         gate_y,
-        exact,
+        exact_layout,
         reduce,
         query_data_bgl,
         query_work_bgl,
         reduce_bgl,
+        arc_bgl,
+        arc_placeholder,
+        _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
         ledger,
@@ -1196,36 +1827,10 @@ fn nonnegative(v: f32) -> f32 {
     if !v.is_nan() && v > 0.0 { v } else { 0.0 }
 }
 
-fn base_shape_id(shape_id: u32) -> u32 {
-    match shape_id {
-        5 => 0,
-        6 => 1,
-        7 => 2,
-        8 => 3,
-        9 | 17 => 5,
-        10 | 18 => 6,
-        11 | 19 => 7,
-        12 | 20 => 8,
-        13 | 22 => 9,
-        14 | 23 => 10,
-        15 | 24 => 11,
-        16 | 25 => 12,
-        21 => 4,
-        other => other,
-    }
-}
-
+/// The factor `visual_shape_radius` gives shape `shape_id` (SHADER_COMMON.md
+/// §5.5): its drawn radius per unit of reference radius.
 fn shape_scale(shape_id: u32) -> f32 {
-    match base_shape_id(shape_id) {
-        1 => 0.886_226_95,
-        2 | 5 | 6 | 7 => MAX_SHAPE_SCALE,
-        3 => 1.253_314_1,
-        9 => 1.149_139_9,
-        10 => 1.099_636_1,
-        11 => 1.053_907_4,
-        12 => 1.462_850_3,
-        _ => 1.0,
-    }
+    crate::pick::marker_visual_scale(crate::pick::marker_base_shape_id(shape_id))
 }
 
 fn gpu_meta_u32(v: f32) -> Option<u32> {
@@ -1611,6 +2216,21 @@ impl GpuPickEngine {
                     .ok_or_else(|| GpuPickError::MissingColumn(map.column.clone()))
             })
             .transpose()?;
+        let mut vector = [None; 3];
+        if let Some(arrows) = descriptor.vector.as_ref() {
+            for (slot, id) in vector.iter_mut().zip([
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ]) {
+                if let Some(id) = id {
+                    *slot = Some(
+                        pool.handle_for(id)
+                            .ok_or_else(|| GpuPickError::MissingColumn(id.clone()))?,
+                    );
+                }
+            }
+        }
         self.prepare_series_buffer(
             pool.buffer(),
             descriptor,
@@ -1619,6 +2239,7 @@ impl GpuPickEngine {
                 y: y_handle,
                 style_index: style_index_handle,
                 size_value: size_value_handle,
+                vector,
             },
             Some(pool),
         )
@@ -1646,6 +2267,9 @@ impl GpuPickEngine {
             Some(y_handle),
             columns.style_index,
             columns.size_value,
+            columns.vector[0],
+            columns.vector[1],
+            columns.vector[2],
         ]
         .into_iter()
         .flatten()
@@ -1752,6 +2376,43 @@ impl GpuPickEngine {
             }
         }
 
+        // A point vector's arrows: every component column is resident and
+        // the arrow count is the shortest column the vector shader reads.
+        let mut vector_handles = [None; 3];
+        let mut vector_epochs = [None; 3];
+        let mut vector_base = [0u32; 2];
+        let mut vector_count = 0u32;
+        if let Some(arrows) = descriptor.vector.as_ref() {
+            if descriptor.scatter.is_none() {
+                return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
+            }
+            flags |= FLAG_VECTOR;
+            let ids = [
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ];
+            let mut count = paired_len;
+            for (index, id) in ids.into_iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let handle =
+                    columns.vector[index].ok_or_else(|| GpuPickError::MissingColumn(id.clone()))?;
+                count = count.min(handle.len_values);
+                vector_handles[index] = Some(handle);
+                vector_epochs[index] = Some(
+                    resident
+                        .and_then(|pool| pool.allocation_epoch(id))
+                        .unwrap_or(0),
+                );
+                if index < 2 {
+                    vector_base[index] = lane_base(handle, &descriptor.series_id)?;
+                }
+            }
+            vector_count = u32::try_from(count).unwrap_or(u32::MAX);
+        }
+
         let line_half_width_px = descriptor
             .line_width_px
             .map(|width| nonnegative(width) * 0.5)
@@ -1761,6 +2422,12 @@ impl GpuPickEngine {
             max_extent_px = max_extent_px.max(line_half_width_px);
         }
         let line_step_mode = crate::line_step::step_mode(descriptor.line_interpolation);
+        let mut line_dash = [0.0f32; 8];
+        let pattern = descriptor.line_style.pattern();
+        for (slot, length) in line_dash.iter_mut().zip(pattern) {
+            *slot = *length;
+        }
+        let line_dash_len = pattern.len().min(line_dash.len()) as u32;
         if flags & (FLAG_SCATTER | FLAG_LINE) == 0 {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
@@ -1769,7 +2436,9 @@ impl GpuPickEngine {
         let _ = lane_base(y_handle, &descriptor.series_id)?;
         let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
             gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
-        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS;
+        // An arrow reaches as far from its anchor as its component says, so
+        // no per-axis gate bounds it: a vector series scans every point.
+        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS || flags & FLAG_VECTOR != 0;
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
             .checked_mul(GATE_MASK_BYTES)
@@ -1964,6 +2633,11 @@ impl GpuPickEngine {
                 size_column,
                 size_handle,
                 size_allocation_epoch,
+                vector: descriptor.vector,
+                vector_handles,
+                vector_epochs,
+                vector_base,
+                vector_count,
                 size_base,
                 size_len,
                 size_domain,
@@ -1985,6 +2659,8 @@ impl GpuPickEngine {
                 base_shape_id,
                 line_half_width_px,
                 line_step_mode,
+                line_dash,
+                line_dash_len,
                 max_extent_px,
                 style_count,
                 override_count,
@@ -2098,6 +2774,30 @@ impl GpuPickEngine {
             (None, 0, 0)
         };
 
+        let mut vector_handles = [None; 3];
+        let mut vector_base = [0u32; 2];
+        if let Some(arrows) = series.vector.as_ref() {
+            let ids = [
+                Some(&arrows.u_column),
+                Some(&arrows.v_column),
+                arrows.color_column.as_ref(),
+            ];
+            for (index, id) in ids.into_iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let expected =
+                    series.vector_handles[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                let expected_epoch =
+                    series.vector_epochs[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                let current = relocated(id, expected, expected_epoch)?;
+                if index < 2 {
+                    vector_base[index] = lane_base(current, next_series_id)?;
+                }
+                vector_handles[index] = Some(current);
+            }
+        }
+
         let storage_unchanged = pool.layout_generation() == series.pool_layout_generation
             && same_storage(x_handle, series.x_handle)
             && same_storage(y_handle, series.y_handle)
@@ -2108,7 +2808,15 @@ impl GpuPickEngine {
             && size_handle
                 .zip(series.size_handle)
                 .is_none_or(|(current, expected)| same_storage(current, expected))
-            && size_handle.is_some() == series.size_handle.is_some();
+            && size_handle.is_some() == series.size_handle.is_some()
+            && vector_handles
+                .iter()
+                .zip(&series.vector_handles)
+                .all(|(current, expected)| match (current, expected) {
+                    (Some(current), Some(expected)) => same_storage(*current, *expected),
+                    (None, None) => true,
+                    _ => false,
+                });
         if storage_unchanged {
             return Ok(series.clone());
         }
@@ -2147,6 +2855,8 @@ impl GpuPickEngine {
         rebound.size_handle = size_handle;
         rebound.size_base = size_base;
         rebound.size_len = size_len;
+        rebound.vector_handles = vector_handles;
+        rebound.vector_base = vector_base;
         rebound.query_data_bg = query_data_bg;
         Ok(rebound)
     }
@@ -2440,6 +3150,24 @@ impl GpuPickEngine {
                 series.size_handle,
                 series.size_allocation_epoch,
             ),
+            (
+                series.vector.as_ref().map(|vector| &vector.u_column),
+                series.vector_handles[0],
+                series.vector_epochs[0],
+            ),
+            (
+                series.vector.as_ref().map(|vector| &vector.v_column),
+                series.vector_handles[1],
+                series.vector_epochs[1],
+            ),
+            (
+                series
+                    .vector
+                    .as_ref()
+                    .and_then(|vector| vector.color_column.as_ref()),
+                series.vector_handles[2],
+                series.vector_epochs[2],
+            ),
         ]
         .into_iter()
         .filter_map(|(id, expected, epoch)| Some((id?, expected?, epoch?)))
@@ -2473,11 +3201,56 @@ impl GpuPickEngine {
     /// applied once by the query shader to scatter radii, line half-widths,
     /// and the matching conservative gate widths. Cursor coordinates,
     /// `max_distance_px`, and returned distances remain physical canvas pixels.
+    /// The registered series, in the order a pick addresses them.
+    pub(crate) fn series_identities(&self) -> GpuPickSeriesIdentities {
+        GpuPickSeriesIdentities(Arc::clone(&self.registry.identities))
+    }
+
+    #[cfg(test)]
     pub(crate) fn pick_with_display_scale(
         &self,
         pool: &ColumnPool,
         query: GpuPickQuery,
         display_scale: f32,
+    ) -> Result<GpuPickTicket, GpuPickError> {
+        let mut exact = PickExactPipelines::default();
+        for key in self.exact_variants(&query) {
+            exact.ensure(&self.bundle, key)?;
+        }
+        self.pick_with_arcs(pool, query, display_scale, &[], &exact)
+    }
+
+    /// The exact module and variant each registered series needs under
+    /// `query`, in registry order: create them
+    /// ([`PickExactPipelines::ensure`]) before [`Self::pick_with_arcs`].
+    pub(crate) fn exact_variants<'a>(
+        &'a self,
+        query: &'a GpuPickQuery,
+    ) -> impl Iterator<Item = PickExactKey> + 'a {
+        self.registry
+            .slots
+            .iter()
+            .map(move |slot| series_exact_variant(&slot.gpu, query))
+    }
+
+    /// The bundle the exact pipelines are created against.
+    pub(crate) fn bundle(&self) -> &PickPipelineBundle {
+        &self.bundle
+    }
+
+    /// [`Self::pick_with_display_scale`] with each registered series' arc
+    /// prefix, by registry position: the per-point cumulative arc length the
+    /// line shader drew the series with (`line_arc.wgsl`) for the query's
+    /// transform, which places its dash phase and sketch wobble. A missing
+    /// entry, or a buffer too short for the series, picks without it.
+    /// `exact` must hold every variant [`Self::exact_variants`] names.
+    pub(crate) fn pick_with_arcs(
+        &self,
+        pool: &ColumnPool,
+        query: GpuPickQuery,
+        display_scale: f32,
+        arcs: &[Option<Arc<wgpu::Buffer>>],
+        exact: &PickExactPipelines,
     ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
         if !display_scale.is_finite()
@@ -2533,50 +3306,26 @@ impl GpuPickEngine {
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
             Self::validate_series_columns(pool, slot)?;
             let series = &slot.gpu;
-            let params = PickQueryParamsGpu {
-                transform: query.transform,
-                cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
-                chart_limits: [
-                    chart_width,
-                    chart_height,
-                    query.max_distance_px,
-                    series.max_extent_px,
-                ],
-                scatter_line: [
-                    series.base_radius_px,
-                    series.line_half_width_px,
-                    display_scale,
-                    if series.direct_scan { 1.0 } else { 0.0 },
-                ],
-                data: [
+            let params = query_params(
+                series,
+                &slot.identity.series_id,
+                &query,
+                display_scale,
+                series_order as u32,
+                [
                     series.point_count,
                     lane_base(series.x_handle, &slot.identity.series_id)?,
                     lane_base(series.y_handle, &slot.identity.series_id)?,
                     series.style_index_base,
                 ],
-                style: [
-                    series.flags,
-                    series.style_count,
-                    series.override_count,
-                    series.style_index_len,
-                ],
-                series: [
-                    series.gate_word_count,
-                    series_order as u32,
-                    series.base_shape_id,
-                    series.dispatch_x,
-                ],
-                stream: [
+                [
                     0,
                     series.point_count,
                     series.point_count.saturating_sub(1),
                     0,
                 ],
-                line: [series.line_step_mode, 0, 0, 0],
-                size_map: [series.size_base, series.size_len, 0, 0],
-                size_domain: series.size_domain,
-                size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
-            };
+                series_arc(arcs, series_order, series.point_count).is_some(),
+            );
             self.bundle
                 .queue
                 .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
@@ -2642,11 +3391,16 @@ impl GpuPickEngine {
                 label: Some("figgy exact GPU pick candidate scan"),
                 timestamp_writes: None,
             });
-            pass.set_pipeline(&self.bundle.exact);
-            for slot in &self.registry.slots {
+            for (series_order, slot) in self.registry.slots.iter().enumerate() {
                 let series = &slot.gpu;
+                let key = series_exact_variant(series, &query);
+                pass.set_pipeline(exact.get(key).ok_or(GpuPickError::InvalidGpuResult)?);
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
+                // The pass keeps the bind group alive until it is submitted.
+                let arc = series_arc(arcs, series_order, series.point_count)
+                    .map(|buffer| self.bundle.arc_bind_group(buffer));
+                pass.set_bind_group(2, arc.as_ref().unwrap_or(&self.bundle.arc_placeholder), &[]);
                 pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
             }
         }
@@ -2705,6 +3459,31 @@ impl GpuPickEngine {
                 _scratch_charge: None,
             },
         })
+    }
+}
+
+/// The arc prefix of the series at registry position `index`, when one was
+/// supplied and holds a value for each of its `point_count` points.
+fn series_arc(
+    arcs: &[Option<Arc<wgpu::Buffer>>],
+    index: usize,
+    point_count: u32,
+) -> Option<&wgpu::Buffer> {
+    arcs.get(index)
+        .and_then(Option::as_deref)
+        .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
+}
+
+/// The identities of a registry's series in registry order.
+pub(crate) struct GpuPickSeriesIdentities(Arc<[PickIdentity]>);
+
+impl GpuPickSeriesIdentities {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn series_ids(&self) -> impl Iterator<Item = &str> {
+        self.0.iter().map(|identity| identity.series_id.as_str())
     }
 }
 
@@ -2822,6 +3601,12 @@ mod tests {
     use crate::line::LineStylePreset;
     use crate::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 
+    /// The largest `visual_shape_radius` factor (the triangles').
+    const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
+    /// `STROKE_HALF_PX`: an outline marker's stroke reaches this far either
+    /// side of its contour.
+    const STROKE_HALF: f32 = crate::pick::MARKER_STROKE_HALF_PX;
+
     struct CpuColumns(HashMap<ColumnId, Vec<f32>>);
 
     impl CpuColumns {
@@ -2912,6 +3697,7 @@ mod tests {
             data_area_px,
             canvas_position_px,
             max_distance_px,
+            draw_style: GpuPickDrawStyle::PRECISE,
         }
     }
 
@@ -3028,12 +3814,14 @@ mod tests {
             y_column: y_column.to_owned(),
             scatter: Some(GpuPickScatter {
                 base_radius_px: 2.0,
-                base_shape_id: 0,
+                base_shape_id: 5,
                 style_map: None,
                 size_map: None,
             }),
             line_width_px: None,
             line_interpolation: crate::data_config::LineInterpolation::Linear,
+            line_style: crate::line::LineStylePreset::Solid,
+            vector: None,
         }
     }
 
@@ -3056,6 +3844,7 @@ mod tests {
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
             canvas_position_px,
             max_distance_px: 0.0,
+            draw_style: GpuPickDrawStyle::PRECISE,
         }
     }
 
@@ -3243,7 +4032,6 @@ mod tests {
                 "setup",
                 "pick_gate_x",
                 "pick_gate_y",
-                "pick_exact_candidates",
                 "pick_reduce_candidates",
             ]
         );
@@ -3255,7 +4043,6 @@ mod tests {
         assert!(Arc::ptr_eq(&first.bundle, &second.bundle));
         assert_eq!(first.bundle.gate_x, second.bundle.gate_x);
         assert_eq!(first.bundle.gate_y, second.bundle.gate_y);
-        assert_eq!(first.bundle.exact, second.bundle.exact);
         assert_eq!(first.bundle.reduce, second.bundle.reduce);
     }
 
@@ -3281,7 +4068,7 @@ mod tests {
             y_column: "y".into(),
             scatter: scatter.then_some(GpuPickScatter {
                 base_radius_px: 1.0,
-                base_shape_id: 0,
+                base_shape_id: 5,
                 style_map: Some(GpuPickScatterStyle {
                     style_index_column: Some("style".into()),
                     style_slots: &slots,
@@ -3297,6 +4084,8 @@ mod tests {
             }),
             line_width_px: Some(2.0),
             line_interpolation: crate::data_config::LineInterpolation::Linear,
+            line_style: crate::line::LineStylePreset::Solid,
+            vector: None,
         };
         for logarithmic in [false, true] {
             let origin = if logarithmic {
@@ -3359,9 +4148,13 @@ mod tests {
                         let identities = (0..2)
                             .map(|order| (Some("stream-source".into()), format!("stream-{order}")))
                             .collect();
+                        let exact = PickExactPipelines::default()
+                            .ensure(&resident.bundle, PickExactKey::STREAMED)
+                            .unwrap()
+                            .clone();
                         let mut stream = resident
                             .bundle
-                            .begin_stream(query, 1.0, identities)
+                            .begin_stream(query, 1.0, identities, exact)
                             .unwrap();
                         let mut charges = vec![stream.charge()];
                         // Reverse both series and chunk submission order: ties
@@ -3411,6 +4204,7 @@ mod tests {
                                             y: handle(1),
                                             style_index: scatter.then(|| handle(2)),
                                             size_value: None,
+                                            vector: [None; 3],
                                         },
                                         order as u32,
                                         start as u32,
@@ -3477,6 +4271,7 @@ mod tests {
             },
             style_index: None,
             size_value: None,
+            vector: [None; 3],
         };
         let bundle = PickPipelineBundle::new_observed(
             Arc::clone(&device),
@@ -3487,6 +4282,8 @@ mod tests {
         .unwrap();
         // Exact centerline hits must survive reciprocal rounding; near misses
         // and points beyond either endpoint must not become infinite-line hits.
+        // A zero-width line is drawn one pixel wide, so a quarter pixel off
+        // the centreline is on the stroke and three quarters is not.
         // The right halo is available to the last segment, never to scatter.
         for (line, cursor, expected_local_index) in [
             (false, [90.0, 50.0], None),
@@ -3494,7 +4291,8 @@ mod tests {
             (true, [50.0, 50.0], Some(count - 2)),
             (true, [30.0, 50.0], Some(count - 2)),
             (true, [70.0, 50.0], Some(count - 1)),
-            (true, [50.0, 50.001], None),
+            (true, [50.0, 50.25], Some(count - 2)),
+            (true, [50.0, 50.75], None),
             (true, [5.0, 50.0], None),
             (true, [95.0, 50.0], None),
         ] {
@@ -3505,16 +4303,22 @@ mod tests {
                 y_column: "y".into(),
                 scatter: (!line).then_some(GpuPickScatter {
                     base_radius_px: 2.0,
-                    base_shape_id: 0,
+                    base_shape_id: 5,
                     style_map: None,
                     size_map: None,
                 }),
                 line_width_px: line.then_some(0.0),
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
+                line_style: crate::line::LineStylePreset::Solid,
+                vector: None,
             };
             let query = test_query(cursor);
+            let exact = PickExactPipelines::default()
+                .ensure(&bundle, PickExactKey::STREAMED)
+                .unwrap()
+                .clone();
             let mut stream = bundle
-                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())])
+                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())], exact)
                 .unwrap();
             assert_eq!(
                 stream.charge().charged_bytes(),
@@ -3826,17 +4630,17 @@ mod tests {
 
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 1.0,
             point_style_table: Some(vec![
                 DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Square),
+                    point_shape: Some(ScatterShape::SquareFilled),
                     point_size: Some(2.0),
                 },
                 DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Triangle),
+                    point_shape: Some(ScatterShape::TriangleFilled),
                     point_size: Some(3.0),
                 },
             ]),
@@ -3845,7 +4649,7 @@ mod tests {
                 index: 1,
                 style: DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Diamond),
+                    point_shape: Some(ScatterShape::DiamondFilled),
                     point_size: Some(5.0),
                 },
             }]),
@@ -3864,7 +4668,7 @@ mod tests {
                 color_premul: [0.0; 4],
                 meta: [
                     2.0,
-                    crate::data_render::shape_id(&ScatterShape::Square) as f32,
+                    crate::data_render::shape_id(&ScatterShape::SquareFilled) as f32,
                     (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                     0.0,
                 ],
@@ -3873,7 +4677,7 @@ mod tests {
                 color_premul: [0.0; 4],
                 meta: [
                     3.0,
-                    crate::data_render::shape_id(&ScatterShape::Triangle) as f32,
+                    crate::data_render::shape_id(&ScatterShape::TriangleFilled) as f32,
                     (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                     0.0,
                 ],
@@ -3885,7 +4689,7 @@ mod tests {
             color_premul: [0.0; 4],
             meta: [
                 5.0,
-                crate::data_render::shape_id(&ScatterShape::Diamond) as f32,
+                crate::data_render::shape_id(&ScatterShape::DiamondFilled) as f32,
                 (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                 0.0,
             ],
@@ -3901,7 +4705,7 @@ mod tests {
                     y_column: "parity-sy".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: Some(GpuPickScatterStyle {
                             style_index_column: Some("parity-si".into()),
                             style_slots: &slots,
@@ -3917,16 +4721,31 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
 
-        for (cursor, expected_index) in [([24.5, 50.0], 0), ([56.0, 50.0], 1)] {
+        // Point 0 is a filled triangle of visual radius 3 * 1.555 with its
+        // apex up; 3 px above its centre is inside it, while the disc the
+        // old picker used would also have taken 4.5 px to the right, where
+        // the triangle draws nothing. Point 1 is a filled diamond of visual
+        // radius 5 * 1.253 = 6.27, so 6 px right of its centre is inside.
+        for (cursor, expected_index) in [([20.0, 47.0], 0), ([56.0, 50.0], 1)] {
             let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
             let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
             assert_pick_parity(cpu.clone(), gpu);
             assert_eq!(cpu.unwrap().point_index, expected_index);
         }
+
+        // Beside the triangle, inside its circumscribed disc, nothing is
+        // drawn and nothing is picked.
+        let cursor = [24.5, 50.0];
+        let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
+        assert!(cpu.is_none(), "{cpu:?}");
+        let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
+        assert_pick_parity(cpu, gpu);
 
         // An out-of-range style-table index falls back to the one-pixel base
         // circle; 1.25 px outside its center must therefore miss exactly.
@@ -3978,7 +4797,7 @@ mod tests {
         };
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 3.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -3998,7 +4817,7 @@ mod tests {
                     y_column: "size-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 3.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: Some(GpuPickSizeMap {
                             column: size_map.column.clone(),
@@ -4011,6 +4830,8 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4109,6 +4930,8 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4138,6 +4961,8 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4152,27 +4977,60 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(6.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
 
         for display_scale in [0.5, 1.0, 2.0] {
+            // The base marker is an outline circle: a stroke of half-width
+            // `STROKE_HALF` (physical pixels, unscaled) centred on the scaled
+            // radius, hollow inside.
             let base_radius = 4.0 * display_scale;
-            let base_inside = query_from_config(&config, [20.0 + base_radius - 0.25, 50.0], 0.0);
-            let base_outside = query_from_config(&config, [20.0 + base_radius + 0.25, 50.0], 0.0);
-            assert_eq!(
-                resolve_pick_scaled(&engine, &pool, base_inside, display_scale)
-                    .unwrap()
-                    .series_id,
-                "scaled-base"
+            let on_stroke_inside = query_from_config(
+                &config,
+                [20.0 + base_radius - STROKE_HALF + 0.25, 50.0],
+                0.0,
             );
+            let on_stroke_outside = query_from_config(
+                &config,
+                [20.0 + base_radius + STROKE_HALF - 0.25, 50.0],
+                0.0,
+            );
+            let base_outside = query_from_config(
+                &config,
+                [20.0 + base_radius + STROKE_HALF + 0.25, 50.0],
+                0.0,
+            );
+            for hit in [on_stroke_inside, on_stroke_outside] {
+                assert_eq!(
+                    resolve_pick_scaled(&engine, &pool, hit, display_scale)
+                        .unwrap()
+                        .series_id,
+                    "scaled-base"
+                );
+            }
             assert!(resolve_pick_scaled(&engine, &pool, base_outside, display_scale).is_none());
+            if base_radius > STROKE_HALF + 0.5 {
+                let hollow = query_from_config(&config, [20.0, 50.0], 0.0);
+                assert!(
+                    resolve_pick_scaled(&engine, &pool, hollow, display_scale).is_none(),
+                    "the hollow centre of an outline circle draws nothing"
+                );
+            }
 
+            // The mapped marker is an outline triangle of reference radius 6:
+            // its apex sits straight up (canvas y decreasing) at the visual
+            // radius.
             let mapped_radius = 6.0 * MAX_SHAPE_SCALE * display_scale;
             let mapped_inside =
-                query_from_config(&config, [100.0 + mapped_radius - 0.25, 50.0], 0.0);
-            let mapped_outside =
-                query_from_config(&config, [100.0 + mapped_radius + 0.25, 50.0], 0.0);
+                query_from_config(&config, [100.0, 50.0 - mapped_radius + 0.25], 0.0);
+            let mapped_outside = query_from_config(
+                &config,
+                [100.0, 50.0 - mapped_radius - STROKE_HALF - 0.25],
+                0.0,
+            );
             assert_eq!(
                 resolve_pick_scaled(&engine, &pool, mapped_inside, display_scale)
                     .unwrap()
@@ -4195,10 +5053,11 @@ mod tests {
             assert!(resolve_pick_scaled(&engine, &pool, line_outside, display_scale).is_none());
 
             let physical_gap = 2.5;
+            let edge = base_radius + STROKE_HALF;
             let max_distance_miss =
-                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 2.0);
+                query_from_config(&config, [20.0 + edge + physical_gap, 50.0], 2.0);
             let max_distance_hit =
-                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 3.0);
+                query_from_config(&config, [20.0 + edge + physical_gap, 50.0], 3.0);
             assert!(
                 resolve_pick_scaled(&engine, &pool, max_distance_miss, display_scale).is_none()
             );
@@ -4294,6 +5153,8 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4362,6 +5223,8 @@ mod tests {
                     scatter: None,
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4418,12 +5281,14 @@ mod tests {
                     y_column: "gate-2d-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0001,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4457,6 +5322,7 @@ mod tests {
                 data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
                 canvas_position_px: cursor,
                 max_distance_px: 0.0,
+                draw_style: GpuPickDrawStyle::PRECISE,
             },
         )
         .unwrap();
@@ -4499,12 +5365,14 @@ mod tests {
                     y_column: "overlap-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0001,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4528,6 +5396,7 @@ mod tests {
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
             canvas_position_px: [cursor_x, 50.0],
             max_distance_px: 0.0,
+            draw_style: GpuPickDrawStyle::PRECISE,
         };
         let left = engine.pick(&pool, query(25.0)).unwrap();
         let right = engine.pick(&pool, query(75.0)).unwrap();
@@ -4560,7 +5429,7 @@ mod tests {
         let cpu_columns = CpuColumns::new(&[("parity-log-x", &xs), ("parity-log-y", &ys)]);
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 2.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -4604,12 +5473,14 @@ mod tests {
                     y_column: "parity-log-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 2.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -4738,6 +5609,8 @@ mod tests {
                             scatter: None,
                             line_width_px: Some(3.0),
                             line_interpolation: mode,
+                            line_style: crate::line::LineStylePreset::Solid,
+                            vector: None,
                         },
                     )
                     .unwrap();
@@ -4856,7 +5729,7 @@ mod tests {
         ]);
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 20.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -4887,7 +5760,7 @@ mod tests {
             "parity-tie-y1",
             DataScatterStyleConfig {
                 point_color: Color::BLACK,
-                point_shape: ScatterShape::Circle,
+                point_shape: ScatterShape::CircleFilled,
                 point_size: 1.0,
                 point_style_table: None,
                 point_style_index_column: None,
@@ -4926,19 +5799,22 @@ mod tests {
                     y_column: "parity-tie-y0".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 20.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: Some(0.0),
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
 
         // Both scatter points and the line segment have distance zero at this
-        // cursor. CPU traversal keeps scatter point 0; GPU reduction must use
-        // the same lower-index/scatter-before-line rule.
+        // cursor. The topmost paint wins the tie: markers paint over their
+        // series' line and instance 1 paints over instance 0, so both pickers
+        // answer marker 1 (the old rule answered the covered marker 0).
         let cursor = [56.0, 50.0];
         let cpu = cpu_pick(
             &config,
@@ -4949,7 +5825,7 @@ mod tests {
         );
         let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
         assert_pick_parity(cpu.clone(), gpu);
-        assert_eq!(cpu.unwrap().point_index, 0);
+        assert_eq!(cpu.unwrap().point_index, 1);
 
         engine
             .add_series(
@@ -4961,12 +5837,14 @@ mod tests {
                     y_column: "parity-tie-y1".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5019,12 +5897,14 @@ mod tests {
                     y_column: "parity-f64-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5624,7 +6504,7 @@ mod tests {
                     y_column: "pick-ry".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: Some(GpuPickScatterStyle {
                             style_index_column: Some("pick-rstyle".into()),
                             style_slots: &slots,
@@ -5640,6 +6520,8 @@ mod tests {
                     }),
                     line_width_px: None,
                     line_interpolation: crate::data_config::LineInterpolation::Linear,
+                    line_style: crate::line::LineStylePreset::Solid,
+                    vector: None,
                 },
             )
             .unwrap();
@@ -5793,7 +6675,7 @@ mod tests {
     fn style_cross_product_extent_is_conservative() {
         let scatter = GpuPickScatter {
             base_radius_px: 2.0,
-            base_shape_id: 0,
+            base_shape_id: 5,
             style_map: Some(GpuPickScatterStyle {
                 style_index_column: None,
                 style_slots: &[ScatterStyleSlotGpu {
@@ -5916,5 +6798,155 @@ mod tests {
             Err(GpuPickError::StaleColumn { column_id, .. })
                 if column_id == "epoch-pick-x"
         ));
+    }
+
+    /// Every assembled pick module is its fragments concatenated in the
+    /// declared order, each fragment verbatim, and every fragment file under
+    /// `src/gpu_pick/` is in some module; the twinned blocks live in the
+    /// fragments `shader_consistency` compares.
+    #[test]
+    fn assembled_pick_shaders_are_their_fragments_concatenated() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
+        let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+        let mut used = std::collections::HashSet::new();
+        for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
+            let mut expected = String::new();
+            for name in shader.fragments() {
+                expected.push_str(&read(name));
+                expected.push('\n');
+                used.insert(*name);
+            }
+            assert_eq!(shader.source(), expected, "{shader:?}");
+            assert_eq!(shader.fragments()[0], "core.wgsl", "{shader:?}");
+            let last = *shader.fragments().last().unwrap();
+            if shader == PickShader::Gate {
+                assert_eq!(last, "gate_entries.wgsl");
+            } else {
+                assert_eq!(last, "exact_entry.wgsl", "{shader:?}");
+                if let Err(error) = wgpu::naga::front::wgsl::parse_str(shader.source()) {
+                    panic!("{shader:?}: {}", error.emit_to_string(shader.source()));
+                }
+            }
+        }
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let name = entry.unwrap().file_name().into_string().unwrap();
+            assert!(used.contains(name.as_str()), "{name} is in no pick module");
+        }
+    }
+
+    /// Compile cost of the point picker per module, entry point and exact
+    /// variant: the wall time of `create_shader_module` and of
+    /// `create_compute_pipeline(layout: None)` per entry, three rounds, each
+    /// on a fresh device. `FIGGY_PICK_TIMING_SOURCE` times one other
+    /// single-module `gpu_pick.wgsl` (an older revision) instead. Run with
+    /// `--ignored --nocapture`.
+    #[test]
+    #[ignore = "timing report"]
+    fn pick_shader_compile_timings() {
+        use super::exact_variant as v;
+        use std::time::Instant;
+        let override_source = std::env::var("FIGGY_PICK_TIMING_SOURCE")
+            .ok()
+            .map(|path| std::fs::read_to_string(path).expect("timing source"));
+        // (module label, source, [(entry, variant label, PICK_VARIANT)]).
+        type Entries = Vec<(&'static str, &'static str, Option<u32>)>;
+        let mut modules: Vec<(&str, String, Entries)> = Vec::new();
+        let gate_entries: Entries = vec![
+            ("pick_gate_x", "-", None),
+            ("pick_gate_y", "-", None),
+            ("pick_reduce_candidates", "-", None),
+        ];
+        if let Some(source) = override_source {
+            let mut entries = gate_entries;
+            entries.push(("pick_exact_candidates", "default", None));
+            modules.push(("single module", source, entries));
+        } else {
+            let exact = |variants: &[(&'static str, u32)]| -> Entries {
+                variants
+                    .iter()
+                    .map(|(label, bits)| ("pick_exact_candidates", *label, Some(*bits)))
+                    .collect()
+            };
+            modules.push(("gate", PickShader::Gate.source().to_string(), gate_entries));
+            modules.push((
+                "marker",
+                PickShader::Marker.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("precise circle", 0x1000 | 5),
+                    ("precise star", 0x1000 | 25),
+                    ("polar", v::POLAR),
+                    ("styled", v::STYLED_MARKER),
+                    ("all", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "marker+line",
+                PickShader::MarkerLine.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("precise circle", 0x1000 | 5),
+                    ("dashed", v::DASH),
+                    ("styled", v::STYLED_MARKER | v::STYLED_LINE),
+                    ("all (streamed)", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "line",
+                PickShader::Line.source().to_string(),
+                exact(&[
+                    ("precise", 0),
+                    ("dashed", v::DASH),
+                    ("styled", v::STYLED_LINE),
+                    ("all", v::ALL),
+                ]),
+            ));
+            modules.push((
+                "vector",
+                PickShader::Vector.source().to_string(),
+                exact(&[("precise", 0)]),
+            ));
+        }
+        for round in 0..3 {
+            let (device, _queue) = crate::test_gpu::device();
+            for (name, source, entries) in &modules {
+                let started = Instant::now();
+                let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                    label: Some(name),
+                    source: wgpu::ShaderSource::Wgsl(source.clone().into()),
+                });
+                println!(
+                    "PICK_TIMING round {round} [{name}] create_shader_module {:.1} ms",
+                    started.elapsed().as_secs_f64() * 1e3
+                );
+                for (entry, label, variant) in entries {
+                    // 0x1000 | id: the precise variant with `PICK_SHAPE = id`.
+                    let constants = variant.map(|bits| {
+                        if bits & 0x1000 != 0 {
+                            vec![(v::CONSTANT, 0.0), ("PICK_SHAPE", f64::from(bits & 0xfff))]
+                        } else {
+                            vec![(v::CONSTANT, f64::from(bits))]
+                        }
+                    });
+                    let started = Instant::now();
+                    let _pipeline =
+                        device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                            label: Some(entry),
+                            layout: None,
+                            module: &module,
+                            entry_point: Some(entry),
+                            compilation_options: wgpu::PipelineCompilationOptions {
+                                constants: constants.as_deref().unwrap_or(&[]),
+                                zero_initialize_workgroup_memory: true,
+                            },
+                            cache: None,
+                        });
+                    println!(
+                        "PICK_TIMING round {round} [{name}] {entry} [{label}] {:.1} ms",
+                        started.elapsed().as_secs_f64() * 1e3
+                    );
+                }
+            }
+        }
     }
 }

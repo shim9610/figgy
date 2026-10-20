@@ -4,6 +4,8 @@
 // (projection layer), places the arrow and emits one corner of its quad (glyph
 // layer). `fs_main` turns the interpolated pixel position into coverage with
 // the same placement, carried flat. `draw(0..ARROW_VERTICES, 0..count)`.
+// The grid form's arrow pick, `pick_vector_cell`, closes the grid input
+// fragment and calls `vector_arrow_style` from here.
 
 struct VectorVsOut {
     @builtin(position) pos: vec4<f32>,

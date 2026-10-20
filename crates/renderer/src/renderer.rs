@@ -531,7 +531,8 @@ struct VectorScratch {
     vector_bg: wgpu::BindGroup,
     charge: crate::gpu_memory::SharedCharge,
     /// Grid form only: the `u` grid as a field's group 2, so the selected
-    /// cell highlight and the cell pick run the field pipelines unchanged.
+    /// cell highlight runs the field pipeline unchanged. The grid's arrow
+    /// pick binds `vector_bg` (`pick_vector_cell`).
     field: Option<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)>,
     sources: Arc<GridSources>,
     /// Arrows the draw issues; zero draws nothing.
@@ -1186,7 +1187,85 @@ struct PickResourceSignature {
     line_width_bits: Option<u32>,
     /// The line's step mode: a stepped path is picked along its pieces.
     line_step_mode: u32,
+    /// The line's dash preset: a dashed path is picked on its dashes.
+    line_style: LineStylePreset,
     scatter: Option<PickScatterSignature>,
+    /// A point vector's arrows: picked on the drawn shaft and head.
+    vector: Option<PickVectorSignature>,
+}
+
+/// A point vector's arrows as the pick plan compares them: the component
+/// and colour columns and the style, by bits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PickVectorSignature {
+    u_column: ColumnId,
+    v_column: ColumnId,
+    color_column: Option<ColumnId>,
+    scale_pixels: bool,
+    scale_bits: u32,
+    pivot: u32,
+    width_bits: u32,
+    head_length_bits: u32,
+    head_width_bits: u32,
+    min_length_bits: u32,
+}
+
+impl PickVectorSignature {
+    fn of(vector: &crate::gpu_pick::GpuPickVector) -> Self {
+        Self {
+            u_column: vector.u_column.clone(),
+            v_column: vector.v_column.clone(),
+            color_column: vector.color_column.clone(),
+            scale_pixels: vector.scale_pixels,
+            scale_bits: vector.scale.to_bits(),
+            pivot: vector.pivot,
+            width_bits: vector.width_px.to_bits(),
+            head_length_bits: vector.head_length_px.to_bits(),
+            head_width_bits: vector.head_width_px.to_bits(),
+            min_length_bits: vector.min_length_px.to_bits(),
+        }
+    }
+
+    fn references_column(&self, id: &str) -> bool {
+        self.u_column == id || self.v_column == id || self.color_column.as_deref() == Some(id)
+    }
+}
+
+/// The arrows the vector shader draws for a point vector series, in the
+/// picker's terms: the same columns, scale mode, pivot and sizes
+/// (`Renderer::ensure_vector_scratch`), in logical pixels.
+fn gpu_pick_vector(
+    components: &crate::data_config::VectorComponents,
+    style: &crate::data_config::VectorStyle,
+) -> Option<crate::gpu_pick::GpuPickVector> {
+    use crate::data_config::{VectorColorMap, VectorComponents, VectorPivot, VectorScale};
+    use data_render::vector as vector_render;
+    let VectorComponents::Points { u, v } = components else {
+        return None;
+    };
+    let (scale_pixels, scale) = match style.scale {
+        VectorScale::Data { factor } => (false, factor as f32),
+        VectorScale::Pixels { px_per_unit } => (true, px_per_unit as f32),
+    };
+    Some(crate::gpu_pick::GpuPickVector {
+        u_column: u.clone(),
+        v_column: v.clone(),
+        color_column: match style.color_map.as_ref() {
+            Some(VectorColorMap::Column(column)) => Some(column.clone()),
+            _ => None,
+        },
+        scale_pixels,
+        scale,
+        pivot: match style.pivot {
+            VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
+            VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
+            VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
+        },
+        width_px: style.width_px,
+        head_length_px: style.head_length_px,
+        head_width_px: style.head_width_px,
+        min_length_px: style.min_length_px,
+    })
 }
 
 impl PickResourceSignature {
@@ -1203,6 +1282,10 @@ impl PickResourceSignature {
                     .as_ref()
                     .is_some_and(|size_map| size_map.column == id)
             })
+            || self
+                .vector
+                .as_ref()
+                .is_some_and(|vector| vector.references_column(id))
     }
 
     fn references_any_column(&self, ids: &[&str]) -> bool {
@@ -1267,6 +1350,8 @@ struct OwnedGpuPickSeriesDescriptor {
     scatter: Option<OwnedGpuPickScatter>,
     line_width_px: Option<f32>,
     line_interpolation: LineInterpolation,
+    line_style: LineStylePreset,
+    vector: Option<crate::gpu_pick::GpuPickVector>,
 }
 
 impl OwnedGpuPickSeriesDescriptor {
@@ -1279,6 +1364,8 @@ impl OwnedGpuPickSeriesDescriptor {
             scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
             line_width_px: self.line_width_px,
             line_interpolation: self.line_interpolation,
+            line_style: self.line_style,
+            vector: self.vector.clone(),
         }
     }
 }
@@ -1350,10 +1437,12 @@ impl PickChartPlan {
 
         for series in series {
             let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
-            // A point vector is picked at its anchors like a marker series.
-            let vector_points = primitives.vector
-                && extract_vector(&series.render_type)
-                    .is_some_and(|(components, _)| components.grid().is_none());
+            // A point vector is picked on the arrows it draws, through the
+            // scatter primitive slot.
+            let vector = extract_vector(&series.render_type)
+                .filter(|_| primitives.vector)
+                .and_then(|(components, style)| gpu_pick_vector(components, style));
+            let vector_points = vector.is_some();
             if !primitives.line && !primitives.scatter && !vector_points {
                 continue;
             }
@@ -1361,11 +1450,10 @@ impl PickChartPlan {
             let (scatter, scatter_signature) = if let Some((_, style)) =
                 extract_vector(&series.render_type).filter(|_| vector_points)
             {
-                // The anchor is picked as a disc of the glyph radius, which is
-                // what the pick shader's circle shape resolves to unchanged
-                // (`pick_visual_shape_radius` scales by 1 for a circle).
+                // The marker slot carries the anchor's highlight radius; the
+                // pick itself walks the drawn arrow (`GpuPickVector`).
                 let base_radius_px = crate::pick::vector_anchor_radius_px(style);
-                let base_shape_id = data_render::shape_id(&ScatterShape::Circle);
+                let base_shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
                 (
                     Some(OwnedGpuPickScatter {
                         base_radius_px,
@@ -1533,13 +1621,16 @@ impl PickChartPlan {
             let line_width_px = line.map(|line| line.line_width);
             let line_interpolation =
                 line.map_or(LineInterpolation::Linear, |line| line.interpolation);
+            let line_style = line.map_or(LineStylePreset::Solid, |line| line.line_style);
             let resource = PickResourceSignature {
                 x_column: series.x_column.clone(),
                 y_column: series.y_column.clone(),
                 primitives,
                 line_width_bits: line_width_px.map(f32::to_bits),
                 line_step_mode: crate::line_step::step_mode(line_interpolation),
+                line_style,
                 scatter: scatter_signature,
+                vector: vector.as_ref().map(PickVectorSignature::of),
             };
             descriptors.push(OwnedGpuPickSeriesDescriptor {
                 signature: PickSeriesSignature {
@@ -1550,6 +1641,8 @@ impl PickChartPlan {
                 scatter,
                 line_width_px,
                 line_interpolation,
+                line_style,
+                vector,
             });
         }
 
@@ -1726,6 +1819,9 @@ impl PreparedChartMutation<'_> {
 struct RendererPicker {
     pipeline_state: PickerPipelineState,
     active: Option<ActivePickRegistry>,
+    /// The exact pipelines created so far, by module and variant: compiled on
+    /// the first pick that needs each (`PickExactPipelines`).
+    exact: crate::gpu_pick::PickExactPipelines,
     #[cfg(test)]
     injected_activation_failure: Option<crate::gpu_pick::GpuPickError>,
 }
@@ -1735,6 +1831,7 @@ impl RendererPicker {
         Self {
             pipeline_state: PickerPipelineState::Disabled,
             active: None,
+            exact: crate::gpu_pick::PickExactPipelines::default(),
             #[cfg(test)]
             injected_activation_failure: None,
         }
@@ -1746,11 +1843,11 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1776,11 +1873,11 @@ impl RendererPicker {
                     device,
                     queue,
                     gpu_ledger,
-                    bar_shader,
-                    field_shader,
+                    shaders,
                     transform_bgl,
                     field_bgl,
                     bar_style_bgl,
+                    vector_bgl,
                     observer,
                 );
                 self.pipeline_state = PickerPipelineState::Ready { point, data };
@@ -1799,11 +1896,11 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1831,11 +1928,11 @@ impl RendererPicker {
                     device,
                     queue,
                     gpu_ledger,
-                    bar_shader,
-                    field_shader,
+                    shaders,
                     transform_bgl,
                     field_bgl,
                     bar_style_bgl,
+                    vector_bgl,
                     observer,
                 )
                 .await
@@ -1866,6 +1963,18 @@ impl RendererPicker {
             PickerPipelineState::Ready { point, .. } => Ok(Arc::clone(point)),
             PickerPipelineState::Failed(error) => Err(error.clone()),
         }
+    }
+
+    /// The exact pipeline a streamed pick scans every chunk with: the
+    /// marker-and-line module with every path, created on first use.
+    fn stream_exact(
+        &mut self,
+    ) -> std::result::Result<wgpu::ComputePipeline, crate::gpu_pick::GpuPickError> {
+        let bundle = self.ready_bundle()?;
+        Ok(self
+            .exact
+            .ensure(&bundle, crate::gpu_pick::PickExactKey::STREAMED)?
+            .clone())
     }
 
     fn ready_data_bundle(
@@ -4032,6 +4141,9 @@ struct TargetPipelines {
     bar_selection: Option<wgpu::RenderPipeline>,
     field: Option<wgpu::RenderPipeline>,
     field_selection: Option<wgpu::RenderPipeline>,
+    /// The selected contour level's highlight for a labelled contour, with
+    /// group 3 bound to its label gaps (`fs_data_selection_labelled`).
+    field_selection_labelled: Option<wgpu::RenderPipeline>,
     /// The field quad through `fs_contour` — the isolines. Same module and same
     /// layouts as `field`, one entry point apart.
     contour: Option<wgpu::RenderPipeline>,
@@ -4190,6 +4302,7 @@ fn create_target_pipelines_observed(
         bar_selection: None,
         field: None,
         field_selection: None,
+        field_selection_labelled: None,
         contour: None,
         contour_labelled: None,
         contour_label: None,
@@ -4262,6 +4375,7 @@ async fn create_target_pipelines_observed_async(
         bar_selection: None,
         field: None,
         field_selection: None,
+        field_selection_labelled: None,
         contour: None,
         contour_labelled: None,
         contour_label: None,
@@ -4587,6 +4701,23 @@ impl TargetPipelines {
                     transform_bgl,
                     data_selection_bgl,
                     field_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_field_selection
+            && self.field_selection_labelled.is_none()
+            && let Some(labels) = label_pipelines
+        {
+            self.field_selection_labelled = Some(
+                data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    data_selection_bgl,
+                    field_bgl,
+                    labels.label_gap_bgl(),
                     surface_format,
                     self.sample_count,
                 ),
@@ -4947,6 +5078,22 @@ impl TargetPipelines {
             )
         );
         ensure!(
+            field_selection_labelled,
+            "selected labelled field data",
+            data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                data_selection_bgl,
+                field_bgl,
+                label_pipelines
+                    .expect("field preparation owns labels")
+                    .label_gap_bgl(),
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
             contour_label,
             "contour labels",
             label_pipelines
@@ -5299,6 +5446,26 @@ fn create_msaa_target(
     }))
 }
 
+/// Whether the line `series` draws under `draw_style` walks its arc prefix:
+/// a dashed stroke takes its dash phase from it and a sketch stroke its
+/// wobble. A Milkyway ribbon is never dashed and its stars are picked by
+/// their envelope, so it needs none.
+fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig) -> bool {
+    if !effective_series_primitives(draw_style, &series.render_type).line {
+        return false;
+    }
+    let Some(line) = extract_line(&series.render_type) else {
+        return false;
+    };
+    match draw_style {
+        DrawStyle::Milkyway(_) => false,
+        DrawStyle::Sketch(_) => true,
+        DrawStyle::Precise | DrawStyle::Constellation(_) => {
+            !matches!(line.line_style, LineStylePreset::Solid)
+        }
+    }
+}
+
 fn scatter_config_radius_px(
     scatter: &DataScatterStyleConfig,
     point_index: usize,
@@ -5319,15 +5486,6 @@ fn scatter_config_radius_px(
         }
     }
     radius.max(0.0)
-}
-
-fn scatter_pick_anchor_may_be_visible(
-    scatter: &DataScatterStyleConfig,
-    point_index: usize,
-    use_style_mapping: bool,
-) -> bool {
-    (use_style_mapping && scatter.point_style_index_column.is_some())
-        || scatter_config_radius_px(scatter, point_index, use_style_mapping) > 0.0
 }
 
 fn require_resident_sources(
@@ -7224,11 +7382,15 @@ impl Renderer {
             Arc::clone(&self.device),
             Arc::clone(&self.queue),
             Arc::clone(&self.gpu_ledger),
-            &self.pipelines.shaders.bar,
-            &self.pipelines.shaders.field,
+            crate::gpu_data_pick::DataPickShaders {
+                bar: &self.pipelines.shaders.bar,
+                field: &self.pipelines.shaders.field,
+                vector_grid: &self.pipelines.shaders.vector_grid,
+            },
             &self.transform_bgl,
             &self.field_bgl,
             &self.per_point_style_map_bgl,
+            &self.vector_bgl,
             observer,
         )
     }
@@ -7249,11 +7411,15 @@ impl Renderer {
                 Arc::clone(&self.device),
                 Arc::clone(&self.queue),
                 Arc::clone(&self.gpu_ledger),
-                &self.pipelines.shaders.bar,
-                &self.pipelines.shaders.field,
+                crate::gpu_data_pick::DataPickShaders {
+                    bar: &self.pipelines.shaders.bar,
+                    field: &self.pipelines.shaders.field,
+                    vector_grid: &self.pipelines.shaders.vector_grid,
+                },
                 &self.transform_bgl,
                 &self.field_bgl,
                 &self.per_point_style_map_bgl,
+                &self.vector_bgl,
                 observer,
             )
             .await
@@ -7294,7 +7460,46 @@ impl Renderer {
             request.display_scale,
             request.display_panel_px,
         );
-        let (display_config, _) = active_layer_pick_inputs(&displayed, &state.series)?;
+        let (display_config, layer_series) = active_layer_pick_inputs(&displayed, &state.series)?;
+        let transform = data_render::scatter_transform_from_config(&display_config);
+        // The arc prefix each registered line was drawn with at this
+        // transform, by registry position: its dash phase and sketch wobble
+        // walk it. The draw's own cache key, so a pick after a frame reuses
+        // the frame's scan and a pick before one runs the same scan.
+        let slots = self
+            .picker
+            .active
+            .as_ref()
+            .expect("successful chart preparation publishes an active picker registry")
+            .engine
+            .series_identities();
+        let mut arcs: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
+        arcs.try_reserve_exact(slots.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick arc prefixes",
+            }
+        })?;
+        for series_id in slots.series_ids() {
+            let series = layer_series
+                .iter()
+                .find(|series| series.series_id == series_id);
+            let arc = series
+                .filter(|series| line_pick_walks_arc(&display_config.draw_style, series))
+                .and_then(|series| {
+                    let interpolation = extract_line(&series.render_type)
+                        .map_or(LineInterpolation::Linear, |line| line.interpolation);
+                    self.preparation_parts().1.ensure_arc_prefix(
+                        &series.series_id,
+                        &series.x_column,
+                        &series.y_column,
+                        &transform,
+                        None,
+                        interpolation,
+                    )
+                })
+                .map(|arc| arc.prefix.0);
+            arcs.push(arc);
+        }
         let chart_rect = display_config.chart_area.0;
         let data_area_px = display_config.data_area().ok().map(|area| {
             let rect = area.0;
@@ -7306,7 +7511,7 @@ impl Renderer {
             ]
         });
         let query = crate::gpu_pick::GpuPickQuery {
-            transform: data_render::scatter_transform_from_config(&display_config),
+            transform,
             chart_rect_px: [
                 chart_rect.x as f32,
                 chart_rect.y as f32,
@@ -7316,16 +7521,26 @@ impl Renderer {
             data_area_px,
             canvas_position_px: request.canvas_position_px,
             max_distance_px: request.max_distance_px,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&display_config.draw_style),
         };
-        let active = self
-            .picker
+        let picker = &mut self.picker;
+        let active = picker
             .active
             .as_ref()
             .expect("successful chart preparation publishes an active picker registry");
         debug_assert_eq!(active.chart_id, id);
-        active
-            .engine
-            .pick_with_display_scale(&self.pool, query, request.display_scale)
+        // The exact pipelines these series need, compiled on the first pick
+        // that needs each.
+        for key in active.engine.exact_variants(&query) {
+            picker.exact.ensure(active.engine.bundle(), key)?;
+        }
+        active.engine.pick_with_arcs(
+            &self.pool,
+            query,
+            request.display_scale,
+            &arcs,
+            &picker.exact,
+        )
     }
 
     /// Submit one typed data pick across points/lines, histogram bins, heatmap
@@ -7450,26 +7665,23 @@ impl Renderer {
             }
 
             if primitives.vector {
-                // A grid vector's cells are picked exactly as a heatmap's: the
-                // `u` grid is bound as a field for the cell lookup.
+                // A grid vector picks the arrows it draws, as the cells they
+                // are drawn for: the vector shader's own pick entry walks
+                // them with the draw's group 2 at the pick's display scale.
+                // A point vector is a point pick (`pick_chart`).
                 self.ensure_vector_scratch(&config, cfg, request.display_scale)?;
                 let scratch = self
                     .vector_cache
                     .get(cfg.series_id.as_str())
                     .expect("vector scratch was just ensured");
-                if let Some((field_bg, charge)) = scratch.field.as_ref()
-                    && scratch.count != 0
-                {
+                if scratch.input == data_render::vector::VectorInput::Grid && scratch.count != 0 {
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
                         series_id: cfg.series_id.clone(),
                         paint_order,
-                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Field {
-                            field_bg: field_bg.clone(),
-                            charge: Arc::clone(charge),
-                            has_fill: true,
-                            has_contour: false,
-                            contour_width_px: 0.0,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::VectorGrid {
+                            vector_bg: scratch.vector_bg.clone(),
+                            charge: Arc::clone(&scratch.charge),
                         },
                     });
                 }
@@ -7480,12 +7692,17 @@ impl Renderer {
             }
             let has_fill = primitives.field;
             let has_contour = primitives.contour;
+            let mut nan_color_premul = [0.0; 4];
             let (field_bg, charge, drawable) = if has_fill {
                 self.ensure_field_scratch(&config, cfg)?;
                 let scratch = self
                     .field_cache
                     .get(cfg.series_id.as_str())
                     .expect("field scratch was just ensured");
+                // The fill's `nan_color`, premultiplied as its style uniform
+                // holds it (`PrimitiveStyle::from_color`).
+                let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
+                nan_color_premul = PrimitiveStyle::from_color(Color { r, g, b, a }).color_premul;
                 (
                     scratch.field_bg.clone(),
                     Arc::clone(&scratch.charge),
@@ -7509,6 +7726,21 @@ impl Renderer {
             let contour_width_px = extract_contour(&cfg.render_type)
                 .map_or(0.0, |contour| contour.line.line_width.max(0.0))
                 * request.display_scale;
+            // The label placement the contour draws its gaps from at this
+            // display transform: the draw's own snapshot (reused after a frame
+            // at the same transform, dispatched once otherwise).
+            let label = if has_contour && series_wants_contour_labels(&cfg.render_type) {
+                if has_fill {
+                    self.ensure_contour_scratch(cfg, &config, request.display_scale)?;
+                }
+                self.preparation_parts().1.contour_pick_label(
+                    cfg,
+                    &display_config,
+                    request.display_scale,
+                )?
+            } else {
+                None
+            };
             data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                 source_id: cfg.source_id.clone(),
                 series_id: cfg.series_id.clone(),
@@ -7519,6 +7751,8 @@ impl Renderer {
                     has_fill,
                     has_contour,
                     contour_width_px,
+                    nan_color_premul,
+                    label,
                 },
             });
         }
@@ -14029,7 +14263,7 @@ impl PrepareContext<'_> {
     }
 
     /// Build or reuse one vector series' group-2 bind group (and, for the grid
-    /// form, the field bind group its cell highlight and cell pick use).
+    /// form, the field bind group its cell highlight uses).
     ///
     /// Same contract as `ensure_field_scratch`: the signature is compared
     /// before anything is created, so a steady frame uploads nothing, and a
@@ -14120,7 +14354,7 @@ impl PrepareContext<'_> {
         let mut ids = Vec::new();
         let mut epochs = Vec::new();
         // Grid form: the `u` grid's field params and its table length, for
-        // the field bind group the selection and the cell pick reuse.
+        // the field bind group the selection reuses.
         let mut field_params = None;
         let input = match components {
             VectorComponents::Points { u, v } => {
@@ -14214,8 +14448,8 @@ impl PrepareContext<'_> {
                     params.flags |= vector_render::VECTOR_FLAG_CENTERS;
                     field_flags |= data_render::FIELD_FLAG_CENTERS;
                 }
-                // The `u` grid's lattice as a field, for the cell pick and the
-                // selected-cell outline; those passes read only the lattice.
+                // The `u` grid's lattice as a field, for the selected-cell
+                // outline; that pass reads only the lattice.
                 field_params = Some(data_render::FieldParamsGpu::cell_geometry(
                     params.x_base,
                     params.y_base,
@@ -14690,56 +14924,17 @@ impl PrepareContext<'_> {
                     ));
                 }
 
+                let label = self.contour_label_snapshot(
+                    cfg.series_id.as_str(),
+                    &mut encoder,
+                    &transform,
+                    (ca, da),
+                    *effective_spacing_px,
+                );
                 let entry = self
                     .contour_cache
-                    .get_mut(cfg.series_id.as_str())
+                    .get(cfg.series_id.as_str())
                     .expect("contour scratch was just ensured");
-                let label = match entry.label.as_mut() {
-                    None => None,
-                    Some(label) if !label.is_automatic() => label.explicit_snapshot(),
-                    Some(label) => {
-                        let effective_spacing_px = effective_spacing_px
-                            .expect("automatic contour spacing was preflighted");
-                        let params = &entry.signature.params;
-                        let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
-                            da.width as f32,
-                            da.height as f32,
-                            effective_spacing_px,
-                            params.level_count,
-                        );
-                        Some(
-                            label.dispatch_automatic(
-                                &self.device,
-                                &self.queue,
-                                &self.gpu_ledger,
-                                encoder.as_mut().expect("automatic label encoder"),
-                                self.contour_label_pipelines
-                                    .as_ref()
-                                    .expect("contour label pipelines ensured"),
-                                &transform,
-                                crate::gpu_contour::AnchorParamsGpu {
-                                    lattice_x: plan.lattice_x,
-                                    lattice_y: plan.lattice_y,
-                                    level_count: plan.levels,
-                                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
-                                    area_x: ca.x as f32,
-                                    area_y: ca.y as f32,
-                                    area_w: ca.width as f32,
-                                    area_h: ca.height as f32,
-                                    clip_x: da.x as f32,
-                                    clip_y: da.y as f32,
-                                    clip_w: da.width as f32,
-                                    clip_h: da.height as f32,
-                                    spacing_px: effective_spacing_px,
-                                    label_h_px: label.cell_h_px(),
-                                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
-                                    _pad0: 0,
-                                },
-                                &entry.field_bg,
-                            ),
-                        )
-                    }
-                };
                 per_series.push(PreparedContourSeries {
                     scratch: Some(PreparedContourScratch {
                         style_bg: entry.style_bg.clone(),
@@ -14756,6 +14951,110 @@ impl PrepareContext<'_> {
             prepared.push(PreparedContourItem { series: per_series });
         }
         Ok((prepared, receipts))
+    }
+
+    /// The label snapshot a contour series draws with at `transform`: the
+    /// explicit placement, or the automatic one for this exact transform and
+    /// anchor plan (dispatched into `encoder` on a miss, reused on a hit).
+    /// `None` without labels. Shared by the draw and the contour pick, which
+    /// leaves the same label gaps unpicked.
+    fn contour_label_snapshot(
+        &mut self,
+        series_id: &str,
+        encoder: &mut Option<wgpu::CommandEncoder>,
+        transform: &data_render::ScatterTransform,
+        (ca, da): (Rect, Rect),
+        effective_spacing_px: Option<f32>,
+    ) -> Option<crate::gpu_contour::ContourLabelSnapshot> {
+        let entry = self.contour_cache.get_mut(series_id)?;
+        let label = entry.label.as_mut()?;
+        if !label.is_automatic() {
+            return label.explicit_snapshot();
+        }
+        let effective_spacing_px =
+            effective_spacing_px.expect("automatic contour spacing was preflighted");
+        let params = &entry.signature.params;
+        let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
+            da.width as f32,
+            da.height as f32,
+            effective_spacing_px,
+            params.level_count,
+        );
+        let encoder = encoder.get_or_insert_with(|| {
+            self.device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("figgy contour label encoder"),
+                })
+        });
+        Some(
+            label.dispatch_automatic(
+                &self.device,
+                &self.queue,
+                &self.gpu_ledger,
+                encoder,
+                self.contour_label_pipelines
+                    .as_ref()
+                    .expect("contour label pipelines ensured"),
+                transform,
+                crate::gpu_contour::AnchorParamsGpu {
+                    lattice_x: plan.lattice_x,
+                    lattice_y: plan.lattice_y,
+                    level_count: plan.levels,
+                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
+                    area_x: ca.x as f32,
+                    area_y: ca.y as f32,
+                    area_w: ca.width as f32,
+                    area_h: ca.height as f32,
+                    clip_x: da.x as f32,
+                    clip_y: da.y as f32,
+                    clip_w: da.width as f32,
+                    clip_h: da.height as f32,
+                    spacing_px: effective_spacing_px,
+                    label_h_px: label.cell_h_px(),
+                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
+                    _pad0: 0,
+                },
+                &entry.field_bg,
+            ),
+        )
+    }
+
+    /// The label snapshot a contour pick of `cfg` sees: the one the draw at
+    /// `chart_config` (the pick's display configuration) and `scale` paints
+    /// its label gaps from, through [`Self::contour_label_snapshot`]. Any
+    /// anchor dispatch is submitted before the pick that reads it.
+    fn contour_pick_label(
+        &mut self,
+        cfg: &SeriesConfig,
+        chart_config: &Config,
+        scale: f32,
+    ) -> Result<Option<crate::gpu_contour::ContourLabelSnapshot>> {
+        if !series_wants_contour_labels(&cfg.render_type) {
+            return Ok(None);
+        }
+        let spacing =
+            preflight_contour_label_spacing(cfg.series_id.as_str(), &cfg.render_type, true, scale)?;
+        if self.contour_label_pipelines.is_none() {
+            *self.contour_label_pipelines = Some(crate::gpu_contour::ContourLabelPipelines::new(
+                &self.device,
+                &self.field_bgl,
+            ));
+        }
+        let transform = data_render::scatter_transform_from_config(chart_config);
+        let ca = chart_config.chart_area.0;
+        let da = chart_config.data_area().map(|area| area.0).unwrap_or(ca);
+        let mut encoder = None;
+        let label = self.contour_label_snapshot(
+            cfg.series_id.as_str(),
+            &mut encoder,
+            &transform,
+            (ca, da),
+            spacing,
+        );
+        if let Some(encoder) = encoder {
+            self.queue.submit(std::iter::once(encoder.finish()));
+        }
+        Ok(label)
     }
 
     /// Build or reuse one contour series' GPU state.
@@ -19093,6 +19392,9 @@ mod tests {
     }
 
     #[test]
+    /// Enabling picking creates the gate and reduction pipelines and the
+    /// typed data pipelines once; the exact point pipelines wait for the first
+    /// pick that needs each (`PickExactPipelines`).
     fn renderer_gpu_picker_activation_creates_six_pipelines_once() {
         let Some(mut renderer) = state_test_renderer() else {
             return;
@@ -19132,7 +19434,10 @@ mod tests {
             .filter(|event| {
                 event.scope == "renderer.gpu_data_pick"
                     && event.phase == crate::init::InitPhase::Started
-                    && matches!(event.stage, "pick_histogram_bin" | "pick_field_data")
+                    && matches!(
+                        event.stage,
+                        "pick_histogram_bin" | "pick_field_data" | "pick_vector_cell"
+                    )
             })
             .count();
         let data_setup_starts = events
@@ -19143,9 +19448,9 @@ mod tests {
                     && event.stage == "setup"
             })
             .count();
-        assert_eq!(pipeline_starts, 4);
+        assert_eq!(pipeline_starts, 3);
         assert_eq!(setup_starts, 1);
-        assert_eq!(data_pipeline_starts, 2);
+        assert_eq!(data_pipeline_starts, 3);
         assert_eq!(data_setup_starts, 1);
         assert!(renderer.picker.active.is_none());
     }
@@ -23478,8 +23783,10 @@ mod tests {
         r.export_panel_rgba(&chart, &series, 1.0).unwrap();
     }
 
+    /// A zero-size marker draws a dot and picks (`pick_draw_agreement`), so a
+    /// picked one takes the ring like any other marker.
     #[test]
-    fn picked_overlay_skips_zero_size_scatter_errorbar_anchor() {
+    fn picked_overlay_rings_a_zero_size_scatter_errorbar_anchor() {
         let Some((device, queue)) = crate::data_render::shared_device() else {
             return;
         };
@@ -23530,9 +23837,9 @@ mod tests {
             .filter(|p| p[0] < 80 && p[1] > 160 && p[2] < 80 && p[3] > 80)
             .count();
 
-        assert_eq!(
-            green_ring_ink, 0,
-            "hidden scatter marker over errorbar must not draw picked overlay"
+        assert!(
+            green_ring_ink > 20,
+            "a picked zero-size marker over an errorbar takes the ring: {green_ring_ink}"
         );
     }
 

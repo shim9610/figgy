@@ -5,7 +5,7 @@
 //!
 //! The GPU twins are `step_piece` / `strip_slot` in
 //! `data_render/line_columnar.wgsl` (shared byte-for-byte with
-//! `line_arc.wgsl`) and `pick_step_piece` in `gpu_pick.wgsl`. All of them
+//! `line_arc.wgsl`) and `pick_step_piece` in `gpu_pick/line.wgsl`. All of them
 //! split a segment `a → b` into the same pieces: the axis-aligned step
 //! pieces, with the step-mid riser at the **data-space** midpoint of the two
 //! x values, or a polar chart's equal subdivisions in data space (an arc

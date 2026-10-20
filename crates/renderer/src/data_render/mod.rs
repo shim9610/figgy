@@ -3938,7 +3938,7 @@ pub struct FieldParamsGpu {
 
 impl FieldParamsGpu {
     /// Params for a field group that serves cell geometry only (a grid
-    /// vector's cell pick and selected-cell outline): the grid lattice and
+    /// vector's selected-cell outline): the grid lattice and
     /// its flags are real; the z range, levels, stops and colours are unread
     /// by those passes and are left at neutral values.
     pub fn cell_geometry(
@@ -4000,7 +4000,9 @@ pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
     // binding counts against `max_storage_buffers_per_shader_stage` (8) in every
     // stage it is visible to, and the anchor pipeline binds four of its own — so
     // marking the ramp tables compute-visible for symmetry would put the layout
-    // one over the limit on a conformant device.
+    // one over the limit on a conformant device. The colour stops alone are
+    // compute-visible: the cell pick evaluates the colour the fill paints
+    // (`field_paint`), which brings the anchor pass to exactly eight.
     crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
@@ -4009,7 +4011,7 @@ pub fn create_field_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindG
                 storage(0, shared), // column pool (coordinate + grid bases in the uniform)
                 storage(1, shared), // per-constituent-column (base, len)
                 storage(2, shared), // contour levels, in data units
-                storage(3, render), // colourmap control points
+                storage(3, shared), // colourmap control points
                 wgpu::BindGroupLayoutEntry {
                     binding: 4,
                     visibility: shared,
@@ -4055,8 +4057,8 @@ pub struct FieldTables<'a> {
 }
 
 /// The group-2 tables a field bind group needs beyond its grid and params
-/// when it serves cell geometry only: a grid vector's cell pick and
-/// selected-cell outline run the field pipelines, which read the grid table
+/// when it serves cell geometry only: a grid vector's selected-cell outline
+/// runs the field pipeline, which reads the grid table
 /// and `FieldParams` and nothing of the levels, stops, level colours or
 /// lookup metadata. Those four bindings must still exist, so one padding set
 /// (an empty level list, one stop, one colour, one zero lookup record) is
@@ -4457,6 +4459,33 @@ pub(crate) fn create_field_selection_pipeline_with_sample_count(
         sample_count,
         "fs_data_selection",
         "figgy selected field data pipeline",
+    )
+}
+
+/// The selected-field highlight for a labelled contour: group 3 is the
+/// series' label-gap group, which `fs_data_selection_labelled` reads.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_field_selection_labelled_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    selection_bgl: &wgpu::BindGroupLayout,
+    field_bgl: &wgpu::BindGroupLayout,
+    label_gap_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_field_columnar_pipeline_with_optional_extra_layout(
+        device,
+        shader,
+        transform_bgl,
+        selection_bgl,
+        field_bgl,
+        Some(label_gap_bgl),
+        target_format,
+        sample_count,
+        "fs_data_selection_labelled",
+        "figgy selected labelled field data pipeline",
     )
 }
 
@@ -5125,6 +5154,11 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_bind_group(0, selection.transform_bg, &[]);
         pass.set_bind_group(1, &selection.selection_bg, &[]);
         pass.set_bind_group(2, &selection.field_bg, &[]);
+        // A labelled contour's highlight pipeline reads the label gaps the
+        // contour draw leaves; the plain one ignores the extra group.
+        if let Some(label) = series.contour.as_ref().and_then(|c| c.label.as_ref()) {
+            pass.set_bind_group(3, label.snapshot.label_gap_bind_group(), &[]);
+        }
         pass.draw(0..FIELD_VERTICES, 0..1);
     }
 
@@ -5490,6 +5524,26 @@ mod tests {
             }
             Err(e) => {
                 panic!("required GPU test: adapter initialization failed: {e}");
+            }
+        }
+    }
+
+    /// The constellation star picks on the disc its quad inscribes
+    /// (SHADER_COMMON.md §5.7): the sprite is zero from 0.98 of the half
+    /// width out, so even a bilinear tap a texel further stays inside it.
+    #[test]
+    fn psf_sprite_is_zero_outside_the_inscribed_disc() {
+        let size = 128u32;
+        let psf = bake_psf_rgba(size);
+        let half = (size as f32 - 1.0) * 0.5;
+        for y in 0..size {
+            for x in 0..size {
+                let dx = (x as f32 - half) / half;
+                let dy = (y as f32 - half) / half;
+                if (dx * dx + dy * dy).sqrt() >= 0.98 {
+                    let i = ((y * size + x) * 4) as usize;
+                    assert_eq!((psf[i], psf[i + 1]), (0, 0), "texel ({x}, {y})");
+                }
             }
         }
     }

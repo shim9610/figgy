@@ -239,31 +239,26 @@ fn pair_add(pair: vec2<f32>, s: f32) -> vec2<f32> {
     return vec2<f32>(sum, fma(1.0, a_roundoff, b_roundoff) + pair.y);
 }
 
-/// Pixels per data unit along one axis at `pair`: the derivative of
-/// `axis_pair_to_t` mapped through NDC. Exact on a linear axis; the local
-/// direction on a logarithmic one, the way the contour labels orient
-/// themselves.
-fn axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
-    var range: f32;
-    var panel_scale: f32;
-    var is_log: f32;
-    var pixel_to_ndc: f32;
-    if (axis == 0u) {
-        range = fma(1.0, transform.data_max.x - transform.data_min.x, transform.data_max_lo.x - transform.data_min_lo.x);
-        panel_scale = transform.data_to_panel_scale.x;
-        is_log = transform.scale_log.x;
-        pixel_to_ndc = transform.pixel_to_ndc.x;
-    } else {
-        range = fma(1.0, transform.data_max.y - transform.data_min.y, transform.data_max_lo.y - transform.data_min_lo.y);
-        panel_scale = transform.data_to_panel_scale.y;
-        is_log = transform.scale_log.y;
-        pixel_to_ndc = transform.pixel_to_ndc.y;
-    }
+/// Pixels per data unit along one axis whose range is `range` (the hi/lo
+/// sum), at `pair`: the derivative of `axis_pair_to_t` mapped through NDC.
+/// Exact on a linear axis; the local direction on a logarithmic one, the way
+/// the contour labels orient themselves.
+fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: f32, pair: vec2<f32>) -> f32 {
     let linear = 2.0 * panel_scale / (range * pixel_to_ndc);
     // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
     let value = pair.x + pair.y;
     let log_slope = linear / (value * log(10.0));
     return mix(linear, log_slope, is_log);
+}
+
+/// `axis_px_per_unit_at` for one axis of the transform: 0 = x, 1 = y.
+fn axis_px_per_unit(axis: u32, pair: vec2<f32>) -> f32 {
+    if (axis == 0u) {
+        let range = fma(1.0, transform.data_max.x - transform.data_min.x, transform.data_max_lo.x - transform.data_min_lo.x);
+        return axis_px_per_unit_at(range, transform.data_to_panel_scale.x, transform.scale_log.x, transform.pixel_to_ndc.x, pair);
+    }
+    let range = fma(1.0, transform.data_max.y - transform.data_min.y, transform.data_max_lo.y - transform.data_min_lo.y);
+    return axis_px_per_unit_at(range, transform.data_to_panel_scale.y, transform.scale_log.y, transform.pixel_to_ndc.y, pair);
 }
 
 /// Project one sample. `mode` is a `VECTOR_SCALE_*` constant and `scale` the
