@@ -330,6 +330,80 @@ fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
     }
 }
 
+/// One `const NAME: TYPE = VALUE;` line of a WGSL source.
+fn wgsl_const(source: &str, name: &str) -> String {
+    let needle = format!("const {name}:");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing WGSL constant `{name}`"));
+    let end = source[start..]
+        .find(';')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("WGSL constant `{name}` has no terminator"));
+    source[start..=end].to_string()
+}
+
+/// The marker shape is a function twin (SHADER_COMMON.md §5.5): the scatter
+/// shader draws with it and the pick shader picks with it, so a marker picks
+/// exactly where it is drawn.
+#[test]
+fn marker_shape_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let functions = [
+        "shape_is_filled",
+        "base_shape_id",
+        "visual_shape_radius",
+        "rotate2",
+        "sd_segment",
+        "sd_box",
+        "regular_vertex",
+        "star_vertex",
+        "sd_regular_polygon",
+        "sd_star",
+        "sd_plus_filled",
+        "sd_triangle",
+        "shape_distance",
+        "marker_edge",
+    ];
+    let constants = [
+        "QUAD_MARGIN_PX",
+        "STROKE_HALF_PX",
+        "MARKER_PI",
+        "MARKER_HALF_PI",
+        "STAR_INNER_RATIO",
+    ];
+    for path in ["src/data_render/scatter_columnar.wgsl", "src/gpu_pick.wgsl"] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.5 defines it"
+            );
+        }
+        for constant in constants {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.5 defines it"
+            );
+        }
+    }
+}
+
+/// The pick shader applies the draw shaders' polar fragment clip at the
+/// cursor with the common block's own `polar_fragment_visible`.
+#[test]
+fn pick_polar_clip_is_the_draw_fragment_clip() {
+    let ssot = read(SSOT_PATH);
+    let pick = read("src/gpu_pick.wgsl");
+    assert_eq!(
+        wgsl_function(&pick, "polar_fragment_visible"),
+        wgsl_function(&ssot, "polar_fragment_visible"),
+        "gpu_pick.wgsl must carry the common block's `polar_fragment_visible` byte-for-byte"
+    );
+}
+
 #[test]
 fn contour_level_search_constants_match_the_model_limit() {
     assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);

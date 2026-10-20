@@ -208,6 +208,14 @@ struct VsOut {
 // STROKE_HALF_PX plus the AA feather (~1 px) beyond the radius; without
 // the margin the quad edge would clip them. fs_main must reconstruct
 // pixel coordinates with this same expanded scale.
+
+// ───── shared marker shape (SHADER_COMMON.md §5.5; `shader_consistency`
+// compares these function bodies and constants with the pick shader) ─────
+
+// The marker quad's margin past the shape's visual radius, in pixels:
+// outline strokes and their anti-aliasing reach past the contour, and
+// nothing a marker draws lies outside `visual_shape_radius + QUAD_MARGIN_PX`
+// on either axis.
 const QUAD_MARGIN_PX: f32 = 2.0;
 // Half-width of the ~1.5 px contour stroke (outline shapes and Cross).
 const STROKE_HALF_PX: f32 = 0.75;
@@ -268,27 +276,6 @@ fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
     let c = cos(a);
     let s = sin(a);
     return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
-}
-
-@vertex
-fn vs_main(in: VsIn) -> VsOut {
-    if (!sample_valid(in.x, in.y)) {
-        var masked: VsOut;
-        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
-        return masked;
-    }
-    let center_ndc = data_to_ndc(in.x, in.y);
-    let half_px =
-        visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
-    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
-
-    var out: VsOut;
-    out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(out.pos.xy);
-    out.polar_limits = polar_clip_limits();
-    out.polar_sector = polar_clip_sector();
-    out.local_pos = in.quad_pos;
-    return out;
 }
 
 // Unsigned distance from `p` to segment `ab`. The denominator guard keeps
@@ -419,6 +406,38 @@ fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
     return d;
 }
 
+/// The coverage edge of a marker at shape distance `d`: a filled marker
+/// covers `d < 0`; an outline (and an open plus or cross) is a stroke of
+/// half-width `STROKE_HALF_PX` centred on `d == 0`. A fragment draws where
+/// this is below its anti-aliasing width, and the picker's hit distance is
+/// `max(marker_edge(d, filled), 0)`.
+fn marker_edge(d: f32, filled: bool) -> f32 {
+    return select(abs(d) - STROKE_HALF_PX, d, filled);
+}
+
+// ───── end shared marker shape ─────
+
+@vertex
+fn vs_main(in: VsIn) -> VsOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
+    let center_ndc = data_to_ndc(in.x, in.y);
+    let half_px =
+        visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
+    out.local_pos = in.quad_pos;
+    return out;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
@@ -436,7 +455,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let aa = fwidth(d);
     // Filled: cover d < 0. Outline/Cross: ~1.5 px stroke centered on the
     // d == 0 contour.
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;
@@ -778,7 +797,7 @@ fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
 
     let d = shape_distance(base, p, visual_r, filled);
     let aa = fwidth(d);
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;
@@ -954,7 +973,7 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
         + in.wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, in.seed_inst);
 
     let aa = fwidth(d);
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;

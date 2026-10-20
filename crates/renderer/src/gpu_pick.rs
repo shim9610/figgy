@@ -38,7 +38,10 @@ const GPU_PICK_DIRECT_SCAN_POINTS: u32 = GPU_PICK_GATE_WORD_POINTS * GPU_PICK_WO
 
 const GATE_MASK_BYTES: u64 = 8;
 const CANDIDATE_BYTES: u64 = 32;
-const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
+/// `QUAD_MARGIN_PX` of the shared marker shape (SHADER_COMMON.md §5.5): a
+/// marker draws nothing farther than its visual radius plus this margin from
+/// its centre on either axis.
+const MARKER_QUAD_MARGIN_PX: f32 = crate::pick::MARKER_QUAD_MARGIN_PX;
 
 const FLAG_SCATTER: u32 = 1;
 const FLAG_LINE: u32 = 2;
@@ -505,48 +508,24 @@ impl GpuStreamPick {
             .engine
             .prepare_series_buffer(buffer, descriptor, columns, None)?;
         let series = &slot.gpu;
-        let query = self.query;
-        let [cx, cy] = query.canvas_position_px;
-        let [x, y, w, h] = query.chart_rect_px;
-        let params = PickQueryParamsGpu {
-            transform: query.transform,
-            cursor_chart: [cx, cy, x, y],
-            chart_limits: [w, h, query.max_distance_px, series.max_extent_px],
-            scatter_line: [
-                series.base_radius_px,
-                series.line_half_width_px,
-                self.display_scale,
-                if series.direct_scan { 1.0 } else { 0.0 },
-            ],
-            data: [
+        let params = query_params(
+            series,
+            &self.query,
+            self.display_scale,
+            series_order,
+            [
                 series.point_count,
                 lane_base(columns.x, &slot.identity.series_id)?,
                 lane_base(columns.y, &slot.identity.series_id)?,
                 series.style_index_base,
             ],
-            style: [
-                series.flags,
-                series.style_count,
-                series.override_count,
-                series.style_index_len,
-            ],
-            series: [
-                series.gate_word_count,
-                series_order,
-                series.base_shape_id,
-                series.dispatch_x,
-            ],
-            stream: [
+            [
                 global_point_start,
                 owned_points,
                 owned_segments,
                 original_index_word_base,
             ],
-            line: [series.line_step_mode, 0, 0, 0],
-            size_map: [series.size_base, series.size_len, 0, 0],
-            size_domain: series.size_domain,
-            size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
-        };
+        );
         self.engine
             .bundle
             .queue
@@ -668,6 +647,58 @@ struct GpuPickSeriesId(u32);
 impl GpuPickSeriesId {
     fn index(self) -> u32 {
         self.0
+    }
+}
+
+/// The pick shader's per-query uniform for one registered series. `data` is
+/// `(point count, x lane base, y lane base, style-index lane base)` and
+/// `stream` the `(global offset, owned scatter count, owned segment count,
+/// row-map base)` of the chunk; a resident series owns every point.
+fn query_params(
+    series: &PickSeriesGpu,
+    query: &GpuPickQuery,
+    display_scale: f32,
+    series_order: u32,
+    data: [u32; 4],
+    stream: [u32; 4],
+) -> PickQueryParamsGpu {
+    let [cursor_x, cursor_y] = query.canvas_position_px;
+    let [chart_x, chart_y, chart_width, chart_height] = query.chart_rect_px;
+    PickQueryParamsGpu {
+        transform: query.transform,
+        cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
+        chart_limits: [
+            chart_width,
+            chart_height,
+            query.max_distance_px,
+            // Nothing a marker draws lies outside its quad: the visual
+            // radius plus the quad margin on either axis.
+            series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
+        ],
+        scatter_line: [
+            series.base_radius_px,
+            series.line_half_width_px,
+            display_scale,
+            if series.direct_scan { 1.0 } else { 0.0 },
+        ],
+        data,
+        style: [
+            series.flags,
+            series.style_count,
+            series.override_count,
+            series.style_index_len,
+        ],
+        series: [
+            series.gate_word_count,
+            series_order,
+            series.base_shape_id,
+            series.dispatch_x,
+        ],
+        stream,
+        line: [series.line_step_mode, 0, 0, 0],
+        size_map: [series.size_base, series.size_len, 0, 0],
+        size_domain: series.size_domain,
+        size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
     }
 }
 
@@ -1196,36 +1227,10 @@ fn nonnegative(v: f32) -> f32 {
     if !v.is_nan() && v > 0.0 { v } else { 0.0 }
 }
 
-fn base_shape_id(shape_id: u32) -> u32 {
-    match shape_id {
-        5 => 0,
-        6 => 1,
-        7 => 2,
-        8 => 3,
-        9 | 17 => 5,
-        10 | 18 => 6,
-        11 | 19 => 7,
-        12 | 20 => 8,
-        13 | 22 => 9,
-        14 | 23 => 10,
-        15 | 24 => 11,
-        16 | 25 => 12,
-        21 => 4,
-        other => other,
-    }
-}
-
+/// The factor `visual_shape_radius` gives shape `shape_id` (SHADER_COMMON.md
+/// §5.5): its drawn radius per unit of reference radius.
 fn shape_scale(shape_id: u32) -> f32 {
-    match base_shape_id(shape_id) {
-        1 => 0.886_226_95,
-        2 | 5 | 6 | 7 => MAX_SHAPE_SCALE,
-        3 => 1.253_314_1,
-        9 => 1.149_139_9,
-        10 => 1.099_636_1,
-        11 => 1.053_907_4,
-        12 => 1.462_850_3,
-        _ => 1.0,
-    }
+    crate::pick::marker_visual_scale(crate::pick::marker_base_shape_id(shape_id))
 }
 
 fn gpu_meta_u32(v: f32) -> Option<u32> {
@@ -2533,50 +2538,24 @@ impl GpuPickEngine {
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
             Self::validate_series_columns(pool, slot)?;
             let series = &slot.gpu;
-            let params = PickQueryParamsGpu {
-                transform: query.transform,
-                cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
-                chart_limits: [
-                    chart_width,
-                    chart_height,
-                    query.max_distance_px,
-                    series.max_extent_px,
-                ],
-                scatter_line: [
-                    series.base_radius_px,
-                    series.line_half_width_px,
-                    display_scale,
-                    if series.direct_scan { 1.0 } else { 0.0 },
-                ],
-                data: [
+            let params = query_params(
+                series,
+                &query,
+                display_scale,
+                series_order as u32,
+                [
                     series.point_count,
                     lane_base(series.x_handle, &slot.identity.series_id)?,
                     lane_base(series.y_handle, &slot.identity.series_id)?,
                     series.style_index_base,
                 ],
-                style: [
-                    series.flags,
-                    series.style_count,
-                    series.override_count,
-                    series.style_index_len,
-                ],
-                series: [
-                    series.gate_word_count,
-                    series_order as u32,
-                    series.base_shape_id,
-                    series.dispatch_x,
-                ],
-                stream: [
+                [
                     0,
                     series.point_count,
                     series.point_count.saturating_sub(1),
                     0,
                 ],
-                line: [series.line_step_mode, 0, 0, 0],
-                size_map: [series.size_base, series.size_len, 0, 0],
-                size_domain: series.size_domain,
-                size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
-            };
+            );
             self.bundle
                 .queue
                 .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
@@ -2822,6 +2801,12 @@ mod tests {
     use crate::line::LineStylePreset;
     use crate::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 
+    /// The largest `visual_shape_radius` factor (the triangles').
+    const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
+    /// `STROKE_HALF_PX`: an outline marker's stroke reaches this far either
+    /// side of its contour.
+    const STROKE_HALF: f32 = crate::pick::MARKER_STROKE_HALF_PX;
+
     struct CpuColumns(HashMap<ColumnId, Vec<f32>>);
 
     impl CpuColumns {
@@ -3028,7 +3013,7 @@ mod tests {
             y_column: y_column.to_owned(),
             scatter: Some(GpuPickScatter {
                 base_radius_px: 2.0,
-                base_shape_id: 0,
+                base_shape_id: 5,
                 style_map: None,
                 size_map: None,
             }),
@@ -3281,7 +3266,7 @@ mod tests {
             y_column: "y".into(),
             scatter: scatter.then_some(GpuPickScatter {
                 base_radius_px: 1.0,
-                base_shape_id: 0,
+                base_shape_id: 5,
                 style_map: Some(GpuPickScatterStyle {
                     style_index_column: Some("style".into()),
                     style_slots: &slots,
@@ -3505,7 +3490,7 @@ mod tests {
                 y_column: "y".into(),
                 scatter: (!line).then_some(GpuPickScatter {
                     base_radius_px: 2.0,
-                    base_shape_id: 0,
+                    base_shape_id: 5,
                     style_map: None,
                     size_map: None,
                 }),
@@ -3826,17 +3811,17 @@ mod tests {
 
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 1.0,
             point_style_table: Some(vec![
                 DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Square),
+                    point_shape: Some(ScatterShape::SquareFilled),
                     point_size: Some(2.0),
                 },
                 DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Triangle),
+                    point_shape: Some(ScatterShape::TriangleFilled),
                     point_size: Some(3.0),
                 },
             ]),
@@ -3845,7 +3830,7 @@ mod tests {
                 index: 1,
                 style: DataScatterPointStyleConfig {
                     point_color: None,
-                    point_shape: Some(ScatterShape::Diamond),
+                    point_shape: Some(ScatterShape::DiamondFilled),
                     point_size: Some(5.0),
                 },
             }]),
@@ -3864,7 +3849,7 @@ mod tests {
                 color_premul: [0.0; 4],
                 meta: [
                     2.0,
-                    crate::data_render::shape_id(&ScatterShape::Square) as f32,
+                    crate::data_render::shape_id(&ScatterShape::SquareFilled) as f32,
                     (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                     0.0,
                 ],
@@ -3873,7 +3858,7 @@ mod tests {
                 color_premul: [0.0; 4],
                 meta: [
                     3.0,
-                    crate::data_render::shape_id(&ScatterShape::Triangle) as f32,
+                    crate::data_render::shape_id(&ScatterShape::TriangleFilled) as f32,
                     (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                     0.0,
                 ],
@@ -3885,7 +3870,7 @@ mod tests {
             color_premul: [0.0; 4],
             meta: [
                 5.0,
-                crate::data_render::shape_id(&ScatterShape::Diamond) as f32,
+                crate::data_render::shape_id(&ScatterShape::DiamondFilled) as f32,
                 (STYLE_MASK_RADIUS | STYLE_MASK_SHAPE) as f32,
                 0.0,
             ],
@@ -3901,7 +3886,7 @@ mod tests {
                     y_column: "parity-sy".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: Some(GpuPickScatterStyle {
                             style_index_column: Some("parity-si".into()),
                             style_slots: &slots,
@@ -3921,12 +3906,25 @@ mod tests {
             )
             .unwrap();
 
-        for (cursor, expected_index) in [([24.5, 50.0], 0), ([56.0, 50.0], 1)] {
+        // Point 0 is a filled triangle of visual radius 3 * 1.555 with its
+        // apex up; 3 px above its centre is inside it, while the disc the
+        // old picker used would also have taken 4.5 px to the right, where
+        // the triangle draws nothing. Point 1 is a filled diamond of visual
+        // radius 5 * 1.253 = 6.27, so 6 px right of its centre is inside.
+        for (cursor, expected_index) in [([20.0, 47.0], 0), ([56.0, 50.0], 1)] {
             let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
             let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
             assert_pick_parity(cpu.clone(), gpu);
             assert_eq!(cpu.unwrap().point_index, expected_index);
         }
+
+        // Beside the triangle, inside its circumscribed disc, nothing is
+        // drawn and nothing is picked.
+        let cursor = [24.5, 50.0];
+        let cpu = cpu_pick(&config, &cpu_series, &cpu_columns, cursor, 0.0);
+        assert!(cpu.is_none(), "{cpu:?}");
+        let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
+        assert_pick_parity(cpu, gpu);
 
         // An out-of-range style-table index falls back to the one-pixel base
         // circle; 1.25 px outside its center must therefore miss exactly.
@@ -3978,7 +3976,7 @@ mod tests {
         };
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 3.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -3998,7 +3996,7 @@ mod tests {
                     y_column: "size-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 3.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: Some(GpuPickSizeMap {
                             column: size_map.column.clone(),
@@ -4157,22 +4155,53 @@ mod tests {
             .unwrap();
 
         for display_scale in [0.5, 1.0, 2.0] {
+            // The base marker is an outline circle: a stroke of half-width
+            // `STROKE_HALF` (physical pixels, unscaled) centred on the scaled
+            // radius, hollow inside.
             let base_radius = 4.0 * display_scale;
-            let base_inside = query_from_config(&config, [20.0 + base_radius - 0.25, 50.0], 0.0);
-            let base_outside = query_from_config(&config, [20.0 + base_radius + 0.25, 50.0], 0.0);
-            assert_eq!(
-                resolve_pick_scaled(&engine, &pool, base_inside, display_scale)
-                    .unwrap()
-                    .series_id,
-                "scaled-base"
+            let on_stroke_inside = query_from_config(
+                &config,
+                [20.0 + base_radius - STROKE_HALF + 0.25, 50.0],
+                0.0,
             );
+            let on_stroke_outside = query_from_config(
+                &config,
+                [20.0 + base_radius + STROKE_HALF - 0.25, 50.0],
+                0.0,
+            );
+            let base_outside = query_from_config(
+                &config,
+                [20.0 + base_radius + STROKE_HALF + 0.25, 50.0],
+                0.0,
+            );
+            for hit in [on_stroke_inside, on_stroke_outside] {
+                assert_eq!(
+                    resolve_pick_scaled(&engine, &pool, hit, display_scale)
+                        .unwrap()
+                        .series_id,
+                    "scaled-base"
+                );
+            }
             assert!(resolve_pick_scaled(&engine, &pool, base_outside, display_scale).is_none());
+            if base_radius > STROKE_HALF + 0.5 {
+                let hollow = query_from_config(&config, [20.0, 50.0], 0.0);
+                assert!(
+                    resolve_pick_scaled(&engine, &pool, hollow, display_scale).is_none(),
+                    "the hollow centre of an outline circle draws nothing"
+                );
+            }
 
+            // The mapped marker is an outline triangle of reference radius 6:
+            // its apex sits straight up (canvas y decreasing) at the visual
+            // radius.
             let mapped_radius = 6.0 * MAX_SHAPE_SCALE * display_scale;
             let mapped_inside =
-                query_from_config(&config, [100.0 + mapped_radius - 0.25, 50.0], 0.0);
-            let mapped_outside =
-                query_from_config(&config, [100.0 + mapped_radius + 0.25, 50.0], 0.0);
+                query_from_config(&config, [100.0, 50.0 - mapped_radius + 0.25], 0.0);
+            let mapped_outside = query_from_config(
+                &config,
+                [100.0, 50.0 - mapped_radius - STROKE_HALF - 0.25],
+                0.0,
+            );
             assert_eq!(
                 resolve_pick_scaled(&engine, &pool, mapped_inside, display_scale)
                     .unwrap()
@@ -4195,10 +4224,11 @@ mod tests {
             assert!(resolve_pick_scaled(&engine, &pool, line_outside, display_scale).is_none());
 
             let physical_gap = 2.5;
+            let edge = base_radius + STROKE_HALF;
             let max_distance_miss =
-                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 2.0);
+                query_from_config(&config, [20.0 + edge + physical_gap, 50.0], 2.0);
             let max_distance_hit =
-                query_from_config(&config, [20.0 + base_radius + physical_gap, 50.0], 3.0);
+                query_from_config(&config, [20.0 + edge + physical_gap, 50.0], 3.0);
             assert!(
                 resolve_pick_scaled(&engine, &pool, max_distance_miss, display_scale).is_none()
             );
@@ -4418,7 +4448,7 @@ mod tests {
                     y_column: "gate-2d-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0001,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: None,
                         size_map: None,
                     }),
@@ -4499,7 +4529,7 @@ mod tests {
                     y_column: "overlap-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0001,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: None,
                         size_map: None,
                     }),
@@ -4560,7 +4590,7 @@ mod tests {
         let cpu_columns = CpuColumns::new(&[("parity-log-x", &xs), ("parity-log-y", &ys)]);
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 2.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -4604,7 +4634,7 @@ mod tests {
                     y_column: "parity-log-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 2.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
@@ -4856,7 +4886,7 @@ mod tests {
         ]);
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
-            point_shape: ScatterShape::Circle,
+            point_shape: ScatterShape::CircleFilled,
             point_size: 20.0,
             point_style_table: None,
             point_style_index_column: None,
@@ -4887,7 +4917,7 @@ mod tests {
             "parity-tie-y1",
             DataScatterStyleConfig {
                 point_color: Color::BLACK,
-                point_shape: ScatterShape::Circle,
+                point_shape: ScatterShape::CircleFilled,
                 point_size: 1.0,
                 point_style_table: None,
                 point_style_index_column: None,
@@ -4926,7 +4956,7 @@ mod tests {
                     y_column: "parity-tie-y0".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 20.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
@@ -4937,8 +4967,9 @@ mod tests {
             .unwrap();
 
         // Both scatter points and the line segment have distance zero at this
-        // cursor. CPU traversal keeps scatter point 0; GPU reduction must use
-        // the same lower-index/scatter-before-line rule.
+        // cursor. The topmost paint wins the tie: markers paint over their
+        // series' line and instance 1 paints over instance 0, so both pickers
+        // answer marker 1 (the old rule answered the covered marker 0).
         let cursor = [56.0, 50.0];
         let cpu = cpu_pick(
             &config,
@@ -4949,7 +4980,7 @@ mod tests {
         );
         let gpu = resolve_pick(&engine, &pool, query_from_config(&config, cursor, 0.0));
         assert_pick_parity(cpu.clone(), gpu);
-        assert_eq!(cpu.unwrap().point_index, 0);
+        assert_eq!(cpu.unwrap().point_index, 1);
 
         engine
             .add_series(
@@ -4961,7 +4992,7 @@ mod tests {
                     y_column: "parity-tie-y1".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
@@ -5019,7 +5050,7 @@ mod tests {
                     y_column: "parity-f64-y".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 1.0,
-                        base_shape_id: crate::data_render::shape_id(&ScatterShape::Circle),
+                        base_shape_id: crate::data_render::shape_id(&ScatterShape::CircleFilled),
                         style_map: None,
                         size_map: None,
                     }),
@@ -5624,7 +5655,7 @@ mod tests {
                     y_column: "pick-ry".into(),
                     scatter: Some(GpuPickScatter {
                         base_radius_px: 0.0,
-                        base_shape_id: 0,
+                        base_shape_id: 5,
                         style_map: Some(GpuPickScatterStyle {
                             style_index_column: Some("pick-rstyle".into()),
                             style_slots: &slots,
@@ -5793,7 +5824,7 @@ mod tests {
     fn style_cross_product_extent_is_conservative() {
         let scatter = GpuPickScatter {
             base_radius_px: 2.0,
-            base_shape_id: 0,
+            base_shape_id: 5,
             style_map: Some(GpuPickScatterStyle {
                 style_index_column: None,
                 style_slots: &[ScatterStyleSlotGpu {

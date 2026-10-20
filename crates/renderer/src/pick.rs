@@ -1,6 +1,6 @@
 use crate::config::Config;
 use crate::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, SeriesConfig,
 };
 use crate::data_render::{self, ColumnId};
 
@@ -195,9 +195,12 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
     }
 
     let transform = data_render::scatter_transform_from_config(config);
+    // The polar fragment clip at the cursor: every primitive is cut by it.
+    let clip_distance =
+        crate::polar_projection::clip_distance(&transform, config, [canvas_x, canvas_y]);
     let max_dist_sq = options.max_distance_px * options.max_distance_px;
     let use_scatter_style_mapping = config.draw_style.is_precise();
-    let mut best: Option<(usize, f32, PickedPoint)> = None;
+    let mut best: Option<BestPick> = None;
 
     for (series_index, cfg) in series.iter().enumerate() {
         let Some(xs) = columns.get_f32_column(&cfg.x_column) else {
@@ -225,16 +228,15 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                 None
             };
             for i in 0..xs.len().min(ys.len()) {
-                let radius_px = scatter_visual_radius_px(
+                let Some((radius_px, shape_id)) = scatter_marker(
                     scatter,
                     style_index,
                     size_values,
                     i,
                     use_scatter_style_mapping,
-                );
-                if radius_px <= 0.0 {
+                ) else {
                     continue;
-                }
+                };
                 pick_anchor(
                     &mut best,
                     series_index,
@@ -243,8 +245,10 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                     &transform,
                     i,
                     (xs[i], ys[i]),
-                    radius_px,
-                    (canvas_x, canvas_y),
+                    &|center| {
+                        marker_hit_distance(shape_id, radius_px, center, [canvas_x, canvas_y])
+                            .max(clip_distance)
+                    },
                     max_dist_sq,
                 );
             }
@@ -278,8 +282,13 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
                         &transform,
                         i,
                         (xs[i], ys[i]),
-                        radius_px,
-                        (canvas_x, canvas_y),
+                        &|center| {
+                            let dx = center[0] - canvas_x;
+                            let dy = center[1] - canvas_y;
+                            (dx.mul_add(dx, dy * dy).sqrt() - radius_px)
+                                .max(0.0)
+                                .max(clip_distance)
+                        },
                         max_dist_sq,
                     );
                 }
@@ -300,8 +309,8 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             }
             // Both endpoints must be placeable before any piece is tested —
             // the same gate the GPU picker applies to the segment.
-            if project_data_to_canvas_px(config, &transform, ax, ay, false).is_none()
-                || project_data_to_canvas_px(config, &transform, bx, by, false).is_none()
+            if project_data_to_canvas_px(config, &transform, ax, ay).is_none()
+                || project_data_to_canvas_px(config, &transform, bx, by).is_none()
             {
                 continue;
             }
@@ -321,14 +330,12 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             let mut pieces_px = [([0.0f32; 2], [0.0f32; 2]); crate::line_step::MAX_LINE_PIECES];
             let mut projected = true;
             for (piece, out) in pieces[..piece_count].iter().zip(pieces_px.iter_mut()) {
-                let Some(a) =
-                    project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1], false)
+                let Some(a) = project_data_to_canvas_px(config, &transform, piece.a[0], piece.a[1])
                 else {
                     projected = false;
                     break;
                 };
-                let Some(b) =
-                    project_data_to_canvas_px(config, &transform, piece.b[0], piece.b[1], false)
+                let Some(b) = project_data_to_canvas_px(config, &transform, piece.b[0], piece.b[1])
                 else {
                     projected = false;
                     break;
@@ -346,6 +353,8 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             ) else {
                 continue;
             };
+            let dist = dist_sq.sqrt().max(clip_distance);
+            let dist_sq = dist * dist;
             if !dist_sq.is_finite() || dist_sq > max_dist_sq {
                 continue;
             }
@@ -353,48 +362,45 @@ pub fn pick_nearest_point<L: PointColumnLookup>(
             maybe_replace_best(
                 &mut best,
                 series_index,
+                PrimitiveKind::Line,
                 dist_sq,
                 PickedPoint {
                     source_id: cfg.source_id.clone(),
                     series_id: cfg.series_id.clone(),
                     point_index,
-                    distance_px: dist_sq.sqrt(),
+                    distance_px: dist,
                 },
             );
         }
     }
 
-    best.map(|(_, _, p)| p)
+    best.map(|(_, _, _, p)| p)
 }
 
 /// Score one anchor (a marker or a vector's tail) of `cfg` against the cursor
 /// and keep it when it is the best so far: the data point `(x, y)` is
-/// projected to the canvas, the hit distance is measured from the edge of its
-/// `radius_px` disc, and anything past `max_dist_sq` is dropped. A non-finite
-/// or unprojectable anchor is skipped.
+/// projected to the canvas, `hit` measures the cursor's distance from what
+/// is drawn around that centre, and anything past `max_dist_sq` is dropped.
+/// A non-finite or unprojectable anchor is skipped.
 #[allow(clippy::too_many_arguments)]
 fn pick_anchor(
-    best: &mut Option<(usize, f32, PickedPoint)>,
+    best: &mut Option<BestPick>,
     series_index: usize,
     cfg: &SeriesConfig,
     config: &Config,
     transform: &data_render::ScatterTransform,
     index: usize,
     (x, y): (f32, f32),
-    radius_px: f32,
-    (canvas_x, canvas_y): (f32, f32),
+    hit: &dyn Fn([f32; 2]) -> f32,
     max_dist_sq: f32,
 ) {
     if !x.is_finite() || !y.is_finite() {
         return;
     }
-    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y, true) else {
+    let Some((px, py)) = project_data_to_canvas_px(config, transform, x, y) else {
         return;
     };
-    let dx = px - canvas_x;
-    let dy = py - canvas_y;
-    let center_dist = dx.mul_add(dx, dy * dy).sqrt();
-    let hit_dist = (center_dist - radius_px).max(0.0);
+    let hit_dist = hit([px, py]);
     let dist_sq = hit_dist * hit_dist;
     if !dist_sq.is_finite() || dist_sq > max_dist_sq {
         return;
@@ -402,6 +408,7 @@ fn pick_anchor(
     maybe_replace_best(
         best,
         series_index,
+        PrimitiveKind::Marker,
         dist_sq,
         PickedPoint {
             source_id: cfg.source_id.clone(),
@@ -412,20 +419,39 @@ fn pick_anchor(
     );
 }
 
+/// What a candidate is, for the paint-order tie rule: within one series the
+/// markers paint over the line.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PrimitiveKind {
+    Marker,
+    Line,
+}
+
+type BestPick = (usize, PrimitiveKind, f32, PickedPoint);
+
+/// Keep `picked` when it is nearer than the best so far, or exactly as near
+/// and painted over it. Series paint in order, a series' markers over its
+/// line, and instances in index order; candidates are visited in that same
+/// order, so a tie goes to the later visit unless it is a line under an
+/// earlier marker of the same series. Twin of `pick_candidate_is_better`.
 fn maybe_replace_best(
-    best: &mut Option<(usize, f32, PickedPoint)>,
+    best: &mut Option<BestPick>,
     series_index: usize,
+    kind: PrimitiveKind,
     dist_sq: f32,
     picked: PickedPoint,
 ) {
     let replace = match best {
         None => true,
-        Some((best_series, best_dist_sq, _)) => {
-            dist_sq < *best_dist_sq || (dist_sq == *best_dist_sq && series_index > *best_series)
+        Some((best_series, best_kind, best_dist_sq, _)) => {
+            dist_sq < *best_dist_sq
+                || (dist_sq == *best_dist_sq
+                    && (series_index > *best_series
+                        || (series_index == *best_series && kind <= *best_kind)))
         }
     };
     if replace {
-        *best = Some((series_index, dist_sq, picked));
+        *best = Some((series_index, kind, dist_sq, picked));
     }
 }
 
@@ -494,19 +520,21 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
     }
 }
 
-/// The drawn radius of one point, in logical pixels; zero for a hidden point.
+/// One point's marker as the scatter shader resolves it: the reference
+/// radius in logical pixels and the shape code, or `None` for a point the
+/// size map hides.
 ///
 /// Precedence per channel is the shader's: sparse override > size map >
 /// style table slot > series base. A size map resolves the radius from the
 /// point's value column (`size_values`, the same column the GPU draws from);
 /// a non-finite value hides the point unless an override sets its radius.
-fn scatter_visual_radius_px(
+fn scatter_marker(
     scatter: &DataScatterStyleConfig,
     style_index: Option<&[f32]>,
     size_values: Option<&[f32]>,
     point_index: usize,
     use_style_mapping: bool,
-) -> f32 {
+) -> Option<(f32, u32)> {
     let mut radius = scatter.point_size;
     let mut shape = &scatter.point_shape;
     let mut hidden = false;
@@ -553,10 +581,10 @@ fn scatter_visual_radius_px(
         }
     }
 
-    if hidden {
-        return 0.0;
+    if hidden || radius.is_nan() {
+        return None;
     }
-    shape_visual_radius_px(shape, radius.max(0.0))
+    Some((radius.max(0.0), data_render::shape_id(shape)))
 }
 
 fn valid_style_index(v: f32) -> Option<usize> {
@@ -567,25 +595,207 @@ fn valid_style_index(v: f32) -> Option<usize> {
     }
 }
 
-fn shape_visual_radius_px(shape: &ScatterShape, radius: f32) -> f32 {
-    let scale = match shape {
-        ScatterShape::Square | ScatterShape::SquareFilled => 0.886_226_95,
-        ScatterShape::Triangle
-        | ScatterShape::TriangleFilled
-        | ScatterShape::TriangleDown
-        | ScatterShape::TriangleLeft
-        | ScatterShape::TriangleRight
-        | ScatterShape::TriangleDownFilled
-        | ScatterShape::TriangleLeftFilled
-        | ScatterShape::TriangleRightFilled => 1.555_120_3,
-        ScatterShape::Diamond | ScatterShape::DiamondFilled => 1.253_314_1,
-        ScatterShape::Pentagon | ScatterShape::PentagonFilled => 1.149_139_9,
-        ScatterShape::Hexagon | ScatterShape::HexagonFilled => 1.099_636_1,
-        ScatterShape::Octagon | ScatterShape::OctagonFilled => 1.053_907_4,
-        ScatterShape::Star | ScatterShape::StarFilled => 1.462_850_3,
+// ───── CPU twin of the shared marker shape (SHADER_COMMON.md §5.5) ─────
+//
+// A line-for-line port of the WGSL functions the scatter shader draws with
+// and the pick shader picks with, in f32 like the GPU. `wgsl_sign` keeps
+// WGSL's `sign(0) == 0`, which `f32::signum` does not.
+
+/// `QUAD_MARGIN_PX`: nothing a marker draws lies farther than its visual
+/// radius plus this margin from its centre on either axis.
+pub(crate) const MARKER_QUAD_MARGIN_PX: f32 = 2.0;
+/// `STROKE_HALF_PX`: half-width of the outline stroke.
+pub(crate) const MARKER_STROKE_HALF_PX: f32 = 0.75;
+const MARKER_PI: f32 = 3.141_592_7;
+const MARKER_HALF_PI: f32 = 1.570_796_4;
+const STAR_INNER_RATIO: f32 = 0.5;
+
+fn wgsl_sign(v: f32) -> f32 {
+    if v > 0.0 {
+        1.0
+    } else if v < 0.0 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+fn length2(p: [f32; 2]) -> f32 {
+    (p[0] * p[0] + p[1] * p[1]).sqrt()
+}
+
+/// Twin of `shape_is_filled`.
+pub(crate) fn marker_shape_is_filled(shape_id: u32) -> bool {
+    (5..=8).contains(&shape_id) || shape_id >= 17
+}
+
+/// Twin of `base_shape_id`.
+pub(crate) fn marker_base_shape_id(shape_id: u32) -> u32 {
+    match shape_id {
+        5 => 0,
+        6 => 1,
+        7 => 2,
+        8 => 3,
+        9 | 17 => 5,
+        10 | 18 => 6,
+        11 | 19 => 7,
+        12 | 20 => 8,
+        13 | 22 => 9,
+        14 | 23 => 10,
+        15 | 24 => 11,
+        16 | 25 => 12,
+        21 => 4,
+        other => other,
+    }
+}
+
+/// The factor `visual_shape_radius` applies to the reference radius.
+pub(crate) fn marker_visual_scale(base: u32) -> f32 {
+    match base {
+        1 => 0.886_226_95,
+        2 | 5 | 6 | 7 => 1.555_120_3,
+        3 => 1.253_314_1,
+        9 => 1.149_139_9,
+        10 => 1.099_636_1,
+        11 => 1.053_907_4,
+        12 => 1.462_850_3,
         _ => 1.0,
-    };
-    radius * scale
+    }
+}
+
+/// Twin of `visual_shape_radius`.
+pub(crate) fn marker_visual_shape_radius(base: u32, r: f32) -> f32 {
+    r * marker_visual_scale(base)
+}
+
+fn rotate2(p: [f32; 2], a: f32) -> [f32; 2] {
+    let c = a.cos();
+    let s = a.sin();
+    [c * p[0] - s * p[1], s * p[0] + c * p[1]]
+}
+
+fn sd_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let pa = [p[0] - a[0], p[1] - a[1]];
+    let ba = [b[0] - a[0], b[1] - a[1]];
+    let h = ((pa[0] * ba[0] + pa[1] * ba[1]) / (ba[0] * ba[0] + ba[1] * ba[1]).max(1e-12))
+        .clamp(0.0, 1.0);
+    length2([pa[0] - ba[0] * h, pa[1] - ba[1] * h])
+}
+
+fn sd_box(p: [f32; 2], b: [f32; 2]) -> f32 {
+    let q = [p[0].abs() - b[0], p[1].abs() - b[1]];
+    length2([q[0].max(0.0), q[1].max(0.0)]) + q[0].max(q[1]).min(0.0)
+}
+
+fn regular_vertex(i: u32, n: u32, r: f32, rot: f32) -> [f32; 2] {
+    let a = rot + i as f32 * (2.0 * MARKER_PI / n as f32);
+    [a.cos() * r, a.sin() * r]
+}
+
+fn star_vertex(i: u32, r: f32) -> [f32; 2] {
+    let outer = i % 2 == 0;
+    let rr = if outer { r } else { r * STAR_INNER_RATIO };
+    let a = MARKER_HALF_PI + i as f32 * MARKER_PI / 5.0;
+    [a.cos() * rr, a.sin() * rr]
+}
+
+fn sd_closed_polygon(p: [f32; 2], n: u32, vertex: impl Fn(u32) -> [f32; 2]) -> f32 {
+    let mut min_d = 1e20f32;
+    let mut inside = false;
+    let mut prev = vertex(n - 1);
+    for i in 0..n {
+        let curr = vertex(i);
+        min_d = min_d.min(sd_segment(p, prev, curr));
+        if (curr[1] > p[1]) != (prev[1] > p[1]) {
+            let x_at_y = (prev[0] - curr[0]) * (p[1] - curr[1]) / (prev[1] - curr[1]) + curr[0];
+            if p[0] < x_at_y {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    if inside { -min_d } else { min_d }
+}
+
+fn sd_plus_filled(p: [f32; 2], r: f32) -> f32 {
+    let arm = (r * 0.32).max(MARKER_STROKE_HALF_PX);
+    let h = sd_box(p, [r, arm]);
+    let v = sd_box(p, [arm, r]);
+    h.min(v)
+}
+
+fn sd_triangle(p_in: [f32; 2], r: f32) -> f32 {
+    let k = 3.0f32.sqrt();
+    let half_w = 0.5 * k * r;
+    let mut p = [p_in[0].abs() - half_w, p_in[1] + half_w / k];
+    if p[0] + k * p[1] > 0.0 {
+        p = [(p[0] - k * p[1]) * 0.5, (-k * p[0] - p[1]) * 0.5];
+    }
+    p[0] -= p[0].clamp(-2.0 * half_w, 0.0);
+    -length2(p) * wgsl_sign(p[1])
+}
+
+/// Twin of `shape_distance`: signed pixel distance from `p` (y up) to the
+/// contour of base shape `base` with visual radius `r`.
+pub(crate) fn marker_shape_distance(base: u32, p: [f32; 2], r: f32, filled: bool) -> f32 {
+    match base {
+        0 => length2(p) - r,
+        1 => p[0].abs().max(p[1].abs()) - r,
+        2 => sd_triangle(p, r),
+        3 => p[0].abs() + p[1].abs() - r,
+        4 => {
+            let c = r;
+            if filled {
+                sd_plus_filled(rotate2(p, MARKER_PI * 0.25), c)
+            } else {
+                let d1 = sd_segment(p, [-c, -c], [c, c]);
+                let d2 = sd_segment(p, [-c, c], [c, -c]);
+                d1.min(d2)
+            }
+        }
+        5 => sd_triangle([-p[0], -p[1]], r),
+        6 => sd_triangle(rotate2(p, -MARKER_HALF_PI), r),
+        7 => sd_triangle(rotate2(p, MARKER_HALF_PI), r),
+        8 => {
+            let c = r;
+            if filled {
+                sd_plus_filled(p, c)
+            } else {
+                let d1 = sd_segment(p, [-c, 0.0], [c, 0.0]);
+                let d2 = sd_segment(p, [0.0, -c], [0.0, c]);
+                d1.min(d2)
+            }
+        }
+        9 => sd_closed_polygon(p, 5, |i| regular_vertex(i, 5, r, MARKER_HALF_PI)),
+        10 => sd_closed_polygon(p, 6, |i| regular_vertex(i, 6, r, MARKER_HALF_PI)),
+        11 => sd_closed_polygon(p, 8, |i| regular_vertex(i, 8, r, MARKER_HALF_PI)),
+        _ => sd_closed_polygon(p, 10, |i| star_vertex(i, r)),
+    }
+}
+
+/// Twin of `marker_edge`.
+pub(crate) fn marker_edge(d: f32, filled: bool) -> f32 {
+    if filled {
+        d
+    } else {
+        d.abs() - MARKER_STROKE_HALF_PX
+    }
+}
+
+/// The hit distance of a marker of `shape_id` and reference radius
+/// `radius_px` centred at `center` (canvas pixels, y down) for `cursor`: the
+/// GPU picker's `pick_marker_distance`.
+pub(crate) fn marker_hit_distance(
+    shape_id: u32,
+    radius_px: f32,
+    center: [f32; 2],
+    cursor: [f32; 2],
+) -> f32 {
+    let p = [cursor[0] - center[0], -(cursor[1] - center[1])];
+    let filled = marker_shape_is_filled(shape_id);
+    let base = marker_base_shape_id(shape_id);
+    let visual_r = marker_visual_shape_radius(base, radius_px);
+    marker_edge(marker_shape_distance(base, p, visual_r, filled), filled).max(0.0)
 }
 
 /// Distance² from `cursor` to the stroke of one segment drawn as `pieces`
@@ -672,14 +882,14 @@ fn line_segment_pick(
     Some((dist_sq, snapped_index))
 }
 
-/// `sector`: reject a polar sample outside the sector (a marker); a line's
-/// endpoints pass, since the clip cuts the drawn pieces at the edge.
+/// A sample outside a polar sector keeps its projection: the fragment clip
+/// cuts what it draws there, which `polar_projection::clip_distance` applies
+/// at the cursor.
 fn project_data_to_canvas_px(
     config: &Config,
     transform: &data_render::ScatterTransform,
     x: f32,
     y: f32,
-    sector: bool,
 ) -> Option<(f32, f32)> {
     if (transform.scale_log[0] != 0.0 && x <= 0.0) || (transform.scale_log[1] != 0.0 && y <= 0.0) {
         return None;
@@ -699,7 +909,7 @@ fn project_data_to_canvas_px(
     let tx = axis_t(x, 0);
     let ty = axis_t(y, 1);
     let [ndc_x, ndc_y] = if crate::polar_projection::is_polar(transform) {
-        if !crate::polar_projection::sample_valid(transform, x, ty, sector) {
+        if !crate::polar_projection::sample_valid(transform, ty) {
             return None;
         }
         crate::polar_projection::ndc(transform, x, ty)
@@ -880,7 +1090,7 @@ mod tests {
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
-                    point_shape: ScatterShape::Circle,
+                    point_shape: ScatterShape::CircleFilled,
                     point_size,
                     point_style_table: None,
                     point_style_index_column: None,
@@ -908,7 +1118,7 @@ mod tests {
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
-                    point_shape: ScatterShape::Circle,
+                    point_shape: ScatterShape::CircleFilled,
                     point_size,
                     point_style_table: None,
                     point_style_index_column: None,
@@ -1046,12 +1256,25 @@ mod tests {
     }
 
     #[test]
-    fn zero_size_scatter_errorbar_is_not_pickable_at_data_center() {
+    fn zero_size_marker_picks_the_dot_it_draws() {
+        // A zero-size marker still draws: the scatter shader evaluates the
+        // shape at radius zero, a dot of the outline stroke's half-width (or
+        // a sub-pixel point when filled). Picking follows the drawing; only
+        // a point the size map hides is not drawn and not picked.
         let config = config();
         let columns = Columns::new(&[("x", &[5.0]), ("y", &[5.0]), ("ey", &[2.0])]);
-        let series = [scatter_errorbar_y_series("err", "x", "y", "ey", 0.0)];
+        let mut series = scatter_errorbar_y_series("err", "x", "y", "ey", 0.0);
+        let DataRenderType::ScatterErrorbarY { scatter, .. } = &mut series.render_type else {
+            unreachable!();
+        };
+        scatter.point_shape = ScatterShape::Circle;
+        let series = [series];
 
-        assert_eq!(pick(&config, &series, &columns, 60.0, 70.0, 0.0), None);
+        let dot = pick(&config, &series, &columns, 60.5, 70.0, 0.0).unwrap();
+        assert_eq!((dot.point_index, dot.distance_px), (0, 0.0));
+        let near = pick(&config, &series, &columns, 62.0, 70.0, 2.0).unwrap();
+        assert!((near.distance_px - (2.0 - MARKER_STROKE_HALF_PX)).abs() < 1e-5);
+        assert_eq!(pick(&config, &series, &columns, 61.0, 70.0, 0.0), None);
     }
 
     #[test]
@@ -1078,8 +1301,10 @@ mod tests {
             },
         ]);
 
+        // Point 0's table size is zero: a filled marker of radius zero is a
+        // point, so one pixel beside it nothing is drawn or picked.
         assert_eq!(
-            pick(&config, &[series.clone()], &columns, 60.0, 70.0, 0.0),
+            pick(&config, &[series.clone()], &columns, 61.0, 70.0, 0.0),
             None
         );
         let picked = pick(&config, &[series], &columns, 93.0, 70.0, 0.0).unwrap();
@@ -1194,8 +1419,11 @@ mod tests {
         assert_eq!(picked.distance_px, 0.0);
     }
 
+    /// An exact tie goes to the marker painted on top: a later series paints
+    /// over an earlier one, and within a series instance 1 paints over
+    /// instance 0.
     #[test]
-    fn exact_tie_prefers_later_series_and_lower_index_within_series() {
+    fn exact_tie_prefers_the_marker_painted_on_top() {
         let config = config();
         let columns = Columns::new(&[
             ("x0", &[5.0]),
@@ -1212,6 +1440,6 @@ mod tests {
 
         assert_eq!(picked.series_id, "late");
         assert_eq!(picked.source_id, Some("src-b".into()));
-        assert_eq!(picked.point_index, 0);
+        assert_eq!(picked.point_index, 1);
     }
 }

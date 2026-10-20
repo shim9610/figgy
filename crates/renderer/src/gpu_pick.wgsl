@@ -43,8 +43,9 @@ struct PickQueryParams {
     transform: PickQueryTransform,
     // (cursor_x, cursor_y, chart_x, chart_y), all canvas pixels.
     cursor_chart: vec4<f32>,
-    // (chart_width, chart_height, maximum pick distance, maximum scatter
-    // center extent). Exact radii/widths are resolved after both gates.
+    // (chart_width, chart_height, maximum pick distance, maximum per-axis
+    // reach of a drawn marker from its centre in canvas pixels, the quad
+    // margin included). Exact radii/widths are resolved after both gates.
     chart_limits: vec4<f32>,
     // (base scatter radius, line half width, display scale, direct-scan flag).
     scatter_line: vec4<f32>,
@@ -209,24 +210,102 @@ fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
 }
 
 // Twin of `polar_sample_valid`: a radius below the axis start is not drawn,
-// so it is not picked. A marker outside the sector is clipped away entirely
-// and not picked either (`sector`); a line keeps its pieces, which the clip
-// cuts at the edge, so its endpoints are not rejected by the sector.
-fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>, sector: bool) -> bool {
+// so it is not picked. The sector, the outer ring and the hole cut the drawn
+// primitive per fragment instead; `pick_polar_clip_distance` applies that
+// clip at the cursor.
+fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
     if !pick_polar() {
         return true;
     }
     let t = pick_query_params.transform;
     let ty = pick_axis_pair_to_t(y, 1u);
     let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    if rt < 0.0 {
-        return false;
-    }
-    if !sector || t.polar_extent.y <= t.polar_extent.x {
+    return rt >= 0.0;
+}
+
+// The polar fragment clip of the draw shaders (SHADER_COMMON.md, coordinate
+// sample validity). `polar_fragment_visible` is copied byte-for-byte; the
+// three inputs it takes are computed from this shader's transform exactly
+// as `polar_clip_offset` / `polar_clip_limits` / `polar_clip_sector` compute
+// them from the draw transform.
+fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
+    if (limits.x < 0.5) {
         return true;
     }
-    let a = x.x + x.y;
-    return a >= t.polar_extent.x && a <= t.polar_extent.y;
+    let r = length(px);
+    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
+        return false;
+    }
+    if (limits.w < 0.5) {
+        return true;
+    }
+    // The data angle of the fragment, brought into the turn that starts at
+    // the sector start.
+    let turn = 6.283185307179586 / abs(sector.y);
+    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
+    a = a - floor((a - sector.z) / turn) * turn;
+    return a <= sector.w + 1e-6 * turn;
+}
+
+// The cursor's offset from the polar centre in pixels, y up: what
+// `polar_clip_offset` interpolates to at the fragment under the cursor.
+fn pick_polar_cursor_offset() -> vec2<f32> {
+    let t = pick_query_params.transform;
+    let cursor = pick_query_params.cursor_chart;
+    let ndc = vec2<f32>(
+        (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
+        1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
+    );
+    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return (ndc - center) / t.pixel_to_ndc;
+}
+
+fn pick_polar_clip_limits() -> vec4<f32> {
+    let p = pick_query_params.transform.polar_angle;
+    let e = pick_query_params.transform.polar_extent;
+    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
+}
+
+fn pick_polar_clip_sector() -> vec4<f32> {
+    let p = pick_query_params.transform.polar_angle;
+    let e = pick_query_params.transform.polar_extent;
+    return vec4<f32>(p.y, p.z, e.x, e.y);
+}
+
+// Distance from the ray at screen angle `angle` (from the polar centre) to
+// `px`.
+fn pick_polar_ray_distance(px: vec2<f32>, angle: f32) -> f32 {
+    let dir = vec2<f32>(cos(angle), sin(angle));
+    let along = dot(px, dir);
+    if along <= 0.0 {
+        return length(px);
+    }
+    return abs(px.x * dir.y - px.y * dir.x);
+}
+
+// Zero where the polar fragment clip keeps the fragment under the cursor,
+// else a positive lower bound of the distance to the kept region: past the
+// outer ring, inside the hole, or to the nearer sector edge. Every primitive
+// a polar chart draws is cut by this clip, so a hit distance is never below
+// it. Zero for a rectangular chart.
+fn pick_polar_clip_distance() -> f32 {
+    if !pick_polar() {
+        return 0.0;
+    }
+    let px = pick_polar_cursor_offset();
+    let limits = pick_polar_clip_limits();
+    let sector = pick_polar_clip_sector();
+    if polar_fragment_visible(px, limits, sector) {
+        return 0.0;
+    }
+    let r = length(px);
+    var d = max(r - (limits.y + 0.5), (limits.z - 0.5) - r);
+    if limits.w >= 0.5 && !polar_fragment_visible(px, vec4<f32>(limits.x, PICK_F32_MAX, 0.0, limits.w), sector) {
+        let start = sector.x + sector.y * sector.z;
+        let end = sector.x + sector.y * sector.w;
+        d = max(d, min(pick_polar_ray_distance(px, start), pick_polar_ray_distance(px, end)));
+    }
+    return max(d, PICK_F32_EPSILON);
 }
 
 fn pick_axis_cursor(axis: u32) -> f32 {
@@ -252,15 +331,14 @@ fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
         return false;
     }
     let threshold = pick_conservative_gate_threshold(
-        pick_query_params.chart_limits.z
-        + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
+        pick_query_params.chart_limits.z + pick_query_params.chart_limits.w,
     );
     return abs(projected - pick_axis_cursor(axis)) <= threshold;
 }
 
 fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
     let x = pick_read_pair(pick_query_params.data.y, point_index);
-    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y, true) {
+    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y) {
         return false;
     }
     let projected = pick_project_pair_polar(x, y);
@@ -268,8 +346,7 @@ fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
         return false;
     }
     let threshold = pick_conservative_gate_threshold(
-        pick_query_params.chart_limits.z
-        + pick_query_params.chart_limits.w * pick_query_params.scatter_line.z,
+        pick_query_params.chart_limits.z + pick_query_params.chart_limits.w,
     );
     let delta = abs(projected - pick_query_params.cursor_chart.xy);
     return delta.x <= threshold && delta.y <= threshold;
@@ -419,48 +496,213 @@ fn pick_gate_y(
     pick_gate_masks[word_index] = vec2<u32>(scatter_mask, line_mask);
 }
 
-fn pick_base_shape_id(shape_id: u32) -> u32 {
+// ───── shared marker shape (SHADER_COMMON.md §5.5; `shader_consistency`
+// compares these function bodies and constants with the scatter shader) ─────
+
+// The marker quad's margin past the shape's visual radius, in pixels:
+// outline strokes and their anti-aliasing reach past the contour, and
+// nothing a marker draws lies outside `visual_shape_radius + QUAD_MARGIN_PX`
+// on either axis.
+const QUAD_MARGIN_PX: f32 = 2.0;
+// Half-width of the ~1.5 px contour stroke (outline shapes and Cross).
+const STROKE_HALF_PX: f32 = 0.75;
+
+const MARKER_PI: f32 = 3.14159265359;
+const MARKER_HALF_PI: f32 = 1.57079632679;
+const STAR_INNER_RATIO: f32 = 0.5;
+
+fn shape_is_filled(shape_id: u32) -> bool {
+    return (shape_id >= 5u && shape_id <= 8u) || shape_id >= 17u;
+}
+
+fn base_shape_id(shape_id: u32) -> u32 {
     switch shape_id {
-        case 5u: { return 0u; }
-        case 6u: { return 1u; }
-        case 7u: { return 2u; }
-        case 8u: { return 3u; }
-        case 9u: { return 5u; }
-        case 10u: { return 6u; }
-        case 11u: { return 7u; }
-        case 12u: { return 8u; }
-        case 13u: { return 9u; }
-        case 14u: { return 10u; }
-        case 15u: { return 11u; }
-        case 16u: { return 12u; }
-        case 17u: { return 5u; }
-        case 18u: { return 6u; }
-        case 19u: { return 7u; }
-        case 20u: { return 8u; }
-        case 21u: { return 4u; }
-        case 22u: { return 9u; }
-        case 23u: { return 10u; }
-        case 24u: { return 11u; }
-        case 25u: { return 12u; }
+        case 5u: { return 0u; }   // CircleFilled
+        case 6u: { return 1u; }   // SquareFilled
+        case 7u: { return 2u; }   // TriangleFilled
+        case 8u: { return 3u; }   // DiamondFilled
+        case 9u: { return 5u; }   // TriangleDown
+        case 10u: { return 6u; }  // TriangleLeft
+        case 11u: { return 7u; }  // TriangleRight
+        case 12u: { return 8u; }  // Plus
+        case 13u: { return 9u; }  // Pentagon
+        case 14u: { return 10u; } // Hexagon
+        case 15u: { return 11u; } // Octagon
+        case 16u: { return 12u; } // Star
+        case 17u: { return 5u; }  // TriangleDownFilled
+        case 18u: { return 6u; }  // TriangleLeftFilled
+        case 19u: { return 7u; }  // TriangleRightFilled
+        case 20u: { return 8u; }  // PlusFilled
+        case 21u: { return 4u; }  // CrossFilled
+        case 22u: { return 9u; }  // PentagonFilled
+        case 23u: { return 10u; } // HexagonFilled
+        case 24u: { return 11u; } // OctagonFilled
+        case 25u: { return 12u; } // StarFilled
         default: { return shape_id; }
     }
 }
 
-fn pick_visual_shape_radius(shape_id: u32, radius: f32) -> f32 {
-    let base = pick_base_shape_id(shape_id);
+// Shape-local radius/half-extent relative to the circle reference radius.
+// Filled polygon markers are area-matched to a circle of radius r.
+fn visual_shape_radius(base: u32, r: f32) -> f32 {
     var scale = 1.0;
     switch base {
-        case 1u: { scale = 0.88622695; }
-        case 2u, 5u, 6u, 7u: { scale = 1.55512030; }
-        case 3u: { scale = 1.25331414; }
-        case 9u: { scale = 1.14913986; }
-        case 10u: { scale = 1.09963611; }
-        case 11u: { scale = 1.05390737; }
-        case 12u: { scale = 1.46285033; }
+        case 1u: { scale = 0.88622695; }  // square sqrt(pi)/2
+        case 2u, 5u, 6u, 7u: { scale = 1.55512030; } // triangles
+        case 3u: { scale = 1.25331414; }  // diamond sqrt(pi/2)
+        case 9u: { scale = 1.14913986; }  // pentagon
+        case 10u: { scale = 1.09963611; } // hexagon
+        case 11u: { scale = 1.05390737; } // octagon
+        case 12u: { scale = 1.46285033; } // 5-point star, inner ratio 0.5
         default: {}
     }
-    return radius * scale;
+    return r * scale;
 }
+
+fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+// Unsigned distance from `p` to segment `ab`. The denominator guard keeps
+// a zero-length segment (radius 0) from yielding NaN — it degenerates to
+// point distance instead.
+fn sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+fn sd_box(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+fn regular_vertex(i: u32, n: u32, r: f32, rot: f32) -> vec2<f32> {
+    let a = rot + f32(i) * (2.0 * MARKER_PI / f32(n));
+    return vec2<f32>(cos(a), sin(a)) * r;
+}
+
+fn star_vertex(i: u32, r: f32) -> vec2<f32> {
+    let outer = (i % 2u) == 0u;
+    let rr = select(r * STAR_INNER_RATIO, r, outer);
+    let a = MARKER_HALF_PI + f32(i) * MARKER_PI / 5.0;
+    return vec2<f32>(cos(a), sin(a)) * rr;
+}
+
+fn sd_regular_polygon(p: vec2<f32>, n: u32, r: f32, rot: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = regular_vertex(n - 1u, n, r, rot);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let curr = regular_vertex(i, n, r, rot);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_star(p: vec2<f32>, r: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = star_vertex(9u, r);
+    for (var i = 0u; i < 10u; i = i + 1u) {
+        let curr = star_vertex(i, r);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_plus_filled(p: vec2<f32>, r: f32) -> f32 {
+    let arm = max(r * 0.32, STROKE_HALF_PX);
+    let h = sd_box(p, vec2<f32>(r, arm));
+    let v = sd_box(p, vec2<f32>(arm, r));
+    return min(h, v);
+}
+
+// Exact SDF of an equilateral point-up triangle centered on the origin,
+// vertices on the circle of radius `r` (same inscribed sizing as the
+// diamond). `p_in` is y-up (NDC orientation), so the apex points up on
+// screen. Adapted from iq's sdEquilateralTriangle.
+fn sd_triangle(p_in: vec2<f32>, r: f32) -> f32 {
+    let k = sqrt(3.0);
+    let half_w = 0.5 * k * r; // half of the base edge
+    var p = vec2<f32>(abs(p_in.x) - half_w, p_in.y + half_w / k);
+    if (p.x + k * p.y > 0.0) {
+        p = vec2<f32>(p.x - k * p.y, -k * p.x - p.y) * 0.5;
+    }
+    p.x -= clamp(p.x, -2.0 * half_w, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+// Signed pixel distance from `p` to the contour of `base` shape. For open
+// plus/cross, the distance is unsigned to the center strokes; the outline
+// alpha path below turns that into a visible stroke.
+fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
+    var d: f32;
+    switch base {
+        case 0u: { d = length(p) - r; }
+        case 1u: { d = max(abs(p.x), abs(p.y)) - r; }
+        case 2u: { d = sd_triangle(p, r); }
+        case 3u: { d = abs(p.x) + abs(p.y) - r; }
+        case 4u: { // Cross / x
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(rotate2(p, MARKER_PI * 0.25), c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, -c), vec2<f32>(c, c));
+                let d2 = sd_segment(p, vec2<f32>(-c, c), vec2<f32>(c, -c));
+                d = min(d1, d2);
+            }
+        }
+        case 5u: { d = sd_triangle(-p, r); }
+        case 6u: { d = sd_triangle(rotate2(p, -MARKER_HALF_PI), r); }
+        case 7u: { d = sd_triangle(rotate2(p, MARKER_HALF_PI), r); }
+        case 8u: { // Plus / +
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(p, c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, 0.0), vec2<f32>(c, 0.0));
+                let d2 = sd_segment(p, vec2<f32>(0.0, -c), vec2<f32>(0.0, c));
+                d = min(d1, d2);
+            }
+        }
+        case 9u: { d = sd_regular_polygon(p, 5u, r, MARKER_HALF_PI); }
+        case 10u: { d = sd_regular_polygon(p, 6u, r, MARKER_HALF_PI); }
+        case 11u: { d = sd_regular_polygon(p, 8u, r, MARKER_HALF_PI); }
+        default: { // 12u: Star
+            d = sd_star(p, r);
+        }
+    }
+    return d;
+}
+
+/// The coverage edge of a marker at shape distance `d`: a filled marker
+/// covers `d < 0`; an outline (and an open plus or cross) is a stroke of
+/// half-width `STROKE_HALF_PX` centred on `d == 0`. A fragment draws where
+/// this is below its anti-aliasing width, and the picker's hit distance is
+/// `max(marker_edge(d, filled), 0)`.
+fn marker_edge(d: f32, filled: bool) -> f32 {
+    return select(abs(d) - STROKE_HALF_PX, d, filled);
+}
+
+// ───── end shared marker shape ─────
 
 fn pick_nonnegative(v: f32) -> f32 {
     return select(0.0, v, v == v && v > 0.0);
@@ -528,10 +770,19 @@ fn pick_size_map_radius(point_index: u32) -> f32 {
     );
 }
 
+// One marker as the scatter shader resolves it before drawing: the radius
+// in canvas pixels (the display scale applied, like `point_radius_px`), the
+// shape code, and whether the size map hides the point.
+struct PickMarker {
+    radius: f32,
+    shape: u32,
+    hidden: bool,
+};
+
 // Precedence per channel, as in `resolve_mapped_style`: sparse override >
-// size map > style table slot > series base. A hidden point returns a
-// negative radius unless an override sets its radius.
-fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
+// size map > style table slot > series base. A hidden point stays hidden
+// unless an override sets its radius.
+fn pick_resolve_scatter_marker(point_index: u32) -> PickMarker {
     var radius = pick_nonnegative(pick_query_params.scatter_line.x);
     var shape = pick_query_params.series.z;
     let flags = pick_query_params.style.x;
@@ -572,10 +823,24 @@ fn pick_resolve_scatter_radius(point_index: u32) -> f32 {
             }
         }
     }
-    if hidden {
-        return -1.0;
-    }
-    return pick_visual_shape_radius(shape, radius) * pick_query_params.scatter_line.z;
+    return PickMarker(radius * pick_query_params.scatter_line.z, shape, hidden);
+}
+
+// The hit distance of a marker drawn at `center_px` for the cursor: the
+// scatter shader's own coverage rule (`shape_distance` and `marker_edge`,
+// SHADER_COMMON.md §5.5), evaluated where the fragment at the cursor would
+// evaluate it. The marker's local frame is y-up like NDC while canvas
+// pixels run down, hence the flip. Zero exactly where the fragment's
+// coverage is at least one half; the anti-aliasing fringe beyond it is a
+// sub-pixel positive distance.
+fn pick_marker_distance(marker: PickMarker, center_px: vec2<f32>) -> f32 {
+    let delta = pick_query_params.cursor_chart.xy - center_px;
+    let p = vec2<f32>(delta.x, -delta.y);
+    let filled = shape_is_filled(marker.shape);
+    let base = base_shape_id(marker.shape);
+    let visual_r = visual_shape_radius(base, marker.radius);
+    let d = shape_distance(base, p, visual_r, filled);
+    return max(marker_edge(d, filled), 0.0);
 }
 
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
@@ -601,15 +866,17 @@ fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) 
     if candidate.distance_sq != incumbent.distance_sq {
         return candidate.distance_sq < incumbent.distance_sq;
     }
-    // Current production picker replaces equal-distance candidates from a
-    // later series, but retains the first primitive within one series.
+    // An exact tie goes to whatever is painted on top. Series paint in
+    // order, so a later series covers an earlier one; within a series the
+    // markers paint over the line; and instances paint in index order, so a
+    // higher marker or segment index covers a lower one.
     if candidate.series_order != incumbent.series_order {
         return candidate.series_order > incumbent.series_order;
     }
     if candidate.primitive_kind != incumbent.primitive_kind {
         return candidate.primitive_kind < incumbent.primitive_kind;
     }
-    return candidate.primitive_index < incumbent.primitive_index;
+    return candidate.primitive_index > incumbent.primitive_index;
 }
 
 fn pick_scatter_candidate(
@@ -618,20 +885,20 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y, true) {
+    // The vertex stage's `sample_valid`; the sector and the rings are the
+    // fragment clip's, applied at the cursor below.
+    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y) {
         return pick_invalid_candidate(series_order);
     }
-    let radius = pick_resolve_scatter_radius(point_index);
-    if radius <= 0.0 {
+    let marker = pick_resolve_scatter_marker(point_index);
+    if marker.hidden || !pick_is_finite(marker.radius) {
         return pick_invalid_candidate(series_order);
     }
     let point_px = pick_project_pair(x, y);
     if !pick_is_finite(point_px.x) || !pick_is_finite(point_px.y) {
         return pick_invalid_candidate(series_order);
     }
-    let delta = point_px - pick_query_params.cursor_chart.xy;
-    let center_distance = sqrt(fma(delta.x, delta.x, delta.y * delta.y));
-    let hit_distance = max(center_distance - radius, 0.0);
+    let hit_distance = max(pick_marker_distance(marker, point_px), pick_polar_clip_distance());
     let distance_sq = hit_distance * hit_distance;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
     if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
@@ -732,7 +999,7 @@ fn pick_line_candidate(
     if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
-    if !pick_polar_valid(ax, ay, false) || !pick_polar_valid(bx, by, false) {
+    if !pick_polar_valid(ax, ay) || !pick_polar_valid(bx, by) {
         return pick_invalid_candidate(series_order);
     }
     // A step mode tests every axis-aligned piece of the segment and keeps the
@@ -801,10 +1068,19 @@ fn pick_line_candidate(
         prefix_length = prefix_length + length;
         total_length = total_length + length;
     }
-    if !best_found || best_distance_sq > maximum_sq {
+    if !best_found {
         return pick_invalid_candidate(series_order);
     }
-    let distance_sq = best_distance_sq;
+    // The polar fragment clip cuts the stroke like it cuts a marker.
+    let clip = pick_polar_clip_distance();
+    var distance_sq = best_distance_sq;
+    if clip > 0.0 {
+        let distance = max(sqrt(best_distance_sq), clip);
+        distance_sq = distance * distance;
+    }
+    if distance_sq > maximum_sq {
+        return pick_invalid_candidate(series_order);
+    }
     // Where along the whole stepped path the hit lies, 0 at A and 1 at B. A
     // linear segment keeps t itself: `(t · len) / len` is not bit-exact.
     var position = best_t;
