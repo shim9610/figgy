@@ -1519,3 +1519,97 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         }
     }
 }
+
+/// G7: a histogram picks what it paints. Full bins pick their bar (gap,
+/// border and a nonzero baseline included); subpixel bins pick the pixel
+/// columns the envelope pass paints, from the baseline to the column's
+/// winner, and the winner is the bin picked there. Vertical and horizontal,
+/// at 1x and 2x.
+#[test]
+fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
+    use renderer::data_config::{BarOrientation, DataBarStyleConfig};
+    let mut renderer = renderer();
+    // Three wide bins over 1..4, then 120 subpixel bins over 5..6, all
+    // above the baseline 1.5.
+    let mut edges = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+    let mut values = vec![4.0, 7.5, 3.0, 2.0];
+    for i in 0..120 {
+        edges.push(5.0 + f64::from(i + 1) / 120.0);
+        values.push(2.0 + 6.0 * (f64::from(i) * 0.37).sin().abs());
+    }
+    renderer
+        .add_columns(&[
+            ("edges", &col(edges) as &dyn renderer::ColumnSource),
+            ("counts", &col(values) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    for orientation in [BarOrientation::Vertical, BarOrientation::Horizontal] {
+        let (x, y) = match orientation {
+            BarOrientation::Vertical => ("edges", "counts"),
+            BarOrientation::Horizontal => ("counts", "edges"),
+        };
+        let series = [SeriesConfig {
+            series_id: "hist".into(),
+            source_id: None,
+            label: None,
+            x_column: x.into(),
+            y_column: y.into(),
+            render_type: DataRenderType::Histogram {
+                bar: DataBarStyleConfig {
+                    fill_color: RED,
+                    border_color: BLUE,
+                    border_width: 1.0,
+                    baseline: 1.5,
+                    gap_px: 2.0,
+                    width_ratio: 1.0,
+                    orientation: orientation.clone(),
+                    bar_style_overrides: None,
+                },
+            },
+        }];
+        for scale in [1.0, 2.0] {
+            let what = format!("{orientation:?} at {scale}x");
+            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
+            let mut failures = Vec::new();
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    let ink = difference(&with, &without, px, py);
+                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                    let bin = match &hit {
+                        Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                            Some(*bin_index)
+                        }
+                        None => None,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    // A bar is axis-aligned, so painted and picked agree
+                    // pixel for pixel: more than half the samples covered
+                    // picks, fewer does not. An edge through the pixel's
+                    // centre covers exactly half and may go either way.
+                    if ink > 128 && bin.is_none() {
+                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                    }
+                    if ink < 128 && bin.is_some() {
+                        failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
+                    }
+                    if ink >= PAINTED {
+                        painted += 1;
+                    }
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(painted > 400, "{what}: {painted}");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}
