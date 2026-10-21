@@ -261,17 +261,23 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 drop(surface);
                 r.end_gpu_frame();
                 r.wait_idle();
-                r.service_gpu_completions().unwrap();
-                assert_eq!(
-                    r.gpu_memory_usage()
-                        .live_bytes_of(GpuResourceKind::StreamingUpload),
-                    0
-                );
-                assert_eq!(
-                    r.gpu_memory_usage()
-                        .retired_bytes_of(GpuResourceKind::StreamingUpload),
-                    0
-                );
+                // On the shared test device a retirement callback can run on
+                // another test's poll thread: wait for it, as d6313ad does.
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                loop {
+                    r.service_gpu_completions().unwrap();
+                    let usage = r.gpu_memory_usage();
+                    if usage.live_bytes_of(GpuResourceKind::StreamingUpload) == 0
+                        && usage.retired_bytes_of(GpuResourceKind::StreamingUpload) == 0
+                    {
+                        break;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "streaming upload release timed out"
+                    );
+                    std::thread::yield_now();
+                }
             }
         }
     }
