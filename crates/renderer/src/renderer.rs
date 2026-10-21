@@ -1965,16 +1965,10 @@ impl RendererPicker {
         }
     }
 
-    /// The exact pipeline a streamed pick scans every chunk with: the
-    /// marker-and-line module with every path, created on first use.
-    fn stream_exact(
-        &mut self,
-    ) -> std::result::Result<wgpu::ComputePipeline, crate::gpu_pick::GpuPickError> {
-        let bundle = self.ready_bundle()?;
-        Ok(self
-            .exact
-            .ensure(&bundle, crate::gpu_pick::PickExactKey::STREAMED)?
-            .clone())
+    /// The exact pipelines, shared by resident and streamed picks: a
+    /// streamed chunk scans with its resident series' variant.
+    fn exact_pipelines(&mut self) -> &mut crate::gpu_pick::PickExactPipelines {
+        &mut self.exact
     }
 
     fn ready_data_bundle(

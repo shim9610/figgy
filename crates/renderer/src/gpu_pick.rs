@@ -61,7 +61,8 @@ pub(crate) mod exact_variant {
     pub(crate) const DASH: u32 = 16;
     pub(crate) const STYLED_LINE: u32 = 32;
     pub(crate) const POLAR: u32 = 64;
-    /// Every path: the shader's default, and what a streamed pick uses.
+    /// Every path: the shader's default.
+    #[cfg(test)]
     pub(crate) const ALL: u32 = STYLED_MARKER | DASH | STYLED_LINE | POLAR;
     /// The override's name in `gpu_pick/core.wgsl`.
     pub(crate) const CONSTANT: &str = "PICK_VARIANT";
@@ -212,9 +213,9 @@ impl PickExactKey {
     /// `PICK_SHAPE_ANY`: the shape is read per point.
     pub(crate) const ANY_SHAPE: u32 = u32::MAX;
 
-    /// What a streamed pick scans every chunk with: the marker-and-line
-    /// module with every path and any shape (streaming is not specialised).
-    pub(crate) const STREAMED: Self = Self {
+    /// The marker-and-line module with every path and any shape.
+    #[cfg(test)]
+    pub(crate) const ALL_PATHS: Self = Self {
         shader: PickShader::MarkerLine,
         bits: exact_variant::ALL,
         shape: Self::ANY_SHAPE,
@@ -343,6 +344,16 @@ fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExa
         bits,
         shape,
     }
+}
+
+/// The exact variant a streamed chunk of `series` scans with: the resident
+/// series' own variant, so a streamed pick answers bit for bit what the
+/// resident pick does, without the dash walk. A stream binds no arc prefix,
+/// so with or without that walk its dash gaps pick like its dashes.
+fn stream_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
+    let mut key = series_exact_variant(series, query);
+    key.bits &= !exact_variant::DASH;
+    key
 }
 
 /// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
@@ -648,9 +659,6 @@ pub(crate) fn validate_stream_handle(
 /// upload ring; every encoded chunk is reduced before that slot is reusable.
 pub(crate) struct GpuStreamPick {
     engine: GpuPickEngine,
-    /// The exact pipeline every chunk scans with: the marker-and-line module
-    /// with every path (`exact_variant::ALL`); streaming is not specialised.
-    exact: wgpu::ComputePipeline,
     query: GpuPickQuery,
     display_scale: f32,
     identities: Arc<[PickIdentity]>,
@@ -664,7 +672,6 @@ impl PickPipelineBundle {
         query: GpuPickQuery,
         display_scale: f32,
         identities: Vec<(Option<String>, String)>,
-        exact: wgpu::ComputePipeline,
     ) -> Result<GpuStreamPick, GpuPickError> {
         let reduce = GpuPickEngine::create_reduce_resources(
             &self.device,
@@ -691,7 +698,6 @@ impl PickPipelineBundle {
             });
         Ok(GpuStreamPick {
             engine: GpuPickEngine::from_bundle_and_reduce(Arc::clone(self), reduce),
-            exact,
             query,
             display_scale,
             identities: identities
@@ -783,9 +789,11 @@ impl GpuStreamPick {
     /// exactly the starts owned by this chunk. Style override rows keep global
     /// indices, whereas the style-index handle addresses this chunk's lane.
     /// Returned scratch charge must live through the chunk's GPU completion.
+    /// `exact` is the renderer's exact pipelines, shared with resident picks.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_chunk(
         &mut self,
+        exact: &mut PickExactPipelines,
         encoder: &mut wgpu::CommandEncoder,
         buffer: &wgpu::Buffer,
         descriptor: GpuPickSeriesDescriptor<'_>,
@@ -796,6 +804,7 @@ impl GpuStreamPick {
         owned_segments: u32,
     ) -> Result<Option<SharedCharge>, GpuPickError> {
         self.encode_chunk_impl(
+            exact,
             encoder,
             buffer,
             descriptor,
@@ -813,6 +822,7 @@ impl GpuStreamPick {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn encode_indexed_chunk(
         &mut self,
+        exact: &mut PickExactPipelines,
         encoder: &mut wgpu::CommandEncoder,
         buffer: &wgpu::Buffer,
         descriptor: GpuPickSeriesDescriptor<'_>,
@@ -823,6 +833,7 @@ impl GpuStreamPick {
         owned_segments: u32,
     ) -> Result<Option<SharedCharge>, GpuPickError> {
         self.encode_chunk_impl(
+            exact,
             encoder,
             buffer,
             descriptor,
@@ -838,6 +849,7 @@ impl GpuStreamPick {
     #[allow(clippy::too_many_arguments)]
     fn encode_chunk_impl(
         &mut self,
+        exact: &mut PickExactPipelines,
         encoder: &mut wgpu::CommandEncoder,
         buffer: &wgpu::Buffer,
         descriptor: GpuPickSeriesDescriptor<'_>,
@@ -917,10 +929,11 @@ impl GpuStreamPick {
             .queue
             .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
         let bundle = &self.engine.bundle;
+        let exact = exact.ensure(bundle, stream_exact_variant(series, &self.query))?;
         for (pipeline, enabled) in [
             (&bundle.gate_x, !series.direct_scan),
             (&bundle.gate_y, !series.direct_scan),
-            (&self.exact, true),
+            (exact, true),
         ] {
             if !enabled {
                 continue;
@@ -4148,13 +4161,10 @@ mod tests {
                         let identities = (0..2)
                             .map(|order| (Some("stream-source".into()), format!("stream-{order}")))
                             .collect();
-                        let exact = PickExactPipelines::default()
-                            .ensure(&resident.bundle, PickExactKey::STREAMED)
-                            .unwrap()
-                            .clone();
+                        let mut exact = PickExactPipelines::default();
                         let mut stream = resident
                             .bundle
-                            .begin_stream(query, 1.0, identities, exact)
+                            .begin_stream(query, 1.0, identities)
                             .unwrap();
                         let mut charges = vec![stream.charge()];
                         // Reverse both series and chunk submission order: ties
@@ -4196,6 +4206,7 @@ mod tests {
                                     device.create_command_encoder(&Default::default());
                                 if let Some(charge) = stream
                                     .encode_chunk(
+                                        &mut exact,
                                         &mut encoder,
                                         &buffer,
                                         descriptor(order, scatter),
@@ -4220,6 +4231,18 @@ mod tests {
                         }
                         let actual =
                             pollster::block_on(stream.finish().unwrap().resolve()).unwrap();
+                        // Bit parity needs the same compiled code: every
+                        // chunk scanned with its resident series' variant.
+                        // Drivers that compile two variants differently
+                        // (Metal, DX12) otherwise round differently.
+                        let resident_keys: Vec<_> = resident.exact_variants(&query).collect();
+                        assert!(!exact.pipelines.is_empty());
+                        for (key, _) in &exact.pipelines {
+                            assert!(
+                                resident_keys.contains(key),
+                                "{key:?} not in {resident_keys:?}"
+                            );
+                        }
                         assert_eq!(
                             expected, actual,
                             "stream parity logarithmic={logarithmic}, scatter={scatter}, cursor={cursor:?}, chunk_size={chunk_size}"
@@ -4313,12 +4336,9 @@ mod tests {
                 vector: None,
             };
             let query = test_query(cursor);
-            let exact = PickExactPipelines::default()
-                .ensure(&bundle, PickExactKey::STREAMED)
-                .unwrap()
-                .clone();
+            let mut exact = PickExactPipelines::default();
             let mut stream = bundle
-                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())], exact)
+                .begin_stream(query, 1.0, vec![(None, "gated-stream".into())])
                 .unwrap();
             assert_eq!(
                 stream.charge().charged_bytes(),
@@ -4328,6 +4348,7 @@ mod tests {
             let mut encoder = device.create_command_encoder(&Default::default());
             let scratch = stream
                 .encode_chunk(
+                    &mut exact,
                     &mut encoder,
                     &buffer,
                     descriptor,

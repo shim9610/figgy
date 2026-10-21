@@ -81,7 +81,7 @@ fn all_shader_compilation_times_and_entry_coverage() {
             for shader in crate::gpu_pick::PickShader::EXACT {
                 let key = crate::gpu_pick::PickExactKey {
                     shader,
-                    ..crate::gpu_pick::PickExactKey::STREAMED
+                    ..crate::gpu_pick::PickExactKey::ALL_PATHS
                 };
                 renderer.picker.exact.ensure(&bundle, key).unwrap();
             }

@@ -287,13 +287,10 @@ impl Renderer {
                 (series.source_id.clone(), series.series_id.clone())
             })
             .collect();
-        let exact = self.picker.stream_exact()?;
-        let mut pick = self.picker.ready_bundle()?.begin_stream(
-            query,
-            snapshot.display_scale,
-            identities,
-            exact,
-        )?;
+        let mut pick =
+            self.picker
+                .ready_bundle()?
+                .begin_stream(query, snapshot.display_scale, identities)?;
         // Each page keeps its own encoder: combining large gated scans and
         // reductions in one encoder can stall the browser WebGPU backend.
         // Submit a bounded set of command buffers together instead.
@@ -367,6 +364,7 @@ impl Renderer {
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
+                        self.picker.exact_pipelines(),
                         &mut encoder,
                         &packed.chunk.work,
                         descriptor,
@@ -536,7 +534,6 @@ impl Renderer {
                 0
             };
         self.preflight_auxiliary_gpu_bytes(bytes)?;
-        let stream_exact = self.picker.stream_exact()?;
         let point = self.picker.ready_bundle()?.begin_stream(
             crate::gpu_pick::GpuPickQuery {
                 transform,
@@ -548,7 +545,6 @@ impl Renderer {
             },
             scale,
             identities(),
-            stream_exact,
         )?;
         let data = if typed {
             Some(self.picker.ready_data_bundle()?.begin_stream(
@@ -845,6 +841,7 @@ impl Renderer {
                     .map(handles)
                     .transpose()?;
                 return Ok(pick.point.encode_chunk(
+                    self.picker.exact_pipelines(),
                     &mut encoder,
                     &chunk.work,
                     descriptor,
