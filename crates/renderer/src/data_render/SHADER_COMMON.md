@@ -222,21 +222,27 @@ group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵
 ## 3. 로그 변환 선택(`maybe_log`)
 
 `is_log` 플래그(0.0 또는 1.0)에 따라 값을 그대로 통과시키거나 log10을
-적용한다. `if` 분기 없이 `select`로 두 값 중 하나를 고른다. 선형축에서도 log10을
+적용한다. `if` 분기 없이 `mix`로 두 값 중 하나를 고르되, 고르지 않는 첫 값에
+`(1.0 - is_log)`를 곱해 로그축에서는 0으로 만든다. 선형축에서도 log10을
 계산하지만 결과는 입력값 그대로다.
 
-`mix`로 고르면 안 된다. 많은 드라이버(Metal, DX12, 브라우저 WebGPU)가
-`mix(x, y, a)`를 `x + a * (y - x)`로 계산하므로, `a = 1`이어도 `x`가 크면
-`y - x`에서 `y`가 f32 반올림에 묻혀 `y`가 나오지 않는다. 로그축에서
-`v ≥ 2²⁴`이면 log10(v)가 정수 단위로 깎이고 그보다 작은 값도 어긋난다.
+곱하지 않은 `mix(v, lv, is_log)`는 안 된다. 많은 드라이버(Metal, DX12, 브라우저
+WebGPU)가 `mix(x, y, a)`를 `x + a * (y - x)`로 계산하므로, `a = 1`이어도 `x`가
+크면 `y - x`에서 `y`가 f32 반올림에 묻혀 `y`가 나오지 않는다. 로그축에서
+`v ≥ 2²⁴`이면 log10(v)가 정수 단위로 깎이고 그보다 작은 값도 어긋난다. 첫 값을
+0으로 만들면 어느 계산식으로도 로그축 결과는 정확히 `y`이고, 선형축 결과는
+`x * 1`로 원래 식과 같다.
+
+`select`도 쓰지 않는다. `select`로 바꿨을 때 DX12 CI에서 큰 오프셋(1e9 이상)의
+선형축 정밀도 테스트가 실패했다. 이 형태는 선형축 계산을 원래 `mix`와 같게 둔다.
 플래그로 두 값 중 하나를 고르는 곳(4절, 컬러맵 정규화, `axis_px_per_unit_at`)은
-모두 `select`를 쓴다.
+모두 이 형태를 쓴다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
-    return select(v, lv, is_log > 0.5);
+    return mix(v * (1.0 - is_log), lv, is_log);
 }
 ```
 
@@ -262,7 +268,7 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    let data_t = select(linear_num / range, log_num / range, is_log > 0.5);
+    let data_t = mix(linear_num / range * (1.0 - is_log), log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
 
@@ -996,7 +1002,7 @@ fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32
         || !ramp_finite(span) || span <= 0.0) {
         return -1.0;
     }
-    let numerator = select(linear_num, log_num, is_log > 0.5);
+    let numerator = mix(linear_num * (1.0 - is_log), log_num, is_log);
     let normalized = numerator / span;
     if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
         return -1.0;
@@ -1696,7 +1702,7 @@ fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: 
     // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
     let value = pair.x + pair.y;
     let log_slope = linear / (value * log(10.0));
-    return select(linear, log_slope, is_log > 0.5);
+    return mix(linear * (1.0 - is_log), log_slope, is_log);
 }
 ```
 

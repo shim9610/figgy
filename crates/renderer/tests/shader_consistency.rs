@@ -834,13 +834,14 @@ fn every_targeted_shader_has_begin_end_markers() {
     }
 }
 
-// A log flag picks between the linear and the logarithmic value with
-// `select`, never `mix`: drivers that evaluate `mix(x, y, 1)` as
-// `x + (y - x)` lose `y` under a large `x`, which put log-axis values past
-// 2^24 at the wrong height (SHADER_COMMON §3). llvmpipe evaluates it
-// exactly, so no pixel test here would see the difference.
+// A log flag picks between the linear and the logarithmic value with `mix`
+// whose first value is zeroed by `(1.0 - flag)`: drivers that evaluate
+// `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`, which put
+// log-axis values past 2^24 at the wrong height, and `select` failed the
+// large-offset linear tests on DX12 (SHADER_COMMON §3). llvmpipe evaluates
+// both exactly, so no pixel test here would see the difference.
 #[test]
-fn log_flags_select_and_never_blend() {
+fn log_flags_zero_the_unused_value_before_mixing() {
     fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
         for entry in fs::read_dir(dir).unwrap() {
             let path = entry.unwrap().path();
@@ -855,11 +856,20 @@ fn log_flags_select_and_never_blend() {
     walk(&workspace_root().join("src"), &mut shaders);
     assert!(shaders.len() > 10, "found {} shaders", shaders.len());
     let mut offending = Vec::new();
+    let mut zeroed = 0;
     for path in shaders {
         let source = fs::read_to_string(&path).unwrap();
         for (number, line) in source.lines().enumerate() {
             let code = line.split("//").next().unwrap();
-            if code.contains("mix(") && (code.contains("is_log") || code.contains("scale_log")) {
+            let flag = ["is_log", "scale_log"]
+                .into_iter()
+                .find(|f| code.contains(f));
+            let Some(flag) = flag else { continue };
+            let blended = code.contains("mix(");
+            // `select(0.0, 1.0, log_z)` makes a flag; choosing by one is the
+            // `select(.., flag > 0.5)` this rules out.
+            let selected = code.contains("select(") && code.contains(&format!("{flag} >"));
+            if selected || (blended && !code.contains(&format!("(1.0 - {flag})"))) {
                 offending.push(format!(
                     "{}:{}: {}",
                     path.display(),
@@ -867,11 +877,13 @@ fn log_flags_select_and_never_blend() {
                     line.trim()
                 ));
             }
+            zeroed += usize::from(blended);
         }
     }
     assert!(
         offending.is_empty(),
-        "log flags blended with mix:\n{}",
+        "log flags chosen unsafely:\n{}",
         offending.join("\n")
     );
+    assert!(zeroed >= 20, "{zeroed} zeroed log mixes found");
 }

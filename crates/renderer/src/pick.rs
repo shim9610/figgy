@@ -1399,7 +1399,7 @@ fn project_data_to_canvas_px(
         let linear_num = (value - min_hi) - min_lo;
         let range = (max_hi - min_hi) + (max_lo - min_lo);
         let log_num = (maybe_log(value, transform.scale_log[axis]) - min_hi) - min_lo;
-        // Selected, not blended: the shaders' `select` (SHADER_COMMON §3).
+        // Chosen exactly, as the shaders' zeroed `mix` does (SHADER_COMMON §3).
         let data_t = if transform.scale_log[axis] > 0.5 {
             log_num / range
         } else {

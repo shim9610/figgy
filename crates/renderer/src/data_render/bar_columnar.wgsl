@@ -88,7 +88,7 @@ struct Style {
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
-    return select(v, lv, is_log > 0.5);
+    return mix(v * (1.0 - is_log), lv, is_log);
 }
 
 fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
@@ -96,7 +96,7 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    let data_t = select(linear_num / range, log_num / range, is_log > 0.5);
+    let data_t = mix(linear_num / range * (1.0 - is_log), log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
 
