@@ -34,7 +34,9 @@
 //! the same rules from its resolved config ([`Config::subplot_config`]: the
 //! subplot's `config` with its linked axes following their targets), after
 //! the parent's panels and in subplot order, so its panels share its own
-//! chart area and data area, not the parent's.
+//! chart area and data area, not the parent's. The document's picked
+//! references of a subplot's series go to that subplot's panels, which split
+//! them by the same rule.
 
 use crate::config::{AxisOptions, Config, TickVisibility};
 use crate::default::{
@@ -430,7 +432,8 @@ impl Config {
             });
         }
         for index in 0..self.subplots.len() {
-            let subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
+            let mut subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
+            self.lend_subplot_picks(&mut subplot, index);
             for panel in subplot.expand()?.panels {
                 panels.push(ExpandedPanel {
                     layer: match panel.layer {
@@ -590,6 +593,31 @@ impl HiddenText for AxisOptions {
         self.label_style.label_visible = false;
         self.title_option.visible = false;
         self
+    }
+}
+
+impl Config {
+    /// Hand subplot `index` the document's picked references of the series
+    /// it draws, so its panels highlight them; its own expansion then splits
+    /// them between its base and overlay panels. A document without a
+    /// selection of a kind leaves the subplot's own.
+    fn lend_subplot_picks(&self, subplot: &mut Config, index: usize) {
+        let owned = |id: &str| {
+            matches!(
+                self.layer_of_series(id),
+                LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) if i == index
+            )
+        };
+        if let Some(picked) = &self.picked_points {
+            let mut picked = picked.clone();
+            picked.refs.retain(|reference| owned(&reference.series_id));
+            subplot.picked_points = Some(picked);
+        }
+        if let Some(picked) = &self.picked_data {
+            let mut picked = picked.clone();
+            picked.refs.retain(|reference| owned(reference.series_id()));
+            subplot.picked_data = Some(picked);
+        }
     }
 }
 
@@ -1245,6 +1273,73 @@ mod tests {
         assert_ne!(after.panels[1], expansion.panels[1]);
         assert_eq!(after.panels[2], expansion.panels[2]);
         assert_eq!(after.panels[3], expansion.panels[3]);
+    }
+
+    // The document's selection reaches the panel that draws each picked
+    // series: a subplot's base and overlay panels as well as the parent's.
+    #[test]
+    fn subplot_panels_highlight_the_document_picks_of_their_series() {
+        use crate::config::{
+            DataSelectionsConfig, PickedDataRef, PickedPointRef, PickedPointsConfig,
+        };
+        let mut cfg = subplot_document();
+        let point = |id: &str| PickedDataRef::Point {
+            source_id: None,
+            series_id: id.into(),
+            point_index: 1,
+        };
+        cfg.picked_data = Some(DataSelectionsConfig {
+            refs: ["temperature", "flow", "level", "rate"].map(point).to_vec(),
+            ..Default::default()
+        });
+        cfg.picked_points = Some(PickedPointsConfig {
+            refs: vec![PickedPointRef {
+                source_id: None,
+                series_id: "level".into(),
+                point_index: 3,
+            }],
+            ..Default::default()
+        });
+        let expansion = cfg.expand().unwrap();
+        let data: Vec<Vec<String>> = expansion
+            .panels
+            .iter()
+            .map(|panel| {
+                panel
+                    .config
+                    .picked_data
+                    .as_ref()
+                    .unwrap()
+                    .refs
+                    .iter()
+                    .map(|r| r.series_id().to_string())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            data,
+            [
+                vec!["temperature"],
+                vec!["flow"],
+                vec!["level"],
+                vec!["rate"]
+            ]
+        );
+        let points: Vec<usize> = expansion
+            .panels
+            .iter()
+            .map(|panel| panel.config.picked_points.as_ref().unwrap().refs.len())
+            .collect();
+        assert_eq!(points, [0, 0, 1, 0]);
+        // Without a document selection a subplot keeps its own.
+        let mut own = subplot_document();
+        own.subplots[1].config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![point("rate")],
+            ..Default::default()
+        });
+        let panels = own.expand().unwrap().panels;
+        assert_eq!(panels[3].config.picked_data.as_ref().unwrap().refs.len(), 1);
+        assert!(panels[1].config.picked_data.is_none());
     }
 
     #[test]
