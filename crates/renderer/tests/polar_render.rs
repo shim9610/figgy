@@ -1115,3 +1115,48 @@ fn radius_labels_survive_rotating_the_ray() {
         }
     }
 }
+
+// A dashed line's dash phase walks the arc length of the path as drawn, so
+// a polar geometry edit that keeps the axis ranges (the inner radius, the
+// sector, the zero angle, the direction) must not reuse the old arc
+// lengths: the same renderer draws what a fresh one does.
+#[test]
+fn polar_geometry_edits_refresh_the_dash_phase() {
+    let theta: Vec<f64> = (0..=36).map(|i| f64::from(i) * 10.0).collect();
+    let r: Vec<f64> = (0..=36).map(|i| 0.3 + 0.6 * f64::from(i) / 36.0).collect();
+    let mut dashed = line_style(2.0);
+    dashed.line_style = LineStylePreset::Dash;
+    let series = [line("spiral", dashed)];
+    let base = PolarOptions::default();
+    let edits = [
+        PolarOptions {
+            inner_radius_fraction: 0.35,
+            ..base.clone()
+        },
+        PolarOptions {
+            sector: Some([0.0, 270.0]),
+            ..base.clone()
+        },
+        PolarOptions {
+            zero_angle_degrees: 90.0,
+            ..base.clone()
+        },
+        PolarOptions {
+            clockwise: true,
+            ..base.clone()
+        },
+    ];
+    for edited in edits {
+        let mut reused = renderer();
+        upload(&mut reused, theta.clone(), r.clone());
+        export(&mut reused, &bare_chart(base.clone()), &series);
+        let after = export(&mut reused, &bare_chart(edited.clone()), &series);
+        let mut fresh = renderer();
+        upload(&mut fresh, theta.clone(), r.clone());
+        let expected = export(&mut fresh, &bare_chart(edited.clone()), &series);
+        assert!(
+            after.rgba == expected.rgba,
+            "{edited:?}: the edit reused the previous dash phase"
+        );
+    }
+}

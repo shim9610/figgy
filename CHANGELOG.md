@@ -10,13 +10,20 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
-## Unreleased — interaction geometry hotfix
+<a id="release-0181"></a>
+
+## Patch — renderer 0.18.1 / model 0.12.1 / figgy 0.15.1
+
+Not yet published; the date is added at publication.
 
 Selection boxes, hit tests and picks now come from the same functions that
 draw the element, instead of a separate estimate
-([#37](https://github.com/shim9610/figgy/issues/37)). No public API is
+([#37](https://github.com/shim9610/figgy/issues/37)). Logarithmic axes draw
+large values at their height on Metal, DX12 and browsers. No public API is
 removed or changed in signature; the additions are listed at the end. No
-serialized field changes.
+serialized field changes: documents written by model 0.12.0 parse and
+re-serialize byte for byte. The WASM integration example advances to 0.15.1
+with the renderer dependency and is not published (`publish = false`).
 
 - **Tick labels.** For axis and colourbar tick labels, `bounds` is the union
   of the labels the raster draws, and the hit region is the selection box
@@ -89,6 +96,10 @@ serialized field changes.
   value swallowed its logarithm. A logarithmic axis now takes the
   logarithm directly, for the draw, the pick, the arrow slope and the
   logarithmic colour ramp; the linear arithmetic is unchanged.
+- **Polar dash phase.** A dashed or sketched line on a polar chart restarts
+  its dash phase when only the polar geometry changes (the inner radius,
+  the sector, the zero angle or the direction). The arc-length cache key
+  left the transform's polar words out and reused the previous lengths.
 - **Pick compile time.** The pick shader is assembled from fragments, and
   only the exact variant a series needs is compiled, on its first pick.
   Enabling GPU picking compiles only the gate pipelines.
@@ -104,6 +115,8 @@ Additions:
   strip is removed: under a measure that does not lay tick labels and axes
   out, they have no bounds, because only the renderer knows where they are
   drawn. Every host in this repository uses the renderer's `CpuTextMeasure`;
+  a custom `MeasureText` keeps axis and tick-label selection by forwarding
+  `drawn_parts` to a `CpuTextMeasure`;
 - `layout::DrawnPart`;
 - `annotation::AnnotationShape`, `annotation::annotation_shapes` and
   `AnnotationElement::shapes`;

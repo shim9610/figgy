@@ -8,11 +8,11 @@ library names are `renderer` and `model`: code imports `renderer::...` and
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 ```
 
 A crate that uses the model types without the renderer depends on
-`model = { package = "figgy-model", version = "0.12.0" }`. To build against a
+`model = { package = "figgy-model", version = "0.12.1" }`. To build against a
 local checkout, replace `version` with a `path` to `crates/renderer` or
 `crates/model`.
 
@@ -414,8 +414,9 @@ updates must preserve the supported contract. Public low-level modules such as
 wgpu major changes public wgpu types such as the `RendererDevice` handles, so it
 ships in a new 0.x minor.
 
-figgy-renderer 0.18.0 / figgy-model 0.12.0 follow the crates.io releases
-0.16.1 / 0.10.0 (the first, 2026-10-13) and 0.17.0 / 0.11.0 (2026-10-16).
+figgy-renderer 0.18.1 / figgy-model 0.12.1 follow the crates.io releases
+0.16.1 / 0.10.0 (the first, 2026-10-13), 0.17.0 / 0.11.0 (2026-10-16) and
+0.18.0 / 0.12.0 (2026-10-20).
 Published registry artifacts are immutable.
 
 Version 0.16.0 / model 0.10.0 added plot-area decoration state and targets:
@@ -431,7 +432,9 @@ Version 0.18.0 / model 0.12.0 is also an incompatible minor. JSON written by
 matches need new enum variants, `RenderWarning::axis()` returns an `Option`,
 and some low-level `data_render` signatures change.
 [Migrating from 0.17.0](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)
-lists every change and the value to write for each new field.
+lists every change and the value to write for each new field. Version 0.18.1 /
+model 0.12.1 is a patch: it adds items without changing a signature or a
+serialized field.
 
 The optional serde representation is not an application file-format version.
 Serialized fields added since the first crates.io release (0.16.1 / 0.10.0) are

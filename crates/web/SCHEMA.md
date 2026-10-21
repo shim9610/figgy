@@ -5,10 +5,10 @@
 `crates/web`의 [브라우저 통합 예제](README.md)가 사용하는 JSON 형식이다.
 설정 타입 자체는 Rust 모델에 정의되며 `serde`로 직렬화할 수 있다.
 
-이 문서는 `figgy` 0.15.0과 `figgy-renderer` 0.18.0 / `figgy-model` 0.12.0의 JSON 형식을 설명한다. `crates/web`은 같은 체크아웃의 렌더러를 경로 의존성으로 빌드한다. Rust 호스트에서 같은 JSON을 읽고 쓰려면 렌더러의 `serde` 기능을 켠다.
+이 문서는 `figgy` 0.15.1과 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1의 JSON 형식을 설명한다. `crates/web`은 같은 체크아웃의 렌더러를 경로 의존성으로 빌드한다. Rust 호스트에서 같은 JSON을 읽고 쓰려면 렌더러의 `serde` 기능을 켠다.
 
 ```toml
-renderer = { package = "figgy-renderer", version = "0.18.0", features = ["serde"] }
+renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
 
 figgy-model 0.11.0과 0.10.0이 쓴 문서는 그대로 읽히며 다시 직렬화해도 같은 바이트가 된다. 반대로 `polar`, `overlays`, `subplots`, `active_layer`, `annotations`, `point_color_map` / `point_size_map`, 선 스타일의 `fill` / `fill_color` / `interpolation`, `RichSegment.rule_band` 같은 키가 든 문서를 figgy-model 0.11.0 이하에서 읽으면 이 키는 오류 없이 무시되고, `"Vector"`나 `"Degrees"` 같은 열거형 값은 거부된다.

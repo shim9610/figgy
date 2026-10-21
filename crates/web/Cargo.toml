@@ -3,7 +3,7 @@
 # JS/wasm files are called: `figgy.js`, `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
-version = "0.15.0"
+version = "0.15.1"
 edition = "2024"
 description = "Browser integration example using wasm-bindgen and the figgy Rust renderer."
 license = "MIT OR Apache-2.0"
@@ -24,7 +24,7 @@ default = []
 wasm-opt = false
 
 [dependencies]
-renderer = { package = "figgy-renderer", path = "../renderer", version = "0.18.0", features = ["serde"] }
+renderer = { package = "figgy-renderer", path = "../renderer", version = "0.18.1", features = ["serde"] }
 serde_json = "1"
 wgpu = "30"
 futures-channel = "0.3"

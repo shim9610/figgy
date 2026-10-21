@@ -621,9 +621,12 @@ struct ArcResultKey {
     pool_layout_generation: u64,
     x_allocation_epoch: u64,
     y_allocation_epoch: u64,
-    /// Only the first 64 bytes of `ScatterTransform` are read by the arc scan;
-    /// style parameter changes must not retraverse the data.
+    /// The arc scan reads the first 64 bytes of `ScatterTransform` and its
+    /// polar words (`polar_angle`, `polar_extent`, the last 32 bytes); the
+    /// style parameters between them are left out, so a style change does
+    /// not retraverse the data.
     geometry_transform_bits: [u32; 16],
+    polar_transform_bits: [u32; 8],
     star_pitch_bits: Option<u32>,
     /// Step interpolation mode: a stepped path has a different arc length.
     step_mode: u32,
@@ -16507,6 +16510,8 @@ impl PrepareContext<'_> {
             bytemuck::cast(*t);
         let mut geometry_transform_bits = [0u32; 16];
         geometry_transform_bits.copy_from_slice(&transform_bits[..16]);
+        let mut polar_transform_bits = [0u32; 8];
+        polar_transform_bits.copy_from_slice(&transform_bits[28..]);
         let key = ArcResultKey {
             n,
             x_base,
@@ -16515,6 +16520,7 @@ impl PrepareContext<'_> {
             x_allocation_epoch,
             y_allocation_epoch,
             geometry_transform_bits,
+            polar_transform_bits,
             star_pitch_bits: star_pitch.map(f32::to_bits),
             step_mode,
         };

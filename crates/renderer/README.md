@@ -21,13 +21,13 @@ Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
 pollster = "1"
 ```
 
 The Cargo package is **`figgy-renderer`**; the Rust import is **`renderer`**.
-The `version` line installs figgy-renderer 0.18.0, with figgy-model 0.12.0, from
+The `version` line installs figgy-renderer 0.18.1, with figgy-model 0.12.1, from
 [crates.io](https://crates.io/crates/figgy-renderer). For a local checkout,
 replace `version` with `path = "../figgy/crates/renderer"`. Code written for
 0.17.0 needs the changes in the

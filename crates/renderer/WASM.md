@@ -10,13 +10,13 @@ Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻�
 
 The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
 
-이 문서는 브라우저 패키지 `figgy` 0.15.0과 `figgy-renderer` 0.18.0 / `figgy-model` 0.12.0을 기준으로 한다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. Rust 호스트는 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
+이 문서는 브라우저 패키지 `figgy` 0.15.1과 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1을 기준으로 한다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. Rust 호스트는 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
 
 ```toml
-renderer = { package = "figgy-renderer", version = "0.18.0", features = ["serde"] }
+renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
 
-렌더러 없이 모델 타입만 쓰는 크레이트는 `model = { package = "figgy-model", version = "0.12.0" }`을 지정한다. 로컬 체크아웃을 쓰려면 `version` 대신 `path`로 `crates/renderer`를 가리킨다. 0.17.0용으로 작성한 Rust 코드는 [마이그레이션 안내](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)에 따라 고친다.
+렌더러 없이 모델 타입만 쓰는 크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 지정한다. 로컬 체크아웃을 쓰려면 `version` 대신 `path`로 `crates/renderer`를 가리킨다. 0.17.0용으로 작성한 Rust 코드는 [마이그레이션 안내](https://github.com/shim9610/figgy/blob/master/CHANGELOG.md#migrating-from-0170)에 따라 고친다.
 
 `model`과 `renderer`는 모두 `wasm32-unknown-unknown`으로 빌드할 수 있다. 이 문서는 네이티브와 웹의 차이, 브라우저 초기화, 데이터 입력, 이벤트 처리와 이미지 출력을 설명한다.
 

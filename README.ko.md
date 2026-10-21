@@ -135,13 +135,13 @@
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
 pollster = "1"
 ```
 
-`version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.0과
-figgy-model 0.12.0을 설치합니다. 로컬에 받은 저장소를 쓰려면 renderer의 `version` 대신
+`version` 줄은 [crates.io](https://crates.io/crates/figgy-renderer)에서 figgy-renderer 0.18.1과
+figgy-model 0.12.1을 설치합니다. 로컬에 받은 저장소를 쓰려면 renderer의 `version` 대신
 애플리케이션 기준 경로인 `path = "../figgy/crates/renderer"`를 지정합니다.
 0.17.0용 코드에서 바꿔야 할 부분은 [마이그레이션 안내](CHANGELOG.md#migrating-from-0170)에 있습니다.
 

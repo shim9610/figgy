@@ -5,14 +5,14 @@ demonstrates wasm-bindgen exports and a `<figgy-chart>` custom element that owns
 a canvas, forwards pointer events, schedules frames and adapts async calls.
 
 The library packages are `figgy-renderer` 0.18.0 and `figgy-model` 0.12.0. This
-example is the Cargo package `figgy` 0.15.0, named for its generated JS/WASM
+example is the Cargo package `figgy` 0.15.1, named for its generated JS/WASM
 filenames, and has `publish = false`. It builds against the renderer and model
 sources in this checkout through path dependencies. An application that reuses
 this wrapper in its own crate depends on the published renderer with the
 `serde` feature, which the wrapper's JSON methods need:
 
 ```toml
-renderer = { package = "figgy-renderer", version = "0.18.0", features = ["serde"] }
+renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
 ```
 
 The generated module exports `FiggyChart` for Cartesian charts, including polar
