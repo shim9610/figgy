@@ -12,9 +12,7 @@ at the time. The first crates.io publication is recorded below.
 
 <a id="release-0181"></a>
 
-## Patch — renderer 0.18.1 / model 0.12.1 / figgy 0.15.1
-
-Not yet published; the date is added at publication.
+## crates.io patch — renderer 0.18.1 / model 0.12.1 / figgy 0.15.1 (2026-10-21)
 
 Selection boxes, hit tests and picks now come from the same functions that
 draw the element, instead of a separate estimate
