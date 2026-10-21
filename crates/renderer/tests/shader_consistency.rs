@@ -833,3 +833,45 @@ fn every_targeted_shader_has_begin_end_markers() {
         );
     }
 }
+
+// A log flag picks between the linear and the logarithmic value with
+// `select`, never `mix`: drivers that evaluate `mix(x, y, 1)` as
+// `x + (y - x)` lose `y` under a large `x`, which put log-axis values past
+// 2^24 at the wrong height (SHADER_COMMON §3). llvmpipe evaluates it
+// exactly, so no pixel test here would see the difference.
+#[test]
+fn log_flags_select_and_never_blend() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                out.push(path);
+            }
+        }
+    }
+    let mut shaders = Vec::new();
+    walk(&workspace_root().join("src"), &mut shaders);
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
+    let mut offending = Vec::new();
+    for path in shaders {
+        let source = fs::read_to_string(&path).unwrap();
+        for (number, line) in source.lines().enumerate() {
+            let code = line.split("//").next().unwrap();
+            if code.contains("mix(") && (code.contains("is_log") || code.contains("scale_log")) {
+                offending.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+        }
+    }
+    assert!(
+        offending.is_empty(),
+        "log flags blended with mix:\n{}",
+        offending.join("\n")
+    );
+}

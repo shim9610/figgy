@@ -619,7 +619,11 @@ fn axis_px_per_unit(transform: &data_render::ScatterTransform, axis: usize, valu
         + (transform.data_max_lo[axis] - transform.data_min_lo[axis]);
     let linear = 2.0 * transform.data_to_panel_scale[axis] / (range * transform.pixel_to_ndc[axis]);
     let log_slope = linear / (value * std::f32::consts::LN_10);
-    linear + (log_slope - linear) * transform.scale_log[axis]
+    if transform.scale_log[axis] > 0.5 {
+        log_slope
+    } else {
+        linear
+    }
 }
 
 /// The pick distance from `cursor` to the arrow the vector shader draws for
@@ -1395,8 +1399,12 @@ fn project_data_to_canvas_px(
         let linear_num = (value - min_hi) - min_lo;
         let range = (max_hi - min_hi) + (max_lo - min_lo);
         let log_num = (maybe_log(value, transform.scale_log[axis]) - min_hi) - min_lo;
-        let data_t = linear_num * (1.0 - transform.scale_log[axis]) / range
-            + log_num * transform.scale_log[axis] / range;
+        // Selected, not blended: the shaders' `select` (SHADER_COMMON §3).
+        let data_t = if transform.scale_log[axis] > 0.5 {
+            log_num / range
+        } else {
+            linear_num / range
+        };
         transform.data_to_panel_offset[axis] + data_t * transform.data_to_panel_scale[axis]
     };
     let tx = axis_t(x, 0);
@@ -1425,9 +1433,13 @@ fn project_data_to_canvas_px(
     }
 }
 
+/// CPU twin of the shaders' `maybe_log` (SHADER_COMMON §3).
 fn maybe_log(v: f32, is_log: f32) -> f32 {
-    let lv = v.max(1e-30).log10();
-    v * (1.0 - is_log) + lv * is_log
+    if is_log > 0.5 {
+        v.max(1e-30).log10()
+    } else {
+        v
+    }
 }
 
 #[cfg(test)]

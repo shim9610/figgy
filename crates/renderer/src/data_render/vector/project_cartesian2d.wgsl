@@ -78,7 +78,7 @@ struct Style {
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
-    return mix(v, lv, is_log);
+    return select(v, lv, is_log > 0.5);
 }
 
 fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
@@ -86,7 +86,7 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    let data_t = mix(linear_num / range, log_num / range, is_log);
+    let data_t = select(linear_num / range, log_num / range, is_log > 0.5);
     return fma(data_t, panel_scale, panel_offset);
 }
 
@@ -248,7 +248,7 @@ fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: 
     // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
     let value = pair.x + pair.y;
     let log_slope = linear / (value * log(10.0));
-    return mix(linear, log_slope, is_log);
+    return select(linear, log_slope, is_log > 0.5);
 }
 
 /// `axis_px_per_unit_at` for one axis of the transform: 0 = x, 1 = y.

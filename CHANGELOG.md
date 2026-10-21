@@ -81,6 +81,13 @@ serialized field changes.
   boxes collide. They were thinned by their height on screen, as on a
   Cartesian left axis, so rotating the ray toward horizontal dropped all but
   one label.
+- **Logarithmic axes on Metal, DX12 and browsers.** Values past about
+  2^24 (1.7e7) were drawn at the wrong height, and from about 1e8 at the
+  axis floor or not at all; smaller values were off by up to half a decade.
+  The shaders chose between the linear and the logarithmic value with
+  `mix`, which those drivers evaluate as `x + a * (y - x)`, so a large
+  value swallowed its logarithm. They now `select` it, for the draw, the
+  pick, the arrow slope and the logarithmic colour ramp.
 - **Pick compile time.** The pick shader is assembled from fragments, and
   only the exact variant a series needs is compiled, on its first pick.
   Enabling GPU picking compiles only the gate pipelines.

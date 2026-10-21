@@ -1080,3 +1080,35 @@ fn legend_symbol_shows_a_band_for_a_filled_series() {
         "the filled series' legend mark has a band"
     );
 }
+
+// A line on a logarithmic axis sits at its value's logarithm at every
+// magnitude. Drivers that blended the log flag with `mix` lost the logarithm
+// past 2^24 and drew 1e8 at the floor; llvmpipe never did, so this pins the
+// result and `shader_consistency` pins the `select` (SHADER_COMMON §3).
+#[test]
+fn log_axis_places_lines_at_every_magnitude() {
+    for magnitude in [1e-20f64, 1e-6, 1.0, 1e6, 1e12, 1e16, 1e30] {
+        let mut r = renderer();
+        r.add_column("lx", &col_f64(vec![0.0, 1.0])).unwrap();
+        r.add_column("ly", &col_f64(vec![magnitude, magnitude]))
+            .unwrap();
+        let mut chart = bare_chart(200, 160);
+        chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+        chart.set_x_range(0.0, 1.0);
+        chart.set_y_range(magnitude / 100.0, magnitude * 100.0);
+        let s = vec![series(
+            "log_line",
+            "lx",
+            "ly",
+            line(None, None, LineInterpolation::Linear),
+        )];
+        let img = r.export_panel_rgba(&chart, &s, 1.0).unwrap();
+        let x = data_x_to_px(&chart, 0.5);
+        let y = data_y_to_px(&chart, magnitude);
+        let p = pixel(&img, x, y);
+        assert!(
+            p[0] > 200 && p[1] < 80 && p[2] < 80,
+            "{magnitude:e}: no line at ({x}, {y}) on the log axis: {p:?}"
+        );
+    }
+}
