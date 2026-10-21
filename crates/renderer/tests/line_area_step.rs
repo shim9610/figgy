@@ -1084,7 +1084,7 @@ fn legend_symbol_shows_a_band_for_a_filled_series() {
 // A line on a logarithmic axis sits at its value's logarithm at every
 // magnitude. Drivers that blended the log flag with `mix` lost the logarithm
 // past 2^24 and drew 1e8 at the floor; llvmpipe never did, so this pins the
-// result and `shader_consistency` pins the zeroed `mix` (SHADER_COMMON §3).
+// result and `shader_consistency` pins the early return (SHADER_COMMON §3).
 #[test]
 fn log_axis_places_lines_at_every_magnitude() {
     for magnitude in [1e-20f64, 1e-6, 1.0, 1e6, 1e12, 1e16, 1e30] {

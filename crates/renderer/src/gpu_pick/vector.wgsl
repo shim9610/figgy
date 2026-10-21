@@ -142,7 +142,10 @@ fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: 
     // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
     let value = pair.x + pair.y;
     let log_slope = linear / (value * log(10.0));
-    return mix(linear * (1.0 - is_log), log_slope, is_log);
+    if is_log > 0.5 {
+        return log_slope;
+    }
+    return mix(linear, log_slope, is_log);
 }
 
 // ───── end shared arrow glyph ─────

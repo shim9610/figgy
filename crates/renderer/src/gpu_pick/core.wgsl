@@ -220,8 +220,11 @@ fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (pick_log10(raw) - min_hi) - min_lo;
-    let is_log = pick_query_params.transform.scale_log[axis];
-    let data_t = mix(linear_num / range * (1.0 - is_log), log_num / range, is_log);
+    if pick_query_params.transform.scale_log[axis] > 0.5 {
+        return fma(log_num / range, pick_query_params.transform.data_to_panel_scale[axis],
+            pick_query_params.transform.data_to_panel_offset[axis]);
+    }
+    let data_t = mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
     return fma(data_t, pick_query_params.transform.data_to_panel_scale[axis],
         pick_query_params.transform.data_to_panel_offset[axis]);
 }
