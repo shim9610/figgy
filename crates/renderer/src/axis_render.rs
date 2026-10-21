@@ -1912,7 +1912,9 @@ enum NumericTickText {
 
 struct NumericTickLabel {
     position: (f32, f32),
-    interval: (f32, f32),
+    /// The box the label is drawn in, which decides whether it collides
+    /// with its neighbours.
+    bounds: RectF,
     text: NumericTickText,
 }
 
@@ -1934,6 +1936,37 @@ fn visible_numeric_labels(
     fp: FontPolicy,
     majors: &[f64],
     position: impl Fn(f64) -> (f32, f32),
+) -> Vec<NumericTickLabel> {
+    let ls = &axis.label_style;
+    prune_numeric_labels(axis, fp, majors, position, |position, metrics| {
+        let (x, y) = label_origin(
+            side.clone(),
+            position,
+            axis.major_tick_length,
+            (ls.label_offset_x, ls.label_offset_y),
+            metrics,
+        );
+        RectF {
+            x,
+            y: y - metrics.ascent,
+            width: metrics.width,
+            height: metrics.ascent + metrics.descent,
+        }
+    })
+}
+
+/// [`visible_numeric_labels`] with each label's drawn box given by
+/// `bounds(position, metrics)`: when two kept neighbours' boxes come closer
+/// than half an em both across and along the screen, the labels are thinned
+/// to every 2nd, 5th, 10th... label. A Cartesian axis' labels line up, so
+/// this compares them along the axis; a polar ray's labels step along the
+/// ray at any angle.
+fn prune_numeric_labels(
+    axis: &AxisOptions,
+    fp: FontPolicy,
+    majors: &[f64],
+    position: impl Fn(f64) -> (f32, f32),
+    bounds: impl Fn((f32, f32), crate::text_render::TextMetrics) -> RectF,
 ) -> Vec<NumericTickLabel> {
     let ls = &axis.label_style;
     let labels: Vec<_> = majors
@@ -1958,34 +1991,30 @@ fn visible_numeric_labels(
                 (NumericTickText::Plain(text), metrics)
             };
             let position = position(value);
-            let (x, y) = label_origin(
-                side.clone(),
-                position,
-                axis.major_tick_length,
-                (ls.label_offset_x, ls.label_offset_y),
-                metrics,
-            );
-            let interval = match side {
-                Side::Top | Side::Bottom => (x, x + metrics.width),
-                Side::Left | Side::Right => (y - metrics.ascent, y + metrics.descent),
-            };
-            (interval.0.is_finite() && interval.1.is_finite()).then_some(NumericTickLabel {
-                position,
-                interval,
-                text,
-            })
+            let bounds = bounds(position, metrics);
+            [bounds.x, bounds.y, bounds.width, bounds.height]
+                .into_iter()
+                .all(f32::is_finite)
+                .then_some(NumericTickLabel {
+                    position,
+                    bounds,
+                    text,
+                })
         })
         .collect();
     // Half an em also scales with HiDPI/PNG export, unlike a fixed pixel gap.
     let gap = ls.font_size * 0.5;
     let mut stride = 1;
     loop {
-        let mut previous: Option<(f32, f32)> = None;
+        let mut previous: Option<RectF> = None;
+        let apart = |a: (f32, f32), b: (f32, f32)| b.0 >= a.1 + gap || a.0 >= b.1 + gap;
         let fits = labels.iter().step_by(stride).all(|label| {
-            let current = label.interval;
-            let fits =
-                previous.is_none_or(|last| current.0 >= last.1 + gap || last.0 >= current.1 + gap);
-            previous = Some(current);
+            let b = label.bounds;
+            let fits = previous.is_none_or(|a| {
+                apart((a.x, a.x + a.width), (b.x, b.x + b.width))
+                    || apart((a.y, a.y + a.height), (b.y, b.y + b.height))
+            });
+            previous = Some(b);
             fits
         });
         if fits {
@@ -3194,8 +3223,16 @@ mod tests {
                             labels.len() >= 2 && labels.len() < majors.len(),
                             "crowded axes must retain useful, separated labels"
                         );
-                        let mut intervals: Vec<_> =
-                            labels.iter().map(|label| label.interval).collect();
+                        let mut intervals: Vec<_> = labels
+                            .iter()
+                            .map(|label| {
+                                let b = label.bounds;
+                                match side {
+                                    Side::Top | Side::Bottom => (b.x, b.x + b.width),
+                                    Side::Left | Side::Right => (b.y, b.y + b.height),
+                                }
+                            })
+                            .collect();
                         intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
                         for pair in intervals.windows(2) {
                             assert!(

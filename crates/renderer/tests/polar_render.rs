@@ -1064,3 +1064,54 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
         .map(|el| el.element_id());
     assert_eq!(hit.as_deref(), Some("tick_labels_left"), "{probe:?}");
 }
+
+// Rotating the radius ray keeps its labels where they fit: they are thinned
+// where their drawn boxes collide, not by their height on screen, which on a
+// near-horizontal ray made them all overlap and dropped all but one. Where
+// they do not fit, the kept ones never overlap at any angle.
+#[test]
+fn radius_labels_survive_rotating_the_ray() {
+    use renderer::layout::{DrawnPart, Element, RectF, Side};
+    use renderer::{CpuTextMeasure, MeasureText};
+    let labels = |angle: f64, max: f64, font_size: f32| {
+        let mut chart = bare_chart(PolarOptions {
+            radial_label_angle_degrees: angle,
+            ..PolarOptions::default()
+        });
+        chart.set_y_range(0.0, max);
+        let config = chart.config_mut();
+        config.left_y.major_spacing = 0.5;
+        config.left_y.label_style.visible = true;
+        config.left_y.label_style.label_visible = true;
+        config.left_y.label_style.font_size = font_size;
+        config.left_y.line_visible = true;
+        config.left_y.tick = renderer::config::TickVisibility::Outside;
+        let config = chart.config().clone();
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        let mut boxes: Vec<RectF> = Vec::new();
+        assert!(
+            measure.drawn_parts(&config, &Element::AxisLabel(Side::Left), &mut |part| {
+                if let DrawnPart::Text(rect) = part {
+                    boxes.push(rect);
+                }
+            })
+        );
+        boxes
+    };
+    let angles = [0.0, 5.0, 15.0, 30.0, 90.0, 180.0, 270.0, 330.0, 355.0];
+    for angle in angles {
+        let roomy = labels(angle, 2.0, 10.0);
+        assert_eq!(roomy.len(), 5, "the ray at {angle}° keeps every label");
+        let crowded = labels(angle, 3.0, 16.0);
+        assert!(crowded.len() >= 2, "the ray at {angle}° keeps some labels");
+        for (i, a) in crowded.iter().enumerate() {
+            for b in &crowded[i + 1..] {
+                let apart = b.x >= a.x + a.width
+                    || a.x >= b.x + b.width
+                    || b.y >= a.y + a.height
+                    || a.y >= b.y + b.height;
+                assert!(apart, "the ray at {angle}°: {a:?} overlaps {b:?}");
+            }
+        }
+    }
+}

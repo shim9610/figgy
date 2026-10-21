@@ -405,10 +405,34 @@ fn each_radius_label(
         return;
     }
     let offset = polar.radius_label_offset(ls);
-    let labels = visible_numeric_labels(axis, Side::Left, fp, majors, |value| {
-        point(geometry, ray, ring_radius(polar, geometry, axis, value))
-    });
     let band = outward_tick(axis) + 4.0;
+    // Where a label is drawn: beside its tick and half a line inward, so the
+    // outermost label stays clear of the angle label on the same spoke.
+    let center = |position: (f32, f32), m: TextMetrics| {
+        let reach = band + side.0.abs() * m.width * 0.5 + side.1.abs() * m.height() * 0.5;
+        let inward = m.height() * 0.5;
+        (
+            position.0 + side.0 * reach - dir.0 * inward + offset[0],
+            position.1 + side.1 * reach - dir.1 * inward + offset[1],
+        )
+    };
+    // Thinned where the drawn boxes collide, so the ray's angle alone does
+    // not change which labels stay.
+    let labels = prune_numeric_labels(
+        axis,
+        fp,
+        majors,
+        |value| point(geometry, ray, ring_radius(polar, geometry, axis, value)),
+        |position, m| {
+            let (x, y) = center(position, m);
+            RectF {
+                x: x - m.width * 0.5,
+                y: y - m.height() * 0.5,
+                width: m.width,
+                height: m.height(),
+            }
+        },
+    );
     for label in &labels {
         let (dx, dy) = (
             label.position.0 - geometry.center[0],
@@ -419,15 +443,7 @@ fn each_radius_label(
             continue;
         }
         let m = extents(&label.text, ls, fp);
-        let reach = band + side.0.abs() * m.width * 0.5 + side.1.abs() * m.height() * 0.5;
-        // Beside the tick and half a line inward, so the outermost label
-        // stays clear of the angle label on the same spoke.
-        let inward = m.height() * 0.5;
-        let center = (
-            label.position.0 + side.0 * reach - dir.0 * inward,
-            label.position.1 + side.1 * reach - dir.1 * inward,
-        );
-        place(&label.text, (center.0 + offset[0], center.1 + offset[1]), m);
+        place(&label.text, center(label.position, m), m);
     }
 }
 

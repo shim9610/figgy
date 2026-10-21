@@ -74,6 +74,13 @@ serialized field changes.
   - heatmap cells pick at the painted pixel centre and only where the fill
     is visible;
   - contour label gaps neither pick nor highlight.
+- **Subplot selections.** A picked point, bin or cell of a subplot or
+  subplot overlay series is highlighted. Expansion never handed a subplot
+  the document's `picked_points` or `picked_data`, so no panel drew them.
+- **Polar radius labels.** The ray's labels are thinned where their drawn
+  boxes collide. They were thinned by their height on screen, as on a
+  Cartesian left axis, so rotating the ray toward horizontal dropped all but
+  one label.
 - **Pick compile time.** The pick shader is assembled from fragments, and
   only the exact variant a series needs is compiled, on its first pick.
   Enabling GPU picking compiles only the gate pipelines.
