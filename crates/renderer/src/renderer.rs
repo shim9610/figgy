@@ -27097,11 +27097,20 @@ mod tests {
                 timeout: Some(std::time::Duration::from_secs(30)),
             })
             .unwrap();
-        assert_eq!(
-            r.gpu_memory_usage()
-                .bytes_of(crate::GpuResourceKind::StreamingUpload),
-            0
-        );
+        // As above: the release can complete on another test's poll thread.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while r
+            .gpu_memory_usage()
+            .bytes_of(crate::GpuResourceKind::StreamingUpload)
+            != 0
+        {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "upload release timed out"
+            );
+            r.service_gpu_completions().unwrap();
+            std::thread::yield_now();
+        }
     }
 
     /// The token owns host inputs after prepare and rejects only renderer
