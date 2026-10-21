@@ -8,7 +8,7 @@
 
 1. 이 문서의 해당 코드 블록을 먼저 수정한다.
 2. 아래 동기화 대상 셰이더에서 같은 블록을 모두 수정한다.
-3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다. `Transform`을 바꿨다면 공통 블록 밖의 사본인 `gpu_pick.wgsl`의 `PickQueryTransform`도 고친다(1절).
+3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다. `Transform`을 바꿨다면 공통 블록 밖의 사본인 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 고친다(1절).
 4. `cargo test -p figgy-renderer --test shader_consistency`로 공통 블록과 함수 쌍둥이를 검사한 뒤 `cargo check && cargo test`로 전체 빌드와 테스트를 실행한다.
 
 한 파일만 바꾸면 컴파일은 성공해도 GPU가 메모리를 잘못 해석할 수 있다. 일부 시리즈의 색·위치·축만 어긋나는 오류를 피하려면 공통 정의를 함께 갱신해야 한다.
@@ -106,13 +106,13 @@ fn styled_point_index(local_index: u32) -> u32 {
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 투영이 `polar_projection::ndc`, 표본 유효성이 `polar_projection::sample_valid`다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 투영이 `polar_projection::ndc`, 표본 유효성이 `polar_projection::sample_valid`다. |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer.rs` (`[f32; 12]`). |
 
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
-`gpu_pick.wgsl`의 `PickQueryTransform`은 같은 배치를 공통 블록 밖에서 따로 선언한다. 픽 셰이더는 변환을 매개변수 유니폼 `PickQueryParams`의 첫 필드로 받고, CPU 쪽 `gpu_pick.rs::PickQueryParamsGpu`도 `ScatterTransform`을 그대로 담는다. `shader_consistency`는 이 사본을 검사하지 않고 `gpu_pick.rs`의 크기 단언(320바이트)은 크기 변화만 잡으므로, `Transform`을 바꿀 때 이 사본도 함께 고쳐야 한다.
+`gpu_pick/core.wgsl`의 `PickQueryTransform`은 같은 배치를 공통 블록 밖에서 따로 선언한다. 픽 셰이더는 변환을 매개변수 유니폼 `PickQueryParams`의 첫 필드로 받고, CPU 쪽 `gpu_pick.rs::PickQueryParamsGpu`도 `ScatterTransform`을 그대로 담는다. `shader_consistency`는 이 사본을 검사하지 않고 `gpu_pick.rs`의 크기 단언(320바이트)은 크기 변화만 잡으므로, `Transform`을 바꿀 때 이 사본도 함께 고쳐야 한다.
 
 `style_params[2].z` is reserved independently of the active style: it carries
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
@@ -222,13 +222,27 @@ group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵
 ## 3. 로그 변환 선택(`maybe_log`)
 
 `is_log` 플래그(0.0 또는 1.0)에 따라 값을 그대로 통과시키거나 log10을
-적용한다. `if` 분기 없이 `mix`로 두 값 중 하나를 고른다. 선형축에서도 log10을
-계산하지만 결과는 입력값 그대로다.
+적용한다. 로그축은 `if`로 log10 값을 바로 돌려주고, 선형축은 원래대로 `mix`로
+고른다. 선형축에서도 log10을 계산하지만 결과는 입력값 그대로다.
+
+로그축을 `mix`로 고르면 안 된다. 많은 드라이버(Metal, DX12, 브라우저 WebGPU)가
+`mix(x, y, a)`를 `x + a * (y - x)`로 계산하므로, `a = 1`이어도 `x`가 크면
+`y - x`에서 `y`가 f32 반올림에 묻혀 `y`가 나오지 않는다. 로그축에서
+`v ≥ 2²⁴`이면 log10(v)가 정수 단위로 깎이고 그보다 작은 값도 어긋난다.
+
+선형축 계산은 바꾸지 않는다. `mix`를 `select`로 바꾸거나 첫 값에 `(1.0 - is_log)`를
+곱했을 때, DX12 CI에서 큰 오프셋(1e9 이상)의 선형축 정밀도 테스트가 실패했다.
+여러 셰이더가 같은 값을 비트 단위로 내야 하는 곳이라, 선형 경로는 원래 식을
+그대로 둔다. 플래그로 두 값 중 하나를 고르는 곳(4절, 컬러맵 정규화,
+`axis_px_per_unit_at`)은 모두 이 형태를 쓴다.
 
 <!-- shader-common: applies-to=scatter,line,errorbar,bar,field,arc,anchor,label,vector -->
 ```wgsl
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
+    if is_log > 0.5 {
+        return lv;
+    }
     return mix(v, lv, is_log);
 }
 ```
@@ -255,6 +269,9 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    if is_log > 0.5 {
+        return fma(log_num / range, panel_scale, panel_offset);
+    }
     let data_t = mix(linear_num / range, log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
@@ -923,16 +940,26 @@ arrow takes the colour a heatmap cell of the same value would.
 The glyph fragment owns nothing but pixel geometry: `arrow_place` applies the
 pivot and the minimum length and scales the head down to a short arrow,
 `arrow_quad_corner` places the six vertices of the covering quad, and
-`arrow_coverage` evaluates the signed distance to shaft ∪ head per fragment.
-Nothing derived per arrow is uploaded: every draw recomputes the placement
-from the bound columns.
+`arrow_coverage` evaluates the signed distance to shaft ∪ head
+(`arrow_distance`) per fragment. The quad reaches half the shaft width plus
+the margin past both ends, so the shaft's round end is never cut. Nothing
+derived per arrow is uploaded: every draw recomputes the placement from the
+bound columns.
+
+Picking follows the draw. A grid vector's typed data pick is the grid input
+fragment's compute entry `pick_vector_cell` (bound like the draw, group 0 the
+pick transform, group 1 the typed pick query and output, group 2 this
+series' group): it walks every instance through `vector_sample`,
+`project_arrow`, `arrow_place` and `arrow_distance` and answers the matrix
+cell of the nearest drawn arrow, a later instance winning an exact tie. A
+point vector is a point pick (§5.8).
 
 ### 5.4 Colour ramp and size-map radius — function twins
 
 The colourbar ramp is evaluated in three shaders (`field_columnar.wgsl` for
 cells, `scatter_columnar.wgsl` for `point_color_map`, the vector shader for
 `VectorStyle::color_map`) and the size-map radius in two
-(`scatter_columnar.wgsl` and `gpu_pick.wgsl`). The maths is one function set,
+(`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`). The maths is one function set,
 parameterised on the caller's bounds, so the stop storage binding (which WGSL
 cannot pass as an argument) stays the only per-shader line. The functions
 below are copied byte-for-byte into each shader and `shader_consistency`
@@ -979,7 +1006,10 @@ fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32
         || !ramp_finite(span) || span <= 0.0) {
         return -1.0;
     }
-    let numerator = mix(linear_num, log_num, is_log);
+    var numerator = mix(linear_num, log_num, is_log);
+    if is_log > 0.5 {
+        numerator = log_num;
+    }
     let normalized = numerator / span;
     if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
         return -1.0;
@@ -1030,6 +1060,662 @@ fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, 
 }
 ```
 
+### 5.5 Marker shape — function twins
+
+A marker is drawn by the scatter shader (`fs_main`, `fs_mapped`,
+`fs_sketch`) and picked by `gpu_pick/*.wgsl`, and both must answer the same
+question: does this pixel belong to the marker? The shape is one function
+set: `shape_distance` and its helpers give the signed pixel distance from the
+marker's local position `p` (y up, like NDC) to the contour of the base
+shape, and `marker_edge` turns it into the coverage edge — a filled marker
+covers `d < 0`, an outline (and an open plus or cross) draws a stroke of
+half-width `STROKE_HALF_PX` centred on `d == 0`. The fragment covers its pixel
+where the edge is below the anti-aliasing width; the picker's hit distance is
+`max(marker_edge(d, filled), 0)` evaluated at the cursor, with the canvas y
+axis flipped into the marker's frame. So a pick at distance zero is a pixel
+at least half covered, and every painted pixel is within one anti-aliasing
+width of a zero-distance pick. The radius is the drawn one: the series or
+mapped radius times the display scale, through `visual_shape_radius`; the
+stroke half-width is in physical pixels and does not scale.
+
+Nothing a marker draws lies farther than `visual_shape_radius +
+QUAD_MARGIN_PX` from its centre on either axis (the quad `vs_main` emits),
+which is the reach the picker's axis gates allow around each centre.
+
+The functions and constants below are copied byte-for-byte into
+`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
+every body and constant with this document. CPU twin: the `marker_*`
+functions of `pick.rs` (`styled_marker_distance`).
+
+```wgsl
+// The marker quad's margin past the shape's visual radius, in pixels:
+// outline strokes and their anti-aliasing reach past the contour, and
+// nothing a marker draws lies outside `visual_shape_radius + QUAD_MARGIN_PX`
+// on either axis.
+const QUAD_MARGIN_PX: f32 = 2.0;
+// Half-width of the ~1.5 px contour stroke (outline shapes and Cross).
+const STROKE_HALF_PX: f32 = 0.75;
+
+const MARKER_PI: f32 = 3.14159265359;
+const MARKER_HALF_PI: f32 = 1.57079632679;
+const STAR_INNER_RATIO: f32 = 0.5;
+
+fn shape_is_filled(shape_id: u32) -> bool {
+    return (shape_id >= 5u && shape_id <= 8u) || shape_id >= 17u;
+}
+
+fn base_shape_id(shape_id: u32) -> u32 {
+    switch shape_id {
+        case 5u: { return 0u; }   // CircleFilled
+        case 6u: { return 1u; }   // SquareFilled
+        case 7u: { return 2u; }   // TriangleFilled
+        case 8u: { return 3u; }   // DiamondFilled
+        case 9u: { return 5u; }   // TriangleDown
+        case 10u: { return 6u; }  // TriangleLeft
+        case 11u: { return 7u; }  // TriangleRight
+        case 12u: { return 8u; }  // Plus
+        case 13u: { return 9u; }  // Pentagon
+        case 14u: { return 10u; } // Hexagon
+        case 15u: { return 11u; } // Octagon
+        case 16u: { return 12u; } // Star
+        case 17u: { return 5u; }  // TriangleDownFilled
+        case 18u: { return 6u; }  // TriangleLeftFilled
+        case 19u: { return 7u; }  // TriangleRightFilled
+        case 20u: { return 8u; }  // PlusFilled
+        case 21u: { return 4u; }  // CrossFilled
+        case 22u: { return 9u; }  // PentagonFilled
+        case 23u: { return 10u; } // HexagonFilled
+        case 24u: { return 11u; } // OctagonFilled
+        case 25u: { return 12u; } // StarFilled
+        default: { return shape_id; }
+    }
+}
+
+// Shape-local radius/half-extent relative to the circle reference radius.
+// Filled polygon markers are area-matched to a circle of radius r.
+fn visual_shape_radius(base: u32, r: f32) -> f32 {
+    var scale = 1.0;
+    switch base {
+        case 1u: { scale = 0.88622695; }  // square sqrt(pi)/2
+        case 2u, 5u, 6u, 7u: { scale = 1.55512030; } // triangles
+        case 3u: { scale = 1.25331414; }  // diamond sqrt(pi/2)
+        case 9u: { scale = 1.14913986; }  // pentagon
+        case 10u: { scale = 1.09963611; } // hexagon
+        case 11u: { scale = 1.05390737; } // octagon
+        case 12u: { scale = 1.46285033; } // 5-point star, inner ratio 0.5
+        default: {}
+    }
+    return r * scale;
+}
+
+fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
+    let c = cos(a);
+    let s = sin(a);
+    return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
+}
+
+// Unsigned distance from `p` to segment `ab`. The denominator guard keeps
+// a zero-length segment (radius 0) from yielding NaN — it degenerates to
+// point distance instead.
+fn sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+fn sd_box(p: vec2<f32>, b: vec2<f32>) -> f32 {
+    let q = abs(p) - b;
+    return length(max(q, vec2<f32>(0.0, 0.0))) + min(max(q.x, q.y), 0.0);
+}
+
+fn regular_vertex(i: u32, n: u32, r: f32, rot: f32) -> vec2<f32> {
+    let a = rot + f32(i) * (2.0 * MARKER_PI / f32(n));
+    return vec2<f32>(cos(a), sin(a)) * r;
+}
+
+fn star_vertex(i: u32, r: f32) -> vec2<f32> {
+    let outer = (i % 2u) == 0u;
+    let rr = select(r * STAR_INNER_RATIO, r, outer);
+    let a = MARKER_HALF_PI + f32(i) * MARKER_PI / 5.0;
+    return vec2<f32>(cos(a), sin(a)) * rr;
+}
+
+fn sd_regular_polygon(p: vec2<f32>, n: u32, r: f32, rot: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = regular_vertex(n - 1u, n, r, rot);
+    for (var i = 0u; i < n; i = i + 1u) {
+        let curr = regular_vertex(i, n, r, rot);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_star(p: vec2<f32>, r: f32) -> f32 {
+    var min_d = 1e20;
+    var inside = false;
+    var prev = star_vertex(9u, r);
+    for (var i = 0u; i < 10u; i = i + 1u) {
+        let curr = star_vertex(i, r);
+        min_d = min(min_d, sd_segment(p, prev, curr));
+        if ((curr.y > p.y) != (prev.y > p.y)) {
+            let x_at_y = (prev.x - curr.x) * (p.y - curr.y) / (prev.y - curr.y) + curr.x;
+            if (p.x < x_at_y) {
+                inside = !inside;
+            }
+        }
+        prev = curr;
+    }
+    return select(min_d, -min_d, inside);
+}
+
+fn sd_plus_filled(p: vec2<f32>, r: f32) -> f32 {
+    let arm = max(r * 0.32, STROKE_HALF_PX);
+    let h = sd_box(p, vec2<f32>(r, arm));
+    let v = sd_box(p, vec2<f32>(arm, r));
+    return min(h, v);
+}
+
+// Exact SDF of an equilateral point-up triangle centered on the origin,
+// vertices on the circle of radius `r` (same inscribed sizing as the
+// diamond). `p_in` is y-up (NDC orientation), so the apex points up on
+// screen. Adapted from iq's sdEquilateralTriangle.
+fn sd_triangle(p_in: vec2<f32>, r: f32) -> f32 {
+    let k = sqrt(3.0);
+    let half_w = 0.5 * k * r; // half of the base edge
+    var p = vec2<f32>(abs(p_in.x) - half_w, p_in.y + half_w / k);
+    if (p.x + k * p.y > 0.0) {
+        p = vec2<f32>(p.x - k * p.y, -k * p.x - p.y) * 0.5;
+    }
+    p.x -= clamp(p.x, -2.0 * half_w, 0.0);
+    return -length(p) * sign(p.y);
+}
+
+// Signed pixel distance from `p` to the contour of `base` shape. For open
+// plus/cross, the distance is unsigned to the center strokes; the outline
+// alpha path below turns that into a visible stroke.
+fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
+    var d: f32;
+    switch base {
+        case 0u: { d = length(p) - r; }
+        case 1u: { d = max(abs(p.x), abs(p.y)) - r; }
+        case 2u: { d = sd_triangle(p, r); }
+        case 3u: { d = abs(p.x) + abs(p.y) - r; }
+        case 4u: { // Cross / x
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(rotate2(p, MARKER_PI * 0.25), c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, -c), vec2<f32>(c, c));
+                let d2 = sd_segment(p, vec2<f32>(-c, c), vec2<f32>(c, -c));
+                d = min(d1, d2);
+            }
+        }
+        case 5u: { d = sd_triangle(-p, r); }
+        case 6u: { d = sd_triangle(rotate2(p, -MARKER_HALF_PI), r); }
+        case 7u: { d = sd_triangle(rotate2(p, MARKER_HALF_PI), r); }
+        case 8u: { // Plus / +
+            let c = r;
+            if (filled) {
+                d = sd_plus_filled(p, c);
+            } else {
+                let d1 = sd_segment(p, vec2<f32>(-c, 0.0), vec2<f32>(c, 0.0));
+                let d2 = sd_segment(p, vec2<f32>(0.0, -c), vec2<f32>(0.0, c));
+                d = min(d1, d2);
+            }
+        }
+        case 9u: { d = sd_regular_polygon(p, 5u, r, MARKER_HALF_PI); }
+        case 10u: { d = sd_regular_polygon(p, 6u, r, MARKER_HALF_PI); }
+        case 11u: { d = sd_regular_polygon(p, 8u, r, MARKER_HALF_PI); }
+        default: { // 12u: Star
+            d = sd_star(p, r);
+        }
+    }
+    return d;
+}
+
+/// The coverage edge of a marker at shape distance `d`: a filled marker
+/// covers `d < 0`; an outline (and an open plus or cross) is a stroke of
+/// half-width `STROKE_HALF_PX` centred on `d == 0`. A fragment draws where
+/// this is below its anti-aliasing width, and the picker's hit distance is
+/// `max(marker_edge(d, filled), 0)`.
+fn marker_edge(d: f32, filled: bool) -> f32 {
+    return select(abs(d) - STROKE_HALF_PX, d, filled);
+}
+```
+
+The picked ring (`vs_pick_ring`, `vs_pick_ring_mapped`) is drawn around the
+same marker: its centreline lies `radius_extra_px` (`Style.cap_half_px`)
+past `marker_extent_px`, the farthest point where `marker_edge <= 0` (the
+contour's circumradius at the visual radius, plus `STROKE_HALF_PX` for an
+outline), taken at the drawn radius and shape (the mapped entry resolves
+both per point; a size map's hidden point draws no ring). Under a stylized
+draw style `ring_marker_extent_px` uses the §5.7 envelope the picker picks:
+the sketch wobble added, a Milkyway planet's ring band or rim glow, a
+Constellation star's sprite disc. These are scatter-shader functions only;
+`pick_draw_agreement` measures the ring against the exported marker.
+
+### 5.6 Line stroke — function twins
+
+A line is drawn by `line_columnar.wgsl` (`vs_main` / `vs_sketch` with
+`fs_main` or `fs_constellation_line`) and picked by `gpu_pick/*.wgsl`, and both
+answer the same question per pixel. Every step piece of a segment is
+extruded into a rectangle with square caps, `max(line_width_px, 1) / 2` wide
+either side: `line_stroke_distance` is its signed distance in the piece's
+`(along, side)` frame, and the stroke covers a pixel where it is below the
+anti-aliasing width. A dashed stroke is on where `dash_pattern_on` says so at
+the interpolated arc position, which is the cumulative arc prefix of
+`line_arc.wgsl` at the piece's ends (`arc_start - half_w` at the A-side
+corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides
+each piece into `SKETCH_SUBDIV` spans whose knots are displaced along the
+normal by `sketch_line_offset` at their arc position, and the fragment
+evaluates the same rectangle in the undisplaced `(along, side)` frame.
+
+The picker inverts that extrusion at the cursor: it projects the cursor onto
+the piece, removes the knot displacement interpolated at that position, and
+evaluates `line_stroke_distance` and `dash_pattern_on` there. Its exact pass
+binds the line's arc prefix (group 2, `pick_arc`) — the buffer the line was
+drawn with, from the renderer's arc cache under the same key — so the dash
+phase and the wobble are the drawn ones. A streamed series is picked without
+it (streaming is not extended): its dashes pick as a solid stroke and its
+sketch wobble as the envelope `±amplitude_px`. In a dash gap the hit distance
+runs along the stroke to the nearer dash of the same piece. A Milkyway
+ribbon is never dashed; its strip and the star field scattered along it pick
+as one rectangle of the larger half extent (`gpu_pick.rs::
+milkyway_line_half_extent`), since the star positions are hashed per slot.
+
+The functions and constants below are copied byte-for-byte into
+`line_columnar.wgsl` and `gpu_pick/*.wgsl` (the sketch noise also into
+`scatter_columnar.wgsl` and `errorbar_columnar.wgsl`); `shader_consistency`
+compares every body and constant with this document. CPU twin:
+`pick.rs::line_segment_pick` (precise strokes and dashes) with its arc sum.
+
+```wgsl
+// Solid strokes grow their quad by this anti-aliasing fringe on every side;
+// dashed strokes keep the bare stroke so the measured dash lengths hold.
+const LINE_AA_EXTENT_PX: f32 = 0.5;
+// Subdivision count S per segment instance: the sketch pipeline draws
+// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
+// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
+const SKETCH_SUBDIV: u32 = 8u;
+
+/// Signed pixel distance from a stroke fragment to the edge of its piece's
+/// square-capped rectangle. `along` runs from the piece start along its
+/// direction, `side` across it; the rectangle is
+/// `[-half_w, len + half_w] x [-half_w, half_w]`. The stroke covers a pixel
+/// where this is below its anti-aliasing width.
+fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
+    let p = vec2<f32>(along - len * 0.5, side);
+    let half_rect = vec2<f32>(len * 0.5 + half_w, half_w);
+    let q = abs(p) - half_rect;
+    let outside = max(q, vec2<f32>(0.0, 0.0));
+    return length(outside) + min(max(q.x, q.y), 0.0);
+}
+
+/// Whether the dash pattern is "on" at arc position `dist_px`. `dash` packs
+/// up to eight sequential `[on, off, ...]` pixel lengths (`dash[0].xyzw`
+/// first) and `count` says how many are used; zero is a solid line, and so is
+/// a pattern whose spans are all zero or negative.
+fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool {
+    if count == 0u {
+        return true;
+    }
+    // A local copy, so the spans can be indexed at run time on every
+    // backend. Clamp to the 8-scalar capacity so a bad CPU-side count cannot
+    // index past the array.
+    var spans = dash;
+    let n = min(count, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    if period <= 0.0 {
+        return true;
+    }
+    // The square-cap extension can push dist_px slightly negative at the
+    // polyline start — wrap into [0, period) with the sign-safe form.
+    let phase = ((dist_px % period) + period) % period;
+    var acc = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
+        acc = end;
+        if phase <= end || i == n - 1u {
+            // Even spans are "on", odd spans are "off". Dash membership is
+            // intentionally binary so the requested pattern length stays
+            // stable; antialiasing is applied to the stroke outline itself.
+            return (i & 1u) == 0u;
+        }
+    }
+    // phase == period can occur from float rounding; that point is the
+    // start of the next repetition, which always opens with an "on" span.
+    return true;
+}
+
+// Deliberately duplicated per data shader (scatter/line/errorbar/pick) and
+// NOT in the SHADER_COMMON.md common block: line_arc.wgsl shares that block
+// but has no use for noise.
+fn sketch_hash01(i: u32, seed: u32) -> f32 {
+    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
+    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
+    h = h ^ (h >> 16u);
+    return f32(h) / 4294967296.0;
+}
+
+// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
+// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
+// integer boundaries is preserved.
+fn sketch_noise(t: f32, seed: u32) -> f32 {
+    let i = u32(i32(floor(t)));
+    let f = fract(t);
+    let u = f * f * (3.0 - 2.0 * f);
+    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
+}
+
+/// The sketch line's perpendicular displacement at arc position `arc_px`:
+/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
+/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
+/// layers degrade identically.
+fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
+    return select(0.0, wobble, wavelength_px > 0.0);
+}
+```
+
+### 5.7 Styled markers — function twins
+
+The stylized draw styles replace the precise marker with their own entry, and
+the picker follows the entry the chart's style draws with
+(`gpu_pick.rs::GpuPickDrawStyle`, the shader's `styled` modes):
+
+- **Sketch** (`fs_sketch`) perturbs `shape_distance` by
+  `sketch_marker_distance`'s angular noise, seeded per marker from the
+  style seed, the series salt (`Style.series_salt`, `fnv1a(series_id)`) and
+  the global point index; the picker evaluates the same function, so a
+  sketch marker picks exactly. Sketch strokes are §5.6's.
+- **Milkyway** draws a planet (`fs_planet`): the disc, the rim glow where
+  `planet_rim_glow` stays above `PLANET_ALPHA_FLOOR`, and the ring band
+  between `RING_INNER` and `RING_OUTER` at the hashed position angle
+  `planet_ring_phi`, all inside the quad `vs_planet` emits. The picker uses
+  the same functions; the ring band is the envelope of the baked ring
+  texture, whose density is data, not a shader constant.
+- **Constellation** draws a PSF star (`fs_constellation_star`) of radius
+  `constellation_star_radius` in a quad of four times that plus
+  `QUAD_MARGIN_PX`. Its brightness and tint are hashed and its sprite is a
+  baked texture that fades to zero inside the disc the quad inscribes
+  (`mod.rs::bake_psf_rgba`), so that disc is what picks. A zero star or line
+  opacity draws nothing and picks nothing.
+
+The functions and constants below are copied byte-for-byte into
+`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
+every body and constant with this document. CPU twin:
+`pick.rs::styled_marker_distance`.
+
+```wgsl
+const SKETCH_TAU: f32 = 6.28318530718;
+// Six noise periods around the contour keep marker wobble visually local.
+const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
+const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
+// Ring radii relative to the planet radius, and the apparent inclination of
+// the ring plane (minor/major axis ratio of the projected ellipse).
+const RING_INNER: f32 = 1.45;
+const RING_OUTER: f32 = 2.3;
+const RING_INCL: f32 = 0.32;
+// Quad half-extent multiplier — room for the ring + rim glow + AA.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+// A planet fragment whose composed alpha is at or below this is discarded.
+const PLANET_ALPHA_FLOOR: f32 = 0.003;
+
+/// A sketch marker's contour wobble amplitude in pixels: half the style's
+/// amplitude, at most 0.35 of the marker radius.
+fn sketch_marker_wobble_px(amplitude_px: f32, radius_px: f32) -> f32 {
+    return min(max(amplitude_px, 0.0) * 0.5, radius_px * 0.35);
+}
+
+/// A sketch marker's signed contour distance: the precise `shape_distance`
+/// perturbed with angle-parameterized noise, d' = d + k·noise(θ/τ·C), seeded
+/// per marker so every point gets its own hand-drawn outline. The noise
+/// lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px at
+/// default amplitude) and reads as part of the hand-drawn look.
+fn sketch_marker_distance(base: u32, p: vec2<f32>, r: f32, filled: bool, wobble_px: f32, seed: u32) -> f32 {
+    let theta = atan2(p.y, p.x); // [-π, π]
+    return shape_distance(base, p, r, filled)
+        + wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, seed);
+}
+
+/// A constellation marker star's core radius in pixels: the marker radius
+/// with a per-point size jitter hashed from the point index, at least half a
+/// pixel. The star's quad (and its PSF sprite) spans four times this plus
+/// `QUAD_MARGIN_PX`.
+fn constellation_star_radius(radius_px: f32, index: u32, seed: u32) -> f32 {
+    let size_jitter = 0.86 + 0.30 * sketch_hash01(index, seed ^ 0x51A7u);
+    return max(radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
+}
+
+// ScatterShape code → ring position angle. The first legacy shapes get hand-
+// picked angles; newer marker codes share a deterministic fallback.
+fn cons_ring_angle(shape_id: u32) -> f32 {
+    switch shape_id {
+        case 0u: { return 0.0; }          // Circle
+        case 1u: { return 0.52; }         // Square        (+30°)
+        case 2u: { return 1.05; }         // Triangle      (+60°)
+        case 3u: { return -0.52; }        // Diamond       (−30°)
+        case 4u: { return -1.05; }        // Cross         (−60°)
+        case 5u: { return 0.26; }         // CircleFilled  (+15°)
+        case 6u: { return 0.79; }         // SquareFilled  (+45°)
+        case 7u: { return -0.26; }        // TriangleFilled(−15°)
+        case 8u: { return -0.79; }        // DiamondFilled (−45°)
+        default: {
+            return -1.2 + f32(shape_id % 11u) * 0.24;
+        }
+    }
+}
+
+/// A planet's ring position angle: the series shape's tilt plus a small
+/// per-point jitter (real systems aren't aligned).
+fn planet_ring_phi(shape_id: u32, seed_inst: u32) -> f32 {
+    let h_jit = sketch_hash01(seed_inst, 0x717Au);
+    return cons_ring_angle(shape_id) + (h_jit - 0.5) * 0.12;
+}
+
+/// `p` rotated into the ring frame of position angle `phi`.
+fn planet_ring_frame(p: vec2<f32>, phi: f32) -> vec2<f32> {
+    let cphi = cos(phi);
+    let sphi = sin(phi);
+    return vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
+}
+
+/// The ring-plane radius of ring-frame point `q`, in planet radii: the ring
+/// band is drawn where it lies between `RING_INNER` and `RING_OUTER`.
+fn planet_ring_rho(q: vec2<f32>, r_planet: f32) -> f32 {
+    return length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
+}
+
+/// The atmospheric rim glow's alpha at distance `dist` from the planet's
+/// centre: a soft exponential falloff outside the disc.
+fn planet_rim_glow(dist: f32, r_planet: f32, rim_gain: f32) -> f32 {
+    let rim_d = max(dist - r_planet, 0.0);
+    return rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0));
+}
+```
+
+### 5.8 Arrow glyph — function twins
+
+A point vector series (`DataRenderType::Vector` with `VectorComponents::Points`)
+is picked on the arrow the assembled vector shader draws, not at its anchor.
+The pick shader's `pick_vector_candidate` repeats the draw's `vector_sample`
+(the shortest of the anchor, component and colour columns bounds the arrow
+count; a non-finite component draws nothing) and `project_arrow` (the `Data`
+tip through the axes, or the `Pixels` direction through
+`axis_px_per_unit_at`), then calls the glyph's own `arrow_place` and
+`arrow_distance`. The draw frame is y-up framebuffer pixels; the picker works
+in canvas pixels flipped up (`pick_flip`), a translation of it, so distances
+agree. A zero vector, an arrow under `min_length_px` and an arrow with a
+non-finite end are not drawn and do not pick.
+
+`ARROW_SHAFT_MIN_PX` keeps the head-only arrow (shorter than its head) from
+growing a round dot at the tail: the fragment stage recomputes the length from
+the pivot-shifted tail and tip, and that rounding used to leave a shaft of a
+few ulps whose round end the draw painted and the pick did not.
+
+The items below are copied byte-for-byte into `vector/glyph_arrow.wgsl` (the
+constants, structs and `arrow_*` functions), `vector/project_cartesian2d.wgsl`
+(`pair_add`, `axis_px_per_unit_at`) and `gpu_pick/*.wgsl`; `shader_consistency`
+compares every body, struct and constant with this document. CPU twin:
+`pick.rs::vector_arrow_distance` with `arrow_place` / `arrow_distance`.
+
+```wgsl
+const ARROW_PIVOT_TAIL: u32 = 0u;
+const ARROW_PIVOT_MIDDLE: u32 = 1u;
+const ARROW_PIVOT_TIP: u32 = 2u;
+// A shaft shorter than this (pixels) is no shaft. The head takes the whole
+// length of an arrow shorter than the head; the fragment stage recomputes
+// that length from the interpolated tail and tip, and the rounding must not
+// turn the missing shaft into a round dot at the tail.
+const ARROW_SHAFT_MIN_PX: f32 = 0.01;
+
+/// Pixel-space arrow style. Sizes are already multiplied by the render scale.
+struct ArrowStyle {
+    width_px: f32,
+    head_length_px: f32,
+    head_width_px: f32,
+    min_length_px: f32,
+    pivot: u32,
+};
+
+/// An arrow placed on its anchor: tail and tip after the pivot shift, and the
+/// head dimensions after scaling down for a short arrow.
+struct ArrowPlacement {
+    tail: vec2<f32>,
+    tip: vec2<f32>,
+    head_length_px: f32,
+    head_width_px: f32,
+    valid: bool,
+};
+
+fn arrow_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+/// Apply the pivot and the minimum length, and size the head to the arrow.
+/// A zero-length arrow, one shorter than `min_length_px`, or one with a
+/// non-finite end is not drawn.
+fn arrow_place(tail: vec2<f32>, tip: vec2<f32>, style: ArrowStyle) -> ArrowPlacement {
+    var out: ArrowPlacement;
+    out.tail = tail;
+    out.tip = tip;
+    out.head_length_px = 0.0;
+    out.head_width_px = 0.0;
+    out.valid = false;
+    let delta = tip - tail;
+    let len = length(delta);
+    if (!arrow_finite(len) || len <= 0.0 || len < style.min_length_px) {
+        return out;
+    }
+    var shift = 0.0;
+    if (style.pivot == ARROW_PIVOT_MIDDLE) {
+        shift = -0.5;
+    } else if (style.pivot == ARROW_PIVOT_TIP) {
+        shift = -1.0;
+    }
+    out.tail = tail + delta * shift;
+    out.tip = tip + delta * shift;
+    let head_length = min(max(style.head_length_px, 0.0), len);
+    out.head_length_px = head_length;
+    if (style.head_length_px > 0.0) {
+        out.head_width_px = max(style.head_width_px, 0.0) * (head_length / style.head_length_px);
+    }
+    out.valid = true;
+    return out;
+}
+
+/// Unsigned distance from `p` to the segment `ab`; a zero-length segment is a
+/// point.
+fn arrow_sd_segment(p: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    let pa = p - a;
+    let ba = b - a;
+    let h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-12), 0.0, 1.0);
+    return length(pa - ba * h);
+}
+
+/// Signed distance from `p` to the triangle `p0 p1 p2` (negative inside).
+fn arrow_sd_triangle(p: vec2<f32>, p0: vec2<f32>, p1: vec2<f32>, p2: vec2<f32>) -> f32 {
+    let e0 = p1 - p0;
+    let e1 = p2 - p1;
+    let e2 = p0 - p2;
+    let v0 = p - p0;
+    let v1 = p - p1;
+    let v2 = p - p2;
+    let pq0 = v0 - e0 * clamp(dot(v0, e0) / max(dot(e0, e0), 1e-12), 0.0, 1.0);
+    let pq1 = v1 - e1 * clamp(dot(v1, e1) / max(dot(e1, e1), 1e-12), 0.0, 1.0);
+    let pq2 = v2 - e2 * clamp(dot(v2, e2) / max(dot(e2, e2), 1e-12), 0.0, 1.0);
+    let s = sign(e0.x * e2.y - e0.y * e2.x);
+    let d = min(
+        min(
+            vec2<f32>(dot(pq0, pq0), s * (v0.x * e0.y - v0.y * e0.x)),
+            vec2<f32>(dot(pq1, pq1), s * (v1.x * e1.y - v1.y * e1.x)),
+        ),
+        vec2<f32>(dot(pq2, pq2), s * (v2.x * e2.y - v2.y * e2.x)),
+    );
+    return -sqrt(d.x) * sign(d.y);
+}
+
+/// Signed distance from pixel `p` to the placed arrow: the union of the
+/// shaft (a segment `width_px` wide) and the head (a triangle). Negative
+/// inside; `1e20` for an arrow with neither.
+fn arrow_distance(p: vec2<f32>, placed: ArrowPlacement, width_px: f32) -> f32 {
+    let delta = placed.tip - placed.tail;
+    let len = length(delta);
+    let dir = delta / max(len, 1e-12);
+    let nrm = vec2<f32>(-dir.y, dir.x);
+    let head_base = placed.tip - dir * placed.head_length_px;
+    var distance = 1e20;
+    // The shaft stops where the head begins. A shaft of zero length draws
+    // nothing rather than a dot.
+    if (len - placed.head_length_px > ARROW_SHAFT_MIN_PX && width_px > 0.0) {
+        distance = min(distance, arrow_sd_segment(p, placed.tail, head_base) - width_px * 0.5);
+    }
+    if (placed.head_length_px > 0.0 && placed.head_width_px > 0.0) {
+        let half = nrm * (placed.head_width_px * 0.5);
+        distance = min(distance, arrow_sd_triangle(p, placed.tip, head_base + half, head_base - half));
+    }
+    return distance;
+}
+
+/// `pair + s` as a `(hi, lo)` pair: the error-free sum keeps the low part, so a
+/// large-offset coordinate still resolves a small data-space step.
+fn pair_add(pair: vec2<f32>, s: f32) -> vec2<f32> {
+    let sum = fma(1.0, pair.x, s);
+    let b_virtual = fma(1.0, sum, -pair.x);
+    let a_virtual = fma(1.0, sum, -b_virtual);
+    let b_roundoff = fma(1.0, s, -b_virtual);
+    let a_roundoff = fma(1.0, pair.x, -a_virtual);
+    return vec2<f32>(sum, fma(1.0, a_roundoff, b_roundoff) + pair.y);
+}
+
+/// Pixels per data unit along one axis whose range is `range` (the hi/lo
+/// sum), at `pair`: the derivative of `axis_pair_to_t` mapped through NDC.
+/// Exact on a linear axis; the local direction on a logarithmic one, the way
+/// the contour labels orient themselves.
+fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: f32, pair: vec2<f32>) -> f32 {
+    let linear = 2.0 * panel_scale / (range * pixel_to_ndc);
+    // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
+    let value = pair.x + pair.y;
+    let log_slope = linear / (value * log(10.0));
+    if is_log > 0.5 {
+        return log_slope;
+    }
+    return mix(linear, log_slope, is_log);
+}
+```
+
 ---
 ## 변경 체크리스트
 
@@ -1050,16 +1736,26 @@ fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, 
       확인했다 (struct 크기가 바뀌었다면 `mod.rs`의
       `size_of::<ScatterTransform>() == 144` / `size_of::<PrimitiveStyle>() == 80`
       컴파일 타임 단언도 갱신).
-- [ ] `Transform`을 바꿨다면 `gpu_pick.wgsl`의 `PickQueryTransform`도 같은
+- [ ] `Transform`을 바꿨다면 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 같은
       배치로 고쳤다 (크기가 바뀌었다면 `gpu_pick.rs`의
       `size_of::<PickQueryParamsGpu>() == 320` 단언도 갱신).
 - [ ] 격자 샘플링 블록을 바꿨다면 `mod.rs::FieldParamsGpu` / `GridColumnGpu`를
       확인했다. 쌍 연산 함수를 바꿨다면 `gpu_errorbar.wgsl`의 같은 함수와
       `vector/vector_input_grid.wgsl`의 `vector_*` 사본도 고쳤다.
 - [ ] 5.4절 함수를 바꿨다면 `field_columnar.wgsl`, `scatter_columnar.wgsl`,
-      `vector/vector_input_common.wgsl`, `gpu_pick.wgsl`의 사본을 고쳤다.
+      `vector/vector_input_common.wgsl`, `gpu_pick/*.wgsl`의 사본을 고쳤다.
+- [ ] 5.5절 마커 모양 함수를 바꿨다면 `scatter_columnar.wgsl`과
+      `gpu_pick/*.wgsl`의 사본, `pick.rs`의 `marker_*` CPU 쌍둥이를 고쳤다.
+- [ ] 5.6절 선 획 함수를 바꿨다면 `line_columnar.wgsl`과 `gpu_pick/*.wgsl`의
+      사본, `pick.rs::line_segment_pick` CPU 쌍둥이를 고쳤다.
+- [ ] 5.7절 양식 마커 함수를 바꿨다면 `scatter_columnar.wgsl`과
+      `gpu_pick/*.wgsl`의 사본, `pick.rs::styled_marker_distance` CPU 쌍둥이를
+      고쳤다.
+- [ ] 5.8절 화살표 글리프 함수를 바꿨다면 `vector/glyph_arrow.wgsl`,
+      `vector/project_cartesian2d.wgsl`, `gpu_pick/*.wgsl`의 사본,
+      `pick.rs::vector_arrow_distance` CPU 쌍둥이를 고쳤다.
 - [ ] 계단 보간 헬퍼를 바꿨다면 `line_columnar.wgsl`과 `line_arc.wgsl`을 함께
-      고쳤고, `gpu_pick.wgsl`의 `pick_step_piece_count` / `pick_step_piece`가
+      고쳤고, `gpu_pick/*.wgsl`의 `pick_step_piece_count` / `pick_step_piece`가
       같은 규칙을 따르는지 확인했다.
 - [ ] `cargo test -p figgy-renderer --test shader_consistency` 통과.
 - [ ] `cargo check` 통과.

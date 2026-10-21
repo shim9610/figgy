@@ -37,13 +37,13 @@ render targets and compatibility policy.
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu     = "30"
 ```
 
-This installs `figgy-renderer` 0.18.0 from crates.io. A crate that uses the
+This installs `figgy-renderer` 0.18.1 from crates.io. A crate that uses the
 model types without the renderer depends on
-`model = { package = "figgy-model", version = "0.12.0" }`.
+`model = { package = "figgy-model", version = "0.12.1" }`.
 
 For a local checkout, replace `version` with a `path` relative to the consuming
 application's `Cargo.toml`. A standalone program that calls `pollster::block_on`
@@ -592,12 +592,12 @@ WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서�
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu     = "30"
 ```
 
-이 설정은 crates.io에서 `figgy-renderer` 0.18.0을 받는다. 렌더러 없이 모델 타입만 쓰는
-크레이트는 `model = { package = "figgy-model", version = "0.12.0" }`을 의존성으로 지정한다.
+이 설정은 crates.io에서 `figgy-renderer` 0.18.1을 받는다. 렌더러 없이 모델 타입만 쓰는
+크레이트는 `model = { package = "figgy-model", version = "0.12.1" }`을 의존성으로 지정한다.
 
 로컬 체크아웃을 쓰려면 `version` 대신 `path = "../figgy/crates/renderer"`처럼 애플리케이션의
 `Cargo.toml` 기준 경로를 지정한다. [examples/line.rs](examples/line.rs)처럼

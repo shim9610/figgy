@@ -74,6 +74,18 @@ fn all_shader_compilation_times_and_entry_coverage() {
         let before = capture::counts();
         pollster::block_on(renderer.prewarm_all()).unwrap();
         assert_eq!(before, capture::counts());
+        // The exact pick modules compile on the first pick that needs each;
+        // measure every module (with every path) here.
+        if samples == 1 {
+            let bundle = renderer.picker.ready_bundle().unwrap();
+            for shader in crate::gpu_pick::PickShader::EXACT {
+                let key = crate::gpu_pick::PickExactKey {
+                    shader,
+                    ..crate::gpu_pick::PickExactKey::ALL_PATHS
+                };
+                renderer.picker.exact.ensure(&bundle, key).unwrap();
+            }
+        }
         if samples == 1 {
             data_render::create_bar_columnar_pipeline(
                 &device,

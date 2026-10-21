@@ -69,6 +69,9 @@ fn styled_point_index(local_index: u32) -> u32 {
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
+    if is_log > 0.5 {
+        return lv;
+    }
     return mix(v, lv, is_log);
 }
 
@@ -77,6 +80,9 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    if is_log > 0.5 {
+        return fma(log_num / range, panel_scale, panel_offset);
+    }
     let data_t = mix(linear_num / range, log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
@@ -187,7 +193,7 @@ fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -
 // Piece corners live in DATA space so every consumer projects the same
 // points: the line, area, sketch, ribbon and star entries here, the
 // arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
+// (gpu_pick/line.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
 // and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
 // and line_arc.wgsl (shader_consistency checks); the CPU twin is
 // `line_step::step_pieces` in the renderer crate.

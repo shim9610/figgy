@@ -3,7 +3,9 @@
 //! The compute entry points live in the same WGSL modules as the render entry
 //! points. Histogram picking calls the bar renderer's rectangle helper;
 //! heatmap/contour picking calls the field renderer's `locate`,
-//! `contour_sample`, and quadratic contour-distance helpers. The CPU submits
+//! `contour_sample`, and quadratic contour-distance helpers; grid vector
+//! picking runs the assembled vector shader's `pick_vector_cell`, which walks
+//! the arrows with the draw's own sample, projection and glyph functions. The CPU submits
 //! only transforms, lane bases, style scalars, and identity indices. It never
 //! reads or mirrors source values from [`ColumnPool`](crate::data_render::ColumnPool).
 
@@ -24,6 +26,9 @@ const INIT_SCOPE: &str = "renderer.gpu_data_pick";
 const DATA_PICK_CANDIDATE_BYTES: u64 = 32;
 const DATA_PICK_FLAG_FILL: u32 = 1;
 const DATA_PICK_FLAG_CONTOUR: u32 = 2;
+/// Resident fills pick the cell painted at the cursor's pixel centre, and
+/// only where its colour is not clear (`field_pick_cell`).
+const DATA_PICK_FLAG_PAINTED: u32 = 4;
 const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
 const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
@@ -54,6 +59,13 @@ struct DataPickCandidateGpu {
 const _: () = assert!(std::mem::size_of::<DataPickQueryGpu>() == 80);
 const _: () = assert!(std::mem::size_of::<DataPickCandidateGpu>() == 32);
 
+/// What a typed pick's field and vector-grid series keep alive until the
+/// pick resolves: the group-2 charge and a contour's label placement.
+struct FieldPickHold {
+    _charge: SharedCharge,
+    _label: Option<crate::gpu_contour::ContourLabelSnapshot>,
+}
+
 #[derive(Clone)]
 struct DataPickIdentity {
     source_id: Option<String>,
@@ -78,6 +90,19 @@ pub(crate) enum GpuDataPickGeometry {
         has_fill: bool,
         has_contour: bool,
         contour_width_px: f32,
+        /// The fill's premultiplied `nan_color` (the fill's group-1 style),
+        /// so the cell pick sees the colour the fill paints.
+        nan_color_premul: [f32; 4],
+        /// A labelled contour's label placement at the pick's transform: its
+        /// gaps paint no contour, so they pick none.
+        label: Option<crate::gpu_contour::ContourLabelSnapshot>,
+    },
+    /// A grid vector's arrows, picked as the cells they are drawn for: the
+    /// series' vector group 2 (pool, grid table, stops, params at the pick's
+    /// display scale).
+    VectorGrid {
+        vector_bg: wgpu::BindGroup,
+        charge: SharedCharge,
     },
 }
 
@@ -474,7 +499,10 @@ impl GpuStreamDataPick {
                     identities: self.identities,
                     byte_len: DATA_PICK_CANDIDATE_BYTES,
                     gpu_reduced: true,
-                    _field_charges: vec![self.charge],
+                    _field_charges: vec![FieldPickHold {
+                        _charge: self.charge,
+                        _label: None,
+                    }],
                     _scratch_charge: ChargeTally::new()
                         .into_charge(&self.bundle.ledger, GpuResourceKind::PickScratch),
                     _readback_charge: tally
@@ -511,6 +539,16 @@ fn compute_uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     }
 }
 
+/// The shader modules the typed data pick's compute entries live in, next to
+/// the render entries they share geometry with.
+#[derive(Clone, Copy)]
+pub(crate) struct DataPickShaders<'a> {
+    pub(crate) bar: &'a wgpu::ShaderModule,
+    pub(crate) field: &'a wgpu::ShaderModule,
+    /// The assembled grid vector module (`VectorInput::Grid`).
+    pub(crate) vector_grid: &'a wgpu::ShaderModule,
+}
+
 /// Immutable pipelines shared by every chart and pick query on one renderer.
 pub(crate) struct DataPickPipelineBundle {
     device: Arc<wgpu::Device>,
@@ -519,7 +557,11 @@ pub(crate) struct DataPickPipelineBundle {
     query_bgl: wgpu::BindGroupLayout,
     histogram: wgpu::ComputePipeline,
     field: wgpu::ComputePipeline,
+    vector_cell: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
+    /// Group 3 of the field pick for a contour without labels.
+    empty_label_gap: wgpu::BindGroup,
+    _empty_label_gap_charge: SharedCharge,
     stream_reduce_bgl: wgpu::BindGroupLayout,
     stream_reduce_data: wgpu::ComputePipeline,
     stream_reduce_point: wgpu::ComputePipeline,
@@ -531,13 +573,18 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
+        let DataPickShaders {
+            bar: bar_shader,
+            field: field_shader,
+            vector_grid: vector_grid_shader,
+        } = shaders;
         started(observer, INIT_SCOPE, "setup");
         let query_bgl = crate::gpu_compile::bind_group_layout(
             &device,
@@ -558,11 +605,28 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        // Group 3: the contour's label gaps (`contour_label_gap_contains`).
+        let label_gap_bgl = crate::gpu_contour::create_label_gap_bind_group_layout(&device);
         let field_layout = crate::gpu_compile::pipeline_layout(
             &device,
             &wgpu::PipelineLayoutDescriptor {
                 label: Some("figgy field data pick layout"),
-                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(field_bgl)],
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    Some(field_bgl),
+                    Some(&label_gap_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
+        let (empty_label_gap, empty_label_gap_charge) =
+            crate::gpu_contour::create_empty_label_gap_bind_group(&device, &ledger, &label_gap_bgl);
+        let vector_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy vector grid data pick layout"),
+                bind_group_layouts: &[Some(transform_bgl), Some(&query_bgl), Some(vector_bgl)],
                 immediate_size: 0,
             },
         );
@@ -589,6 +653,19 @@ impl DataPickPipelineBundle {
                     layout: Some(&field_layout),
                     module: field_shader,
                     entry_point: Some("pick_field_data"),
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let vector_cell = observe_value(observer, INIT_SCOPE, "pick_vector_cell", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy vector grid data pick pipeline"),
+                    layout: Some(&vector_layout),
+                    module: vector_grid_shader,
+                    entry_point: Some("pick_vector_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                     cache: None,
                 },
@@ -648,7 +725,10 @@ impl DataPickPipelineBundle {
             query_bgl,
             histogram,
             field,
+            vector_cell,
             empty_bar_style_map,
+            empty_label_gap,
+            _empty_label_gap_charge: empty_label_gap_charge,
             stream_reduce_bgl,
             stream_reduce_data,
             stream_reduce_point,
@@ -660,11 +740,11 @@ impl DataPickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
-        bar_shader: &wgpu::ShaderModule,
-        field_shader: &wgpu::ShaderModule,
+        shaders: DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
+        vector_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         #[cfg(target_arch = "wasm32")]
@@ -699,16 +779,27 @@ impl DataPickPipelineBundle {
             )
             .await
             .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
+            crate::init::prewarm_compute_entries_js(
+                &device,
+                "gpu.data_pick.vector.async",
+                &crate::data_render::vector::assemble(
+                    crate::data_render::vector::VectorInput::Grid,
+                ),
+                &[("pick_vector_cell", "pick_vector_cell")],
+                observer,
+            )
+            .await
+            .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
         }
         Ok(Self::new_observed(
             device,
             queue,
             ledger,
-            bar_shader,
-            field_shader,
+            shaders,
             transform_bgl,
             field_bgl,
             bar_style_bgl,
+            vector_bgl,
             observer,
         ))
     }
@@ -833,7 +924,8 @@ impl DataPickPipelineBundle {
 
         enum PreparedKind {
             Histogram(wgpu::BindGroup),
-            Field(wgpu::BindGroup),
+            Field(wgpu::BindGroup, wgpu::BindGroup),
+            VectorGrid(wgpu::BindGroup),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -883,24 +975,49 @@ impl DataPickPipelineBundle {
                     has_fill,
                     has_contour,
                     contour_width_px,
+                    nan_color_premul,
+                    label,
                 } => {
                     let mut flags = 0;
                     if has_fill {
-                        flags |= DATA_PICK_FLAG_FILL;
+                        flags |= DATA_PICK_FLAG_FILL | DATA_PICK_FLAG_PAINTED;
                     }
                     if has_contour {
                         flags |= DATA_PICK_FLAG_CONTOUR;
                     }
-                    field_charges.push(charge);
+                    let label_gap = label.as_ref().map_or_else(
+                        || self.empty_label_gap.clone(),
+                        |label| label.label_gap_bind_group().clone(),
+                    );
+                    field_charges.push(FieldPickHold {
+                        _charge: charge,
+                        _label: label,
+                    });
                     (
                         DataPickQueryGpu {
                             cursor_ndc_t: cursor,
                             limits: [query.max_distance_px, 0.0, contour_width_px, 0.0],
                             data: [flags, item.paint_order, 0, 0],
                             bases: [0; 4],
+                            baseline: nan_color_premul,
+                        },
+                        PreparedKind::Field(field_bg, label_gap),
+                    )
+                }
+                GpuDataPickGeometry::VectorGrid { vector_bg, charge } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: charge,
+                        _label: None,
+                    });
+                    (
+                        DataPickQueryGpu {
+                            cursor_ndc_t: cursor,
+                            limits: [query.max_distance_px, 0.0, 0.0, 0.0],
+                            data: [0, item.paint_order, 0, 0],
+                            bases: [0; 4],
                             baseline: [0.0; 4],
                         },
-                        PreparedKind::Field(field_bg),
+                        PreparedKind::VectorGrid(vector_bg),
                     )
                 }
             };
@@ -966,9 +1083,14 @@ impl DataPickPipelineBundle {
                         pass.set_pipeline(&self.histogram);
                         pass.set_bind_group(2, style_map, &[]);
                     }
-                    PreparedKind::Field(field_bg) => {
+                    PreparedKind::Field(field_bg, label_gap) => {
                         pass.set_pipeline(&self.field);
                         pass.set_bind_group(2, field_bg, &[]);
+                        pass.set_bind_group(3, label_gap, &[]);
+                    }
+                    PreparedKind::VectorGrid(vector_bg) => {
+                        pass.set_pipeline(&self.vector_cell);
+                        pass.set_bind_group(2, vector_bg, &[]);
                     }
                 }
                 pass.set_bind_group(1, &item.query_bg, &[]);
@@ -1026,7 +1148,7 @@ enum DataPickTicketState {
         identities: Arc<[DataPickIdentity]>,
         byte_len: u64,
         gpu_reduced: bool,
-        _field_charges: Vec<SharedCharge>,
+        _field_charges: Vec<FieldPickHold>,
         _scratch_charge: GpuByteCharge,
         _readback_charge: GpuByteCharge,
     },
@@ -1304,18 +1426,25 @@ mod stream_tests {
                 ),
             },
         );
+        let vector_grid =
+            data_render::vector::shader_module(&device, data_render::vector::VectorInput::Grid);
         let transform = data_render::create_scatter_transform_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
+        let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         DataPickPipelineBundle::new_observed(
             device,
             queue,
             Arc::new(GpuLedger::new()),
-            &bar,
-            &field,
+            DataPickShaders {
+                bar: &bar,
+                field: &field,
+                vector_grid: &vector_grid,
+            },
             &transform,
             &field_bgl,
             &style,
+            &vector_bgl,
             &mut |_| {},
         )
     }

@@ -670,7 +670,8 @@ pub struct AnnotationElement {
     pub handle: Option<AnnotationHandle>,
 }
 
-/// Half the thickness of the strip a reference line can be grabbed by.
+/// Least half thickness by which a stroke can be grabbed: a thin line is
+/// grabbed within this distance, a wider one across its whole width.
 const LINE_HIT_HALF_WIDTH: f32 = 3.0;
 /// Gap between an arrow's shaft and its label.
 pub const ARROW_LABEL_GAP: f32 = 6.0;
@@ -723,16 +724,37 @@ impl AnnotationElement {
         }
     }
 
+    /// What the raster paints for this item ([`annotation_shapes`]).
+    pub fn shapes(&self, cfg: &AnnotationLayer) -> [Option<AnnotationShape>; 3] {
+        match (cfg.items.get(self.index), self.geometry(cfg)) {
+            (Some(item), Some(geometry)) => {
+                annotation_shapes(&item.kind, &geometry, self.text_size)
+            }
+            _ => [None, None, None],
+        }
+    }
+
     /// The handles this item exposes, as compass names on its selection box
     /// and the part each one drags, with the square's centre.
     fn handles(&self, cfg: &AnnotationLayer) -> Vec<(ResizeHandle, AnnotationHandle, [f32; 2])> {
         let Some(geometry) = self.geometry(cfg) else {
             return Vec::new();
         };
-        let Some(rect) = self.bounds(cfg, &NoMeasure) else {
+        // The handles sit on the item's own shapes, not on its label; an
+        // item that paints only its label keeps the label's box.
+        let shapes = self.shapes(cfg);
+        let own = union_rects(
+            shapes
+                .iter()
+                .flatten()
+                .filter(|s| !matches!(s, AnnotationShape::Label(_)))
+                .map(AnnotationShape::extent),
+        );
+        let Some(rect) =
+            own.or_else(|| union_rects(shapes.iter().flatten().map(AnnotationShape::extent)))
+        else {
             return Vec::new();
         };
-        let rect = rect.expanded(SELECTION_PADDING);
         let (x0, y0) = (rect.x, rect.y);
         let (x1, y1) = (rect.x + rect.width, rect.y + rect.height);
         let (cx, cy) = (rect.x + rect.width * 0.5, rect.y + rect.height * 0.5);
@@ -960,16 +982,184 @@ pub fn geometry_bounds(geometry: &AnnotationGeometry, head_half_width: f32) -> R
     }
 }
 
-fn head_half_width(kind: &AnnotationKind) -> f32 {
-    match kind {
-        AnnotationKind::Arrow { style, .. } => style.head_width.max(style.line.width) * 0.5,
-        _ => 0.0,
+/// One shape the raster paints for an annotation item, in the layer's
+/// pixel space.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum AnnotationShape {
+    /// A segment stroked `width` across with butt ends, dashed as the item's
+    /// line style says.
+    Stroke {
+        a: [f32; 2],
+        b: [f32; 2],
+        width: f32,
+    },
+    /// A filled triangle: an arrow head, tip first.
+    Triangle([[f32; 2]; 3]),
+    /// A span's fill or a text block's box, padding included.
+    Rect(RectF),
+    /// The block of a reference line's or an arrow's label.
+    Label(RectF),
+}
+
+impl AnnotationShape {
+    /// Whether `p` is on the shape, within the grab slack: a stroke within
+    /// half its width and at least 3 px, a filled shape
+    /// within [`SELECTION_PADDING`] of its edge.
+    pub fn contains(&self, p: [f32; 2]) -> bool {
+        match *self {
+            AnnotationShape::Stroke { a, b, width } => {
+                segment_distance(p, a, b) <= stroke_hit_half_width(width)
+            }
+            AnnotationShape::Triangle(t) => {
+                in_triangle(p, t)
+                    || (0..3)
+                        .any(|i| segment_distance(p, t[i], t[(i + 1) % 3]) <= SELECTION_PADDING)
+            }
+            AnnotationShape::Rect(r) | AnnotationShape::Label(r) => {
+                r.expanded(SELECTION_PADDING).contains(p[0], p[1])
+            }
+        }
+    }
+
+    /// The axis-aligned extent of the shape's hit region.
+    pub fn extent(&self) -> RectF {
+        match *self {
+            AnnotationShape::Stroke { a, b, width } => {
+                let half = stroke_hit_half_width(width);
+                RectF {
+                    x: a[0].min(b[0]) - half,
+                    y: a[1].min(b[1]) - half,
+                    width: (a[0] - b[0]).abs() + half * 2.0,
+                    height: (a[1] - b[1]).abs() + half * 2.0,
+                }
+            }
+            AnnotationShape::Triangle(t) => {
+                let x0 = t[0][0].min(t[1][0]).min(t[2][0]);
+                let y0 = t[0][1].min(t[1][1]).min(t[2][1]);
+                let x1 = t[0][0].max(t[1][0]).max(t[2][0]);
+                let y1 = t[0][1].max(t[1][1]).max(t[2][1]);
+                RectF {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                }
+                .expanded(SELECTION_PADDING)
+            }
+            AnnotationShape::Rect(r) | AnnotationShape::Label(r) => r.expanded(SELECTION_PADDING),
+        }
     }
 }
 
-/// Annotation bounds never depend on glyph metrics at hit time: the renderer
-/// measured the text when it registered the element.
+fn stroke_hit_half_width(width: f32) -> f32 {
+    (width * 0.5).max(LINE_HIT_HALF_WIDTH)
+}
+
+/// Distance from `p` to the segment `a`..`b`.
+fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len2 = d[0] * d[0] + d[1] * d[1];
+    let t = if len2 > 0.0 {
+        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+}
+
+fn in_triangle(p: [f32; 2], t: [[f32; 2]; 3]) -> bool {
+    let side =
+        |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
+    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
+    (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
+}
+
+/// What the raster paints for `kind` at `geometry`, `text_size` being the
+/// measured label or text block: at most three shapes, in paint order. The
+/// raster draws exactly these, and the item's bounds, hit test and selection
+/// box are computed from them, so what is selectable is what is drawn.
+/// A stroke or head with no width or no alpha paints nothing and is absent.
+pub fn annotation_shapes(
+    kind: &AnnotationKind,
+    geometry: &AnnotationGeometry,
+    text_size: Option<[f32; 2]>,
+) -> [Option<AnnotationShape>; 3] {
+    match (kind, *geometry) {
+        (AnnotationKind::ReferenceLine { style, label, .. }, AnnotationGeometry::Line { a, b }) => {
+            let stroke =
+                (style.width > 0.0 && style.color.a > 0.0).then_some(AnnotationShape::Stroke {
+                    a,
+                    b,
+                    width: style.width,
+                });
+            let label = label
+                .as_ref()
+                .and(text_size)
+                .map(|size| AnnotationShape::Label(line_label_rect(a, b, size)));
+            [stroke, label, None]
+        }
+        (AnnotationKind::Span { .. }, AnnotationGeometry::Span(rect))
+        | (AnnotationKind::Text { .. }, AnnotationGeometry::Text(rect)) => {
+            [Some(AnnotationShape::Rect(rect)), None, None]
+        }
+        (AnnotationKind::Arrow { style, text, .. }, AnnotationGeometry::Arrow { from, to }) => {
+            let d = [to[0] - from[0], to[1] - from[1]];
+            let len = d[0].hypot(d[1]);
+            let head_len = style.head_length.min(len);
+            let dir = if len > 0.0 {
+                [d[0] / len, d[1] / len]
+            } else {
+                [1.0, 0.0]
+            };
+            let base = [to[0] - dir[0] * head_len, to[1] - dir[1] * head_len];
+            let visible = style.line.color.a > 0.0;
+            let shaft = (style.line.width > 0.0 && visible && len > head_len).then_some(
+                AnnotationShape::Stroke {
+                    a: from,
+                    b: base,
+                    width: style.line.width,
+                },
+            );
+            let head = (head_len > 0.0 && style.head_width > 0.0 && visible).then(|| {
+                let half = style.head_width * 0.5;
+                let n = [-dir[1] * half, dir[0] * half];
+                AnnotationShape::Triangle([
+                    to,
+                    [base[0] + n[0], base[1] + n[1]],
+                    [base[0] - n[0], base[1] - n[1]],
+                ])
+            });
+            let label = text
+                .as_ref()
+                .and(text_size)
+                .map(|size| AnnotationShape::Label(arrow_label_rect(from, to, size)));
+            [shaft, head, label]
+        }
+        _ => [None, None, None],
+    }
+}
+
+/// The union of `rects`.
+fn union_rects(rects: impl Iterator<Item = RectF>) -> Option<RectF> {
+    rects.reduce(|u, r| {
+        let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
+        let x1 = (u.x + u.width).max(r.x + r.width);
+        let y1 = (u.y + u.height).max(r.y + r.height);
+        RectF {
+            x: x0,
+            y: y0,
+            width: x1 - x0,
+            height: y1 - y0,
+        }
+    })
+}
+
+/// A measure for tests: annotation bounds never depend on glyph metrics at
+/// hit time, because the renderer measured the text when it registered the
+/// element.
+#[cfg(test)]
 struct NoMeasure;
+#[cfg(test)]
 impl MeasureText for NoMeasure {
     fn measure_rich(&self, _: &RichText) -> crate::text::TextExtents {
         crate::text::TextExtents {
@@ -981,10 +1171,24 @@ impl MeasureText for NoMeasure {
 }
 
 impl Selectable<AnnotationLayer> for AnnotationElement {
+    /// The extent of everything the raster paints for the item
+    /// ([`Self::shapes`]), grab slack included; the selection box adds the
+    /// padding around it.
     fn bounds(&self, cfg: &AnnotationLayer, _: &dyn MeasureText) -> Option<RectF> {
-        let item = cfg.items.get(self.index)?;
-        let geometry = self.geometry(cfg)?;
-        Some(geometry_bounds(&geometry, head_half_width(&item.kind)))
+        union_rects(
+            self.shapes(cfg)
+                .iter()
+                .flatten()
+                .map(AnnotationShape::extent),
+        )
+    }
+
+    /// On one of the painted shapes ([`AnnotationShape::contains`]).
+    fn contains(&self, cfg: &AnnotationLayer, _: &dyn MeasureText, x: f32, y: f32) -> bool {
+        self.shapes(cfg)
+            .iter()
+            .flatten()
+            .any(|s| s.contains([x, y]))
     }
 
     /// The common blue box, carrying only this item's own handles: a span's

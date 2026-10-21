@@ -48,7 +48,7 @@ mod tests {
             bits: "bitcast<u32>(v.x.minimum.x) | bitcast<u32>(v.x.minimum.y) | bitcast<u32>(v.x.maximum.x) | bitcast<u32>(v.x.maximum.y) | bitcast<u32>(v.x.minimum_positive.x) | bitcast<u32>(v.x.minimum_positive.y) | bitcast<u32>(v.y.minimum.x) | bitcast<u32>(v.y.minimum.y) | bitcast<u32>(v.y.maximum.x) | bitcast<u32>(v.y.maximum.y) | bitcast<u32>(v.y.minimum_positive.x) | bitcast<u32>(v.y.minimum_positive.y)",
         },
         Case {
-            source: include_str!("gpu_pick.wgsl"),
+            source: crate::gpu_pick::PickShader::MarkerLine.source(),
             array: "pick_shared_candidates",
             width: 64,
             poison: "PickCandidate(1u, 2u, 3u, 4u, 5u, 6.0, 7.0, 8u)",

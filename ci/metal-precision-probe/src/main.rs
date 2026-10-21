@@ -34,7 +34,7 @@ fn definition(source: &str, kind: &str, name: &str) -> String {
 
 fn generate(out: &Path, root: &Path) {
     fs::create_dir_all(out).unwrap();
-    let production = fs::read_to_string(root.join("crates/renderer/src/gpu_pick.wgsl")).unwrap();
+    let production = fs::read_to_string(root.join("crates/renderer/src/gpu_pick/core.wgsl")).unwrap();
     let mut source = String::new();
     for name in ["PickQueryTransform", "PickQueryParams"] {
         source.push_str(&definition(&production, "struct", name));

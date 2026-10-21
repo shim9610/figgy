@@ -7,14 +7,28 @@ mod rect;
 
 pub use fit::FitStrategy;
 pub use geometry::{
-    LABEL_GAP, LEGEND_INSET, TitleBand, TitlePlacement, axis_anchor, axis_offset,
-    axis_title_offset_to_screen, axis_title_placement, axis_visibility_extent,
+    LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, TitleBand, TitlePlacement, axis_anchor,
+    axis_offset, axis_title_offset_to_screen, axis_title_placement, axis_visibility_extent,
     axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
     fit_chart_title_margin, label_origin, label_rect, legend_rect, point_on_rect_side,
     rect_axis_visibility_rect, screen_offset_to_axis_title,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF};
+
+/// One part of a decoration as a renderer draws it, in the chart frame:
+/// what [`crate::text::MeasureText::drawn_parts`] reports.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DrawnPart {
+    /// A block of glyphs: one tick label.
+    Text(RectF),
+    /// A stroked segment `width` across: an axis line or one tick.
+    Segment {
+        a: [f32; 2],
+        b: [f32; 2],
+        width: f32,
+    },
+}
 
 // Support types.
 

@@ -127,7 +127,10 @@ fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32
         || !ramp_finite(span) || span <= 0.0) {
         return -1.0;
     }
-    let numerator = mix(linear_num, log_num, is_log);
+    var numerator = mix(linear_num, log_num, is_log);
+    if is_log > 0.5 {
+        numerator = log_num;
+    }
     let normalized = numerator / span;
     if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
         return -1.0;

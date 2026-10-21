@@ -10,6 +10,131 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+<a id="release-0181"></a>
+
+## Patch — renderer 0.18.1 / model 0.12.1 / figgy 0.15.1
+
+Not yet published; the date is added at publication.
+
+Selection boxes, hit tests and picks now come from the same functions that
+draw the element, instead of a separate estimate
+([#37](https://github.com/shim9610/figgy/issues/37)). Logarithmic axes draw
+large values at their height on Metal, DX12 and browsers. No public API is
+removed or changed in signature; the additions are listed at the end. No
+serialized field changes: documents written by model 0.12.0 parse and
+re-serialize byte for byte. The WASM integration example advances to 0.15.1
+with the renderer dependency and is not published (`publish = false`).
+
+- **Tick labels.** For axis and colourbar tick labels, `bounds` is the union
+  of the labels the raster draws, and the hit region is the selection box
+  around them. Before, both came from a representative strip: a sample-width
+  band across the axis, and the data area (or the bar) along it. End labels
+  hung outside it, wide labels left it, and an empty band beside narrow
+  labels was selectable. Polar angle and radius labels hit on each drawn
+  label, where their outline is drawn.
+- **Tick-label drag.** Dragging labels along their axis moves the selection
+  box and the hit region with them again. Since 17d5d9b (2026-08-17) the
+  strip dropped `label_offset_x` on top and bottom labels and
+  `label_offset_y` on left and right labels. Overlay and subplot axis labels
+  share the fix.
+- **Axis lines and ticks.** A Cartesian or colourbar axis is selected inside
+  the box around its drawn line and ticks. The polar radius ray hits on its
+  line and every tick, instead of a fixed 4 px strip that cut longer ticks
+  off.
+- **Axis titles in layered documents.** Axis titles are placed on the
+  expanded base panel the renderer draws, whose right margin follows the
+  widest band of the group.
+- **Legend and colourbar borders.** The legend box and the colourbar strip
+  hit their whole border, including its outer half.
+- **Annotations.** An item's bounds, hit test and selection box come from
+  `annotation_shapes`, the shape list the raster paints:
+  - strokes are grabbed across their width, and at least 3 px either side;
+  - an arrow hits on its shaft and head only;
+  - the labels of reference lines and arrows are part of the item.
+- **Bars and box plots.** Picks follow the shader's coverage: the four
+  subpixel samples, and the half-open ownership of shared stack edges. Every
+  painted pixel picks its bar or box.
+- **Output scale.** `Config::scaled` keeps the fixed tick-label gap and
+  legend inset proportional by moving labels and legend through their
+  offsets. Before, at 2x the bottom labels sat 2 logical px closer to the
+  axis than at 1x. Only scaled display and export copies carry the
+  correction.
+- **WASM.**
+  - The bounded wrapper prepares edits, adoption and new documents at the
+    surface scale, so hits match the canvas between frames.
+  - `decoration_bounds` returns the per-label boxes of polar tick labels as
+    `labels`.
+- **Data picks.** The GPU pick runs the draw's own shape functions, so a
+  pick lands where the series paints:
+  - markers use the scatter shader's distance for all 26 shapes, and
+    zero-size markers, which draw a dot, pick and get the selection ring;
+  - lines pick on the drawn stroke, with its minimum width, square caps and
+    dash gaps;
+  - sketch strokes and markers pick on what their style draws, and
+    Milkyway and Constellation markers on their documented envelope;
+  - point and grid vectors pick on the drawn arrow, and arrows that are not
+    drawn do not pick;
+  - the selection ring sits `radius_extra_px` outside the drawn marker, at
+    every display scale;
+  - subpixel histogram bins pick and outline as the envelope paints them,
+    and the envelope fills from `bar.baseline`;
+  - heatmap cells pick at the painted pixel centre and only where the fill
+    is visible;
+  - contour label gaps neither pick nor highlight.
+- **Subplot selections.** A picked point, bin or cell of a subplot or
+  subplot overlay series is highlighted. Expansion never handed a subplot
+  the document's `picked_points` or `picked_data`, so no panel drew them.
+- **Polar radius labels.** The ray's labels are thinned where their drawn
+  boxes collide. They were thinned by their height on screen, as on a
+  Cartesian left axis, so rotating the ray toward horizontal dropped all but
+  one label.
+- **Logarithmic axes on Metal, DX12 and browsers.** Values past about
+  2^24 (1.7e7) were drawn at the wrong height, and from about 1e8 at the
+  axis floor or not at all; smaller values were off by up to half a decade.
+  The shaders chose between the linear and the logarithmic value with
+  `mix`, which those drivers evaluate as `x + a * (y - x)`, so a large
+  value swallowed its logarithm. A logarithmic axis now takes the
+  logarithm directly, for the draw, the pick, the arrow slope and the
+  logarithmic colour ramp; the linear arithmetic is unchanged.
+- **Polar dash phase.** A dashed or sketched line on a polar chart restarts
+  its dash phase when only the polar geometry changes (the inner radius,
+  the sector, the zero angle or the direction). The arc-length cache key
+  left the transform's polar words out and reused the previous lengths.
+- **Pick compile time.** The pick shader is assembled from fragments, and
+  only the exact variant a series needs is compiled, on its first pick.
+  Enabling GPU picking compiles only the gate pipelines.
+- **Tests.** Each element above has a test that compares its drawn pixels
+  with its hit region and selection box. `pick_draw_agreement.rs` does the
+  same for every data family at 1x and 2x. `scale_consistency.rs` checks
+  bounds, label sets and box-filtered images at 1x, 2x and 3x.
+
+Additions:
+
+- the provided `MeasureText::drawn_parts` method. Its default returns
+  `false`, so other implementations compile unchanged. The representative
+  strip is removed: under a measure that does not lay tick labels and axes
+  out, they have no bounds, because only the renderer knows where they are
+  drawn. Every host in this repository uses the renderer's `CpuTextMeasure`;
+  a custom `MeasureText` keeps axis and tick-label selection by forwarding
+  `drawn_parts` to a `CpuTextMeasure`;
+- `layout::DrawnPart`;
+- `annotation::AnnotationShape`, `annotation::annotation_shapes` and
+  `AnnotationElement::shapes`;
+- `layout::LEGEND_BORDER_WIDTH`.
+
+Left for [#38](https://github.com/shim9610/figgy/issues/38), because each
+needs a public type to change:
+
+- per-part hit regions of multi-part bounded decorations;
+- masking a lifted radial label to its slice;
+- drag containment measured on drawn bounds;
+- annotation label gaps proportional to the Cartesian display scale.
+
+Still approximate after this release: a selected grid-vector cell is
+outlined as a whole cell; band fills pick by opacity only; histogram columns
+with mixed signs may pick a bin the envelope does not paint; streamed
+sources keep their existing pick behaviour.
+
 <a id="release-0180"></a>
 
 ## crates.io release — renderer 0.18.0 / model 0.12.0 / figgy 0.15.0 (2026-10-20)

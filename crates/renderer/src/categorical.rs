@@ -81,6 +81,43 @@ fn distance(bar: &Bar, p: [f32; 2]) -> f32 {
     d[0].max(0.0).hypot(d[1].max(0.0)) + d[0].max(d[1]).min(0.0) - r
 }
 
+/// Whether the shader's `fs` gives a fragment at `p` (physical pixels) any
+/// coverage of `bar`: the half-open ownership of shared stack edges, then
+/// any of the four subpixel samples, each clamped at an owned edge, inside
+/// the bar's SDF. The CPU twin of `categorical.wgsl`'s coverage loop.
+fn covers(bar: &Bar, p: [f32; 2]) -> bool {
+    let mask = bar.effects[2] as u32;
+    let [x0, y0, x1, y1] = bar.rect;
+    if (mask & 1 != 0 && p[0] < x0)
+        || (mask & 2 != 0 && p[0] >= x1)
+        || (mask & 4 != 0 && p[1] < y0)
+        || (mask & 8 != 0 && p[1] >= y1)
+    {
+        return false;
+    }
+    SUBPIXEL_SAMPLES.iter().any(|o| {
+        let mut sample = [p[0] + o[0], p[1] + o[1]];
+        if mask & 1 != 0 {
+            sample[0] = sample[0].max(x0);
+        }
+        if mask & 2 != 0 {
+            sample[0] = sample[0].min(x1);
+        }
+        if mask & 4 != 0 {
+            sample[1] = sample[1].max(y0);
+        }
+        if mask & 8 != 0 {
+            sample[1] = sample[1].min(y1);
+        }
+        distance(bar, sample) <= 0.0
+    })
+}
+
+/// The four subpixel sample offsets of the bar and box plot shaders:
+/// `p + ((x, y) + 0.5) * 0.5 - 0.5` for `x, y` in `0..2`.
+pub(crate) const SUBPIXEL_SAMPLES: [[f32; 2]; 4] =
+    [[-0.25, -0.25], [0.25, -0.25], [-0.25, 0.25], [0.25, 0.25]];
+
 /// Immutable GPU snapshot. Its shader draws straight into a same-format,
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
@@ -117,8 +154,11 @@ impl CategoricalFrame {
     pub fn background(&self) -> crate::annotation::FrameBackground {
         self.background
     }
-    /// Pick a visible nonzero bar in chart-local logical pixels. IDs remain stable
-    /// across category/series reordering. Zero and missing values have no surface.
+    /// Pick a visible nonzero bar in chart-local logical pixels: the topmost
+    /// bar the shader gives any coverage at that point (`covers`), so a
+    /// drawn edge pixel picks and a shared stack edge picks its owner. IDs
+    /// remain stable across category/series reordering. Zero and missing
+    /// values have no surface.
     pub fn hit_test(&self, position: [f32; 2]) -> Option<CategoryBarTarget> {
         if position.iter().any(|v| !v.is_finite()) {
             return None;
@@ -128,7 +168,7 @@ impl CategoricalFrame {
             .iter()
             .zip(&self.targets)
             .rev()
-            .find(|(b, _)| distance(b, p) <= 0.0)
+            .find(|(b, _)| covers(b, p))
             .map(|(_, t)| t.clone())
     }
     /// Physical bounding rectangle for a visible bar; rounded corners may be outside its surface.

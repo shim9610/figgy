@@ -88,6 +88,9 @@ struct Style {
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
+    if is_log > 0.5 {
+        return lv;
+    }
     return mix(v, lv, is_log);
 }
 
@@ -96,6 +99,9 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    if is_log > 0.5 {
+        return fma(log_num / range, panel_scale, panel_offset);
+    }
     let data_t = mix(linear_num / range, log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
@@ -223,6 +229,72 @@ fn bar_outer_ndc_values(
         hi.x = hi.x - d;
     }
     return vec4<f32>(lo, hi);
+}
+
+fn bar_finite(v: f32) -> bool {
+    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
+}
+
+/// The pixel columns `[start, end)` a subpixel bin paints through the
+/// max-envelope pass, or an empty span for a bin drawn as its own bar (or
+/// not at all). A bin is subpixel when its raw span (no gap, full width) is
+/// under one pixel; distinct edges that round to one coordinate still cover
+/// that pixel, while equal edges or a zero width ratio draw nothing.
+/// `pixels` is the panel's column count. The envelope reduction, its pick
+/// and its selection outline all use this one rule.
+fn bar_envelope_columns(
+    edge_lo: vec2<f32>,
+    edge_hi: vec2<f32>,
+    value: vec2<f32>,
+    horizontal: bool,
+    width_ratio: f32,
+    pixels: f32,
+) -> vec2<u32> {
+    if (!bar_finite(edge_lo.x) || !bar_finite(edge_lo.y) ||
+        !bar_finite(edge_hi.x) || !bar_finite(edge_hi.y) ||
+        !bar_finite(value.x) || !bar_finite(value.y)) { return vec2<u32>(0u); }
+    let raw = bar_outer_ndc_values(edge_lo, edge_hi, value, vec2<f32>(0.0), horizontal, 0.0, 1.0);
+    let low = select(raw.x, raw.y, horizontal);
+    let high = select(raw.z, raw.w, horizontal);
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let width = (high - low) / pixel;
+    if (!(width >= 0.0 && width < 1.0) || all(edge_lo == edge_hi)) { return vec2<u32>(0u); }
+    if (width_ratio <= 0.0) { return vec2<u32>(0u); }
+    // Half-open bin bounds: touching the next column is not overlapping it.
+    let start = u32(clamp(floor((low + 1.0) / pixel), 0.0, pixels));
+    var end = u32(clamp(ceil((high + 1.0) / pixel), 0.0, pixels));
+    if (high == low && low >= -1.0 && low < 1.0) {
+        end = min(start + 1u, u32(pixels));
+    }
+    return vec2<u32>(start, max(end, start));
+}
+
+/// The envelope's extent along the value axis for a winner of value `value`,
+/// in NDC `(low, high)`: from the series baseline `b` to the value, like the
+/// bar the bin would draw if it were wide enough.
+fn bar_envelope_magnitude(value: vec2<f32>, b: vec2<f32>, horizontal: bool) -> vec2<f32> {
+    let base = select(data_to_ndc(vec2<f32>(0.0), b).y, data_to_ndc(b, vec2<f32>(0.0)).x, horizontal);
+    let top = select(data_to_ndc(vec2<f32>(0.0), value).y, data_to_ndc(value, vec2<f32>(0.0)).x, horizontal);
+    return vec2<f32>(min(base, top), max(base, top));
+}
+
+/// The NDC rect `(lo.x, lo.y, hi.x, hi.y)` an envelope bin paints: its
+/// pixel columns along the edge axis, baseline to value along the other.
+fn bar_envelope_rect(columns: vec2<u32>, value: vec2<f32>, base: vec2<f32>, horizontal: bool) -> vec4<f32> {
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    let along = vec2<f32>(-1.0 + f32(columns.x) * pixel, -1.0 + f32(columns.y) * pixel);
+    let magnitude = bar_envelope_magnitude(value, base, horizontal);
+    if (horizontal) {
+        return vec4<f32>(magnitude.x, along.x, magnitude.y, along.y);
+    }
+    return vec4<f32>(along.x, magnitude.x, along.y, magnitude.y);
+}
+
+/// The panel's column count along the edge axis, as the pick and the
+/// selection outline see it (the envelope pass is told it directly).
+fn bar_panel_columns(horizontal: bool) -> f32 {
+    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
+    return round(2.0 / pixel);
 }
 
 fn bar_outer_ndc(in: VsIn, horizontal: bool, gap_px: f32, width_ratio: f32) -> vec4<f32> {
@@ -463,26 +535,13 @@ fn reduce_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = envelope_pool[envelope_params.edges + i];
     let b = envelope_pool[envelope_params.edges + i + 1u];
     let value = envelope_pool[envelope_params.values + i];
-    if (!data_pick_finite(a.x) || !data_pick_finite(a.y) ||
-        !data_pick_finite(b.x) || !data_pick_finite(b.y) ||
-        !data_pick_finite(value.x) || !data_pick_finite(value.y)) { return; }
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let raw = bar_outer_ndc_values(a, b, value, vec2<f32>(0.0), horizontal, 0.0, 1.0);
-    let low = select(raw.x, raw.y, horizontal);
-    let high = select(raw.z, raw.w, horizontal);
-    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
-    let width = (high - low) / pixel;
-    // Distinct hi/lo edges may round to the same final f32 screen coordinate.
-    // They still cover that pixel; only genuinely equal edges are empty.
-    if (!(width >= 0.0 && width < 1.0) || all(a == b)) { return; }
-    if (resolve_bar_style(base_bar_style(), i).width_ratio <= 0.0) { return; }
-    // Half-open bin bounds: touching the next column is not overlapping it.
-    let start = u32(clamp(floor((low + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
-    var end = u32(clamp(ceil((high + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
-    if (high == low && low >= -1.0 && low < 1.0) {
-        end = min(start + 1u, envelope_params.pixels);
-    }
-    for (var p = start; p < end; p = p + 1u) {
+    let columns = bar_envelope_columns(
+        a, b, value, horizontal,
+        resolve_bar_style(base_bar_style(), i).width_ratio,
+        f32(envelope_params.pixels),
+    );
+    for (var p = columns.x; p < columns.y; p = p + 1u) {
         var old = atomicLoad(&envelope_atomic[p]);
         loop {
             if (!envelope_better(i + 1u, old)) { break; }
@@ -500,23 +559,13 @@ fn reduce_stream_bar_envelope(@builtin(global_invocation_id) gid: vec3<u32>) {
     let a = envelope_pool[envelope_params.edges + i];
     let b = envelope_pool[envelope_params.edges + i + 1u];
     let value = envelope_pool[envelope_params.values + i];
-    if (!data_pick_finite(a.x) || !data_pick_finite(a.y) ||
-        !data_pick_finite(b.x) || !data_pick_finite(b.y) ||
-        !data_pick_finite(value.x) || !data_pick_finite(value.y)) { return; }
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let raw = bar_outer_ndc_values(a, b, value, vec2<f32>(0.0), horizontal, 0.0, 1.0);
-    let low = select(raw.x, raw.y, horizontal);
-    let high = select(raw.z, raw.w, horizontal);
-    let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
-    let width = (high - low) / pixel;
-    if (!(width >= 0.0 && width < 1.0) || all(a == b)) { return; }
-    if (resolve_bar_style(base_bar_style(), stream_offset.bin_start + i).width_ratio <= 0.0) { return; }
-    let start = u32(clamp(floor((low + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
-    var end = u32(clamp(ceil((high + 1.0) / pixel), 0.0, f32(envelope_params.pixels)));
-    if (high == low && low >= -1.0 && low < 1.0) {
-        end = min(start + 1u, envelope_params.pixels);
-    }
-    for (var p = start; p < end; p = p + 1u) {
+    let columns = bar_envelope_columns(
+        a, b, value, horizontal,
+        resolve_bar_style(base_bar_style(), stream_offset.bin_start + i).width_ratio,
+        f32(envelope_params.pixels),
+    );
+    for (var p = columns.x; p < columns.y; p = p + 1u) {
         var old = atomicLoad(&envelope_atomic[p]);
         loop {
             if (!envelope_better(i + 1u, old)) { break; }
@@ -556,13 +605,6 @@ struct EnvelopeVertex {
     @location(0) @interpolate(flat) fill: vec4<f32>,
 };
 
-fn envelope_top(winner: u32, horizontal: bool, base: f32) -> f32 {
-    if (winner == 0u) { return base; }
-    let value = envelope_pool[envelope_params.values + winner - 1u];
-    return select(data_to_ndc(vec2<f32>(0.0), value).y,
-        data_to_ndc(value, vec2<f32>(0.0)).x, horizontal);
-}
-
 @vertex
 fn vs_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u32) -> EnvelopeVertex {
     var out: EnvelopeVertex;
@@ -571,12 +613,11 @@ fn vs_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_index) p: u
     if (winner == 0u) { return out; }
     let resolved = resolve_bar_style(base_bar_style(), winner - 1u);
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let zero = data_to_ndc(vec2<f32>(0.0), vec2<f32>(0.0));
-    let base = select(zero.y, zero.x, horizontal);
-    let top = envelope_top(winner, horizontal, base);
+    // Baseline to the winner's value, like the bar the bin would draw.
+    let magnitude_span = bar_envelope_magnitude(envelope_pool[envelope_params.values + winner - 1u], bar_baseline(), horizontal);
     let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
-    let low = min(base, top);
-    let high = max(base, top);
+    let low = magnitude_span.x;
+    let high = magnitude_span.y;
     let border = resolved.border_width_px > 0.0 && resolved.border_color_premul.a > 0.0;
     var corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
     let corner = corners[vi % 6u];
@@ -597,13 +638,10 @@ fn vs_stream_bar_envelope(@builtin(vertex_index) vi: u32, @builtin(instance_inde
     if (winner.valid == 0u) { return out; }
     let resolved = resolve_bar_style(base_bar_style(), winner.bin_index);
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let zero = data_to_ndc(vec2<f32>(0.0), vec2<f32>(0.0));
-    let base = select(zero.y, zero.x, horizontal);
-    let top = select(data_to_ndc(vec2<f32>(0.0), winner.value).y,
-        data_to_ndc(winner.value, vec2<f32>(0.0)).x, horizontal);
+    let magnitude_span = bar_envelope_magnitude(winner.value, bar_baseline(), horizontal);
     let pixel = select(transform.pixel_to_ndc.x, transform.pixel_to_ndc.y, horizontal);
-    let low = min(base, top);
-    let high = max(base, top);
+    let low = magnitude_span.x;
+    let high = magnitude_span.y;
     let border = resolved.border_width_px > 0.0 && resolved.border_color_premul.a > 0.0;
     var corners = array<u32, 6>(0u, 1u, 2u, 2u, 1u, 3u);
     let corner = corners[vi % 6u];
@@ -693,6 +731,16 @@ fn data_pick_invalid() -> DataPickCandidate {
     );
 }
 
+// `DataPickCandidate.index2` of a bin painted by the envelope pass;
+// `index1` then holds its value's order-preserving bits for the tie-break.
+const DATA_PICK_ENVELOPE: u32 = 1u;
+
+/// `f32` bits whose unsigned order is the float order.
+fn data_pick_ordered_bits(v: f32) -> u32 {
+    let bits = bitcast<u32>(v);
+    return select(bits | 0x80000000u, ~bits, (bits & 0x80000000u) != 0u);
+}
+
 fn data_pick_better(candidate: DataPickCandidate, incumbent: DataPickCandidate) -> bool {
     if (candidate.valid == 0u) {
         return false;
@@ -702,6 +750,20 @@ fn data_pick_better(candidate: DataPickCandidate, incumbent: DataPickCandidate) 
     }
     if (candidate.distance_px != incumbent.distance_px) {
         return candidate.distance_px < incumbent.distance_px;
+    }
+    // The envelope pass paints over the full bars.
+    let candidate_envelope = candidate.index2 == DATA_PICK_ENVELOPE;
+    let incumbent_envelope = incumbent.index2 == DATA_PICK_ENVELOPE;
+    if (candidate_envelope != incumbent_envelope) {
+        return candidate_envelope;
+    }
+    // A pixel column paints its envelope winner: the largest value, the
+    // earliest bin on a tie (`envelope_better`, by the value's high part).
+    if (candidate_envelope) {
+        if (candidate.index1 != incumbent.index1) {
+            return candidate.index1 > incumbent.index1;
+        }
+        return candidate.primitive_order < incumbent.primitive_order;
     }
     // Later bars are painted later when malformed/reversed bins overlap.
     return candidate.primitive_order > incumbent.primitive_order;
@@ -729,15 +791,25 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
         ),
         bin_index + data_pick_query.bases.z,
     );
-    let outer = bar_outer_ndc_values(
+    let horizontal = data_pick_query.data.w == BAR_ORIENT_HORIZONTAL;
+    // A subpixel bin paints the envelope's pixel columns, baseline to value
+    // (`bar_envelope_columns`); any other bin paints its own bar.
+    let columns = bar_envelope_columns(
+        edge_lo, edge_hi, value, horizontal, resolved.width_ratio, bar_panel_columns(horizontal),
+    );
+    let envelope = columns.y > columns.x;
+    var outer = bar_outer_ndc_values(
         edge_lo,
         edge_hi,
         value,
         data_pick_query.baseline.xy,
-        data_pick_query.data.w == BAR_ORIENT_HORIZONTAL,
+        horizontal,
         resolved.gap_px,
         resolved.width_ratio,
     );
+    if (envelope) {
+        outer = bar_envelope_rect(columns, value, data_pick_query.baseline.xy, horizontal);
+    }
     if (!all(vec4<bool>(
         data_pick_finite(outer.x),
         data_pick_finite(outer.y),
@@ -760,8 +832,8 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         bin_index + data_pick_query.bases.z,
-        0u,
-        0u,
+        select(0u, data_pick_ordered_bits(value.x), envelope),
+        select(0u, DATA_PICK_ENVELOPE, envelope),
         distance_px,
         bin_index + data_pick_query.bases.z,
     );
@@ -813,7 +885,7 @@ struct DataSelection {
 @vertex
 fn vs_bar_selection(in: VsIn) -> VsOut {
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    let outer = bar_outer_ndc_values(
+    var outer = bar_outer_ndc_values(
         in.edge_lo,
         in.edge_hi,
         in.value,
@@ -822,6 +894,13 @@ fn vs_bar_selection(in: VsIn) -> VsOut {
         style.cap_half_px,
         style.cap_width_px,
     );
+    // A subpixel bin is painted by the envelope pass: outline what it paints.
+    let columns = bar_envelope_columns(
+        in.edge_lo, in.edge_hi, in.value, horizontal, style.cap_width_px, bar_panel_columns(horizontal),
+    );
+    if (columns.y > columns.x) {
+        outer = bar_envelope_rect(columns, in.value, style.dash[1].xy, horizontal);
+    }
     var out: VsOut;
     out.color_premul = data_selection.color_premul;
     if (!(outer.z > outer.x) || !(outer.w > outer.y)) {

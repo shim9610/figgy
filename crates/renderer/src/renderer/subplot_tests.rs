@@ -700,3 +700,67 @@ fn a_layer_fit_covers_its_whole_link_group() {
     );
     assert_eq!(c.bottom_x, document().bottom_x);
 }
+
+// A picked point is highlighted by the panel that draws its series: the
+// parent's, a parent overlay's, a subplot's or a subplot overlay's, and
+// nowhere else.
+#[test]
+fn picks_are_highlighted_in_the_panel_of_their_series() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = renderer();
+    let mut on_overlay = document();
+    let mut overlay = OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 1.0;
+    overlay.y_axis.out_margin = 18.0;
+    overlay.y_axis.label_style.font_size = 9.0;
+    overlay.y_axis.title_option.visible = false;
+    overlay.series = vec!["s0".into()];
+    on_overlay.overlays.push(overlay);
+    let lower_left = Rect {
+        x: 0,
+        y: 120,
+        width: 160,
+        height: 120,
+    };
+    for (plain, series_id, panel) in [
+        (document(), "s0", UPPER),
+        (on_overlay, "s0", UPPER),
+        (document(), "s1", lower_left),
+        (document(), "s2", lower_left),
+    ] {
+        let base = r
+            .export_document_rgba(&Chart::new(plain.clone()), &series(), 1.0)
+            .unwrap();
+        let mut picked = plain.clone();
+        picked.picked_data = Some(crate::config::DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: series_id.into(),
+                point_index: 3,
+            }],
+            ..Default::default()
+        });
+        let image = r
+            .export_document_rgba(&Chart::new(picked), &series(), 1.0)
+            .unwrap();
+        let mut inside = 0;
+        for (i, (a, b)) in base.rgba.chunks(4).zip(image.rgba.chunks(4)).enumerate() {
+            if a == b {
+                continue;
+            }
+            let (x, y) = ((i as u32) % base.width, (i as u32) / base.width);
+            assert!(
+                x >= panel.x
+                    && x < panel.x + panel.width
+                    && y >= panel.y
+                    && y < panel.y + panel.height,
+                "{series_id}: highlight at ({x}, {y}) outside its panel {panel:?}"
+            );
+            inside += 1;
+        }
+        assert!(inside > 20, "{series_id}: {inside} highlighted pixels");
+    }
+}

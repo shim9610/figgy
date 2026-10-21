@@ -41,7 +41,34 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
+/// The point picker's fragments (`src/gpu_pick/*.wgsl`), concatenated in
+/// file-name order: every twin a pick module carries lives in one of them.
+const PICK_FRAGMENTS: &str = "src/gpu_pick/*.wgsl";
+
 fn read(path_rel: &str) -> String {
+    if let Some(dir) = path_rel.strip_suffix("/*.wgsl") {
+        let mut names: Vec<_> = fs::read_dir(workspace_root().join(dir))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
+            .collect();
+        names.sort();
+        return names
+            .iter()
+            .map(|path| {
+                read(
+                    path.strip_prefix(workspace_root())
+                        .unwrap()
+                        .to_str()
+                        .unwrap(),
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            );
+    }
     let p = workspace_root().join(path_rel);
     let raw = fs::read_to_string(&p).unwrap_or_else(|e| panic!("Failed to read {:?}: {}", p, e));
     // Normalize line endings so CRLF (Windows) vs LF doesn't trip substring
@@ -317,7 +344,7 @@ fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
             "src/data_render/vector/vector_input_common.wgsl",
             ramp.as_slice(),
         ),
-        ("src/gpu_pick.wgsl", radius.as_slice()),
+        (PICK_FRAGMENTS, radius.as_slice()),
     ] {
         let shader = read(path);
         for function in functions {
@@ -328,6 +355,243 @@ fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
             );
         }
     }
+}
+
+/// One `const NAME: TYPE = VALUE;` line of a WGSL source.
+fn wgsl_const(source: &str, name: &str) -> String {
+    let needle = format!("const {name}:");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing WGSL constant `{name}`"));
+    let end = source[start..]
+        .find(';')
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("WGSL constant `{name}` has no terminator"));
+    source[start..=end].to_string()
+}
+
+/// The marker shape is a function twin (SHADER_COMMON.md §5.5): the scatter
+/// shader draws with it and the pick shader picks with it, so a marker picks
+/// exactly where it is drawn.
+#[test]
+fn marker_shape_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let functions = [
+        "shape_is_filled",
+        "base_shape_id",
+        "visual_shape_radius",
+        "rotate2",
+        "sd_segment",
+        "sd_box",
+        "regular_vertex",
+        "star_vertex",
+        "sd_regular_polygon",
+        "sd_star",
+        "sd_plus_filled",
+        "sd_triangle",
+        "shape_distance",
+        "marker_edge",
+    ];
+    let constants = [
+        "QUAD_MARGIN_PX",
+        "STROKE_HALF_PX",
+        "MARKER_PI",
+        "MARKER_HALF_PI",
+        "STAR_INNER_RATIO",
+    ];
+    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.5 defines it"
+            );
+        }
+        for constant in constants {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.5 defines it"
+            );
+        }
+    }
+}
+
+/// The line stroke is a function twin (SHADER_COMMON.md §5.6): the line
+/// shader extrudes with it and the pick shader inverts the same extrusion,
+/// so a stroke, its caps and its dashes pick exactly where they are drawn.
+#[test]
+fn line_stroke_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let all = [
+        "line_stroke_distance",
+        "dash_pattern_on",
+        "sketch_hash01",
+        "sketch_noise",
+        "sketch_line_offset",
+    ];
+    let noise = ["sketch_hash01", "sketch_noise"];
+    for (path, functions) in [
+        ("src/data_render/line_columnar.wgsl", all.as_slice()),
+        (PICK_FRAGMENTS, all.as_slice()),
+        ("src/data_render/scatter_columnar.wgsl", noise.as_slice()),
+        ("src/data_render/errorbar_columnar.wgsl", noise.as_slice()),
+    ] {
+        let shader = read(path);
+        for function in functions {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.6 defines it"
+            );
+        }
+    }
+    for path in ["src/data_render/line_columnar.wgsl", PICK_FRAGMENTS] {
+        let shader = read(path);
+        for constant in ["LINE_AA_EXTENT_PX", "SKETCH_SUBDIV"] {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.6 defines it"
+            );
+        }
+    }
+}
+
+/// The styled markers are function twins (SHADER_COMMON.md §5.7): the
+/// sketch wobble, the planet's ring and rim and the constellation star's
+/// radius are evaluated by the pick shader with the scatter shader's own
+/// functions.
+#[test]
+fn styled_marker_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
+        let shader = read(path);
+        for function in [
+            "sketch_marker_wobble_px",
+            "sketch_marker_distance",
+            "constellation_star_radius",
+            "cons_ring_angle",
+            "planet_ring_phi",
+            "planet_ring_frame",
+            "planet_ring_rho",
+            "planet_rim_glow",
+        ] {
+            assert_eq!(
+                wgsl_function(&shader, function),
+                wgsl_function(&ssot, function),
+                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.7 defines it"
+            );
+        }
+        for constant in [
+            "SKETCH_TAU",
+            "SKETCH_CONTOUR_WOBBLES",
+            "CONSTELLATION_POINT_STAR_GAIN",
+            "RING_INNER",
+            "RING_OUTER",
+            "RING_INCL",
+            "PLANET_QUAD_EXTENT",
+            "PLANET_ALPHA_FLOOR",
+        ] {
+            assert_eq!(
+                wgsl_const(&shader, constant),
+                wgsl_const(&ssot, constant),
+                "{path} must carry `{constant}` as SHADER_COMMON.md §5.7 defines it"
+            );
+        }
+    }
+}
+
+/// One `struct NAME { ... };` declaration of a WGSL source.
+fn wgsl_struct(source: &str, name: &str) -> String {
+    let needle = format!("struct {name} {{");
+    let start = source
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing WGSL struct `{name}`"));
+    let end = source[start..]
+        .find("};")
+        .map(|offset| start + offset)
+        .unwrap_or_else(|| panic!("WGSL struct `{name}` has no terminator"));
+    source[start..end + 2].to_string()
+}
+
+/// The arrow glyph is a function twin (SHADER_COMMON.md §5.8): the vector
+/// shader draws a point vector's arrow with it and the pick shader picks
+/// that arrow with it.
+#[test]
+fn arrow_glyph_twins_match_the_ssot() {
+    let ssot = read(SSOT_PATH);
+    let pick = read(PICK_FRAGMENTS);
+    let glyph = read("src/data_render/vector/glyph_arrow.wgsl");
+    let projection = read("src/data_render/vector/project_cartesian2d.wgsl");
+    let copies = [
+        ("src/data_render/vector/glyph_arrow.wgsl", &glyph, true),
+        (
+            "src/data_render/vector/project_cartesian2d.wgsl",
+            &projection,
+            false,
+        ),
+        (PICK_FRAGMENTS, &pick, true),
+    ];
+    for (path, shader, has_glyph) in copies {
+        if has_glyph {
+            for function in [
+                "arrow_finite",
+                "arrow_place",
+                "arrow_sd_segment",
+                "arrow_sd_triangle",
+                "arrow_distance",
+            ] {
+                assert_eq!(
+                    wgsl_function(shader, function),
+                    wgsl_function(&ssot, function),
+                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+            for structure in ["ArrowStyle", "ArrowPlacement"] {
+                assert_eq!(
+                    wgsl_struct(shader, structure),
+                    wgsl_struct(&ssot, structure),
+                    "{path} must declare `{structure}` as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+            for constant in [
+                "ARROW_PIVOT_TAIL",
+                "ARROW_PIVOT_MIDDLE",
+                "ARROW_PIVOT_TIP",
+                "ARROW_SHAFT_MIN_PX",
+            ] {
+                assert_eq!(
+                    wgsl_const(shader, constant),
+                    wgsl_const(&ssot, constant),
+                    "{path} must carry `{constant}` as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+        }
+        if path != "src/data_render/vector/glyph_arrow.wgsl" {
+            for function in ["pair_add", "axis_px_per_unit_at"] {
+                assert_eq!(
+                    wgsl_function(shader, function),
+                    wgsl_function(&ssot, function),
+                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
+                );
+            }
+        }
+    }
+}
+
+/// The pick shader applies the draw shaders' polar fragment clip at the
+/// cursor with the common block's own `polar_fragment_visible`.
+#[test]
+fn pick_polar_clip_is_the_draw_fragment_clip() {
+    let ssot = read(SSOT_PATH);
+    let pick = read(PICK_FRAGMENTS);
+    assert_eq!(
+        wgsl_function(&pick, "polar_fragment_visible"),
+        wgsl_function(&ssot, "polar_fragment_visible"),
+        "the pick fragments must carry the common block's `polar_fragment_visible` byte-for-byte"
+    );
 }
 
 #[test]
@@ -544,7 +808,7 @@ fn step_interpolation_helpers_match_between_the_line_and_arc_shaders() {
     }
     // The picker's copy keeps the data-space midpoint rule under its own
     // names; the rest of its agreement is the CPU/GPU pick parity test.
-    let pick = read("src/gpu_pick.wgsl");
+    let pick = read(PICK_FRAGMENTS);
     assert!(pick.contains("fn pick_step_piece("));
     assert!(pick.contains("let xm = (ax + bx) * 0.5;"));
     assert!(line.contains("let xm = (xa + xb) * 0.5;"));
@@ -568,4 +832,71 @@ fn every_targeted_shader_has_begin_end_markers() {
             END_MARKER
         );
     }
+}
+
+// A log flag returns the logarithmic value before any `mix`: drivers that
+// evaluate `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`,
+// which put log-axis values past 2^24 at the wrong height. The linear
+// arithmetic stays the original `mix`, which DX12 needs bit for bit at large
+// offsets (SHADER_COMMON §3). llvmpipe evaluates `mix` exactly, so no pixel
+// test here would see the difference.
+#[test]
+fn log_flags_return_the_logarithm_before_mixing() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                out.push(path);
+            }
+        }
+    }
+    let mut shaders = Vec::new();
+    walk(&workspace_root().join("src"), &mut shaders);
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
+    let mut offending = Vec::new();
+    let mut guarded = 0;
+    for path in shaders {
+        let source = fs::read_to_string(&path).unwrap();
+        let lines: Vec<&str> = source.lines().collect();
+        for (number, line) in lines.iter().enumerate() {
+            let code = line.split("//").next().unwrap();
+            let Some(flag) = ["is_log", "scale_log"]
+                .into_iter()
+                .find(|f| code.contains(f))
+            else {
+                continue;
+            };
+            let chosen = (code.contains("mix(") || code.contains("select("))
+                && !code.contains("select(0.0, 1.0,");
+            if !chosen {
+                continue;
+            }
+            // The same function returns the logarithm before the `mix`, or
+            // overrides the `mix` with it right after.
+            let guard = |l: &&str| l.contains("if ") && l.contains(flag) && l.contains("> 0.5");
+            let early = lines[..number]
+                .iter()
+                .rev()
+                .take_while(|l| !l.trim_start().starts_with("fn "))
+                .any(guard);
+            let overridden = lines[number + 1..].iter().take(2).any(guard);
+            if code.contains("select(") || !(early || overridden) {
+                offending.push(format!(
+                    "{}:{}: {}",
+                    path.display(),
+                    number + 1,
+                    line.trim()
+                ));
+            }
+            guarded += 1;
+        }
+    }
+    assert!(
+        offending.is_empty(),
+        "log flags chosen unsafely:\n{}",
+        offending.join("\n")
+    );
+    assert!(guarded >= 20, "{guarded} guarded log choices found");
 }

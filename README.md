@@ -132,13 +132,13 @@ Add these dependencies to your application's `Cargo.toml`:
 
 ```toml
 [dependencies]
-renderer = { package = "figgy-renderer", version = "0.18.0" }
+renderer = { package = "figgy-renderer", version = "0.18.1" }
 wgpu = "30"
 pollster = "1"
 ```
 
 The `version` line installs [figgy-renderer](https://crates.io/crates/figgy-renderer)
-0.18.0, with figgy-model 0.12.0, from crates.io. With a local checkout, use
+0.18.1, with figgy-model 0.12.1, from crates.io. With a local checkout, use
 `path = "../figgy/crates/renderer"` (relative to your application) instead of
 `version`. Code written for 0.17.0 needs the changes in the
 [migration notes](CHANGELOG.md#migrating-from-0170).

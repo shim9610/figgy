@@ -250,6 +250,7 @@ impl Renderer {
             data_area_px,
             canvas_position_px: position,
             max_distance_px: distance,
+            draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
         };
         // Give each packed page a distinct pick identity. The GPU reports a
         // page-local index; only this one small candidate is read back, then
@@ -359,9 +360,11 @@ impl Renderer {
                         y: handle(&series.y_column)?,
                         style_index: None,
                         size_value: None,
+                        vector: [None; 3],
                     };
                     let mut encoder = self.device.create_command_encoder(&Default::default());
                     let charge = pick.encode_indexed_chunk(
+                        self.picker.exact_pipelines(),
                         &mut encoder,
                         &packed.chunk.work,
                         descriptor,
@@ -538,6 +541,7 @@ impl Renderer {
                 data_area_px,
                 canvas_position_px: position,
                 max_distance_px: distance,
+                draw_style: crate::gpu_pick::GpuPickDrawStyle::of(&snapshot.config.draw_style),
             },
             scale,
             identities(),
@@ -837,6 +841,7 @@ impl Renderer {
                     .map(handles)
                     .transpose()?;
                 return Ok(pick.point.encode_chunk(
+                    self.picker.exact_pipelines(),
                     &mut encoder,
                     &chunk.work,
                     descriptor,
@@ -845,6 +850,7 @@ impl Renderer {
                         y: handles(&cfg.y_column)?,
                         style_index,
                         size_value: None,
+                        vector: [None; 3],
                     },
                     series_index as u32,
                     offset as u32,

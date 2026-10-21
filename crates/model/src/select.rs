@@ -8,22 +8,20 @@
 //! states the policy.
 //!
 //! Placement formulas shared with the renderer consume glyph extents through
-//! the [`MeasureText`] contract. Tick labels intentionally use a representative
-//! strip instead of reproducing renderer-owned tick generation, formatting,
-//! pruning, or the exact union of rendered labels.
+//! the [`MeasureText`] contract. Tick labels and axis strokes come from the
+//! renderer's own layout ([`MeasureText::drawn_parts`]): tick generation,
+//! formatting and pruning belong to the renderer, and the model does not
+//! estimate them.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config, TickVisibility};
+use crate::config::{AxisOptions, Config};
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    Element, LABEL_GAP, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_offset,
-    axis_title_placement, axis_visibility_rect, chart_title_placement, colorbar_rect,
-    colorbar_title_placement, label_origin, label_rect, legend_rect, point_on_rect_side,
-    rect_axis_visibility_rect,
+    DrawnPart, Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_title_placement,
+    chart_title_placement, colorbar_rect, colorbar_title_placement, legend_rect,
 };
-use crate::polar::PolarOptions;
 use crate::resize::Resizable;
 use crate::text::MeasureText;
 
@@ -76,8 +74,9 @@ pub struct SelectionBox {
 pub trait Selectable<C: DragConfig = Config> {
     /// Interaction bounds of this element under `cfg`, or `None` when the
     /// element is hidden, empty, or the layout is infeasible. Text-bearing
-    /// elements use `measure`; tick-label elements remain representative
-    /// strips rather than exact rendered-label unions.
+    /// elements use `measure`; tick labels and axes are the parts `measure`
+    /// reports as drawn, and have no bounds under a measure that does not
+    /// lay them out.
     fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
 
     /// Default selection policy: a blue box [`SELECTION_PADDING`] px outside
@@ -572,26 +571,124 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     }
 }
 
-fn representative_label_extents(
-    axis: &AxisOptions,
-    measure: &dyn MeasureText,
-) -> crate::text::TextExtents {
-    let ls = &axis.label_style;
-    let sample_text = match &ls.format {
-        crate::format::LabelFormat::Timestamp(_) => "0000-00-00 00:00:00.000".to_string(),
-        _ => {
-            let digits = (ls.significant_digits.max(1) as usize) + 2;
-            "0".repeat(digits)
+/// The config the renderer draws the base layer of a layered document with
+/// (the expanded base panel, or the document without its layers when it does
+/// not expand at this size, as the renderer's panel expansion does), or `None`
+/// for a single-layer document, which is drawn as it is.
+fn drawn_base_panel(cfg: &Config) -> Option<Config> {
+    if cfg.overlays.is_empty() && cfg.subplots.is_empty() {
+        return None;
+    }
+    match cfg.expand() {
+        Ok(expansion) => expansion
+            .panel(LayerRef::Base)
+            .map(|panel| panel.config.clone()),
+        Err(_) => {
+            let mut panel = cfg.clone();
+            panel.overlays.clear();
+            panel.subplots.clear();
+            panel.active_layer = LayerRef::Base;
+            Some(panel)
         }
-    };
-    let sample = crate::text::RichText {
-        segments: crate::text::rich_segments_from_text(&sample_text),
-        color: ls.color,
-        font_size: ls.font_size,
-        font: ls.label_font.clone(),
-        align: crate::text::TextAlign::Left,
-    };
-    measure.measure_rich(&sample)
+    }
+}
+
+/// The extent of a drawn part: a label's glyph block, or a segment's stroke
+/// with at least `min_half` either side.
+fn part_extent(part: &DrawnPart, min_half: f32) -> RectF {
+    match *part {
+        DrawnPart::Text(r) => r,
+        DrawnPart::Segment { a, b, width } => {
+            let half = (width * 0.5).max(min_half);
+            RectF {
+                x: a[0].min(b[0]) - half,
+                y: a[1].min(b[1]) - half,
+                width: (a[0] - b[0]).abs() + half * 2.0,
+                height: (a[1] - b[1]).abs() + half * 2.0,
+            }
+        }
+    }
+}
+
+/// Whether `(x, y)` is on a drawn part: inside a label's block grown by
+/// [`SELECTION_PADDING`], as its outline is, or within half a segment's
+/// stroke and at least `min_half` of it.
+fn part_contains(part: &DrawnPart, min_half: f32, x: f32, y: f32) -> bool {
+    match *part {
+        DrawnPart::Text(r) => r.expanded(SELECTION_PADDING).contains(x, y),
+        DrawnPart::Segment { a, b, width } => {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let len2 = d[0] * d[0] + d[1] * d[1];
+            let t = if len2 > 0.0 {
+                (((x - a[0]) * d[0] + (y - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            (x - a[0] - t * d[0]).hypot(y - a[1] - t * d[1]) <= (width * 0.5).max(min_half)
+        }
+    }
+}
+
+/// The union of the parts of `element` the renderer draws under `cfg`,
+/// laid out through `measure` ([`MeasureText::drawn_parts`]): `Some(None)`
+/// when it draws none, `None` when `measure` cannot lay them out.
+fn drawn_union(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    element: &Element,
+    min_half: f32,
+) -> Option<Option<RectF>> {
+    let mut union: Option<RectF> = None;
+    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
+        let r = part_extent(&part, min_half);
+        union = Some(match union {
+            None => r,
+            Some(u) => {
+                let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
+                let x1 = (u.x + u.width).max(r.x + r.width);
+                let y1 = (u.y + u.height).max(r.y + r.height);
+                RectF {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                }
+            }
+        });
+    });
+    laid_out.then_some(union)
+}
+
+/// Whether `(x, y)` falls on one of the drawn parts of `element`
+/// ([`part_contains`]), or `None` when `measure` cannot lay them out.
+fn drawn_part_hit(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    element: &Element,
+    min_half: f32,
+    x: f32,
+    y: f32,
+) -> Option<bool> {
+    let mut hit = false;
+    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
+        hit |= part_contains(&part, min_half, x, y);
+    });
+    laid_out.then_some(hit)
+}
+
+/// Whether `(x, y)` falls inside the selection box around the drawn parts
+/// of `element`, or `None` when `measure` cannot lay them out. The hit
+/// region is the box the selection draws, so a click inside the box always
+/// selects the element.
+fn drawn_box_hit(
+    cfg: &Config,
+    measure: &dyn MeasureText,
+    element: &Element,
+    x: f32,
+    y: f32,
+) -> Option<bool> {
+    let union = drawn_union(cfg, measure, element, 0.0)?;
+    Some(union.is_some_and(|r| r.expanded(SELECTION_PADDING).contains(x, y)))
 }
 
 fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOptions, RectF)> {
@@ -607,158 +704,39 @@ fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOption
 /// Half the width of the hit strip along a polar ray, in logical pixels.
 const POLAR_RAY_HIT_HALF_WIDTH: f32 = 4.0;
 
-/// The radius axis ray of a polar chart: centre, unit direction, the radii
-/// it spans and the side vector its labels sit on. `polar_ray` returns
-/// `None` off polar mode or when the layout is infeasible.
-struct PolarRay {
-    center: [f32; 2],
-    dir: [f32; 2],
-    side: [f32; 2],
-    inner: f32,
-    outer: f32,
-}
-
-fn polar_ray(cfg: &Config) -> Option<PolarRay> {
-    let polar = cfg.polar.as_ref()?;
-    let geometry = cfg.polar_geometry()?;
-    Some(PolarRay {
-        center: geometry.center,
-        dir: polar.ray_direction(),
-        side: polar.ray_side(),
-        inner: geometry.inner_radius,
-        outer: geometry.radius,
-    })
-}
-
-impl PolarRay {
-    /// `(along, across)` coordinates of a screen point in the ray frame.
-    fn frame(&self, x: f32, y: f32) -> (f32, f32) {
-        let (dx, dy) = (x - self.center[0], y - self.center[1]);
-        (
-            dx * self.dir[0] + dy * self.dir[1],
-            dx * self.side[0] + dy * self.side[1],
-        )
-    }
-
-    /// The axis-aligned box around the ray-frame rectangle
-    /// `along0..along1` by `across0..across1`.
-    fn aabb(&self, along: (f32, f32), across: (f32, f32)) -> RectF {
-        let corners = [
-            (along.0, across.0),
-            (along.1, across.0),
-            (along.0, across.1),
-            (along.1, across.1),
-        ]
-        .map(|(a, c)| {
-            (
-                self.center[0] + self.dir[0] * a + self.side[0] * c,
-                self.center[1] + self.dir[1] * a + self.side[1] * c,
-            )
-        });
-        let x0 = corners.iter().map(|c| c.0).fold(f32::INFINITY, f32::min);
-        let x1 = corners
-            .iter()
-            .map(|c| c.0)
-            .fold(f32::NEG_INFINITY, f32::max);
-        let y0 = corners.iter().map(|c| c.1).fold(f32::INFINITY, f32::min);
-        let y1 = corners
-            .iter()
-            .map(|c| c.1)
-            .fold(f32::NEG_INFINITY, f32::max);
-        RectF {
-            x: x0,
-            y: y0,
-            width: x1 - x0,
-            height: y1 - y0,
-        }
-    }
-}
-
-/// The strip the polar radius tick labels occupy, in the ray frame:
-/// `(along0..along1, across0..across1)`, the representative strip the
-/// straight axes use, shifted by the label offset read in that frame.
-fn polar_radius_label_strip(
-    cfg: &Config,
-    ray: &PolarRay,
-    measure: &dyn MeasureText,
-) -> ((f32, f32), (f32, f32)) {
-    let axis = &cfg.left_y;
-    let m = representative_label_extents(axis, measure);
-    let (_, outward) = crate::layout::axis_visibility_extent(axis);
-    let band = outward + LABEL_GAP;
-    let thickness = ray.side[0].abs() * m.width + ray.side[1].abs() * m.height();
-    let ls = &axis.label_style;
-    (
-        (
-            ray.inner - m.height() * 0.5 + ls.label_offset_x,
-            ray.outer + ls.label_offset_x,
-        ),
-        (
-            band + ls.label_offset_y,
-            band + thickness + ls.label_offset_y,
-        ),
-    )
-}
-
-/// The annulus the polar angle tick labels occupy: `(inner, outer)` radii
-/// from the centre, shifted by the radial label offset.
-fn polar_angle_label_band(cfg: &Config, measure: &dyn MeasureText) -> Option<(f32, f32)> {
-    let geometry = cfg.polar_geometry()?;
-    let axis = &cfg.bottom_x;
-    let m = representative_label_extents(axis, measure);
-    let (_, outward) = crate::layout::axis_visibility_extent(axis);
-    let radial = PolarOptions::angle_label_offset(&axis.label_style);
-    let inner = (geometry.radius + outward + LABEL_GAP + radial).max(0.0);
-    Some((inner, inner + m.width.max(m.height())))
-}
-
 impl Selectable for AxisElement {
     fn element_id(&self) -> String {
         format!("axis_{}", side_str(&self.side))
     }
 
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        // A polar chart draws the angle axis as the outer ring, which is the
-        // data boundary and has no detached position, and the radius axis as
-        // the ray; only the ray is selectable (its drag turns it).
-        if cfg.polar.is_some() {
-            if self.side != Side::Left {
-                return None;
-            }
-            let axis = &cfg.left_y;
-            if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
-                return None;
-            }
-            let ray = polar_ray(cfg)?;
-            return Some(ray.aabb(
-                (ray.inner, ray.outer),
-                (-POLAR_RAY_HIT_HALF_WIDTH, POLAR_RAY_HIT_HALF_WIDTH),
-            ));
-        }
-        let axis = axis_of(cfg, &self.side);
-        if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
+    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]):
+    /// a polar chart's angle axis is the outer ring, which is the data
+    /// boundary and not selectable, and its radius ray is grabbed at least
+    /// 4 px either side. `None` when nothing is
+    /// drawn or `measure` does not lay the axis out.
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        if cfg.polar.is_some() && self.side != Side::Left {
             return None;
         }
-        let da = cfg.data_area().ok()?;
-
-        Some(axis_visibility_rect(self.side.clone(), &da, axis))
+        let min_half = if cfg.polar.is_some() {
+            POLAR_RAY_HIT_HALF_WIDTH
+        } else {
+            0.0
+        };
+        drawn_union(cfg, measure, &Element::Axis(self.side.clone()), min_half).flatten()
     }
 
+    /// The polar ray hits on each drawn stroke, a Cartesian axis inside the
+    /// selection box around its drawn line and ticks.
     fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        let element = Element::Axis(self.side.clone());
         if cfg.polar.is_some() {
-            // Distance to the ray segment, not its axis-aligned box.
-            let Some(ray) = polar_ray(cfg) else {
-                return false;
-            };
-            if self.bounds(cfg, measure).is_none() {
-                return false;
-            }
-            let (along, across) = ray.frame(x, y);
-            return (ray.inner - POLAR_RAY_HIT_HALF_WIDTH..=ray.outer + POLAR_RAY_HIT_HALF_WIDTH)
-                .contains(&along)
-                && across.abs() <= POLAR_RAY_HIT_HALF_WIDTH;
+            self.side == Side::Left
+                && drawn_part_hit(cfg, measure, &element, POLAR_RAY_HIT_HALF_WIDTH, x, y)
+                    .unwrap_or(false)
+        } else {
+            drawn_box_hit(cfg, measure, &element, x, y).unwrap_or(false)
         }
-        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -767,76 +745,15 @@ impl Selectable for AxisElement {
 }
 
 impl Selectable for AxisLabelElement {
-    /// Approximate interaction strip for representative label glyphs. It uses
-    /// the renderer's placement formula and a decimal/timestamp sample, but
-    /// does not reproduce the renderer-owned tick set, formatting, pruning,
-    /// or exact rendered-label union.
     fn element_id(&self) -> String {
         format!("tick_labels_{}", side_str(&self.side))
     }
 
+    /// The union of the labels the renderer draws
+    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
+    /// `measure` does not lay tick labels out.
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let axis = axis_of(cfg, &self.side);
-        let ls = &axis.label_style;
-        if !ls.visible || !ls.label_visible {
-            return None;
-        }
-        if cfg.polar.is_some() {
-            // The angle labels ring the plot, the radius labels line the
-            // ray; the top and right axes are not drawn.
-            return match self.side {
-                Side::Bottom => {
-                    let geometry = cfg.polar_geometry()?;
-                    let (_, outer) = polar_angle_label_band(cfg, measure)?;
-                    Some(RectF {
-                        x: geometry.center[0] - outer,
-                        y: geometry.center[1] - outer,
-                        width: outer * 2.0,
-                        height: outer * 2.0,
-                    })
-                }
-                Side::Left => {
-                    let ray = polar_ray(cfg)?;
-                    let (along, across) = polar_radius_label_strip(cfg, &ray, measure);
-                    Some(ray.aabb(along, across))
-                }
-                Side::Top | Side::Right => None,
-            };
-        }
-        let da = cfg.data_area().ok()?;
-        // Representative label extents at the label font/size. Digits share
-        // one height; width approximates a `significant_digits`-long number
-        // (+2 for a sign / decimal point).
-        let m = representative_label_extents(axis, measure);
-
-        let (dax, day) = (da.x as f32, da.y as f32);
-        let (daw, dah) = (da.width as f32, da.height as f32);
-        let tick_position = match self.side {
-            Side::Top => (dax, day),
-            Side::Bottom => (dax, day + dah),
-            Side::Left => (dax, day),
-            Side::Right => (dax + daw, day),
-        };
-        let origin = label_origin(
-            self.side.clone(),
-            tick_position,
-            axis.major_tick_length,
-            (ls.label_offset_x, ls.label_offset_y),
-            m,
-        );
-        let mut strip = label_rect(origin, m);
-        match self.side {
-            Side::Top | Side::Bottom => {
-                strip.x = dax;
-                strip.width = daw;
-            }
-            Side::Left | Side::Right => {
-                strip.y = day;
-                strip.height = dah;
-            }
-        }
-        let (dx, dy) = axis_offset(self.side.clone(), axis.line_offset);
-        Some(strip.translated(dx, dy))
+        drawn_union(cfg, measure, &Element::AxisLabel(self.side.clone()), 0.0).flatten()
     }
 
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
@@ -850,31 +767,16 @@ impl Selectable for AxisLabelElement {
         }
     }
 
+    /// Polar labels hit on each drawn label, where each is outlined;
+    /// Cartesian labels inside the one box around them.
     fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        if cfg.polar.is_some() && self.bounds(cfg, measure).is_some() {
-            return match self.side {
-                Side::Bottom => {
-                    let Some(geometry) = cfg.polar_geometry() else {
-                        return false;
-                    };
-                    let Some((inner, outer)) = polar_angle_label_band(cfg, measure) else {
-                        return false;
-                    };
-                    let r = (x - geometry.center[0]).hypot(y - geometry.center[1]);
-                    (inner..=outer).contains(&r)
-                }
-                Side::Left => {
-                    let Some(ray) = polar_ray(cfg) else {
-                        return false;
-                    };
-                    let (along, across) = polar_radius_label_strip(cfg, &ray, measure);
-                    let (a, c) = ray.frame(x, y);
-                    (along.0..=along.1).contains(&a) && (across.0..=across.1).contains(&c)
-                }
-                Side::Top | Side::Right => false,
-            };
-        }
-        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
+        let labels = Element::AxisLabel(self.side.clone());
+        let drawn = if cfg.polar.is_some() {
+            drawn_part_hit(cfg, measure, &labels, 0.0, x, y)
+        } else {
+            drawn_box_hit(cfg, measure, &labels, x, y)
+        };
+        drawn.unwrap_or(false)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -887,12 +789,17 @@ impl Selectable for AxisTitleElement {
         format!("axis_title_{}", side_str(&self.side))
     }
 
+    /// Placed on the config the base layer is drawn with: in a layered
+    /// document that is the expanded base panel, whose margins follow the
+    /// widest axis band of the group.
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
         // A polar chart draws no top or right axis, so their titles have no
         // hit region either.
         if cfg.polar.is_some() && matches!(self.side, Side::Top | Side::Right) {
             return None;
         }
+        let panel = drawn_base_panel(cfg);
+        let cfg = panel.as_ref().unwrap_or(cfg);
         let axis = axis_of(cfg, &self.side);
         let to = &axis.title_option;
         if !to.visible || to.text.segments.is_empty() {
@@ -979,6 +886,15 @@ impl Selectable for ColorBarElement {
         visible_colorbar_rect(cfg).map(|(_, rect)| rect)
     }
 
+    /// The strip with the outer half of its border, which is stroked centred
+    /// on the strip's edge.
+    fn contains(&self, cfg: &Config, _measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        visible_colorbar_rect(cfg).is_some_and(|(bar, rect)| {
+            rect.expanded(bar.border_width.max(0.0) * 0.5)
+                .contains(x, y)
+        })
+    }
+
     fn as_draggable(&self) -> Option<&dyn Draggable> {
         Some(self)
     }
@@ -993,13 +909,15 @@ impl Selectable for ColorBarAxisElement {
         "colorbar_axis".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        let (bar, rect) = visible_colorbar_rect(cfg)?;
-        let axis = &bar.axis;
-        if !axis.line_visible && matches!(axis.tick, TickVisibility::None) {
-            return None;
-        }
-        Some(rect_axis_visibility_rect(bar.side.clone(), &rect, axis))
+    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]);
+    /// `None` when nothing is drawn or `measure` does not lay them out.
+    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+        drawn_union(cfg, measure, &Element::ColorBarAxis, 0.0).flatten()
+    }
+
+    /// Inside the selection box around the drawn line and ticks.
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        drawn_box_hit(cfg, measure, &Element::ColorBarAxis, x, y).unwrap_or(false)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1012,36 +930,16 @@ impl Selectable for ColorBarLabelElement {
         "colorbar_tick_labels".to_string()
     }
 
+    /// The union of the labels the renderer draws
+    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
+    /// `measure` does not lay them out.
     fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let (bar, rect) = visible_colorbar_rect(cfg)?;
-        let axis = &bar.axis;
-        let ls = &axis.label_style;
-        if !ls.visible || !ls.label_visible {
-            return None;
-        }
+        drawn_union(cfg, measure, &Element::ColorBarLabel, 0.0).flatten()
+    }
 
-        let m = representative_label_extents(axis, measure);
-        let tick_position = point_on_rect_side(0.0, &bar.side, &rect);
-        let origin = label_origin(
-            bar.side.clone(),
-            tick_position,
-            axis.major_tick_length,
-            (ls.label_offset_x, ls.label_offset_y),
-            m,
-        );
-        let mut strip = label_rect(origin, m);
-        match bar.side {
-            Side::Top | Side::Bottom => {
-                strip.x = rect.x;
-                strip.width = rect.width;
-            }
-            Side::Left | Side::Right => {
-                strip.y = rect.y;
-                strip.height = rect.height;
-            }
-        }
-        let (dx, dy) = axis_offset(bar.side.clone(), axis.line_offset);
-        Some(strip.translated(dx, dy))
+    /// Inside the selection box around the drawn labels.
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        drawn_box_hit(cfg, measure, &Element::ColorBarLabel, x, y).unwrap_or(false)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1101,6 +999,15 @@ impl Selectable for LegendElement {
             (lg.offset_x, lg.offset_y),
             m,
         ))
+    }
+
+    /// The box with the outer half of its border, which is stroked centred
+    /// on the box edge.
+    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        self.bounds(cfg, measure).is_some_and(|b| {
+            b.expanded(crate::layout::LEGEND_BORDER_WIDTH * 0.5)
+                .contains(x, y)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1404,74 +1311,6 @@ mod tests {
         );
     }
 
-    // The overlay's elements sit where the overlay panel draws them: on the
-    // right side of the group data area. A hit there resolves to the overlay
-    // axis, and a drag moves `overlays[0].y_axis` only.
-    #[test]
-    fn overlay_elements_hit_and_drag_the_overlay_axis_only() {
-        let mut cfg = cfg_with_overlay();
-        cfg.set_active_layer(LayerRef::Overlay(0));
-        let map = HitMap::for_active_layer(&cfg);
-        let da = cfg.data_area().unwrap().0;
-        let panel = cfg.overlay_panel(0).unwrap();
-        assert_eq!(panel.data_area().unwrap().0, da);
-        let right_edge = (da.x + da.width) as f32;
-        let mid_y = da.y as f32 + da.height as f32 / 2.0;
-        // Ticks point inside by default: the axis band starts at the edge.
-        let hit = map
-            .hit_test(&cfg, &FixedMeasure, right_edge - 1.0, mid_y)
-            .expect("the overlay axis band is on the right edge");
-        assert_eq!(map.get(hit).unwrap().element_id(), "overlay_0:axis_right");
-        let labels = map.find("overlay_0:tick_labels_right").unwrap();
-        let label_bounds = map
-            .get(labels)
-            .unwrap()
-            .bounds(&cfg, &FixedMeasure)
-            .unwrap();
-        assert!(label_bounds.x > right_edge, "{label_bounds:?}");
-        let title = map.find("overlay_0:axis_title_right").unwrap();
-        let title_bounds = map.get(title).unwrap().bounds(&cfg, &FixedMeasure).unwrap();
-        assert!(title_bounds.x > label_bounds.x, "{title_bounds:?}");
-        // No per-layer legend: no bounds, no hit.
-        let legend = map.find("overlay_0:legend").unwrap();
-        assert!(
-            map.get(legend)
-                .unwrap()
-                .bounds(&cfg, &FixedMeasure)
-                .is_none()
-        );
-
-        let before = cfg.clone();
-        let axis = map.get(hit).unwrap().as_draggable().unwrap();
-        assert_eq!(axis.drag_by(&mut cfg, -12.0, 40.0), NudgeResult::Moved);
-        assert_eq!(cfg.overlays[0].y_axis.line_offset, -12.0);
-        assert_eq!(cfg.right_y, before.right_y);
-        assert_eq!(cfg.data_area().unwrap().0, da);
-        let labels_drag = map.get(labels).unwrap().as_draggable().unwrap();
-        assert_eq!(labels_drag.drag_by(&mut cfg, 3.0, -4.0), NudgeResult::Moved);
-        assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_x, 3.0);
-        assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_y, -4.0);
-        let title_drag = map.get(title).unwrap().as_draggable().unwrap();
-        assert_eq!(title_drag.drag_by(&mut cfg, 0.0, 10.0), NudgeResult::Moved);
-        assert_ne!(
-            cfg.overlays[0].y_axis.title_option,
-            before.overlays[0].y_axis.title_option
-        );
-        assert_eq!(cfg.right_y, before.right_y);
-        assert_eq!(cfg.left_y, before.left_y);
-        assert_eq!(
-            cfg.overlays[0].y_axis.out_margin,
-            before.overlays[0].y_axis.out_margin
-        );
-        // A move that would leave the chart area is refused atomically.
-        let snapshot = cfg.clone();
-        assert_eq!(
-            axis.drag_by(&mut cfg, 10_000.0, 0.0),
-            NudgeResult::Rejected(NudgeReject::OutOfBounds)
-        );
-        assert_eq!(cfg, snapshot);
-    }
-
     /// The 800x600 parent and below it a subplot with its own axes, an
     /// overlay, and a Y axis linked to the parent's.
     fn cfg_with_subplot() -> Config {
@@ -1653,19 +1492,6 @@ mod tests {
     }
 
     #[test]
-    fn bottom_axis_bounds_hug_data_area_edge() {
-        let cfg = cfg_800x600();
-        let da = cfg.data_area().unwrap();
-        let b = AxisElement { side: Side::Bottom }
-            .bounds(&cfg, &FixedMeasure)
-            .unwrap();
-        assert_eq!(b.x, da.x as f32);
-        assert_eq!(b.width, da.width as f32);
-        let axis_y = (da.y + da.height) as f32;
-        assert!(b.y <= axis_y && axis_y <= b.y + b.height);
-    }
-
-    #[test]
     fn left_axis_title_bounds_swap_extents() {
         let mut cfg = cfg_800x600();
         cfg.left_y.title_option.text.segments = rich_segments_from_text("Volt"); // 4 chars
@@ -1734,42 +1560,6 @@ mod tests {
     }
 
     #[test]
-    fn bottom_axis_label_strip_hugs_glyph_extent() {
-        let cfg = cfg_800x600();
-        let da = cfg.data_area().unwrap();
-        let b = AxisLabelElement { side: Side::Bottom }
-            .bounds(&cfg, &FixedMeasure)
-            .unwrap();
-        // Starts past the tick + LABEL_GAP; thickness is the measured glyph
-        // height (FixedMeasure: ascent 10 + descent 3), not the whole margin.
-        assert_eq!(
-            b.y,
-            (da.y + da.height) as f32 + cfg.bottom_x.major_tick_length + 4.0
-        );
-        assert_eq!(b.height, 13.0);
-        assert!(b.height < cfg.bottom_x.out_margin);
-        assert_eq!(b.x, da.x as f32);
-        assert_eq!(b.width, da.width as f32);
-    }
-
-    #[test]
-    fn left_axis_label_strip_width_scales_with_digits() {
-        let cfg = cfg_800x600();
-        let da = cfg.data_area().unwrap();
-        let b = AxisLabelElement { side: Side::Left }
-            .bounds(&cfg, &FixedMeasure)
-            .unwrap();
-        // Width = (significant_digits + 2) digits × 8 px under FixedMeasure.
-        let digits = cfg.left_y.label_style.significant_digits.max(1) as f32 + 2.0;
-        assert_eq!(b.width, digits * 8.0);
-        // Right edge sits tick + LABEL_GAP inward of the axis line.
-        assert_eq!(
-            b.x + b.width,
-            da.x as f32 - cfg.left_y.major_tick_length - 4.0
-        );
-    }
-
-    #[test]
     fn legend_drag_offset_moves_bounds() {
         use crate::legend::{LegendEntryKind, append_legend_entry, symbol_segments};
         let mut cfg = cfg_800x600();
@@ -1798,7 +1588,9 @@ mod tests {
         let sb = DataAreaElement.selection_box(&cfg, &FixedMeasure).unwrap();
         assert_eq!(sb.handles.len(), 8);
         // Non-resizable elements carry none.
-        let sb2 = AxisElement { side: Side::Bottom }
+        let mut cfg = cfg;
+        cfg.chart_title.text = RichText::plain("title", Color::BLACK, 14.0, "");
+        let sb2 = ChartTitleElement
             .selection_box(&cfg, &FixedMeasure)
             .unwrap();
         assert!(sb2.handles.is_empty());
@@ -1965,274 +1757,11 @@ mod tests {
     }
 
     #[test]
-    fn colorbar_axis_labels_and_title_are_independent_hit_targets() {
-        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
-            let mut cfg = cfg_with_colorbar(side.clone());
-            {
-                let bar = cfg.colorbar.as_mut().expect("colourbar");
-                bar.axis.title_option.visible = true;
-                bar.axis.title_option.text =
-                    RichText::plain("z", crate::color::Color::BLACK, 12.0, "");
-            }
-            let map = HitMap::standard_chart();
-
-            let axis = ColorBarAxisElement
-                .bounds(&cfg, &FixedMeasure)
-                .expect("axis bounds");
-            let axis_hit = map
-                .hit_test(
-                    &cfg,
-                    &FixedMeasure,
-                    axis.x + axis.width * 0.5,
-                    axis.y + axis.height * 0.5,
-                )
-                .expect("axis hit");
-            assert_eq!(map.get(axis_hit).unwrap().element_id(), "colorbar_axis");
-            let axis_selection = map
-                .selection_box(axis_hit, &cfg, &FixedMeasure)
-                .expect("axis selection box");
-            assert_eq!(axis_selection.rect, axis.expanded(SELECTION_PADDING));
-            assert!(axis_selection.handles.is_empty());
-
-            let labels = ColorBarLabelElement
-                .bounds(&cfg, &FixedMeasure)
-                .expect("label bounds");
-            let label_point = match side {
-                Side::Top | Side::Bottom => (labels.x + 1.0, labels.y + labels.height * 0.5),
-                Side::Left | Side::Right => (labels.x + labels.width * 0.5, labels.y + 1.0),
-            };
-            let label_hit = map
-                .hit_test(&cfg, &FixedMeasure, label_point.0, label_point.1)
-                .expect("label hit");
-            assert_eq!(
-                map.get(label_hit).unwrap().element_id(),
-                "colorbar_tick_labels"
-            );
-            let label_selection = map
-                .selection_box(label_hit, &cfg, &FixedMeasure)
-                .expect("label selection box");
-            assert_eq!(label_selection.rect, labels.expanded(SELECTION_PADDING));
-            assert!(label_selection.handles.is_empty());
-
-            let title = ColorBarTitleElement
-                .bounds(&cfg, &FixedMeasure)
-                .expect("title bounds");
-            let title_hit = map
-                .hit_test(
-                    &cfg,
-                    &FixedMeasure,
-                    title.x + title.width * 0.5,
-                    title.y + title.height * 0.5,
-                )
-                .expect("title hit");
-            assert_eq!(map.get(title_hit).unwrap().element_id(), "colorbar_title");
-            let title_selection = map
-                .selection_box(title_hit, &cfg, &FixedMeasure)
-                .expect("title selection box");
-            assert_eq!(title_selection.rect, title.expanded(SELECTION_PADDING));
-            assert!(title_selection.handles.is_empty());
-        }
-    }
-
-    #[test]
-    fn colorbar_detail_bounds_follow_the_painted_strip_offset() {
-        let mut cfg = cfg_with_colorbar(Side::Right);
-        {
-            let bar = cfg.colorbar.as_mut().expect("colourbar");
-            bar.length_frac = 0.4;
-            bar.align = crate::config::BarAlign::End;
-            bar.axis.title_option.visible = true;
-            bar.axis.title_option.text =
-                RichText::plain("intensity", crate::color::Color::BLACK, 12.0, "");
-        }
-        let before = [
-            ColorBarAxisElement.bounds(&cfg, &FixedMeasure).unwrap(),
-            ColorBarLabelElement.bounds(&cfg, &FixedMeasure).unwrap(),
-            ColorBarTitleElement.bounds(&cfg, &FixedMeasure).unwrap(),
-        ];
-        {
-            let bar = cfg.colorbar.as_mut().expect("colourbar");
-            bar.offset_x += 17.0;
-            bar.offset_y -= 11.0;
-        }
-        let after = [
-            ColorBarAxisElement.bounds(&cfg, &FixedMeasure).unwrap(),
-            ColorBarLabelElement.bounds(&cfg, &FixedMeasure).unwrap(),
-            ColorBarTitleElement.bounds(&cfg, &FixedMeasure).unwrap(),
-        ];
-        for (before, after) in before.into_iter().zip(after) {
-            assert_eq!(after, before.translated(17.0, -11.0));
-        }
-    }
-
-    #[test]
     fn hidden_colorbar_details_have_no_bounds() {
         let mut cfg = cfg_with_colorbar(Side::Right);
         cfg.colorbar.as_mut().unwrap().visible = false;
         assert!(ColorBarAxisElement.bounds(&cfg, &FixedMeasure).is_none());
         assert!(ColorBarLabelElement.bounds(&cfg, &FixedMeasure).is_none());
         assert!(ColorBarTitleElement.bounds(&cfg, &FixedMeasure).is_none());
-    }
-
-    fn polar_cfg() -> Config {
-        let mut cfg = cfg_800x600();
-        cfg.polar = Some(crate::polar::PolarOptions::default());
-        cfg.bottom_x.label_style.visible = true;
-        cfg.bottom_x.label_style.label_visible = true;
-        cfg.left_y.label_style.visible = true;
-        cfg.left_y.label_style.label_visible = true;
-        cfg.left_y.line_visible = true;
-        cfg.bottom_x.line_visible = true;
-        cfg
-    }
-
-    /// A polar chart registers the ray and both label sets, never the ring,
-    /// the top and right axes or their titles.
-    #[test]
-    fn polar_hit_regions_are_the_ray_the_label_ring_and_the_label_strip() {
-        let cfg = polar_cfg();
-        let m = FixedMeasure;
-        let geometry = cfg.polar_geometry().unwrap();
-        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
-        let map = HitMap::standard_chart();
-        let id_at = |x: f32, y: f32| {
-            map.hit_test(&cfg, &m, x, y)
-                .and_then(|id| map.get(id))
-                .map(|el| el.element_id())
-        };
-        // The ring is not an element: a point on it at 30 degrees hits
-        // nothing but the data area behind it.
-        let (ax, ay) = (
-            cx + r * 30f32.to_radians().cos(),
-            cy - r * 30f32.to_radians().sin(),
-        );
-        assert_ne!(id_at(ax, ay).as_deref(), Some("axis_bottom"));
-        assert!(
-            AxisElement { side: Side::Bottom }
-                .bounds(&cfg, &m)
-                .is_none()
-        );
-        // The ray (default: up) at half the radius.
-        assert_eq!(id_at(cx, cy - r * 0.5).as_deref(), Some("axis_left"));
-        assert_eq!(id_at(cx + 2.0, cy - r * 0.5).as_deref(), Some("axis_left"));
-        assert_ne!(id_at(cx + 12.0, cy - r * 0.5).as_deref(), Some("axis_left"));
-        // The angle labels: a band just outside the ring, all around it.
-        let (inner, outer) = polar_angle_label_band(&cfg, &m).unwrap();
-        let mid = (inner + outer) * 0.5;
-        for degrees in [0f32, 135.0, 250.0] {
-            let (x, y) = (
-                cx + mid * degrees.to_radians().cos(),
-                cy - mid * degrees.to_radians().sin(),
-            );
-            assert_eq!(
-                id_at(x, y).as_deref(),
-                Some("tick_labels_bottom"),
-                "{degrees}"
-            );
-        }
-        assert_ne!(
-            id_at(cx + (outer + 30.0), cy).as_deref(),
-            Some("tick_labels_bottom")
-        );
-        // The radius labels: the strip on the label side of the ray (its
-        // left seen from the centre, so screen left of an upward ray).
-        let ray = polar_ray(&cfg).unwrap();
-        let (along, across) = polar_radius_label_strip(&cfg, &ray, &m);
-        let a = (along.0 + along.1) * 0.5;
-        let c = (across.0 + across.1) * 0.5;
-        let p = (
-            cx + ray.dir[0] * a + ray.side[0] * c,
-            cy + ray.dir[1] * a + ray.side[1] * c,
-        );
-        assert!(p.0 < cx, "labels sit left of the upward ray: {p:?}");
-        assert_eq!(id_at(p.0, p.1).as_deref(), Some("tick_labels_left"));
-        assert_ne!(
-            id_at(cx + 2.0 * (cx - p.0), p.1).as_deref(),
-            Some("tick_labels_left")
-        );
-        // Nothing for the top and right axes, their labels or titles.
-        for side in [Side::Top, Side::Right] {
-            assert!(
-                AxisElement { side: side.clone() }
-                    .bounds(&cfg, &m)
-                    .is_none()
-            );
-            assert!(
-                AxisLabelElement { side: side.clone() }
-                    .bounds(&cfg, &m)
-                    .is_none()
-            );
-            let mut titled = cfg.clone();
-            let axis = match side {
-                Side::Top => &mut titled.top_x,
-                _ => &mut titled.right_y,
-            };
-            axis.title_option.visible = true;
-            axis.title_option.text.segments = rich_segments_from_text("hidden");
-            assert!(AxisTitleElement { side }.bounds(&titled, &m).is_none());
-        }
-    }
-
-    /// The hit regions follow the ray's angle and the label offsets read in
-    /// the polar frames.
-    #[test]
-    fn polar_hit_regions_follow_the_ray_and_the_label_offsets() {
-        let mut cfg = polar_cfg();
-        cfg.polar.as_mut().unwrap().radial_label_angle_degrees = 0.0;
-        let m = FixedMeasure;
-        let geometry = cfg.polar_geometry().unwrap();
-        let (cx, cy, r) = (geometry.center[0], geometry.center[1], geometry.radius);
-        let map = HitMap::standard_chart();
-        let id_at = |cfg: &Config, x: f32, y: f32| {
-            map.hit_test(cfg, &m, x, y)
-                .and_then(|id| map.get(id))
-                .map(|el| el.element_id())
-        };
-        assert_eq!(id_at(&cfg, cx + r * 0.5, cy).as_deref(), Some("axis_left"));
-        assert_ne!(id_at(&cfg, cx, cy - r * 0.5).as_deref(), Some("axis_left"));
-        // Radius labels: `label_offset_y` is across the ray, toward the
-        // label side (above a rightward ray); the strip moves up with it.
-        let ray = polar_ray(&cfg).unwrap();
-        let (along, across) = polar_radius_label_strip(&cfg, &ray, &m);
-        let a = (along.0 + along.1) * 0.5;
-        let c = (across.0 + across.1) * 0.5;
-        let p = (cx + a, cy - c);
-        assert_eq!(id_at(&cfg, p.0, p.1).as_deref(), Some("tick_labels_left"));
-        let mut shifted = cfg.clone();
-        shifted.left_y.label_style.label_offset_y = 60.0;
-        assert_ne!(
-            id_at(&shifted, p.0, p.1).as_deref(),
-            Some("tick_labels_left")
-        );
-        assert_eq!(
-            id_at(&shifted, p.0, p.1 - 60.0).as_deref(),
-            Some("tick_labels_left")
-        );
-        // Angle labels: `label_offset_y` is radial; the band moves outward.
-        let (inner, outer) = polar_angle_label_band(&cfg, &m).unwrap();
-        let mid = (inner + outer) * 0.5;
-        let mut outward = cfg.clone();
-        outward.bottom_x.label_style.label_offset_y = 40.0;
-        let on_band = (cx - mid * 0.7071, cy + mid * 0.7071);
-        assert_eq!(
-            id_at(&cfg, on_band.0, on_band.1).as_deref(),
-            Some("tick_labels_bottom")
-        );
-        assert_ne!(
-            id_at(&outward, on_band.0, on_band.1).as_deref(),
-            Some("tick_labels_bottom")
-        );
-        let further = (cx - (mid + 40.0) * 0.7071, cy + (mid + 40.0) * 0.7071);
-        assert_eq!(
-            id_at(&outward, further.0, further.1).as_deref(),
-            Some("tick_labels_bottom")
-        );
-        // `label_offset_x` of the angle axis has no effect in polar mode.
-        let mut sideways = cfg.clone();
-        sideways.bottom_x.label_style.label_offset_x = 40.0;
-        assert_eq!(
-            id_at(&sideways, on_band.0, on_band.1).as_deref(),
-            Some("tick_labels_bottom")
-        );
     }
 }

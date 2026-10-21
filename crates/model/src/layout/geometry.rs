@@ -6,6 +6,8 @@ use super::{ChartArea, DataArea, RectF, Side};
 /// Minimum gap between a tick end and its label, in pixels.
 pub const LABEL_GAP: f32 = 4.0;
 
+/// Width of the legend box border, stroked centred on the box edge.
+pub const LEGEND_BORDER_WIDTH: f32 = 1.0;
 /// Inset between a legend box and its data-area corner, in pixels.
 pub const LEGEND_INSET: f32 = 6.0;
 

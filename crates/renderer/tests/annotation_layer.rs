@@ -69,6 +69,26 @@ fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
         .count()
 }
 
+/// A point on the first shape the raster paints for an item: a stroke's
+/// midpoint, a head's centroid, a box's centre. The centre of the item's
+/// bounds can be empty, for example beside a label.
+fn on_item(map: &AnnotationMap, layer: &AnnotationLayer, id: HitId) -> [f32; 2] {
+    use ::renderer::annotation::AnnotationShape;
+    let shape = map.element(id).unwrap().shapes(layer)[0]
+        .or(map.element(id).unwrap().shapes(layer)[1])
+        .expect("the item paints a shape");
+    match shape {
+        AnnotationShape::Stroke { a, b, .. } => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+        AnnotationShape::Triangle(t) => [
+            (t[0][0] + t[1][0] + t[2][0]) / 3.0,
+            (t[0][1] + t[1][1] + t[2][1]) / 3.0,
+        ],
+        AnnotationShape::Rect(r) | AnnotationShape::Label(r) => {
+            [r.x + r.width * 0.5, r.y + r.height * 0.5]
+        }
+    }
+}
+
 /// The checks every family shares, written once over the family's
 /// renderer, chart and frame types.
 macro_rules! family_contract {
@@ -109,10 +129,7 @@ macro_rules! family_contract {
                     );
                     // Items may overlap; the topmost one under the centre wins,
                     // and it must at least contain the point.
-                    let centre = [
-                        bounds.x + bounds.width * 0.5,
-                        bounds.y + bounds.height * 0.5,
-                    ];
+                    let centre = on_item(a.annotations(), &c.annotations, id);
                     let hit = a.annotations().hit_test(centre).expect("item centre picks");
                     let picked = a.annotations().element(hit).unwrap().index;
                     assert!(
@@ -446,7 +463,7 @@ macro_rules! family_routing {
                 let centre = |b: RectF| [b.x + b.width * 0.5, b.y + b.height * 0.5];
                 let items: Vec<(usize, [f32; 2])> = annotations
                     .entries()
-                    .map(|(id, e)| (e.index, centre(annotations.bounds(id).unwrap())))
+                    .map(|(id, e)| (e.index, on_item(annotations, &c.annotations, id)))
                     .collect();
                 assert_eq!(items.len(), c.annotations.items.len());
                 let (title_id, title) = decorations
@@ -747,5 +764,140 @@ fn radial_data_anchors_are_warnings() {
             .px_to_anchor([100., 100.], AnchorKind::Data)
             .is_none()
     );
+    r.end_frame();
+}
+
+// Each item's hit region is what the raster draws for it: every strongly
+// inked pixel of the item hits it, every point that hits it lies within the
+// grab slack of its ink, and its selection box encloses all of it. Covers a
+// stroke wider than the minimum grab strip, a diagonal arrow, whose empty
+// bounding-box corners must not hit, and the labels of both.
+#[test]
+fn annotation_hit_regions_follow_the_drawn_items() {
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let thick = AnnotationLineStyle {
+        width: 12.,
+        ..Default::default()
+    };
+    let items = [
+        (
+            "thick line",
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::Y,
+                value: 15.,
+                style: thick,
+                label: Some(text("target")),
+            }),
+        ),
+        (
+            "thin line",
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::X,
+                value: 1.,
+                style: Default::default(),
+                label: Some(text("mid")),
+            }),
+        ),
+        (
+            "diagonal arrow",
+            Annotation::new(AnnotationKind::Arrow {
+                from: Anchor::Ratio { x: 0.2, y: 0.8 },
+                to: Anchor::Ratio { x: 0.75, y: 0.25 },
+                style: Default::default(),
+                text: Some(text("rise")),
+            }),
+        ),
+    ];
+    // Anti-aliasing and the grab slack: the minimum strip half width (3 px)
+    // plus the label padding (2 px), plus a pixel of rounding.
+    const SLACK: f32 = 6.0;
+    for (name, item) in items {
+        let mut c = CategoricalChart {
+            categories: vec![Category::new("a", "A"), Category::new("b", "B")],
+            series: vec![BarSeries::new(
+                "s",
+                "S",
+                vec![Some(20.), Some(30.)],
+                Color::from_rgb8(60, 130, 210),
+            )],
+            legend: false,
+            ..Default::default()
+        };
+        c.annotations.items = vec![item];
+        for scale in [1., 2.] {
+            let with = r.export_rgba(&c, SIZE, scale).unwrap();
+            c.annotations.visible = false;
+            let without = r.export_rgba(&c, SIZE, scale).unwrap();
+            c.annotations.visible = true;
+            let a = r.prepare_annotations(&c, SIZE, scale).unwrap();
+            let map = a.annotations();
+            let (id, _) = map
+                .entries()
+                .next()
+                .unwrap_or_else(|| panic!("{name}: skipped {:?}", a.render_warnings()));
+            let (w, h) = (with.width as usize, with.height as usize);
+            let diff = |x: usize, y: usize| {
+                let i = (y * w + x) * 4;
+                (0..4)
+                    .map(|k| with.rgba[i + k].abs_diff(without.rgba[i + k]))
+                    .max()
+                    .unwrap()
+            };
+            let selection = map.selection_box(id).unwrap().rect.expanded(1.0);
+            let mut strong = 0;
+            for y in 0..h {
+                for x in 0..w {
+                    let d = diff(x, y);
+                    if d == 0 {
+                        continue;
+                    }
+                    let p = [(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale];
+                    assert!(
+                        selection.contains(p[0], p[1]),
+                        "{name} at {scale}x: ink at {p:?} outside the box {selection:?}"
+                    );
+                    if d >= 128 {
+                        strong += 1;
+                        assert_eq!(
+                            map.hit_test(p),
+                            Some(id),
+                            "{name} at {scale}x: drawn at {p:?} but not hit"
+                        );
+                    }
+                }
+            }
+            assert!(strong > 0, "{name} at {scale}x drew nothing");
+            // Every hit lies near the item's ink.
+            let reach = (SLACK * scale).ceil() as i64;
+            let inked_near = |px: f32, py: f32| {
+                let (cx, cy) = ((px * scale) as i64, (py * scale) as i64);
+                (cy - reach..=cy + reach).any(|y| {
+                    (cx - reach..=cx + reach).any(|x| {
+                        (0..w as i64).contains(&x)
+                            && (0..h as i64).contains(&y)
+                            && diff(x as usize, y as usize) > 0
+                    })
+                })
+            };
+            let (lw, lh) = (SIZE.0 as f32, SIZE.1 as f32);
+            let mut y = 0.5;
+            while y < lh {
+                let mut x = 0.5;
+                while x < lw {
+                    if map.hit_test([x, y]) == Some(id) {
+                        assert!(
+                            inked_near(x, y),
+                            "{name} at {scale}x: ({x}, {y}) hits with no ink nearby"
+                        );
+                    }
+                    x += 3.0;
+                }
+                y += 3.0;
+            }
+        }
+    }
     r.end_frame();
 }

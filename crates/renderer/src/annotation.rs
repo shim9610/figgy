@@ -27,12 +27,12 @@ use crate::raster::{Canvas, Paint};
 use crate::render_warning::{AnnotationSkip, RenderWarning};
 use crate::text_render::{FontPolicy, draw_rich_text, measure_rich_text};
 use crate::{CpuTextMeasure, HitId, HitMap, RendererDevice};
+use model::annotation::geometry;
 pub use model::annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationGeometry,
-    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, PixelSpace,
+    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationShape, AnnotationSpace,
+    ArrowStyle, AxisMap, AxisSpace, BoxStyle, PixelSpace, annotation_shapes,
 };
-use model::annotation::{arrow_label_rect, geometry, line_label_rect};
 use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
 /// The anchor space of a Cartesian chart: the chart area is the panel, the
@@ -441,111 +441,93 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
             text_size,
             handle: None,
         };
-        match (&item.kind, geometry) {
-            (AnnotationKind::Span { fill, .. }, AnnotationGeometry::Span(rect)) => {
-                if let Some(c) = canvas(&mut underlay, w, h) {
-                    let (x, y) = px([rect.x, rect.y]);
-                    c.draw_rect(
-                        x,
-                        y,
-                        rect.width * scale,
-                        rect.height * scale,
-                        &Paint::fill(fill),
-                    );
-                }
-            }
-            (
-                AnnotationKind::ReferenceLine { style, label, .. },
-                AnnotationGeometry::Line { a, b },
-            ) => {
-                if let Some(c) = canvas(&mut overlay, w, h) {
-                    if style.width > 0.0 && style.color.a > 0.0 {
-                        c.draw_line(
-                            px(a),
-                            px(b),
-                            &Paint::stroke(&style.color, style.width * scale)
-                                .with_dash(&dash(&style.style, scale)),
+        // Paint exactly the item's shapes; its bounds, hit test and
+        // selection box are computed from the same shapes.
+        for shape in annotation_shapes(&item.kind, &geometry, text_size)
+            .into_iter()
+            .flatten()
+        {
+            match (&item.kind, shape) {
+                (AnnotationKind::Span { fill, .. }, AnnotationShape::Rect(rect)) => {
+                    if let Some(c) = canvas(&mut underlay, w, h) {
+                        let (x, y) = px([rect.x, rect.y]);
+                        c.draw_rect(
+                            x,
+                            y,
+                            rect.width * scale,
+                            rect.height * scale,
+                            &Paint::fill(fill),
                         );
                     }
-                    if let (Some(label), Some(m)) = (label, &measured) {
-                        let rect = line_label_rect(a, b, m.size);
+                }
+                (
+                    AnnotationKind::Text {
+                        text, box_style, ..
+                    },
+                    AnnotationShape::Rect(rect),
+                ) => {
+                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
                         let (x, y) = px([rect.x, rect.y]);
+                        if let Some(b) = box_style {
+                            let (pw, ph) = (rect.width * scale, rect.height * scale);
+                            if b.fill.a > 0.0 {
+                                c.draw_rect(x, y, pw, ph, &Paint::fill(&b.fill));
+                            }
+                            if b.border_width > 0.0 && b.border_color.a > 0.0 {
+                                let bw = b.border_width * scale;
+                                c.draw_rect(
+                                    x + bw * 0.5,
+                                    y + bw * 0.5,
+                                    (pw - bw).max(0.0),
+                                    (ph - bw).max(0.0),
+                                    &Paint::stroke(&b.border_color, bw),
+                                );
+                            }
+                        }
+                        let pad = m.padding * scale;
                         draw_rich_text(
                             c,
-                            &scaled_rich_text(label, scale),
-                            (x, y + m.ascent),
+                            &scaled_rich_text(text, scale),
+                            (x + pad, y + pad + m.ascent),
                             request.policy,
                         );
                     }
                 }
-            }
-            (
-                AnnotationKind::Text {
-                    text, box_style, ..
-                },
-                AnnotationGeometry::Text(rect),
-            ) => {
-                if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
-                    let (x, y) = px([rect.x, rect.y]);
-                    if let Some(b) = box_style {
-                        let (pw, ph) = (rect.width * scale, rect.height * scale);
-                        if b.fill.a > 0.0 {
-                            c.draw_rect(x, y, pw, ph, &Paint::fill(&b.fill));
-                        }
-                        if b.border_width > 0.0 && b.border_color.a > 0.0 {
-                            let bw = b.border_width * scale;
-                            c.draw_rect(
-                                x + bw * 0.5,
-                                y + bw * 0.5,
-                                (pw - bw).max(0.0),
-                                (ph - bw).max(0.0),
-                                &Paint::stroke(&b.border_color, bw),
-                            );
-                        }
-                    }
-                    let pad = m.padding * scale;
-                    draw_rich_text(
-                        c,
-                        &scaled_rich_text(text, scale),
-                        (x + pad, y + pad + m.ascent),
-                        request.policy,
-                    );
-                }
-            }
-            (AnnotationKind::Arrow { style, text, .. }, AnnotationGeometry::Arrow { from, to }) => {
-                if let Some(c) = canvas(&mut overlay, w, h) {
-                    let (p0, p1) = (px(from), px(to));
-                    let d = (p1.0 - p0.0, p1.1 - p0.1);
-                    let len = (d.0 * d.0 + d.1 * d.1).sqrt();
-                    let head_len = (style.head_length * scale).min(len);
-                    let dir = if len > 0.0 {
-                        (d.0 / len, d.1 / len)
-                    } else {
-                        (1.0, 0.0)
-                    };
-                    let base = (p1.0 - dir.0 * head_len, p1.1 - dir.1 * head_len);
-                    if style.line.width > 0.0 && style.line.color.a > 0.0 && len > head_len {
+                (
+                    AnnotationKind::ReferenceLine { style, .. }
+                    | AnnotationKind::Arrow {
+                        style: model::annotation::ArrowStyle { line: style, .. },
+                        ..
+                    },
+                    AnnotationShape::Stroke { a, b, width },
+                ) => {
+                    if let Some(c) = canvas(&mut overlay, w, h) {
                         c.draw_line(
-                            p0,
-                            base,
-                            &Paint::stroke(&style.line.color, style.line.width * scale)
-                                .with_dash(&dash(&style.line.style, scale)),
+                            px(a),
+                            px(b),
+                            &Paint::stroke(&style.color, width * scale)
+                                .with_dash(&dash(&style.style, scale)),
                         );
                     }
-                    if head_len > 0.0 && style.head_width > 0.0 && style.line.color.a > 0.0 {
-                        let half = style.head_width * scale * 0.5;
-                        let n = (-dir.1 * half, dir.0 * half);
+                }
+                (AnnotationKind::Arrow { style, .. }, AnnotationShape::Triangle(t)) => {
+                    if let Some(c) = canvas(&mut overlay, w, h) {
                         c.fill_polygon(
-                            &[
-                                p1,
-                                (base.0 + n.0, base.1 + n.1),
-                                (base.0 - n.0, base.1 - n.1),
-                            ],
+                            &[px(t[0]), px(t[1]), px(t[2])],
                             &Paint::fill(&style.line.color),
                         );
                     }
-                    if let (Some(text), Some(m)) = (text, &measured) {
-                        let rect = arrow_label_rect(from, to, m.size);
+                }
+                (
+                    AnnotationKind::ReferenceLine {
+                        label: Some(text), ..
+                    }
+                    | AnnotationKind::Arrow {
+                        text: Some(text), ..
+                    },
+                    AnnotationShape::Label(rect),
+                ) => {
+                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
                         let (x, y) = px([rect.x, rect.y]);
                         draw_rich_text(
                             c,
@@ -555,8 +537,8 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
                         );
                     }
                 }
+                _ => unreachable!("the shapes follow the item kind"),
             }
-            _ => unreachable!("geometry kind follows the item kind"),
         }
         registered.push(element);
     }
@@ -1161,8 +1143,10 @@ mod tests {
             );
             let drawn: Vec<usize> = raster.map.entries().map(|(_, e)| e.index).collect();
             assert_eq!(drawn, [0, 1, 4]);
-            // Later items win where they overlap: the arrow's box covers the
-            // middle of the plot, so probe the line and the span beside it.
+            // Later items win where they overlap. The arrow runs from
+            // (54, 91) to (166, 19) and hits only on its drawn shaft and
+            // head, so it wins where it crosses the line at (110, 55) and
+            // nowhere else on the line.
             let hit = raster.map.hit_test([175., 55.]).expect("line is hit");
             assert_eq!(raster.map.element(hit).unwrap().index, 1);
             assert_eq!(
@@ -1172,13 +1156,15 @@ mod tests {
                     .map(|id| raster.map.element(id).unwrap().index),
                 Some(0)
             );
-            assert_eq!(
+            let index_at = |p: [f32; 2]| {
                 raster
                     .map
-                    .hit_test([80., 55.])
-                    .map(|id| raster.map.element(id).unwrap().index),
-                Some(4)
-            );
+                    .hit_test(p)
+                    .map(|id| raster.map.element(id).unwrap().index)
+            };
+            assert_eq!(index_at([110., 55.]), Some(4));
+            assert_eq!(index_at([80., 55.]), Some(1));
+            assert_eq!(index_at([80., 64.]), Some(0));
             assert_eq!(raster.map.hit_test([5., 5.]), None);
             let selection = raster.map.selection_box(hit).unwrap();
             assert_eq!(selection.handles.len(), 2);

@@ -215,7 +215,12 @@ fn replay_grid_value(s: ReplayPixel, c: u32, r: u32) -> GridValue {
 fn shader_source() -> String {
     // Reuse the resident final colour arithmetic verbatim; only the four
     // source loads change. No hand-maintained second interpolation/ramp body.
-    let main = RESIDENT.split("fn fs_main(in: FieldOut)").nth(1).unwrap();
+    // The resident fill's cell lookup after `locate` (`field_cell_sample`)
+    // with its grid loads replaced, then the resident `field_fill_color`.
+    let main = RESIDENT
+        .split("fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {")
+        .nth(1)
+        .unwrap();
     let tail = main
         .split("    let c = select(x.index, y.index, columns_are_y);")
         .nth(1)
@@ -226,8 +231,18 @@ fn shader_source() -> String {
     let tail = format!("    let c = select(x.index, y.index, columns_are_y);{tail}");
     assert_eq!(tail.matches("grid_value(").count(), 4);
     assert!(!tail.contains("locate("));
+    assert!(RESIDENT.contains(
+        "    return field_fill_color(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr, style.color_premul);"
+    ));
     format!(
-        "{RESIDENT}\n{ENTRIES}{}\n}}",
+        "{RESIDENT}\n{ENTRIES}    let cell = replay_cell_sample(s, x, y, columns_are_y);
+    return field_fill_color(cell.z00, cell.z10, cell.z01, cell.z11, cell.fc, cell.fr, style.color_premul);
+}}
+fn replay_cell_sample(s: ReplayPixel, x: CellHit, y: CellHit, columns_are_y: bool) -> FieldCellSample {{
+    var out: FieldCellSample;
+{}
+}}
+",
         tail.replace("grid_value(", "replay_grid_value(s, ")
     )
 }

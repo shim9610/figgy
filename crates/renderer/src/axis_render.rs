@@ -9,7 +9,7 @@ use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
 use crate::format::LabelFormat;
 use crate::layout::{
-    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_anchor, axis_offset,
+    DataArea, DrawnPart, RectF, Side, TitleBand, TitlePlacement, axis_anchor, axis_offset,
     axis_title_placement, chart_title_placement, colorbar_rect, colorbar_title_placement,
     label_origin, legend_rect, point_on_rect_side,
 };
@@ -582,55 +582,21 @@ fn draw_colorbar(
         canvas.translate(off_x, off_y);
     }
 
-    // The bar's axis runs along the strip's outer long edge — the same side of
-    // the strip as the bar is of the chart, which is what makes `draw_tick`'s
-    // "outward = away from the data area" come out right.
-    let low = point_on_rect_side(0.0, &side, &rect);
-    let high = point_on_rect_side(1.0, &side, &rect);
-    if axis.line_visible {
-        let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-        stroker.stroke_segment(canvas, low, high, &paint, "axis_colorbar");
-    }
-
-    // Ticks. `major_tick_values` / `minor_tick_values` are the axis walkers, so a
-    // logarithmic bar gets decades and 2a..9a minors with no extra code here.
+    // Line and ticks, from the walk `drawn_parts` reports.
     let majors = major_tick_values(axis);
-    let minors = minor_tick_values(axis);
-    if axis.tick != TickVisibility::None {
-        let tick_paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-        for (i, value) in majors.iter().chain(minors.iter()).enumerate() {
-            let length = if i < majors.len() {
-                axis.major_tick_length
-            } else {
-                axis.minor_tick_length
-            };
-            let pos = point_on_rect_side(axis_fraction(*value, axis), &side, &rect);
-            let tag = format!("tick_colorbar_{i}");
-            draw_tick(
-                canvas,
-                pos,
-                side.clone(),
-                length,
-                &axis.tick,
-                &tick_paint,
-                stroker,
-                &tag,
-            );
-        }
-    }
+    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
+    each_colorbar_axis_stroke(axis, side.clone(), &rect, &majors, |stroke, a, b| {
+        let tag = match stroke {
+            AxisStroke::Line => "axis_colorbar".to_string(),
+            AxisStroke::Tick(i) => format!("tick_colorbar_{i}"),
+        };
+        stroker.stroke_segment(canvas, a, b, &paint, &tag);
+    });
 
-    // Tick labels. Timestamps are not offered: a z value is a magnitude, and the
-    // timestamp planner needs an axis pixel length and collision pruning that
-    // belong to a time axis. `LabelFormat::Timestamp` on a colourbar therefore
-    // formats through the numeric path rather than being silently dropped.
-    let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
-            point_on_rect_side(axis_fraction(value, axis), &side, &rect)
-        }) {
-            label.draw(canvas, side.clone(), axis, fp);
-        }
-    }
+    // Tick labels, through the walk `drawn_parts` reports.
+    each_colorbar_tick_label(axis, side.clone(), &rect, fp, &majors, |text, pos| {
+        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
+    });
 
     if detached {
         canvas.restore();
@@ -1073,7 +1039,7 @@ fn draw_legend(
     // outline; the fill stays a precise rect — perturbing the fill too
     // would visibly disagree with the independently wobbled border.
     canvas.draw_rect(box_x, box_y, box_w, box_h, &Paint::fill(&lg.bg_color));
-    let border = Paint::stroke(&lg.border_color, 1.0);
+    let border = Paint::stroke(&lg.border_color, crate::layout::LEGEND_BORDER_WIDTH);
     stroker.stroke_rect_outline(canvas, box_x, box_y, box_w, box_h, &border, "legend_box");
 
     // Content: first baseline sits `ascent` below the padded top-left corner.
@@ -1225,69 +1191,24 @@ fn draw_axis(
         canvas.translate(off_x, off_y);
     }
 
-    let (p0, p1) = axis_anchor(side.clone(), da);
-
-    // 1) Axis line.
-    if axis.line_visible {
-        let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-        let tag = format!("axis_{}", side_tag(&side));
-        draw_axis_segment(canvas, p0, p1, &paint, stroker, &tag);
-    }
-
-    // 2) Major / minor ticks
+    // 1) Axis line and 2) major / minor ticks, from the walk `drawn_parts`
+    // reports.
     let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
-    let minors = minor_tick_values_for_axis(axis, side.clone(), da, fp);
-
-    if axis.tick != TickVisibility::None {
-        let tick_paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
+    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
+    each_axis_stroke(axis, side.clone(), da, fp, &majors, |stroke, a, b| {
         // Tick stroker tags share one running index per side (majors first,
         // minors after) so every tick gets its own wobble shape.
-        for (i, v) in majors.iter().enumerate() {
-            let pos = value_to_screen(*v, axis, side.clone(), da);
-            let tag = format!("tick_{}_{i}", side_tag(&side));
-            draw_tick(
-                canvas,
-                pos,
-                side.clone(),
-                axis.major_tick_length,
-                &axis.tick,
-                &tick_paint,
-                stroker,
-                &tag,
-            );
-        }
-        for (i, v) in minors.iter().enumerate() {
-            let pos = value_to_screen(*v, axis, side.clone(), da);
-            let tag = format!("tick_{}_{}", side_tag(&side), majors.len() + i);
-            draw_tick(
-                canvas,
-                pos,
-                side.clone(),
-                axis.minor_tick_length,
-                &axis.tick,
-                &tick_paint,
-                stroker,
-                &tag,
-            );
-        }
-    }
+        let tag = match stroke {
+            AxisStroke::Line => format!("axis_{}", side_tag(&side)),
+            AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
+        };
+        draw_axis_segment(canvas, a, b, &paint, stroker, &tag);
+    });
 
     // 3) Major tick labels
-    let ls = &axis.label_style;
-    if ls.visible && ls.label_visible {
-        if let LabelFormat::Timestamp(_) = &ls.format {
-            for label in visible_timestamp_labels(axis, side.clone(), da, fp, &majors) {
-                let pos = value_to_screen(label.value, axis, side.clone(), da);
-                draw_tick_label(canvas, &label.text, pos, side.clone(), axis, fp);
-            }
-        } else {
-            for label in visible_numeric_labels(axis, side.clone(), fp, &majors, |value| {
-                value_to_screen(value, axis, side.clone(), da)
-            }) {
-                label.draw(canvas, side.clone(), axis, fp);
-            }
-        }
-    }
+    each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
+        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
+    });
 
     if detached {
         canvas.restore();
@@ -1755,17 +1676,88 @@ fn push_walker_warnings(out: &mut Vec<RenderWarning>, which: WarningAxis, axis: 
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_tick(
-    canvas: &mut Canvas,
+/// Which stroke of an axis a segment is: its line, or tick `i` in the
+/// running per-axis index (majors first, minors after).
+#[derive(Clone, Copy)]
+enum AxisStroke {
+    Line,
+    Tick(usize),
+}
+
+/// Every segment [`draw_axis`] strokes for `axis` on `side`, before the
+/// detached-axis translate: the line, then the major and minor ticks.
+/// Drawing and [`drawn_parts`] both walk this.
+fn each_axis_stroke(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
+) {
+    if axis.line_visible {
+        let (p0, p1) = axis_anchor(side.clone(), da);
+        each(AxisStroke::Line, p0, p1);
+    }
+    if axis.tick == TickVisibility::None {
+        return;
+    }
+    let minors = minor_tick_values_for_axis(axis, side.clone(), da, fp);
+    let ticks = majors
+        .iter()
+        .map(|v| (*v, axis.major_tick_length))
+        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)));
+    for (i, (value, length)) in ticks.enumerate() {
+        let pos = value_to_screen(value, axis, side.clone(), da);
+        if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
+            each(AxisStroke::Tick(i), a, b);
+        }
+    }
+}
+
+/// Every segment [`draw_colorbar`] strokes for the bar's axis along the strip
+/// `rect`, before the detached-axis translate: the line, then the ticks.
+fn each_colorbar_axis_stroke(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    majors: &[f64],
+    mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
+) {
+    // The bar's axis runs along the strip's outer long edge — the same side
+    // of the strip as the bar is of the chart, which is what makes
+    // `tick_segment`'s "outward = away from the data area" come out right.
+    if axis.line_visible {
+        let low = point_on_rect_side(0.0, &side, rect);
+        let high = point_on_rect_side(1.0, &side, rect);
+        each(AxisStroke::Line, low, high);
+    }
+    if axis.tick == TickVisibility::None {
+        return;
+    }
+    // `major_tick_values` / `minor_tick_values` are the axis walkers, so a
+    // logarithmic bar gets decades and 2a..9a minors with no extra code here.
+    let minors = minor_tick_values(axis);
+    let ticks = majors
+        .iter()
+        .map(|v| (*v, axis.major_tick_length))
+        .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)));
+    for (i, (value, length)) in ticks.enumerate() {
+        let pos = point_on_rect_side(axis_fraction(value, axis), &side, rect);
+        if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
+            each(AxisStroke::Tick(i), a, b);
+        }
+    }
+}
+
+/// The segment a tick at `pos` is stroked along, or `None` when ticks are
+/// hidden. Drawing and [`drawn_parts`] both use it.
+fn tick_segment(
     pos: (f32, f32),
     side: Side,
     length: f32,
     visibility: &TickVisibility,
-    paint: &Paint,
-    stroker: &DecoStroker,
-    tag: &str,
-) {
+) -> Option<((f32, f32), (f32, f32))> {
     // outward direction = away from the data area.
     let (dx_out, dy_out) = match side {
         Side::Top => (0.0, -1.0),
@@ -1776,16 +1768,10 @@ fn draw_tick(
     let outside = (pos.0 + dx_out * length, pos.1 + dy_out * length);
     let inside = (pos.0 - dx_out * length, pos.1 - dy_out * length);
     match visibility {
-        TickVisibility::None => {}
-        TickVisibility::Outside => {
-            stroker.stroke_segment(canvas, pos, outside, paint, tag);
-        }
-        TickVisibility::Inside => {
-            stroker.stroke_segment(canvas, pos, inside, paint, tag);
-        }
-        TickVisibility::Both => {
-            stroker.stroke_segment(canvas, inside, outside, paint, tag);
-        }
+        TickVisibility::None => None,
+        TickVisibility::Outside => Some((pos, outside)),
+        TickVisibility::Inside => Some((pos, inside)),
+        TickVisibility::Both => Some((inside, outside)),
     }
 }
 
@@ -1926,19 +1912,17 @@ enum NumericTickText {
 
 struct NumericTickLabel {
     position: (f32, f32),
-    interval: (f32, f32),
+    /// The box the label is drawn in, which decides whether it collides
+    /// with its neighbours.
+    bounds: RectF,
     text: NumericTickText,
 }
 
-impl NumericTickLabel {
-    fn draw(&self, canvas: &mut Canvas, side: Side, axis: &AxisOptions, fp: FontPolicy) {
-        match &self.text {
-            NumericTickText::Plain(text) => {
-                draw_tick_label(canvas, text, self.position, side, axis, fp)
-            }
-            NumericTickText::Power(text) => {
-                draw_tick_label_rich(canvas, text, self.position, side, axis, fp)
-            }
+impl NumericTickText {
+    fn as_tick_text(&self) -> TickText<'_> {
+        match self {
+            NumericTickText::Plain(text) => TickText::Plain(text),
+            NumericTickText::Power(text) => TickText::Power(text),
         }
     }
 }
@@ -1952,6 +1936,37 @@ fn visible_numeric_labels(
     fp: FontPolicy,
     majors: &[f64],
     position: impl Fn(f64) -> (f32, f32),
+) -> Vec<NumericTickLabel> {
+    let ls = &axis.label_style;
+    prune_numeric_labels(axis, fp, majors, position, |position, metrics| {
+        let (x, y) = label_origin(
+            side.clone(),
+            position,
+            axis.major_tick_length,
+            (ls.label_offset_x, ls.label_offset_y),
+            metrics,
+        );
+        RectF {
+            x,
+            y: y - metrics.ascent,
+            width: metrics.width,
+            height: metrics.ascent + metrics.descent,
+        }
+    })
+}
+
+/// [`visible_numeric_labels`] with each label's drawn box given by
+/// `bounds(position, metrics)`: when two kept neighbours' boxes come closer
+/// than half an em both across and along the screen, the labels are thinned
+/// to every 2nd, 5th, 10th... label. A Cartesian axis' labels line up, so
+/// this compares them along the axis; a polar ray's labels step along the
+/// ray at any angle.
+fn prune_numeric_labels(
+    axis: &AxisOptions,
+    fp: FontPolicy,
+    majors: &[f64],
+    position: impl Fn(f64) -> (f32, f32),
+    bounds: impl Fn((f32, f32), crate::text_render::TextMetrics) -> RectF,
 ) -> Vec<NumericTickLabel> {
     let ls = &axis.label_style;
     let labels: Vec<_> = majors
@@ -1976,34 +1991,30 @@ fn visible_numeric_labels(
                 (NumericTickText::Plain(text), metrics)
             };
             let position = position(value);
-            let (x, y) = label_origin(
-                side.clone(),
-                position,
-                axis.major_tick_length,
-                (ls.label_offset_x, ls.label_offset_y),
-                metrics,
-            );
-            let interval = match side {
-                Side::Top | Side::Bottom => (x, x + metrics.width),
-                Side::Left | Side::Right => (y - metrics.ascent, y + metrics.descent),
-            };
-            (interval.0.is_finite() && interval.1.is_finite()).then_some(NumericTickLabel {
-                position,
-                interval,
-                text,
-            })
+            let bounds = bounds(position, metrics);
+            [bounds.x, bounds.y, bounds.width, bounds.height]
+                .into_iter()
+                .all(f32::is_finite)
+                .then_some(NumericTickLabel {
+                    position,
+                    bounds,
+                    text,
+                })
         })
         .collect();
     // Half an em also scales with HiDPI/PNG export, unlike a fixed pixel gap.
     let gap = ls.font_size * 0.5;
     let mut stride = 1;
     loop {
-        let mut previous: Option<(f32, f32)> = None;
+        let mut previous: Option<RectF> = None;
+        let apart = |a: (f32, f32), b: (f32, f32)| b.0 >= a.1 + gap || a.0 >= b.1 + gap;
         let fits = labels.iter().step_by(stride).all(|label| {
-            let current = label.interval;
-            let fits =
-                previous.is_none_or(|last| current.0 >= last.1 + gap || last.0 >= current.1 + gap);
-            previous = Some(current);
+            let b = label.bounds;
+            let fits = previous.is_none_or(|a| {
+                apart((a.x, a.x + a.width), (b.x, b.x + b.width))
+                    || apart((a.y, a.y + a.height), (b.y, b.y + b.height))
+            });
+            previous = Some(b);
             fits
         });
         if fits {
@@ -2190,50 +2201,31 @@ fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     style_from(segs)
 }
 
-fn draw_tick_label(
-    canvas: &mut Canvas,
-    text: &str,
-    tick_pos: (f32, f32),
-    side: Side,
-    axis: &AxisOptions,
-    fp: FontPolicy,
-) {
-    let ls: &LabelStyle = &axis.label_style;
-    let m = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
-
-    let (origin_x, origin_y) = label_origin(
-        side,
-        tick_pos,
-        axis.major_tick_length,
-        (ls.label_offset_x, ls.label_offset_y),
-        m,
-    );
-
-    draw_plain_text(
-        canvas,
-        text,
-        (origin_x, origin_y),
-        ls.color,
-        &ls.label_font,
-        ls.font_size,
-        false,
-        false,
-        fp,
-    );
+/// The text of one drawn tick label: plain, or a Power-format `RichText`
+/// with its exponent.
+enum TickText<'a> {
+    Plain(&'a str),
+    Power(&'a RichText),
 }
 
-/// Draw a Power-format RichText label, following the same placement rules as
-/// `draw_tick_label` but with `measure_rich_text` measurements.
-fn draw_tick_label_rich(
-    canvas: &mut Canvas,
-    rt: &RichText,
+/// Where a tick label at `tick_pos` is drawn: its baseline origin and its
+/// glyph extents. [`draw_tick_text`] draws there and [`drawn_parts`]
+/// reports the same rectangle, so a label's selection and hit geometry
+/// cannot leave the drawn text.
+fn tick_label_placement(
+    text: &TickText<'_>,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
     fp: FontPolicy,
-) {
-    let m = measure_rich_text(rt, fp);
-    let ls = &axis.label_style;
+) -> ((f32, f32), crate::text::TextExtents) {
+    let ls: &LabelStyle = &axis.label_style;
+    let m = match text {
+        TickText::Plain(text) => {
+            measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp)
+        }
+        TickText::Power(rt) => measure_rich_text(rt, fp),
+    };
     let origin = label_origin(
         side,
         tick_pos,
@@ -2241,8 +2233,184 @@ fn draw_tick_label_rich(
         (ls.label_offset_x, ls.label_offset_y),
         m,
     );
+    (origin, m)
+}
 
-    draw_rich_text(canvas, rt, origin, fp);
+fn draw_tick_text(
+    canvas: &mut Canvas,
+    text: &TickText<'_>,
+    tick_pos: (f32, f32),
+    side: Side,
+    axis: &AxisOptions,
+    fp: FontPolicy,
+) {
+    let (origin, _) = tick_label_placement(text, tick_pos, side, axis, fp);
+    let ls: &LabelStyle = &axis.label_style;
+    match text {
+        TickText::Plain(text) => draw_plain_text(
+            canvas,
+            text,
+            origin,
+            ls.color,
+            &ls.label_font,
+            ls.font_size,
+            false,
+            false,
+            fp,
+        ),
+        TickText::Power(rt) => draw_rich_text(canvas, rt, origin, fp),
+    }
+}
+
+/// Every tick label [`draw_axis`] draws on `side`, with its tick position,
+/// in draw order. Drawing and [`drawn_parts`] both walk this, so the
+/// labels a selection boxes are the labels on screen.
+fn each_axis_tick_label(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(TickText<'_>, (f32, f32)),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    if let LabelFormat::Timestamp(_) = &ls.format {
+        for label in visible_timestamp_labels(axis, side.clone(), da, fp, majors) {
+            let pos = value_to_screen(label.value, axis, side.clone(), da);
+            each(TickText::Plain(&label.text), pos);
+        }
+    } else {
+        for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+            value_to_screen(value, axis, side.clone(), da)
+        }) {
+            each(label.text.as_tick_text(), label.position);
+        }
+    }
+}
+
+/// Every tick label [`draw_colorbar`] draws along the strip `rect`, with its
+/// tick position, in draw order. Timestamps are not offered: a z value is a
+/// magnitude, and the timestamp planner needs an axis pixel length and
+/// collision pruning that belong to a time axis. `LabelFormat::Timestamp` on a
+/// colourbar therefore formats through the numeric path rather than being
+/// silently dropped.
+fn each_colorbar_tick_label(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    fp: FontPolicy,
+    majors: &[f64],
+    mut each: impl FnMut(TickText<'_>, (f32, f32)),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
+        point_on_rect_side(axis_fraction(value, axis), &side, rect)
+    }) {
+        each(label.text.as_tick_text(), label.position);
+    }
+}
+
+/// Call `each` with every part of decoration `element` that
+/// [`draw_decoration_layer`] draws for `config`, in `config`'s chart frame
+/// with the detached-axis offset applied, and return `true`: one
+/// [`DrawnPart::Text`] per tick label of an axis or the colourbar, and the
+/// line and ticks of an axis or the colourbar's axis as
+/// [`DrawnPart::Segment`]s. Other elements return `false`. This is the
+/// renderer's [`crate::text::MeasureText::drawn_parts`]; each case walks the
+/// same function its drawing walks.
+pub(crate) fn drawn_parts(
+    config: &Config,
+    element: &crate::layout::Element,
+    fp: FontPolicy,
+    each: &mut dyn FnMut(DrawnPart),
+) -> bool {
+    use crate::layout::{Element, label_rect};
+
+    let segment =
+        |a: (f32, f32), b: (f32, f32), (dx, dy): (f32, f32), width: f32| DrawnPart::Segment {
+            a: [a.0 + dx, a.1 + dy],
+            b: [b.0 + dx, b.1 + dy],
+            width,
+        };
+    let Ok(da) = config.data_area() else {
+        return matches!(
+            element,
+            Element::AxisLabel(_)
+                | Element::ColorBarLabel
+                | Element::Axis(_)
+                | Element::ColorBarAxis
+        );
+    };
+    let axis_of = |side: &Side| match side {
+        Side::Top => &config.top_x,
+        Side::Bottom => &config.bottom_x,
+        Side::Left => &config.left_y,
+        Side::Right => &config.right_y,
+    };
+    match element {
+        Element::AxisLabel(side) if config.polar.is_some() => {
+            polar::polar_tick_label_rects(config, side.clone(), fp, |r| each(DrawnPart::Text(r)));
+        }
+        Element::Axis(side) if config.polar.is_some() => {
+            polar::polar_axis_segments(config, side.clone(), fp, |a, b, width| {
+                each(segment(a, b, (0.0, 0.0), width));
+            });
+        }
+        Element::AxisLabel(side) => {
+            let axis = axis_of(side);
+            let majors = major_tick_values_for_axis(axis, side.clone(), &da, fp);
+            let (dx, dy) = axis_offset(side.clone(), axis.line_offset);
+            each_axis_tick_label(axis, side.clone(), &da, fp, &majors, |text, pos| {
+                let (origin, m) = tick_label_placement(&text, pos, side.clone(), axis, fp);
+                each(DrawnPart::Text(label_rect(origin, m).translated(dx, dy)));
+            });
+        }
+        Element::Axis(side) => {
+            let axis = axis_of(side);
+            let majors = major_tick_values_for_axis(axis, side.clone(), &da, fp);
+            let offset = axis_offset(side.clone(), axis.line_offset);
+            each_axis_stroke(axis, side.clone(), &da, fp, &majors, |_, a, b| {
+                each(segment(a, b, offset, axis.line_width));
+            });
+        }
+        Element::ColorBarLabel => {
+            if let Some((bar, rect)) = drawn_colorbar(config, &da) {
+                let axis = &bar.axis;
+                let majors = major_tick_values(axis);
+                let (dx, dy) = axis_offset(bar.side.clone(), axis.line_offset);
+                each_colorbar_tick_label(
+                    axis,
+                    bar.side.clone(),
+                    &rect,
+                    fp,
+                    &majors,
+                    |text, pos| {
+                        let (origin, m) =
+                            tick_label_placement(&text, pos, bar.side.clone(), axis, fp);
+                        each(DrawnPart::Text(label_rect(origin, m).translated(dx, dy)));
+                    },
+                );
+            }
+        }
+        Element::ColorBarAxis => {
+            if let Some((bar, rect)) = drawn_colorbar(config, &da) {
+                let axis = &bar.axis;
+                let majors = major_tick_values(axis);
+                let offset = axis_offset(bar.side.clone(), axis.line_offset);
+                each_colorbar_axis_stroke(axis, bar.side.clone(), &rect, &majors, |_, a, b| {
+                    each(segment(a, b, offset, axis.line_width));
+                });
+            }
+        }
+        _ => return false,
+    }
+    true
 }
 
 // Axis title (RichText).
@@ -3055,8 +3223,16 @@ mod tests {
                             labels.len() >= 2 && labels.len() < majors.len(),
                             "crowded axes must retain useful, separated labels"
                         );
-                        let mut intervals: Vec<_> =
-                            labels.iter().map(|label| label.interval).collect();
+                        let mut intervals: Vec<_> = labels
+                            .iter()
+                            .map(|label| {
+                                let b = label.bounds;
+                                match side {
+                                    Side::Top | Side::Bottom => (b.x, b.x + b.width),
+                                    Side::Left | Side::Right => (b.y, b.y + b.height),
+                                }
+                            })
+                            .collect();
                         intervals.sort_by(|a, b| a.0.total_cmp(&b.0));
                         for pair in intervals.windows(2) {
                             assert!(

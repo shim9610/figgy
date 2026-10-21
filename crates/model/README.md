@@ -18,10 +18,10 @@ The Cargo package is **`figgy-model`**; its Rust import is **`model`**.
 
 ```toml
 [dependencies]
-model = { package = "figgy-model", version = "0.12.0" }
+model = { package = "figgy-model", version = "0.12.1" }
 ```
 
-The `version` line installs figgy-model 0.12.0 from
+The `version` line installs figgy-model 0.12.1 from
 [crates.io](https://crates.io/crates/figgy-model). For a local checkout, replace
 `version` with `path = "../figgy/crates/model"`. Code written for 0.11.0, the
 release that shipped with figgy-renderer 0.17.0, needs the changes in the

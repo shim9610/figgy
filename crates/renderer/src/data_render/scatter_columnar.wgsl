@@ -73,6 +73,9 @@ struct Style {
 
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
+    if is_log > 0.5 {
+        return lv;
+    }
     return mix(v, lv, is_log);
 }
 
@@ -81,6 +84,9 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
     let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
     let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
     let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
+    if is_log > 0.5 {
+        return fma(log_num / range, panel_scale, panel_offset);
+    }
     let data_t = mix(linear_num / range, log_num / range, is_log);
     return fma(data_t, panel_scale, panel_offset);
 }
@@ -208,6 +214,14 @@ struct VsOut {
 // STROKE_HALF_PX plus the AA feather (~1 px) beyond the radius; without
 // the margin the quad edge would clip them. fs_main must reconstruct
 // pixel coordinates with this same expanded scale.
+
+// ───── shared marker shape (SHADER_COMMON.md §5.5; `shader_consistency`
+// compares these function bodies and constants with the pick shader) ─────
+
+// The marker quad's margin past the shape's visual radius, in pixels:
+// outline strokes and their anti-aliasing reach past the contour, and
+// nothing a marker draws lies outside `visual_shape_radius + QUAD_MARGIN_PX`
+// on either axis.
 const QUAD_MARGIN_PX: f32 = 2.0;
 // Half-width of the ~1.5 px contour stroke (outline shapes and Cross).
 const STROKE_HALF_PX: f32 = 0.75;
@@ -268,27 +282,6 @@ fn rotate2(p: vec2<f32>, a: f32) -> vec2<f32> {
     let c = cos(a);
     let s = sin(a);
     return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y);
-}
-
-@vertex
-fn vs_main(in: VsIn) -> VsOut {
-    if (!sample_valid(in.x, in.y)) {
-        var masked: VsOut;
-        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
-        return masked;
-    }
-    let center_ndc = data_to_ndc(in.x, in.y);
-    let half_px =
-        visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
-    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
-
-    var out: VsOut;
-    out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(out.pos.xy);
-    out.polar_limits = polar_clip_limits();
-    out.polar_sector = polar_clip_sector();
-    out.local_pos = in.quad_pos;
-    return out;
 }
 
 // Unsigned distance from `p` to segment `ab`. The denominator guard keeps
@@ -419,6 +412,38 @@ fn shape_distance(base: u32, p: vec2<f32>, r: f32, filled: bool) -> f32 {
     return d;
 }
 
+/// The coverage edge of a marker at shape distance `d`: a filled marker
+/// covers `d < 0`; an outline (and an open plus or cross) is a stroke of
+/// half-width `STROKE_HALF_PX` centred on `d == 0`. A fragment draws where
+/// this is below its anti-aliasing width, and the picker's hit distance is
+/// `max(marker_edge(d, filled), 0)`.
+fn marker_edge(d: f32, filled: bool) -> f32 {
+    return select(abs(d) - STROKE_HALF_PX, d, filled);
+}
+
+// ───── end shared marker shape ─────
+
+@vertex
+fn vs_main(in: VsIn) -> VsOut {
+    if (!sample_valid(in.x, in.y)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
+    let center_ndc = data_to_ndc(in.x, in.y);
+    let half_px =
+        visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
+    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+
+    var out: VsOut;
+    out.pos = vec4<f32>(world, 0.0, 1.0);
+    out.polar_px = polar_clip_offset(out.pos.xy);
+    out.polar_limits = polar_clip_limits();
+    out.polar_sector = polar_clip_sector();
+    out.local_pos = in.quad_pos;
+    return out;
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
@@ -436,7 +461,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let aa = fwidth(d);
     // Filled: cover d < 0. Outline/Cross: ~1.5 px stroke centered on the
     // d == 0 contour.
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;
@@ -568,7 +593,10 @@ fn ramp_t(zv: vec2<f32>, z_min: vec2<f32>, z_max: vec2<f32>, log_z: bool) -> f32
         || !ramp_finite(span) || span <= 0.0) {
         return -1.0;
     }
-    let numerator = mix(linear_num, log_num, is_log);
+    var numerator = mix(linear_num, log_num, is_log);
+    if is_log > 0.5 {
+        numerator = log_num;
+    }
     let normalized = numerator / span;
     if (!ramp_finite(numerator) || !ramp_finite(normalized)) {
         return -1.0;
@@ -778,12 +806,81 @@ fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
 
     let d = shape_distance(base, p, visual_r, filled);
     let aa = fwidth(d);
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;
     }
     return in.color_premul * alpha;
+}
+
+// The picked ring's marker mode (`Style.primitive_flags` of the ring entry):
+// the draw style whose marker it surrounds, numbered like the pick shader's
+// `PICK_MARKER_*` (`gpu_pick.rs::GpuPickDrawStyle`).
+const RING_MARKER_PRECISE: u32 = 0u;
+const RING_MARKER_SKETCH: u32 = 1u;
+const RING_MARKER_PLANET: u32 = 2u;
+const RING_MARKER_STAR: u32 = 3u;
+
+/// The farthest a precise marker of `shape_id` and radius `r` covers from its
+/// centre: the circumradius of its contour (`shape_distance` at the visual
+/// radius, sized like `visual_shape_radius`), plus the stroke half-width for
+/// an outline or an open plus or cross. `marker_edge <= 0` lies within it.
+fn marker_extent_px(shape_id: u32, r: f32) -> f32 {
+    let filled = shape_is_filled(shape_id);
+    let base = base_shape_id(shape_id);
+    let rv = visual_shape_radius(base, max(r, 0.0));
+    var extent = rv;
+    switch base {
+        case 1u: { extent = rv * sqrt(2.0); } // square corner
+        case 4u: { // cross: the diagonal strokes, or the rotated filled plus
+            if (filled) {
+                let arm = max(rv * 0.32, STROKE_HALF_PX);
+                extent = sqrt(rv * rv + arm * arm);
+            } else {
+                extent = rv * sqrt(2.0);
+            }
+        }
+        case 8u: { // plus: the arm ends, or the filled arms' corners
+            if (filled) {
+                let arm = max(rv * 0.32, STROKE_HALF_PX);
+                extent = sqrt(rv * rv + arm * arm);
+            }
+        }
+        default: {} // circle, triangles, diamond, polygons, star: vertices on rv
+    }
+    return extent + select(STROKE_HALF_PX, 0.0, filled);
+}
+
+/// How far the marker the chart's draw style paints at instance `inst`
+/// reaches from its centre, on the envelope the picker picks (SHADER_COMMON.md
+/// §5.7): the precise contour, grown by the sketch wobble; a Milkyway
+/// planet's disc, rim glow and ring band; a Constellation star's sprite disc.
+fn ring_marker_extent_px(shape_id: u32, r: f32, inst: u32) -> f32 {
+    let mode = style.primitive_flags & 3u;
+    if (mode == RING_MARKER_STAR) {
+        let star = constellation_star_radius(r, styled_point_index(inst), style.series_salt);
+        return star * 4.0 + QUAD_MARGIN_PX;
+    }
+    if (mode == RING_MARKER_PLANET) {
+        // In the planet's own frame (`fs_planet` scales the quad to
+        // `r_planet`): the ring band's major axis, or the rim glow's reach
+        // above `PLANET_ALPHA_FLOOR`, inside the quad's corner.
+        let r_planet = max(r, 1.0);
+        let rim_gain = clamp(transform.style_params[1].w, 0.0, 2.0);
+        var reach = r_planet * RING_OUTER;
+        if (rim_gain > PLANET_ALPHA_FLOOR) {
+            reach = max(reach, r_planet + max(r_planet * 0.10, 1.0) * log(rim_gain / PLANET_ALPHA_FLOOR));
+        }
+        let quad = r * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX;
+        let screen = reach * quad / (r_planet * PLANET_QUAD_EXTENT + QUAD_MARGIN_PX);
+        return min(screen, quad * sqrt(2.0));
+    }
+    let extent = marker_extent_px(shape_id, r);
+    if (mode == RING_MARKER_SKETCH) {
+        return extent + sketch_marker_wobble_px(transform.style_params[0].x, r);
+    }
+    return extent;
 }
 
 struct VsPickRingOut {
@@ -795,15 +892,19 @@ struct VsPickRingOut {
     @location(4) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
+// The picked ring: a circle `radius_extra_px` (`Style.cap_half_px`) outside
+// the marker the chart draws at that point (`ring_marker_extent_px` of the
+// marker radius `Style.point_radius_px` and shape `Style.shape_id`, both at
+// the render scale).
 @vertex
-fn vs_pick_ring(in: VsIn) -> VsPickRingOut {
+fn vs_pick_ring(in: VsIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
     if (!sample_valid(in.x, in.y)) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
     let center_ndc = data_to_ndc(in.x, in.y);
-    let radius = max(style.point_radius_px, 0.0);
+    let radius = max(ring_marker_extent_px(style.shape_id, style.point_radius_px, inst) + style.cap_half_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
@@ -831,10 +932,10 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
         return hidden;
     }
     let center_ndc = data_to_ndc(in.x, in.y);
-    // Pick-ring mapped mode uses style.cap_half_px as radius_extra_px. The
+    // The ring entries use style.cap_half_px as radius_extra_px. The
     // errorbar shader is not involved in this pipeline, so the slot is local
     // to this decoration entry.
-    let radius = max(resolved.radius_px + style.cap_half_px, 0.0);
+    let radius = max(ring_marker_extent_px(resolved.shape_id, resolved.radius_px, inst) + style.cap_half_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
@@ -882,6 +983,97 @@ fn sketch_noise(t: f32, seed: u32) -> f32 {
     return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
 }
 
+// ───── shared styled markers (SHADER_COMMON.md §5.7; `shader_consistency`
+// compares these function bodies and constants with the pick shader) ─────
+
+const SKETCH_TAU: f32 = 6.28318530718;
+// Six noise periods around the contour keep marker wobble visually local.
+const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
+const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
+// Ring radii relative to the planet radius, and the apparent inclination of
+// the ring plane (minor/major axis ratio of the projected ellipse).
+const RING_INNER: f32 = 1.45;
+const RING_OUTER: f32 = 2.3;
+const RING_INCL: f32 = 0.32;
+// Quad half-extent multiplier — room for the ring + rim glow + AA.
+const PLANET_QUAD_EXTENT: f32 = 2.5;
+// A planet fragment whose composed alpha is at or below this is discarded.
+const PLANET_ALPHA_FLOOR: f32 = 0.003;
+
+/// A sketch marker's contour wobble amplitude in pixels: half the style's
+/// amplitude, at most 0.35 of the marker radius.
+fn sketch_marker_wobble_px(amplitude_px: f32, radius_px: f32) -> f32 {
+    return min(max(amplitude_px, 0.0) * 0.5, radius_px * 0.35);
+}
+
+/// A sketch marker's signed contour distance: the precise `shape_distance`
+/// perturbed with angle-parameterized noise, d' = d + k·noise(θ/τ·C), seeded
+/// per marker so every point gets its own hand-drawn outline. The noise
+/// lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px at
+/// default amplitude) and reads as part of the hand-drawn look.
+fn sketch_marker_distance(base: u32, p: vec2<f32>, r: f32, filled: bool, wobble_px: f32, seed: u32) -> f32 {
+    let theta = atan2(p.y, p.x); // [-π, π]
+    return shape_distance(base, p, r, filled)
+        + wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, seed);
+}
+
+/// A constellation marker star's core radius in pixels: the marker radius
+/// with a per-point size jitter hashed from the point index, at least half a
+/// pixel. The star's quad (and its PSF sprite) spans four times this plus
+/// `QUAD_MARGIN_PX`.
+fn constellation_star_radius(radius_px: f32, index: u32, seed: u32) -> f32 {
+    let size_jitter = 0.86 + 0.30 * sketch_hash01(index, seed ^ 0x51A7u);
+    return max(radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
+}
+
+// ScatterShape code → ring position angle. The first legacy shapes get hand-
+// picked angles; newer marker codes share a deterministic fallback.
+fn cons_ring_angle(shape_id: u32) -> f32 {
+    switch shape_id {
+        case 0u: { return 0.0; }          // Circle
+        case 1u: { return 0.52; }         // Square        (+30°)
+        case 2u: { return 1.05; }         // Triangle      (+60°)
+        case 3u: { return -0.52; }        // Diamond       (−30°)
+        case 4u: { return -1.05; }        // Cross         (−60°)
+        case 5u: { return 0.26; }         // CircleFilled  (+15°)
+        case 6u: { return 0.79; }         // SquareFilled  (+45°)
+        case 7u: { return -0.26; }        // TriangleFilled(−15°)
+        case 8u: { return -0.79; }        // DiamondFilled (−45°)
+        default: {
+            return -1.2 + f32(shape_id % 11u) * 0.24;
+        }
+    }
+}
+
+/// A planet's ring position angle: the series shape's tilt plus a small
+/// per-point jitter (real systems aren't aligned).
+fn planet_ring_phi(shape_id: u32, seed_inst: u32) -> f32 {
+    let h_jit = sketch_hash01(seed_inst, 0x717Au);
+    return cons_ring_angle(shape_id) + (h_jit - 0.5) * 0.12;
+}
+
+/// `p` rotated into the ring frame of position angle `phi`.
+fn planet_ring_frame(p: vec2<f32>, phi: f32) -> vec2<f32> {
+    let cphi = cos(phi);
+    let sphi = sin(phi);
+    return vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
+}
+
+/// The ring-plane radius of ring-frame point `q`, in planet radii: the ring
+/// band is drawn where it lies between `RING_INNER` and `RING_OUTER`.
+fn planet_ring_rho(q: vec2<f32>, r_planet: f32) -> f32 {
+    return length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
+}
+
+/// The atmospheric rim glow's alpha at distance `dist` from the planet's
+/// centre: a soft exponential falloff outside the disc.
+fn planet_rim_glow(dist: f32, r_planet: f32, rim_gain: f32) -> f32 {
+    let rim_d = max(dist - r_planet, 0.0);
+    return rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0));
+}
+
+// ───── end shared styled markers ─────
+
 // Sketch varyings. The fragment stage must not read `transform` (the shared
 // transform bind group is vertex-only), so the vertex stage forwards the
 // resolved per-marker seed and the clamped wobble amplitude as flat values.
@@ -910,8 +1102,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     }
     let center_ndc = data_to_ndc(in.x, in.y);
 
-    let amp = max(transform.style_params[0].x, 0.0);
-    let wobble = min(amp * 0.5, style.point_radius_px * 0.35);
+    let wobble = sketch_marker_wobble_px(transform.style_params[0].x, style.point_radius_px);
     let half_px = visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px)
         + QUAD_MARGIN_PX
         + wobble;
@@ -928,15 +1119,8 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> VsSketchOut {
     return out;
 }
 
-const SKETCH_TAU: f32 = 6.28318530718;
-// Six noise periods around the contour keep marker wobble visually local.
-const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
-
-// Perturb the sketch marker's signed contour distance with angle-parameterized
-// noise, d' = d + k·noise(θ/τ·C), seeded per marker so every point gets its
-// own hand-drawn outline. The
-// noise lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px
-// at default amplitude) and reads as part of the hand-drawn look.
+// The sketch marker's contour is `sketch_marker_distance`'s: the precise
+// shape perturbed by angle-parameterized noise, seeded per marker.
 @fragment
 fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
@@ -949,12 +1133,10 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
     // Pixel-space position — same expanded scale as the vs_sketch quad.
     let p = in.local_pos * (visual_r + QUAD_MARGIN_PX + in.wobble_px);
 
-    let theta = atan2(p.y, p.x); // [-π, π]
-    let d = shape_distance(base, p, visual_r, filled)
-        + in.wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, in.seed_inst);
+    let d = sketch_marker_distance(base, p, visual_r, filled, in.wobble_px, in.seed_inst);
 
     let aa = fwidth(d);
-    let edge = select(abs(d) - STROKE_HALF_PX, d, filled);
+    let edge = marker_edge(d, filled);
     let alpha = 1.0 - smoothstep(-aa, aa, edge);
     if (alpha <= 0.0) {
         discard;
@@ -978,8 +1160,6 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
 @group(2) @binding(2) var cons_samp: sampler;
 @group(2) @binding(3) var cons_planet_atlas: texture_2d<f32>;
 @group(2) @binding(4) var cons_ring_tex: texture_2d<f32>;
-
-const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
 
 struct VsConstellationStarOut {
     @builtin(position) pos: vec4<f32>,
@@ -1005,8 +1185,7 @@ fn vs_constellation_star(in: VsIn, @builtin(instance_index) inst: u32) -> VsCons
     let global_inst = styled_point_index(inst);
     let u_b = sketch_hash01(global_inst, seed ^ 0x86A9u);
     let brightness = 0.22 + 0.78 * pow(u_b, 2.4);
-    let size_jitter = 0.86 + 0.30 * sketch_hash01(global_inst, seed ^ 0x51A7u);
-    let star_radius = max(style.point_radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
+    let star_radius = constellation_star_radius(style.point_radius_px, global_inst, seed);
     let half_px = star_radius * 4.0 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
 
@@ -1044,33 +1223,6 @@ fn fs_constellation_star(in: VsConstellationStarOut) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(min(col, vec3<f32>(a)) * star_opacity, out_a);
-}
-
-// Ring radii relative to the planet radius, and the apparent inclination of
-// the ring plane (minor/major axis ratio of the projected ellipse).
-const RING_INNER: f32 = 1.45;
-const RING_OUTER: f32 = 2.3;
-const RING_INCL: f32 = 0.32;
-// Quad half-extent multiplier — room for the ring + rim glow + AA.
-const PLANET_QUAD_EXTENT: f32 = 2.5;
-
-// ScatterShape code → ring position angle. The first legacy shapes get hand-
-// picked angles; newer marker codes share a deterministic fallback.
-fn cons_ring_angle(shape_id: u32) -> f32 {
-    switch shape_id {
-        case 0u: { return 0.0; }          // Circle
-        case 1u: { return 0.52; }         // Square        (+30°)
-        case 2u: { return 1.05; }         // Triangle      (+60°)
-        case 3u: { return -0.52; }        // Diamond       (−30°)
-        case 4u: { return -1.05; }        // Cross         (−60°)
-        case 5u: { return 0.26; }         // CircleFilled  (+15°)
-        case 6u: { return 0.79; }         // SquareFilled  (+45°)
-        case 7u: { return -0.26; }        // TriangleFilled(−15°)
-        case 8u: { return -0.79; }        // DiamondFilled (−45°)
-        default: {
-            return -1.2 + f32(shape_id % 11u) * 0.24;
-        }
-    }
 }
 
 struct VsPlanetOut {
@@ -1121,14 +1273,13 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     // Per-point variation channels.
     let h_arch = sketch_hash01(in.seed_inst, 0xA2C4u);
     let h_spin = sketch_hash01(in.seed_inst, 0x591Eu);
-    let h_jit = sketch_hash01(in.seed_inst, 0x717Au);
 
     // Ring frame: rotate into the ring plane. Position angle = series shape
     // mapping ± a small per-point jitter (real systems aren't aligned).
-    let phi = cons_ring_angle(style.shape_id) + (h_jit - 0.5) * 0.12;
+    let phi = planet_ring_phi(style.shape_id, in.seed_inst);
     let cphi = cos(phi);
     let sphi = sin(phi);
-    let q = vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
+    let q = planet_ring_frame(p, phi);
 
     // ── Physically consistent ring/planet frame ──
     // The ring lies in the planet's EQUATORIAL plane. With the projected
@@ -1145,7 +1296,7 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     let cos_i = sqrt(1.0 - sin_i * sin_i);
 
     // Projected ring ellipse: radial coordinate in ring-plane units.
-    let rho = length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
+    let rho = planet_ring_rho(q, r_planet);
     let in_band = rho > RING_INNER && rho < RING_OUTER;
     var ring_a = 0.0;
     var ring_rgb = vec3<f32>(0.0);
@@ -1219,12 +1370,7 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
 
     // Atmospheric rim glow — the series color's only appearance. Soft
     // exponential falloff outside the disc, not a hard shell.
-    let rim_d = max(dist - r_planet, 0.0);
-    let rim = select(
-        0.0,
-        in.rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0)),
-        dist > r_planet - aa,
-    );
+    let rim = select(0.0, planet_rim_glow(dist, r_planet, in.rim_gain), dist > r_planet - aa);
     let rim_rgb = style.color_premul.rgb * rim;
 
     // Compose, premultiplied: back ring (occluded by the disc) → planet →
@@ -1245,7 +1391,7 @@ fn fs_planet(in: VsPlanetOut) -> @location(0) vec4<f32> {
     rgb = rgb + rim_rgb * (1.0 - a);
     a = a + rim * (1.0 - a);
 
-    if (a <= 0.003) {
+    if (a <= PLANET_ALPHA_FLOOR) {
         discard;
     }
     return vec4<f32>(rgb, a);

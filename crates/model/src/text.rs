@@ -218,6 +218,35 @@ impl TextExtents {
 /// this with its skia text stack and injects it; tests use fixed stubs.
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
+
+    /// The parts of decoration `element` a renderer draws under `cfg`: call
+    /// `each` with every one, in `cfg`'s chart frame, and return `true`.
+    /// Tick labels ([`Element::AxisLabel`], [`Element::ColorBarLabel`])
+    /// report one [`DrawnPart::Text`] per drawn label; axes
+    /// ([`Element::Axis`], [`Element::ColorBarAxis`]) report their line and
+    /// ticks as [`DrawnPart::Segment`]s.
+    ///
+    /// Tick generation, formatting and pruning belong to the renderer, so the
+    /// model cannot know which labels and ticks are drawn. A measure that
+    /// lays them out lets selection and hit testing follow the drawn parts.
+    /// The default lays out nothing and returns `false`; tick labels and axes
+    /// then have no bounds, since nothing tells the model where they are
+    /// drawn.
+    ///
+    /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
+    /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel
+    /// [`Element::Axis`]: crate::layout::Element::Axis
+    /// [`Element::ColorBarAxis`]: crate::layout::Element::ColorBarAxis
+    /// [`DrawnPart::Text`]: crate::layout::DrawnPart::Text
+    /// [`DrawnPart::Segment`]: crate::layout::DrawnPart::Segment
+    fn drawn_parts(
+        &self,
+        _cfg: &crate::config::Config,
+        _element: &crate::layout::Element,
+        _each: &mut dyn FnMut(crate::layout::DrawnPart),
+    ) -> bool {
+        false
+    }
 }
 
 /// One plain `RichSegment` per char, mapping Unicode super/subscript chars to

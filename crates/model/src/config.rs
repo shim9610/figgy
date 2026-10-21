@@ -766,13 +766,15 @@ impl Config {
         self.chart_title.offset_x *= s;
         self.chart_title.offset_y *= s;
 
-        for axis in [
-            &mut self.top_x,
-            &mut self.bottom_x,
-            &mut self.left_y,
-            &mut self.right_y,
+        let polar = self.polar.is_some();
+        for (axis, side) in [
+            (&mut self.top_x, Side::Top),
+            (&mut self.bottom_x, Side::Bottom),
+            (&mut self.left_y, Side::Left),
+            (&mut self.right_y, Side::Right),
         ] {
             scale_axis_in_place(axis, s);
+            scale_label_gap(axis, &side, polar, s);
         }
 
         self.grid.major_x_width *= s;
@@ -784,16 +786,19 @@ impl Config {
         self.legend.offset_y *= s;
         self.legend.padding *= s;
         scale_rich_text(&mut self.legend.content, s);
+        scale_legend_inset(&mut self.legend, s);
 
         // Overlay layers carry their own axis and optional legend; both are
         // pixel-dimensioned like the parent's and scale by the same rules.
         for overlay in &mut self.overlays {
             scale_axis_in_place(&mut overlay.y_axis, s);
+            scale_label_gap(&mut overlay.y_axis, &Side::Right, false, s);
             if let Some(legend) = overlay.legend.as_mut() {
                 legend.offset_x *= s;
                 legend.offset_y *= s;
                 legend.padding *= s;
                 scale_rich_text(&mut legend.content, s);
+                scale_legend_inset(legend, s);
             }
         }
 
@@ -828,6 +833,8 @@ impl Config {
             bar.offset_x *= s;
             bar.offset_y *= s;
             scale_axis_in_place(&mut bar.axis, s);
+            let side = bar.side.clone();
+            scale_label_gap(&mut bar.axis, &side, false, s);
         }
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
@@ -873,6 +880,43 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
     axis.line_width *= s;
     axis.major_tick_length *= s;
     axis.minor_tick_length *= s;
+}
+
+/// The tick-label gap ([`crate::layout::LABEL_GAP`]) is a fixed pixel
+/// distance of the shared layout, not a config field, so scaling cannot
+/// multiply it. A scaled config moves the labels outward by the extra
+/// `(s − 1) × LABEL_GAP` through their offset instead, and lays them out
+/// exactly as the 1x config scaled. Polar labels read the offset in their own
+/// frame: outward along a spoke for the angle axis, towards the label side
+/// of the ray for the radius axis.
+fn scale_label_gap(axis: &mut AxisOptions, side: &Side, polar: bool, s: f32) {
+    let extra = (s - 1.0) * crate::layout::LABEL_GAP;
+    let ls = &mut axis.label_style;
+    match side {
+        _ if polar && matches!(side, Side::Bottom | Side::Left) => ls.label_offset_y += extra,
+        Side::Top => ls.label_offset_y -= extra,
+        Side::Bottom => ls.label_offset_y += extra,
+        Side::Left => ls.label_offset_x -= extra,
+        Side::Right => ls.label_offset_x += extra,
+    }
+}
+
+/// The legend's inset from its data-area corner
+/// ([`crate::layout::LEGEND_INSET`]) is a fixed pixel distance, so a scaled
+/// config moves the legend away from its corner by the extra
+/// `(s − 1) × LEGEND_INSET` through its offset, as [`scale_label_gap`] does
+/// for tick labels.
+fn scale_legend_inset(legend: &mut crate::legend::Legend, s: f32) {
+    use crate::legend::LegendCorner;
+    let extra = (s - 1.0) * crate::layout::LEGEND_INSET;
+    let (sx, sy) = match legend.corner {
+        LegendCorner::TopLeft => (1.0, 1.0),
+        LegendCorner::TopRight => (-1.0, 1.0),
+        LegendCorner::BottomLeft => (1.0, -1.0),
+        LegendCorner::BottomRight => (-1.0, -1.0),
+    };
+    legend.offset_x += sx * extra;
+    legend.offset_y += sy * extra;
 }
 
 /// Scale a `RichText`'s pixel-based dims: the document-level `font_size` and
@@ -1011,18 +1055,61 @@ mod colorbar_scale_tests {
         assert_eq!(after.nan_color, before.nan_color);
     }
 
-    // The colourbar's axis must scale by exactly the same rule as a chart axis:
-    // if the two ever diverge, a high-DPI export puts the bar's labels at a
-    // different size than the axis labels beside them.
+    // The colourbar's axis must scale by exactly the same rule as a chart axis
+    // on the same side: if the two ever diverge, a high-DPI export puts the
+    // bar's labels at a different size or gap than the axis labels beside them.
     #[test]
     fn the_colorbar_axis_scales_like_a_chart_axis() {
         let mut cfg = default_config();
         let mut bar = default_colorbar_options();
-        bar.axis = cfg.left_y.clone();
+        assert_eq!(bar.side, crate::layout::Side::Right);
+        bar.axis = cfg.right_y.clone();
         cfg.colorbar = Some(bar);
 
         let scaled = cfg.scaled(1.75);
-        assert_eq!(scaled.colorbar.expect("colourbar").axis, scaled.left_y);
+        assert_eq!(scaled.colorbar.expect("colourbar").axis, scaled.right_y);
+    }
+
+    // The fixed tick-label gap and legend inset are layout constants, not
+    // fields, so a scaled config moves labels and legend by the extra gap and
+    // lays them out as the 1x config scaled.
+    #[test]
+    fn scaling_keeps_the_fixed_label_gap_and_legend_inset_proportional() {
+        use crate::layout::{LABEL_GAP, LEGEND_INSET};
+        let cfg = default_config();
+        let scaled = cfg.scaled(2.0);
+        for (before, after, outward) in [
+            (&cfg.top_x, &scaled.top_x, (0.0, -1.0)),
+            (&cfg.bottom_x, &scaled.bottom_x, (0.0, 1.0)),
+            (&cfg.left_y, &scaled.left_y, (-1.0, 0.0)),
+            (&cfg.right_y, &scaled.right_y, (1.0, 0.0)),
+        ] {
+            let ls = (&before.label_style, &after.label_style);
+            assert_eq!(
+                ls.1.label_offset_x,
+                ls.0.label_offset_x * 2.0 + outward.0 * LABEL_GAP
+            );
+            assert_eq!(
+                ls.1.label_offset_y,
+                ls.0.label_offset_y * 2.0 + outward.1 * LABEL_GAP
+            );
+        }
+        let (sx, sy) = match cfg.legend.corner {
+            crate::legend::LegendCorner::TopLeft => (1.0, 1.0),
+            crate::legend::LegendCorner::TopRight => (-1.0, 1.0),
+            crate::legend::LegendCorner::BottomLeft => (1.0, -1.0),
+            crate::legend::LegendCorner::BottomRight => (-1.0, -1.0),
+        };
+        assert_eq!(
+            scaled.legend.offset_x,
+            cfg.legend.offset_x * 2.0 + sx * LEGEND_INSET
+        );
+        assert_eq!(
+            scaled.legend.offset_y,
+            cfg.legend.offset_y * 2.0 + sy * LEGEND_INSET
+        );
+        // At 1x nothing moves.
+        assert_eq!(cfg.scaled(1.0), cfg);
     }
 }
 

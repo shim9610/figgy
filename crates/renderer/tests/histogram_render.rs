@@ -539,7 +539,7 @@ fn subpixel_envelope_keeps_maxima_without_repeated_alpha_blending() {
 }
 
 #[test]
-fn envelope_uses_winner_style_zero_baseline_and_keeps_tiny_edges() {
+fn envelope_uses_winner_style_bar_baseline_and_keeps_tiny_edges() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -565,7 +565,9 @@ fn envelope_uses_winner_style_zero_baseline_and_keeps_tiny_edges() {
     let DataRenderType::Histogram { bar } = &mut series.render_type else {
         unreachable!()
     };
-    bar.baseline = 5.0; // The subpixel fallback explicitly fills to zero.
+    // The subpixel envelope fills from the bar baseline, like a full bar,
+    // so the pick and the selection outline see what it paints.
+    bar.baseline = 5.0;
     bar.bar_style_overrides = Some(vec![DataBarStyleOverride {
         index: 1,
         style: DataBarBinStyleConfig {
@@ -581,10 +583,16 @@ fn envelope_uses_winner_style_zero_baseline_and_keeps_tiny_edges() {
     }]);
     let image = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
     let x = data_x_to_px(&chart, 100.0).floor() as u32;
-    for value in [2.0, 7.0] {
+    for value in [6.0, 7.5] {
         assert!(
             is_override_fill(pixel(&image, x, data_y_to_px(&chart, value) as u32)),
-            "tiny peak must select the first maximum's style and fill to zero"
+            "tiny peak must select the first maximum's style and fill to the baseline"
+        );
+    }
+    for value in [2.0, 4.0, 9.0] {
+        assert!(
+            !is_override_fill(pixel(&image, x, data_y_to_px(&chart, value) as u32)),
+            "the envelope paints nothing below the baseline or above the peak ({value})"
         );
     }
 }
