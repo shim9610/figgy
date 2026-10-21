@@ -2071,3 +2071,152 @@ fn contour_strokes_pick_where_they_paint() {
         assert!(painted > 50, "at {scale}x: {painted}");
     }
 }
+
+/// A data value's export pixel along one axis, in f64, linear or
+/// logarithmic: the reference both the CPU and the GPU must hit.
+fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length: f64) -> f64 {
+    let t = match axis.scale {
+        renderer::config::AxisScale::Linear => (value - axis.min) / (axis.max - axis.min),
+        renderer::config::AxisScale::Logarithmic => {
+            (value.log10() - axis.min.log10()) / (axis.max.log10() - axis.min.log10())
+        }
+    };
+    start + t * length
+}
+
+/// The CPU (`pick_nearest_point`) and the GPU (the draw and `pick_chart`)
+/// place every point where its value lies, within a pixel of each other and
+/// of the f64 reference, on linear and logarithmic axes at every magnitude.
+/// Past 2^24 the GPU once lost the logarithm (a log flag blended with
+/// `mix`) while the CPU kept it.
+#[test]
+fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
+    use renderer::config::AxisScale;
+    let magnitudes = [
+        1e-20, 1e-6, 1.0, 1e6, 4e6, 1.6e7, 1.7e7, 3e7, 1e8, 1e12, 1e16, 1e30,
+    ];
+    let fractions = [0.2, 0.5, 0.8];
+    let mut checked = 0;
+    for (x_scale, y_scale) in [
+        (AxisScale::Linear, AxisScale::Linear),
+        (AxisScale::Linear, AxisScale::Logarithmic),
+        (AxisScale::Logarithmic, AxisScale::Logarithmic),
+    ] {
+        for magnitude in magnitudes {
+            // A range around `magnitude`: two decades either side on a log
+            // axis, one magnitude wide on a linear one.
+            let range = |scale: &AxisScale| match scale {
+                AxisScale::Linear => (magnitude, 2.0 * magnitude),
+                AxisScale::Logarithmic => (magnitude / 100.0, magnitude * 100.0),
+            };
+            let value = |scale: &AxisScale, f: f64| {
+                let (lo, hi) = range(scale);
+                match scale {
+                    AxisScale::Linear => lo + f * (hi - lo),
+                    AxisScale::Logarithmic => lo * (hi / lo).powf(f),
+                }
+            };
+            let xs: Vec<f64> = fractions.iter().map(|f| value(&x_scale, *f)).collect();
+            let ys: Vec<f64> = fractions
+                .iter()
+                .map(|f| value(&y_scale, 1.0 - *f))
+                .collect();
+            let mut renderer = renderer();
+            upload_xy(&mut renderer, xs.clone(), ys.clone());
+            let mut chart = bare_chart();
+            chart.config_mut().bottom_x.scale = x_scale.clone();
+            chart.config_mut().left_y.scale = y_scale.clone();
+            let (x0, x1) = range(&x_scale);
+            let (y0, y1) = range(&y_scale);
+            chart.set_x_range(x0, x1);
+            chart.set_y_range(y0, y1);
+            let series = [scatter("points", ScatterShape::SquareFilled, 7.0, RED)];
+            let image = renderer
+                .export_panel_rgba(&chart, &series, 1.0)
+                .expect("export");
+            let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+            let columns = F32Columns(vec![
+                ("x".into(), xs.iter().map(|v| *v as f32).collect()),
+                ("y".into(), ys.iter().map(|v| *v as f32).collect()),
+            ]);
+            let cfg = chart.config().clone();
+            let da = cfg.data_area().expect("data area").0;
+            let case = format!("{x_scale:?}/{y_scale:?} at {magnitude:e}");
+            for (index, (&x, &y)) in xs.iter().zip(&ys).enumerate() {
+                let expected = (
+                    axis_px(&cfg.bottom_x, x, da.x as f64, da.width as f64),
+                    axis_px(
+                        &cfg.left_y,
+                        y,
+                        (da.y + da.height) as f64,
+                        -(da.height as f64),
+                    ),
+                );
+                // The draw: the marker's red ink is centred on the value.
+                let (mut sum_x, mut sum_y, mut ink) = (0.0, 0.0, 0.0);
+                for py in
+                    (expected.1 as i64 - 12).max(0)..(expected.1 as i64 + 12).min(HEIGHT as i64)
+                {
+                    for px in
+                        (expected.0 as i64 - 12).max(0)..(expected.0 as i64 + 12).min(WIDTH as i64)
+                    {
+                        let i = ((py as u32 * image.width + px as u32) * 4) as usize;
+                        let [r, g, b, a] = image.rgba[i..i + 4].try_into().unwrap();
+                        if r > 128 && g < 100 && b < 100 && a > 0 {
+                            let w = f64::from(r);
+                            sum_x += (px as f64 + 0.5) * w;
+                            sum_y += (py as f64 + 0.5) * w;
+                            ink += w;
+                        }
+                    }
+                }
+                assert!(
+                    ink > 0.0,
+                    "{case}: point {index} is not drawn near {expected:?}"
+                );
+                let drawn = (sum_x / ink, sum_y / ink);
+                assert!(
+                    (drawn.0 - expected.0).abs() <= 1.0 && (drawn.1 - expected.1).abs() <= 1.0,
+                    "{case}: point {index} drawn at {drawn:?}, expected {expected:?}"
+                );
+                // The GPU and the CPU pickers find it there.
+                let at = (expected.0 as f32, expected.1 as f32);
+                let gpu = pollster::block_on(
+                    renderer
+                        .pick_chart(probe.id, probe.request(at.0, at.1, 3.0))
+                        .unwrap()
+                        .resolve(),
+                )
+                .unwrap()
+                .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
+                let cpu = renderer::pick_nearest_point(
+                    &cfg,
+                    &series,
+                    &columns,
+                    at.0,
+                    at.1,
+                    renderer::PointPickOptions {
+                        max_distance_px: 3.0,
+                    },
+                )
+                .unwrap_or_else(|| panic!("{case}: CPU misses point {index} at {at:?}"));
+                assert_eq!((gpu.point_index, cpu.point_index), (index, index), "{case}");
+                assert!(
+                    gpu.distance_px <= 1.0 && cpu.distance_px <= 1.0,
+                    "{case}: point {index}: GPU {} px, CPU {} px from the value",
+                    gpu.distance_px,
+                    cpu.distance_px
+                );
+                assert!(
+                    (gpu.distance_px - cpu.distance_px).abs() <= 0.5,
+                    "{case}: point {index}: GPU {} px, CPU {} px",
+                    gpu.distance_px,
+                    cpu.distance_px
+                );
+                checked += 1;
+            }
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+    assert_eq!(checked, 3 * magnitudes.len() * fractions.len());
+}
