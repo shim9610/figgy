@@ -177,7 +177,7 @@ fn suites() -> Vec<(&'static str, Config, Vec<SeriesConfig>, bool)> {
 fn every_config_leaf_that_changes_the_frame_moves_a_cache_revision() {
     let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
-        .unwrap();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut total = Tally::default();
     let mut live = Vec::new();
     for (name, config, series, _) in suites() {
@@ -230,6 +230,9 @@ fn every_config_leaf_that_changes_the_frame_moves_a_cache_revision() {
         live.join("\n")
     );
     eprintln!("skipped:\n{}", total.skipped.join("\n"));
+    // Release the font lock before the verdict, so a confirmed gap fails
+    // this test alone instead of poisoning the lock for every later test.
+    drop(_fonts);
     assert!(
         total.gaps.is_empty(),
         "{} config leaves change the frame without moving a cache revision:\n{}",
@@ -242,7 +245,7 @@ fn every_config_leaf_that_changes_the_frame_moves_a_cache_revision() {
 fn every_config_leaf_that_changes_the_stream_prefix_moves_the_view_revision() {
     let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
-        .unwrap();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (mut oracle, _) = fixture(&baseline(), false, false);
     let mut total = Tally::default();
     for (name, config, series, streams) in suites() {
@@ -281,6 +284,9 @@ fn every_config_leaf_that_changes_the_stream_prefix_moves_the_view_revision() {
     }
     eprintln!("{}", total.summary("stream view (all suites)"));
     eprintln!("skipped:\n{}", total.skipped.join("\n"));
+    // Release the font lock before the verdict, so a confirmed gap fails
+    // this test alone instead of poisoning the lock for every later test.
+    drop(_fonts);
     assert!(
         total.gaps.is_empty(),
         "{} config leaves change the stream prefix without moving the view revision:\n{}",
@@ -301,7 +307,7 @@ fn every_config_leaf_that_changes_the_stream_prefix_moves_the_view_revision() {
 fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
     let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
         .lock()
-        .unwrap();
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let config = baseline_with_annotations();
     let series = vec![declaration("s", "x", "a")];
     let demo = |values: [f32; 3]| crate::Column {
@@ -386,6 +392,9 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
         annotation_kept.join("\n")
     );
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
+    // Release the font lock before the verdict, so a confirmed gap fails
+    // this test alone instead of poisoning the lock for every later test.
+    drop(_fonts);
     assert!(
         tally.gaps.is_empty(),
         "{} annotation leaves of a loaded demo do not reach the first frame:\n{}",

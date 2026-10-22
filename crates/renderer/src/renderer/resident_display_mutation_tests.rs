@@ -465,6 +465,9 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     tally.absorb(run_suite("subplot", config, chart_series(), size));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
+    // Release the font lock before the verdict, so a confirmed gap fails
+    // this test alone instead of poisoning the lock for every later test.
+    drop(_fonts);
     assert!(
         tally.gaps.is_empty(),
         "{} leaves change the cached series bodies without changing ResidentDisplayKey:\n{}",

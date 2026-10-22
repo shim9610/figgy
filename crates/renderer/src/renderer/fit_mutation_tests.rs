@@ -206,6 +206,9 @@ fn every_leaf_that_changes_a_fit_changes_the_fit_token() {
     tally.absorb(run_fit_suite("subplot", LayerRef::Subplot(0)));
     eprintln!("{}", tally.summary("fit (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
+    // Release the font lock before the verdict, so a confirmed gap fails
+    // this test alone instead of poisoning the lock for every later test.
+    drop(_fonts);
     assert!(
         tally.gaps.is_empty(),
         "{} leaves change a committed fit without changing FitCommitToken:\n{}",
