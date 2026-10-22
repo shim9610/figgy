@@ -9,8 +9,8 @@ use crate::raster::Canvas;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 use crate::format::LabelFormat;
 use crate::layout::{
-    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_title_placement, label_origin,
-    point_on_rect_side,
+    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_title_placement, chart_title_placement,
+    label_origin, point_on_rect_side,
 };
 use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
@@ -23,3 +23,5 @@ mod tick_format;
 pub(crate) use tick_format::*;
 mod axis_titles;
 pub(crate) use axis_titles::*;
+mod chart_title;
+pub(crate) use chart_title::*;

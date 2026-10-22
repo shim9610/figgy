@@ -9,8 +9,8 @@ use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
 use crate::format::LabelFormat;
 use crate::layout::{
-    DataArea, DrawnPart, RectF, Side, axis_anchor, axis_offset, chart_title_placement,
-    colorbar_rect, colorbar_title_placement, legend_rect, point_on_rect_side,
+    DataArea, DrawnPart, RectF, Side, axis_anchor, axis_offset, colorbar_rect,
+    colorbar_title_placement, legend_rect, point_on_rect_side,
 };
 use crate::line::LineStylePreset;
 use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
@@ -599,20 +599,6 @@ pub(crate) fn drawn_parts(
         _ => return false,
     }
     true
-}
-
-// Chart title (RichText).
-
-fn draw_chart_title(canvas: &mut Canvas, config: &Config, fp: FontPolicy) {
-    let ct = &config.chart_title;
-    let m = measure_rich_text(&ct.text, fp);
-    let placement = chart_title_placement(
-        &config.chart_area,
-        ct.top_margin,
-        (ct.offset_x, ct.offset_y),
-        m,
-    );
-    draw_placed_title(canvas, &ct.text, placement, fp);
 }
 
 #[cfg(test)]
