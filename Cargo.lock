@@ -755,6 +755,7 @@ dependencies = [
  "js-sys",
  "png",
  "pollster",
+ "serde",
  "serde_json",
  "swash",
  "tiny-skia 0.12.0",
