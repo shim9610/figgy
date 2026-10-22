@@ -2,8 +2,9 @@
 //! tick label is, baked once per signature into one texture the GPU places.
 
 use super::*;
-use crate::axis_render::{effective_major_spacing, format_tick_value};
+use crate::axis_render::effective_major_spacing;
 use crate::config::AxisScale;
+use crate::decoration_render::format_tick_value;
 use crate::raster::{Canvas, Paint};
 use crate::text_render::{FontPolicy, draw_plain_text, measure_plain_text};
 

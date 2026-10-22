@@ -231,11 +231,11 @@ pub(super) fn plain_tick_label_interval(
     }
 }
 
-pub(crate) fn plain_seg(c: char) -> RichSegment {
+pub(super) fn plain_seg(c: char) -> RichSegment {
     RichSegment::plain(c)
 }
 
-pub(crate) fn sup_seg(c: char) -> RichSegment {
+pub(super) fn sup_seg(c: char) -> RichSegment {
     RichSegment {
         superscript: true,
         ..RichSegment::plain(c)
