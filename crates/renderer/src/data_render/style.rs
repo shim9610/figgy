@@ -87,27 +87,39 @@ impl PrimitiveStyle {
     /// `scale` multiplies the pixel dimensions for high-DPI export, exactly as
     /// the other `create_style_for_series_scaled` paths do.
     pub fn from_bar(bar: &crate::data_config::DataBarStyleConfig, scale: f32) -> Self {
+        let crate::data_config::DataBarStyleConfig {
+            fill_color,
+            border_color,
+            border_width,
+            baseline,
+            gap_px,
+            width_ratio,
+            orientation,
+            // Per-bin overrides are resolved into `bar` before this call
+            // (`resolved_bar_primitive_style`) or go to the bar style map.
+            bar_style_overrides: _,
+        } = bar;
         let premul = |c: Color| {
             let a = c.a.clamp(0.0, 1.0);
             [c.r * a, c.g * a, c.b * a, a]
         };
         // The baseline crosses as the pool's (hi, lo) f32 pair so a large
         // absolute base keeps its small deltas — a single f32 would not.
-        let (base_hi, base_lo) = crate::data::split_f64_to_f32_pair(bar.baseline);
+        let (base_hi, base_lo) = crate::data::split_f64_to_f32_pair(*baseline);
         Self {
-            color_premul: premul(bar.fill_color),
-            line_width_px: bar.border_width.max(0.0) * scale,
+            color_premul: premul(*fill_color),
+            line_width_px: border_width.max(0.0) * scale,
             point_radius_px: 0.0,
-            cap_half_px: bar.gap_px.max(0.0) * scale,
-            cap_width_px: sanitize_bar_width_ratio(bar.width_ratio),
-            shape_id: match bar.orientation {
+            cap_half_px: gap_px.max(0.0) * scale,
+            cap_width_px: sanitize_bar_width_ratio(*width_ratio),
+            shape_id: match orientation {
                 crate::data_config::BarOrientation::Vertical => 0,
                 crate::data_config::BarOrientation::Horizontal => 1,
             },
             dash_len: 0,
             series_salt: 0,
             primitive_flags: 0,
-            dash: [premul(bar.border_color), [base_hi, base_lo, 0.0, 0.0]],
+            dash: [premul(*border_color), [base_hi, base_lo, 0.0, 0.0]],
         }
     }
 
