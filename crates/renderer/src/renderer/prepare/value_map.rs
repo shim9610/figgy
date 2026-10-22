@@ -135,17 +135,7 @@ impl PrepareContext<'_> {
         {
             return Ok(());
         }
-        let stops: &[Color] = signature
-            .colormap
-            .as_ref()
-            .map_or(&[], |colormap| colormap.stops());
-        let (bind_group, charge) = data_render::create_point_value_map_bind_group(
-            &self.device,
-            &self.gpu_ledger,
-            &self.point_value_map_bgl,
-            &signature.params,
-            stops,
-        );
+        let scratch = self.build_value_map_scratch(signature);
         evict_if_full(
             &mut self.value_map_cache,
             cfg.series_id.as_str(),
@@ -157,15 +147,33 @@ impl PrepareContext<'_> {
                 resource: "point value map scratch cache",
                 reason: error.to_string(),
             })?;
-        self.value_map_cache.insert(
-            cfg.series_id.clone(),
-            ValueMapScratch {
-                signature,
-                bind_group,
-                _charge: charge,
-            },
-        );
+        self.value_map_cache.insert(cfg.series_id.clone(), scratch);
         Ok(())
+    }
+
+    /// Build the group-3 state a signature describes.
+    ///
+    /// The signature is this function's only input besides the device: the
+    /// cache compares signatures, so whatever the build could read beyond
+    /// one would be a change the compare cannot see. Keeping the build to
+    /// the signature makes the compare complete by construction.
+    fn build_value_map_scratch(&self, signature: ValueMapSignature) -> ValueMapScratch {
+        let stops: &[Color] = signature
+            .colormap
+            .as_ref()
+            .map_or(&[], |colormap| colormap.stops());
+        let (bind_group, charge) = data_render::create_point_value_map_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.point_value_map_bgl,
+            &signature.params,
+            stops,
+        );
+        ValueMapScratch {
+            signature,
+            bind_group,
+            _charge: charge,
+        }
     }
 }
 

@@ -13,17 +13,54 @@ pub struct FitCommitToken {
     pub(super) series: Vec<FitSeriesStamp>,
 }
 
+/// The axes a fit reads or writes: the parent's four, each overlay's y axis
+/// and each subplot's cell. A range edit on any of them between `begin` and
+/// `commit` retires the token, so a concurrent user edit is never overwritten
+/// by a fit computed before it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct FitAxisStamp {
     pub(super) top_x: (u8, u64, u64),
     pub(super) bottom_x: (u8, u64, u64),
     pub(super) left_y: (u8, u64, u64),
     pub(super) right_y: (u8, u64, u64),
+    pub(super) overlays: Vec<(u8, u64, u64)>,
+    pub(super) subplots: Vec<FitSubplotStamp>,
+}
+
+/// One subplot cell as the fit sees it: its axes, its links (which decide
+/// whose range a series fits through `Config::series_fit_roles`) and its own
+/// overlays' y axes.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) struct FitSubplotStamp {
+    pub(super) top_x: (u8, u64, u64),
+    pub(super) bottom_x: (u8, u64, u64),
+    pub(super) left_y: (u8, u64, u64),
+    pub(super) right_y: (u8, u64, u64),
+    pub(super) link_x: Option<model::layer::CellRef>,
+    pub(super) link_y: Option<model::layer::CellRef>,
+    pub(super) overlays: Vec<(u8, u64, u64)>,
+}
+
+/// The parameters of a series' extent that are not column content: what the
+/// host folds into the extent besides the columns' values.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum FitExtentParams {
+    /// The extent is the columns' values alone.
+    Columns,
+    /// A `Data`-scaled point vector: the tips are `anchor + factor * (u, v)`.
+    VectorTips { factor_bits: u64 },
+    /// A histogram: the counts' extent includes the baseline, and the
+    /// orientation decides which column is edges and which is counts.
+    Histogram { baseline_bits: u64, orientation: u8 },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub(super) struct FitSeriesStamp {
     pub(super) series_id: String,
+    /// The layer that owns the series, which with the subplot links decides
+    /// which axes it fits (`Config::series_fit_roles`).
+    pub(super) layer: model::layer::LayerRef,
+    pub(super) params: FitExtentParams,
     /// `None` for a render type whose extent is metadata-only (histogram). The
     /// stamp is still
     /// recorded with its column stamps, so a content change in one of those
@@ -209,8 +246,29 @@ pub(super) fn build_fit_token_from_state(
             push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_U, u)?;
             push_fit_column_stamp(pool, streaming_sources, &mut columns, FIT_ROLE_VECTOR_V, v)?;
         }
+        let params = match &item.render_type {
+            DataRenderType::Vector {
+                components: crate::data_config::VectorComponents::Points { .. },
+                style,
+            } => match style.scale {
+                crate::data_config::VectorScale::Data { factor } => FitExtentParams::VectorTips {
+                    factor_bits: factor.to_bits(),
+                },
+                crate::data_config::VectorScale::Pixels { .. } => FitExtentParams::Columns,
+            },
+            DataRenderType::Histogram { bar } => FitExtentParams::Histogram {
+                baseline_bits: bar.baseline.to_bits(),
+                orientation: match bar.orientation {
+                    crate::data_config::BarOrientation::Vertical => 0,
+                    crate::data_config::BarOrientation::Horizontal => 1,
+                },
+            },
+            _ => FitExtentParams::Columns,
+        };
         series.push(FitSeriesStamp {
             series_id: item.series_id.clone(),
+            layer: state.config.layer_of_series(&item.series_id),
+            params,
             mode: crate::gpu_errorbar::GpuSeriesFitMode::from_render_type(&item.render_type),
             field_orientation: fit_matrix(&item.render_type).map(|matrix| {
                 match matrix.orientation {
@@ -222,6 +280,40 @@ pub(super) fn build_fit_token_from_state(
         });
     }
 
+    let overlay_stamps = |overlays: &[model::layer::OverlayLayer]| -> Result<Vec<_>> {
+        let mut stamps = Vec::new();
+        stamps.try_reserve_exact(overlays.len()).map_err(|error| {
+            FiggyError::StateAllocationFailed {
+                resource: "fit overlay axis stamps",
+                reason: error.to_string(),
+            }
+        })?;
+        stamps.extend(
+            overlays
+                .iter()
+                .map(|overlay| axis_fit_stamp(&overlay.y_axis)),
+        );
+        Ok(stamps)
+    };
+    let mut subplots = Vec::new();
+    subplots
+        .try_reserve_exact(state.config.subplots.len())
+        .map_err(|error| FiggyError::StateAllocationFailed {
+            resource: "fit subplot stamps",
+            reason: error.to_string(),
+        })?;
+    for subplot in &state.config.subplots {
+        subplots.push(FitSubplotStamp {
+            top_x: axis_fit_stamp(&subplot.config.top_x),
+            bottom_x: axis_fit_stamp(&subplot.config.bottom_x),
+            left_y: axis_fit_stamp(&subplot.config.left_y),
+            right_y: axis_fit_stamp(&subplot.config.right_y),
+            link_x: subplot.link_x,
+            link_y: subplot.link_y,
+            overlays: overlay_stamps(&subplot.config.overlays)?,
+        });
+    }
+
     Ok(FitCommitToken {
         renderer_identity,
         chart_id,
@@ -230,6 +322,8 @@ pub(super) fn build_fit_token_from_state(
             bottom_x: axis_fit_stamp(&state.config.bottom_x),
             left_y: axis_fit_stamp(&state.config.left_y),
             right_y: axis_fit_stamp(&state.config.right_y),
+            overlays: overlay_stamps(&state.config.overlays)?,
+            subplots,
         },
         series,
     })

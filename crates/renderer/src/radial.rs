@@ -857,12 +857,63 @@ fn frame_eq(a: &RadialChart, b: &RadialChart) -> bool {
 }
 fn annotation_key(chart: &RadialChart) -> RadialChart {
     fn style(s: &RadialStyle) -> RadialStyle {
+        let RadialStyle {
+            tilt_degrees,
+            depth,
+            shadow,
+            hover_lift,
+            // Surface appearance: GPU work, never on the label raster.
+            material: _,
+            bevel: _,
+            gap_degrees: _,
+            roughness: _,
+            texture_strength: _,
+            texture_scale: _,
+            light: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline: _,
+            hover_brightness: _,
+            gloss: _,
+            texture_angle_degrees: _,
+        } = s;
+        let RadialStyle {
+            tilt_degrees: _,
+            depth: _,
+            shadow: _,
+            hover_lift: _,
+            material,
+            bevel,
+            gap_degrees,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            inner_corner,
+            outer_corner,
+            outline,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = RadialStyle::default();
         RadialStyle {
-            tilt_degrees: s.tilt_degrees,
-            depth: s.depth,
-            shadow: s.shadow,
-            hover_lift: s.hover_lift,
-            ..Default::default()
+            material,
+            tilt_degrees: *tilt_degrees,
+            depth: *depth,
+            bevel,
+            gap_degrees,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: *shadow,
+            inner_corner,
+            outer_corner,
+            outline,
+            hover_lift: *hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
         }
     }
     let mut c = frame_key(chart);

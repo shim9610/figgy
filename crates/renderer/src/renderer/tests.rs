@@ -12803,3 +12803,7 @@ fn out_of_pool_bytes_ride_into_the_pool_and_a_budget_refuses_growth() {
         .expect("the same upload fits once the ceiling is lifted");
     assert!(renderer.pool.capacity() > capacity_before);
 }
+
+#[cfg(feature = "serde")]
+#[path = "arc_mutation_tests.rs"]
+mod arc_mutation;

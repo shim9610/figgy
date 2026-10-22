@@ -350,37 +350,8 @@ impl PrepareContext<'_> {
             return Ok(Arc::clone(&scratch.sources));
         }
 
-        // Interpolated shading spans point-to-point, so it needs two samples
-        // along each axis before it has a quad to draw.
-        let minimum = if interpolated { 2 } else { 1 };
-        let drawable = resolved.extent.cols >= minimum && resolved.extent.rows >= minimum;
         let sources = Self::grid_receipt(matrix, &signature.epochs)?;
-
-        let nan_buf = data_render::create_style_uniform_buffer(
-            &self.device,
-            &PrimitiveStyle::from_color(bar.nan_color),
-        );
-        let style_bg =
-            data_render::create_style_bind_group(&self.device, &self.style_bgl, &nan_buf);
-        let lookup_tables = data_render::build_field_lookup_tables(
-            &signature.stops,
-            &signature.levels[..level_count as usize],
-        )?;
-        let (field_bg, charge) = data_render::create_field_data_bind_group(
-            &self.device,
-            &self.gpu_ledger,
-            &self.field_bgl,
-            self.pool.buffer(),
-            data_render::FieldTables {
-                grid: &signature.grid,
-                levels: &signature.levels,
-                stops: &lookup_tables.stops,
-                // Fill-only bind group: the stroke colour table is padding.
-                level_colors: &[[0.0; 4]],
-                lookup_metadata: &lookup_tables.metadata,
-                params: &signature.params,
-            },
-        );
+        let scratch = self.build_field_scratch(signature, sources)?;
 
         // Bounded like `arc_cache`: a host cycling through thousands of series
         // ids must not grow this without limit.
@@ -395,19 +366,70 @@ impl PrepareContext<'_> {
                 resource: "field scratch cache",
                 reason: error.to_string(),
             })?;
-        let receipt = Arc::clone(&sources);
-        self.field_cache.insert(
-            cfg.series_id.clone(),
-            FieldScratch {
-                signature,
-                style_bg,
-                field_bg,
-                charge,
-                sources,
-                drawable,
+        let receipt = Arc::clone(&scratch.sources);
+        self.field_cache.insert(cfg.series_id.clone(), scratch);
+        Ok(receipt)
+    }
+
+    /// Build the group-2 state a signature describes.
+    ///
+    /// The signature (and the column receipt, which names the same columns
+    /// the signature's epochs stamp) is this function's only input besides
+    /// the device: the cache compares signatures, so whatever the build could
+    /// read beyond one would be a change the compare cannot see. Keeping the
+    /// build to the signature makes the compare complete by construction.
+    fn build_field_scratch(
+        &self,
+        signature: FieldSignature,
+        sources: Arc<GridSources>,
+    ) -> Result<FieldScratch> {
+        let params = &signature.params;
+        // Interpolated shading spans point-to-point, so it needs two samples
+        // along each axis before it has a quad to draw.
+        let interpolated = params.flags & data_render::FIELD_FLAG_INTERPOLATED != 0;
+        let minimum = if interpolated { 2 } else { 1 };
+        let drawable = params.cols >= minimum && params.rows >= minimum;
+
+        let [r, g, b, a] = signature.nan_color;
+        let nan_color = Color::new(
+            f32::from_bits(r),
+            f32::from_bits(g),
+            f32::from_bits(b),
+            f32::from_bits(a),
+        );
+        let nan_buf = data_render::create_style_uniform_buffer(
+            &self.device,
+            &PrimitiveStyle::from_color(nan_color),
+        );
+        let style_bg =
+            data_render::create_style_bind_group(&self.device, &self.style_bgl, &nan_buf);
+        let lookup_tables = data_render::build_field_lookup_tables(
+            &signature.stops,
+            &signature.levels[..params.level_count as usize],
+        )?;
+        let (field_bg, charge) = data_render::create_field_data_bind_group(
+            &self.device,
+            &self.gpu_ledger,
+            &self.field_bgl,
+            self.pool.buffer(),
+            data_render::FieldTables {
+                grid: &signature.grid,
+                levels: &signature.levels,
+                stops: &lookup_tables.stops,
+                // Fill-only bind group: the stroke colour table is padding.
+                level_colors: &[[0.0; 4]],
+                lookup_metadata: &lookup_tables.metadata,
+                params,
             },
         );
-        Ok(receipt)
+        Ok(FieldScratch {
+            signature,
+            style_bg,
+            field_bg,
+            charge,
+            sources,
+            drawable,
+        })
     }
 }
 

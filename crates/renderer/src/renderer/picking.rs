@@ -124,33 +124,46 @@ pub(super) fn gpu_pick_vector(
     components: &crate::data_config::VectorComponents,
     style: &crate::data_config::VectorStyle,
 ) -> Option<crate::gpu_pick::GpuPickVector> {
-    use crate::data_config::{VectorColorMap, VectorComponents, VectorPivot, VectorScale};
+    use crate::data_config::{
+        VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    };
     use data_render::vector as vector_render;
     let VectorComponents::Points { u, v } = components else {
         return None;
     };
-    let (scale_pixels, scale) = match style.scale {
-        VectorScale::Data { factor } => (false, factor as f32),
-        VectorScale::Pixels { px_per_unit } => (true, px_per_unit as f32),
+    let VectorStyle {
+        // The hit shape does not depend on the arrow colour.
+        color: _,
+        width_px,
+        scale,
+        pivot,
+        head_length_px,
+        head_width_px,
+        min_length_px,
+        color_map,
+    } = style;
+    let (scale_pixels, scale) = match scale {
+        VectorScale::Data { factor } => (false, *factor as f32),
+        VectorScale::Pixels { px_per_unit } => (true, *px_per_unit as f32),
     };
     Some(crate::gpu_pick::GpuPickVector {
         u_column: u.clone(),
         v_column: v.clone(),
-        color_column: match style.color_map.as_ref() {
+        color_column: match color_map.as_ref() {
             Some(VectorColorMap::Column(column)) => Some(column.clone()),
             _ => None,
         },
         scale_pixels,
         scale,
-        pivot: match style.pivot {
+        pivot: match pivot {
             VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
             VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
             VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
         },
-        width_px: style.width_px,
-        head_length_px: style.head_length_px,
-        head_width_px: style.head_width_px,
-        min_length_px: style.min_length_px,
+        width_px: *width_px,
+        head_length_px: *head_length_px,
+        head_width_px: *head_width_px,
+        min_length_px: *min_length_px,
     })
 }
 
@@ -215,18 +228,25 @@ pub(super) struct OwnedGpuPickScatter {
 
 impl OwnedGpuPickScatter {
     pub(super) fn descriptor(&self) -> crate::gpu_pick::GpuPickScatter<'_> {
+        let Self {
+            base_radius_px,
+            base_shape_id,
+            style_index_column,
+            style_slots,
+            style_overrides,
+            style_meta,
+            size_map,
+        } = self;
         crate::gpu_pick::GpuPickScatter {
-            base_radius_px: self.base_radius_px,
-            base_shape_id: self.base_shape_id,
-            style_map: self
-                .style_meta
-                .map(|style_meta| crate::gpu_pick::GpuPickScatterStyle {
-                    style_index_column: self.style_index_column.clone(),
-                    style_slots: &self.style_slots,
-                    style_overrides: &self.style_overrides,
-                    style_meta,
-                }),
-            size_map: self.size_map.clone(),
+            base_radius_px: *base_radius_px,
+            base_shape_id: *base_shape_id,
+            style_map: style_meta.map(|style_meta| crate::gpu_pick::GpuPickScatterStyle {
+                style_index_column: style_index_column.clone(),
+                style_slots,
+                style_overrides,
+                style_meta,
+            }),
+            size_map: size_map.clone(),
         }
     }
 }
@@ -242,16 +262,41 @@ pub(super) struct OwnedGpuPickSeriesDescriptor {
 
 impl OwnedGpuPickSeriesDescriptor {
     pub(super) fn descriptor(&self) -> crate::gpu_pick::GpuPickSeriesDescriptor<'_> {
+        let Self {
+            signature,
+            scatter,
+            line_width_px,
+            line_interpolation,
+            line_style,
+            vector,
+        } = self;
+        let PickSeriesSignature {
+            series_id,
+            source_id,
+            resource,
+        } = signature;
+        let PickResourceSignature {
+            x_column,
+            y_column,
+            // The rest of the signature restates the owned fields above in
+            // comparable form; the descriptor reads those.
+            primitives: _,
+            line_width_bits: _,
+            line_step_mode: _,
+            line_style: _,
+            scatter: _,
+            vector: _,
+        } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
-            source_id: self.signature.source_id.clone(),
-            series_id: self.signature.series_id.clone(),
-            x_column: self.signature.resource.x_column.clone(),
-            y_column: self.signature.resource.y_column.clone(),
-            scatter: self.scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
-            line_width_px: self.line_width_px,
-            line_interpolation: self.line_interpolation,
-            line_style: self.line_style,
-            vector: self.vector.clone(),
+            source_id: source_id.clone(),
+            series_id: series_id.clone(),
+            x_column: x_column.clone(),
+            y_column: y_column.clone(),
+            scatter: scatter.as_ref().map(OwnedGpuPickScatter::descriptor),
+            line_width_px: *line_width_px,
+            line_interpolation: *line_interpolation,
+            line_style: *line_style,
+            vector: vector.clone(),
         }
     }
 }

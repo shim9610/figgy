@@ -25,7 +25,13 @@
 //!
 //! CI and local development can run this gate whenever a `.wgsl` file or
 //! `SHADER_COMMON.md` changes.
+//!
+//! The file also holds the #46 source guards, each with an allowlist that
+//! only shrinks: one definition per WGSL function, and no `..` rest pattern
+//! on a model type in the Rust product code of the model, renderer and web
+//! crates.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -900,4 +906,907 @@ fn log_flags_return_the_logarithm_before_mixing() {
         offending.join("\n")
     );
     assert!(guarded >= 20, "{guarded} guarded log choices found");
+}
+
+/// Rule from #46: one behaviour has one implementation. Every WGSL function
+/// defined in more than one product shader under `src/` is listed below, and
+/// the test fails on any change to that picture: a new copy (a name defined
+/// in two files that is not listed, or listed with a different file set) or
+/// a stale entry (a listed copy that no longer exists). The list therefore
+/// only shrinks: each merge of item 11 in #58 removes its entries, until only
+/// `ASSEMBLED_ALTERNATIVES` is left. Entry points (`@vertex`, `@fragment`,
+/// `@compute`) are exempt: their names are per pipeline, not shared code.
+///
+/// `ASSEMBLED_ALTERNATIVES` are interface functions with one body per
+/// variant, of which the Rust assembler splices exactly one into a module.
+/// They are the layered design of rule 9 and stay. `PENDING_COPIES` are the
+/// pasted copies, kept in sync by the tests above until the assembler
+/// fragments replace them. Each entry is (files that define them, names).
+#[test]
+fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                out.push(path);
+            }
+        }
+    }
+    let src = workspace_root().join("src");
+    let mut shaders = Vec::new();
+    walk(&src, &mut shaders);
+    shaders.sort();
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
+
+    let mut defined: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for path in &shaders {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\\', "/");
+        let text = fs::read_to_string(path).unwrap();
+        let mut attributes = String::new();
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("fn ") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let entry_point = ["@vertex", "@fragment", "@compute"]
+                    .iter()
+                    .any(|attr| attributes.contains(attr) || trimmed.contains(attr));
+                if !name.is_empty() && !entry_point {
+                    defined.entry(name).or_default().push(rel.clone());
+                }
+            }
+            if !trimmed.is_empty() {
+                attributes = trimmed.to_string();
+            }
+        }
+    }
+    let actual: BTreeMap<&str, Vec<&str>> = defined
+        .iter()
+        .filter(|(_, files)| files.len() > 1)
+        .map(|(name, files)| (name.as_str(), files.iter().map(String::as_str).collect()))
+        .collect();
+
+    let mut expected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (files, names) in ASSEMBLED_ALTERNATIVES.iter().chain(PENDING_COPIES) {
+        let mut files: Vec<&str> = files.to_vec();
+        files.sort_unstable();
+        for name in *names {
+            assert!(
+                expected.insert(name, files.clone()).is_none(),
+                "`{name}` is listed twice in the duplicate allowlist"
+            );
+        }
+    }
+
+    let mut problems = Vec::new();
+    for (name, files) in &actual {
+        match expected.get(name) {
+            Some(listed) if listed == files => {}
+            Some(listed) => problems.push(format!(
+                "`{name}` is defined in {files:?} but the allowlist says {listed:?}: a copy moved or a new one appeared"
+            )),
+            None => problems.push(format!(
+                "`{name}` is defined in {files:?}: a new copy of a shader function. Call the existing one or splice it in as an assembler fragment (#46)"
+            )),
+        }
+    }
+    for (name, listed) in &expected {
+        if !actual.contains_key(name) {
+            problems.push(format!(
+                "`{name}` is no longer defined in more than one of {listed:?}: remove its allowlist entry"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "WGSL duplicate definitions changed:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// Interface functions with one body per variant; the assembler splices one.
+/// Part of the layered design (rule 9); these stay.
+const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "gpu_pick/marker.wgsl",
+            "gpu_pick/no_scatter.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["pick_scatter_candidate"],
+    ),
+    (
+        &[
+            "data_render/vector/vector_input_grid.wgsl",
+            "data_render/vector/vector_input_points.wgsl",
+        ],
+        &["vector_sample"],
+    ),
+    (
+        &["gpu_pick/line.wgsl", "gpu_pick/no_line.wgsl"],
+        &["pick_line_candidate"],
+    ),
+    (
+        &[
+            "stream_sample_transfer.wgsl",
+            "stream_sample_transfer_msaa.wgsl",
+        ],
+        &["preview_texel"],
+    ),
+];
+
+/// Pasted copies that item 11 of #58 replaces with assembler fragments.
+/// Shrinks with every merge; never grows.
+const PENDING_COPIES: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "contour_anchor.wgsl",
+            "contour_label.wgsl",
+            "data_render/bar_columnar.wgsl",
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/field_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &[
+            "axis_pair_to_t",
+            "data_to_ndc",
+            "maybe_log",
+            "polar_ndc",
+            "styled_point_index",
+        ],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/core.wgsl",
+        ],
+        &["polar_fragment_visible"],
+    ),
+    (
+        &[
+            "data_render/bar_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "gpu_errorbar.wgsl",
+            "gpu_pick/core.wgsl",
+        ],
+        &["figgy_zero_workgroup"],
+    ),
+    (
+        &[
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "gpu_pick/noise.wgsl",
+        ],
+        &["sketch_hash01", "sketch_noise"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+            "gpu_pick/marker.wgsl",
+        ],
+        &["ramp_finite"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &[
+            "polar_clip_limits",
+            "polar_clip_offset",
+            "polar_clip_sector",
+            "polar_sample_valid",
+            "sample_finite",
+            "sample_valid",
+        ],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
+        &["output", "sdf"],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
+        &["hash", "noise"],
+    ),
+    (
+        &[
+            "contour_anchor.wgsl",
+            "data_render/field_columnar.wgsl",
+            "gpu_errorbar.wgsl",
+        ],
+        &[
+            "add_grid_pairs",
+            "grid_rounded_add",
+            "grid_rounded_subtract",
+            "midpoint_grid_pair",
+            "normalize_grid_pair",
+            "scale_grid_pair",
+            "subtract_grid_pairs",
+        ],
+    ),
+    (
+        &[
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["pair_add"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+        ],
+        &["ramp_blend", "ramp_segment", "ramp_t"],
+    ),
+    (&["boxplot.wgsl", "categorical.wgsl"], &["shade"]),
+    (
+        &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
+        &[
+            "axis_t",
+            "boundary_t",
+            "cell_edge_pair",
+            "contour_sample",
+            "f32_is_finite",
+            "field_flag",
+            "grad_px",
+            "grid_value",
+            "lattice_is_samples",
+            "locate",
+            "pool_pair",
+            "quad_count",
+            "sample_point_pair",
+            "vec2_f32_is_finite",
+        ],
+    ),
+    (
+        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
+        &["pair_value"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+        ],
+        &["step_piece", "step_piece_count", "step_piece_len_px"],
+    ),
+    (
+        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
+        &[
+            "dash_pattern_on",
+            "line_stroke_distance",
+            "sketch_line_offset",
+        ],
+    ),
+    (
+        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
+        &[
+            "base_shape_id",
+            "cons_ring_angle",
+            "constellation_star_radius",
+            "marker_edge",
+            "planet_rim_glow",
+            "planet_ring_frame",
+            "planet_ring_phi",
+            "planet_ring_rho",
+            "regular_vertex",
+            "rotate2",
+            "sd_box",
+            "sd_plus_filled",
+            "sd_regular_polygon",
+            "sd_segment",
+            "sd_star",
+            "sd_triangle",
+            "shape_distance",
+            "shape_is_filled",
+            "size_map_radius",
+            "sketch_marker_distance",
+            "sketch_marker_wobble_px",
+            "star_vertex",
+            "visual_shape_radius",
+        ],
+    ),
+    (
+        &[
+            "data_render/vector/glyph_arrow.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &[
+            "arrow_distance",
+            "arrow_finite",
+            "arrow_place",
+            "arrow_sd_segment",
+            "arrow_sd_triangle",
+        ],
+    ),
+    (
+        &[
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["axis_px_per_unit_at"],
+    ),
+];
+
+/// Rule from #46 (the hand-off convention): code that builds one struct from
+/// another reads the source through a pattern that names every field, with
+/// the fields it leaves out written as `name: _`, so a new field is a compile
+/// error at every reader and an omission is a line in the diff. A `..` rest
+/// pattern, `..Default::default()` or `..template` on a model type defeats
+/// that: the new field is silently ignored or silently defaulted.
+///
+/// This walks product Rust code (`crates/model/src`, `crates/renderer/src`,
+/// `crates/web/src`), skipping `tests.rs` / `*_tests.rs` files, items under
+/// `#[cfg(test)]` or `#[cfg(all(test, ..))]` and `mod tests` / `mod *_tests`
+/// blocks, and fails on any struct pattern or literal of a `REST_GUARDED_TYPES`
+/// type (or `Self` inside its `impl`) whose fields include a `..` item. The
+/// sites not yet converted are `REST_PATTERN_ALLOWLIST`, as (file, type,
+/// count, reason); the test fails on any change to that picture, so the list
+/// only shrinks: a converted site removes its entry, a new site fails.
+#[test]
+fn model_struct_hand_offs_name_every_field_outside_the_allowlist() {
+    let scanner_self_check = r##"
+        // Config { a, ..Default::default() } in a comment is not code.
+        /* nested /* Config { .. } */ still a comment */
+        const DOC: &str = "Config { a, ..b }";
+        const RAW: &str = r#"Config { .. }"#;
+        const BRACE: char = '{';
+        pub struct Config { a: u8 }
+        impl Config { fn f(&self) -> Config { make() } }
+        fn hit(c: &Config) { let Config { a, .. } = c; }
+        fn range(c: &Config) -> Config { Config { a: 0..4, b } }
+        fn update(b: Config) -> Config { crate::config::Config { a: 1, ..b } }
+        fn variant(x: Warning) { if let Warning::Config { .. } = x {} }
+        impl Default for Config { fn default() -> Self { Self { a: 0, ..zero() } } }
+        #[cfg(test)]
+        mod hidden { fn f(c: Config) { Config { a: 1, ..c }; } }
+        #[cfg(all(test, feature = "serde"))]
+        fn hidden_too(c: Config) -> Config { Config { a: 1, ..c } }
+        mod tests { fn f(c: Config) { Config { a: 1, ..c }; } }
+    "##;
+    let found = rest_pattern_sites(scanner_self_check, &["Config"]);
+    let lines: Vec<usize> = found.iter().map(|(_, line)| *line).collect();
+    assert_eq!(
+        lines,
+        vec![9, 11, 13],
+        "the rest-pattern scanner misreads its own fixture: {found:?}"
+    );
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let trees = product_source_trees();
+    let mut actual: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
+    let mut scanned = 0;
+    for (crate_name, src) in &trees {
+        let mut files = Vec::new();
+        walk(src, &mut files);
+        files.sort();
+        for path in &files {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            if name == "tests.rs" || name.ends_with("_tests.rs") {
+                continue;
+            }
+            scanned += 1;
+            let rel = path
+                .strip_prefix(src)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/");
+            let rel = format!("{crate_name}/src/{rel}");
+            let source = fs::read_to_string(path).unwrap();
+            for (ty, line) in rest_pattern_sites(&source, REST_GUARDED_TYPES) {
+                actual.entry((rel.clone(), ty)).or_default().push(line);
+            }
+        }
+    }
+    assert!(scanned > 100, "scanned only {scanned} product files");
+    let scanned_crate = |file: &str| {
+        trees
+            .iter()
+            .any(|(crate_name, _)| file.starts_with(&format!("{crate_name}/")))
+    };
+
+    let mut expected: BTreeMap<(String, &str), usize> = BTreeMap::new();
+    for (file, ty, count, _reason) in REST_PATTERN_ALLOWLIST {
+        assert!(
+            REST_GUARDED_TYPES.contains(ty),
+            "allowlist entry ({file}, {ty}) names a type the guard does not check"
+        );
+        assert!(
+            expected.insert((file.to_string(), ty), *count).is_none(),
+            "({file}, {ty}) is listed twice in the rest-pattern allowlist"
+        );
+    }
+
+    let mut problems = Vec::new();
+    for ((file, ty), lines) in &actual {
+        match expected.get(&(file.clone(), *ty)) {
+            Some(count) if *count == lines.len() => {}
+            Some(count) if *count > lines.len() => problems.push(format!(
+                "{file}: {} `{ty} {{ .. }}` site(s) left (lines {lines:?}), the allowlist says {count}: lower its count",
+                lines.len()
+            )),
+            Some(count) => problems.push(format!(
+                "{file}: {} `{ty} {{ .. }}` site(s) (lines {lines:?}), the allowlist says {count}: a new rest pattern. Name every field, with the ones left out as `name: _` (#46)",
+                lines.len()
+            )),
+            None => problems.push(format!(
+                "{file}: `{ty} {{ .. }}` at lines {lines:?}: a rest pattern on a model type. Name every field, with the ones left out as `name: _` (#46)"
+            )),
+        }
+    }
+    for ((file, ty), count) in &expected {
+        if scanned_crate(file) && !actual.contains_key(&(file.clone(), *ty)) {
+            problems.push(format!(
+                "{file}: no `{ty} {{ .. }}` site is left of the {count} listed: remove its allowlist entry"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "rest patterns on model types changed:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The product source trees the rest-pattern guard reads, as (crate, `src`
+/// directory). In the workspace these are `crates/{model,renderer,web}/src`,
+/// all required. `ci/verify.py packages` runs the tests from the published
+/// archives instead, extracted side by side as `figgy-model-<version>` and
+/// `figgy-renderer-<version>`, without the unpublished web crate; the guard
+/// then reads those two. A renderer package on its own reads its own source.
+fn product_source_trees() -> Vec<(&'static str, PathBuf)> {
+    let renderer = workspace_root();
+    let parent = renderer.join("..");
+    let mut trees = vec![("renderer", renderer.join("src"))];
+    if renderer.file_name().is_some_and(|name| name == "renderer") {
+        for crate_name in ["model", "web"] {
+            let src = parent.join(crate_name).join("src");
+            assert!(
+                src.is_dir(),
+                "workspace crate source {} is missing",
+                src.display()
+            );
+            trees.push((crate_name, src));
+        }
+        return trees;
+    }
+    let model = fs::read_dir(&parent).ok().and_then(|entries| {
+        entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("figgy-model-"))
+                    && path.join("src").is_dir()
+            })
+    });
+    match model {
+        Some(model) => trees.push(("model", model.join("src"))),
+        None => eprintln!(
+            "rest-pattern guard: no figgy-model source beside {}; checking the renderer only",
+            renderer.display()
+        ),
+    }
+    trees
+}
+
+/// Model types whose struct patterns and literals must name every field.
+/// `LegendOptions` and `SubplotLayer` of the #46 list do not exist; their
+/// types are `Legend` and `Subplot`. `AxisTitleOptions`, `PolarOptions`,
+/// `PickedPointsConfig`, `DataSelectionsConfig`, `DataScatterStyleConfig` and
+/// `DataErrorBarPointStyleConfig` are read by converted hand-offs too.
+const REST_GUARDED_TYPES: &[&str] = &[
+    "Config",
+    "AxisOptions",
+    "AxisTitleOptions",
+    "SeriesConfig",
+    "ColorBarOptions",
+    "ChartTitleOptions",
+    "Legend",
+    "GridOptions",
+    "LabelStyle",
+    "PolarOptions",
+    "PickedPointsConfig",
+    "DataSelectionsConfig",
+    "MilkywayOptions",
+    "SketchOptions",
+    "ConstellationOptions",
+    "DrawStyle",
+    "VectorStyle",
+    "PointSizeMap",
+    "PointColorMap",
+    "DataScatterStyleConfig",
+    "DataScatterPointStyleConfig",
+    "DataLineStyleConfig",
+    "DataErrorBarStyleConfig",
+    "DataErrorBarPointStyleConfig",
+    "DataBarStyleConfig",
+    "DataBarBinStyleConfig",
+    "ContourLabelConfig",
+    "ChartRevisions",
+    "OverlayLayer",
+    "Subplot",
+    "AnnotationLayer",
+    "RadarChart",
+    "RadarStyle",
+    "RadialChart",
+    "RadialStyle",
+    "CategoricalChart",
+    "BoxPlotChart",
+];
+
+/// Rest patterns on guarded types that are not converted yet: (file, type,
+/// count, reason). Empty since every site was converted; a new site fails
+/// and is converted, not listed, unless its file is frozen (streaming) and
+/// the entry says so.
+const REST_PATTERN_ALLOWLIST: &[(&str, &str, usize, &str)] = &[];
+
+/// The `(type, line)` of every struct pattern or literal of one of `types`
+/// in `source` (or `Self` inside an `impl` of one of them) whose fields
+/// include a `..` item. Comments, string and char literals and test-only
+/// items are blanked first, so only product code is read.
+fn rest_pattern_sites<'t>(source: &str, types: &[&'t str]) -> Vec<(&'t str, usize)> {
+    let code = blank_test_items(&blank_comments_and_literals(source));
+    let chars: Vec<char> = code.chars().collect();
+    let impls = impl_blocks(&chars, types);
+    let line_of = |index: usize| chars[..index].iter().filter(|c| **c == '\n').count() + 1;
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut sites = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if !is_ident(chars[index]) || (index > 0 && is_ident(chars[index - 1])) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < chars.len() && is_ident(chars[index]) {
+            index += 1;
+        }
+        let word: String = chars[start..index].iter().collect();
+        let mut brace = index;
+        while brace < chars.len() && chars[brace].is_whitespace() {
+            brace += 1;
+        }
+        if brace >= chars.len() || chars[brace] != '{' {
+            continue;
+        }
+        let ty = if word == "Self" {
+            // The innermost `impl` block around this `Self`.
+            match impls
+                .iter()
+                .filter(|(open, close, _)| *open < start && start < *close)
+                .max_by_key(|(open, _, _)| *open)
+            {
+                Some((_, _, Some(ty))) => *ty,
+                _ => continue,
+            }
+        } else {
+            match types.iter().find(|ty| **ty == word) {
+                Some(ty) => *ty,
+                None => continue,
+            }
+        };
+        // What precedes the name decides between an item body and a struct
+        // expression or pattern; a few tokens are enough.
+        let before: String = chars[start.saturating_sub(120)..start].iter().collect();
+        if !is_struct_expression_or_pattern(&before) {
+            continue;
+        }
+        let end = matching_close(&chars, brace);
+        if top_level_items(&chars[brace + 1..end])
+            .iter()
+            .any(|item| item.trim_start().starts_with(".."))
+        {
+            sites.push((ty, line_of(start)));
+        }
+    }
+    sites
+}
+
+/// Whether a type name followed by `{` starts a struct expression or pattern
+/// rather than an item body: not after `struct` / `enum` / `union` / `trait`
+/// / `impl ... for` / `dyn` or a return type, and not an enum variant
+/// (`Warning::Subplot { .. }`, a path segment starting upper-case).
+fn is_struct_expression_or_pattern(before: &str) -> bool {
+    let mut rest = before.trim_end();
+    if let Some(path) = rest.strip_suffix("::") {
+        let segment: String = path
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        return !segment.chars().last().is_some_and(char::is_uppercase);
+    }
+    // A return type may be a reference: `-> &'a mut Config {`.
+    loop {
+        let trimmed = rest.trim_end();
+        let stripped = trimmed
+            .strip_suffix("mut")
+            .filter(|r| r.ends_with(|c: char| c.is_whitespace() || c == '&'))
+            .or_else(|| trimmed.strip_suffix('&'))
+            .or_else(|| {
+                let lifetime = trimmed.rfind('\'')?;
+                trimmed[lifetime + 1..]
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_')
+                    .then(|| &trimmed[..lifetime])
+            });
+        match stripped {
+            Some(shorter) if shorter.len() < trimmed.len() => rest = shorter,
+            _ => break,
+        }
+    }
+    let rest = rest.trim_end();
+    if rest.ends_with("->") {
+        return false;
+    }
+    let previous: String = rest
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    !matches!(
+        previous.as_str(),
+        "struct" | "enum" | "union" | "trait" | "impl" | "for" | "dyn"
+    )
+}
+
+/// Every `impl` block in `chars` as (open brace, close brace, the guarded
+/// type it implements, if it is one of `types`).
+fn impl_blocks<'t>(chars: &[char], types: &[&'t str]) -> Vec<(usize, usize, Option<&'t str>)> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut blocks = Vec::new();
+    let mut index = 0;
+    while index + 4 <= chars.len() {
+        let keyword = chars[index..index + 4] == ['i', 'm', 'p', 'l']
+            && (index == 0 || !is_ident(chars[index - 1]))
+            && chars.get(index + 4).is_none_or(|c| !is_ident(*c));
+        if !keyword {
+            index += 1;
+            continue;
+        }
+        let Some(open) = (index..chars.len()).find(|&i| chars[i] == '{' || chars[i] == ';') else {
+            break;
+        };
+        if chars[open] == ';' {
+            index = open;
+            continue;
+        }
+        let header: String = chars[index + 4..open].iter().collect();
+        let header = header.split(" where ").next().unwrap_or(&header);
+        let name: String = header
+            .trim_end_matches(|c: char| c == '>' || c.is_whitespace())
+            .chars()
+            .rev()
+            .take_while(|c| is_ident(*c))
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let ty = types.iter().find(|ty| **ty == name).copied();
+        blocks.push((open, matching_close(chars, open), ty));
+        index = open;
+    }
+    blocks
+}
+
+/// The index of the bracket closing the one at `open`, or the end.
+fn matching_close(chars: &[char], open: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return index;
+                }
+            }
+            _ => {}
+        }
+    }
+    chars.len()
+}
+
+/// `body` split at its top-level commas.
+fn top_level_items(body: &[char]) -> Vec<String> {
+    let mut items = vec![String::new()];
+    let mut depth = 0usize;
+    for c in body {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        items.last_mut().unwrap().push(*c);
+    }
+    items
+}
+
+/// `source` with comments, string literals and char literals replaced by
+/// spaces; line breaks are kept so line numbers stay.
+fn blank_comments_and_literals(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = chars.clone();
+    let blank = |out: &mut Vec<char>, from: usize, to: usize| {
+        for c in &mut out[from..to.min(chars.len())] {
+            if *c != '\n' {
+                *c = ' ';
+            }
+        }
+    };
+    let starts_with = |at: usize, pattern: &str| {
+        pattern
+            .chars()
+            .enumerate()
+            .all(|(offset, p)| chars.get(at + offset) == Some(&p))
+    };
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        let ident_before =
+            index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_');
+        if starts_with(index, "//") {
+            let end = (index..chars.len())
+                .find(|&i| chars[i] == '\n')
+                .unwrap_or(chars.len());
+            blank(&mut out, index, end);
+            index = end;
+        } else if starts_with(index, "/*") {
+            let mut depth = 0;
+            let mut end = index;
+            while end < chars.len() {
+                if starts_with(end, "/*") {
+                    depth += 1;
+                    end += 2;
+                } else if starts_with(end, "*/") {
+                    depth -= 1;
+                    end += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    end += 1;
+                }
+            }
+            blank(&mut out, index, end);
+            index = end;
+        } else if (c == 'r' || (c == 'b' && chars.get(index + 1) == Some(&'r'))) && !ident_before {
+            let mut at = index + if c == 'b' { 2 } else { 1 };
+            let mut hashes = 0;
+            while chars.get(at) == Some(&'#') {
+                hashes += 1;
+                at += 1;
+            }
+            if chars.get(at) != Some(&'"') {
+                index += 1;
+                continue;
+            }
+            let closing: String = std::iter::once('"')
+                .chain(std::iter::repeat_n('#', hashes))
+                .collect();
+            let mut end = at + 1;
+            while end < chars.len() && !starts_with(end, &closing) {
+                end += 1;
+            }
+            let end = end + closing.chars().count();
+            blank(&mut out, index, end);
+            index = end;
+        } else if c == '"' {
+            let mut end = index + 1;
+            while end < chars.len() && chars[end] != '"' {
+                end += if chars[end] == '\\' { 2 } else { 1 };
+            }
+            blank(&mut out, index, end + 1);
+            index = end + 1;
+        } else if c == '\'' {
+            // A char literal, not a lifetime: `'x'` or an escape `'\n'`.
+            let end = if chars.get(index + 1) == Some(&'\\') {
+                (index + 2..chars.len()).find(|&i| chars[i] == '\'')
+            } else if chars.get(index + 2) == Some(&'\'') {
+                Some(index + 2)
+            } else {
+                None
+            };
+            match end {
+                Some(end) => {
+                    blank(&mut out, index, end + 1);
+                    index = end + 1;
+                }
+                None => index += 1,
+            }
+        } else {
+            index += 1;
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// `code` (already without comments and literals) with every item under
+/// `#[cfg(test)]` or `#[cfg(all(test, ..))]` and every `mod tests` /
+/// `mod *_tests` block blanked.
+fn blank_test_items(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = chars.clone();
+    let text: String = chars.iter().collect();
+    // Character offsets of the starts of test-only items.
+    let mut starts = Vec::new();
+    for marker in ["#[cfg(test)]", "#[cfg(all(test,"] {
+        let mut search = 0;
+        while let Some(offset) = text[search..].find(marker) {
+            let at = search + offset;
+            starts.push(text[..at].chars().count());
+            search = at + marker.len();
+        }
+    }
+    let mut search = 0;
+    while let Some(offset) = text[search..].find("mod ") {
+        let at = search + offset;
+        search = at + 4;
+        if at > 0 && text[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let name: String = text[at + 4..]
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name == "tests" || name.ends_with("_tests") {
+            starts.push(text[..at].chars().count());
+        }
+    }
+    for start in starts {
+        let Some(open) = (start..chars.len()).find(|&i| chars[i] == '{' || chars[i] == ';') else {
+            continue;
+        };
+        let end = if chars[open] == '{' {
+            matching_close(&chars, open)
+        } else {
+            open
+        };
+        for c in &mut out[start..(end + 1).min(chars.len())] {
+            if *c != '\n' {
+                *c = ' ';
+            }
+        }
+    }
+    out.into_iter().collect()
 }

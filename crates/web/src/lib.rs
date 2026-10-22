@@ -184,6 +184,10 @@ struct SeriesExtentKey {
     /// Orientation decides which resolved matrix dimension belongs to x/y.
     /// It is independent of the cell/sample lattice encoded by `mode`.
     field_orientation: Option<u8>,
+    /// A `Data`-scaled point vector's tips are `anchor + factor * (u, v)`,
+    /// so the factor is part of the extent's identity; bits, so the key
+    /// stays `Eq`.
+    vector_factor_bits: Option<u64>,
 }
 
 #[cfg(any(target_arch = "wasm32", test))]
@@ -375,6 +379,16 @@ fn series_extent_request_from(
         | renderer::DataRenderType::LineScatterErrorbarXY { .. }
         | renderer::DataRenderType::Histogram { .. } => (Vec::new(), None),
     };
+    let vector_factor_bits = match &cfg.render_type {
+        renderer::DataRenderType::Vector {
+            components: renderer::data_config::VectorComponents::Points { .. },
+            style,
+        } => match style.scale {
+            renderer::data_config::VectorScale::Data { factor } => Some(factor.to_bits()),
+            renderer::data_config::VectorScale::Pixels { .. } => None,
+        },
+        _ => None,
+    };
     Some(SeriesExtentRequest {
         key: SeriesExtentKey {
             mode: series_extent_mode(&cfg.render_type)?,
@@ -384,6 +398,7 @@ fn series_extent_request_from(
             y_error,
             matrix,
             field_orientation,
+            vector_factor_bits,
         },
         series: cfg.clone(),
     })
@@ -843,6 +858,9 @@ fn prepare_demo_declarations(
         color_seq: next_color_seq,
     })
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod series_extent_mutation_tests;
 
 #[cfg(test)]
 mod tests {

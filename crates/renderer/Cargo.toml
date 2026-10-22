@@ -63,6 +63,9 @@ web-sys = { version = "0.3", features = ["Window"] }
 [dev-dependencies]
 winit = "0.30.13"
 serde_json = "1"
+# The cache-key mutation tests walk serialized documents through a recording
+# deserializer (`src/renderer/config_mutation.rs`).
+serde = { version = "1", features = ["derive"] }
 
 [features]
 serde = ["model/serde"]

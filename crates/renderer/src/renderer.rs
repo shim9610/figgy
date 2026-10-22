@@ -414,3 +414,6 @@ impl Renderer {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, feature = "serde"))]
+pub(crate) mod config_mutation;

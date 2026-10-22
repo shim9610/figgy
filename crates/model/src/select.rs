@@ -389,9 +389,47 @@ impl SubplotElement {
         let result = edit(&mut chart);
         if result == NudgeResult::Moved {
             let stored = &mut cfg.subplots[self.subplot].config;
-            chart.active_layer = stored.active_layer;
-            chart.annotations = std::mem::take(&mut stored.annotations);
-            *stored = chart;
+            // Every field of the edited chart is named: a new one is stored
+            // from the edit unless it is one `subplot_config` overrides.
+            let Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_points,
+                picked_data,
+                colorbar,
+                draw_style,
+                polar,
+                overlays,
+                subplots,
+                // `subplot_config` resets these two; the stored ones stay.
+                active_layer: _,
+                annotations: _,
+            } = chart;
+            *stored = Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_points,
+                picked_data,
+                colorbar,
+                draw_style,
+                polar,
+                overlays,
+                subplots,
+                active_layer: stored.active_layer,
+                annotations: std::mem::take(&mut stored.annotations),
+            };
         }
         result
     }

@@ -16,18 +16,18 @@ use super::*;
 /// background in this style, no host compositing needed).
 pub(super) const SPACE_BASE: [f32; 3] = [11.0, 15.0, 23.0];
 
-pub(super) fn draw_space_background(
-    canvas: &mut Canvas,
-    _config: &Config,
-    c: &crate::config::MilkywayOptions,
-) {
+/// The deep-space backdrop of the Milkyway style. `seed`, `nebula` and
+/// `dust` are its only inputs besides the canvas size: the renderer caches
+/// the bake by exactly those ([`crate::renderer`]'s `SpaceBgKey`), so a new
+/// option the backdrop reads has to come in through this signature and
+/// therefore into the key.
+pub(crate) fn draw_space_background(canvas: &mut Canvas, seed: u32, nebula: f32, dust: f32) {
     use crate::data_render::fbm2;
 
     let (w, h) = canvas.size();
     if w == 0 || h == 0 {
         return;
     }
-    let seed = c.seed;
 
     // Nebula sampled on a quarter-res lattice (it is low-frequency by
     // design) and bilinearly upsampled — 16× cheaper than per-pixel fBm.
@@ -73,7 +73,7 @@ pub(super) fn draw_space_background(
             // Peak nebula contribution stays ≤ ~12/255 per channel at the
             // default `nebula = 1.0`; the slider scales within the same
             // legibility-bounded design.
-            let neb = c.nebula.clamp(0.0, 2.0);
+            let neb = nebula.clamp(0.0, 2.0);
             let nc = sample(&cool, px, py) * vig * neb;
             let nw = sample(&warm, px, py) * vig * neb;
             let r = SPACE_BASE[0] + nc * 4.0 + nw * 9.0;
@@ -89,7 +89,7 @@ pub(super) fn draw_space_background(
     }
 
     // Background dust: sparse, dim, 1 px — unmistakably "behind" the data.
-    let n_dust = (((w as u64 * h as u64) / 1400) as f32 * c.dust.clamp(0.0, 4.0)).max(0.0) as u32;
+    let n_dust = (((w as u64 * h as u64) / 1400) as f32 * dust.clamp(0.0, 4.0)).max(0.0) as u32;
     for k in 0..n_dust {
         let hx = crate::sketch::hash01(k, seed ^ 0xD057_0001);
         let hy = crate::sketch::hash01(k, seed ^ 0xD057_0002);

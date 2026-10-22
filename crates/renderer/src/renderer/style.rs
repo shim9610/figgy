@@ -25,13 +25,24 @@ pub(crate) struct StyleVariant {
 /// sketch: `[0] = (amplitude_px, wavelength_px, seed, 0)`, rest 0.
 pub(super) fn pack_sketch_params(style: &DrawStyle) -> [f32; 12] {
     match style.sketch() {
-        Some(s) => {
-            let mut p = [0.0; 12];
-            p[0] = s.amplitude_px;
-            p[1] = s.wavelength_px;
-            p[2] = s.seed as f32;
-            p
-        }
+        Some(crate::config::SketchOptions {
+            amplitude_px,
+            wavelength_px,
+            seed,
+        }) => [
+            *amplitude_px,
+            *wavelength_px,
+            *seed as f32,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+        ],
         None => [0.0; 12],
     }
 }
@@ -42,17 +53,31 @@ pub(super) fn pack_sketch_params(style: &DrawStyle) -> [f32; 12] {
 /// `glow`/`nebula`/`dust` are CPU-raster parameters and never reach the GPU.
 pub(super) fn pack_milkyway_params(style: &DrawStyle) -> [f32; 12] {
     match style.milkyway() {
-        Some(c) => [
-            c.star_density,
-            c.ribbon_width_px,
-            c.ribbon_intensity,
-            c.seed as f32,
-            c.star_scale,
-            c.spread_px,
-            c.faint_bias,
-            c.planet_rim,
-            c.structure_scale,
-            c.star_brightness,
+        Some(crate::config::MilkywayOptions {
+            star_density,
+            ribbon_width_px,
+            ribbon_intensity,
+            star_scale,
+            star_brightness,
+            spread_px,
+            structure_scale,
+            faint_bias,
+            glow: _,
+            nebula: _,
+            dust: _,
+            planet_rim,
+            seed,
+        }) => [
+            *star_density,
+            *ribbon_width_px,
+            *ribbon_intensity,
+            *seed as f32,
+            *star_scale,
+            *spread_px,
+            *faint_bias,
+            *planet_rim,
+            *structure_scale,
+            *star_brightness,
             0.0,
             0.0,
         ],
@@ -65,9 +90,12 @@ pub(super) fn pack_milkyway_params(style: &DrawStyle) -> [f32; 12] {
 /// Only ScatterLine series use this style.
 pub(super) fn pack_constellation_params(style: &DrawStyle) -> [f32; 12] {
     match style.constellation() {
-        Some(c) => [
-            c.star_opacity,
-            c.line_opacity,
+        Some(crate::config::ConstellationOptions {
+            star_opacity,
+            line_opacity,
+        }) => [
+            *star_opacity,
+            *line_opacity,
             0.0,
             0.0,
             0.0,
@@ -215,19 +243,24 @@ pub(super) fn scatter_style_slot_gpu(
     mask_radius: u32,
     mask_shape: u32,
 ) -> data_render::ScatterStyleSlotGpu {
+    let DataScatterPointStyleConfig {
+        point_color,
+        point_shape,
+        point_size,
+    } = slot;
     let mut mask = 0u32;
     let mut color_premul = [0.0; 4];
     let mut radius_px = 0.0;
     let mut shape_id = 0.0;
-    if let Some(c) = slot.point_color {
+    if let Some(c) = *point_color {
         mask |= mask_color;
         color_premul = premul_rgba(c);
     }
-    if let Some(size) = slot.point_size {
+    if let Some(size) = *point_size {
         mask |= mask_radius;
         radius_px = size * scale;
     }
-    if let Some(shape) = &slot.point_shape {
+    if let Some(shape) = point_shape {
         mask |= mask_shape;
         shape_id = data_render::shape_id(shape) as f32;
     }
@@ -245,24 +278,30 @@ pub(super) fn errorbar_style_slot_gpu(
     mask_cap_half: u32,
     mask_cap_width: u32,
 ) -> data_render::ErrorBarStyleSlotGpu {
+    let DataErrorBarPointStyleConfig {
+        error_bar_color,
+        error_bar_width,
+        error_bar_cap_size,
+        cap_width: cap_width_px,
+    } = slot;
     let mut mask = 0u32;
     let mut color_premul = [0.0; 4];
     let mut stem_width = 0.0;
     let mut cap_half = 0.0;
     let mut cap_width = 0.0;
-    if let Some(c) = slot.error_bar_color {
+    if let Some(c) = *error_bar_color {
         mask |= mask_color;
         color_premul = premul_rgba(c);
     }
-    if let Some(width) = slot.error_bar_width {
+    if let Some(width) = *error_bar_width {
         mask |= mask_stem_width;
         stem_width = width * scale;
     }
-    if let Some(size) = slot.error_bar_cap_size {
+    if let Some(size) = *error_bar_cap_size {
         mask |= mask_cap_half;
         cap_half = size * scale;
     }
-    if let Some(width) = slot.cap_width {
+    if let Some(width) = *cap_width_px {
         mask |= mask_cap_width;
         cap_width = width * scale;
     }
@@ -282,21 +321,28 @@ pub(super) fn bar_style_slot_gpu(
     const MASK_GAP: u32 = 8;
     const MASK_WIDTH_RATIO: u32 = 16;
 
+    let DataBarBinStyleConfig {
+        fill_color,
+        border_color,
+        border_width,
+        gap_px: slot_gap_px,
+        width_ratio: slot_width_ratio,
+    } = slot;
     let mut mask = 0u32;
     let mut fill_color_premul = [0.0; 4];
     let mut border_color_premul = [0.0; 4];
     let mut border_width_px = 0.0;
     let mut gap_px = 0.0;
     let mut width_ratio = 1.0;
-    if let Some(color) = slot.fill_color {
+    if let Some(color) = *fill_color {
         mask |= MASK_FILL;
         fill_color_premul = premul_rgba(color);
     }
-    if let Some(color) = slot.border_color {
+    if let Some(color) = *border_color {
         mask |= MASK_BORDER_COLOR;
         border_color_premul = premul_rgba(color);
     }
-    if let Some(width) = slot.border_width {
+    if let Some(width) = *border_width {
         mask |= MASK_BORDER_WIDTH;
         border_width_px = if width.is_finite() {
             width.max(0.0) * scale
@@ -304,7 +350,7 @@ pub(super) fn bar_style_slot_gpu(
             0.0
         };
     }
-    if let Some(gap) = slot.gap_px {
+    if let Some(gap) = *slot_gap_px {
         mask |= MASK_GAP;
         gap_px = if gap.is_finite() {
             gap.max(0.0) * scale
@@ -312,7 +358,7 @@ pub(super) fn bar_style_slot_gpu(
             0.0
         };
     }
-    if let Some(ratio) = slot.width_ratio {
+    if let Some(ratio) = *slot_width_ratio {
         mask |= MASK_WIDTH_RATIO;
         width_ratio = data_render::sanitize_bar_width_ratio(ratio);
     }
@@ -324,20 +370,39 @@ pub(super) fn bar_style_slot_gpu(
 }
 
 pub(super) fn apply_bar_bin_style(bar: &mut DataBarStyleConfig, slot: &DataBarBinStyleConfig) {
-    if let Some(color) = slot.fill_color {
-        bar.fill_color = color;
+    let DataBarBinStyleConfig {
+        fill_color: slot_fill_color,
+        border_color: slot_border_color,
+        border_width: slot_border_width,
+        gap_px: slot_gap_px,
+        width_ratio: slot_width_ratio,
+    } = slot;
+    let DataBarStyleConfig {
+        fill_color,
+        border_color,
+        border_width,
+        // A bin override restyles the bar; it does not move its base, turn
+        // it or carry overrides of its own.
+        baseline: _,
+        gap_px,
+        width_ratio,
+        orientation: _,
+        bar_style_overrides: _,
+    } = bar;
+    if let Some(color) = *slot_fill_color {
+        *fill_color = color;
     }
-    if let Some(color) = slot.border_color {
-        bar.border_color = color;
+    if let Some(color) = *slot_border_color {
+        *border_color = color;
     }
-    if let Some(width) = slot.border_width {
-        bar.border_width = width;
+    if let Some(width) = *slot_border_width {
+        *border_width = width;
     }
-    if let Some(gap) = slot.gap_px {
-        bar.gap_px = gap;
+    if let Some(gap) = *slot_gap_px {
+        *gap_px = gap;
     }
-    if let Some(ratio) = slot.width_ratio {
-        bar.width_ratio = ratio;
+    if let Some(ratio) = *slot_width_ratio {
+        *width_ratio = ratio;
     }
 }
 
@@ -542,14 +607,30 @@ impl Renderer {
         // (star placement, sketch wobble). Derived from the series id, so the
         // result stays deterministic for a given config; renaming a series
         // re-rolls its pattern.
-        let series_salt = crate::sketch::fnv1a(&cfg.series_id);
-        let line = match extract_line(&cfg.render_type) {
-            Some(l) => {
-                let mut s =
-                    PrimitiveStyle::from_color_with_width(l.line_color, l.line_width * scale);
-                s.pack_dash_pattern(l.line_style.pattern(), scale);
+        let SeriesConfig {
+            series_id,
+            // Identity and column bindings: not part of the GPU style.
+            source_id: _,
+            label: _,
+            x_column: _,
+            y_column: _,
+            render_type,
+        } = cfg;
+        let series_salt = crate::sketch::fnv1a(series_id);
+        let line = match extract_line(render_type) {
+            Some(DataLineStyleConfig {
+                line_style,
+                line_color,
+                line_width,
+                // The fill has its own `Style` (`area` below).
+                fill: _,
+                fill_color: _,
+                interpolation,
+            }) => {
+                let mut s = PrimitiveStyle::from_color_with_width(*line_color, line_width * scale);
+                s.pack_dash_pattern(line_style.pattern(), scale);
                 // Bits 2-3: the step interpolation mode the line entries read.
-                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
+                s.primitive_flags = crate::line_step::step_flag_bits(*interpolation);
                 s
             }
             None => PrimitiveStyle::from_color_with_width(Color::BLACK, 1.0),
@@ -557,11 +638,22 @@ impl Renderer {
         // The fill's `Style` reinterpretation (SHADER_COMMON.md §2.2): fill
         // colour, the step mode, the fill-to-series bit and the baseline as
         // the pool's `(hi, lo)` pair in `dash[1].xy`.
-        let area = extract_line(&cfg.render_type)
+        let area = extract_line(render_type)
             .and_then(|l| l.fill.as_ref().map(|fill| (l, fill)))
             .map(|(l, fill)| {
+                let DataLineStyleConfig {
+                    // Dashes and width belong to the stroke, not the fill.
+                    line_style: _,
+                    line_width: _,
+                    // Read through `effective_fill_color`.
+                    line_color: _,
+                    fill_color: _,
+                    // Matched above.
+                    fill: _,
+                    interpolation,
+                } = l;
                 let mut s = PrimitiveStyle::from_color(l.effective_fill_color());
-                s.primitive_flags = crate::line_step::step_flag_bits(l.interpolation);
+                s.primitive_flags = crate::line_step::step_flag_bits(*interpolation);
                 match fill {
                     LineFill::ToBaseline(baseline) => {
                         let (hi, lo) = crate::data::split_f64_to_f32_pair(*baseline);
@@ -575,31 +667,50 @@ impl Renderer {
                 s.series_salt = series_salt;
                 s
             });
-        let scatter = match extract_scatter(&cfg.render_type) {
-            Some(sc) => {
-                let mut s = PrimitiveStyle::from_color(sc.point_color);
-                s.point_radius_px = sc.point_size * scale;
-                s.shape_id = data_render::shape_id(&sc.point_shape);
+        let scatter = match extract_scatter(render_type) {
+            Some(DataScatterStyleConfig {
+                point_color,
+                point_shape,
+                point_size,
+                // Per-point styles: the scatter style map below.
+                point_style_table: _,
+                point_style_index_column: _,
+                point_style_overrides: _,
+                point_color_map: _,
+                point_size_map: _,
+            }) => {
+                let mut s = PrimitiveStyle::from_color(*point_color);
+                s.point_radius_px = point_size * scale;
+                s.shape_id = data_render::shape_id(point_shape);
                 s
             }
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
-        let mut errorbar = match extract_errorbar_style(&cfg.render_type) {
-            Some(e) => {
+        let mut errorbar = match extract_errorbar_style(render_type) {
+            Some(DataErrorBarStyleConfig {
+                error_bar_color,
+                error_bar_width,
+                error_bar_cap_size,
+                cap_width,
+                // Per-point styles: the error-bar style map below.
+                error_bar_style_table: _,
+                error_bar_style_index_column: _,
+                error_bar_style_overrides: _,
+            }) => {
                 let mut s = PrimitiveStyle::from_color_with_width(
-                    e.error_bar_color,
-                    e.error_bar_width * scale,
+                    *error_bar_color,
+                    error_bar_width * scale,
                 );
-                s.cap_half_px = e.error_bar_cap_size * scale;
-                s.cap_width_px = e.cap_width * scale;
+                s.cap_half_px = error_bar_cap_size * scale;
+                s.cap_width_px = cap_width * scale;
                 s
             }
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
-        errorbar.primitive_flags = errorbar_direction_flags(&cfg.render_type);
+        errorbar.primitive_flags = errorbar_direction_flags(render_type);
         // Bars reinterpret the same `Style` bytes — fill, border, gap, baseline,
         // orientation. SHADER_COMMON.md's bar reinterpretation table is the SSoT.
-        let bar = match extract_bar(&cfg.render_type) {
+        let bar = match extract_bar(render_type) {
             Some(b) => PrimitiveStyle::from_bar(b, scale),
             None => PrimitiveStyle::from_color(Color::BLACK),
         };
@@ -608,12 +719,12 @@ impl Renderer {
         scatter.series_salt = series_salt;
         errorbar.series_salt = series_salt;
         bar.series_salt = series_salt;
-        let scatter_map = extract_scatter(&cfg.render_type)
+        let scatter_map = extract_scatter(render_type)
             .and_then(|sc| self.create_scatter_style_map_for(sc, scale));
-        let errorbar_map = extract_errorbar_style(&cfg.render_type)
+        let errorbar_map = extract_errorbar_style(render_type)
             .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
         let bar_map =
-            extract_bar(&cfg.render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
+            extract_bar(render_type).and_then(|bar| self.create_bar_style_map_for(bar, scale));
         Ok(self.create_style_from_primitives(
             line,
             area,

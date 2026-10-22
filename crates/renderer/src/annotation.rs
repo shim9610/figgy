@@ -788,14 +788,48 @@ impl BoundedAnnotationFrame {
 }
 
 /// Everything the raster depends on besides the layer's `visible` flag.
+///
+/// The key owns every field of the [`RasterRequest`] the raster is drawn
+/// from, and [`Self::request`] builds that request from the key alone, so a
+/// field the raster reads that the key does not compare does not compile.
+/// The layer is held with `visible` cleared: a visibility toggle shares
+/// the rasters (the frame is keyed on `visible` separately), and a new
+/// layer field is a compile error here, where its place in the key is
+/// decided.
 #[derive(Clone, PartialEq)]
 struct RasterKey {
-    items: Vec<Annotation>,
+    layer: AnnotationLayer,
     space: PixelSpace,
+    origin: [f32; 2],
     size: (u32, u32),
     scale: f32,
-    fonts: u64,
     selected: Option<usize>,
+    policy: FontPolicy,
+    fonts: u64,
+}
+
+impl RasterKey {
+    fn request(&self) -> RasterRequest<'_> {
+        let RasterKey {
+            layer,
+            space,
+            origin,
+            size,
+            scale,
+            selected,
+            policy,
+            fonts: _,
+        } = self;
+        RasterRequest {
+            layer,
+            space: *space,
+            origin: *origin,
+            size: *size,
+            scale: *scale,
+            selected: *selected,
+            policy: *policy,
+        }
+    }
 }
 
 /// Per-renderer cache of the annotation layer for bounded charts: one GPU
@@ -849,12 +883,20 @@ impl BoundedAnnotationCache {
         selected: Option<usize>,
     ) -> RasterKey {
         RasterKey {
-            items: layer.items.clone(),
+            layer: {
+                let AnnotationLayer { visible: _, items } = layer;
+                AnnotationLayer {
+                    visible: false,
+                    items: items.clone(),
+                }
+            },
             space,
+            origin: [0.0, 0.0],
             size,
             scale,
-            fonts: crate::text_render::font_generation(),
             selected,
+            policy: FontPolicy::Standard,
+            fonts: crate::text_render::font_generation(),
         }
     }
 
@@ -894,15 +936,7 @@ impl BoundedAnnotationCache {
         let rasters = match &self.rasters {
             Some((k, rasters)) if *k == key => Arc::clone(rasters),
             _ => {
-                let raster = rasterize(&RasterRequest {
-                    layer,
-                    space,
-                    origin: [0.0, 0.0],
-                    size,
-                    scale,
-                    selected,
-                    policy: FontPolicy::Standard,
-                });
+                let raster = rasterize(&key.request());
                 // The fullscreen pipeline is compiled on the first frame that
                 // has an annotation to draw, not by the renderer constructor.
                 let mut upload = |rgba: Option<Vec<u8>>, label: &str| {

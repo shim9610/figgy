@@ -143,17 +143,12 @@ pub(in crate::renderer) struct ContourSignature {
 /// frame, not something an atlas is baked for.
 #[derive(Debug, PartialEq)]
 pub(in crate::renderer) struct ContourLabelSignature {
-    /// Final formatted strings are the atlas' exact content authority. This
-    /// captures f64 level distinctions and colourbar/level-spacing changes
-    /// without accidentally keying the atlas to an unrelated chart axis.
-    pub(in crate::renderer) texts: Vec<String>,
-    /// `font_size * scale` — an export at 2x re-bakes rather than magnifying.
-    pub(in crate::renderer) font_bits: u32,
-    pub(in crate::renderer) color: [u32; 4],
-    pub(in crate::renderer) policy: crate::text_render::FontPolicy,
-    pub(in crate::renderer) family: String,
-    pub(in crate::renderer) bg: Option<[u32; 4]>,
-    pub(in crate::renderer) bg_padding_bits: u32,
+    /// Everything the atlas bake reads: the final formatted strings (which
+    /// capture f64 level distinctions and colourbar/level-spacing changes
+    /// without keying the atlas to an unrelated chart axis), the face, the
+    /// colours and the padding. The bake takes this and nothing else, so the
+    /// compare covers all of it.
+    pub(in crate::renderer) atlas: data_render::contour_label_atlas::ContourLabelAtlasInput,
     /// Runtime font registration invalidates a previously baked atlas even
     /// when every chart-owned formatting field is unchanged.
     pub(in crate::renderer) font_generation: u64,
@@ -481,22 +476,15 @@ impl PrepareContext<'_> {
             // not fatal: it draws nothing and the rest still do.
             anchors.retain(|anchor| anchor.level < level_count);
             anchors.truncate(crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL as usize);
-            label_sig = Some(ContourLabelSignature {
-                texts: axis_render::contour_label_texts(chart_config, labels, &contour.levels),
-                font_bits: (labels.font_size * scale).to_bits(),
-                color: [
-                    labels.color.r.to_bits(),
-                    labels.color.g.to_bits(),
-                    labels.color.b.to_bits(),
-                    labels.color.a.to_bits(),
-                ],
-                policy: crate::text_render::FontPolicy::for_style(&chart_config.draw_style),
-                family: chart_config.bottom_x.label_style.label_font.clone(),
-                bg: labels
-                    .bg_color
-                    .as_ref()
-                    .map(|c| [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()]),
-                bg_padding_bits: labels.bg_padding_px.to_bits(),
+            let texts = axis_render::contour_label_texts(chart_config, labels, &contour.levels);
+            label_sig = data_render::contour_label_atlas::ContourLabelAtlasInput::from_config(
+                chart_config,
+                labels,
+                texts,
+                scale,
+            )
+            .map(|atlas| ContourLabelSignature {
+                atlas,
                 font_generation: crate::text_render::font_generation(),
                 anchors,
             });
@@ -555,13 +543,7 @@ impl PrepareContext<'_> {
         );
 
         let label = match signature.label.as_ref() {
-            Some(label_sig) => self.build_contour_label(
-                cfg.series_id.as_str(),
-                chart_config,
-                contour,
-                label_sig,
-                scale,
-            )?,
+            Some(label_sig) => self.build_contour_label(cfg.series_id.as_str(), label_sig)?,
             None => None,
         };
 
@@ -597,22 +579,18 @@ impl PrepareContext<'_> {
     /// `None` when nothing is bakeable because every string is empty. A requested
     /// atlas that cannot fit the device limit is an explicit series error rather
     /// than silently dropping labels.
+    /// Build the label state a label signature describes.
+    ///
+    /// The signature is this function's only input besides the device: the
+    /// atlas is baked from `label_sig.atlas` alone, so the compare the cache
+    /// makes covers everything the bake can read.
     pub(in crate::renderer) fn build_contour_label(
         &mut self,
         series_id: &str,
-        chart_config: &Config,
-        contour: &crate::data_config::ContourConfig,
         label_sig: &ContourLabelSignature,
-        scale: f32,
     ) -> Result<Option<crate::gpu_contour::ContourLabelState>> {
-        let Some(labels) = contour.labels.as_ref() else {
-            return Ok(None);
-        };
         let Some(baked) = axis_render::bake_contour_label_atlas(
-            chart_config,
-            labels,
-            &label_sig.texts,
-            scale,
+            &label_sig.atlas,
             self.caps.max_texture_dimension_2d,
         )
         .map_err(|error| FiggyError::InvalidSeriesConfig {

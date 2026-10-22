@@ -3,6 +3,7 @@
 //! removal plans, the demo loader and the web-derived snapshot.
 
 use super::*;
+use crate::{OverlayLayer, Subplot};
 
 /// Logical data-to-screen state derived from the renderer-owned `Config`.
 ///
@@ -36,40 +37,91 @@ pub struct AxisViewState {
 
 impl AxisViewState {
     pub(super) fn from_axis(axis: &AxisOptions) -> Self {
+        let AxisOptions {
+            scale,
+            min,
+            max,
+            // Re-derived from the range when a view state is applied.
+            major_spacing: _,
+            minor_count: _,
+            inverted,
+            // Style and band: not part of the data-to-screen mapping.
+            label_style: _,
+            tick: _,
+            title_option: _,
+            out_margin: _,
+            line_offset: _,
+            line_visible: _,
+            line_color: _,
+            line_width: _,
+            line_style: _,
+            major_tick_length: _,
+            minor_tick_length: _,
+        } = axis;
         Self {
-            scale: axis.scale.clone(),
-            min: axis.min,
-            max: axis.max,
-            inverted: axis.inverted,
+            scale: scale.clone(),
+            min: *min,
+            max: *max,
+            inverted: *inverted,
         }
     }
 
     pub(super) fn apply_to(&self, axis: &mut AxisOptions) {
-        axis.scale = self.scale.clone();
-        crate::chart::apply_axis_range(
-            axis,
-            self.min,
-            self.max,
-            matches!(&self.scale, AxisScale::Logarithmic),
-        );
-        axis.inverted = self.inverted;
+        let Self {
+            scale,
+            min,
+            max,
+            inverted,
+        } = self;
+        axis.scale = scale.clone();
+        crate::chart::apply_axis_range(axis, *min, *max, matches!(scale, AxisScale::Logarithmic));
+        axis.inverted = *inverted;
     }
 }
 
 impl ChartViewState {
     pub(super) fn from_config(config: &Config) -> Self {
+        let Config {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            right_y,
+            // Chrome, selections, z scale, style and routing: not part of
+            // the data-to-screen mapping.
+            chart_title: _,
+            grid: _,
+            legend: _,
+            picked_points: _,
+            picked_data: _,
+            colorbar: _,
+            draw_style: _,
+            polar: _,
+            overlays,
+            subplots,
+            active_layer: _,
+            annotations: _,
+        } = config;
         Self {
-            chart_area: config.chart_area.0,
-            top_x: AxisViewState::from_axis(&config.top_x),
-            bottom_x: AxisViewState::from_axis(&config.bottom_x),
-            left_y: AxisViewState::from_axis(&config.left_y),
-            right_y: AxisViewState::from_axis(&config.right_y),
-            overlay_y: config
-                .overlays
+            chart_area: chart_area.0,
+            top_x: AxisViewState::from_axis(top_x),
+            bottom_x: AxisViewState::from_axis(bottom_x),
+            left_y: AxisViewState::from_axis(left_y),
+            right_y: AxisViewState::from_axis(right_y),
+            overlay_y: overlays
                 .iter()
-                .map(|overlay| AxisViewState::from_axis(&overlay.y_axis))
+                .map(|overlay| {
+                    let OverlayLayer {
+                        y_axis,
+                        series: _,
+                        legend: _,
+                    } = overlay;
+                    AxisViewState::from_axis(y_axis)
+                })
                 .collect(),
-            subplots: (0..config.subplots.len())
+            // Each subplot as it draws, its linked axes following their
+            // targets.
+            subplots: (0..subplots.len())
                 .filter_map(|index| config.subplot_config(index))
                 .map(|subplot| Self::from_config(&subplot))
                 .collect(),
@@ -77,16 +129,56 @@ impl ChartViewState {
     }
 
     pub(super) fn apply_to(&self, config: &mut Config) {
-        config.chart_area.0 = self.chart_area;
-        self.top_x.apply_to(&mut config.top_x);
-        self.bottom_x.apply_to(&mut config.bottom_x);
-        self.left_y.apply_to(&mut config.left_y);
-        self.right_y.apply_to(&mut config.right_y);
-        for (state, overlay) in self.overlay_y.iter().zip(&mut config.overlays) {
-            state.apply_to(&mut overlay.y_axis);
+        let Self {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            right_y,
+            overlay_y,
+            subplots,
+        } = self;
+        let Config {
+            chart_area: config_area,
+            top_x: config_top_x,
+            bottom_x: config_bottom_x,
+            left_y: config_left_y,
+            right_y: config_right_y,
+            // Not part of a view state (see `from_config`).
+            chart_title: _,
+            grid: _,
+            legend: _,
+            picked_points: _,
+            picked_data: _,
+            colorbar: _,
+            draw_style: _,
+            polar: _,
+            overlays: config_overlays,
+            subplots: config_subplots,
+            active_layer: _,
+            annotations: _,
+        } = config;
+        config_area.0 = *chart_area;
+        top_x.apply_to(config_top_x);
+        bottom_x.apply_to(config_bottom_x);
+        left_y.apply_to(config_left_y);
+        right_y.apply_to(config_right_y);
+        for (state, overlay) in overlay_y.iter().zip(config_overlays) {
+            let OverlayLayer {
+                y_axis,
+                series: _,
+                legend: _,
+            } = overlay;
+            state.apply_to(y_axis);
         }
-        for (state, subplot) in self.subplots.iter().zip(&mut config.subplots) {
-            state.apply_to(&mut subplot.config);
+        for (state, subplot) in subplots.iter().zip(config_subplots) {
+            let Subplot {
+                config,
+                series: _,
+                link_x: _,
+                link_y: _,
+            } = subplot;
+            state.apply_to(config);
         }
     }
 }
@@ -427,8 +519,19 @@ impl ColumnInvalidationPlan {
             let state = chart_states
                 .get_mut(&update.id)
                 .expect("column invalidation chart remains registered");
-            state.revisions.desired = update.desired;
-            state.revisions.data = update.data;
+            // A column edit changes what is drawn, not any declaration.
+            let ChartRevisions {
+                desired,
+                config: _,
+                series: _,
+                data,
+                view: _,
+                selection: _,
+                raster: _,
+                annotation: _,
+            } = &mut state.revisions;
+            *desired = update.desired;
+            *data = update.data;
         }
         if let Some(visual) = self.visual {
             *visual_revision = visual;
@@ -465,29 +568,42 @@ impl ColumnRemovalPlan {
             let state = chart_states
                 .get_mut(&update.id)
                 .expect("column removal chart remains registered");
+            let ChartRevisions {
+                desired,
+                config: config_revision,
+                series: series_revision,
+                data,
+                view,
+                selection,
+                raster,
+                // TODO(#46): a replacement config is not compared for its
+                // annotation items, so an override that edits them keeps the
+                // old annotation raster (the gap of the demo-load plan).
+                annotation: _,
+            } = &mut state.revisions;
             if update.remove_referencing_series {
                 state
                     .series
                     .retain(|series| !series_references_column(series, removed_column));
-                state.revisions.series = update
+                *series_revision = update
                     .series_revision
                     .expect("series-removal revision was prepared");
-                state.revisions.data = update.data.expect("data revision was prepared");
+                *data = update.data.expect("data revision was prepared");
             }
             if let Some(config) = update.next_config {
                 state.config = config;
-                state.revisions.config = update
+                *config_revision = update
                     .config_revision
                     .expect("config replacement revision was prepared");
-                state.revisions.selection = update
+                *selection = update
                     .selection_revision
                     .expect("selection revision was prepared");
-                if let Some(view) = update.view {
-                    state.revisions.view = view;
+                if let Some(next_view) = update.view {
+                    *view = next_view;
                 }
             }
-            state.revisions.desired = update.desired;
-            state.revisions.raster = update.raster;
+            *desired = update.desired;
+            *raster = update.raster;
         }
         if let Some(visual) = self.visual {
             *visual_revision = visual;
@@ -1048,29 +1164,59 @@ pub(super) fn prepare_load_demo_chart_plan(
             continue;
         }
 
-        let mut next = state.revisions;
-        next.desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        if is_target {
-            next.config = state.revisions.config.successor("chart config revision")?;
-            next.selection =
-                selection_config_revision(state.revisions.selection, &state.config, &config)?;
-            next.series = state.revisions.series.successor("chart series revision")?;
-            if !data_series_declarations_equal(&state.series, &series)
-                || series_list_references_any_column(&state.series, DEMO_COLUMN_IDS.iter().copied())
-                || series_list_references_any_column(&series, DEMO_COLUMN_IDS.iter().copied())
-            {
-                next.data = state.revisions.data.successor("chart data revision")?;
+        let ChartRevisions {
+            desired,
+            config: config_revision,
+            series: series_revision,
+            data,
+            view,
+            selection,
+            raster,
+            annotation,
+        } = state.revisions;
+        let desired = desired.successor("chart desired revision")?;
+        let next = if is_target {
+            ChartRevisions {
+                desired,
+                config: config_revision.successor("chart config revision")?,
+                selection: selection_config_revision(selection, &state.config, &config)?,
+                series: series_revision.successor("chart series revision")?,
+                data: if !data_series_declarations_equal(&state.series, &series)
+                    || series_list_references_any_column(
+                        &state.series,
+                        DEMO_COLUMN_IDS.iter().copied(),
+                    )
+                    || series_list_references_any_column(&series, DEMO_COLUMN_IDS.iter().copied())
+                {
+                    data.successor("chart data revision")?
+                } else {
+                    data
+                },
+                view: if !stream_config_equal(&state.config, &config, &state.series) {
+                    view.successor("chart view revision")?
+                } else {
+                    view
+                },
+                raster: raster.successor("chart raster revision")?,
+                // TODO(#46): carried, not recomputed from the demo config
+                // with `annotation_config_revision`, so a chart whose
+                // annotation items differ from the demo's keeps its old
+                // annotation raster (suspected gap 4 of the inventory).
+                annotation,
             }
-            if !stream_config_equal(&state.config, &config, &state.series) {
-                next.view = state.revisions.view.successor("chart view revision")?;
-            }
-            next.raster = state.revisions.raster.successor("chart raster revision")?;
         } else {
-            next.data = state.revisions.data.successor("chart data revision")?;
-        }
+            // A chart that only reads the demo columns: its data changed.
+            ChartRevisions {
+                desired,
+                config: config_revision,
+                selection,
+                series: series_revision,
+                data: data.successor("chart data revision")?,
+                view,
+                raster,
+                annotation,
+            }
+        };
         revisions.push(LoadDemoChartRevision {
             id: *id,
             revisions: next,
@@ -1883,44 +2029,52 @@ impl Renderer {
         // layer change clears it, and its selection chrome must be redrawn.
         let layer_changed = state.config.active_layer() != config.active_layer();
         let clear_selection = layer_changed && state.selected.is_some();
+        let ChartRevisions {
+            desired: desired_before,
+            config: config_before,
+            // A config edit leaves the series declarations and their data.
+            series,
+            data,
+            view: view_before,
+            selection: selection_before,
+            raster: raster_before,
+            annotation: annotation_before,
+        } = state.revisions;
         let desired = if changed {
-            state
-                .revisions
-                .desired
-                .successor("chart desired revision")?
+            desired_before.successor("chart desired revision")?
         } else {
-            state.revisions.desired
+            desired_before
         };
         let config_revision = if changed {
-            state.revisions.config.successor("chart config revision")?
+            config_before.successor("chart config revision")?
         } else {
-            state.revisions.config
+            config_before
         };
         let view = if !stream_config_equal(&state.config, &config, &state.series) {
-            state.revisions.view.successor("chart view revision")?
+            view_before.successor("chart view revision")?
         } else {
-            state.revisions.view
+            view_before
         };
         let raster = if raster_config_equal(&state.config, &config) && !clear_selection {
-            state.revisions.raster
+            raster_before
         } else {
-            state.revisions.raster.successor("chart raster revision")?
+            raster_before.successor("chart raster revision")?
         };
         let visual = self.visual_revision.successor("renderer visual revision")?;
-        let mut next_revisions = state.revisions;
-        next_revisions.desired = desired;
-        next_revisions.config = config_revision;
-        next_revisions.selection =
-            selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        let mut selection = selection_config_revision(selection_before, &state.config, &config)?;
         if clear_selection {
-            next_revisions.selection = next_revisions
-                .selection
-                .successor("chart selection revision")?;
+            selection = selection.successor("chart selection revision")?;
         }
-        next_revisions.annotation =
-            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
-        next_revisions.view = view;
-        next_revisions.raster = raster;
+        let next_revisions = ChartRevisions {
+            desired,
+            config: config_revision,
+            series,
+            data,
+            view,
+            selection,
+            raster,
+            annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
+        };
 
         let chart_state = self
             .chart_states
@@ -2019,23 +2173,37 @@ impl Renderer {
             &series,
         )?;
         self.require_resident_overlay_series(&state.config, &series)?;
-        let desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        let series_revision = state.revisions.series.successor("chart series revision")?;
+        let ChartRevisions {
+            desired: desired_before,
+            // A series edit leaves the config and everything derived from it
+            // alone; the raster follows the series (legend, tick guards).
+            config,
+            series: series_before,
+            data: data_before,
+            view,
+            selection,
+            raster: raster_before,
+            annotation,
+        } = state.revisions;
+        let desired = desired_before.successor("chart desired revision")?;
+        let series_revision = series_before.successor("chart series revision")?;
         let data = if data_series_declarations_equal(&state.series, &series) {
-            state.revisions.data
+            data_before
         } else {
-            state.revisions.data.successor("chart data revision")?
+            data_before.successor("chart data revision")?
         };
-        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let raster = raster_before.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
-        let mut next_revisions = state.revisions;
-        next_revisions.desired = desired;
-        next_revisions.series = series_revision;
-        next_revisions.data = data;
-        next_revisions.raster = raster;
+        let next_revisions = ChartRevisions {
+            desired,
+            config,
+            series: series_revision,
+            data,
+            view,
+            selection,
+            raster,
+            annotation,
+        };
 
         let chart_state = self
             .chart_states
@@ -2083,59 +2251,64 @@ impl Renderer {
         let series_changed = state.series != series;
         let clear_selection =
             state.config.active_layer() != config.active_layer() && state.selected.is_some();
+        let ChartRevisions {
+            desired: desired_before,
+            config: config_before,
+            series: series_before,
+            data: data_before,
+            view: view_before,
+            selection: selection_before,
+            raster: raster_before,
+            annotation: annotation_before,
+        } = state.revisions;
         let desired = if config_changed || series_changed {
-            state
-                .revisions
-                .desired
-                .successor("chart desired revision")?
+            desired_before.successor("chart desired revision")?
         } else {
-            state.revisions.desired
+            desired_before
         };
         let config_revision = if config_changed {
-            state.revisions.config.successor("chart config revision")?
+            config_before.successor("chart config revision")?
         } else {
-            state.revisions.config
+            config_before
         };
         let series_revision = if series_changed {
-            state.revisions.series.successor("chart series revision")?
+            series_before.successor("chart series revision")?
         } else {
-            state.revisions.series
+            series_before
         };
         let data = if data_series_declarations_equal(&state.series, &series) {
-            state.revisions.data
+            data_before
         } else {
-            state.revisions.data.successor("chart data revision")?
+            data_before.successor("chart data revision")?
         };
         let view = if !stream_config_equal(&state.config, &config, &state.series) {
-            state.revisions.view.successor("chart view revision")?
+            view_before.successor("chart view revision")?
         } else {
-            state.revisions.view
+            view_before
         };
         // Series declarations feed the legend and the raster's series-aware
         // tick guards, so a series change re-rasterizes like a chrome edit.
         let raster =
             if raster_config_equal(&state.config, &config) && !series_changed && !clear_selection {
-                state.revisions.raster
+                raster_before
             } else {
-                state.revisions.raster.successor("chart raster revision")?
+                raster_before.successor("chart raster revision")?
             };
         let visual = self.visual_revision.successor("renderer visual revision")?;
-        let mut next_revisions = state.revisions;
-        next_revisions.desired = desired;
-        next_revisions.config = config_revision;
-        next_revisions.selection =
-            selection_config_revision(state.revisions.selection, &state.config, &config)?;
+        let mut selection = selection_config_revision(selection_before, &state.config, &config)?;
         if clear_selection {
-            next_revisions.selection = next_revisions
-                .selection
-                .successor("chart selection revision")?;
+            selection = selection.successor("chart selection revision")?;
         }
-        next_revisions.annotation =
-            annotation_config_revision(state.revisions.annotation, &state.config, &config)?;
-        next_revisions.series = series_revision;
-        next_revisions.data = data;
-        next_revisions.view = view;
-        next_revisions.raster = raster;
+        let next_revisions = ChartRevisions {
+            desired,
+            config: config_revision,
+            series: series_revision,
+            data,
+            view,
+            selection,
+            raster,
+            annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
+        };
 
         let chart_state = self
             .chart_states
@@ -2190,13 +2363,22 @@ impl Renderer {
         view.apply_to(&mut prospective_config);
         prospective_config.sync_subplot_links(Some(&state.config));
         crate::chart::validate_renderer_config(&prospective_config)?;
-        let desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        let config = state.revisions.config.successor("chart config revision")?;
-        let view_revision = state.revisions.view.successor("chart view revision")?;
-        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let ChartRevisions {
+            desired,
+            config,
+            // A view edit moves axis ranges only: no declaration, column,
+            // selection or annotation changes.
+            series,
+            data,
+            view,
+            selection,
+            raster,
+            annotation,
+        } = state.revisions;
+        let desired = desired.successor("chart desired revision")?;
+        let config = config.successor("chart config revision")?;
+        let view_revision = view.successor("chart view revision")?;
+        let raster = raster.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
 
         let state = self
@@ -2206,10 +2388,16 @@ impl Renderer {
         // The validated document, links already carried: one write.
         state.config = prospective_config;
         state.stream_auto_fit_padding = None;
-        state.revisions.desired = desired;
-        state.revisions.config = config;
-        state.revisions.view = view_revision;
-        state.revisions.raster = raster;
+        state.revisions = ChartRevisions {
+            desired,
+            config,
+            series,
+            data,
+            view: view_revision,
+            selection,
+            raster,
+            annotation,
+        };
         self.visual_revision = visual;
         Ok(())
     }
@@ -2219,15 +2407,21 @@ impl Renderer {
             .chart_states
             .get(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
-        let desired = state
-            .revisions
-            .desired
-            .successor("chart desired revision")?;
-        let selection = state
-            .revisions
-            .selection
-            .successor("chart selection revision")?;
-        let raster = state.revisions.raster.successor("chart raster revision")?;
+        let ChartRevisions {
+            desired,
+            // An element selection is chrome only: the raster and the
+            // selection overlay redraw, nothing is re-declared.
+            config,
+            series,
+            data,
+            view,
+            selection,
+            raster,
+            annotation,
+        } = state.revisions;
+        let desired = desired.successor("chart desired revision")?;
+        let selection = selection.successor("chart selection revision")?;
+        let raster = raster.successor("chart raster revision")?;
         let visual = self.visual_revision.successor("renderer visual revision")?;
 
         let state = self
@@ -2235,9 +2429,16 @@ impl Renderer {
             .get_mut(&id)
             .ok_or(FiggyError::UnknownChart { id })?;
         state.selected = selected;
-        state.revisions.desired = desired;
-        state.revisions.selection = selection;
-        state.revisions.raster = raster;
+        state.revisions = ChartRevisions {
+            desired,
+            config,
+            series,
+            data,
+            view,
+            selection,
+            raster,
+            annotation,
+        };
         self.visual_revision = visual;
         Ok(())
     }
@@ -2283,8 +2484,21 @@ impl Renderer {
                 .chart_states
                 .get_mut(&id)
                 .ok_or(FiggyError::UnknownChart { id })?;
-            state.revisions.desired = desired;
-            state.revisions.raster = raster;
+            // A font change re-rasterizes text; nothing else is affected.
+            let ChartRevisions {
+                desired: desired_slot,
+                config: _,
+                series: _,
+                data: _,
+                view: _,
+                selection: _,
+                raster: raster_slot,
+                // TODO(#46): annotation text is rasterized with these fonts
+                // too, but its revision does not move on a font change.
+                annotation: _,
+            } = &mut state.revisions;
+            *desired_slot = desired;
+            *raster_slot = raster;
         }
         self.visual_revision = visual;
         self.observed_font_generation = generation;

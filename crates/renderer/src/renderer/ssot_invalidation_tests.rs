@@ -1639,3 +1639,7 @@ fn ssot_cached_fit_restores_secondary_axes_without_replaying_data() {
 
 #[path = "source_cache_invalidation_tests.rs"]
 mod source_cache_invalidation;
+
+#[cfg(feature = "serde")]
+#[path = "ssot_mutation_tests.rs"]
+mod mutation;

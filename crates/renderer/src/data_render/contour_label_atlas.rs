@@ -207,40 +207,96 @@ pub(crate) fn contour_label_texts(
         .collect()
 }
 
+/// Everything an atlas is baked from, in physical pixels.
+///
+/// [`bake_contour_label_atlas`] takes nothing else, so a cache that compares
+/// two of these compares everything the bake can read: a field the bake
+/// needs has to be here, or the bake does not compile. Floats are held as
+/// bits so two inputs that differ only in a NaN payload still compare equal
+/// and an atlas is not re-baked every frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ContourLabelAtlasInput {
+    /// The final formatted strings: the atlas' exact content authority.
+    pub texts: Vec<String>,
+    /// `font_size * scale`: an export at 2x re-bakes rather than magnifying
+    /// a window-resolution atlas.
+    pub font_size_bits: u32,
+    pub color_bits: [u32; 4],
+    pub policy: FontPolicy,
+    pub family: String,
+    pub bg_color_bits: Option<[u32; 4]>,
+    /// `bg_padding_px * scale`, clamped at zero. Padding also defines the
+    /// transparent line break around a label, so it is geometric even when
+    /// no background colour is painted.
+    pub bg_padding_bits: u32,
+}
+
+impl ContourLabelAtlasInput {
+    /// What `labels` bake to under `config` at `scale`, or `None` when there
+    /// is nothing to bake: hidden labels, a non-positive font size or no
+    /// strings.
+    pub(crate) fn from_config(
+        config: &Config,
+        labels: &crate::data_config::ContourLabelConfig,
+        texts: Vec<String>,
+        scale: f32,
+    ) -> Option<Self> {
+        if !labels.visible || labels.font_size <= 0.0 || texts.is_empty() {
+            return None;
+        }
+        let bits = |c: &Color| [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()];
+        Some(Self {
+            texts,
+            font_size_bits: (labels.font_size * scale).to_bits(),
+            color_bits: bits(&labels.color),
+            policy: FontPolicy::for_style(&config.draw_style),
+            // Contour labels are data annotations, so they take the chart's
+            // tick-label face; `FontPolicy` still swaps it in sketch mode.
+            family: config.bottom_x.label_style.label_font.clone(),
+            bg_color_bits: labels.bg_color.as_ref().map(bits),
+            bg_padding_bits: (labels.bg_padding_px.max(0.0) * scale).to_bits(),
+        })
+    }
+}
+
+fn color_from_bits([r, g, b, a]: [u32; 4]) -> Color {
+    Color::new(
+        f32::from_bits(r),
+        f32::from_bits(g),
+        f32::from_bits(b),
+        f32::from_bits(a),
+    )
+}
+
 /// Bake one contour series' labels into an atlas.
 ///
-/// `scale` is the render scale — the same DPI multiplier every other pixel
-/// dimension gets — so an export at 2x re-bakes at 2x rather than magnifying a
-/// window-resolution atlas.
-///
-/// Returns `Ok(None)` when there is nothing to draw: no visible label, a
-/// non-positive font size, or every string empty. Device-limit and allocation
-/// failures are explicit so the renderer can fail the frame with context rather
-/// than silently drawing an unlabelled series.
+/// Returns `Ok(None)` when the strings measure to nothing. Device-limit and
+/// allocation failures are explicit so the renderer can fail the frame with
+/// context rather than silently drawing an unlabelled series.
 pub(crate) fn bake_contour_label_atlas(
-    config: &Config,
-    labels: &crate::data_config::ContourLabelConfig,
-    texts: &[String],
-    scale: f32,
+    input: &ContourLabelAtlasInput,
     max_dimension: u32,
 ) -> Result<Option<BakedLabelAtlas>, ContourLabelAtlasError> {
-    if !labels.visible || labels.font_size <= 0.0 || texts.is_empty() {
-        return Ok(None);
-    }
-    let fp = FontPolicy::for_style(&config.draw_style);
-    // Contour labels are data annotations, so they take the chart's tick-label
-    // face; `FontPolicy` still swaps it in sketch mode.
-    let family = config.bottom_x.label_style.label_font.clone();
-    let font_size = labels.font_size * scale;
-    // Padding also defines the transparent line break around a label, so it is
-    // geometric even when no background colour is painted.
-    let pad = labels.bg_padding_px.max(0.0) * scale;
+    let ContourLabelAtlasInput {
+        texts,
+        font_size_bits,
+        color_bits,
+        policy: fp,
+        family,
+        bg_color_bits,
+        bg_padding_bits,
+    } = input;
+    let fp = *fp;
+    let font_size = f32::from_bits(*font_size_bits);
+    let pad = f32::from_bits(*bg_padding_bits);
+    let color = color_from_bits(*color_bits);
+    let bg_color = bg_color_bits.map(color_from_bits);
 
     // One measure pass first: the cell height is uniform across levels (the
     // tallest), so it cannot be known before every string has been measured.
     let measured: Vec<_> = texts
         .iter()
-        .map(|text| measure_plain_text(text, &family, font_size, false, false, fp))
+        .map(|text| measure_plain_text(text, family, font_size, false, false, fp))
         .collect();
     let mut cell_w = 0.0f32;
     let mut ascent = 0.0f32;
@@ -277,15 +333,15 @@ pub(crate) fn bake_contour_label_atlas(
         let row = index as u32 / grid.columns;
         let left = (column * cell_stride_w + gutter) as f32;
         let top = (row * cell_stride_h + gutter) as f32;
-        if let Some(bg) = labels.bg_color.as_ref() {
+        if let Some(bg) = bg_color.as_ref() {
             canvas.draw_rect(left, top, content, cell_h, &Paint::fill(bg));
         }
         draw_plain_text(
             &mut canvas,
             text,
             (left + pad, top + pad + ascent),
-            labels.color,
-            &family,
+            color,
+            family,
             font_size,
             false,
             false,
