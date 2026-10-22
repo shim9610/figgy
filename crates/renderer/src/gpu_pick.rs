@@ -27,9 +27,15 @@ use crate::init::observe_result;
 use crate::init::{InitEvent, finished, observe_value, started};
 use crate::pick::PickedPoint;
 
+mod registry;
 mod shader;
 mod types;
 
+#[cfg(test)]
+use registry::GpuPickSeriesId;
+pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};
+use registry::{GpuPickSeriesIdentities, PickIdentity, PickRegistry, PickSeriesSlot};
+use registry::{series_arc, series_exact_variant, stream_exact_variant};
 use shader::exact_variant;
 #[cfg(test)]
 use shader::{INIT_SCOPE, create_pipeline_bundle_observed, validate_device_limits};
@@ -56,71 +62,6 @@ const GPU_PICK_DIRECT_SCAN_POINTS: u32 = GPU_PICK_GATE_WORD_POINTS * GPU_PICK_WO
 /// marker draws nothing farther than its visual radius plus this margin from
 /// its centre on either axis.
 const MARKER_QUAD_MARGIN_PX: f32 = crate::pick::MARKER_QUAD_MARGIN_PX;
-
-/// The exact module and variant that pick `series` as the query draws it:
-/// its primitive class, the styled marker and line paths when the draw
-/// style uses them, the dash walk for a dashed line and the polar paths on
-/// polar axes.
-fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
-    let scatter = series.flags & FLAG_SCATTER != 0;
-    let line = series.flags & FLAG_LINE != 0;
-    let shader = if series.flags & FLAG_VECTOR != 0 {
-        PickShader::Vector
-    } else {
-        match (scatter, line) {
-            (true, true) => PickShader::MarkerLine,
-            (false, true) => PickShader::Line,
-            _ => PickShader::Marker,
-        }
-    };
-    let mut bits = 0;
-    if scatter && shader != PickShader::Vector && query.draw_style.marker != PICK_MARKER_PRECISE {
-        bits |= exact_variant::STYLED_MARKER;
-    }
-    if line {
-        if series.line_dash_len > 0 {
-            bits |= exact_variant::DASH;
-        }
-        if query.draw_style.line != PICK_LINE_PRECISE {
-            bits |= exact_variant::STYLED_LINE;
-        }
-    }
-    if query.transform.polar_angle[0] > 0.5 {
-        bits |= exact_variant::POLAR;
-    }
-    // Without a style map every point has the series' shape.
-    let shape = if scatter && series.flags & FLAG_STYLE_MAP == 0 {
-        series.base_shape_id
-    } else {
-        PickExactKey::ANY_SHAPE
-    };
-    PickExactKey {
-        shader,
-        bits,
-        shape,
-    }
-}
-
-/// The exact variant a streamed chunk of `series` scans with: the resident
-/// series' own variant, so a streamed pick answers bit for bit what the
-/// resident pick does, without the dash walk. A stream binds no arc prefix,
-/// so with or without that walk its dash gaps pick like its dashes.
-fn stream_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
-    let mut key = series_exact_variant(series, query);
-    key.bits &= !exact_variant::DASH;
-    key
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-struct GpuPickSeriesId(u32);
-
-#[cfg(test)]
-impl GpuPickSeriesId {
-    fn index(self) -> u32 {
-        self.0
-    }
-}
 
 /// `CONSTELLATION_POINT_STAR_GAIN` times the largest per-point size jitter
 /// of `constellation_star_radius` (`0.86 + 0.30`).
@@ -289,18 +230,6 @@ fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
 }
 
 #[derive(Clone)]
-struct PickIdentity {
-    source_id: Option<String>,
-    series_id: String,
-}
-
-#[derive(Clone)]
-struct PickSeriesSlot {
-    identity: PickIdentity,
-    gpu: PickSeriesGpu,
-}
-
-#[derive(Clone)]
 struct ReduceResources {
     candidates: wgpu::Buffer,
     final_result: wgpu::Buffer,
@@ -312,53 +241,12 @@ struct ReduceResources {
     _charge: SharedCharge,
 }
 
-struct PickRegistry {
-    slots: Vec<PickSeriesSlot>,
-    identities: Arc<[PickIdentity]>,
-    reduce: ReduceResources,
-    pool_identity: Option<PoolIdentity>,
-    pool_layout_generation: u64,
-    generation: u64,
-}
-
 /// Persistent exact GPU picking engine.
 pub(crate) struct GpuPickEngine {
     bundle: Arc<PickPipelineBundle>,
     registry: PickRegistry,
     #[cfg(test)]
     fail_next_registry_prepare: std::cell::Cell<bool>,
-}
-
-/// One slot in a complete successor registry.
-pub(crate) enum GpuPickRegistrySlot<'a> {
-    /// Reuse GPU resources from `current_index`, optionally with new identity
-    /// strings. The target pool is still validated and relocation-rebound.
-    Reuse {
-        current_index: usize,
-        source_id: Option<String>,
-        series_id: String,
-    },
-    Build(GpuPickSeriesDescriptor<'a>),
-}
-
-/// Engine-bound, fully prepared registry successor.
-///
-/// Its exclusive borrow makes wrong-engine and stale-generation commits
-/// unrepresentable. Dropping it leaves the engine unchanged; `commit` only
-/// moves the already-complete successor state.
-#[must_use = "a prepared GPU-pick transition has no effect until it is committed"]
-pub(crate) struct PreparedPickRegistryTransition<'engine> {
-    engine: &'engine mut GpuPickEngine,
-    next: Option<PickRegistry>,
-}
-
-impl PreparedPickRegistryTransition<'_> {
-    pub(crate) fn commit(mut self) {
-        self.engine.registry = self
-            .next
-            .take()
-            .expect("prepared GPU-pick transition always owns a successor");
-    }
 }
 
 /// Every pick buffer goes through here, and the tally is not optional, so a new
@@ -1908,31 +1796,6 @@ impl GpuPickEngine {
                 _scratch_charge: None,
             },
         })
-    }
-}
-
-/// The arc prefix of the series at registry position `index`, when one was
-/// supplied and holds a value for each of its `point_count` points.
-fn series_arc(
-    arcs: &[Option<Arc<wgpu::Buffer>>],
-    index: usize,
-    point_count: u32,
-) -> Option<&wgpu::Buffer> {
-    arcs.get(index)
-        .and_then(Option::as_deref)
-        .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
-}
-
-/// The identities of a registry's series in registry order.
-pub(crate) struct GpuPickSeriesIdentities(Arc<[PickIdentity]>);
-
-impl GpuPickSeriesIdentities {
-    pub(crate) fn len(&self) -> usize {
-        self.0.len()
-    }
-
-    pub(crate) fn series_ids(&self) -> impl Iterator<Item = &str> {
-        self.0.iter().map(|identity| identity.series_id.as_str())
     }
 }
 
