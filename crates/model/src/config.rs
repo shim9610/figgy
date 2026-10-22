@@ -2,8 +2,9 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
 use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer, Subplot};
-use crate::layout::{ChartArea, Side};
+use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
+use crate::polar::PolarOptions;
 use crate::text::RichText;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -754,87 +755,189 @@ impl Config {
         c
     }
 
+    /// Every field of the chart is named below, so a new one is a decision
+    /// here: scaled when it is a pixel dimension, written as `name: _` when
+    /// it is a data value, a colour, an enum or a fraction.
     pub fn scale_in_place(&mut self, s: f32) {
+        let Config {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            right_y,
+            chart_title,
+            grid,
+            legend,
+            picked_points,
+            picked_data,
+            colorbar,
+            draw_style,
+            polar,
+            overlays,
+            subplots,
+            // Which layer receives the pointer: not a dimension.
+            active_layer: _,
+            annotations,
+        } = self;
+
         let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
-        self.chart_area.0.x = scale_u32(self.chart_area.0.x);
-        self.chart_area.0.y = scale_u32(self.chart_area.0.y);
-        self.chart_area.0.width = scale_u32(self.chart_area.0.width);
-        self.chart_area.0.height = scale_u32(self.chart_area.0.height);
+        let ChartArea(Rect {
+            x,
+            y,
+            width,
+            height,
+        }) = chart_area;
+        *x = scale_u32(*x);
+        *y = scale_u32(*y);
+        *width = scale_u32(*width);
+        *height = scale_u32(*height);
 
-        scale_rich_text(&mut self.chart_title.text, s);
-        self.chart_title.top_margin *= s;
-        self.chart_title.offset_x *= s;
-        self.chart_title.offset_y *= s;
+        let ChartTitleOptions {
+            text,
+            visible: _,
+            offset_x,
+            offset_y,
+            top_margin,
+        } = chart_title;
+        scale_rich_text(text, s);
+        *top_margin *= s;
+        *offset_x *= s;
+        *offset_y *= s;
 
-        let polar = self.polar.is_some();
+        // The polar options are angles, an angle unit and a fraction of the
+        // outer radius: none of them is a pixel dimension.
+        let polar = match polar {
+            Some(PolarOptions {
+                zero_angle_degrees: _,
+                clockwise: _,
+                angle_unit: _,
+                sector: _,
+                inner_radius_fraction: _,
+                interpolation: _,
+                radial_label_angle_degrees: _,
+            }) => true,
+            None => false,
+        };
         for (axis, side) in [
-            (&mut self.top_x, Side::Top),
-            (&mut self.bottom_x, Side::Bottom),
-            (&mut self.left_y, Side::Left),
-            (&mut self.right_y, Side::Right),
+            (top_x, Side::Top),
+            (bottom_x, Side::Bottom),
+            (left_y, Side::Left),
+            (right_y, Side::Right),
         ] {
             scale_axis_in_place(axis, s);
             scale_label_gap(axis, &side, polar, s);
         }
 
-        self.grid.major_x_width *= s;
-        self.grid.major_y_width *= s;
-        self.grid.minor_x_width *= s;
-        self.grid.minor_y_width *= s;
+        let GridOptions {
+            show_major_x: _,
+            major_x_color: _,
+            major_x_width,
+            major_x_style: _,
+            show_major_y: _,
+            major_y_color: _,
+            major_y_width,
+            major_y_style: _,
+            show_minor_x: _,
+            minor_x_color: _,
+            minor_x_width,
+            minor_x_style: _,
+            show_minor_y: _,
+            minor_y_color: _,
+            minor_y_width,
+            minor_y_style: _,
+        } = grid;
+        *major_x_width *= s;
+        *major_y_width *= s;
+        *minor_x_width *= s;
+        *minor_y_width *= s;
 
-        self.legend.offset_x *= s;
-        self.legend.offset_y *= s;
-        self.legend.padding *= s;
-        scale_rich_text(&mut self.legend.content, s);
-        scale_legend_inset(&mut self.legend, s);
+        scale_legend_in_place(legend, s);
 
         // Overlay layers carry their own axis and optional legend; both are
         // pixel-dimensioned like the parent's and scale by the same rules.
-        for overlay in &mut self.overlays {
-            scale_axis_in_place(&mut overlay.y_axis, s);
-            scale_label_gap(&mut overlay.y_axis, &Side::Right, false, s);
-            if let Some(legend) = overlay.legend.as_mut() {
-                legend.offset_x *= s;
-                legend.offset_y *= s;
-                legend.padding *= s;
-                scale_rich_text(&mut legend.content, s);
-                scale_legend_inset(legend, s);
+        for overlay in overlays {
+            let OverlayLayer {
+                y_axis,
+                // Series ids.
+                series: _,
+                legend,
+            } = overlay;
+            scale_axis_in_place(y_axis, s);
+            scale_label_gap(y_axis, &Side::Right, false, s);
+            if let Some(legend) = legend.as_mut() {
+                scale_legend_in_place(legend, s);
             }
         }
 
         // A subplot is a chart of its own, scaled by the same rules; its
         // chart area scales with the same rounding as the parent's.
-        for subplot in &mut self.subplots {
-            subplot.config.scale_in_place(s);
+        for subplot in subplots {
+            let Subplot {
+                config,
+                // Series ids and link targets.
+                series: _,
+                link_x: _,
+                link_y: _,
+            } = subplot;
+            config.scale_in_place(s);
         }
 
-        if let Some(picked_points) = self.picked_points.as_mut() {
-            picked_points.ring_width_px *= s;
-            picked_points.radius_extra_px *= s;
+        if let Some(picked_points) = picked_points.as_mut() {
+            let PickedPointsConfig {
+                visible: _,
+                refs: _,
+                ring_color: _,
+                ring_width_px,
+                radius_extra_px,
+            } = picked_points;
+            *ring_width_px *= s;
+            *radius_extra_px *= s;
         }
-        if let Some(picked_data) = self.picked_data.as_mut() {
-            picked_data.outline_width_px *= s;
-            picked_data.point_radius_extra_px *= s;
-            picked_data.contour_width_extra_px *= s;
+        if let Some(picked_data) = picked_data.as_mut() {
+            let DataSelectionsConfig {
+                visible: _,
+                refs: _,
+                highlight_color: _,
+                outline_width_px,
+                point_radius_extra_px,
+                contour_width_extra_px,
+            } = picked_data;
+            *outline_width_px *= s;
+            *point_radius_extra_px *= s;
+            *contour_width_extra_px *= s;
         }
 
         // Annotation strokes, text and box padding are pixel dims; their
         // values and anchors are data or plot fractions and stay put.
-        self.annotations.scale_in_place(s);
+        annotations.scale_in_place(s);
 
         // The colourbar's axis goes through the same helper as the four chart
         // axes — a new pixel field on `AxisOptions` must not be scalable on the
         // chart axes and silently fixed on the colourbar's. `length_frac` is a
         // fraction of the data area and stays put.
-        if let Some(bar) = self.colorbar.as_mut() {
-            bar.thickness_px *= s;
-            bar.gap_px *= s;
-            bar.border_width *= s;
-            bar.offset_x *= s;
-            bar.offset_y *= s;
-            scale_axis_in_place(&mut bar.axis, s);
-            let side = bar.side.clone();
-            scale_label_gap(&mut bar.axis, &side, false, s);
+        if let Some(bar) = colorbar.as_mut() {
+            let ColorBarOptions {
+                visible: _,
+                side,
+                thickness_px,
+                gap_px,
+                length_frac: _,
+                align: _,
+                offset_x,
+                offset_y,
+                colormap: _,
+                nan_color: _,
+                border_color: _,
+                border_width,
+                axis,
+            } = bar;
+            *thickness_px *= s;
+            *gap_px *= s;
+            *border_width *= s;
+            *offset_x *= s;
+            *offset_y *= s;
+            scale_axis_in_place(axis, s);
+            scale_label_gap(axis, side, false, s);
         }
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
@@ -846,21 +949,42 @@ impl Config {
         // scale, so dividing keeps the star COUNT per data span identical.
         // Without the division a 2× export doubles the stars and the chains
         // bloat into overexposed blobs (field report).
-        match &mut self.draw_style {
-            DrawStyle::Sketch(sketch) => {
-                sketch.amplitude_px *= s;
-                sketch.wavelength_px *= s;
+        match draw_style {
+            DrawStyle::Sketch(SketchOptions {
+                amplitude_px,
+                wavelength_px,
+                seed: _,
+            }) => {
+                *amplitude_px *= s;
+                *wavelength_px *= s;
             }
-            DrawStyle::Milkyway(c) => {
-                c.ribbon_width_px *= s;
-                c.spread_px *= s;
-                c.star_scale *= s;
-                c.structure_scale *= s;
+            DrawStyle::Milkyway(MilkywayOptions {
+                star_density,
+                ribbon_width_px,
+                ribbon_intensity: _,
+                star_scale,
+                star_brightness: _,
+                spread_px,
+                structure_scale,
+                faint_bias: _,
+                glow: _,
+                nebula: _,
+                dust: _,
+                planet_rim: _,
+                seed: _,
+            }) => {
+                *ribbon_width_px *= s;
+                *spread_px *= s;
+                *star_scale *= s;
+                *structure_scale *= s;
                 if s > 0.0 {
-                    c.star_density /= s;
+                    *star_density /= s;
                 }
             }
-            DrawStyle::Constellation(_) => {}
+            DrawStyle::Constellation(ConstellationOptions {
+                star_opacity: _,
+                line_opacity: _,
+            }) => {}
             DrawStyle::Precise => {}
         }
     }
@@ -869,17 +993,72 @@ impl Config {
 /// Scale one axis' pixel-based dims. Shared by the four chart axes and the
 /// colourbar's z axis so the set of "which fields are pixels" is written once.
 fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
-    axis.label_style.font_size *= s;
-    axis.label_style.label_offset_x *= s;
-    axis.label_style.label_offset_y *= s;
-    scale_rich_text(&mut axis.title_option.text, s);
-    axis.title_option.offset_x *= s;
-    axis.title_option.offset_y *= s;
-    axis.out_margin *= s;
-    axis.line_offset *= s;
-    axis.line_width *= s;
-    axis.major_tick_length *= s;
-    axis.minor_tick_length *= s;
+    let AxisOptions {
+        scale: _,
+        min: _,
+        max: _,
+        major_spacing: _,
+        minor_count: _,
+        inverted: _,
+        label_style,
+        tick: _,
+        title_option,
+        out_margin,
+        line_offset,
+        line_visible: _,
+        line_color: _,
+        line_width,
+        line_style: _,
+        major_tick_length,
+        minor_tick_length,
+    } = axis;
+    let LabelStyle {
+        visible: _,
+        color: _,
+        font_size,
+        label_visible: _,
+        label_font: _,
+        label_offset_x,
+        label_offset_y,
+        format: _,
+        significant_digits: _,
+    } = label_style;
+    *font_size *= s;
+    *label_offset_x *= s;
+    *label_offset_y *= s;
+    let AxisTitleOptions {
+        text,
+        visible: _,
+        offset_x,
+        offset_y,
+    } = title_option;
+    scale_rich_text(text, s);
+    *offset_x *= s;
+    *offset_y *= s;
+    *out_margin *= s;
+    *line_offset *= s;
+    *line_width *= s;
+    *major_tick_length *= s;
+    *minor_tick_length *= s;
+}
+
+/// Scale one legend's pixel-based dims: the parent's and every overlay's.
+fn scale_legend_in_place(legend: &mut crate::legend::Legend, s: f32) {
+    let crate::legend::Legend {
+        visible: _,
+        content,
+        corner: _,
+        offset_x,
+        offset_y,
+        padding,
+        bg_color: _,
+        border_color: _,
+    } = legend;
+    *offset_x *= s;
+    *offset_y *= s;
+    *padding *= s;
+    scale_rich_text(content, s);
+    scale_legend_inset(legend, s);
 }
 
 /// The tick-label gap ([`crate::layout::LABEL_GAP`]) is a fixed pixel
