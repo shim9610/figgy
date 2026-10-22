@@ -385,12 +385,6 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
         },
     );
     eprintln!("{}", tally.summary("load demo annotations"));
-    eprintln!(
-        "{} loads changed annotations.items and kept the annotation revision \
-         (the raster revision moved for every load):\n{}",
-        annotation_kept.len(),
-        annotation_kept.join("\n")
-    );
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails
     // this test alone instead of poisoning the lock for every later test.
@@ -400,5 +394,14 @@ fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
         "{} annotation leaves of a loaded demo do not reach the first frame:\n{}",
         tally.gaps.len(),
         tally.gaps.join("\n")
+    );
+    // The frame is right because the raster revision moves on every load;
+    // the annotation revision has to move too, so that
+    // `needs_annotation_raster_since` tells a host the truth.
+    assert!(
+        annotation_kept.is_empty(),
+        "{} loads changed annotations.items and kept the annotation revision:\n{}",
+        annotation_kept.len(),
+        annotation_kept.join("\n")
     );
 }

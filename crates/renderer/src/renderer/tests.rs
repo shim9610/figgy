@@ -3226,10 +3226,69 @@ fn renderer_font_generation_sync_is_atomic_and_idempotent() {
         generation - 1
     };
     let before = renderer.visual_revision();
+    let stamp = renderer.chart_render_stamp(chart).unwrap();
     assert!(renderer.sync_external_invalidations().unwrap());
     assert_ne!(renderer.visual_revision(), before);
+    // Text is rasterized with the fonts: the axis chrome and the annotation
+    // layer both have to be redone, and the stamp has to say so.
+    let after = renderer.chart_render_stamp(chart).unwrap();
+    assert!(after.needs_raster_since(Some(&stamp)));
+    assert!(after.needs_annotation_raster_since(Some(&stamp)));
     assert!(!renderer.sync_external_invalidations().unwrap());
     assert!(renderer.chart_config(chart).is_ok());
+}
+
+#[test]
+fn column_removal_with_chart_config_moves_the_annotation_revision_with_its_items() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+    let initial_config = crate::default::default_config();
+    let chart = renderer
+        .register_chart(
+            initial_config.clone(),
+            vec![state_test_scatter("scatter", None, "x", "y")],
+        )
+        .unwrap();
+
+    // An override that leaves the items alone keeps the annotation
+    // revision, so a host does not redo a raster that did not change.
+    let mut same_items = initial_config.clone();
+    same_items.chart_title.text.segments = crate::text::rich_segments_from_text("renamed");
+    let before = renderer.chart_render_stamp(chart).unwrap();
+    assert!(
+        renderer
+            .remove_column_with_chart_config("x", chart, same_items.clone())
+            .unwrap()
+    );
+    let after = renderer.chart_render_stamp(chart).unwrap();
+    assert!(after.needs_raster_since(Some(&before)));
+    assert!(!after.needs_annotation_raster_since(Some(&before)));
+
+    // An override that edits the items moves it.
+    renderer.add_column("z", &col_f64(vec![0.0, 1.0])).unwrap();
+    let mut edited_items = same_items.clone();
+    edited_items
+        .annotations
+        .items
+        .push(crate::annotation::Annotation::new(
+            crate::annotation::AnnotationKind::Span {
+                axis: crate::annotation::AnnotationAxis::X,
+                from: 0.2,
+                to: 0.4,
+                fill: Color::new(1.0, 0.0, 0.0, 0.5),
+            },
+        ));
+    let before = after;
+    assert!(
+        renderer
+            .remove_column_with_chart_config("z", chart, edited_items.clone())
+            .unwrap()
+    );
+    let after = renderer.chart_render_stamp(chart).unwrap();
+    assert!(after.needs_annotation_raster_since(Some(&before)));
+    assert_eq!(renderer.chart_config(chart).unwrap(), &edited_items);
 }
 
 #[test]
