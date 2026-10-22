@@ -844,6 +844,9 @@ fn prepare_demo_declarations(
     })
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod series_extent_mutation_tests;
+
 #[cfg(test)]
 mod tests {
     use std::{collections::HashMap, rc::Rc};
