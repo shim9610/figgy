@@ -923,3 +923,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
         }
     }
 }
+
+#[cfg(feature = "serde")]
+#[path = "resident_display_mutation_tests.rs"]
+mod mutation;
