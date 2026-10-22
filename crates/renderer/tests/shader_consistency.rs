@@ -26,6 +26,7 @@
 //! CI and local development can run this gate whenever a `.wgsl` file or
 //! `SHADER_COMMON.md` changes.
 
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
@@ -901,3 +902,344 @@ fn log_flags_return_the_logarithm_before_mixing() {
     );
     assert!(guarded >= 20, "{guarded} guarded log choices found");
 }
+
+/// Rule from #46: one behaviour has one implementation. Every WGSL function
+/// defined in more than one product shader under `src/` is listed below, and
+/// the test fails on any change to that picture: a new copy (a name defined
+/// in two files that is not listed, or listed with a different file set) or
+/// a stale entry (a listed copy that no longer exists). The list therefore
+/// only shrinks: each merge of item 11 in #58 removes its entries, until only
+/// `ASSEMBLED_ALTERNATIVES` is left. Entry points (`@vertex`, `@fragment`,
+/// `@compute`) are exempt: their names are per pipeline, not shared code.
+///
+/// `ASSEMBLED_ALTERNATIVES` are interface functions with one body per
+/// variant, of which the Rust assembler splices exactly one into a module.
+/// They are the layered design of rule 9 and stay. `PENDING_COPIES` are the
+/// pasted copies, kept in sync by the tests above until the assembler
+/// fragments replace them. Each entry is (files that define them, names).
+#[test]
+fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                out.push(path);
+            }
+        }
+    }
+    let src = workspace_root().join("src");
+    let mut shaders = Vec::new();
+    walk(&src, &mut shaders);
+    shaders.sort();
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
+
+    let mut defined: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for path in &shaders {
+        let rel = path
+            .strip_prefix(&src)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .replace('\\', "/");
+        let text = fs::read_to_string(path).unwrap();
+        let mut attributes = String::new();
+        for line in text.lines() {
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix("fn ") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                let entry_point = ["@vertex", "@fragment", "@compute"]
+                    .iter()
+                    .any(|attr| attributes.contains(attr) || trimmed.contains(attr));
+                if !name.is_empty() && !entry_point {
+                    defined.entry(name).or_default().push(rel.clone());
+                }
+            }
+            if !trimmed.is_empty() {
+                attributes = trimmed.to_string();
+            }
+        }
+    }
+    let actual: BTreeMap<&str, Vec<&str>> = defined
+        .iter()
+        .filter(|(_, files)| files.len() > 1)
+        .map(|(name, files)| (name.as_str(), files.iter().map(String::as_str).collect()))
+        .collect();
+
+    let mut expected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    for (files, names) in ASSEMBLED_ALTERNATIVES.iter().chain(PENDING_COPIES) {
+        let mut files: Vec<&str> = files.to_vec();
+        files.sort_unstable();
+        for name in *names {
+            assert!(
+                expected.insert(name, files.clone()).is_none(),
+                "`{name}` is listed twice in the duplicate allowlist"
+            );
+        }
+    }
+
+    let mut problems = Vec::new();
+    for (name, files) in &actual {
+        match expected.get(name) {
+            Some(listed) if listed == files => {}
+            Some(listed) => problems.push(format!(
+                "`{name}` is defined in {files:?} but the allowlist says {listed:?}: a copy moved or a new one appeared"
+            )),
+            None => problems.push(format!(
+                "`{name}` is defined in {files:?}: a new copy of a shader function. Call the existing one or splice it in as an assembler fragment (#46)"
+            )),
+        }
+    }
+    for (name, listed) in &expected {
+        if !actual.contains_key(name) {
+            problems.push(format!(
+                "`{name}` is no longer defined in more than one of {listed:?}: remove its allowlist entry"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "WGSL duplicate definitions changed:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// Interface functions with one body per variant; the assembler splices one.
+/// Part of the layered design (rule 9); these stay.
+const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "gpu_pick/marker.wgsl",
+            "gpu_pick/no_scatter.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["pick_scatter_candidate"],
+    ),
+    (
+        &[
+            "data_render/vector/vector_input_grid.wgsl",
+            "data_render/vector/vector_input_points.wgsl",
+        ],
+        &["vector_sample"],
+    ),
+    (
+        &["gpu_pick/line.wgsl", "gpu_pick/no_line.wgsl"],
+        &["pick_line_candidate"],
+    ),
+    (
+        &[
+            "stream_sample_transfer.wgsl",
+            "stream_sample_transfer_msaa.wgsl",
+        ],
+        &["preview_texel"],
+    ),
+];
+
+/// Pasted copies that item 11 of #58 replaces with assembler fragments.
+/// Shrinks with every merge; never grows.
+const PENDING_COPIES: &[(&[&str], &[&str])] = &[
+    (
+        &[
+            "contour_anchor.wgsl",
+            "contour_label.wgsl",
+            "data_render/bar_columnar.wgsl",
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/field_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &[
+            "axis_pair_to_t",
+            "data_to_ndc",
+            "maybe_log",
+            "polar_ndc",
+            "styled_point_index",
+        ],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/core.wgsl",
+        ],
+        &["polar_fragment_visible"],
+    ),
+    (
+        &[
+            "data_render/bar_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "gpu_errorbar.wgsl",
+            "gpu_pick/core.wgsl",
+        ],
+        &["figgy_zero_workgroup"],
+    ),
+    (
+        &[
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "gpu_pick/noise.wgsl",
+        ],
+        &["sketch_hash01", "sketch_noise"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+            "gpu_pick/marker.wgsl",
+        ],
+        &["ramp_finite"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+        ],
+        &[
+            "polar_clip_limits",
+            "polar_clip_offset",
+            "polar_clip_sector",
+            "polar_sample_valid",
+            "sample_finite",
+            "sample_valid",
+        ],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
+        &["output", "sdf"],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
+        &["hash", "noise"],
+    ),
+    (
+        &[
+            "contour_anchor.wgsl",
+            "data_render/field_columnar.wgsl",
+            "gpu_errorbar.wgsl",
+        ],
+        &[
+            "add_grid_pairs",
+            "grid_rounded_add",
+            "grid_rounded_subtract",
+            "midpoint_grid_pair",
+            "normalize_grid_pair",
+            "scale_grid_pair",
+            "subtract_grid_pairs",
+        ],
+    ),
+    (
+        &[
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["pair_add"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+        ],
+        &["ramp_blend", "ramp_segment", "ramp_t"],
+    ),
+    (&["boxplot.wgsl", "categorical.wgsl"], &["shade"]),
+    (
+        &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
+        &[
+            "axis_t",
+            "boundary_t",
+            "cell_edge_pair",
+            "contour_sample",
+            "f32_is_finite",
+            "field_flag",
+            "grad_px",
+            "grid_value",
+            "lattice_is_samples",
+            "locate",
+            "pool_pair",
+            "quad_count",
+            "sample_point_pair",
+            "vec2_f32_is_finite",
+        ],
+    ),
+    (
+        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
+        &["pair_value"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+        ],
+        &["step_piece", "step_piece_count", "step_piece_len_px"],
+    ),
+    (
+        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
+        &[
+            "dash_pattern_on",
+            "line_stroke_distance",
+            "sketch_line_offset",
+        ],
+    ),
+    (
+        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
+        &[
+            "base_shape_id",
+            "cons_ring_angle",
+            "constellation_star_radius",
+            "marker_edge",
+            "planet_rim_glow",
+            "planet_ring_frame",
+            "planet_ring_phi",
+            "planet_ring_rho",
+            "regular_vertex",
+            "rotate2",
+            "sd_box",
+            "sd_plus_filled",
+            "sd_regular_polygon",
+            "sd_segment",
+            "sd_star",
+            "sd_triangle",
+            "shape_distance",
+            "shape_is_filled",
+            "size_map_radius",
+            "sketch_marker_distance",
+            "sketch_marker_wobble_px",
+            "star_vertex",
+            "visual_shape_radius",
+        ],
+    ),
+    (
+        &[
+            "data_render/vector/glyph_arrow.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &[
+            "arrow_distance",
+            "arrow_finite",
+            "arrow_place",
+            "arrow_sd_segment",
+            "arrow_sd_triangle",
+        ],
+    ),
+    (
+        &[
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["axis_px_per_unit_at"],
+    ),
+];
