@@ -9,9 +9,8 @@ use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
 use crate::format::LabelFormat;
 use crate::layout::{
-    DataArea, DrawnPart, RectF, Side, TitleBand, TitlePlacement, axis_anchor, axis_offset,
-    axis_title_placement, chart_title_placement, colorbar_rect, colorbar_title_placement,
-    legend_rect, point_on_rect_side,
+    DataArea, DrawnPart, RectF, Side, axis_anchor, axis_offset, chart_title_placement,
+    colorbar_rect, colorbar_title_placement, legend_rect, point_on_rect_side,
 };
 use crate::line::LineStylePreset;
 use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
@@ -496,27 +495,6 @@ fn draw_legend(
     );
 }
 
-// Decoration stroke plumbing.
-//
-// Each layer entry (`draw_grid` / `draw_decoration_layer`) derives one
-// [`DecoStroker`] from `config.draw_style` and threads it down by reference.
-// `Precise` executes the exact pre-stroker code path (plain `draw_line` /
-// `draw_rect`); the sketch arm mixes stable kind+index element tags
-// ("axis_left", "tick_left_3", "grid_major_x_2", "legend_box") into the
-// global seed so every element wobbles differently but identically across
-// re-rasters. The selection overlay and all text stay off the stroker —
-// unconditionally precise.
-
-/// Stable side name used in stroker element tags.
-fn side_tag(side: &Side) -> &'static str {
-    match side {
-        Side::Top => "top",
-        Side::Bottom => "bottom",
-        Side::Left => "left",
-        Side::Right => "right",
-    }
-}
-
 #[path = "bounded_axes.rs"]
 mod bounded;
 #[path = "polar_axes.rs"]
@@ -623,62 +601,6 @@ pub(crate) fn drawn_parts(
     true
 }
 
-// Axis title (RichText).
-
-fn draw_axis_title(
-    canvas: &mut Canvas,
-    config: &Config,
-    da: &DataArea,
-    side: Side,
-    fp: FontPolicy,
-) {
-    let axis = match side {
-        Side::Top => &config.top_x,
-        Side::Bottom => &config.bottom_x,
-        Side::Left => &config.left_y,
-        Side::Right => &config.right_y,
-    };
-    let to = &axis.title_option;
-    if !to.visible {
-        return;
-    }
-
-    let m = measure_rich_text(&to.text, fp);
-    let placement = axis_title_placement(
-        side.clone(),
-        &config.chart_area,
-        da,
-        TitleBand {
-            out_margin: axis.out_margin,
-            chart_title_margin: config.chart_title.top_margin,
-            edge_inset: config.colorbar_band(&side),
-        },
-        (to.offset_x, to.offset_y),
-        m,
-    );
-    draw_placed_title(canvas, &to.text, placement, fp);
-}
-
-fn draw_placed_title(
-    canvas: &mut Canvas,
-    rt: &crate::text::RichText,
-    placement: TitlePlacement,
-    fp: FontPolicy,
-) {
-    if placement.rotation_degrees == 0.0 {
-        draw_rich_text(canvas, rt, placement.origin, fp);
-    } else {
-        canvas.save();
-        canvas.rotate_at(
-            placement.rotation_degrees,
-            placement.rotation_center.0,
-            placement.rotation_center.1,
-        );
-        draw_rich_text(canvas, rt, placement.origin, fp);
-        canvas.restore();
-    }
-}
-
 // Chart title (RichText).
 
 fn draw_chart_title(canvas: &mut Canvas, config: &Config, fp: FontPolicy) {
@@ -703,7 +625,7 @@ mod tests {
     };
     use crate::default::default_config;
     use crate::layout::LABEL_GAP;
-    use crate::layout::label_origin;
+    use crate::layout::{TitleBand, axis_title_placement, label_origin};
     use crate::text::{RichSegment, RichText};
 
     fn contour_label_fixture() -> (Config, ContourLabelConfig) {

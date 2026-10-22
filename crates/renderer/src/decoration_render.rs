@@ -6,9 +6,12 @@
 
 use crate::raster::Canvas;
 
-use crate::config::{AxisOptions, AxisScale, LabelStyle};
+use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 use crate::format::LabelFormat;
-use crate::layout::{DataArea, RectF, Side, label_origin, point_on_rect_side};
+use crate::layout::{
+    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_title_placement, label_origin,
+    point_on_rect_side,
+};
 use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
     FontPolicy, draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
@@ -18,3 +21,5 @@ mod tick_labels;
 pub(crate) use tick_labels::*;
 mod tick_format;
 pub(crate) use tick_format::*;
+mod axis_titles;
+pub(crate) use axis_titles::*;
