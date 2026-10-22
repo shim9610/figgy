@@ -9,8 +9,9 @@ use crate::raster::{Canvas, Paint};
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 use crate::format::LabelFormat;
 use crate::layout::{
-    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_title_placement, chart_title_placement,
-    label_origin, legend_rect, point_on_rect_side,
+    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_offset, axis_title_placement,
+    chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, legend_rect,
+    point_on_rect_side,
 };
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText, TextAlign};
@@ -28,3 +29,5 @@ mod chart_title;
 pub(crate) use chart_title::*;
 mod legend;
 pub(crate) use legend::*;
+mod colorbar;
+pub(crate) use colorbar::*;

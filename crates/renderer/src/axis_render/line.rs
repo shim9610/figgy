@@ -127,7 +127,7 @@ pub(crate) fn value_to_screen(
 /// Which stroke of an axis a segment is: its line, or tick `i` in the
 /// running per-axis index (majors first, minors after).
 #[derive(Clone, Copy)]
-pub(super) enum AxisStroke {
+pub(crate) enum AxisStroke {
     Line,
     Tick(usize),
 }
@@ -165,7 +165,7 @@ pub(super) fn each_axis_stroke(
 
 /// Every segment [`draw_colorbar`] strokes for the bar's axis along the strip
 /// `rect`, before the detached-axis translate: the line, then the ticks.
-pub(super) fn each_colorbar_axis_stroke(
+pub(crate) fn each_colorbar_axis_stroke(
     axis: &AxisOptions,
     side: Side,
     rect: &RectF,
@@ -225,6 +225,6 @@ pub(super) fn tick_segment(
 
 // Skia Paint helpers.
 
-pub(super) fn stroke_paint(color: &Color, width: f32, style: &LineStylePreset) -> Paint {
+pub(crate) fn stroke_paint(color: &Color, width: f32, style: &LineStylePreset) -> Paint {
     Paint::stroke(color, width).with_dash(style.pattern())
 }

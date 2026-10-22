@@ -187,7 +187,7 @@ pub(super) fn axis_pixel_len(side: Side, da: &DataArea) -> f32 {
     }
 }
 
-pub(super) fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
+pub(crate) fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
     let mut out = Vec::new();
     match axis.scale {
         AxisScale::Linear => {
