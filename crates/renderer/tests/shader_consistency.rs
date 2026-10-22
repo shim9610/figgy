@@ -598,7 +598,7 @@ fn pick_polar_clip_is_the_draw_fragment_clip() {
 fn contour_level_search_constants_match_the_model_limit() {
     assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
 
-    let rust = read("src/data_render/mod.rs");
+    let rust = read("src/data_render/contour.rs");
     let shader = read("src/data_render/field_columnar.wgsl");
     assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_SIZE: usize = 32;"));
     assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_COUNT: usize = 32;"));
@@ -634,17 +634,18 @@ fn contour_label_capacity_and_private_storage_match_the_model_contract() {
 
 #[test]
 fn contour_lookup_metadata_binding_and_layout_match_cpu_and_wgsl() {
-    let rust = read("src/data_render/mod.rs");
+    let metadata = read("src/data_render/contour.rs");
+    let bindings = read("src/data_render/field.rs");
     let field = read("src/data_render/field_columnar.wgsl");
     let anchor = read("src/contour_anchor.wgsl");
 
-    assert!(rust.contains("pub struct ContourLookupMetadataGpu"));
-    assert!(rust.contains("pub finite_count: u32"));
-    assert!(rust.contains("pub negative_infinity_count: u32"));
-    assert!(rust.contains("size_of::<ContourLookupMetadataGpu>() == 8"));
-    assert!(rust.contains("storage(6, wgpu::ShaderStages::FRAGMENT)"));
-    assert!(rust.contains("binding: 6,"));
-    assert!(rust.contains("resource: lookup_metadata_buf.as_entire_binding()"));
+    assert!(metadata.contains("pub struct ContourLookupMetadataGpu"));
+    assert!(metadata.contains("pub finite_count: u32"));
+    assert!(metadata.contains("pub negative_infinity_count: u32"));
+    assert!(metadata.contains("size_of::<ContourLookupMetadataGpu>() == 8"));
+    assert!(bindings.contains("storage(6, wgpu::ShaderStages::FRAGMENT)"));
+    assert!(bindings.contains("binding: 6,"));
+    assert!(bindings.contains("resource: lookup_metadata_buf.as_entire_binding()"));
 
     assert!(field.contains("struct ContourLookupMetadata {\n    finite_count: u32,\n    negative_infinity_count: u32,\n};"));
     assert!(field.contains("@group(2) @binding(6) var<storage, read> contour_lookup_metadata"));
