@@ -6,6 +6,7 @@
 
 use crate::raster::{Canvas, Paint};
 
+use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 use crate::format::LabelFormat;
 use crate::layout::{
@@ -13,6 +14,7 @@ use crate::layout::{
     chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, legend_rect,
     point_on_rect_side,
 };
+use crate::select::SelectionBox;
 use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
@@ -31,3 +33,5 @@ mod legend;
 pub(crate) use legend::*;
 mod colorbar;
 pub(crate) use colorbar::*;
+mod selection;
+pub use selection::*;
