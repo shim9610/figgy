@@ -4,14 +4,15 @@
 //! ([`crate::axis_render`]) owns the raster entry points and the axis geometry
 //! these elements are placed against.
 
-use crate::raster::Canvas;
+use crate::raster::{Canvas, Paint};
 
 use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
 use crate::format::LabelFormat;
 use crate::layout::{
     DataArea, RectF, Side, TitleBand, TitlePlacement, axis_title_placement, chart_title_placement,
-    label_origin, point_on_rect_side,
+    label_origin, legend_rect, point_on_rect_side,
 };
+use crate::sketch::DecoStroker;
 use crate::text::{RichSegment, RichText, TextAlign};
 use crate::text_render::{
     FontPolicy, draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
@@ -25,3 +26,5 @@ mod axis_titles;
 pub(crate) use axis_titles::*;
 mod chart_title;
 pub(crate) use chart_title::*;
+mod legend;
+pub(crate) use legend::*;
