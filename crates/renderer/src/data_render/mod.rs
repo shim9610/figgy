@@ -14,6 +14,7 @@ use wgpu::util::DeviceExt;
 
 pub mod bar_envelope;
 pub mod column_pool;
+pub mod contour_label_atlas;
 pub mod line_arc;
 pub(crate) mod stream_field;
 #[cfg(all(test, not(target_arch = "wasm32")))]
