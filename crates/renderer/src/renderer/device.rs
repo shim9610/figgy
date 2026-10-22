@@ -2215,7 +2215,7 @@ impl Renderer {
             crate::init::prewarm_compute_entries_js(
                 &self.device,
                 "contour.label.async",
-                include_str!("contour_anchor.wgsl"),
+                include_str!("../contour_anchor.wgsl"),
                 &[
                     ("anchor_project", "anchor_seed"),
                     ("anchor_project", "anchor_step"),
