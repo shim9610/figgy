@@ -525,6 +525,9 @@ pub(super) struct ResidentDisplayKey {
     pub(super) draw_style: crate::config::DrawStyle,
     pub(super) polar: Option<crate::polar::PolarOptions>,
     pub(super) colorbar: Option<crate::config::ColorBarOptions>,
+    /// The tick-label face: contour labels baked into the bodies take it
+    /// (`ContourLabelAtlasInput::from_config`).
+    pub(super) label_font: String,
     /// Each series' configuration and the display scale its style was built
     /// at: a style is a pure function of the two, so a host or the registry
     /// rebuilding every style after one series edit draws only the panels
@@ -562,6 +565,7 @@ impl ResidentDisplayKey {
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
             && self.colorbar == probe.chart_config.colorbar
+            && self.label_font == probe.chart_config.bottom_x.label_style.label_font
             && self.series.len() == probe.series.len()
             && self
                 .series
@@ -580,6 +584,7 @@ impl ResidentDisplayKey {
             draw_style: probe.chart_config.draw_style,
             polar: probe.chart_config.polar.clone(),
             colorbar: probe.chart_config.colorbar.clone(),
+            label_font: probe.chart_config.bottom_x.label_style.label_font.clone(),
             series: probe
                 .series
                 .iter()

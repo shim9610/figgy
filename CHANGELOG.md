@@ -10,6 +10,27 @@ at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
 
+<a id="unreleased"></a>
+
+## Unreleased — renderer 0.19.0 / model 0.13.0 / figgy 0.16.0
+
+Collected on `integration/0.19`; the release entry replaces this section.
+
+- **Cache keys.** Three renderer caches compared less than their computation
+  read, found by the new per-field mutation tests
+  ([#46](https://github.com/shim9610/figgy/issues/46)):
+  - the resident bodies of a panel were kept after an edit of the tick-label
+    face (`bottom_x.label_style.label_font`), which the contour labels baked
+    into those bodies use;
+  - a fit commit token (`begin_fit_commit` / `commit_auto_fit_all_if_current`)
+    stayed valid across an edit of a `Data`-scaled vector's `factor`, a
+    histogram's `baseline` or `orientation`, the series membership of an
+    overlay or subplot, a subplot's links or an overlay or subplot axis range,
+    so a fit computed before such an edit could be committed on top of it;
+  - the browser integration's series extent job identity had no vector
+    `factor`, so a factor edit reused the previous extent.
+  No public API or serialized field changes.
+
 <a id="release-0181"></a>
 
 ## crates.io patch — renderer 0.18.1 / model 0.12.1 / figgy 0.15.1 (2026-10-21)
