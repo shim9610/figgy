@@ -546,6 +546,7 @@ pub(super) struct ChartSeriesRemoval {
     pub(super) desired: RenderRevision,
     pub(super) config_revision: Option<RenderRevision>,
     pub(super) selection_revision: Option<RenderRevision>,
+    pub(super) annotation_revision: Option<RenderRevision>,
     pub(super) series_revision: Option<RenderRevision>,
     pub(super) data: Option<RenderRevision>,
     pub(super) view: Option<RenderRevision>,
@@ -576,10 +577,7 @@ impl ColumnRemovalPlan {
                 view,
                 selection,
                 raster,
-                // TODO(#46): a replacement config is not compared for its
-                // annotation items, so an override that edits them keeps the
-                // old annotation raster (the gap of the demo-load plan).
-                annotation: _,
+                annotation,
             } = &mut state.revisions;
             if update.remove_referencing_series {
                 state
@@ -598,6 +596,9 @@ impl ColumnRemovalPlan {
                 *selection = update
                     .selection_revision
                     .expect("selection revision was prepared");
+                *annotation = update
+                    .annotation_revision
+                    .expect("annotation revision was prepared");
                 if let Some(next_view) = update.view {
                     *view = next_view;
                 }
@@ -1198,11 +1199,7 @@ pub(super) fn prepare_load_demo_chart_plan(
                     view
                 },
                 raster: raster.successor("chart raster revision")?,
-                // TODO(#46): carried, not recomputed from the demo config
-                // with `annotation_config_revision`, so a chart whose
-                // annotation items differ from the demo's keeps its old
-                // annotation raster (suspected gap 4 of the inventory).
-                annotation,
+                annotation: annotation_config_revision(annotation, &state.config, &config)?,
             }
         } else {
             // A chart that only reads the demo columns: its data changed.
@@ -2476,15 +2473,20 @@ impl Renderer {
                     .desired
                     .successor("chart desired revision")?,
                 state.revisions.raster.successor("chart raster revision")?,
+                state
+                    .revisions
+                    .annotation
+                    .successor("chart annotation revision")?,
             ));
         }
 
-        for (id, desired, raster) in updates {
+        for (id, desired, raster, annotation) in updates {
             let state = self
                 .chart_states
                 .get_mut(&id)
                 .ok_or(FiggyError::UnknownChart { id })?;
-            // A font change re-rasterizes text; nothing else is affected.
+            // A font change re-rasterizes text: the axis chrome and the
+            // annotation layer, which draws its text with the same fonts.
             let ChartRevisions {
                 desired: desired_slot,
                 config: _,
@@ -2493,12 +2495,11 @@ impl Renderer {
                 view: _,
                 selection: _,
                 raster: raster_slot,
-                // TODO(#46): annotation text is rasterized with these fonts
-                // too, but its revision does not move on a font change.
-                annotation: _,
+                annotation: annotation_slot,
             } = &mut state.revisions;
             *desired_slot = desired;
             *raster_slot = raster;
+            *annotation_slot = annotation;
         }
         self.visual_revision = visual;
         self.observed_font_generation = generation;
@@ -2613,6 +2614,13 @@ impl Renderer {
                     selection_config_revision(state.revisions.selection, &state.config, config)
                 })
                 .transpose()?;
+            let annotation_revision = config_override
+                .as_ref()
+                .filter(|(override_chart, _)| override_chart == chart_id)
+                .map(|(_, config)| {
+                    annotation_config_revision(state.revisions.annotation, &state.config, config)
+                })
+                .transpose()?;
             let view = config_override
                 .as_ref()
                 .filter(|(override_chart, _)| override_chart == chart_id)
@@ -2634,6 +2642,7 @@ impl Renderer {
                 desired,
                 config_revision,
                 selection_revision,
+                annotation_revision,
                 series_revision,
                 data,
                 view,

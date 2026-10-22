@@ -77,4 +77,5 @@ follow-up.
   byte-identically. Breaking Rust literals get a CHANGELOG migration note.
 - Check external facts at the source. Publication state comes from the
   crates.io index, not from wording in the docs.
-- Do not put model identifiers in commits, PRs or code.
+- Do not put model identifiers in code or docs. A commit trailer or PR
+  footer naming the model that wrote it is fine.

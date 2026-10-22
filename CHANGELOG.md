@@ -30,6 +30,12 @@ Collected on `integration/0.19`; the release entry replaces this section.
   - the browser integration's series extent job identity had no vector
     `factor`, so a factor edit reused the previous extent.
   No public API or serialized field changes.
+- **Annotation revision.** `ChartRenderStamp::needs_annotation_raster_since`
+  now reports an annotation raster after a demo load whose items differ, a
+  column removal whose replacement config edits the items, and a font
+  registration (annotation text is drawn with the fonts). The frame was
+  already right in all three cases because the raster revision moved; only
+  the annotation revision stayed behind.
 
 <a id="release-0181"></a>
 
