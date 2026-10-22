@@ -472,3 +472,7 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
         tally.gaps.join("\n")
     );
 }
+
+// The fit-token mutations reuse this panel's columns and series.
+#[path = "fit_mutation_tests.rs"]
+mod fit;
