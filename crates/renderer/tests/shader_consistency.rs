@@ -1466,23 +1466,11 @@ const REST_GUARDED_TYPES: &[&str] = &[
     "BoxPlotChart",
 ];
 
-/// Rest patterns on guarded types that are not converted yet. Shrinks with
-/// every conversion; never grows. No streaming file has one today, so no
-/// entry is marked frozen.
-const REST_PATTERN_ALLOWLIST: &[(&str, &str, usize, &str)] = &[
-    (
-        "renderer/src/radar.rs",
-        "RadarStyle",
-        1,
-        "bounded annotation_key: a cache key, converted by the #46 cache-key work",
-    ),
-    (
-        "renderer/src/radial.rs",
-        "RadialStyle",
-        1,
-        "bounded annotation_key: a cache key, converted by the #46 cache-key work",
-    ),
-];
+/// Rest patterns on guarded types that are not converted yet: (file, type,
+/// count, reason). Empty since every site was converted; a new site fails
+/// and is converted, not listed, unless its file is frozen (streaming) and
+/// the entry says so.
+const REST_PATTERN_ALLOWLIST: &[(&str, &str, usize, &str)] = &[];
 
 /// The `(type, line)` of every struct pattern or literal of one of `types`
 /// in `source` (or `Self` inside an `impl` of one of them) whose fields

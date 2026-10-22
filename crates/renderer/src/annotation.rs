@@ -792,9 +792,10 @@ impl BoundedAnnotationFrame {
 /// The key owns every field of the [`RasterRequest`] the raster is drawn
 /// from, and [`Self::request`] builds that request from the key alone, so a
 /// field the raster reads that the key does not compare does not compile.
-/// The layer is held whole with `visible` cleared: a visibility toggle
-/// shares the rasters (the frame is keyed on `visible` separately), and a
-/// new layer field is in the key without anyone adding it.
+/// The layer is held with `visible` cleared: a visibility toggle shares
+/// the rasters (the frame is keyed on `visible` separately), and a new
+/// layer field is a compile error here, where its place in the key is
+/// decided.
 #[derive(Clone, PartialEq)]
 struct RasterKey {
     layer: AnnotationLayer,
@@ -882,9 +883,12 @@ impl BoundedAnnotationCache {
         selected: Option<usize>,
     ) -> RasterKey {
         RasterKey {
-            layer: AnnotationLayer {
-                visible: false,
-                ..layer.clone()
+            layer: {
+                let AnnotationLayer { visible: _, items } = layer;
+                AnnotationLayer {
+                    visible: false,
+                    items: items.clone(),
+                }
             },
             space,
             origin: [0.0, 0.0],
