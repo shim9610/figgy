@@ -25,6 +25,11 @@
 //!
 //! CI and local development can run this gate whenever a `.wgsl` file or
 //! `SHADER_COMMON.md` changes.
+//!
+//! The file also holds the #46 source guards, each with an allowlist that
+//! only shrinks: one definition per WGSL function, and no `..` rest pattern
+//! on a model type in the Rust product code of the model, renderer and web
+//! crates.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -1243,3 +1248,577 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["axis_px_per_unit_at"],
     ),
 ];
+
+/// Rule from #46 (the hand-off convention): code that builds one struct from
+/// another reads the source through a pattern that names every field, with
+/// the fields it leaves out written as `name: _`, so a new field is a compile
+/// error at every reader and an omission is a line in the diff. A `..` rest
+/// pattern, `..Default::default()` or `..template` on a model type defeats
+/// that: the new field is silently ignored or silently defaulted.
+///
+/// This walks product Rust code (`crates/model/src`, `crates/renderer/src`,
+/// `crates/web/src`), skipping `tests.rs` / `*_tests.rs` files, items under
+/// `#[cfg(test)]` or `#[cfg(all(test, ..))]` and `mod tests` / `mod *_tests`
+/// blocks, and fails on any struct pattern or literal of a `REST_GUARDED_TYPES`
+/// type (or `Self` inside its `impl`) whose fields include a `..` item. The
+/// sites not yet converted are `REST_PATTERN_ALLOWLIST`, as (file, type,
+/// count, reason); the test fails on any change to that picture, so the list
+/// only shrinks: a converted site removes its entry, a new site fails.
+#[test]
+fn model_struct_hand_offs_name_every_field_outside_the_allowlist() {
+    let scanner_self_check = r##"
+        // Config { a, ..Default::default() } in a comment is not code.
+        /* nested /* Config { .. } */ still a comment */
+        const DOC: &str = "Config { a, ..b }";
+        const RAW: &str = r#"Config { .. }"#;
+        const BRACE: char = '{';
+        pub struct Config { a: u8 }
+        impl Config { fn f(&self) -> Config { make() } }
+        fn hit(c: &Config) { let Config { a, .. } = c; }
+        fn range(c: &Config) -> Config { Config { a: 0..4, b } }
+        fn update(b: Config) -> Config { crate::config::Config { a: 1, ..b } }
+        fn variant(x: Warning) { if let Warning::Config { .. } = x {} }
+        impl Default for Config { fn default() -> Self { Self { a: 0, ..zero() } } }
+        #[cfg(test)]
+        mod hidden { fn f(c: Config) { Config { a: 1, ..c }; } }
+        #[cfg(all(test, feature = "serde"))]
+        fn hidden_too(c: Config) -> Config { Config { a: 1, ..c } }
+        mod tests { fn f(c: Config) { Config { a: 1, ..c }; } }
+    "##;
+    let found = rest_pattern_sites(scanner_self_check, &["Config"]);
+    let lines: Vec<usize> = found.iter().map(|(_, line)| *line).collect();
+    assert_eq!(
+        lines,
+        vec![9, 11, 13],
+        "the rest-pattern scanner misreads its own fixture: {found:?}"
+    );
+
+    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+        for entry in fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                walk(&path, out);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+    }
+    let trees = product_source_trees();
+    let mut actual: BTreeMap<(String, &str), Vec<usize>> = BTreeMap::new();
+    let mut scanned = 0;
+    for (crate_name, src) in &trees {
+        let mut files = Vec::new();
+        walk(src, &mut files);
+        files.sort();
+        for path in &files {
+            let name = path.file_name().unwrap().to_str().unwrap();
+            if name == "tests.rs" || name.ends_with("_tests.rs") {
+                continue;
+            }
+            scanned += 1;
+            let rel = path
+                .strip_prefix(src)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .replace('\\', "/");
+            let rel = format!("{crate_name}/src/{rel}");
+            let source = fs::read_to_string(path).unwrap();
+            for (ty, line) in rest_pattern_sites(&source, REST_GUARDED_TYPES) {
+                actual.entry((rel.clone(), ty)).or_default().push(line);
+            }
+        }
+    }
+    assert!(scanned > 100, "scanned only {scanned} product files");
+    let scanned_crate = |file: &str| {
+        trees
+            .iter()
+            .any(|(crate_name, _)| file.starts_with(&format!("{crate_name}/")))
+    };
+
+    let mut expected: BTreeMap<(String, &str), usize> = BTreeMap::new();
+    for (file, ty, count, _reason) in REST_PATTERN_ALLOWLIST {
+        assert!(
+            REST_GUARDED_TYPES.contains(ty),
+            "allowlist entry ({file}, {ty}) names a type the guard does not check"
+        );
+        assert!(
+            expected.insert((file.to_string(), ty), *count).is_none(),
+            "({file}, {ty}) is listed twice in the rest-pattern allowlist"
+        );
+    }
+
+    let mut problems = Vec::new();
+    for ((file, ty), lines) in &actual {
+        match expected.get(&(file.clone(), *ty)) {
+            Some(count) if *count == lines.len() => {}
+            Some(count) if *count > lines.len() => problems.push(format!(
+                "{file}: {} `{ty} {{ .. }}` site(s) left (lines {lines:?}), the allowlist says {count}: lower its count",
+                lines.len()
+            )),
+            Some(count) => problems.push(format!(
+                "{file}: {} `{ty} {{ .. }}` site(s) (lines {lines:?}), the allowlist says {count}: a new rest pattern. Name every field, with the ones left out as `name: _` (#46)",
+                lines.len()
+            )),
+            None => problems.push(format!(
+                "{file}: `{ty} {{ .. }}` at lines {lines:?}: a rest pattern on a model type. Name every field, with the ones left out as `name: _` (#46)"
+            )),
+        }
+    }
+    for ((file, ty), count) in &expected {
+        if scanned_crate(file) && !actual.contains_key(&(file.clone(), *ty)) {
+            problems.push(format!(
+                "{file}: no `{ty} {{ .. }}` site is left of the {count} listed: remove its allowlist entry"
+            ));
+        }
+    }
+    assert!(
+        problems.is_empty(),
+        "rest patterns on model types changed:\n  {}",
+        problems.join("\n  ")
+    );
+}
+
+/// The product source trees the rest-pattern guard reads, as (crate, `src`
+/// directory). In the workspace these are `crates/{model,renderer,web}/src`,
+/// all required. `ci/verify.py packages` runs the tests from the published
+/// archives instead, extracted side by side as `figgy-model-<version>` and
+/// `figgy-renderer-<version>`, without the unpublished web crate; the guard
+/// then reads those two. A renderer package on its own reads its own source.
+fn product_source_trees() -> Vec<(&'static str, PathBuf)> {
+    let renderer = workspace_root();
+    let parent = renderer.join("..");
+    let mut trees = vec![("renderer", renderer.join("src"))];
+    if renderer.file_name().is_some_and(|name| name == "renderer") {
+        for crate_name in ["model", "web"] {
+            let src = parent.join(crate_name).join("src");
+            assert!(
+                src.is_dir(),
+                "workspace crate source {} is missing",
+                src.display()
+            );
+            trees.push((crate_name, src));
+        }
+        return trees;
+    }
+    let model = fs::read_dir(&parent).ok().and_then(|entries| {
+        entries
+            .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with("figgy-model-"))
+                    && path.join("src").is_dir()
+            })
+    });
+    match model {
+        Some(model) => trees.push(("model", model.join("src"))),
+        None => eprintln!(
+            "rest-pattern guard: no figgy-model source beside {}; checking the renderer only",
+            renderer.display()
+        ),
+    }
+    trees
+}
+
+/// Model types whose struct patterns and literals must name every field.
+/// `LegendOptions` and `SubplotLayer` of the #46 list do not exist; their
+/// types are `Legend` and `Subplot`. `AxisTitleOptions`, `PolarOptions`,
+/// `PickedPointsConfig`, `DataSelectionsConfig`, `DataScatterStyleConfig` and
+/// `DataErrorBarPointStyleConfig` are read by converted hand-offs too.
+const REST_GUARDED_TYPES: &[&str] = &[
+    "Config",
+    "AxisOptions",
+    "AxisTitleOptions",
+    "SeriesConfig",
+    "ColorBarOptions",
+    "ChartTitleOptions",
+    "Legend",
+    "GridOptions",
+    "LabelStyle",
+    "PolarOptions",
+    "PickedPointsConfig",
+    "DataSelectionsConfig",
+    "MilkywayOptions",
+    "SketchOptions",
+    "ConstellationOptions",
+    "DrawStyle",
+    "VectorStyle",
+    "PointSizeMap",
+    "PointColorMap",
+    "DataScatterStyleConfig",
+    "DataScatterPointStyleConfig",
+    "DataLineStyleConfig",
+    "DataErrorBarStyleConfig",
+    "DataErrorBarPointStyleConfig",
+    "DataBarStyleConfig",
+    "DataBarBinStyleConfig",
+    "ContourLabelConfig",
+    "ChartRevisions",
+    "OverlayLayer",
+    "Subplot",
+    "AnnotationLayer",
+    "RadarChart",
+    "RadarStyle",
+    "RadialChart",
+    "RadialStyle",
+    "CategoricalChart",
+    "BoxPlotChart",
+];
+
+/// Rest patterns on guarded types that are not converted yet. Shrinks with
+/// every conversion; never grows. No streaming file has one today, so no
+/// entry is marked frozen.
+const REST_PATTERN_ALLOWLIST: &[(&str, &str, usize, &str)] = &[
+    (
+        "renderer/src/radar.rs",
+        "RadarStyle",
+        1,
+        "bounded annotation_key: a cache key, converted by the #46 cache-key work",
+    ),
+    (
+        "renderer/src/radial.rs",
+        "RadialStyle",
+        1,
+        "bounded annotation_key: a cache key, converted by the #46 cache-key work",
+    ),
+];
+
+/// The `(type, line)` of every struct pattern or literal of one of `types`
+/// in `source` (or `Self` inside an `impl` of one of them) whose fields
+/// include a `..` item. Comments, string and char literals and test-only
+/// items are blanked first, so only product code is read.
+fn rest_pattern_sites<'t>(source: &str, types: &[&'t str]) -> Vec<(&'t str, usize)> {
+    let code = blank_test_items(&blank_comments_and_literals(source));
+    let chars: Vec<char> = code.chars().collect();
+    let impls = impl_blocks(&chars, types);
+    let line_of = |index: usize| chars[..index].iter().filter(|c| **c == '\n').count() + 1;
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut sites = Vec::new();
+    let mut index = 0;
+    while index < chars.len() {
+        if !is_ident(chars[index]) || (index > 0 && is_ident(chars[index - 1])) {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        while index < chars.len() && is_ident(chars[index]) {
+            index += 1;
+        }
+        let word: String = chars[start..index].iter().collect();
+        let mut brace = index;
+        while brace < chars.len() && chars[brace].is_whitespace() {
+            brace += 1;
+        }
+        if brace >= chars.len() || chars[brace] != '{' {
+            continue;
+        }
+        let ty = if word == "Self" {
+            // The innermost `impl` block around this `Self`.
+            match impls
+                .iter()
+                .filter(|(open, close, _)| *open < start && start < *close)
+                .max_by_key(|(open, _, _)| *open)
+            {
+                Some((_, _, Some(ty))) => *ty,
+                _ => continue,
+            }
+        } else {
+            match types.iter().find(|ty| **ty == word) {
+                Some(ty) => *ty,
+                None => continue,
+            }
+        };
+        // What precedes the name decides between an item body and a struct
+        // expression or pattern; a few tokens are enough.
+        let before: String = chars[start.saturating_sub(120)..start].iter().collect();
+        if !is_struct_expression_or_pattern(&before) {
+            continue;
+        }
+        let end = matching_close(&chars, brace);
+        if top_level_items(&chars[brace + 1..end])
+            .iter()
+            .any(|item| item.trim_start().starts_with(".."))
+        {
+            sites.push((ty, line_of(start)));
+        }
+    }
+    sites
+}
+
+/// Whether a type name followed by `{` starts a struct expression or pattern
+/// rather than an item body: not after `struct` / `enum` / `union` / `trait`
+/// / `impl ... for` / `dyn` or a return type, and not an enum variant
+/// (`Warning::Subplot { .. }`, a path segment starting upper-case).
+fn is_struct_expression_or_pattern(before: &str) -> bool {
+    let mut rest = before.trim_end();
+    if let Some(path) = rest.strip_suffix("::") {
+        let segment: String = path
+            .chars()
+            .rev()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        return !segment.chars().last().is_some_and(char::is_uppercase);
+    }
+    // A return type may be a reference: `-> &'a mut Config {`.
+    loop {
+        let trimmed = rest.trim_end();
+        let stripped = trimmed
+            .strip_suffix("mut")
+            .filter(|r| r.ends_with(|c: char| c.is_whitespace() || c == '&'))
+            .or_else(|| trimmed.strip_suffix('&'))
+            .or_else(|| {
+                let lifetime = trimmed.rfind('\'')?;
+                trimmed[lifetime + 1..]
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_')
+                    .then(|| &trimmed[..lifetime])
+            });
+        match stripped {
+            Some(shorter) if shorter.len() < trimmed.len() => rest = shorter,
+            _ => break,
+        }
+    }
+    let rest = rest.trim_end();
+    if rest.ends_with("->") {
+        return false;
+    }
+    let previous: String = rest
+        .chars()
+        .rev()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    !matches!(
+        previous.as_str(),
+        "struct" | "enum" | "union" | "trait" | "impl" | "for" | "dyn"
+    )
+}
+
+/// Every `impl` block in `chars` as (open brace, close brace, the guarded
+/// type it implements, if it is one of `types`).
+fn impl_blocks<'t>(chars: &[char], types: &[&'t str]) -> Vec<(usize, usize, Option<&'t str>)> {
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut blocks = Vec::new();
+    let mut index = 0;
+    while index + 4 <= chars.len() {
+        let keyword = chars[index..index + 4] == ['i', 'm', 'p', 'l']
+            && (index == 0 || !is_ident(chars[index - 1]))
+            && chars.get(index + 4).is_none_or(|c| !is_ident(*c));
+        if !keyword {
+            index += 1;
+            continue;
+        }
+        let Some(open) = (index..chars.len()).find(|&i| chars[i] == '{' || chars[i] == ';') else {
+            break;
+        };
+        if chars[open] == ';' {
+            index = open;
+            continue;
+        }
+        let header: String = chars[index + 4..open].iter().collect();
+        let header = header.split(" where ").next().unwrap_or(&header);
+        let name: String = header
+            .trim_end_matches(|c: char| c == '>' || c.is_whitespace())
+            .chars()
+            .rev()
+            .take_while(|c| is_ident(*c))
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect();
+        let ty = types.iter().find(|ty| **ty == name).copied();
+        blocks.push((open, matching_close(chars, open), ty));
+        index = open;
+    }
+    blocks
+}
+
+/// The index of the bracket closing the one at `open`, or the end.
+fn matching_close(chars: &[char], open: usize) -> usize {
+    let mut depth = 0usize;
+    for (index, c) in chars.iter().enumerate().skip(open) {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return index;
+                }
+            }
+            _ => {}
+        }
+    }
+    chars.len()
+}
+
+/// `body` split at its top-level commas.
+fn top_level_items(body: &[char]) -> Vec<String> {
+    let mut items = vec![String::new()];
+    let mut depth = 0usize;
+    for c in body {
+        match c {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
+                items.push(String::new());
+                continue;
+            }
+            _ => {}
+        }
+        items.last_mut().unwrap().push(*c);
+    }
+    items
+}
+
+/// `source` with comments, string literals and char literals replaced by
+/// spaces; line breaks are kept so line numbers stay.
+fn blank_comments_and_literals(source: &str) -> String {
+    let chars: Vec<char> = source.chars().collect();
+    let mut out = chars.clone();
+    let blank = |out: &mut Vec<char>, from: usize, to: usize| {
+        for c in &mut out[from..to.min(chars.len())] {
+            if *c != '\n' {
+                *c = ' ';
+            }
+        }
+    };
+    let starts_with = |at: usize, pattern: &str| {
+        pattern
+            .chars()
+            .enumerate()
+            .all(|(offset, p)| chars.get(at + offset) == Some(&p))
+    };
+    let mut index = 0;
+    while index < chars.len() {
+        let c = chars[index];
+        let ident_before =
+            index > 0 && (chars[index - 1].is_alphanumeric() || chars[index - 1] == '_');
+        if starts_with(index, "//") {
+            let end = (index..chars.len())
+                .find(|&i| chars[i] == '\n')
+                .unwrap_or(chars.len());
+            blank(&mut out, index, end);
+            index = end;
+        } else if starts_with(index, "/*") {
+            let mut depth = 0;
+            let mut end = index;
+            while end < chars.len() {
+                if starts_with(end, "/*") {
+                    depth += 1;
+                    end += 2;
+                } else if starts_with(end, "*/") {
+                    depth -= 1;
+                    end += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    end += 1;
+                }
+            }
+            blank(&mut out, index, end);
+            index = end;
+        } else if (c == 'r' || (c == 'b' && chars.get(index + 1) == Some(&'r'))) && !ident_before {
+            let mut at = index + if c == 'b' { 2 } else { 1 };
+            let mut hashes = 0;
+            while chars.get(at) == Some(&'#') {
+                hashes += 1;
+                at += 1;
+            }
+            if chars.get(at) != Some(&'"') {
+                index += 1;
+                continue;
+            }
+            let closing: String = std::iter::once('"')
+                .chain(std::iter::repeat_n('#', hashes))
+                .collect();
+            let mut end = at + 1;
+            while end < chars.len() && !starts_with(end, &closing) {
+                end += 1;
+            }
+            let end = end + closing.chars().count();
+            blank(&mut out, index, end);
+            index = end;
+        } else if c == '"' {
+            let mut end = index + 1;
+            while end < chars.len() && chars[end] != '"' {
+                end += if chars[end] == '\\' { 2 } else { 1 };
+            }
+            blank(&mut out, index, end + 1);
+            index = end + 1;
+        } else if c == '\'' {
+            // A char literal, not a lifetime: `'x'` or an escape `'\n'`.
+            let end = if chars.get(index + 1) == Some(&'\\') {
+                (index + 2..chars.len()).find(|&i| chars[i] == '\'')
+            } else if chars.get(index + 2) == Some(&'\'') {
+                Some(index + 2)
+            } else {
+                None
+            };
+            match end {
+                Some(end) => {
+                    blank(&mut out, index, end + 1);
+                    index = end + 1;
+                }
+                None => index += 1,
+            }
+        } else {
+            index += 1;
+        }
+    }
+    out.into_iter().collect()
+}
+
+/// `code` (already without comments and literals) with every item under
+/// `#[cfg(test)]` or `#[cfg(all(test, ..))]` and every `mod tests` /
+/// `mod *_tests` block blanked.
+fn blank_test_items(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    let mut out = chars.clone();
+    let text: String = chars.iter().collect();
+    // Character offsets of the starts of test-only items.
+    let mut starts = Vec::new();
+    for marker in ["#[cfg(test)]", "#[cfg(all(test,"] {
+        let mut search = 0;
+        while let Some(offset) = text[search..].find(marker) {
+            let at = search + offset;
+            starts.push(text[..at].chars().count());
+            search = at + marker.len();
+        }
+    }
+    let mut search = 0;
+    while let Some(offset) = text[search..].find("mod ") {
+        let at = search + offset;
+        search = at + 4;
+        if at > 0 && text[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_') {
+            continue;
+        }
+        let name: String = text[at + 4..]
+            .trim_start()
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if name == "tests" || name.ends_with("_tests") {
+            starts.push(text[..at].chars().count());
+        }
+    }
+    for start in starts {
+        let Some(open) = (start..chars.len()).find(|&i| chars[i] == '{' || chars[i] == ';') else {
+            continue;
+        };
+        let end = if chars[open] == '{' {
+            matching_close(&chars, open)
+        } else {
+            open
+        };
+        for c in &mut out[start..(end + 1).min(chars.len())] {
+            if *c != '\n' {
+                *c = ' ';
+            }
+        }
+    }
+    out.into_iter().collect()
+}
