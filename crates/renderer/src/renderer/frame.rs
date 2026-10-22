@@ -90,6 +90,9 @@ pub(super) struct SpaceBgCache {
     pub(super) rgba: Vec<u8>,
 }
 
+/// What the Milkyway backdrop is baked from. [`Self::bake`] reads the key
+/// and nothing else, so a backdrop parameter that is not compared here does
+/// not reach the raster.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct SpaceBgKey {
     pub(super) w: u32,
@@ -97,6 +100,30 @@ pub(super) struct SpaceBgKey {
     pub(super) nebula: u32,
     pub(super) dust: u32,
     pub(super) seed: u32,
+}
+
+impl SpaceBgKey {
+    fn bake(&self) -> Result<Vec<u8>> {
+        let SpaceBgKey {
+            w,
+            h,
+            nebula,
+            dust,
+            seed,
+        } = *self;
+        let Some(mut canvas) = crate::raster::Canvas::new(w, h) else {
+            return Err(FiggyError::RasterWrapFailed {
+                reason: format!("raster target allocation failed for {w}x{h}"),
+            });
+        };
+        crate::axis_render::draw_space_background(
+            &mut canvas,
+            seed,
+            f32::from_bits(nebula),
+            f32::from_bits(dust),
+        );
+        Ok(canvas.into_rgba())
+    }
 }
 
 /// Owned snapshot of one series' constellation/milkyway star pass, cloned
@@ -1733,7 +1760,7 @@ impl Renderer {
             if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
                 && !overlay
             {
-                self.refresh_space_backdrop(view, config, c, w, h)?;
+                self.refresh_space_backdrop(view, c, w, h)?;
             }
             return Ok(());
         }
@@ -1756,7 +1783,7 @@ impl Renderer {
         if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
             && !overlay
         {
-            self.refresh_space_backdrop(view, config, c, w, h)?;
+            self.refresh_space_backdrop(view, c, w, h)?;
         } else {
             let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
             self.refresh_one_layer(
@@ -1792,7 +1819,6 @@ impl Renderer {
     pub(super) fn refresh_space_backdrop(
         &mut self,
         view: &mut ChartView,
-        config: &Config,
         c: &crate::config::MilkywayOptions,
         w: u32,
         h: u32,
@@ -1805,10 +1831,7 @@ impl Renderer {
             seed: c.seed,
         };
         if !self.space_bg.as_ref().is_some_and(|s| s.key == key) {
-            let rgba = axis_render::try_raster_chart_layer_to_rgba(
-                config,
-                axis_render::AxisLayerKind::Grid,
-            )?;
+            let rgba = key.bake()?;
             let bake_gen = self.space_bg.as_ref().map_or(1, |s| s.bake_gen + 1);
             self.space_bg = Some(SpaceBgCache {
                 key,

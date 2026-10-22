@@ -188,7 +188,7 @@ pub fn raster_chart_to_rgba(config: &Config) -> Vec<u8> {
 /// not drawn in that mode — the style declares its own background instead.
 pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
     if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style {
-        draw_space_background(canvas, config, c);
+        draw_space_background(canvas, c.seed, c.nebula, c.dust);
         return;
     }
     let Ok(da) = config.data_area() else { return };
