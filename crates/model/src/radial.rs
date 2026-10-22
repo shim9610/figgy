@@ -235,16 +235,45 @@ impl RadialStyle {
     /// Oblique 3D view used by the native editor. Explicit preset so existing
     /// flat charts and serialized styles do not silently change appearance.
     pub fn three_dimensional() -> Self {
+        // Every field is named: the preset sets the 3D view and keeps the
+        // flat default for the rest.
+        let Self {
+            material: _,
+            tilt_degrees: _,
+            depth: _,
+            bevel: _,
+            gap_degrees: _,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = Self::default();
         Self {
             material: RadialMaterial::Ceramic,
-            depth: 0.16,
             tilt_degrees: 55.0,
-            inner_corner: 0.045,
-            outer_corner: 0.045,
+            depth: 0.16,
             bevel: 0.025,
             gap_degrees: 1.4,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
             shadow: true,
-            ..Self::default()
+            inner_corner: 0.045,
+            outer_corner: 0.045,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
         }
     }
 }
