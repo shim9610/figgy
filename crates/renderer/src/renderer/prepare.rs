@@ -1419,5 +1419,3 @@ impl PrepareContext<'_> {
         Ok(out)
     }
 }
-
-impl Renderer {}
