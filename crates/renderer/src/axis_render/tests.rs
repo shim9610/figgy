@@ -1,7 +1,9 @@
 use super::*;
 use crate::config::{DrawStyle, SketchOptions};
 use crate::data_config::ContourLabelConfig;
-use crate::data_render::contour_label_atlas::{ContourLabelAtlasError, contour_label_atlas_grid};
+use crate::data_render::contour_label_atlas::{
+    ContourLabelAtlasError, ContourLabelAtlasInput, contour_label_atlas_grid,
+};
 use crate::default::default_config;
 use crate::layout::LABEL_GAP;
 use crate::layout::{TitleBand, axis_title_placement, colorbar_rect, label_origin};
@@ -27,7 +29,9 @@ fn contour_label_fixture() -> (Config, ContourLabelConfig) {
 fn a_thousand_and_twenty_four_labels_pack_into_a_2d_atlas() {
     let (config, labels) = contour_label_fixture();
     let texts = vec!["1".to_owned(); 1024];
-    let atlas = bake_contour_label_atlas(&config, &labels, &texts, 1.0, 4096)
+    let input = ContourLabelAtlasInput::from_config(&config, &labels, texts.clone(), 1.0)
+        .expect("visible non-empty labels have an atlas input");
+    let atlas = bake_contour_label_atlas(&input, 4096)
         .expect("the device limit admits the grid")
         .expect("visible non-empty labels bake an atlas");
 
@@ -49,7 +53,9 @@ fn a_thousand_and_twenty_four_labels_pack_into_a_2d_atlas() {
 fn every_label_cell_has_a_transparent_texel_gutter() {
     let (config, labels) = contour_label_fixture();
     let texts = vec!["A".to_owned(); 4];
-    let atlas = bake_contour_label_atlas(&config, &labels, &texts, 1.0, 128)
+    let input = ContourLabelAtlasInput::from_config(&config, &labels, texts.clone(), 1.0)
+        .expect("visible non-empty labels have an atlas input");
+    let atlas = bake_contour_label_atlas(&input, 128)
         .expect("the device limit admits the grid")
         .expect("visible non-empty labels bake an atlas");
     let alpha = |x: u32, y: u32| {
@@ -97,15 +103,13 @@ fn disabled_or_empty_labels_remain_a_no_op() {
     let (config, mut labels) = contour_label_fixture();
     labels.visible = false;
     assert!(
-        bake_contour_label_atlas(&config, &labels, &["1".into()], 1.0, 1)
-            .expect("disabled labels do not consult the limit")
-            .is_none()
+        ContourLabelAtlasInput::from_config(&config, &labels, vec!["1".into()], 1.0).is_none(),
+        "disabled labels have no atlas input"
     );
     labels.visible = true;
     assert!(
-        bake_contour_label_atlas(&config, &labels, &[], 1.0, 1)
-            .expect("empty labels do not consult the limit")
-            .is_none()
+        ContourLabelAtlasInput::from_config(&config, &labels, vec![], 1.0).is_none(),
+        "empty labels have no atlas input"
     );
 }
 
