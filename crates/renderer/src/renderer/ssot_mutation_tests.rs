@@ -288,3 +288,108 @@ fn every_config_leaf_that_changes_the_stream_prefix_moves_the_view_revision() {
         total.gaps.join("\n")
     );
 }
+
+/// `prepare_load_demo_chart_plan` (registry.rs) bumps the raster revision
+/// of the target unconditionally and never recomputes its annotation
+/// revision. For every leaf of the annotation layer, load a demo whose
+/// document differs from the chart's only in that leaf, and require a
+/// host following `ChartRenderStamp` to draw exactly what a fresh
+/// renderer draws: the stamp must ask for the annotation rasters to be
+/// redone, through `needs_raster_since` (a `refresh_axis` redoes them) or
+/// `needs_annotation_raster_since`.
+#[test]
+fn every_annotation_leaf_of_a_loaded_demo_reaches_the_first_frame() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let config = baseline_with_annotations();
+    let series = vec![declaration("s", "x", "a")];
+    let demo = |values: [f32; 3]| crate::Column {
+        data: values.to_vec(),
+        min: values[0],
+        max: values[2],
+    };
+    let columns = [
+        demo([0.0, 1.0, 2.0]),
+        demo([20.0, 50.0, 80.0]),
+        demo([0.0, 2.5, 5.0]),
+        demo([0.0, 4.0, 5.0]),
+    ];
+    let mut host = Host::new(&config, &series);
+    let mut annotation_kept = Vec::new();
+    let tally = run(
+        "annotations: ",
+        &config.annotations,
+        STRINGS,
+        |label, layer| {
+            let mut next = config.clone();
+            next.annotations = layer;
+            let before = host.r.chart_states[&host.id].revisions;
+            let committed = match host.r.begin_load_demo(
+                host.id,
+                &columns[0],
+                &columns[1],
+                &columns[2],
+                &columns[3],
+                |_| Ok((next.clone(), series.clone())),
+            ) {
+                Ok(guard) => {
+                    guard.commit();
+                    true
+                }
+                Err(_) => false,
+            };
+            if !committed {
+                return Outcome::Rejected;
+            }
+            let after = host.r.chart_states[&host.id].revisions;
+            if next.annotations.items != config.annotations.items
+                && after.annotation == before.annotation
+            {
+                annotation_kept.push(label.to_string());
+            }
+            let stamp = host.r.chart_render_stamp(host.id).unwrap();
+            let asked = stamp.needs_raster_since(host.stamp.as_ref())
+                || stamp.needs_annotation_raster_since(host.stamp.as_ref());
+            let actual = host.frame();
+            let expected = fresh_frame(&next, &series);
+            let outcome = if actual == expected {
+                Outcome::Held
+            } else {
+                Outcome::Gap(format!(
+                    "the host's first frame after the load differs from a fresh render in {} \
+                     bytes (stamp asked for a raster refresh: {asked})",
+                    differing_bytes(&actual, &expected)
+                ))
+            };
+            // Back to the baseline document, through the same loader.
+            host.r
+                .begin_load_demo(
+                    host.id,
+                    &columns[0],
+                    &columns[1],
+                    &columns[2],
+                    &columns[3],
+                    |_| Ok((config.clone(), series.clone())),
+                )
+                .unwrap()
+                .commit();
+            host.frame();
+            outcome
+        },
+    );
+    eprintln!("{}", tally.summary("load demo annotations"));
+    eprintln!(
+        "{} loads changed annotations.items and kept the annotation revision \
+         (the raster revision moved for every load):\n{}",
+        annotation_kept.len(),
+        annotation_kept.join("\n")
+    );
+    eprintln!("skipped:\n{}", tally.skipped.join("\n"));
+    assert!(
+        tally.gaps.is_empty(),
+        "{} annotation leaves of a loaded demo do not reach the first frame:\n{}",
+        tally.gaps.len(),
+        tally.gaps.join("\n")
+    );
+}
