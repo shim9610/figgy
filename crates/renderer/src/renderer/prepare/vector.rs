@@ -10,6 +10,8 @@ pub(in crate::renderer) const VECTOR_SCRATCH_CACHE_LIMIT: usize = 256;
 #[derive(Clone, Debug, PartialEq)]
 pub(in crate::renderer) struct VectorSignature {
     pub(in crate::renderer) pool_layout_generation: u64,
+    /// Which input fragment the module is assembled with.
+    pub(in crate::renderer) input: data_render::vector::VectorInput,
     pub(in crate::renderer) params: data_render::vector::VectorParamsGpu,
     pub(in crate::renderer) grid: Vec<data_render::GridColumnGpu>,
     pub(in crate::renderer) epochs: Vec<u64>,
@@ -158,9 +160,6 @@ impl PrepareContext<'_> {
         let mut grid = Vec::new();
         let mut ids = Vec::new();
         let mut epochs = Vec::new();
-        // Grid form: the `u` grid's field params and its table length, for
-        // the field bind group the selection reuses.
-        let mut field_params = None;
         let input = match components {
             VectorComponents::Points { u, v } => {
                 let u_h = handle(u)?;
@@ -244,26 +243,12 @@ impl PrepareContext<'_> {
                         invalid("vector grid cell count exceeds the u32 instance space".into())
                     })?;
                 params.flags |= vector_render::VECTOR_FLAG_GRID;
-                let mut field_flags = 0u32;
                 if u_grid.columns_are_y {
                     params.flags |= vector_render::VECTOR_FLAG_COLUMNS_ARE_Y;
-                    field_flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
                 }
                 if u_grid.centers {
                     params.flags |= vector_render::VECTOR_FLAG_CENTERS;
-                    field_flags |= data_render::FIELD_FLAG_CENTERS;
                 }
-                // The `u` grid's lattice as a field, for the selected-cell
-                // outline; that pass reads only the lattice.
-                field_params = Some(data_render::FieldParamsGpu::cell_geometry(
-                    params.x_base,
-                    params.y_base,
-                    params.x_len,
-                    params.y_len,
-                    params.cols,
-                    params.rows,
-                    field_flags,
-                ));
                 vector_render::VectorInput::Grid
             }
         };
@@ -296,6 +281,7 @@ impl PrepareContext<'_> {
 
         let signature = VectorSignature {
             pool_layout_generation: self.pool.layout_generation(),
+            input,
             params,
             grid,
             epochs,
@@ -317,9 +303,48 @@ impl PrepareContext<'_> {
             ids,
             epochs: signature.epochs.clone(),
         });
+        let scratch = self.build_vector_scratch(signature, sources);
+
+        evict_if_full(
+            &mut self.vector_cache,
+            cfg.series_id.as_str(),
+            VECTOR_SCRATCH_CACHE_LIMIT,
+        );
+        self.vector_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "vector scratch cache",
+                reason: error.to_string(),
+            })?;
+        let receipt = Arc::clone(&scratch.sources);
+        self.vector_cache.insert(cfg.series_id.clone(), scratch);
+        Ok(Some(receipt))
+    }
+
+    /// Build the group-1 and group-2 state a signature describes.
+    ///
+    /// The signature (and the column receipt, which names the same columns
+    /// the signature's epochs stamp) is this function's only input besides
+    /// the device: the cache compares signatures, so whatever the build could
+    /// read beyond one would be a change the compare cannot see. Keeping the
+    /// build to the signature makes the compare complete by construction.
+    fn build_vector_scratch(
+        &self,
+        signature: VectorSignature,
+        sources: Arc<GridSources>,
+    ) -> VectorScratch {
+        use data_render::vector as vector_render;
+        let params = &signature.params;
+        let [r, g, b, a] = signature.color;
+        let color = Color::new(
+            f32::from_bits(r),
+            f32::from_bits(g),
+            f32::from_bits(b),
+            f32::from_bits(a),
+        );
         let style_buf = data_render::create_style_uniform_buffer(
             &self.device,
-            &PrimitiveStyle::from_color_with_width(style.color, style.width_px * scale),
+            &PrimitiveStyle::from_color_with_width(color, params.width_px),
         );
         let style_bg =
             data_render::create_style_bind_group(&self.device, &self.style_bgl, &style_buf);
@@ -335,12 +360,30 @@ impl PrepareContext<'_> {
             vector_render::VectorTables {
                 grid: &signature.grid,
                 stops: &signature.stops,
-                params: &signature.params,
+                params,
             },
         );
-        // The grid table starts with the `u` grid's columns, which is all the
-        // field lattice indexes; the same buffer serves both groups.
-        let field = field_params.map(|field_params| {
+        // Grid form only: the `u` grid's lattice as a field, for the selected
+        // cell outline; that pass reads only the lattice. The grid table
+        // starts with the `u` grid's columns, which is all the field lattice
+        // indexes; the same buffer serves both groups.
+        let field = (signature.input == vector_render::VectorInput::Grid).then(|| {
+            let mut field_flags = 0u32;
+            if params.flags & vector_render::VECTOR_FLAG_COLUMNS_ARE_Y != 0 {
+                field_flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
+            }
+            if params.flags & vector_render::VECTOR_FLAG_CENTERS != 0 {
+                field_flags |= data_render::FIELD_FLAG_CENTERS;
+            }
+            let field_params = data_render::FieldParamsGpu::cell_geometry(
+                params.x_base,
+                params.y_base,
+                params.x_len,
+                params.y_len,
+                params.cols,
+                params.rows,
+                field_flags,
+            );
             data_render::create_field_cell_bind_group(
                 &self.device,
                 &self.gpu_ledger,
@@ -351,34 +394,18 @@ impl PrepareContext<'_> {
                 &field_params,
             )
         });
-
-        evict_if_full(
-            &mut self.vector_cache,
-            cfg.series_id.as_str(),
-            VECTOR_SCRATCH_CACHE_LIMIT,
-        );
-        self.vector_cache
-            .try_reserve(1)
-            .map_err(|error| FiggyError::StateAllocationFailed {
-                resource: "vector scratch cache",
-                reason: error.to_string(),
-            })?;
-        let receipt = Arc::clone(&sources);
-        let count = signature.params.count;
-        self.vector_cache.insert(
-            cfg.series_id.clone(),
-            VectorScratch {
-                signature,
-                input,
-                style_bg,
-                vector_bg,
-                charge,
-                field,
-                sources,
-                count,
-            },
-        );
-        Ok(Some(receipt))
+        let input = signature.input;
+        let count = params.count;
+        VectorScratch {
+            signature,
+            input,
+            style_bg,
+            vector_bg,
+            charge,
+            field,
+            sources,
+            count,
+        }
     }
 }
 
