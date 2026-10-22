@@ -1061,3 +1061,10 @@ impl Renderer {
         pollster::block_on(Self::for_window_async(target, size, pool_capacity_bytes))
     }
 }
+
+impl<'w> std::ops::Deref for WindowedRenderer<'w> {
+    type Target = Renderer;
+    fn deref(&self) -> &Renderer {
+        &self.inner
+    }
+}

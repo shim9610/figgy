@@ -412,12 +412,5 @@ impl Renderer {
 
 // WindowedRenderer — figgy owns the surface and swap chain.
 
-impl<'w> std::ops::Deref for WindowedRenderer<'w> {
-    type Target = Renderer;
-    fn deref(&self) -> &Renderer {
-        &self.inner
-    }
-}
-
 #[cfg(test)]
 mod tests;
