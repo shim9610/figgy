@@ -3232,6 +3232,10 @@ fn assembled_pick_shaders_are_their_fragments_concatenated() {
     }
     for entry in std::fs::read_dir(&dir).unwrap() {
         let name = entry.unwrap().file_name().into_string().unwrap();
+        // The pick modules' Rust files share this directory with the fragments.
+        if !name.ends_with(".wgsl") {
+            continue;
+        }
         assert!(used.contains(name.as_str()), "{name} is in no pick module");
     }
 }
