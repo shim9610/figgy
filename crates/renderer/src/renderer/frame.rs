@@ -34,15 +34,37 @@ pub(super) fn annotation_raster_for_chart(
     selected: Option<usize>,
 ) -> crate::annotation::AnnotationRaster {
     let config = chart.config();
-    let area = config.chart_area.0;
+    let Config {
+        chart_area,
+        // The data area, the value axes and the polar switch reach the
+        // raster through `pixel_space_for_config`, which reads the whole
+        // config; the rest is not part of the annotation raster.
+        top_x: _,
+        bottom_x: _,
+        left_y: _,
+        right_y: _,
+        chart_title: _,
+        grid: _,
+        legend: _,
+        picked_points: _,
+        picked_data: _,
+        colorbar: _,
+        draw_style,
+        polar: _,
+        overlays: _,
+        subplots: _,
+        active_layer: _,
+        annotations,
+    } = config;
+    let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {
-        layer: &config.annotations,
+        layer: annotations,
         space: crate::annotation::pixel_space_for_config(config),
         origin: [area.x as f32, area.y as f32],
         size: (area.width.max(1), area.height.max(1)),
         scale: 1.0,
         selected,
-        policy: crate::text_render::FontPolicy::for_style(&config.draw_style),
+        policy: crate::text_render::FontPolicy::for_style(draw_style),
     })
 }
 
