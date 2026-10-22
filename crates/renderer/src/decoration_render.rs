@@ -1,0 +1,37 @@
+//! Decoration renderer. Draws the decoration elements above the data onto
+//! the CPU raster [`Canvas`]: tick labels, axis titles, the chart title, the
+//! legend, the colourbar and the selection boxes. The axis renderer
+//! ([`crate::axis_render`]) owns the raster entry points and the axis geometry
+//! these elements are placed against.
+
+use crate::raster::{Canvas, Paint};
+
+use crate::color::Color;
+use crate::config::{AxisOptions, AxisScale, Config, LabelStyle};
+use crate::format::LabelFormat;
+use crate::layout::{
+    DataArea, RectF, Side, TitleBand, TitlePlacement, axis_offset, axis_title_placement,
+    chart_title_placement, colorbar_rect, colorbar_title_placement, label_origin, legend_rect,
+    point_on_rect_side,
+};
+use crate::select::SelectionBox;
+use crate::sketch::DecoStroker;
+use crate::text::{RichSegment, RichText, TextAlign};
+use crate::text_render::{
+    FontPolicy, draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text,
+};
+
+mod tick_labels;
+pub(crate) use tick_labels::*;
+mod tick_format;
+pub(crate) use tick_format::*;
+mod axis_titles;
+pub(crate) use axis_titles::*;
+mod chart_title;
+pub(crate) use chart_title::*;
+mod legend;
+pub(crate) use legend::*;
+mod colorbar;
+pub(crate) use colorbar::*;
+mod selection;
+pub use selection::*;
