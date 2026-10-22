@@ -157,9 +157,9 @@ pub(super) fn minor_tick_values_for_axis(
     minor_tick_values(axis)
 }
 
-pub(super) const LABEL_COLLISION_GAP: f32 = 8.0;
+pub(crate) const LABEL_COLLISION_GAP: f32 = 8.0;
 
-pub(super) fn timestamp_tick_plan(
+pub(crate) fn timestamp_tick_plan(
     axis: &AxisOptions,
     side: Side,
     da: &DataArea,

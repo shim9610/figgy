@@ -80,7 +80,7 @@ pub(super) fn draw_axis(
 /// what puts a stale tick visibly off the end instead of piled at it. The
 /// colourbar's `ColorBarOptions::normalized_z` is the clamped z→colour twin, and
 /// `colorbar_ticks_match_the_strip_ramp` pins the two to agree in range.
-pub(super) fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
+pub(crate) fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     let t = match axis.scale {
         AxisScale::Linear => {
             let range = axis.max - axis.min;
@@ -115,7 +115,7 @@ pub(super) fn data_area_rect(da: &DataArea) -> RectF {
     }
 }
 
-pub(super) fn value_to_screen(
+pub(crate) fn value_to_screen(
     value: f64,
     axis: &AxisOptions,
     side: Side,

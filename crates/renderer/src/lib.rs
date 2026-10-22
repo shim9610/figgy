@@ -12,6 +12,7 @@ pub mod categorical;
 pub mod chart;
 pub mod data;
 pub mod data_render;
+mod decoration_render;
 pub mod demo;
 pub mod error;
 mod gpu_compile;
