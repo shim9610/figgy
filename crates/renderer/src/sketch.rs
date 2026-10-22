@@ -11,7 +11,7 @@
 //! stroke either to plain [`Canvas`] calls (`Precise`) or through the wobble
 //! functions above (`Sketch`).
 
-use crate::config::DrawStyle;
+use crate::config::{DrawStyle, SketchOptions};
 use crate::raster::{Canvas, Paint};
 
 /// Maximum spacing between adjacent subdivision points, in pixels.
@@ -267,12 +267,18 @@ impl DecoStroker {
     /// parameters, every other style strokes precisely.
     pub(crate) fn from_style(style: &DrawStyle) -> Self {
         match style {
-            DrawStyle::Sketch(s) => DecoStroker::Sketch {
-                amplitude_px: s.amplitude_px,
-                wavelength_px: s.wavelength_px,
-                seed: s.seed,
+            DrawStyle::Sketch(SketchOptions {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            }) => DecoStroker::Sketch {
+                amplitude_px: *amplitude_px,
+                wavelength_px: *wavelength_px,
+                seed: *seed,
             },
-            _ => DecoStroker::Precise,
+            DrawStyle::Precise | DrawStyle::Milkyway(_) | DrawStyle::Constellation(_) => {
+                DecoStroker::Precise
+            }
         }
     }
 
