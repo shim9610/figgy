@@ -147,6 +147,17 @@ mod tests {
             ("STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),
             ("PICK_STYLE_MASK_RADIUS", dr::STYLE_MASK_RADIUS),
             ("PICK_STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),
+            ("MATERIAL_FLAT", dr::MATERIAL_FLAT),
+            ("MATERIAL_MATTE", dr::MATERIAL_MATTE),
+            ("MATERIAL_CERAMIC", dr::MATERIAL_CERAMIC),
+            ("MATERIAL_BRUSHED_METAL", dr::MATERIAL_BRUSHED_METAL),
+            ("MATERIAL_PAPER", dr::MATERIAL_PAPER),
+            ("MATERIAL_WOOD", dr::MATERIAL_WOOD),
+            ("MATERIAL_SATIN_METAL", dr::MATERIAL_SATIN_METAL),
+            ("MATERIAL_TOON", dr::MATERIAL_TOON),
+            ("MATERIAL_ENAMEL", dr::MATERIAL_ENAMEL),
+            ("MATERIAL_HATCH", dr::MATERIAL_HATCH),
+            ("MATERIAL_PEARL", dr::MATERIAL_PEARL),
             ("ERRORBAR_HAS_Y", dr::ERRORBAR_HAS_Y),
             ("ERRORBAR_HAS_X", dr::ERRORBAR_HAS_X),
             ("LINE_STEP_SHIFT", LINE_STEP_SHIFT),
@@ -243,7 +254,7 @@ mod tests {
         use crate::data_render::vector::VectorParamsGpu;
         use crate::data_render::{BarStyleOverrideGpu, BarStyleSlotGpu};
         use crate::data_render::{
-            ContourLookupMetadataGpu, DataSelectionGpu, FieldParamsGpu, GridColumnGpu,
+            ContourLookupMetadataGpu, DataSelectionGpu, FieldParamsGpu, GridColumnGpu, MaterialGpu,
             PointValueMapParamsGpu, PrimitiveStyle, ScatterStyleMapMeta, ScatterStyleOverrideGpu,
             ScatterStyleSlotGpu, ScatterTransform,
         };
@@ -279,6 +290,8 @@ mod tests {
                 "_pad0" = _pad + 0, "_pad1" = _pad + 4, "_pad2" = _pad + 8, "params" = meta + 0)
             .with(module, wgsl)
         };
+        let material =
+            |module| mirror!("", "", MaterialGpu { params, finish }).with(module, "Material");
         let meta = |module, wgsl| {
             mirror!(
                 "",
@@ -388,6 +401,9 @@ mod tests {
                     nan_color_premul,
                 }
             ),
+            material("boxplot"),
+            material("categorical"),
+            material("radial"),
             slot("scatter", "ScatterStyleSlot"),
             over("scatter", "ScatterStyleOverride"),
             meta("scatter", "ScatterStyleMapMeta"),

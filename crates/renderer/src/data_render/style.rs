@@ -225,6 +225,77 @@ pub(crate) const STYLE_MASK_RADIUS: u32 = 2;
 /// `PICK_STYLE_MASK_SHAPE`).
 pub(crate) const STYLE_MASK_SHAPE: u32 = 4;
 
+/// GPU kinds of `model::Material`, in variant order. The WGSL constants of
+/// `common/material.wgsl` (SHADER_COMMON.md §5.9).
+pub(crate) const MATERIAL_FLAT: u32 = 0;
+pub(crate) const MATERIAL_MATTE: u32 = 1;
+pub(crate) const MATERIAL_CERAMIC: u32 = 2;
+pub(crate) const MATERIAL_BRUSHED_METAL: u32 = 3;
+pub(crate) const MATERIAL_PAPER: u32 = 4;
+pub(crate) const MATERIAL_WOOD: u32 = 5;
+pub(crate) const MATERIAL_SATIN_METAL: u32 = 6;
+pub(crate) const MATERIAL_TOON: u32 = 7;
+pub(crate) const MATERIAL_ENAMEL: u32 = 8;
+pub(crate) const MATERIAL_HATCH: u32 = 9;
+pub(crate) const MATERIAL_PEARL: u32 = 10;
+
+/// The roughness a bar or a box is shaded with: `RadialStyle`'s default.
+/// Bar and box styles have no roughness of their own.
+pub(crate) const FLAT_BODY_ROUGHNESS: f32 = 0.35;
+
+/// Per-instance material of a bar, a box or a sector. 32 bytes; mirrors
+/// WGSL `Material` of `common/material.wgsl` (SHADER_COMMON.md §5.9).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct MaterialGpu {
+    /// Kind, roughness, texture strength, texture scale.
+    pub(crate) params: [f32; 4],
+    /// Gloss, seed, texture angle (radians), emphasis brightness.
+    pub(crate) finish: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<MaterialGpu>() == 32);
+
+impl MaterialGpu {
+    pub(crate) const EMPTY: MaterialGpu = MaterialGpu {
+        params: [0.0; 4],
+        finish: [0.0; 4],
+    };
+
+    /// Pack a material and its parameters. `angle` is in radians;
+    /// `emphasis` is the hover or selection brightness, added after shading.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn pack(
+        material: model::Material,
+        roughness: f32,
+        strength: f32,
+        scale: f32,
+        gloss: f32,
+        seed: f32,
+        angle: f32,
+        emphasis: f32,
+    ) -> Self {
+        use model::Material;
+        let kind = match material {
+            Material::Flat => MATERIAL_FLAT,
+            Material::Matte => MATERIAL_MATTE,
+            Material::Ceramic => MATERIAL_CERAMIC,
+            Material::BrushedMetal => MATERIAL_BRUSHED_METAL,
+            Material::Paper => MATERIAL_PAPER,
+            Material::Wood => MATERIAL_WOOD,
+            Material::SatinMetal => MATERIAL_SATIN_METAL,
+            Material::Toon => MATERIAL_TOON,
+            Material::Enamel => MATERIAL_ENAMEL,
+            Material::Hatch => MATERIAL_HATCH,
+            Material::Pearl => MATERIAL_PEARL,
+        };
+        Self {
+            params: [kind as f32, roughness, strength, scale],
+            finish: [gloss, seed, angle, emphasis],
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterStyleSlotGpu {

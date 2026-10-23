@@ -1,6 +1,6 @@
 //! Bounded categorical bars. Values are model-owned, not ColumnSource payloads.
 //! Stable category/series IDs identify edits and selection; values follow category order.
-use crate::Color;
+use crate::{Color, Material};
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -77,16 +77,10 @@ pub enum CategoryBarDirection {
     Vertical,
     Horizontal,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarMaterial {
-    #[default]
-    Flat,
-    Matte,
-    SatinMetal,
-    Enamel,
-    Paper,
-}
+/// The former bar material enum, now the shared [`Material`]. Bars reject
+/// the materials [`Material::supported_on_flat_body`] excludes.
+#[deprecated(since = "0.13.0", note = "use Material")]
+pub type CategoryBarMaterial = crate::Material;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum CategoryBarLabels {
@@ -112,7 +106,7 @@ pub enum CategoryBarLabelFormat {
     serde(default)
 )]
 pub struct CategoryBarStyle {
-    pub material: CategoryBarMaterial,
+    pub material: Material,
     /// Logical pixels. Only the exposed end of a stack is rounded.
     pub corner_radius: f32,
     pub outline: bool,
@@ -127,7 +121,7 @@ pub struct CategoryBarStyle {
 impl Default for CategoryBarStyle {
     fn default() -> Self {
         Self {
-            material: CategoryBarMaterial::Flat,
+            material: Material::Flat,
             corner_radius: 5.0,
             outline: false,
             outline_width: 1.0,
@@ -269,6 +263,14 @@ fn range(v: f32, lo: f32, hi: f32) -> bool {
 fn color(c: Color, opaque: bool) -> bool {
     [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0.0, 1.0)) && (!opaque || c.a == 1.0)
 }
+/// A bar is a flat body; see [`crate::Material::supported_on_flat_body`].
+fn bar_material(s: &CategoryBarStyle) -> Result<(), &'static str> {
+    if s.material.supported_on_flat_body() {
+        Ok(())
+    } else {
+        Err("material not supported by bars")
+    }
+}
 fn style(s: &CategoryBarStyle) -> bool {
     range(s.corner_radius, 0.0, 32.0)
         && range(s.outline_width, 0.0, 8.0)
@@ -368,6 +370,9 @@ impl CategoricalChart {
         }
         ids.clear();
         for s in &self.series {
+            if let Some(st) = &s.style {
+                bar_material(st)?;
+            }
             if s.id.is_empty()
                 || !text(&s.id, 80)
                 || !text(&s.label, 80)
@@ -384,6 +389,7 @@ impl CategoricalChart {
                 return Err("values must be finite; percent stacks require nonnegative values");
             }
         }
+        bar_material(&self.style)?;
         if !style(&self.style)
             || !range(self.font_size, 8.0, 32.0)
             || !range(self.group_width, 0.1, 0.95)
@@ -404,6 +410,9 @@ impl CategoricalChart {
         }
         let mut targets = HashSet::new();
         for o in &self.overrides {
+            if let Some(st) = &o.style {
+                bar_material(st)?;
+            }
             if !self.categories.iter().any(|c| c.id == o.target.category_id)
                 || !self.series.iter().any(|s| s.id == o.target.series_id)
                 || !targets.insert(&o.target)
@@ -614,11 +623,48 @@ mod tests {
         c.selected = Some(CategoryBarTarget::new("b", "s"));
         assert!(c.validate().is_err());
     }
+    #[test]
+    fn bars_reject_toon_and_pearl_at_every_style_level() {
+        for material in [Material::Toon, Material::Pearl] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Err("material not supported by bars"));
+            let mut c = chart();
+            c.series[0].style = Some(CategoryBarStyle {
+                material,
+                ..Default::default()
+            });
+            assert_eq!(c.validate(), Err("material not supported by bars"));
+            let mut c = chart();
+            let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "s"));
+            o.style = Some(CategoryBarStyle {
+                material,
+                ..Default::default()
+            });
+            c.overrides.push(o);
+            assert_eq!(c.validate(), Err("material not supported by bars"));
+        }
+        for material in [
+            Material::Flat,
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Enamel,
+            Material::Hatch,
+        ] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+        }
+    }
     #[cfg(feature = "serde")]
     #[test]
     fn serde_preserves_full_edit_state() {
         let mut c = chart();
-        c.style.material = CategoryBarMaterial::Paper;
+        c.style.material = Material::Paper;
         c.selected = Some(CategoryBarTarget::new("a", "s"));
         let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "t"));
         o.label_format = Some(CategoryBarLabelFormat::ValuePercent);

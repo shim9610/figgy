@@ -2,7 +2,7 @@
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
-use renderer::{Color, RendererDevice, categorical::*};
+use renderer::{Color, Material, RendererDevice, categorical::*};
 use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
@@ -225,7 +225,7 @@ fn every_visible_ssot_edit_updates_and_identical_snapshot_reuses() {
         ("suffix", Box::new(|c| c.value_suffix = " kg".into())),
         (
             "material",
-            Box::new(|c| c.style.material = CategoryBarMaterial::SatinMetal),
+            Box::new(|c| c.style.material = Material::SatinMetal),
         ),
         ("rounding", Box::new(|c| c.style.corner_radius = 25.)),
         ("outline", Box::new(|c| c.style.outline = true)),
@@ -266,12 +266,17 @@ fn materials_geometry_and_interaction_share_annotations_without_unbounded_growth
     let original = r.prepare(&c, (640, 440), 1.).unwrap();
     let rect = original.bar_rect(&CategoryBarTarget::new("a", "one"));
     for i in 0..30 {
-        c.style.material = match i % 5 {
-            0 => CategoryBarMaterial::Flat,
-            1 => CategoryBarMaterial::Matte,
-            2 => CategoryBarMaterial::SatinMetal,
-            3 => CategoryBarMaterial::Enamel,
-            _ => CategoryBarMaterial::Paper,
+        // Every look a bar supports (all but Toon and Pearl).
+        c.style.material = match i % 9 {
+            0 => Material::Flat,
+            1 => Material::Matte,
+            2 => Material::SatinMetal,
+            3 => Material::Enamel,
+            4 => Material::Paper,
+            5 => Material::Ceramic,
+            6 => Material::BrushedMetal,
+            7 => Material::Wood,
+            _ => Material::Hatch,
         };
         c.style.outline = i % 2 == 0;
         c.style.corner_radius = (i % 20) as f32;
@@ -310,6 +315,15 @@ fn invalid_input_layout_and_budget_keep_last_valid_frame() {
     bad.title = "X".repeat(160);
     assert!(r.prepare(&bad, (640, 440), 1.).is_err());
     assert_eq!(r.gpu_memory_usage(), usage);
+    for material in [Material::Toon, Material::Pearl] {
+        bad = c.clone();
+        bad.style.material = material;
+        assert!(matches!(
+            r.prepare(&bad, (640, 440), 1.),
+            Err(CategoricalError::Invalid("material not supported by bars"))
+        ));
+        assert_eq!(r.gpu_memory_usage(), usage);
+    }
     r.set_memory_budget(usage.total_bytes());
     bad = c.clone();
     bad.style.outline = true;
@@ -427,69 +441,88 @@ fn fractional_stack_joins_do_not_blend_background_twice() {
 fn each_material_parameter_changes_pixels_but_reuses_annotations() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
-    let cases: Vec<(
-        &str,
-        CategoryBarMaterial,
-        Box<dyn Fn(&mut CategoryBarStyle)>,
-    )> = vec![
+    let cases: Vec<(&str, Material, Box<dyn Fn(&mut CategoryBarStyle)>)> = vec![
         (
             "matte strength",
-            CategoryBarMaterial::Matte,
+            Material::Matte,
             Box::new(|s| s.texture_strength = 0.0),
         ),
         (
             "matte frequency",
-            CategoryBarMaterial::Matte,
+            Material::Matte,
             Box::new(|s| s.texture_scale = 3.0),
         ),
         (
             "satin strength",
-            CategoryBarMaterial::SatinMetal,
+            Material::SatinMetal,
             Box::new(|s| s.texture_strength = 0.0),
         ),
+        // The metal brush runs at min(450 * scale, 0.4 * pixels per unit)
+        // cycles per unit, as on a sector (SHADER_COMMON.md §5.9): at 1x a
+        // bar unit is 150 px, so only a scale below 0.13 moves it off the
+        // pixel limit. A larger scale leaves a Satin bar unchanged.
         (
             "satin frequency",
-            CategoryBarMaterial::SatinMetal,
-            Box::new(|s| s.texture_scale = 3.0),
+            Material::SatinMetal,
+            Box::new(|s| s.texture_scale = 0.1),
         ),
         (
             "satin gloss",
-            CategoryBarMaterial::SatinMetal,
+            Material::SatinMetal,
+            Box::new(|s| s.gloss = 0.0),
+        ),
+        // No "enamel gloss" case: a bar is a flat body lit like a flat pie
+        // top, and at that constant normal Enamel's specular lobe is below
+        // one 8-bit step, so gloss has no visible effect on an Enamel bar
+        // (SHADER_COMMON.md §5.9). The metals keep a visible sheen.
+        (
+            "brushed gloss",
+            Material::BrushedMetal,
             Box::new(|s| s.gloss = 0.0),
         ),
         (
-            "enamel gloss",
-            CategoryBarMaterial::Enamel,
-            Box::new(|s| s.gloss = 0.0),
+            "ceramic strength",
+            Material::Ceramic,
+            Box::new(|s| s.texture_strength = 0.0),
+        ),
+        (
+            "wood strength",
+            Material::Wood,
+            Box::new(|s| s.texture_strength = 0.0),
+        ),
+        (
+            "hatch strength",
+            Material::Hatch,
+            Box::new(|s| s.texture_strength = 0.0),
         ),
         (
             "paper strength",
-            CategoryBarMaterial::Paper,
+            Material::Paper,
             Box::new(|s| s.texture_strength = 0.0),
         ),
         (
             "paper frequency",
-            CategoryBarMaterial::Paper,
+            Material::Paper,
             Box::new(|s| s.texture_scale = 3.0),
         ),
         (
             "outline width",
-            CategoryBarMaterial::Flat,
+            Material::Flat,
             Box::new(|s| s.outline_width = 5.0),
         ),
         (
             "outline color",
-            CategoryBarMaterial::Flat,
+            Material::Flat,
             Box::new(|s| s.outline_color = Color::from_rgb8(30, 220, 50)),
         ),
         (
             "outline alpha",
-            CategoryBarMaterial::Flat,
+            Material::Flat,
             Box::new(|s| s.outline_color.a = 0.1),
         ),
         (
             "emphasis brightness",
-            CategoryBarMaterial::Flat,
+            Material::Flat,
             Box::new(|s| s.emphasis_brightness = 0.4),
         ),
     ];
@@ -554,12 +587,12 @@ fn three_level_style_and_label_inheritance_restore_the_parent_pixels() {
     let mut c = chart();
     let target = CategoryBarTarget::new("a", "one");
     c.series[0].style = Some(CategoryBarStyle {
-        material: CategoryBarMaterial::SatinMetal,
+        material: Material::SatinMetal,
         ..Default::default()
     });
     let mut edit = CategoryBarOverride::new(target.clone());
     edit.style = Some(CategoryBarStyle {
-        material: CategoryBarMaterial::Paper,
+        material: Material::Paper,
         texture_strength: 1.,
         ..Default::default()
     });
@@ -570,7 +603,7 @@ fn three_level_style_and_label_inheritance_restore_the_parent_pixels() {
     let other = f.bar_rect(&CategoryBarTarget::new("a", "two")).unwrap();
     let before = r.export_rgba(&c, (640, 440), 1.).unwrap();
     drain(&r);
-    c.style.material = CategoryBarMaterial::Enamel;
+    c.style.material = Material::Enamel;
     let inherited = r.export_rgba(&c, (640, 440), 1.).unwrap();
     assert_eq!(bar_patch(&before, a), bar_patch(&inherited, a));
     assert_eq!(bar_patch(&before, b), bar_patch(&inherited, b));
@@ -736,7 +769,7 @@ fn bars_are_picked_where_they_are_painted() {
     for mode in [CategoryBarMode::Grouped, CategoryBarMode::Stacked] {
         let mut c = chart();
         c.mode = mode;
-        c.style.material = CategoryBarMaterial::Flat;
+        c.style.material = Material::Flat;
         c.style.corner_radius = 6.0;
         for scale in [1., 2.] {
             let frame = r.prepare(&c, (640, 440), scale).unwrap();

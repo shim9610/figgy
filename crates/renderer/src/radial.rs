@@ -11,7 +11,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radial module.
-pub(crate) const RADIAL_SHADER: &str = crate::shader_assembly::wgsl_module!("radial.wgsl",);
+pub(crate) const RADIAL_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/common/material.wgsl", "radial.wgsl",);
 
 #[path = "radial_geometry.rs"]
 mod geometry;
@@ -42,11 +43,13 @@ struct Sector {
     geometry: [f32; 4],
     arc: [f32; 4],
     color: [f32; 4],
-    material: [f32; 4],
-    detail: [f32; 4],
-    rounding: [f32; 4],
+    material: crate::data_render::MaterialGpu,
+    detail: [f32; 4], // explode, angular gap, bevel, reserved (0, seed moved to `material`)
+    rounding: [f32; 4], // inner corner, outer corner, vertical lift, reserved (0, gloss moved)
     outline: [f32; 4],
     outline_color: [f32; 4],
+    // reserved (0, highlight moved), reserved (0, texture angle moved),
+    // inside-label flag, reserved (0)
     effects: [f32; 4],
     light: [f32; 4],
 }
@@ -61,7 +64,7 @@ struct Globals {
     meta: [f32; 4],
 }
 const _: () =
-    assert!(std::mem::size_of::<Sector>() == 160 && std::mem::size_of::<Globals>() == 112);
+    assert!(std::mem::size_of::<Sector>() == 176 && std::mem::size_of::<Globals>() == 112);
 
 /// Immutable GPU snapshot. Its shader draws straight into a same-format,
 /// single-sample target; four analytic subpixel samples provide edge AA.
@@ -223,7 +226,9 @@ impl RadialRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(160),
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Sector>() as u64
+                            ),
                         },
                         count: None,
                     },
@@ -430,7 +435,7 @@ impl RadialRenderer {
             } else {
                 u64::from(width) * u64::from(height) * 4
             } + 112
-                + count as u64 * 160,
+                + count as u64 * std::mem::size_of::<Sector>() as u64,
         )?;
         let l = layout::layout(chart, size, scale, reused.is_none())?;
         let globals = Globals {

@@ -42,18 +42,18 @@ To change shared shader code:
 | `line_step.wgsl` | line, line_arc |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `bounded_shading.wgsl` | boxplot, categorical |
+| `material.wgsl` (§5.9) | boxplot, categorical, radial |
+| `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
 `gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. Four functions stay copied where
+`shader_assembly::MODULES` names every one. Three functions stay copied where
 a module cannot splice their fragment, held to the fragment's text by
 `shader_consistency`: the pick modules' `ramp_finite` and
 `polar_fragment_visible` (they bind no draw `transform` and have no
 `maybe_log`, which the rest of those fragments read) and the radar `output`
-and radial `hash` / `noise` (they declare no `Bar`, which the rest of
-`bounded_shading.wgsl` takes).
+(it declares no `Bar`, which the rest of `bounded_shading.wgsl` takes).
 
 ### Module notes
 
@@ -472,6 +472,71 @@ CPU twin: `pick.rs::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
+
+### 5.9 Material surface
+
+Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
+into one per-instance value, `struct Material { params: vec4<f32>, finish:
+vec4<f32> }`, embedded as the `material` member of the categorical and
+boxplot `Bar` and the radial `Sector`:
+
+| Lane | Meaning |
+|---|---|
+| `params.x` | kind: `MATERIAL_FLAT` (0) … `MATERIAL_PEARL` (10), the `model::Material` variant order |
+| `params.y` | roughness (sectors: `RadialStyle::roughness`) |
+| `params.z` | texture strength |
+| `params.w` | texture scale |
+| `finish.x` | gloss |
+| `finish.y` | grain seed (stable per bar, box or slice identity) |
+| `finish.z` | texture angle in radians |
+| `finish.w` | emphasis brightness, added after shading |
+
+Rust twin: `data_render::MaterialGpu` (`data_render/style.rs`), packed by
+`MaterialGpu::pack`, with the `MATERIAL_*` constants.
+
+One function shades every family:
+
+```wgsl
+fn material_surface(m: Material, color: vec3<f32>, p: vec3<f32>, n: vec3<f32>,
+    view: vec3<f32>, light: vec3<f32>, tangent: vec3<f32>, brush: vec2<f32>,
+    pixels: f32) -> vec3<f32>
+```
+
+- `p` is the object-space surface point. One object unit is `pixels`
+  output pixels: the sector radius. The function turns `p` by the texture
+  angle and scales it by the texture scale, so grain, paper, wood and hatch
+  stay fixed to the object and fade (`material_band`) where the output
+  cannot resolve them.
+- `n`, `view` and `light` are unit vectors: the surface normal, the
+  direction to the viewer and the direction to the light. A sector passes
+  its raymarched normal, the camera direction and `RadialStyle::light`.
+- `tangent` and `brush` describe the brush of `BrushedMetal` and
+  `SatinMetal`: the unit brush direction on the surface, and the (across,
+  along) brush coordinates; the noise runs at a pixel-limited frequency
+  across the brush and at `brush.y` along it. A sector's brush is
+  circumferential: (radius, twice the turned angle).
+- `Flat` returns the color plus the emphasis, ignoring every parameter.
+
+A bar or a box is a flat body, shaded like a flat (zero depth, zero tilt)
+pie top by `bar_surface` in `bounded_shading.wgsl`: normal and view
+`(0, 0, 1)`, the normalized default `RadialStyle::light` (`BAR_LIGHT`),
+the radial default roughness (packed by the layouts) and texture angle 0.
+Its object point is the logical-pixel offset from the bar's top-left corner
+divided by `BAR_UNIT_PX` (150), which plays the sector radius, and its
+brush runs along the bar: (across, twice along). With a constant normal the
+lighting and the specular lobes are uniform over a bar: at that light
+`n·h` is 0.945, so `Enamel`'s lobe is below one 8-bit step and `gloss` has
+no visible effect on an `Enamel` bar, and on a `Ceramic` bar it lifts the
+whole bar by at most 2.5/255. `SatinMetal` and `BrushedMetal` keep a
+visible uniform sheen; their brush runs at `min(450 · scale, 0.4 · pixels)`
+cycles per unit, so at 1x (150 px per unit) a `texture_scale` above 0.13
+leaves a metal bar unchanged, as it does a sector of that radius. `Toon`
+and `Pearl`, which only respond to a turning normal, are rejected by the
+model (`Material::supported_on_flat_body`).
+
+`hash`, `noise`, `material_noise`, `material_band`, the struct, the
+constants and `material_surface` are the fragment
+[`data_render/common/material.wgsl`](common/material.wgsl).
 
 ---
 ## Checklist

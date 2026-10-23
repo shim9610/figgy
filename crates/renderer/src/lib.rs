@@ -122,11 +122,16 @@ pub use streaming_source::{
 pub use text::{MeasureText, TextAlign};
 pub use text_render::{CpuTextMeasure, FontPolicy};
 
+/// The surface material shared by bars, boxes and sectors.
+pub use model::Material;
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit,
-    RadialStyle, RadialTarget,
+    RadialLabels, RadialOutline, RadialRenderer, RadialSlice, RadialSplit, RadialStyle,
+    RadialTarget,
 };
+// The deprecated name stays importable from the crate root.
+#[allow(deprecated)]
+pub use radial::RadialMaterial;
 
 pub use categorical::{CategoricalError, CategoricalFrame, CategoricalRenderer};
 pub use model::categorical::*;

@@ -1,5 +1,5 @@
 //! Native box plot outputs corresponding to the approved visual concepts.
-use renderer::{Category, Color, RendererDevice, boxplot::*, data_render, encode_png};
+use renderer::{Category, Color, Material, RendererDevice, boxplot::*, data_render, encode_png};
 use std::{path::PathBuf, sync::Arc};
 fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Option<BoxSummary> {
     let mut v = BoxSummary::new(low, q1, med, q3, high);
@@ -79,12 +79,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     save(&mut r, &c, "01-classic-matte")?;
     c.title = "Satin finish".into();
-    c.style.material = BoxPlotMaterial::SatinMetal;
+    c.style.material = Material::SatinMetal;
     c.style.gloss = 0.6;
     save(&mut r, &c, "02-satin")?;
     c.title = "Horizontal comparison".into();
     c.direction = BoxPlotDirection::Horizontal;
-    c.style.material = BoxPlotMaterial::Matte;
+    c.style.material = Material::Matte;
     save(&mut r, &c, "03-horizontal")?;
     c.title = "Grouped + notch".into();
     c.direction = BoxPlotDirection::Vertical;

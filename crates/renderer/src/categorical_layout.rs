@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_render::{FLAT_BODY_ROUGHNESS, MaterialGpu};
 use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
@@ -282,13 +283,6 @@ pub(super) fn layout(
             }
         }
         if s.value != 0.0 && rect[2] > rect[0] && rect[3] > rect[1] {
-            let material = match style.material {
-                CategoryBarMaterial::Flat => 0.0,
-                CategoryBarMaterial::Matte => 1.0,
-                CategoryBarMaterial::SatinMetal => 2.0,
-                CategoryBarMaterial::Enamel => 3.0,
-                CategoryBarMaterial::Paper => 4.0,
-            };
             let emphasized =
                 c.hovered.as_ref() == Some(&s.target) || c.selected.as_ref() == Some(&s.target);
             // Stable grain seed depends on identity rather than array order.
@@ -318,17 +312,25 @@ pub(super) fn layout(
                 rect: rect.map(|v| v * scale),
                 radii,
                 color: [color.r, color.g, color.b, color.a],
-                material: [
-                    material,
+                material: MaterialGpu::pack(
+                    style.material,
+                    FLAT_BODY_ROUGHNESS,
                     style.texture_strength,
                     style.texture_scale,
                     style.gloss,
-                ],
+                    (seed % 4096) as f32,
+                    0.0,
+                    if emphasized {
+                        style.emphasis_brightness
+                    } else {
+                        0.0
+                    },
+                ),
                 outline: [
                     if style.outline { 1.0 } else { 0.0 },
                     style.outline_width * scale,
                     if horizontal { 1.0 } else { 0.0 },
-                    (seed % 4096) as f32,
+                    0.0,
                 ],
                 outline_color: [
                     style.outline_color.r,
@@ -336,16 +338,7 @@ pub(super) fn layout(
                     style.outline_color.b,
                     style.outline_color.a,
                 ],
-                effects: [
-                    if emphasized {
-                        style.emphasis_brightness
-                    } else {
-                        0.0
-                    },
-                    scale,
-                    shared as f32,
-                    0.0,
-                ],
+                effects: [0.0, scale, shared as f32, 0.0],
             });
             out.targets.push(s.target.clone());
         }

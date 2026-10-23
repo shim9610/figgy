@@ -67,6 +67,31 @@ Collected on `integration/0.19`; the release entry replaces this section.
   exponents of `LabelFormat::Power` tick labels, are sized and shifted by
   one renderer function that the math `Scripts` node of #45 will share.
   No pixel, metric or public API changes.
+- **One material enum.** Bars, boxes and sectors take one `Material`
+  (`Flat`, `Matte`, `Ceramic`, `BrushedMetal`, `Paper`, `Wood`,
+  `SatinMetal`, `Toon`, `Enamel`, `Hatch`, `Pearl`), and a name has one
+  look in every family: one shader function draws all three
+  ([#46](https://github.com/shim9610/figgy/issues/46)).
+  - Bars and boxes are shaded like a flat pie top under the default light,
+    with uniform lighting and highlights. **The look of Matte, SatinMetal,
+    Enamel and Paper bars and of Matte and SatinMetal boxes changes**: no
+    vertical gradient (Matte) and no highlight band (SatinMetal, Enamel).
+    Boxes default to Matte, so a default box plot changes too. `gloss` has
+    no visible effect on an Enamel bar, and at 1x a `texture_scale` above
+    0.13 none on a metal bar.
+  - Bars and boxes gain `Ceramic`, `BrushedMetal`, `Wood` and `Hatch`
+    (boxes also `Enamel` and `Paper`). `Toon` and `Pearl` need a curved
+    surface: `Material::supported_on_flat_body` is false for them, and bar
+    and box validation rejects them ("material not supported by bars" /
+    "material not supported by boxes"). Sectors accept every material.
+  - Per-family defaults are unchanged (bars Flat, boxes Matte, sectors
+    Flat). Serialized documents are unchanged: the variant names are the
+    strings the three old enums wrote.
+  - Migration: `RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial`
+    are deprecated aliases of `Material`; replace the name, the variants are
+    the same. `BoxPlotMaterial::default()` is now `Flat` (the enum default);
+    `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
+    `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
 
 <a id="release-0181"></a>
 

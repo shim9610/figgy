@@ -1,7 +1,7 @@
 // Independent precomputed box plot components. No Cartesian shared blocks.
 struct Globals { size:vec4<f32>, background:vec4<f32>, clip:vec4<f32> };
 struct Bar {
-    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:vec4<f32>,
+    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:Material,
     outline:vec4<f32>, outline_color:vec4<f32>, effects:vec4<f32>, notch:vec4<f32>, body:vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> globals:Globals;
@@ -50,7 +50,7 @@ fn box_sdf(p:vec2<f32>,b:Bar)->f32 {
     if v.layer>u32(globals.size.z) { return output(textureLoad(annotations,vec2<i32>(p)+vec2(0,i32(globals.size.y)),0)); }
     if p.x<globals.clip.x || p.y<globals.clip.y || p.x>=globals.clip.z || p.y>=globals.clip.w { discard; }
     let b=bars[v.layer-1u];var color=vec4(0.0);
-    let fill=shade(p,b);
+    let fill=bar_surface(p,b);
     for(var y=0u;y<2u;y++) { for(var x=0u;x<2u;x++) {
         let sample=p+(vec2(f32(x),f32(y))+0.5)*0.5-0.5;
         let d=box_sdf(sample,b);

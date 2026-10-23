@@ -1,5 +1,5 @@
 //! Native procedural categorical bars, no image generation or post-render scaling.
-use renderer::{Color, RendererDevice, categorical::*, data_render, encode_png};
+use renderer::{Color, Material, RendererDevice, categorical::*, data_render, encode_png};
 use std::{path::PathBuf, sync::Arc};
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let directory = PathBuf::from(
@@ -37,7 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         font_size: 18.0,
         ..Default::default()
     };
-    chart.style.material = CategoryBarMaterial::Matte;
+    chart.style.material = Material::Matte;
     let save = |r: &mut CategoricalRenderer,
                 c: &CategoricalChart,
                 name: &str|
@@ -66,7 +66,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         [72., 58., 43., 29.].map(Some).into(),
         Color::from_rgb8(61, 125, 205),
     )];
-    chart.style.material = CategoryBarMaterial::SatinMetal;
+    chart.style.material = Material::SatinMetal;
     chart.style.gloss = 0.65;
     for (id, color) in [
         ("Beta", Color::from_rgb8(67, 153, 211)),
@@ -109,14 +109,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         font_size: 18.,
         ..Default::default()
     };
-    chart.style.material = CategoryBarMaterial::Enamel;
+    chart.style.material = Material::Enamel;
     save(&mut renderer, &chart, "stacked-enamel")?;
     chart.title = "100% Stacked · Outline".into();
     chart.direction = CategoryBarDirection::Horizontal;
     chart.mode = CategoryBarMode::PercentStacked;
     chart.label_format = CategoryBarLabelFormat::Percent;
     chart.value_title = "Share".into();
-    chart.style.material = CategoryBarMaterial::Flat;
+    chart.style.material = Material::Flat;
     chart.style.outline = true;
     save(&mut renderer, &chart, "percent-outline")?;
     chart.title = "Positive and negative values".into();

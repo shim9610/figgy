@@ -51,13 +51,13 @@ chart.validate()?;
 
 ```rust,no_run
 use renderer::{CategoricalChart, CategoryBarTarget, CategoryBarOverride,
-    CategoryBarStyle, CategoryBarMaterial, CategoryBarLabels, CategoryBarLabelFormat, Color};
+    CategoryBarStyle, CategoryBarLabels, CategoryBarLabelFormat, Color, Material};
 # fn edit(chart: &mut CategoricalChart) {
 let target = CategoryBarTarget::new("a", "before");
 let mut edit = CategoryBarOverride::new(target.clone());
 edit.color = Some(Color::from_rgb8(30, 175, 165));
 edit.style = Some(CategoryBarStyle {
-    material: CategoryBarMaterial::SatinMetal,
+    material: Material::SatinMetal,
     outline: true,
     ..chart.style.clone()
 });
@@ -72,14 +72,14 @@ chart.selected = Some(target);
 
 | 옵션 | 기본값 | 범위·동작 |
 |---|---|---|
-| `material` | `Flat` | Flat, Matte, SatinMetal, Enamel, Paper |
+| `material` | `Flat` | Any [`Material`](RADIAL.md#materials) except Toon and Pearl; a bar is shaded like a flat pie top |
 | `corner_radius` | 5 | 논리 픽셀 0~32. 막대 두께·길이의 절반 이내로 제한 |
 | `outline` | false | 외곽선 켜기 |
 | `outline_width` | 1 | 논리 픽셀 0~8. 도형 안쪽으로 그림 |
 | `outline_color` | RGB(40,55,75) | RGBA 각 성분 0~1, 알파 허용 |
 | `texture_strength` | 0.2 | 0~1, 0이면 무늬 끄기 |
 | `texture_scale` | 1 | 0.1~8, 높일수록 무늬가 촘촘함 |
-| `gloss` | 0.45 | 0~1, 새틴·에나멜의 반사광 강도 |
+| `gloss` | 0.45 | 0~1; the sheen of SatinMetal and BrushedMetal (no visible effect on an Enamel bar, see [materials](RADIAL.md#materials)) |
 | `emphasis_brightness` | 0.08 | 0~0.5, 호버·선택 시 밝기 증가 |
 | `group_width` | 0.7 | 범주 칸에서 막대가 차지하는 비율, 0.1~0.95 |
 | `bar_gap` | 3 | 묶음 내 막대 사이 논리 픽셀, 0~24 |
