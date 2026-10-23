@@ -20,9 +20,7 @@ use crate::sink::{Sink, Slot, StrokeStyle};
 use crate::sketch::DecoStroker;
 use crate::text_render::{CpuTextMeasure, FontPolicy, measure_plain_text, measure_rich_text};
 
-pub(crate) use crate::data_render::contour_label_atlas::{
-    bake_contour_label_atlas, contour_label_texts,
-};
+pub(crate) use crate::data_render::{bake_contour_label_atlas, contour_label_texts};
 
 use crate::decoration_render::*;
 pub use crate::decoration_render::{draw_selection_box, draw_selection_boxes};

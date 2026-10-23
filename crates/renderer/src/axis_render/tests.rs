@@ -1,7 +1,7 @@
 use super::*;
 use crate::config::{DrawStyle, SketchOptions};
 use crate::data_config::ContourLabelConfig;
-use crate::data_render::contour_label_atlas::{
+use crate::data_render::{
     ContourLabelAtlasError, ContourLabelAtlasInput, contour_label_atlas_grid,
 };
 use crate::default::default_config;

@@ -148,7 +148,7 @@ pub(in crate::renderer) struct ContourLabelSignature {
     /// without keying the atlas to an unrelated chart axis), the face, the
     /// colours and the padding. The bake takes this and nothing else, so the
     /// compare covers all of it.
-    pub(in crate::renderer) atlas: data_render::contour_label_atlas::ContourLabelAtlasInput,
+    pub(in crate::renderer) atlas: data_render::ContourLabelAtlasInput,
     /// Runtime font registration invalidates a previously baked atlas even
     /// when every chart-owned formatting field is unchanged.
     pub(in crate::renderer) font_generation: u64,
@@ -477,7 +477,7 @@ impl PrepareContext<'_> {
             anchors.retain(|anchor| anchor.level < level_count);
             anchors.truncate(crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL as usize);
             let texts = axis_render::contour_label_texts(chart_config, labels, &contour.levels);
-            label_sig = data_render::contour_label_atlas::ContourLabelAtlasInput::from_config(
+            label_sig = data_render::ContourLabelAtlasInput::from_config(
                 chart_config,
                 labels,
                 texts,
