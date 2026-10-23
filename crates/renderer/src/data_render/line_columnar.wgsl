@@ -75,8 +75,6 @@ struct VsOut {
 };
 
 
-const AREA_FILL_TO_SERIES: u32 = 16u;
-
 fn line_step_mode() -> u32 {
     let step = (style.primitive_flags >> LINE_STEP_SHIFT) & LINE_STEP_MASK;
     // Polar arc pieces ride the transform (Config.polar), not the style.
@@ -265,9 +263,9 @@ fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
 // (hi, lo) pairs with the same one-value shift (fill to a series), or the y
 // column itself as inert filler (fill to a baseline, read from
 // Style.dash[1].xy — the bar shader's baseline convention). Each step piece
-// is one trapezoid (p0, q0, p1, q1): the line piece on top, its base piece
-// below, both produced by the same `step_piece` so their x corners agree.
-// Hardware clipping is enough here — there is no stroke SDF to protect.
+// is one trapezoid, the shared fragment `common/area_piece.wgsl`, which the
+// picker tests too. Hardware clipping is enough here — there is no stroke
+// SDF to protect.
 struct VsAreaBase {
     @location(4) base_a: vec2<f32>,
     @location(5) base_b: vec2<f32>,
@@ -284,63 +282,23 @@ fn area_baseline() -> vec2<f32> {
     return vec2<f32>(style.dash[1].x, style.dash[1].y);
 }
 
-// A baseline at or below zero on a logarithmic y axis has no position. The
-// line's samples would be masked there; masking the baseline would delete the
-// whole area instead, so it is clamped to the axis minimum (data_t = 0). This
-// is the documented exception to the sample_valid rule.
-fn area_baseline_ndc_y(base: vec2<f32>) -> f32 {
-    let value = base.x + base.y;
-    if (transform.scale_log.y != 0.0 && !(value > 0.0)) {
-        return transform.data_to_panel_offset.y * 2.0 - 1.0;
-    }
-    return data_to_ndc(transform, vec2<f32>(1.0, 0.0), base).y;
-}
-
 @vertex
 fn vs_area(in: VsIn, base: VsAreaBase, @builtin(vertex_index) vid: u32) -> AreaOut {
     var masked: AreaOut;
     masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
-    if (!sample_valid(transform, in.x_a, in.y_a) || !sample_valid(transform, in.x_b, in.y_b)) {
-        return masked;
-    }
     let to_series = (style.primitive_flags & AREA_FILL_TO_SERIES) != 0u;
-    if (to_series && (!sample_valid(transform, in.x_a, base.base_a) || !sample_valid(transform, in.x_b, base.base_b))) {
-        // A gap in either line breaks the fill exactly where it breaks the
-        // line.
-        return masked;
-    }
     let baseline = area_baseline();
-    if (!to_series && (!sample_finite(baseline.x) || !sample_finite(baseline.y))) {
+    if (!area_segment_drawn(transform, in.x_a, in.y_a, in.x_b, in.y_b, base.base_a, base.base_b, to_series, baseline)) {
         return masked;
     }
 
     let mode = line_step_mode();
     let slot = strip_slot(vid, 4u);
-    let top = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
-    // The base path steps with the same x corners: a baseline is constant, a
-    // second series follows this series' interpolation.
-    let base_ya = select(baseline, base.base_a, to_series);
-    let base_yb = select(baseline, base.base_b, to_series);
-    let bottom = step_piece(in.x_a, base_ya, in.x_b, base_yb, mode, slot.piece);
-
+    let piece = area_piece(in.x_a, in.y_a, in.x_b, in.y_b, base.base_a, base.base_b, to_series, baseline, mode, slot.piece);
     let at_b = slot.local >= 2u;
     let on_base = (slot.local & 1u) == 1u;
-    let x = select(top.x0, top.x1, at_b);
-    let y_top = select(top.y0, top.y1, at_b);
-    let y_base = select(bottom.y0, bottom.y1, at_b);
-    var ndc = data_to_ndc(transform, x, y_top);
-    if (on_base) {
-        // A polar baseline is a ring (the inner ring at or below the axis
-        // start, which is the centre when `inner_radius_fraction` is 0), so
-        // the base corner projects like a sample at the same angle.
-        if (to_series || transform.polar_angle.x > 0.5) {
-            ndc = data_to_ndc(transform, x, y_base);
-        } else {
-            ndc.y = area_baseline_ndc_y(y_base);
-        }
-    }
     var out: AreaOut;
-    out.pos = vec4<f32>(ndc, 0.0, 1.0);
+    out.pos = vec4<f32>(area_corner_ndc(transform, piece, at_b, on_base, to_series), 0.0, 1.0);
     out.polar_px = polar_clip_offset(transform, out.pos.xy);
     out.polar_limits = polar_clip_limits(transform);
     out.polar_sector = polar_clip_sector(transform);

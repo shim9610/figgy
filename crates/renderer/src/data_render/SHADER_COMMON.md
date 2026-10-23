@@ -41,6 +41,8 @@ To change shared shader code:
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
+| `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
+| `errorbar_segment.wgsl` (§5.11) | errorbar |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
@@ -184,6 +186,41 @@ colour and outline width are never taken from the resolved fill or border.
 | 나머지 | 미사용 |
 
 정점 슬롯 0-3은 선과 같고(x_a, y_a, x_b, y_b), 슬롯 4/5는 호 길이 대신 `(hi, lo)` 쌍으로 묶인 두 번째 y 컬럼(`y2_a`, `y2_b`)이다. 기준선 채움은 y 컬럼을 슬롯 4/5에 더미로 묶는다. 인스턴스 하나가 선분 하나이며 계단 모드에서는 선과 같은 조각 수만큼 사다리꼴을 낸다. 로그 y축에서 0 이하 기준선은 샘플처럼 가리지 않고 축 최솟값으로 고정한다(명시적 예외).
+
+**Trapezoids.** The fill's geometry is the fragment
+[`data_render/common/area_piece.wgsl`](common/area_piece.wgsl), spliced
+after `line_step.wgsl` into the line module:
+
+```wgsl
+const AREA_FILL_TO_SERIES: u32 = 16u;
+struct AreaPiece { top: StepPiece, bottom: StepPiece };
+fn area_segment_drawn(t: Transform, xa, ya, xb, yb, base_a, base_b: vec2<f32>,
+    to_series: bool, baseline: vec2<f32>) -> bool
+fn area_piece(xa, ya, xb, yb, base_a, base_b: vec2<f32>, to_series: bool,
+    baseline: vec2<f32>, mode: u32, k: u32) -> AreaPiece
+fn area_baseline_ndc_y(t: Transform, base: vec2<f32>) -> f32
+fn area_corner_ndc(t: Transform, piece: AreaPiece, at_b: bool, on_base: bool,
+    to_series: bool) -> vec2<f32>
+```
+
+- `area_segment_drawn` is the mask: both line samples pass `sample_valid`,
+  and so do the second series' samples (a gap in either line breaks the
+  fill) or the baseline pair is finite.
+- `area_piece` is piece `k` of the segment under the step `mode` word: the
+  line's `step_piece` on top, and below it the `step_piece` of the base path
+  with the same x corners (a constant baseline, or the second series, which
+  follows this series' interpolation).
+- `area_corner_ndc` is one corner of a piece: the top corner projects the
+  line's sample; a base corner projects the second series' sample, or in a
+  polar chart the baseline at the same angle (a ring), or else keeps the top
+  corner's x with `area_baseline_ndc_y` (the log-axis clamp above).
+- `vs_area` emits each piece as the strip (A top, A base, B top, B base):
+  the triangles (A top, A base, B top) and (A base, B top, B base), no face
+  culled. A line that crosses its base inside a piece draws those two
+  triangles, not the crossing's bow tie.
+
+CPU twin: `line_step::step_pieces` for the pieces; the baseline pair is the
+CPU's `split_f64_to_f32_pair`.
 
 ### 2.3 `field_columnar.wgsl`의 `Style` 사용
 
@@ -639,6 +676,69 @@ The struct, the constants and the two functions are the fragment
 [`data_render/common/contour_label_box.wgsl`](common/contour_label_box.wgsl),
 spliced after `projection.wgsl` into the contour label and field modules by
 `wgsl_module!` (`shader_assembly.rs`).
+
+### 5.11 Error-bar quads
+
+An error bar is drawn by `errorbar_columnar.wgsl` (`vs_main`, `vs_mapped`,
+`vs_sketch` and the Milkyway `vs_jet`). One instance emits 36 vertices: six
+axis-aligned quads, each two triangles, in a fixed order. The geometry is one
+function set:
+
+```wgsl
+const ERRORBAR_HAS_Y: u32 = 1u;  const ERRORBAR_HAS_X: u32 = 2u;
+const JET_BEAM_HALO: f32 = 4.0;  const JET_KNOT_HALO: f32 = 1.7;
+struct ErrorBarSample { x, y, err_y_lo, err_y_hi, err_x_lo, err_x_hi: vec2<f32> };
+struct ErrorBarStroke { stem_half: f32, cap_half: f32, cap_stroke_half: f32 };
+struct ErrorBarSegment { a: DataPoint, b: DataPoint, a_px: vec2<f32>,
+    b_px: vec2<f32>, perp: vec2<f32>, half_stroke: f32 };
+fn errorbar_stroke(line_width_px: f32, cap_half_px: f32, cap_width_px: f32) -> ErrorBarStroke
+fn errorbar_jet_stroke(line_width_px: f32, cap_half_px: f32) -> ErrorBarStroke
+fn errorbar_segment_enabled(flags: u32, seg: u32) -> bool
+fn errorbar_segment(seg: u32, s: ErrorBarSample, stroke: ErrorBarStroke) -> ErrorBarSegment
+fn errorbar_corner(vi: u32) -> ErrorBarCorner
+fn errorbar_corner_ndc(t: Transform, g: ErrorBarSegment, at_a: bool, across_px: f32) -> vec2<f32>
+fn errorbar_sketch_offset(amp: f32, seed: u32, seg: u32, at_a: bool) -> f32
+```
+
+- Quad `seg` (`vi / 6`): 0 the Y stem from `y - err_y_lo` to
+  `y + err_y_hi` at `x`, 1 and 2 the caps at those ends, 3 the X stem from
+  `x - err_x_lo` to `x + err_x_hi` at `y`, 4 and 5 its caps. The pair
+  arithmetic is `pair_sum` / `pair_sub` on the hi/lo lanes. A stem's ends A
+  and B are data points with no pixel offset and no extension past them; a
+  cap's A and B are the same data point offset by `∓cap_half` pixels (y up)
+  along the cap. `perp` is the expansion axis, perpendicular to the quad, and
+  `half_stroke` the half width along it: `stem_half` for a stem,
+  `cap_stroke_half` for a cap.
+- `errorbar_segment_enabled` reads `Style.primitive_flags`
+  (`ERRORBAR_HAS_Y`, `ERRORBAR_HAS_X`): a direction the series does not draw
+  collapses to the anchor, caps included, whatever its (filler) columns hold.
+- `errorbar_stroke` is the style's sizes (`Style.line_width_px`,
+  `cap_half_px`, `cap_width_px`, or the resolved per-point style);
+  `errorbar_jet_stroke` the jet's: a beam half width of
+  `max(line_width / 2, 1.2) · JET_BEAM_HALO` and a square knot of half size
+  `max(cap_half, 3) · JET_KNOT_HALO`, whose glow fades to zero at the disc
+  the square inscribes.
+- `errorbar_corner` maps the triangle list `[0, 1, 2, 2, 1, 3]` onto the
+  corners A−, A+, B−, B+; `errorbar_corner_ndc` places a corner at its end's
+  data point (`data_to_ndc`) plus its pixel offset and `across_px` along
+  `perp` (`side · half_stroke`, plus the sketch offset).
+- Sketch: `errorbar_sketch_offset` displaces end A or B of quad `seg` along
+  `perp` by `amp · sketch_noise(2·seg + end, seed)`, the seed
+  `(style_params[0].z ^ series_salt) + global point index`. Both corners of
+  an end share it, so the quad stays a parallelogram of the same width.
+- The draw masks no sample: a log axis clamps a nonpositive end
+  (`maybe_log`), and a non-finite one makes no triangle.
+
+The per-point style rows of the precise mapped entry (`ErrorBarStyleSlot`,
+`ResolvedErrorBarStyle`, the `ERRORBAR_STYLE_MASK_*` bits,
+`valid_errorbar_style_index` and `apply_errorbar_style_slot`: base, then the
+slot the index column names, then every sparse override) are part of the
+fragment too. CPU twin of the rows: `renderer::style::errorbar_style_slot_gpu`.
+
+The struct, the constants and the functions are the fragment
+[`data_render/common/errorbar_segment.wgsl`](common/errorbar_segment.wgsl),
+spliced after `sketch_noise.wgsl` into the errorbar module by `wgsl_module!`
+(`shader_assembly.rs`).
 
 ---
 ## Checklist
