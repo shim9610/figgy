@@ -1111,10 +1111,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &["data_render/line_columnar_a.wgsl", "gpu_pick/line.wgsl"],
-        &["dash_pattern_on", "line_stroke_distance"],
-    ),
-    (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
         &["hash", "noise"],
     ),
