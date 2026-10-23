@@ -51,7 +51,7 @@ const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     (
         "bounded_axes.rs",
         include_str!("../src/bounded_axes.rs"),
-        &["draw_line"],
+        &[],
     ),
     (
         "radial_layout.rs",

@@ -192,7 +192,7 @@ match frame_decision(
                 &mut view,
                 &display_chart,
                 rect,
-                &sel_boxes,
+                selected_id.as_deref(), // 선택된 요소 id, 예: Some("data_area")
             )?;
         } else if annotation_dirty {
             renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
@@ -1017,10 +1017,14 @@ annotation methods keep working on every layer.
 
 ### Cartesian selection helpers (`FiggyChart`)
 
-`FiggyChart.decoration_bounds(id)` returns measured bounds
-and resize handles in physical canvas pixels. For polar angle or radius tick
-labels, whose selection outlines each drawn label, it also returns `labels`:
-one `[x, y, width, height]` box per drawn label, the boxes the canvas draws. `step_selection(dx, dy)` navigates
+`FiggyChart.decoration_bounds(id)` returns measured bounds (`rect`)
+and resize handles (`handles`) in physical canvas pixels. For an element whose
+selection outlines its drawn parts (polar angle and radius tick labels, the
+polar ray, annotations), it also returns `outline`: a list of polygons, one per
+drawn part, each a list of `[x, y]` corners in physical canvas pixels. They are
+exactly the shapes the canvas strokes around the selection: a text block or
+rectangle as its box padded by 2 logical px, a stroke as the thin oriented box
+around it, and an arrow head as its triangle grown outward. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices, without
 copying arrays. For a point, `dx` moves the source index and `dy` switches
 between the series that draw points or lines; a selected point-vector arrow

@@ -77,28 +77,38 @@ pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
 /// position and maps to the axis start.
 pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     let t = match axis.scale {
-        AxisScale::Linear => {
-            let range = axis.max - axis.min;
-            if range == 0.0 {
-                0.0
-            } else {
-                (value - axis.min) / range
-            }
-        }
+        AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
         AxisScale::Logarithmic => {
             let (min, max) = guarded_log_range(axis.min, axis.max);
-            let log_min = min.log10();
-            let log_max = max.log10();
-            let range = log_max - log_min;
-            if range == 0.0 || value <= 0.0 {
-                0.0
-            } else {
-                (value.log10() - log_min) / range
-            }
+            span_fraction(value, min, max, true)
         }
-    };
+    }
+    .unwrap_or(0.0);
     let t = if axis.inverted { 1.0 - t } else { t };
     t as f32
+}
+
+/// Where `value` falls between `min` and `max`, linearly or by decades: the
+/// formula under [`axis_fraction`] and the annotation space. `None` when the
+/// value has no position: a non-finite value, an empty or non-finite span,
+/// or a non-positive value or bound on a logarithmic span.
+pub fn span_fraction(value: f64, min: f64, max: f64, logarithmic: bool) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let (value, min, max) = if logarithmic {
+        if value <= 0.0 || min <= 0.0 || max <= 0.0 {
+            return None;
+        }
+        (value.log10(), min.log10(), max.log10())
+    } else {
+        (value, min, max)
+    };
+    let span = max - min;
+    if !span.is_finite() || span == 0.0 {
+        return None;
+    }
+    Some((value - min) / span)
 }
 
 /// The colourbar and its strip rect when it is drawn: present, visible and

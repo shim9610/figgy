@@ -70,9 +70,35 @@ Collected on `integration/0.19`; the release entry replaces this section.
     triangle grows 2 px outward; a rectangle 2 px). Its label gaps are relative to
     the label font (`LINE_LABEL_INSET_EM`, `ARROW_LABEL_GAP_EM`), so they scale
     with the display scale.
-  - The polar ray is grabbed within 3 px of each stroke (was 4); the data area,
-    the legend and the colourbar strip hit inside their padded selection box
-    like every other element.
+  - Every element hits inside its padded selection box (2 px outside its
+    bounds): the data area, the legend, the colourbar strip, the chart and
+    axis titles and every bounded chart decoration, like the axes and tick
+    labels did before. An element that outlines its parts hits inside each
+    part's outline (`select::part_outline`, the one shape of the hit test,
+    the canvas highlight and a host's outline): a text block or rectangle as
+    its box grown by 2 px, a stroke as the box `max(width / 2 + 2, 3)` px
+    either side of its line and 2 px beyond its ends (the plan said
+    `max(width / 2, 3)`; the polar ray is grabbed within 3 px, was 4), an
+    arrow head as its triangle grown 2 px outward. A text annotation is one
+    box.
+  - `ARROW_LABEL_GAP` and `LINE_LABEL_INSET` (pixels) are gone; the gaps are
+    `ARROW_LABEL_GAP_EM` and `LINE_LABEL_INSET_EM` (em of the label font).
+  - A host element registered in its own `HitMap` (its default `element_id`
+    is `"custom"`) or a map built for another layer is not highlighted by
+    `refresh_axis_with_selection`, which resolves ids on the active layer's
+    standard registration; a host draws such a highlight itself from the
+    element's `SelectionGeometry::selection_box` with
+    `axis_render::draw_selection_box(canvas, &box, origin, scale)`.
+    `Renderer::selection_box` and a refresh with a selected id build the
+    active layer's `HitMap` once per refresh to resolve the id (a `Vec` of
+    boxed elements and a `String` per compared id).
+  - A layered document expands its base panel (`select::on_drawn_panel`,
+    the renderer's own expansion, SSOT configuration) for every placement
+    the model runs for a hit test or a drag step; a single-layer document
+    copies nothing.
+  - The browser wrapper's `decoration_bounds(id)` returns `outline` (one
+    polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
+    instead of `labels` for an element that outlines its parts.
   - Removed: `pick_nearest_point`, `PointPickOptions`, `PointColumnLookup`
     (hosts pick through `pick_chart` / `pick_chart_data`; the CPU twins are
     test support under the `cpu-twin` feature), `errorbar_extent`,

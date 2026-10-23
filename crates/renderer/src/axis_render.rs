@@ -156,7 +156,7 @@ fn finish_decoration_layer(
     let ox = config.chart_area.0.x as f32;
     let oy = config.chart_area.0.y as f32;
     for b in selection {
-        draw_selection_box(canvas, &b.translated(-ox, -oy));
+        draw_selection_box(canvas, b, [ox, oy], 1.0);
     }
 }
 

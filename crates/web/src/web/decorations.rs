@@ -667,20 +667,15 @@ impl FiggyChart {
                         "rect": [r.x, r.y, r.width, r.height],
                         "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
                     });
-                    // Polar tick labels are outlined one box per drawn label;
-                    // the host gets the same boxes the canvas draws.
+                    // An element that outlines its parts (polar tick labels,
+                    // the polar ray) gets one polygon per part: the shapes
+                    // the canvas strokes and the hit test answers within.
                     if let renderer::SelectionOutline::Parts(parts) = b.outline() {
-                        let labels: Vec<Vec<f32>> = parts
+                        let outline: Vec<Vec<[f32; 2]>> = parts
                             .iter()
-                            .filter_map(|part| match part {
-                                renderer::DrawnPart::Text(r) => {
-                                    let r = r.expanded(renderer::select::SELECTION_PADDING);
-                                    Some(vec![r.x, r.y, r.width, r.height])
-                                }
-                                _ => None,
-                            })
+                            .map(|part| renderer::select::part_outline(part).corners().to_vec())
                             .collect();
-                        value["labels"] = serde_json::json!(labels);
+                        value["outline"] = serde_json::json!(outline);
                     }
                     value
                 });

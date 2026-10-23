@@ -150,35 +150,6 @@ impl DrawnPart {
             }
         }
     }
-
-    pub fn translated(&self, dx: f32, dy: f32) -> Self {
-        let p = |p: [f32; 2]| [p[0] + dx, p[1] + dy];
-        match *self {
-            DrawnPart::Text(r) => DrawnPart::Text(r.translated(dx, dy)),
-            DrawnPart::Rect(r) => DrawnPart::Rect(r.translated(dx, dy)),
-            DrawnPart::Segment { a, b, width } => DrawnPart::Segment {
-                a: p(a),
-                b: p(b),
-                width,
-            },
-            DrawnPart::Triangle(t) => DrawnPart::Triangle([p(t[0]), p(t[1]), p(t[2])]),
-        }
-    }
-
-    /// The part at `scale` times its size about the origin.
-    pub fn scaled(&self, scale: f32) -> Self {
-        let p = |p: [f32; 2]| [p[0] * scale, p[1] * scale];
-        match *self {
-            DrawnPart::Text(r) => DrawnPart::Text(r.scaled(scale)),
-            DrawnPart::Rect(r) => DrawnPart::Rect(r.scaled(scale)),
-            DrawnPart::Segment { a, b, width } => DrawnPart::Segment {
-                a: p(a),
-                b: p(b),
-                width: width * scale,
-            },
-            DrawnPart::Triangle(t) => DrawnPart::Triangle([p(t[0]), p(t[1]), p(t[2])]),
-        }
-    }
 }
 
 /// A sink that hands every part on as a [`DrawnPart`], the slot dropped:

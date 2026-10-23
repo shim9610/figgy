@@ -532,10 +532,7 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     {
         sink.ensure(Slot::Above);
         if let Some(c) = sink.overlay.as_mut() {
-            crate::axis_render::draw_selection_box(
-                c,
-                &selection.translated(-origin[0], -origin[1]).scaled(scale),
-            );
+            crate::axis_render::draw_selection_box(c, &selection, origin, scale);
         }
     }
     AnnotationRaster {

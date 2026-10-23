@@ -71,34 +71,7 @@ pub(crate) fn log_decade_step(min: f64, max: f64) -> f64 {
     }
 }
 
-/// Fallback lower bound for invalid manual log-axis ranges.
-pub(crate) const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
-
-/// Renderer-side guard for log-axis ranges.
-pub(crate) fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
-    let min = if min.is_finite() && min > 0.0 {
-        min
-    } else {
-        LOG_RANGE_FALLBACK_MIN
-    };
-    if max.is_finite() && max > min {
-        return (min, max);
-    }
-
-    let upper = min * 10.0;
-    if upper.is_finite() && upper > min {
-        return (min, upper);
-    }
-
-    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
-    // finite, ordered fallback by putting the synthetic decade below it.
-    let lower = min / 10.0;
-    if lower.is_finite() && lower > 0.0 && lower < min {
-        return (lower, min);
-    }
-
-    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
-}
+pub(crate) use crate::layout::guarded_log_range;
 
 /// Positive-preserving padding for a log-scale axis: pad by
 /// `padding_ratio · span` in log space on each side, then back to linear.
@@ -1052,11 +1025,6 @@ mod tests {
         assert_eq!(b, 5.0);
     }
 
-    /// The widest bound is not at a value extreme — per-column min/max
-    /// composition would get this wrong (0−5 = −5), the pairwise pass right.
-    /// NaN values are gaps (skipped); NaN errors draw no bar, so they
-    /// contribute the bare value. Offsets past the error column's end
-    /// default to zero.
     #[test]
     fn auto_fit_y_extent_linear_pads_both_sides() {
         let mut c = Chart::new(dummy_config());

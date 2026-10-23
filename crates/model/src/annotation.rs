@@ -18,7 +18,7 @@ use crate::color::Color;
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::AnnotationLayer;
-use crate::layout::{NudgeReject, NudgeResult, RectF};
+use crate::layout::{NudgeReject, NudgeResult, RectF, span_fraction};
 use crate::line::LineStylePreset;
 use crate::resize::{HANDLE_SIZE, Resizable, ResizeHandle};
 use crate::select::{SELECTION_PADDING, Selectable};
@@ -442,23 +442,8 @@ impl AxisSpace {
             return None;
         }
         let t = match self.map {
-            AxisMap::Linear { min, max } => {
-                let span = max - min;
-                if !span.is_finite() || span == 0.0 {
-                    return None;
-                }
-                (value - min) / span
-            }
-            AxisMap::Log { min, max } => {
-                if value <= 0.0 || min <= 0.0 || max <= 0.0 {
-                    return None;
-                }
-                let span = max.log10() - min.log10();
-                if !span.is_finite() || span == 0.0 {
-                    return None;
-                }
-                (value.log10() - min.log10()) / span
-            }
+            AxisMap::Linear { min, max } => span_fraction(value, min, max, false)?,
+            AxisMap::Log { min, max } => span_fraction(value, min, max, true)?,
             AxisMap::Index { count } => {
                 if count == 0 {
                     return None;
@@ -1148,8 +1133,12 @@ impl Selectable<AnnotationLayer> for AnnotationElement {
 
     /// An item is outlined and hit on its parts: a diagonal arrow's box
     /// would cover the chart.
-    fn outlines_parts(&self, _cfg: &AnnotationLayer) -> bool {
-        true
+    /// A line, span or arrow outlines its parts (a diagonal or a long thin
+    /// stroke has no useful box); a text item is one box.
+    fn outlines_parts(&self, cfg: &AnnotationLayer) -> bool {
+        cfg.items
+            .get(self.index)
+            .is_some_and(|item| !matches!(item.kind, AnnotationKind::Text { .. }))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable<AnnotationLayer>> {

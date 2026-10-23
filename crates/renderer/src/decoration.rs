@@ -211,7 +211,7 @@ impl DecorationMap {
             return;
         };
         if let Some(selection) = self.selection_box(*id) {
-            crate::axis_render::draw_selection_box(canvas, &selection.scaled(scale));
+            crate::axis_render::draw_selection_box(canvas, &selection, [0.0, 0.0], scale);
         }
     }
 }

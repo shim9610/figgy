@@ -62,11 +62,10 @@ pub enum SelectionOutline {
     Parts(Vec<DrawnPart>),
 }
 
-/// The blue box drawn around a selected element. Built only by
-/// [`SelectionGeometry::selection_box`], from the element's emitted parts,
-/// and moved or scaled as a whole by [`SelectionBox::translated`] and
-/// [`SelectionBox::scaled`]; consumed by the renderer's raster pass and by
-/// host UI.
+/// The blue box drawn around a selected element, in the chart frame. Built
+/// only by [`SelectionGeometry::selection_box`], from the element's emitted
+/// parts; the renderer's raster pass and host UI read it through its
+/// accessors and map it into their own frame and scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionBox {
     rect: RectF,
@@ -99,40 +98,6 @@ impl SelectionBox {
     /// What the highlight outlines: `rect`, or each drawn part.
     pub fn outline(&self) -> &SelectionOutline {
         &self.outline
-    }
-
-    /// The box moved by `(dx, dy)`: the renderer shifts a box into a
-    /// raster's own frame with it.
-    pub fn translated(&self, dx: f32, dy: f32) -> Self {
-        Self {
-            rect: self.rect.translated(dx, dy),
-            color: self.color,
-            stroke_width: self.stroke_width,
-            handles: self.handles.iter().map(|h| h.translated(dx, dy)).collect(),
-            outline: match &self.outline {
-                SelectionOutline::Rect => SelectionOutline::Rect,
-                SelectionOutline::Parts(parts) => {
-                    SelectionOutline::Parts(parts.iter().map(|p| p.translated(dx, dy)).collect())
-                }
-            },
-        }
-    }
-
-    /// The box at `scale` times its size about the origin, stroke width
-    /// included: a raster drawn at a physical scale draws it with this.
-    pub fn scaled(&self, scale: f32) -> Self {
-        Self {
-            rect: self.rect.scaled(scale),
-            color: self.color,
-            stroke_width: self.stroke_width * scale,
-            handles: self.handles.iter().map(|h| h.scaled(scale)).collect(),
-            outline: match &self.outline {
-                SelectionOutline::Rect => SelectionOutline::Rect,
-                SelectionOutline::Parts(parts) => {
-                    SelectionOutline::Parts(parts.iter().map(|p| p.scaled(scale)).collect())
-                }
-            },
-        }
     }
 }
 
@@ -205,10 +170,8 @@ pub trait SelectionGeometry<C: DragConfig = Config> {
 
     /// Whether `(x, y)` is inside what the selection outlines: the box
     /// [`SELECTION_PADDING`] px around the bounds, or, for an element that
-    /// [`Selectable::outlines_parts`], the outline of one of its parts (a
-    /// text block or rectangle grown by the padding, the box
-    /// [`segment_grab_half_width`] either side of a stroke and the padding
-    /// beyond its ends, the [`padded_triangle`] of a triangle).
+    /// [`Selectable::outlines_parts`], the [`part_outline`] of one of its
+    /// parts.
     fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool;
 
     /// The selection policy: a blue box [`SELECTION_PADDING`] px outside the
@@ -223,14 +186,79 @@ fn part_extent(part: &DrawnPart) -> RectF {
     part.extent()
 }
 
-/// Whether `(x, y)` is inside the outline of a drawn part: the renderer
-/// draws exactly these shapes around a per-part selection.
-fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
-    match *part {
-        DrawnPart::Text(r) | DrawnPart::Rect(r) => r.expanded(SELECTION_PADDING).contains(x, y),
-        DrawnPart::Segment { a, b, width } => segment_contains([x, y], a, b, width),
-        DrawnPart::Triangle(t) => in_triangle([x, y], padded_triangle(t)),
+/// The shape a per-part selection draws around one drawn part, in the
+/// part's frame, and the region the part is grabbed in: the one geometry of
+/// the hit test, the renderer's highlight and a host's outline. A text block
+/// or rectangle is its box grown by [`SELECTION_PADDING`]; a stroke is the
+/// box [`segment_grab_half_width`] either side of its line and the padding
+/// beyond its ends; a triangle is its [`padded_triangle`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartOutline {
+    Quad([[f32; 2]; 4]),
+    Triangle([[f32; 2]; 3]),
+}
+
+impl PartOutline {
+    /// The corners in drawing order; the polygon closes on the first.
+    pub fn corners(&self) -> &[[f32; 2]] {
+        match self {
+            PartOutline::Quad(c) => c,
+            PartOutline::Triangle(c) => c,
+        }
     }
+
+    /// Whether `(x, y)` is inside the outline, its edge included.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let c = self.corners();
+        let side =
+            |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        let (mut positive, mut negative) = (false, false);
+        for i in 0..c.len() {
+            let d = side(c[i], c[(i + 1) % c.len()]);
+            positive |= d > 0.0;
+            negative |= d < 0.0;
+        }
+        !(positive && negative)
+    }
+}
+
+/// The [`PartOutline`] of `part`.
+pub fn part_outline(part: &DrawnPart) -> PartOutline {
+    match *part {
+        DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+            let r = r.expanded(SELECTION_PADDING);
+            PartOutline::Quad([
+                [r.x, r.y],
+                [r.x + r.width, r.y],
+                [r.x + r.width, r.y + r.height],
+                [r.x, r.y + r.height],
+            ])
+        }
+        DrawnPart::Segment { a, b, width } => {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let len = d[0].hypot(d[1]);
+            let (dir, n) = if len > 0.0 {
+                ([d[0] / len, d[1] / len], [-d[1] / len, d[0] / len])
+            } else {
+                ([1.0, 0.0], [0.0, 1.0])
+            };
+            let half = segment_grab_half_width(width);
+            let along = SELECTION_PADDING;
+            let p = |s: f32, t: f32| [a[0] + dir[0] * s + n[0] * t, a[1] + dir[1] * s + n[1] * t];
+            PartOutline::Quad([
+                p(-along, -half),
+                p(len + along, -half),
+                p(len + along, half),
+                p(-along, half),
+            ])
+        }
+        DrawnPart::Triangle(t) => PartOutline::Triangle(padded_triangle(t)),
+    }
+}
+
+/// Whether `(x, y)` is inside the outline of a drawn part.
+fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
+    part_outline(part).contains(x, y)
 }
 
 /// Half the width of the box a stroke `width` across is outlined and
@@ -238,26 +266,6 @@ fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
 /// [`STROKE_GRAB_HALF_WIDTH`].
 pub fn segment_grab_half_width(width: f32) -> f32 {
     (width * 0.5 + SELECTION_PADDING).max(STROKE_GRAB_HALF_WIDTH)
-}
-
-/// Whether `p` is inside the outline of the segment `a`..`b` stroked
-/// `width` across: within [`segment_grab_half_width`] of its line and
-/// within [`SELECTION_PADDING`] beyond either end.
-pub fn segment_contains(p: [f32; 2], a: [f32; 2], b: [f32; 2], width: f32) -> bool {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let len = d[0].hypot(d[1]);
-    let rel = [p[0] - a[0], p[1] - a[1]];
-    let (along, across) = if len > 0.0 {
-        let dir = [d[0] / len, d[1] / len];
-        (
-            rel[0] * dir[0] + rel[1] * dir[1],
-            rel[0] * dir[1] - rel[1] * dir[0],
-        )
-    } else {
-        (0.0, rel[0].hypot(rel[1]))
-    };
-    (-SELECTION_PADDING..=len + SELECTION_PADDING).contains(&along)
-        && across.abs() <= segment_grab_half_width(width)
 }
 
 /// The triangle `t` with every edge moved [`SELECTION_PADDING`] px outward:
@@ -290,13 +298,6 @@ pub fn padded_triangle(t: [[f32; 2]; 3]) -> [[f32; 2]; 3] {
         out[i] = [v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])];
     }
     out
-}
-
-fn in_triangle(p: [f32; 2], t: [[f32; 2]; 3]) -> bool {
-    let side =
-        |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
-    (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
 }
 
 /// The bounds sink: `Some(None)` when the element draws nothing, `None`
@@ -858,33 +859,27 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     }
 }
 
-/// The config the renderer draws the base layer of a layered document with
-/// (the expanded base panel, or the document without its layers when it does
-/// not expand at this size, as the renderer's panel expansion does), or `None`
-/// for a single-layer document, which is drawn as it is.
-pub fn drawn_base_panel(cfg: &Config) -> Option<Config> {
+/// Run `f` on the config the renderer draws the base layer of `cfg` with: a
+/// single-layer document as it is; a layered one as its expanded base panel
+/// (the expansion's own copy of the SSOT configuration, borrowed here), or
+/// without its layers when it does not expand at this size, as the
+/// renderer's panel expansion does.
+pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
     if cfg.overlays.is_empty() && cfg.subplots.is_empty() {
-        return None;
+        return f(cfg);
     }
     match cfg.expand() {
-        Ok(expansion) => expansion
-            .panel(LayerRef::Base)
-            .map(|panel| panel.config.clone()),
+        Ok(expansion) => match expansion.panel(LayerRef::Base) {
+            Some(panel) => f(&panel.config),
+            None => f(cfg),
+        },
         Err(_) => {
             let mut panel = cfg.clone();
             panel.overlays.clear();
             panel.subplots.clear();
             panel.active_layer = LayerRef::Base;
-            Some(panel)
+            f(&panel)
         }
-    }
-}
-
-/// Run `f` on the config the base layer of `cfg` is drawn with.
-fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
-    match drawn_base_panel(cfg) {
-        Some(panel) => f(&panel),
-        None => f(cfg),
     }
 }
 
@@ -1498,26 +1493,47 @@ pub(crate) mod tests {
         let (a, b) = ([10.0, 10.0], [50.0, 10.0]);
         assert_eq!(segment_grab_half_width(1.0), STROKE_GRAB_HALF_WIDTH);
         assert_eq!(segment_grab_half_width(6.0), 3.0 + SELECTION_PADDING);
-        assert!(segment_contains([30.0, 12.9], a, b, 1.0));
-        assert!(!segment_contains([30.0, 13.1], a, b, 1.0));
-        assert!(segment_contains([8.1, 10.0], a, b, 1.0));
-        assert!(!segment_contains([7.9, 10.0], a, b, 1.0));
-        assert!(segment_contains([51.9, 10.0], a, b, 1.0));
-        assert!(!segment_contains([52.1, 10.0], a, b, 1.0));
-        // A degenerate stroke is a dot grabbed within the same half width.
-        assert!(segment_contains([12.0, 10.0], a, a, 1.0));
-        assert!(!segment_contains([13.5, 10.0], a, a, 1.0));
+        let stroke = |a, b, width| part_outline(&DrawnPart::Segment { a, b, width });
+        let thin = stroke(a, b, 1.0);
+        assert!(thin.contains(30.0, 12.9));
+        assert!(!thin.contains(30.0, 13.1));
+        assert!(thin.contains(8.1, 10.0));
+        assert!(!thin.contains(7.9, 10.0));
+        assert!(thin.contains(51.9, 10.0));
+        assert!(!thin.contains(52.1, 10.0));
+        assert_eq!(
+            thin,
+            PartOutline::Quad([[8.0, 7.0], [52.0, 7.0], [52.0, 13.0], [8.0, 13.0]])
+        );
+        // A degenerate stroke is a dot grabbed within the same box.
+        let dot = stroke(a, a, 1.0);
+        assert!(dot.contains(12.0, 10.0));
+        assert!(!dot.contains(13.5, 10.0));
+        // A rectangle grows by the padding on every side.
+        let rect = RectF {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 5.0,
+        };
+        assert_eq!(
+            part_outline(&DrawnPart::Rect(rect)),
+            PartOutline::Quad([[8.0, 8.0], [32.0, 8.0], [32.0, 17.0], [8.0, 17.0]])
+        );
 
         // A right triangle grows 2 px outward on every edge: the point 1 px
         // outside the bottom edge is inside the padded triangle, 3 px is not.
         let t = [[0.0, 0.0], [40.0, 0.0], [0.0, 30.0]];
-        let padded = padded_triangle(t);
-        assert!(in_triangle([20.0, -1.0], padded));
-        assert!(!in_triangle([20.0, -3.0], padded));
-        assert!((padded[0][0] + SELECTION_PADDING).abs() < 1e-5);
-        assert!((padded[0][1] + SELECTION_PADDING).abs() < 1e-5);
+        let padded = part_outline(&DrawnPart::Triangle(t));
+        assert!(padded.contains(20.0, -1.0));
+        assert!(!padded.contains(20.0, -3.0));
+        let PartOutline::Triangle(corners) = padded else {
+            panic!("a triangle outlines a triangle");
+        };
+        assert!((corners[0][0] + SELECTION_PADDING).abs() < 1e-5);
+        assert!((corners[0][1] + SELECTION_PADDING).abs() < 1e-5);
         for v in t {
-            assert!(in_triangle(v, padded));
+            assert!(padded.contains(v[0], v[1]));
         }
         assert_eq!(padded_triangle([a, a, b]), [a, a, b]);
     }

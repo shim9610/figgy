@@ -12,10 +12,8 @@ use crate::config::ColorBarOptions;
 use crate::decoration_render::draw_colorbar_strip;
 use crate::layout::RectF;
 use crate::raster::{Canvas, Paint};
-use crate::select::{
-    SELECTION_PADDING, SelectionBox, SelectionOutline, padded_triangle, segment_grab_half_width,
-};
-use crate::sink::{Border, DrawnPart, PlacedText, Sink, Slot, StrokeStyle, TextRef};
+use crate::select::{SelectionBox, SelectionOutline, part_outline};
+use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::DecoStroker;
 use crate::text_render::{FontPolicy, draw_plain_text, draw_rich_text};
 
@@ -203,23 +201,36 @@ impl Sink for CanvasSink<'_> {
     }
 }
 
-/// Draw one selection highlight box — the raster realization of the model's
-/// selection policy. Box coordinates are taken as-is in the canvas frame.
-/// A box that outlines its parts strokes each part where it is drawn: a
-/// text block or rectangle as its padded box, a segment as the thin oriented
-/// box around it, a triangle as itself. Resize handles (when present) are
-/// drawn as white squares with the selection color as border, slide-editor
-/// style.
-pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox) {
-    let outline = Paint::stroke(&b.color(), b.stroke_width());
+/// Draw one selection highlight box, the raster realization of the model's
+/// selection policy. `b` is in the chart frame; the canvas shows the chart
+/// from `origin` at `scale`, so every coordinate and the stroke width are
+/// mapped through `(p - origin) * scale`. A box that outlines its parts
+/// strokes each part's [`part_outline`] (the shape its hit test answers
+/// within, computed in the chart frame and then mapped, so the two agree at
+/// every scale). Resize handles (when present) are drawn as white squares
+/// with the selection color as border, slide-editor style.
+pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2], scale: f32) {
+    let map = |p: [f32; 2]| ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale);
+    let rect = |r: RectF| {
+        let (x, y) = map([r.x, r.y]);
+        (x, y, r.width * scale, r.height * scale)
+    };
+    let outline = Paint::stroke(&b.color(), b.stroke_width() * scale);
     match b.outline() {
         SelectionOutline::Rect => {
-            let r = b.rect();
-            canvas.draw_rect(r.x, r.y, r.width, r.height, &outline);
+            let (x, y, w, h) = rect(b.rect());
+            canvas.draw_rect(x, y, w, h, &outline);
         }
         SelectionOutline::Parts(parts) => {
+            // Four corners and the closing point: the largest outline.
+            let mut pts = [(0.0, 0.0); 5];
             for part in parts {
-                draw_part_outline(canvas, part, &outline);
+                let corners = part_outline(part);
+                let corners = corners.corners();
+                for (slot, c) in pts.iter_mut().zip(corners.iter().chain(corners.first())) {
+                    *slot = map(*c);
+                }
+                canvas.draw_polyline(&pts[..corners.len() + 1], &outline);
             }
         }
     }
@@ -229,53 +240,20 @@ pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox) {
     }
     let fill = Paint::fill(&Color::WHITE);
     for h in b.handles() {
-        canvas.draw_rect(h.x, h.y, h.width, h.height, &fill);
-        canvas.draw_rect(h.x, h.y, h.width, h.height, &outline);
+        let (x, y, w, h) = rect(*h);
+        canvas.draw_rect(x, y, w, h, &fill);
+        canvas.draw_rect(x, y, w, h, &outline);
     }
 }
 
 /// Draw selection highlight boxes, each as [`draw_selection_box`].
-pub fn draw_selection_boxes(canvas: &mut Canvas, boxes: &[SelectionBox]) {
+pub fn draw_selection_boxes(
+    canvas: &mut Canvas,
+    boxes: &[SelectionBox],
+    origin: [f32; 2],
+    scale: f32,
+) {
     for b in boxes {
-        draw_selection_box(canvas, b);
-    }
-}
-
-fn draw_part_outline(canvas: &mut Canvas, part: &DrawnPart, outline: &Paint) {
-    match *part {
-        DrawnPart::Text(r) | DrawnPart::Rect(r) => {
-            let r = r.expanded(SELECTION_PADDING);
-            canvas.draw_rect(r.x, r.y, r.width, r.height, outline);
-        }
-        DrawnPart::Segment { a, b, width } => {
-            let d = [b[0] - a[0], b[1] - a[1]];
-            let len = d[0].hypot(d[1]);
-            let (dir, n) = if len > 0.0 {
-                ([d[0] / len, d[1] / len], [-d[1] / len, d[0] / len])
-            } else {
-                ([1.0, 0.0], [0.0, 1.0])
-            };
-            let half = segment_grab_half_width(width);
-            let along = SELECTION_PADDING;
-            let p = |s: f32, t: f32| (a[0] + dir[0] * s + n[0] * t, a[1] + dir[1] * s + n[1] * t);
-            let corners = [
-                p(-along, -half),
-                p(len + along, -half),
-                p(len + along, half),
-                p(-along, half),
-                p(-along, -half),
-            ];
-            canvas.draw_polyline(&corners, outline);
-        }
-        DrawnPart::Triangle(t) => {
-            let t = padded_triangle(t);
-            let pts = [
-                (t[0][0], t[0][1]),
-                (t[1][0], t[1][1]),
-                (t[2][0], t[2][1]),
-                (t[0][0], t[0][1]),
-            ];
-            canvas.draw_polyline(&pts, outline);
-        }
+        draw_selection_box(canvas, b, origin, scale);
     }
 }

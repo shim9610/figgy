@@ -1,4 +1,4 @@
-use crate::select::{drawn_base_panel, emit_element};
+use crate::select::{emit_element, on_drawn_panel};
 use crate::sink::Parts;
 use crate::text::MeasureText;
 
@@ -73,7 +73,9 @@ impl Config {
     /// moved element can always be selected again. `None` when `measure`
     /// cannot lay the element out. The parts come from the element's one
     /// placement ([`emit_element`]), on the panel the base layer is drawn
-    /// with.
+    /// with: a layered document expands its base panel for this on every
+    /// step (SSOT configuration, the renderer's own expansion); a
+    /// single-layer document copies nothing.
     fn grabbable(&self, element: &Element, measure: &dyn MeasureText) -> Option<bool> {
         let chart_area = RectF::from_rect(&self.chart_area.0);
         let mut inside = false;
@@ -81,10 +83,9 @@ impl Config {
             let (cx, cy) = part.extent().center();
             inside |= chart_area.contains(cx, cy);
         });
-        let laid_out = match drawn_base_panel(self) {
-            Some(panel) => emit_element(&panel, element, measure, &mut sink),
-            None => emit_element(self, element, measure, &mut sink),
-        };
+        let laid_out = on_drawn_panel(self, |panel| {
+            emit_element(panel, element, measure, &mut sink)
+        });
         laid_out.then_some(inside)
     }
 
@@ -542,7 +543,8 @@ impl Config {
             };
             // Growing the strip grows its band, which shrinks the data area —
             // so the same check `nudge_data_area_edge` makes applies, by the
-            // same write-then-revert (no Config clone on a pointer-move path).
+            // same write-then-revert (no Config clone on a pointer-move path
+            // beyond the base-panel expansion of a layered document).
             // Thickness and the outer-handle offset are one transaction: a
             // rejected resize must not leave the strip translated.
             {
