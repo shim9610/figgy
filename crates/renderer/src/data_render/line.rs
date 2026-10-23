@@ -7,6 +7,7 @@ pub(crate) const LINE_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/line_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
     "data_render/line_columnar.wgsl"
 );
 

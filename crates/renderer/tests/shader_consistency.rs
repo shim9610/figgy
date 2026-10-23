@@ -229,10 +229,16 @@ fn wgsl_function(source: &str, name: &str) -> String {
 
 /// Fragments that some module still carries as a pasted copy, until that
 /// module is assembled from the fragment too: (fragment, modules).
-const INLINE_COPIES: &[(&str, &[&str])] = &[(
-    "src/data_render/common/transform.wgsl",
-    &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
-)];
+const INLINE_COPIES: &[(&str, &[&str])] = &[
+    (
+        "src/data_render/common/transform.wgsl",
+        &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
+    ),
+    (
+        "src/data_render/common/projection.wgsl",
+        &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
+    ),
+];
 
 /// Every block SHADER_COMMON.md still fences is pasted verbatim into each
 /// module its `applies-to` names, and every fragment a module still carries
@@ -847,7 +853,10 @@ fn log_flags_return_the_logarithm_before_mixing() {
         "log flags chosen unsafely:\n{}",
         offending.join("\n")
     );
-    assert!(guarded >= 20, "{guarded} guarded log choices found");
+    // Each shared fragment is scanned once, so the floor counts the
+    // choices of `maybe_log`, `axis_pair_to_t`, `ramp_t` and
+    // `axis_px_per_unit_at`: the scan must keep finding them.
+    assert!(guarded >= 4, "{guarded} guarded log choices found");
 }
 
 /// Rule from #46: one behaviour has one implementation. Every WGSL function
@@ -1035,13 +1044,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &[
             "contour_anchor.wgsl",
             "contour_label.wgsl",
-            "data_render/bar_columnar.wgsl",
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/field_columnar.wgsl",
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
+            "data_render/common/projection.wgsl",
         ],
         &["axis_pair_to_t", "data_to_ndc", "maybe_log", "polar_ndc"],
     ),
