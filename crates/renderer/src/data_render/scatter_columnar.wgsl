@@ -4,7 +4,7 @@
 // slot 1: X column (per-instance, f32 hi/lo pair).
 // slot 2: Y column (per-instance, f32 hi/lo pair).
 //
-// Marker shapes — style.shape_id is the stable code from mod.rs::shape_id().
+// Marker shapes — style.shape_id is the stable code from data_render/style.rs::shape_id().
 // Existing ids 0..8 are kept compatible; newer scientific-plot symbols append
 // after them. Shape decoding below maps those ids to compact SDF base shapes
 // plus an open/filled flag.
@@ -132,7 +132,7 @@ struct ScatterStyleMapMeta {
 // colour-mapped point and a heatmap cell with the same z draw the same colour.
 // The size side is `PointSizeMap`: value domain as hi/lo pairs and the pixel
 // range already multiplied by the export scale. CPU twin:
-// `mod.rs::PointValueMapParamsGpu`, 64 B.
+// `data_render/value_map.rs::PointValueMapParamsGpu`, 64 B.
 struct PointValueMapParams {
     z_min: vec2<f32>,
     z_max: vec2<f32>,

@@ -11,7 +11,7 @@ To change shared shader code:
 
 1. Edit the fragment under `data_render/common/`.
 2. If a uniform or storage layout changed, change the Rust struct that
-   mirrors it (`mod.rs::ScatterTransform` / `PrimitiveStyle` and the others
+   mirrors it (`transform.rs::ScatterTransform` / `style.rs::PrimitiveStyle` and the others
    §1–§5 name) the same way, and a flag or constant Rust also defines on
    both sides. `shader_assembly.rs` tests both:
    `mirrored_struct_layouts_match_their_rust_twins` compares every mirrored
@@ -97,7 +97,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer.rs` (`[f32; 12]`). |
 
-**대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
+**대응하는 CPU 구조체:** `src/data_render/transform.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
 `gpu_pick/core.wgsl` declares the same `Transform` struct without the uniform: the pick modules bind no `transform` uniform (their group 0 binding 0 is the pool) and take the transform as the first member of their parameter uniform `PickQueryParams` (CPU `gpu_pick::types::PickQueryParamsGpu`, which holds a `ScatterTransform`), which they pass to the shared projection functions. `mirrored_struct_layouts_match_their_rust_twins` (`shader_assembly.rs`) compares the draw's and the pick's `Transform` and `PickQueryParams` with their Rust structs member by member, offsets and sizes included.
@@ -134,13 +134,13 @@ The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), s
 | `primitive_flags` | 도형별 기능 비트. 오차 막대는 bit 0으로 Y방향, bit 1로 X방향 사용 여부를 표시한다. 선 엔트리(`vs_main`/`vs_sketch`/`vs_ribbon`/`vs_area`)는 bit 2-3을 계단 보간 모드(0 직선, 1 StepPre, 2 StepPost, 3 StepMid)로 읽고, 면 채움 엔트리 `vs_area`는 bit 4를 "기준선 대신 다른 시리즈까지 채움"으로 읽는다. 다른 도형은 읽지 않는다. CPU 상수는 `line_step.rs`의 `LINE_STEP_SHIFT` / `AREA_FILL_TO_SERIES`이고, 계단 모드 비트는 `line_step::step_flag_bits`가 만든다. |
 | `dash` | 최대 8개의 순차 `[on, off, ...]` 픽셀 길이 — `dash[0].xyzw` 먼저, 이어서 `dash[1].xyzw` |
 
-**대응하는 CPU 구조체:** `src/data_render/mod.rs::PrimitiveStyle`
+**대응하는 CPU 구조체:** `src/data_render/style.rs::PrimitiveStyle`
 (`#[repr(C)]`, `bytemuck::Pod`). 패딩 포함 80바이트. `shape_id` 매핑은
-`mod.rs::shape_id()` 헬퍼가 담당한다.
+`style.rs::shape_id()` 헬퍼가 담당한다.
 
 ### 2.1 `bar_columnar.wgsl`의 `Style` 재해석
 
-막대는 공통 `Style` 구조체의 크기와 배치를 유지하면서 일부 필드를 다른 용도로 사용한다. 아래 표가 그 해석 기준이며 CPU의 `mod.rs::PrimitiveStyle::from_bar`와 일치해야 한다. 한쪽만 바꾸면 색·두께·기준선이 잘못 전달될 수 있다.
+막대는 공통 `Style` 구조체의 크기와 배치를 유지하면서 일부 필드를 다른 용도로 사용한다. 아래 표가 그 해석 기준이며 CPU의 `style.rs::PrimitiveStyle::from_bar`와 일치해야 한다. 한쪽만 바꾸면 색·두께·기준선이 잘못 전달될 수 있다.
 
 | 필드 | 막대에서의 의미 |
 |------|------------------|
@@ -177,7 +177,7 @@ The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), s
 
 나머지 행렬 옵션은 별도 유니폼인 `FieldParams`(group 2, binding 4)에 저장한다. 좌표 컬럼의 시작 위치, 격자 크기·방향, Z축 범위, 레벨·색상 기준점 개수는 `Style`의 빈 필드에 모두 담을 수 없기 때문이다.
 
-group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵커 계산이 공유하므로 동기화 대상이다. 대응하는 CPU 구조체는 `mod.rs::FieldParamsGpu` / `GridColumnGpu`다. 검색용 메타데이터인 binding 6은 `field_columnar.wgsl`에만 선언하며, 아래 5.1절의 규칙을 따른다.
+group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵커 계산이 공유하므로 동기화 대상이다. 대응하는 CPU 구조체는 `field.rs::FieldParamsGpu` / `GridColumnGpu`다. 검색용 메타데이터인 binding 6은 `field_columnar.wgsl`에만 선언하며, 아래 5.1절의 규칙을 따른다.
 
 ---
 
@@ -251,7 +251,7 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
-대응하는 CPU 정의는 `mod.rs::GridColumnGpu`(8바이트), `mod.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
+대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
 
 The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
@@ -264,14 +264,14 @@ The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pa
 `field_columnar.wgsl`은 공통 블록 밖에서 binding 6을 선언한다. 레벨 32개짜리 블록마다 `[finite_count, negative_infinity_count]`라는 u32 두 개, 총 8바이트를 기록한다.
 `finite_count`는 binding 3 블록 앞부분에 정렬해 둔 유한 레벨 수이며 선·밴드 이진 탐색의 범위를 정한다. `negative_infinity_count`는 밴드 계산의 분자에만 더하고 선 후보에는 포함하지 않는다. NaN과 양의 무한대는 검색과 분자에서 모두 제외한다. 레벨이 없어도 WebGPU의 크기 0인 스토리지 바인딩을 피하려고 `[0, 0]` 하나를 업로드한다.
 
-CPU 구조체는 `mod.rs::ContourLookupMetadataGpu`(8바이트)이며 `create_field_data_bind_group_layout`의 프래그먼트 전용 binding 6에 연결된다. 버퍼는 `create_field_data_bind_group`이 `FieldTables`로 받은 다른 group 2 표와 함께 만들고, 반환하는 바인드 그룹이 보관한다. 할당량은 다른 표와 같은 `ChargeTally`에 실제 바이트 수로 합산해 `GpuResourceKind::FieldTable` 항목으로 기록한다.
+CPU 구조체는 `contour.rs::ContourLookupMetadataGpu`(8바이트)이며 `create_field_data_bind_group_layout`의 프래그먼트 전용 binding 6에 연결된다. 버퍼는 `create_field_data_bind_group`이 `FieldTables`로 받은 다른 group 2 표와 함께 만들고, 반환하는 바인드 그룹이 보관한다. 할당량은 다른 표와 같은 `ChargeTally`에 실제 바이트 수로 합산해 `GpuResourceKind::FieldTable` 항목으로 기록한다.
 
 ### 5.2 Point value maps — group 3 (mapped scatter entries)
 
 Outside the common block, `scatter_columnar.wgsl`'s mapped entries (`vs_mapped`,
 `vs_pick_ring_mapped`) bind group 3 for a series' continuous value maps
 (`point_color_map` / `point_size_map`). Binding 0 is `PointValueMapParams`
-(64 B; CPU twin `mod.rs::PointValueMapParamsGpu`): the colourbar's bounds as
+(64 B; CPU twin `value_map.rs::PointValueMapParamsGpu`): the colourbar's bounds as
 hi/lo pairs, already log10 when `VALUE_MAP_LOG_Z` is set, the size domain as
 hi/lo pairs, `(min_px, max_px)` already multiplied by the export scale, the
 flags, the stop count and the premultiplied `nan_color`. Binding 1 is the
@@ -305,7 +305,7 @@ arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
 Group 2 is the series' data. Binding 0 is the column pool as read-only
 storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the
 grid table (`GridColumn { base, len }`, laid out like the field shader's
-binding 1; CPU twin `mod.rs::GridColumnGpu`): one padding entry for the
+binding 1; CPU twin `field.rs::GridColumnGpu`): one padding entry for the
 points form, and for the grid form the `u`, `v` and colour grids' columns
 appended in that order, each addressed from its own base in `VectorParams`. Binding 2 is the colourbar's ramp control points (straight
 RGBA, at least one entry). Binding 3 is `VectorParams` (128 B; CPU twin
@@ -453,7 +453,7 @@ the picker follows the entry the chart's style draws with
   `constellation_star_radius` in a quad of four times that plus
   `QUAD_MARGIN_PX`. Its brightness and tint are hashed and its sprite is a
   baked texture that fades to zero inside the disc the quad inscribes
-  (`mod.rs::bake_psf_rgba`), so that disc is what picks. A zero star or line
+  (`stylized.rs::bake_psf_rgba`), so that disc is what picks. A zero star or line
   opacity draws nothing and picks nothing.
 
 CPU twin: `cpu_twin::styled_marker_distance`.

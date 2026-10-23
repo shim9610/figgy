@@ -25,7 +25,7 @@ const FIELD_LOG_Z: u32 = 16u;
 /// there keeps the precision that doing it here would lose. Both are `(hi, lo)`
 /// f32 pairs, the pool's own representation.
 ///
-/// CPU twin: `mod.rs::FieldParamsGpu` (`#[repr(C)]`, 64 B).
+/// CPU twin: `data_render/field.rs::FieldParamsGpu` (`#[repr(C)]`, 64 B).
 struct FieldParams {
     x_base: u32,
     y_base: u32,

@@ -33,7 +33,7 @@
 // carries one 4-vertex quad per piece with two duplicated vertices between
 // pieces (degenerate triangles), so the pipeline and the instance count stay
 // the same and only the per-instance vertex count changes — see
-// `strip_slot` and the CPU twin `line_strip_vertex_count` in mod.rs. The
+// `strip_slot` and the CPU twin `line_strip_vertex_count` in data_render/line.rs. The
 // arc-length scan (line_arc.wgsl) and the GPU/CPU pickers walk the same
 // pieces, so dash phase and picking stay on the stepped path.
 //
@@ -99,7 +99,7 @@ fn step_prefix_px(in: VsIn, mode: u32, k: u32) -> f32 {
 // joint: the last vertex of the piece and the first of the next, which fold
 // the connecting triangles to zero area. Total = pieces · per_piece +
 // 2 · (pieces − 1); a one-piece instance is exactly the plain strip. CPU
-// twin: `line_strip_vertex_count` in data_render/mod.rs.
+// twin: `line_strip_vertex_count` in data_render/line.rs.
 struct StripSlot {
     piece: u32,
     local: u32,
@@ -453,7 +453,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 // brightness and population temperature. Star counts stay uniform per arc
 // length so data-sampling density does not look like extra stars.
 const CONS_CLUMP_WAVELENGTH_PX: f32 = 90.0;
-// CPU draw-count twin lives in mod.rs: MILKYWAY_RIBBON_VERTICES =
+// CPU draw-count twin lives in data_render/stylized.rs: MILKYWAY_RIBBON_VERTICES =
 // 2·(SUBDIV+1). The star pass has no fixed vertex count — it draws via
 // DrawIndirect args the arc-scan kernel fills (line_arc.wgsl star_indirect).
 const CONS_RIBBON_SUBDIV: u32 = 8u;

@@ -9,7 +9,7 @@
 
 /// One constituent grid column: where it starts in the pool (as an f32 lane
 /// index) and how many logical values it holds. Same layout as the field's
-/// table (`mod.rs::GridColumnGpu`).
+/// table (`data_render/field.rs::GridColumnGpu`).
 struct GridColumn {
     base: u32,
     len: u32,
