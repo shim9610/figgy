@@ -1124,26 +1124,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-        ],
-        &[
-            "polar_clip_limits",
-            "polar_clip_offset",
-            "polar_clip_sector",
-            "polar_sample_valid",
-            "sample_finite",
-            "sample_valid",
-        ],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
+            "data_render/common/sample_validity.wgsl",
             "gpu_pick/core.wgsl",
         ],
         &["polar_fragment_visible"],

@@ -45,6 +45,7 @@ pub(crate) const LINE_ARC_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/line_arc_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
     "data_render/line_arc.wgsl"
 );
 
