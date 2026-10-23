@@ -24,7 +24,7 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
 use crate::line::LineStylePreset;
-use crate::text::{RichSegment, RichText, rich_segments_from_text};
+use crate::text::{CharSet, RichSegment, RichText, rich_segments_from_text};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -437,7 +437,7 @@ fn is_plain_space(seg: &RichSegment) -> bool {
         && !seg.underline
         && !seg.superscript
         && !seg.subscript
-        && !seg.greek
+        && seg.char_set == CharSet::Text
         && seg.color.is_none()
         && seg.font_size.is_none()
         && seg.field_em.is_none()

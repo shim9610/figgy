@@ -1000,6 +1000,55 @@ mod tests {
         assert!(config.data_area().is_ok());
     }
 
+    // `get_config` / `set_config` and `get_series` / `set_series` are
+    // `serde_json` over `renderer::Config` and `SeriesConfig`: a segment's
+    // `char_set` reaches JavaScript as `greek` plus `math` (written only for
+    // `Math`), comes back from it unchanged, and a segment naming both sets
+    // is rejected before `set_config` touches any state.
+    #[test]
+    fn config_and_series_json_carry_the_segment_char_set_both_ways() {
+        use renderer::text::{CharSet, RichSegment};
+
+        let mut config = renderer::default::default_config();
+        config.chart_title.text.segments = vec![
+            RichSegment {
+                char_set: CharSet::Greek,
+                ..RichSegment::plain('s')
+            },
+            RichSegment {
+                char_set: CharSet::Math,
+                ..RichSegment::plain('≤')
+            },
+            RichSegment::plain('1'),
+        ];
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains(r#""text":"s","bold":false,"italic":false,"underline":false,"superscript":false,"subscript":false,"greek":true}"#), "{json}");
+        assert!(json.contains(r#""text":"≤","bold":false,"italic":false,"underline":false,"superscript":false,"subscript":false,"greek":false,"math":true}"#), "{json}");
+        assert!(json.contains(r#""text":"1","bold":false,"italic":false,"underline":false,"superscript":false,"subscript":false,"greek":false}"#), "{json}");
+        let back: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+
+        let both = json.replacen(r#""greek":true}"#, r#""greek":true,"math":true}"#, 1);
+        assert_ne!(both, json);
+        let err = serde_json::from_str::<renderer::Config>(&both)
+            .expect_err("a segment cannot be greek and math at once")
+            .to_string();
+        assert!(err.contains("both"), "{err}");
+
+        let mut series = vec![series_config(
+            "s",
+            DataRenderType::Scatter {
+                scatter: scatter_style(),
+            },
+        )];
+        series[0].label = Some(config.chart_title.text.clone());
+        let json = serde_json::to_string(&series).unwrap();
+        assert!(json.contains(r#""greek":false,"math":true}"#), "{json}");
+        let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, series);
+    }
+
     #[test]
     fn initial_state_requires_the_first_draw() {
         assert_eq!(

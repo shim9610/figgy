@@ -8,9 +8,9 @@
 //! that can (registered faces, the bundled face, then system faces on native),
 //! so it does not render as a `.notdef` box.
 //!
-//! Layering: the segment layout policy (super/subscript scaling and shifts,
-//! kerning gaps, underline bars, greek mapping, the measure envelope) lives
-//! here and is backend-independent. The glyph layer below it — metrics and
+//! Layering: the segment layout policy (the script layout of
+//! `script_placement`, underline bars, character-set mapping, the measure
+//! envelope) lives here and is backend-independent. The glyph layer below it — metrics and
 //! alpha-mask rasterization — is fontdb (font lookup) + swash (scaling), all
 //! pure Rust, so the whole stack compiles for wasm32-unknown-unknown.
 
@@ -27,7 +27,7 @@ use swash::scale::{Render, ScaleContext, Source};
 use crate::color::Color;
 use crate::layout::RectF;
 use crate::raster::Canvas;
-use crate::text::{RichSegment, RichText, greek_char};
+use crate::text::{RichSegment, RichText};
 
 type FontLookupKey = (String, bool, bool);
 /// Per-character fallback decisions depend only on the character and the
@@ -789,9 +789,6 @@ fn draw_char(
 
 // Rendering coefficients.
 
-const SUB_SUPER_SIZE_RATIO: f32 = 0.65;
-const SUPERSCRIPT_Y_RATIO: f32 = -0.5; // shift up from baseline
-const SUBSCRIPT_Y_RATIO: f32 = 0.25; // shift down from baseline
 const UNDERLINE_THICKNESS_RATIO: f32 = 0.06;
 const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // Rule segments (legend line marks): bar center sits where dash glyphs put
@@ -802,10 +799,6 @@ const RULE_THICKNESS_RATIO: f32 = 0.09;
 // rule's center down to this many em above the baseline, so it stays inside
 // the glyph ascent and never changes the line's measured extents.
 const RULE_BAND_BOTTOM_RATIO: f32 = 0.05;
-/// Horizontal kerning gap inserted before a super/sub segment, as a fraction
-/// of the base font_size. Prevents visual collision from italic overhang or
-/// size mismatch with the preceding glyph.
-const SUB_SUPER_KERN_RATIO: f32 = 0.08;
 
 // Line splitting — a `'\n'` segment ends the current line. Both drawing and
 // measurement share this so multi-line text (legend labels, titles) lays out
@@ -905,8 +898,9 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
 
     for seg in segments {
         let base = segment_base_size(seg, rt);
-        let size = segment_font_size(seg, base);
-        let y_offset = segment_y_offset(seg, base);
+        let script = script_placement(ScriptPosition::of(seg), base);
+        let size = script.size;
+        let y_offset = script.shift;
 
         let (advance, seg_top, mut seg_bottom) = if seg.rule {
             // Drawn rule: a bar centered on the symbol axis. Width is the
@@ -916,17 +910,13 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
             let center = y_offset - base * RULE_Y_RATIO;
             (field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
-            };
+            let ch = seg.char_set.glyph_char(seg.text);
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             let g = glyph_extents(font, size, ch);
             // A fixed field replaces both the kern and the glyph advance.
             let adv = match seg.field_em {
                 Some(f) => f * base,
-                None => segment_kern_before(seg, base) + g.advance,
+                None => script.advance(g.advance),
             };
             (adv, y_offset + g.ink_top, y_offset + g.ink_bottom)
         };
@@ -977,9 +967,10 @@ fn draw_line_segments(
     let (mut pen_x, baseline) = origin;
     for seg in segments {
         let base = segment_base_size(seg, rt);
-        let size = segment_font_size(seg, base);
+        let script = script_placement(ScriptPosition::of(seg), base);
+        let size = script.size;
         let color = seg.color.unwrap_or(rt.color);
-        let y = baseline + segment_y_offset(seg, base);
+        let y = baseline + script.shift;
 
         let advance = if seg.rule {
             // Drawn rule filling its fixed field, centered on the symbol
@@ -1018,11 +1009,7 @@ fn draw_line_segments(
             }
             field
         } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
-            };
+            let ch = seg.char_set.glyph_char(seg.text);
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             match seg.field_em {
                 Some(f) => {
@@ -1034,7 +1021,7 @@ fn draw_line_segments(
                     field
                 }
                 None => {
-                    pen_x += segment_kern_before(seg, base);
+                    pen_x += script.kern_before;
                     draw_char(canvas, font, size, ch, pen_x, y, &color)
                 }
             }
@@ -1288,37 +1275,97 @@ pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
 
 /// Effective base size of a segment: the per-segment `font_size` override
 /// when present, the document-level `RichText.font_size` otherwise. The
-/// sub/superscript ratio (and the derived y-offset / kerning) apply on top.
+/// script layout ([`script_placement`]) applies on top.
 fn segment_base_size(seg: &RichSegment, rt: &RichText) -> f32 {
     seg.font_size.unwrap_or(rt.font_size)
 }
 
-fn segment_font_size(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript || seg.subscript {
-        base * SUB_SUPER_SIZE_RATIO
-    } else {
-        base
+// Script layout.
+
+/// Script size as a fraction of the base font size.
+const SCRIPT_SIZE_RATIO: f32 = 0.65;
+/// Superscript baseline shift as a fraction of the base font size (y down,
+/// so negative raises).
+const SUPERSCRIPT_SHIFT_RATIO: f32 = -0.5;
+/// Subscript baseline shift as a fraction of the base font size (drops).
+const SUBSCRIPT_SHIFT_RATIO: f32 = 0.25;
+/// Horizontal gap before a script glyph, as a fraction of the base font
+/// size. Prevents visual collision from italic overhang or size mismatch
+/// with the preceding glyph.
+const SCRIPT_KERN_RATIO: f32 = 0.08;
+
+/// Where a glyph sits against the baseline of the text around it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ScriptPosition {
+    /// On the baseline, at the base size.
+    Base,
+    /// Raised and reduced: an exponent, the superscript slot of a script.
+    Superscript,
+    /// Dropped and reduced: an index, the subscript slot of a script.
+    Subscript,
+}
+
+impl ScriptPosition {
+    /// The position a segment's `superscript` / `subscript` flags select.
+    /// `superscript` wins when both are set, as it always has.
+    pub(crate) fn of(seg: &RichSegment) -> Self {
+        if seg.superscript {
+            ScriptPosition::Superscript
+        } else if seg.subscript {
+            ScriptPosition::Subscript
+        } else {
+            ScriptPosition::Base
+        }
     }
 }
 
-fn segment_y_offset(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript {
-        base * SUPERSCRIPT_Y_RATIO
-    } else if seg.subscript {
-        base * SUBSCRIPT_Y_RATIO
-    } else {
-        0.0
+/// How a glyph at a [`ScriptPosition`] is placed: computed by
+/// [`script_placement`] from the base font size.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ScriptPlacement {
+    /// Font size the glyph is drawn and measured at.
+    pub(crate) size: f32,
+    /// Shift of the glyph's baseline from the line's baseline, y down:
+    /// negative raises.
+    pub(crate) shift: f32,
+    /// Gap the pen advances before the glyph.
+    pub(crate) kern_before: f32,
+}
+
+impl ScriptPlacement {
+    /// The pen advance of a glyph whose own advance at `size` is
+    /// `glyph_advance`: the gap before it, then the glyph.
+    pub(crate) fn advance(self, glyph_advance: f32) -> f32 {
+        self.kern_before + glyph_advance
     }
 }
 
-/// Kerning gap added to pen_x just before drawing `seg`. Super/sub segments
-/// differ in size and y-offset from the preceding glyph and need a small gap
-/// to avoid visual overhang collisions.
-fn segment_kern_before(seg: &RichSegment, base: f32) -> f32 {
-    if seg.superscript || seg.subscript {
-        base * SUB_SUPER_KERN_RATIO
-    } else {
-        0.0
+/// The script layout: size ratio, raise or drop, and the gap before the
+/// glyph, for a glyph at `position` next to text of font size `base`.
+///
+/// This is the one place scripts are laid out. Rich-text segments with the
+/// `superscript` / `subscript` flags (titles, legends, annotations and the
+/// `LabelFormat::Power` tick-label exponents, which are such segments) are
+/// measured and drawn through it, and the math `Scripts` node of #45 calls
+/// it for its superscript and subscript slots, so the flags and the node
+/// place scripts with the same pixels.
+pub(crate) fn script_placement(position: ScriptPosition, base: f32) -> ScriptPlacement {
+    match position {
+        ScriptPosition::Base => ScriptPlacement {
+            size: base,
+            shift: 0.0,
+            kern_before: 0.0,
+        },
+        ScriptPosition::Superscript => ScriptPlacement {
+            size: base * SCRIPT_SIZE_RATIO,
+            shift: base * SUPERSCRIPT_SHIFT_RATIO,
+            kern_before: base * SCRIPT_KERN_RATIO,
+        },
+        ScriptPosition::Subscript => ScriptPlacement {
+            size: base * SCRIPT_SIZE_RATIO,
+            shift: base * SUBSCRIPT_SHIFT_RATIO,
+            kern_before: base * SCRIPT_KERN_RATIO,
+        },
     }
 }
 
@@ -1375,7 +1422,7 @@ pub fn measure_plain_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::{TextAlign, rich_segments_from_text};
+    use crate::text::{CharSet, TextAlign, rich_segments_from_text};
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -2246,5 +2293,121 @@ mod tests {
         draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
         let rgba = canvas.into_rgba();
         assert!(rgba.chunks_exact(4).any(|p| p[3] > 0));
+    }
+
+    // `Greek` draws the Adobe Symbol letter of its Latin character, exactly as
+    // a segment holding that letter; `Math` draws the character as given, so
+    // until the math font exists it is pixel-identical to `Text`.
+    #[test]
+    fn char_set_picks_the_drawn_character() {
+        let with = |text: char, char_set: CharSet| RichText {
+            segments: vec![RichSegment {
+                char_set,
+                ..RichSegment::plain(text)
+            }],
+            ..RichText::plain("", Color::BLACK, 20.0, "")
+        };
+        let draw = |rt: &RichText| draw_to_rgba(rt, (40, 40), (5.0, 30.0));
+
+        let greek = with('a', CharSet::Greek);
+        let alpha = with('α', CharSet::Text);
+        assert_eq!(draw(&greek), draw(&alpha));
+        assert_eq!(measure_rich_text_std(&greek), measure_rich_text_std(&alpha));
+        assert_ne!(draw(&greek), draw(&with('a', CharSet::Text)));
+
+        for c in ['a', '∑', '≤', '∂'] {
+            let math = with(c, CharSet::Math);
+            let text = with(c, CharSet::Text);
+            assert_eq!(draw(&math), draw(&text), "math {c} draws as given");
+            assert_eq!(measure_rich_text_std(&math), measure_rich_text_std(&text));
+        }
+    }
+
+    // The script layout the math `Scripts` node (#45) will reuse: these ratios
+    // are the pixels every superscript and subscript has today, so a change
+    // here is a pixel change for every chart with scripts.
+    #[test]
+    fn script_placement_pins_the_size_ratio_shifts_and_gap() {
+        assert_eq!(SCRIPT_SIZE_RATIO, 0.65);
+        assert_eq!(SUPERSCRIPT_SHIFT_RATIO, -0.5);
+        assert_eq!(SUBSCRIPT_SHIFT_RATIO, 0.25);
+        assert_eq!(SCRIPT_KERN_RATIO, 0.08);
+
+        for base in [8.0f32, 12.0, 13.5, 20.0, 48.0] {
+            assert_eq!(
+                script_placement(ScriptPosition::Base, base),
+                ScriptPlacement {
+                    size: base,
+                    shift: 0.0,
+                    kern_before: 0.0,
+                }
+            );
+            assert_eq!(
+                script_placement(ScriptPosition::Superscript, base),
+                ScriptPlacement {
+                    size: base * 0.65,
+                    shift: base * -0.5,
+                    kern_before: base * 0.08,
+                }
+            );
+            assert_eq!(
+                script_placement(ScriptPosition::Subscript, base),
+                ScriptPlacement {
+                    size: base * 0.65,
+                    shift: base * 0.25,
+                    kern_before: base * 0.08,
+                }
+            );
+        }
+        let sup = script_placement(ScriptPosition::Superscript, 20.0);
+        assert_eq!(sup.shift, -10.0);
+        assert_eq!(sup.advance(7.0), sup.kern_before + 7.0);
+        assert_eq!(script_placement(ScriptPosition::Subscript, 20.0).shift, 5.0);
+        assert_eq!(
+            script_placement(ScriptPosition::Base, 20.0).advance(7.0),
+            7.0
+        );
+
+        let flags = |superscript: bool, subscript: bool| {
+            ScriptPosition::of(&RichSegment {
+                superscript,
+                subscript,
+                ..RichSegment::plain('2')
+            })
+        };
+        assert_eq!(flags(false, false), ScriptPosition::Base);
+        assert_eq!(flags(true, false), ScriptPosition::Superscript);
+        assert_eq!(flags(false, true), ScriptPosition::Subscript);
+        assert_eq!(flags(true, true), ScriptPosition::Superscript);
+    }
+
+    // A rich-text line is laid out through `script_placement`: its measured
+    // width is the base glyph advance plus the placement's advance of the
+    // script glyph at the script size, and its ascent reaches the raised ink.
+    #[test]
+    fn rich_text_scripts_measure_through_the_script_placement() {
+        let base = 20.0;
+        let font = |ch| glyph_font(FontPolicy::Standard, "", false, false, ch);
+        for (text, position) in [
+            ("x²", ScriptPosition::Superscript),
+            ("x₂", ScriptPosition::Subscript),
+        ] {
+            let rt = RichText::plain(text, Color::BLACK, base, "");
+            let m = measure_rich_text_std(&rt);
+            let place = script_placement(position, base);
+            let x = glyph_extents(font('x'), base, 'x');
+            let two = glyph_extents(font('2'), place.size, '2');
+            assert_eq!(m.width, x.advance + place.advance(two.advance), "{text}");
+            assert_eq!(
+                m.ascent,
+                (-x.ink_top).max(-(place.shift + two.ink_top)),
+                "{text}"
+            );
+            assert_eq!(
+                m.descent,
+                x.ink_bottom.max(place.shift + two.ink_bottom),
+                "{text}"
+            );
+        }
     }
 }
