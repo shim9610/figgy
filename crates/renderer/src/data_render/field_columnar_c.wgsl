@@ -503,14 +503,3 @@ const DATA_PICK_FLAG_CONTOUR: u32 = 2u;
 const DATA_PICK_FLAG_PAINTED: u32 = 4u;
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2u;
 const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3u;
-
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px, y = scaled bar gap px, z = contour width px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order, z/w are primitive-specific.
-    data: vec4<u32>,
-    bases: vec4<u32>,
-    baseline: vec4<f32>,
-};

@@ -175,14 +175,6 @@ fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
 
 // ───── Typed selection overlay (render entry) ───────────────────────────────
 
-struct DataSelection {
-    color_premul: vec4<f32>,
-    // x = cell/bar outline width, y = selected contour extra width.
-    metrics: vec4<f32>,
-    // x = kind, y/z/w = kind-specific indices.
-    indices: vec4<u32>,
-};
-
 @group(2) @binding(4) var<uniform> data_selection: DataSelection;
 
 /// Four outline quads around the exact rendered bar outer rectangle. The

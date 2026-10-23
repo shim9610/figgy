@@ -532,17 +532,3 @@ fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
 
 const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1u;
 const DATA_PICK_WORKGROUP_SIZE: u32 = 64u;
-
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px, y = scaled bar gap px, z = bar width ratio,
-    // w = contour width px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order, z = item count, w = orientation.
-    data: vec4<u32>,
-    // x = edge-column f32 lane base, y = value-column lane base, z = global bin offset.
-    bases: vec4<u32>,
-    // xy = histogram baseline (hi, lo).
-    baseline: vec4<f32>,
-};

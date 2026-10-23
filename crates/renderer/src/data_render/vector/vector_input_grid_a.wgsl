@@ -85,15 +85,3 @@ fn vector_sample(i: u32) -> VectorSample {
 // follow in the assembly.
 
 const DATA_PICK_KIND_MATRIX_CELL: u32 = 2u;
-
-// The typed data pick's query (`gpu_data_pick.rs::DataPickQueryGpu`).
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order.
-    data: vec4<u32>,
-    bases: vec4<u32>,
-    baseline: vec4<f32>,
-};
