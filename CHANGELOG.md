@@ -17,6 +17,32 @@ at the time. The first crates.io publication is recorded below.
 
 Collected on `integration/0.19`; the release entry replaces this section.
 
+- **Error bars and line fills pick where they are drawn** (G10 of
+  [#37](https://github.com/shim9610/figgy/issues/37),
+  [#46](https://github.com/shim9610/figgy/issues/46) item 6). `pick_chart`
+  (`pick_point` in the WASM wrapper) now hits error-bar stems and caps on the
+  quads the error-bar shader draws — per-point widths of the precise style
+  map, the hashed corner wobble under Sketch, a Milkyway jet's beam and knot
+  envelope; Constellation draws no error bars — and a line's area fill where
+  the cursor lies inside it (distance zero, baseline or second series, every
+  step mode, polar). An error-bar hit names the bar's point and a fill hit
+  the filled segment's nearer endpoint by the line rule, so `PickedPoint` is
+  unchanged. On a tie a marker wins over its line, the line over its error
+  bars and every stroke or marker over a fill; among fills the later series
+  wins. A zero-alpha bar or fill picks nothing. The draw and the pick build
+  the geometry from the same new fragments (`common/errorbar_segment.wgsl`,
+  `common/area_piece.wgsl`); the draw is pixel-identical. Zero-size markers
+  already picked; a test now pins it. Streamed picks are unchanged (streaming
+  is not extended). G10 is closed except for band fills: a field drawn with
+  `FillMode::Bands` keeps deciding whether a cell paints by its opacity
+  alone, so a transparent ramp stop still picks. Its band position needs the
+  contour lookup metadata (binding 6), which the field pick cannot bind
+  within the storage-binding limit; moving it into the tail of `stops`
+  (binding 3) would change the frozen streaming field builders, so that
+  option was not taken. The point picker's
+  device-limit check now asks for the 7 storage buffers and 3 bind groups its
+  exact pass binds (it asked for 6 and 2). No public API or serialized field
+  changes.
 - **Cache keys.** Three renderer caches compared less than their computation
   read, found by the new per-field mutation tests
   ([#46](https://github.com/shim9610/figgy/issues/46)):
