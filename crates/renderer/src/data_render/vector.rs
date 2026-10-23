@@ -46,31 +46,10 @@ impl VectorInput {
     }
 }
 
-const PROJECT_CARTESIAN2D: &str = include_str!("vector/project_cartesian2d.wgsl");
-const INPUT_COMMON: &str = include_str!("vector/vector_input_common.wgsl");
-const INPUT_POINTS: &str = include_str!("vector/vector_input_points.wgsl");
-const INPUT_GRID: &str = include_str!("vector/vector_input_grid.wgsl");
-const GLYPH_ARROW: &str = include_str!("vector/glyph_arrow.wgsl");
-const ENTRY: &str = include_str!("vector/vector_entry.wgsl");
-
-/// The fragments of one assembled module, in assembly order, with their file
-/// names.
-pub fn fragments(input: VectorInput) -> [(&'static str, &'static str); 5] {
-    let input_fragment = match input {
-        VectorInput::Points => ("vector_input_points.wgsl", INPUT_POINTS),
-        VectorInput::Grid => ("vector_input_grid.wgsl", INPUT_GRID),
-    };
-    [
-        ("project_cartesian2d.wgsl", PROJECT_CARTESIAN2D),
-        ("vector_input_common.wgsl", INPUT_COMMON),
-        input_fragment,
-        ("glyph_arrow.wgsl", GLYPH_ARROW),
-        ("vector_entry.wgsl", ENTRY),
-    ]
-}
-
 /// The assembled vector module for [`VectorInput::Points`].
 pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/vector/project_cartesian2d_header.wgsl",
+    "data_render/common/transform.wgsl",
     "data_render/vector/project_cartesian2d.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_points.wgsl",
@@ -80,6 +59,8 @@ pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
 
 /// The assembled vector module for [`VectorInput::Grid`].
 pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/vector/project_cartesian2d_header.wgsl",
+    "data_render/common/transform.wgsl",
     "data_render/vector/project_cartesian2d.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_grid.wgsl",
@@ -87,10 +68,9 @@ pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/vector/vector_entry.wgsl",
 );
 
-/// The assembled WGSL source: the fragments of [`fragments`] joined with one
-/// newline, spliced at compile time. The test
-/// `assembled_vector_shaders_are_their_fragments_concatenated` holds it to
-/// exactly this.
+/// The assembled WGSL source of one input form, spliced at compile time. The
+/// test `assembled_vector_shaders_are_their_fragments_concatenated` holds it
+/// to its fragment list.
 pub const fn assemble(input: VectorInput) -> &'static str {
     match input {
         VectorInput::Points => VECTOR_POINTS_SHADER,
@@ -448,31 +428,46 @@ pub struct ColumnVectorLayer<'a> {
 mod tests {
     use super::*;
 
+    /// The parts of one assembled module, in assembly order, relative to
+    /// `src/`: the list each `wgsl_module!` above splices.
+    fn fragments(input: VectorInput) -> &'static [&'static str] {
+        match input {
+            VectorInput::Points => &[
+                "data_render/vector/project_cartesian2d_header.wgsl",
+                "data_render/common/transform.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
+                "data_render/vector/vector_input_common.wgsl",
+                "data_render/vector/vector_input_points.wgsl",
+                "data_render/vector/glyph_arrow.wgsl",
+                "data_render/vector/vector_entry.wgsl",
+            ],
+            VectorInput::Grid => &[
+                "data_render/vector/project_cartesian2d_header.wgsl",
+                "data_render/common/transform.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
+                "data_render/vector/vector_input_common.wgsl",
+                "data_render/vector/vector_input_grid.wgsl",
+                "data_render/vector/glyph_arrow.wgsl",
+                "data_render/vector/vector_entry.wgsl",
+            ],
+        }
+    }
+
     #[test]
     fn assembled_vector_shaders_are_their_fragments_concatenated() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for input in VectorInput::ALL {
-            let assembled = assemble(input);
-            let mut expected = String::new();
-            for (i, (_, fragment)) in fragments(input).into_iter().enumerate() {
-                if i > 0 {
-                    expected.push('\n');
-                }
-                expected.push_str(fragment);
-            }
-            assert_eq!(assembled, expected, "{input:?}");
-            // Each fragment is present verbatim, so every shipped fragment file
-            // is covered by the compilation test's source check.
-            for (name, fragment) in fragments(input) {
-                assert!(
-                    assembled.contains(fragment),
-                    "{name} missing from {input:?}"
-                );
-            }
-            // The entry is last and the projection first: the interfaces the
-            // other layers depend on are declared before the entry calls them.
-            let names: Vec<&str> = fragments(input).iter().map(|(name, _)| *name).collect();
-            assert_eq!(names[0], "project_cartesian2d.wgsl");
-            assert_eq!(names[names.len() - 1], "vector_entry.wgsl");
+            let parts: Vec<String> = fragments(input)
+                .iter()
+                .map(|name| std::fs::read_to_string(src.join(name)).unwrap())
+                .collect();
+            assert_eq!(assemble(input), parts.join("\n"), "{input:?}");
+            // The entry is last: the interfaces the other layers declare are
+            // in place before the entry calls them.
+            assert_eq!(
+                fragments(input).last(),
+                Some(&"data_render/vector/vector_entry.wgsl")
+            );
         }
         assert_ne!(assemble(VectorInput::Points), assemble(VectorInput::Grid));
     }

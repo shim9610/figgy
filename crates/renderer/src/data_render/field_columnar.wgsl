@@ -1,86 +1,3 @@
-// Columnar field shader — heatmaps and band (filled-contour) fields.
-//
-// The grid is a bundle of pool columns declared by `MatrixRef`: one column per
-// x (or y) position, each holding that position's values along the other axis.
-// Coordinates come from the ordinary `x_column` / `y_column`; nothing here is
-// stored twice.
-//
-// **One quad for the whole field, not one per cell.** The cell a fragment
-// belongs to is found per fragment by binary search over the coordinate
-// columns. Two reasons, both decisive:
-//
-//   1. A 5000 x 5000 grid is 25M cells. As instances that is 150M vertices a
-//      frame; as one quad it is 6, and the cost becomes the data area's pixel
-//      count — which is what a heatmap's cost should be.
-//   2. Adjacent per-cell quads seam under MSAA. Two quads meeting on an edge
-//      resolve as `bg*(1-cA)*(1-cB) + ...`, so up to 25% of the background
-//      shows through along every shared edge. One quad cannot seam against
-//      itself.
-//
-// The search runs in axis `t` space (`axis_pair_to_t`), so logarithmic and
-// inverted axes need no special case: the same monotone comparison works for
-// all four combinations.
-//
-// Cell geometry follows `GridLayout`. `Edges` reads the coordinate columns as
-// cell boundaries (n + 1 for n cells); `Centers` reads them as cell midpoints
-// and derives boundaries as the midpoints between them, mirroring the outermost
-// half-cells. A single centre has no neighbour to measure against, so its cell
-// has zero width and draws nothing — the data does not say how wide it is, and
-// inventing a width would be a number nobody wrote.
-//
-// `Shading::Flat` gives each cell its own colour from its own z.
-// `Shading::Interpolated` interpolates z bilinearly between the four
-// surrounding sample points, so the quads span point-to-point rather than
-// cell-to-cell (matplotlib's `flat` vs `gouraud`).
-//
-// `FillMode::Bands` quantizes z into the intervals between the contour levels,
-// which makes exactly the filled-contour bands the contour lines will be drawn
-// over. `Continuous` uses the ramp directly.
-//
-// The colour ramp is the colourmap's own control points, and the mapping is a
-// byte-for-byte reimplementation of `model::colormap::sample` — see `ramp()`.
-// That is what makes the CPU-drawn colourbar strip and this shader agree: same
-// stops, same formula, same `t`.
-
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
@@ -588,7 +505,6 @@ fn contour_sample(t: vec2<f32>) -> ContourSample {
 fn grad_px(dz: vec2<f32>) -> vec2<f32> {
     return dz * transform.pixel_to_ndc * 0.5;
 }
-// ───── END common block ─────
 
 // Label-gap inputs exist only in `fs_contour_labelled`'s call graph. The plain
 // `fs_contour` entry therefore keeps the original three-group layout, while a

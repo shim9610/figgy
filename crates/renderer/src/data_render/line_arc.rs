@@ -41,8 +41,11 @@ use crate::init::{InitEvent, finished, observe_value, started};
 use super::ScatterTransform;
 
 /// The assembled arc-length scan module.
-pub(crate) const LINE_ARC_SHADER: &str =
-    crate::shader_assembly::wgsl_module!("data_render/line_arc.wgsl");
+pub(crate) const LINE_ARC_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/line_arc_header.wgsl",
+    "data_render/common/transform.wgsl",
+    "data_render/line_arc.wgsl"
+);
 
 const INIT_SCOPE: &str = "renderer.arc_scan";
 

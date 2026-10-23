@@ -32,16 +32,10 @@
 //! crates.
 
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
 const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
-const BEGIN_MARKER: &str = "// ───── BEGIN common block";
-const END_MARKER: &str = "// ───── END common block";
-const TARGETS: &[&str] = &[
-    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label", "vector",
-];
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -208,33 +202,6 @@ fn is_fence_close(line: &str) -> bool {
     line.trim_start() == "```"
 }
 
-/// Extract the substring of `shader` strictly between the BEGIN and END common
-/// block markers (exclusive of the marker lines themselves).
-fn shader_common_region(shader: &str, path: &str) -> String {
-    let begin = shader.find(BEGIN_MARKER).unwrap_or_else(|| {
-        panic!(
-            "{}: missing `{}` marker. Every duplicated shader must wrap its \
-             common section with BEGIN/END markers.",
-            path, BEGIN_MARKER
-        )
-    });
-    // Advance past the marker's full line so the body starts cleanly.
-    let after_begin = shader[begin..]
-        .find('\n')
-        .map(|n| begin + n + 1)
-        .expect("BEGIN marker line must end with a newline");
-    let end = shader[after_begin..]
-        .find(END_MARKER)
-        .map(|n| after_begin + n)
-        .unwrap_or_else(|| {
-            panic!(
-                "{}: missing `{}` marker (or it appears before BEGIN).",
-                path, END_MARKER
-            )
-        });
-    shader[after_begin..end].to_string()
-}
-
 fn wgsl_function(source: &str, name: &str) -> String {
     let needle = format!("fn {name}(");
     let start = source
@@ -260,75 +227,45 @@ fn wgsl_function(source: &str, name: &str) -> String {
     panic!("WGSL function `{name}` has an unclosed body")
 }
 
-fn expected_region_for(blocks: &[CommonBlock], short: &str) -> String {
-    let chunks: Vec<&str> = blocks
-        .iter()
-        .filter(|block| block.applies_to.iter().any(|target| target == short))
-        .map(|block| block.body.as_str())
-        .collect();
-    assert!(
-        !chunks.is_empty(),
-        "{} contains no SSoT block for shader target `{}`",
-        SSOT_PATH,
-        short
-    );
-    chunks.join("\n\n")
-}
+/// Fragments that some module still carries as a pasted copy, until that
+/// module is assembled from the fragment too: (fragment, modules).
+const INLINE_COPIES: &[(&str, &[&str])] = &[(
+    "src/data_render/common/transform.wgsl",
+    &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
+)];
 
-fn trim_outer_blank_lines(s: &str) -> &str {
-    s.trim_matches('\n')
-}
-
+/// Every block SHADER_COMMON.md still fences is pasted verbatim into each
+/// module its `applies-to` names, and every fragment a module still carries
+/// as a copy ([`INLINE_COPIES`]) is pasted there verbatim.
 #[test]
 fn shader_common_blocks_match_ssot() {
     let md = read(SSOT_PATH);
     let blocks = parse_ssot_blocks(&md);
-    assert!(
-        !blocks.is_empty(),
-        "{} produced 0 SSoT blocks. Did the metadata-marker syntax change?",
-        SSOT_PATH
-    );
-
-    let mut shader_cache: HashMap<&str, String> = HashMap::new();
     let mut failures: Vec<String> = Vec::new();
-
-    for short in TARGETS {
-        let path = shader_path_for(short);
-        let region = shader_cache.entry(path).or_insert_with(|| {
-            let raw = read(path);
-            shader_common_region(&raw, path)
-        });
-        let expected = expected_region_for(&blocks, short);
-        let actual = trim_outer_blank_lines(region);
-
-        if actual != expected {
-            failures.push(format!(
-                "----------------------------------------------------------------\n\
-                 SHADER_COMMON.md → {}\n\
-                 Common region does NOT exactly equal the SSoT blocks for `{}`.\n\
-                 Extra local WGSL inside the common block is not allowed.\n\
-                 \n\
-                 --- Expected common region (SSoT order) ---\n\
-                 {}\n\
-                 --- Actual common region of {} ---\n\
-                 {}\n",
-                path, short, expected, path, actual
-            ));
+    for block in &blocks {
+        for short in &block.applies_to {
+            let path = shader_path_for(short);
+            if !read(path).contains(&block.body) {
+                failures.push(format!(
+                    "{path} does not carry this SHADER_COMMON.md block verbatim:\n{}",
+                    block.body
+                ));
+            }
         }
     }
-
-    if !failures.is_empty() {
-        panic!(
-            "\nSHADER_COMMON.md SSoT check failed for {} shader(s).\n\
-             Fix order:\n  \
-             1. Open src/data_render/SHADER_COMMON.md and confirm the canonical text.\n  \
-             2. Copy only the SSoT blocks for that shader into its BEGIN/END common region.\n  \
-             3. Move shader-local structs/comments outside the common region.\n  \
-             4. Re-run `cargo test --test shader_consistency`.\n\n{}",
-            failures.len(),
-            failures.join("\n")
-        );
+    for (fragment, modules) in INLINE_COPIES {
+        let text = read(fragment);
+        for path in *modules {
+            if !read(path).contains(&text) {
+                failures.push(format!("{path} does not carry {fragment} verbatim"));
+            }
+        }
     }
+    assert!(
+        failures.is_empty(),
+        "\nSHADER_COMMON.md SSoT check failed:\n{}",
+        failures.join("\n")
+    );
 }
 
 #[test]
@@ -846,26 +783,6 @@ fn step_interpolation_helpers_match_between_the_line_and_arc_shaders() {
     assert!(line.contains("let xm = (xa + xb) * 0.5;"));
 }
 
-#[test]
-fn every_targeted_shader_has_begin_end_markers() {
-    for short in TARGETS {
-        let path = shader_path_for(short);
-        let raw = read(path);
-        assert!(
-            raw.contains(BEGIN_MARKER),
-            "{}: missing `{}` marker.",
-            path,
-            BEGIN_MARKER
-        );
-        assert!(
-            raw.contains(END_MARKER),
-            "{}: missing `{}` marker.",
-            path,
-            END_MARKER
-        );
-    }
-}
-
 // A log flag returns the logarithmic value before any `mix`: drivers that
 // evaluate `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`,
 // which put log-axis values past 2^24 at the wrong height. The linear
@@ -1088,78 +1005,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
         &[
             "contour_anchor.wgsl",
-            "contour_label.wgsl",
-            "data_render/bar_columnar.wgsl",
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/field_columnar.wgsl",
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-        ],
-        &[
-            "axis_pair_to_t",
-            "data_to_ndc",
-            "maybe_log",
-            "polar_ndc",
-            "styled_point_index",
-        ],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/core.wgsl",
-        ],
-        &["polar_fragment_visible"],
-    ),
-    (
-        &[
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "gpu_pick/noise.wgsl",
-        ],
-        &["sketch_hash01", "sketch_noise"],
-    ),
-    (
-        &[
-            "data_render/field_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
-            "gpu_pick/marker.wgsl",
-        ],
-        &["ramp_finite"],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-        ],
-        &[
-            "polar_clip_limits",
-            "polar_clip_offset",
-            "polar_clip_sector",
-            "polar_sample_valid",
-            "sample_finite",
-            "sample_valid",
-        ],
-    ),
-    (
-        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
-        &["output"],
-    ),
-    (
-        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
-        &["hash", "noise"],
-    ),
-    (
-        &[
-            "contour_anchor.wgsl",
             "data_render/field_columnar.wgsl",
             "gpu_errorbar.wgsl",
         ],
@@ -1175,20 +1020,38 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "data_render/vector/project_cartesian2d.wgsl",
+            "data_render/vector/glyph_arrow.wgsl",
             "gpu_pick/vector.wgsl",
         ],
-        &["pair_add"],
+        &[
+            "arrow_distance",
+            "arrow_finite",
+            "arrow_place",
+            "arrow_sd_segment",
+            "arrow_sd_triangle",
+        ],
     ),
     (
         &[
+            "contour_anchor.wgsl",
+            "contour_label.wgsl",
+            "data_render/bar_columnar.wgsl",
+            "data_render/errorbar_columnar.wgsl",
             "data_render/field_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
             "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
         ],
-        &["ramp_blend", "ramp_segment", "ramp_t"],
+        &["axis_pair_to_t", "data_to_ndc", "maybe_log", "polar_ndc"],
     ),
-    (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
+    (
+        &[
+            "data_render/vector/project_cartesian2d.wgsl",
+            "gpu_pick/vector.wgsl",
+        ],
+        &["axis_px_per_unit_at", "pair_add"],
+    ),
     (
         &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
         &[
@@ -1206,25 +1069,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "quad_count",
             "sample_point_pair",
             "vec2_f32_is_finite",
-        ],
-    ),
-    (
-        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
-        &["pair_value"],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-        ],
-        &["step_piece", "step_piece_count", "step_piece_len_px"],
-    ),
-    (
-        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
-        &[
-            "dash_pattern_on",
-            "line_stroke_distance",
-            "sketch_line_offset",
         ],
     ),
     (
@@ -1256,24 +1100,92 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
+        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
         &[
-            "data_render/vector/glyph_arrow.wgsl",
-            "gpu_pick/vector.wgsl",
+            "dash_pattern_on",
+            "line_stroke_distance",
+            "sketch_line_offset",
+        ],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
+        &["hash", "noise"],
+    ),
+    (
+        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
+        &["output"],
+    ),
+    (
+        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
+        &["pair_value"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/project_cartesian2d.wgsl",
         ],
         &[
-            "arrow_distance",
-            "arrow_finite",
-            "arrow_place",
-            "arrow_sd_segment",
-            "arrow_sd_triangle",
+            "polar_clip_limits",
+            "polar_clip_offset",
+            "polar_clip_sector",
+            "polar_sample_valid",
+            "sample_finite",
+            "sample_valid",
         ],
     ),
     (
         &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
             "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/vector.wgsl",
+            "gpu_pick/core.wgsl",
         ],
-        &["axis_px_per_unit_at"],
+        &["polar_fragment_visible"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+        ],
+        &["ramp_blend", "ramp_segment", "ramp_t"],
+    ),
+    (
+        &[
+            "data_render/field_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "data_render/vector/vector_input_common.wgsl",
+            "gpu_pick/marker.wgsl",
+        ],
+        &["ramp_finite"],
+    ),
+    (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
+    (
+        &[
+            "data_render/errorbar_columnar.wgsl",
+            "data_render/line_columnar.wgsl",
+            "data_render/scatter_columnar.wgsl",
+            "gpu_pick/noise.wgsl",
+        ],
+        &["sketch_hash01", "sketch_noise"],
+    ),
+    (
+        &[
+            "data_render/line_arc.wgsl",
+            "data_render/line_columnar.wgsl",
+        ],
+        &["step_piece", "step_piece_count", "step_piece_len_px"],
+    ),
+    (
+        &[
+            "contour_anchor.wgsl",
+            "contour_label.wgsl",
+            "data_render/common/transform.wgsl",
+        ],
+        &["styled_point_index"],
     ),
 ];
 

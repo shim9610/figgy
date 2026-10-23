@@ -3208,8 +3208,9 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
 /// fragments `shader_consistency` compares.
 #[test]
 fn assembled_pick_shaders_are_their_fragments_concatenated() {
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
-    let read = |name: &str| std::fs::read_to_string(dir.join(name)).unwrap();
+    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let dir = src.join("gpu_pick");
+    let read = |name: &str| std::fs::read_to_string(src.join(name)).unwrap();
     let mut used = std::collections::HashSet::new();
     for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
         let mut expected = String::new();
@@ -3221,12 +3222,12 @@ fn assembled_pick_shaders_are_their_fragments_concatenated() {
             used.insert(*name);
         }
         assert_eq!(shader.source(), expected, "{shader:?}");
-        assert_eq!(shader.fragments()[0], "core.wgsl", "{shader:?}");
+        assert_eq!(shader.fragments()[0], "gpu_pick/core.wgsl", "{shader:?}");
         let last = *shader.fragments().last().unwrap();
         if shader == PickShader::Gate {
-            assert_eq!(last, "gate_entries.wgsl");
+            assert_eq!(last, "gpu_pick/gate_entries.wgsl");
         } else {
-            assert_eq!(last, "exact_entry.wgsl", "{shader:?}");
+            assert_eq!(last, "gpu_pick/exact_entry.wgsl", "{shader:?}");
             if let Err(error) = wgpu::naga::front::wgsl::parse_str(shader.source()) {
                 panic!("{shader:?}: {}", error.emit_to_string(shader.source()));
             }
@@ -3238,7 +3239,10 @@ fn assembled_pick_shaders_are_their_fragments_concatenated() {
         if !name.ends_with(".wgsl") {
             continue;
         }
-        assert!(used.contains(name.as_str()), "{name} is in no pick module");
+        assert!(
+            used.contains(format!("gpu_pick/{name}").as_str()),
+            "{name} is in no pick module"
+        );
     }
 }
 

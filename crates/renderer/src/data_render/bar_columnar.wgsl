@@ -1,68 +1,3 @@
-// Columnar bar shader — histograms from host-binned data.
-//
-// Binning is the host's job. The renderer is handed two columns: bin `edges`
-// (n + 1 values) and `counts` (n). The edge column is bound twice, the second
-// time shifted by one logical value (COLUMN_VALUE_BYTES), so instance i sees
-// `edges[i]`, `edges[i + 1]`, and `counts[i]` — the same trick the line shader
-// uses for its segment endpoints. Instance count is decided by the caller as
-// `min(edges - 1, counts)`; a length mismatch draws fewer bars, never garbage.
-//
-// `style.shape_id` picks which axis the edges run along, so one shader draws
-// both orientations. The caller binds the edge column to slots 0/1 and the
-// count column to slot 2 accordingly; nothing here infers the roles from the
-// column lengths.
-//
-// Each instance is 5 axis-aligned quads = 30 vertices on a TriangleList:
-// the fill plus the four border edges, which tile the bar exactly with no
-// overlap (so a translucent fill never blends over its own border). Pixel
-// dimensions — the inter-bar gap and the border width — are applied as NDC
-// offsets via `transform.pixel_to_ndc`, the same construction
-// `errorbar_columnar.wgsl` uses.
-//
-// Log axes need no special case: `maybe_log` already floors non-positive
-// values at 1e-30, so a bar based at 0 on a logarithmic count axis extends
-// past the bottom of the data area and is clipped by the scissor — which is
-// what a bar with no lower bound looks like. Nothing produces NaN.
-
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
@@ -129,7 +64,6 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     }
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
-// ───── END common block ─────
 
 // ───── Style reinterpretation (bars only) ─────
 //

@@ -1,60 +1,3 @@
-// Columnar errorbar shader.
-//
-// Six columns (x, y, err_y_lo, err_y_hi, err_x_lo, err_x_hi) bound as
-// per-instance slots. Each instance produces 36 vertices on a TriangleList:
-// six axis-aligned quads (6 vertices each) — Y stem, cap @ y_lo, cap @ y_hi,
-// X stem, cap @ x_lo, cap @ x_hi. Stem endpoints live in data space; caps
-// span ±style.cap_half_px (pixels) perpendicular to their stem. Each quad is
-// expanded perpendicular to its own axis by half its stroke width in pixels
-// (stems: style.line_width_px, caps: style.cap_width_px); pixel offsets are
-// converted to NDC via transform.pixel_to_ndc.
-//
-// `style.primitive_flags` is the direction authority: bit 0 enables Y and
-// bit 1 enables X. Inactive vertex slots may bind any sufficiently long
-// column because the shader collapses that direction before reading errors.
-//
-// `scale_log.{x,y}` = 1.0 applies log10 to both the input coords and the
-// computed err endpoints.
-
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
 struct Style {
     color_premul: vec4<f32>,
     line_width_px: f32,
@@ -121,7 +64,6 @@ fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     }
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
-// ───── END common block ─────
 
 const ERRORBAR_HAS_Y: u32 = 1u;
 const ERRORBAR_HAS_X: u32 = 2u;

@@ -1,72 +1,3 @@
-// Arc-length prefix for dashed lines — fully GPU-resident compute scan.
-//
-// The dash phase must advance with the polyline's cumulative PIXEL arc
-// length, which depends on the data→pixel transform. This pipeline produces
-// the per-point prefix directly on the GPU so the column data never has to
-// come back to the CPU (the column pool keeps no CPU copies — that contract
-// is load-bearing; do not reintroduce shadows to "simplify" this).
-//
-// Entry points, dispatched by `line_arc.rs`:
-//   1. `seg_init`     — dst[start+i] = pixel length of segment (g-1, g) at
-//                       global index g = start+i; 0 at g=0. Non-finite
-//                       endpoints (NaN gaps, log of ≤0) contribute 0 so the
-//                       phase stays continuous across gaps. A step mode
-//                       (`params.mode`) sums the stepped pieces instead of
-//                       the straight distance.
-//   2. `scan_block`   — in-place per-256-block inclusive scan of the chunk,
-//                       block totals written to `sums` (Hillis–Steele in
-//                       workgroup memory).
-//   3. `add_offsets`  — dst[start+i] += scanned_sums[block(i) - 1], block > 0.
-//   4. `apply_carry`  — dst[start+i] += carry[0]: folds the running total of
-//                       every previous chunk into this one.
-//   5. `update_carry` — carry[0] = dst[start+len-1] (single thread), run
-//                       AFTER apply_carry so the total stays cumulative.
-//
-// One chunk covers up to min(dispatch-limit × 256, 256³) points via the
-// recursive scan (dst → sums0 → sums1); larger polylines are processed as
-// SEQUENTIAL chunks in one encoder with the carry chain linking them — n is
-// bounded only by pool memory, never by dispatch limits. The result buffer
-// doubles as the line pipeline's vertex slots 4/5.
-
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
 fn maybe_log(v: f32, is_log: f32) -> f32 {
     let lv = log(max(v, 1e-30)) / log(10.0);
     if is_log > 0.5 {
@@ -186,7 +117,6 @@ fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -
     a = a - floor((a - sector.z) / turn) * turn;
     return a <= sector.w + 1e-6 * turn;
 }
-// ───── END common block ─────
 
 // ──────────── step interpolation (NOT part of the common block) ────────────
 // A step mode draws every instance (segment a → b) as axis-aligned pieces.

@@ -3,8 +3,11 @@
 use super::*;
 
 /// The assembled line module.
-pub(crate) const LINE_SHADER: &str =
-    crate::shader_assembly::wgsl_module!("data_render/line_columnar.wgsl");
+pub(crate) const LINE_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/line_header.wgsl",
+    "data_render/common/transform.wgsl",
+    "data_render/line_columnar.wgsl"
+);
 
 /// Columnar line pipeline. slots: 0=x_a, 1=y_a, 2=x_b, 3=y_b (per-instance).
 pub fn create_line_columnar_pipeline(

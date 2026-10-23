@@ -47,37 +47,37 @@ impl PickShader {
         PickShader::Vector,
     ];
 
-    /// The fragment files, in assembly order.
+    /// The fragment files, in assembly order, relative to `src/`.
     #[cfg(test)]
     pub(crate) fn fragments(self) -> &'static [&'static str] {
         match self {
-            PickShader::Gate => &["core.wgsl", "gate_entries.wgsl"],
+            PickShader::Gate => &["gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl"],
             PickShader::Marker => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "gpu_pick/noise.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::MarkerLine => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "gpu_pick/noise.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::Line => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "no_scatter.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "gpu_pick/noise.wgsl",
+                "gpu_pick/no_scatter.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::Vector => &[
-                "core.wgsl",
-                "vector.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "gpu_pick/vector.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
         }
     }
