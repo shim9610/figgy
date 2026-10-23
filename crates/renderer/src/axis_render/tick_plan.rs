@@ -4,113 +4,17 @@
 
 use super::*;
 
-/// Hard ceiling on majors the linear walker may emit. A finite-but-tiny
-/// spacing (a mis-typed magnitude arriving through the SSoT) would otherwise
-/// walk the whole range in near-zero steps — millions of pushes on the
-/// raster path, which reads as a frozen chart.
-pub(super) const MAX_MAJOR_INTERVALS: usize = 1000;
+// The spacing guards and walk limits are the model's (`crate::tick`), so
+// every axis family walks the same grid.
+pub(crate) use crate::tick::effective_major_spacing;
+pub(super) use crate::tick::{
+    MAX_LOG_DECADES, MAX_MAJOR_INTERVALS, drawn_minor_count, effective_log_decade_step,
+    major_spacing_rejection, spacing_advances_range,
+};
 
-pub(super) const MAX_MINOR_SUBDIVISIONS: usize = 100;
-
-pub(super) const MAX_LOG_DECADES: usize = 1024;
-
-/// The largest decade step the log walker takes; `RenderWarning`'s message
-/// states the same bound.
-pub(crate) const MAX_LOG_DECADE_STEP: i32 = i32::MAX;
-
-pub(super) fn range_in_spacing_units(axis: &AxisOptions, spacing: f64) -> Option<f64> {
-    if !walkable_range(axis) || !spacing.is_finite() || spacing <= 0.0 {
-        return None;
-    }
-    let span = axis.max - axis.min;
-    let units = if span.is_finite() {
-        span / spacing
-    } else {
-        // Divide before subtracting so `-MAX..MAX` can still be measured when
-        // the requested spacing is large enough to make the walk bounded.
-        axis.max / spacing - axis.min / spacing
-    };
-    (units.is_finite() && units >= 0.0).then_some(units)
-}
-
-pub(super) fn spacing_advances_range(axis: &AxisOptions, spacing: f64) -> bool {
-    let forward = axis.min + spacing;
-    let backward = axis.max - spacing;
-    (forward.is_finite() && forward > axis.min) || (backward.is_finite() && backward < axis.max)
-}
-
-pub(super) fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
-    if !walkable_range(axis) {
-        return 1.0;
-    }
-    let span = axis.max - axis.min;
-    let mut spacing = if span.is_finite() {
-        crate::chart::nice_spacing(span)
-    } else {
-        let scale = axis.min.abs().max(axis.max.abs());
-        let normalized_span = axis.max / scale - axis.min / scale;
-        scale * (normalized_span / 8.0)
-    };
-    if !spacing.is_finite() || spacing <= 0.0 {
-        spacing = if span.is_finite() && span > 0.0 {
-            span
-        } else {
-            1.0
-        };
-    }
-    if !spacing_advances_range(axis, spacing) && span.is_finite() && span > 0.0 {
-        spacing = span;
-    }
-    spacing
-}
-
-/// The major spacing the raster actually walks. The SSoT accepts whatever
-/// the host sends (a live spacing input passes through 0 mid-edit), so the
-/// guard lives here — in the one place shared by tick marks, grid lines,
-/// minors, and label decimals, which therefore can never disagree. A
-/// non-finite or ≤ 0 spacing, or one that would emit an absurd tick count,
-/// falls back to the auto spacing for the current range instead of blanking
-/// the axis. Callers must have validated the range as finite and non-empty.
-pub(crate) fn effective_major_spacing(axis: &AxisOptions) -> f64 {
-    match major_spacing_rejection(axis) {
-        None => axis.major_spacing,
-        Some(_) => automatic_linear_spacing(axis),
-    }
-}
-
-/// Why [`effective_major_spacing`] does not walk `axis.major_spacing`, or
-/// `None` when it does. The one decision behind both the fallback and its
-/// [`RenderWarning::MajorSpacingReplaced`], so the two cannot disagree.
-///
-/// The reason is meaningful for a walkable range only, the same precondition
-/// [`effective_major_spacing`] has: any other range refuses every spacing
-/// (reported as `TooManyTicks`, because its interval count cannot be measured)
-/// and the walkers draw no linear ticks on it.
-pub(super) fn major_spacing_rejection(axis: &AxisOptions) -> Option<SpacingRejection> {
-    let sp = axis.major_spacing;
-    if !sp.is_finite() {
-        Some(SpacingRejection::NonFinite)
-    } else if sp <= 0.0 {
-        Some(SpacingRejection::NotPositive)
-    } else if !range_in_spacing_units(axis, sp)
-        .is_some_and(|units| units <= MAX_MAJOR_INTERVALS as f64)
-    {
-        Some(SpacingRejection::TooManyTicks {
-            limit: MAX_MAJOR_INTERVALS,
-        })
-    } else if !spacing_advances_range(axis, sp) {
-        Some(SpacingRejection::BelowResolution)
-    } else {
-        None
-    }
-}
-
-/// Minor ticks the linear walker draws per major interval: `minor_count`,
-/// clamped so the walk stays O(majors × subdivisions) whatever arrives.
-pub(super) fn drawn_minor_count(axis: &AxisOptions) -> usize {
-    axis.minor_count.min(MAX_MINOR_SUBDIVISIONS - 1)
-}
-
+/// The first and last whole decade exponents inside the guarded log range.
+/// It stays here with the Vec walkers below until they move to the model's
+/// `major_ticks` / `minor_ticks`.
 pub(super) fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
     let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
     let first = min
@@ -122,15 +26,6 @@ pub(super) fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
         .floor()
         .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
     (first, last)
-}
-
-pub(super) fn effective_log_decade_step(axis: &AxisOptions) -> i32 {
-    let step = if axis.major_spacing.is_finite() {
-        axis.major_spacing.max(1.0).floor()
-    } else {
-        1.0
-    };
-    step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32
 }
 
 pub(super) fn major_tick_values_for_axis(

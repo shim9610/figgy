@@ -32,12 +32,12 @@ pub(crate) fn apply_axis_range(
     axis.min = min;
     axis.max = max;
     if log {
-        axis.major_spacing = log_decade_step(min, max);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Logarithmic, min, max);
         axis.minor_count = 8;
         axis.label_style.format = LabelFormat::Power;
         axis.label_style.significant_digits = 1;
     } else {
-        axis.major_spacing = nice_spacing(max - min);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Linear, min, max);
         axis.minor_count = 4;
         if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
             axis.label_style.format = LabelFormat::Decimal;
@@ -49,26 +49,6 @@ pub(crate) fn apply_axis_range(
 /// Fill `rt.segments` with one plain RichSegment per char (all style flags off).
 fn fill_plain_segments(rt: &mut RichText, s: &str) {
     rt.segments = rich_segments_from_text(s);
-}
-
-/// Major spacing for a logarithmic axis, in decades.
-///
-/// `min`/`max` are in linear space; both shader and axis raster interpret
-/// `major_spacing` as "decades per major tick". Branches aim for 5–8 labels.
-pub(crate) fn log_decade_step(min: f64, max: f64) -> f64 {
-    if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= min {
-        return 1.0;
-    }
-    let log_min = min.log10().floor();
-    let log_max = max.log10().ceil();
-    let decades = (log_max - log_min).max(1.0);
-    if decades <= 6.0 {
-        1.0
-    } else if decades <= 12.0 {
-        2.0
-    } else {
-        (decades / 6.0).ceil()
-    }
 }
 
 pub(crate) use crate::layout::guarded_log_range;
@@ -84,35 +64,6 @@ pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
     let span = lmax - lmin;
     let pad = span * padding_ratio.max(0.0);
     (10f64.powf(lmin - pad), 10f64.powf(lmax + pad))
-}
-
-/// "Nice" tick spacing for a given data span — aims for 5–10 major ticks
-/// using the 1·2·5 × 10^k sequence common in scientific plots.
-///
-/// Examples: span=72 → 10, span=8 → 1, span=0.7 → 0.1.
-pub(crate) fn nice_spacing(span: f64) -> f64 {
-    if !span.is_finite() || span <= 0.0 {
-        return 1.0;
-    }
-    let exp = span.log10().floor();
-    let base = 10f64.powf(exp);
-    if !base.is_finite() || base <= 0.0 {
-        return span;
-    }
-    let frac = span / base;
-    // frac is in [1, 10); the 1·2·5 branches keep tick count in 5..=10.
-    let spacing = if frac >= 5.0 {
-        base
-    } else if frac >= 2.0 {
-        0.5 * base
-    } else {
-        0.2 * base
-    };
-    if spacing.is_finite() && spacing > 0.0 {
-        spacing
-    } else {
-        span
-    }
 }
 
 /// One axis' fit input: the union of everything that must stay visible.
@@ -480,12 +431,15 @@ impl Chart {
     /// [`Self::with_axis_range_change`] instead.
     ///
     /// Branches on the bottom axis's scale:
-    /// - **Linear**: `major_spacing = nice_spacing(max - min)` (1·2·5 sequence),
-    ///   `minor_count = 4`, `format = Decimal` (an existing timestamp format
-    ///   is retained), `sig_digits = 3`.
-    /// - **Logarithmic**: `major_spacing = log_decade_step(min, max)`
-    ///   (1 / 2 / N decades), `minor_count = 8` (2..9 within each decade),
-    ///   `format = Power` (10ⁿ superscript), `sig_digits = 1`.
+    /// - **Linear**: `major_spacing` is
+    ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
+    ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
+    ///   8 → 1, 0.7 → 0.1, 10 → 2). `minor_count = 4`, `format = Decimal`
+    ///   (an existing timestamp format is retained), `sig_digits = 3`.
+    /// - **Logarithmic**: `major_spacing` is the same function's decade step
+    ///   (1 up to 6 decades, 2 up to 12, then `ceil(decades / 6)`),
+    ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
+    ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {

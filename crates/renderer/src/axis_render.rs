@@ -14,7 +14,7 @@ use crate::layout::{
     DataArea, Element, RectF, Side, axis_anchor, axis_offset, label_rect, point_on_rect_side,
 };
 use crate::line::LineStylePreset;
-use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
+use crate::render_warning::{RenderWarning, WarningAxis};
 use crate::select::{SelectionBox, emit_element};
 use crate::sink::{Sink, Slot, StrokeStyle};
 use crate::sketch::DecoStroker;
