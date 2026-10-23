@@ -12,6 +12,8 @@ pub(crate) const LINE_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/line_columnar_a.wgsl",
     "data_render/common/line_stroke.wgsl",
     "data_render/common/sketch_noise.wgsl",
+    "data_render/line_columnar_b.wgsl",
+    "data_render/common/line_step.wgsl",
     "data_render/line_columnar.wgsl"
 );
 

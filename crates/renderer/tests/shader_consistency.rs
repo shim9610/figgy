@@ -1143,15 +1143,8 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["sketch_hash01", "sketch_noise"],
     ),
     (
-        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
+        &["data_render/line_columnar_b.wgsl", "gpu_pick/line.wgsl"],
         &["sketch_line_offset"],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-        ],
-        &["step_piece", "step_piece_count", "step_piece_len_px"],
     ),
     (
         &[
