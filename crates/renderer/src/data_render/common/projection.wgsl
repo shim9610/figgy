@@ -21,8 +21,8 @@ fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f
 // Polar (Config.polar): the angle column in radians around the centre of the
 // data area, the radius axis fraction between the inner ring and the outer
 // radius. A radius below the axis start sits on the inner ring (data samples
-// there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::ndc` on the CPU.
+// there are masked by `sample_valid`; a fill baseline is not). CPU twin:
+// `cpu_twin::ndc`, test support.
 fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
     let p = transform.polar_angle;
     let e = transform.polar_extent;
