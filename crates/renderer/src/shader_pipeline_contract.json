@@ -2200,7 +2200,7 @@
           "binding": 1,
           "buffer": {
             "hasDynamicOffset": false,
-            "minBindingSize": 160,
+            "minBindingSize": 176,
             "type": "read-only-storage"
           },
           "visibility": 2
@@ -2231,7 +2231,7 @@
           "binding": 1,
           "buffer": {
             "hasDynamicOffset": false,
-            "minBindingSize": 112,
+            "minBindingSize": 128,
             "type": "read-only-storage"
           },
           "visibility": 3
@@ -2262,7 +2262,7 @@
           "binding": 1,
           "buffer": {
             "hasDynamicOffset": false,
-            "minBindingSize": 144,
+            "minBindingSize": 160,
             "type": "read-only-storage"
           },
           "visibility": 3
@@ -3022,7 +3022,7 @@
         }
       },
       "kind": "render",
-      "source": "76bcd67039adc382"
+      "source": "f45dad81e635b017"
     },
     {
       "descriptor": {
@@ -3068,7 +3068,7 @@
         }
       },
       "kind": "render",
-      "source": "ad0f396bece47d6b"
+      "source": "f2984e203ede681c"
     },
     {
       "descriptor": {
@@ -3160,7 +3160,7 @@
         }
       },
       "kind": "render",
-      "source": "4f6a7d515d74d181"
+      "source": "786262bc8ba5e181"
     },
     {
       "descriptor": {
