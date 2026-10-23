@@ -98,8 +98,8 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
-| `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer.rs` (`[f32; 12]`). |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer/registry.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
+| `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer/style.rs` (`[f32; 12]`). |
 
 **대응하는 CPU 구조체:** `src/data_render/transform.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
@@ -134,7 +134,7 @@ The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), s
 | `cap_width_px` | 오차 막대 끝선의 두께(px) |
 | `shape_id` | `ScatterShape` GPU 코드 — 0 Circle, 1 Square, 2 Triangle, 3 Diamond, 4 Cross, 5 CircleFilled, 6 SquareFilled, 7 TriangleFilled, 8 DiamondFilled, 9 TriangleDown, 10 TriangleLeft, 11 TriangleRight, 12 Plus, 13 Pentagon, 14 Hexagon, 15 Octagon, 16 Star, 17 TriangleDownFilled, 18 TriangleLeftFilled, 19 TriangleRightFilled, 20 PlusFilled, 21 CrossFilled, 22 PentagonFilled, 23 HexagonFilled, 24 OctagonFilled, 25 StarFilled |
 | `dash_len` | `dash`의 유효 스칼라 개수. 0은 실선 |
-| `series_salt` | 시리즈마다 해시 패턴을 다르게 만드는 값. `renderer.rs`의 `create_style_for_series*`가 `fnv1a(series_id)`를 기록한다. 스케치·은하수·별자리 셰이더는 이 값을 시드에 XOR해 같은 X좌표를 쓰는 시리즈에서도 선의 흔들림과 별 패턴이 겹치지 않게 한다. 정밀 모드에서는 읽지 않는다. |
+| `series_salt` | 시리즈마다 해시 패턴을 다르게 만드는 값. `renderer/style.rs`의 `create_style_for_series*`가 `fnv1a(series_id)`를 기록한다. 스케치·은하수·별자리 셰이더는 이 값을 시드에 XOR해 같은 X좌표를 쓰는 시리즈에서도 선의 흔들림과 별 패턴이 겹치지 않게 한다. 정밀 모드에서는 읽지 않는다. |
 | `primitive_flags` | 도형별 기능 비트. 오차 막대는 bit 0으로 Y방향, bit 1로 X방향 사용 여부를 표시한다. 선 엔트리(`vs_main`/`vs_sketch`/`vs_ribbon`/`vs_area`)는 bit 2-3을 계단 보간 모드(0 직선, 1 StepPre, 2 StepPost, 3 StepMid)로 읽고, 면 채움 엔트리 `vs_area`는 bit 4를 "기준선 대신 다른 시리즈까지 채움"으로 읽는다. 다른 도형은 읽지 않는다. CPU 상수는 `line_step.rs`의 `LINE_STEP_SHIFT` / `AREA_FILL_TO_SERIES`이고, 계단 모드 비트는 `line_step::step_flag_bits`가 만든다. |
 | `dash` | 최대 8개의 순차 `[on, off, ...]` 픽셀 길이 — `dash[0].xyzw` 먼저, 이어서 `dash[1].xyzw` |
 
@@ -176,7 +176,7 @@ colour and outline width are never taken from the resolved fill or border.
 
 ### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`
 
-선 아래(또는 두 선 사이) 면 채움은 선 셰이더의 별도 엔트리와 별도 파이프라인("figgy line area pipeline")으로 그린다. 공통 `Style` 구조체를 그대로 쓰되 일부 필드를 막대처럼 다른 용도로 쓴다. CPU 쪽 작성자는 `renderer.rs::create_style_for_series_scaled_inner`(`area` 스타일)이며 아래 표와 일치해야 한다.
+선 아래(또는 두 선 사이) 면 채움은 선 셰이더의 별도 엔트리와 별도 파이프라인("figgy line area pipeline")으로 그린다. 공통 `Style` 구조체를 그대로 쓰되 일부 필드를 막대처럼 다른 용도로 쓴다. CPU 쪽 작성자는 `renderer/style.rs::create_style_for_series_scaled_inner`(`area` 스타일)이며 아래 표와 일치해야 한다.
 
 | 필드 | 면 채움에서의 의미 |
 |------|------------------|
@@ -526,7 +526,7 @@ it (streaming is not extended): its dashes pick as a solid stroke and its
 sketch wobble as the envelope `±amplitude_px`. In a dash gap the hit distance
 runs along the stroke to the nearer dash of the same piece. A Milkyway
 ribbon is never dashed; its strip and the star field scattered along it pick
-as one rectangle of the larger half extent (`gpu_pick.rs::
+as one rectangle of the larger half extent (`gpu_pick/engine.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
 CPU twin: `cpu_twin::line_segment_pick` (precise strokes and dashes) with
@@ -538,7 +538,7 @@ The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line
 
 The stylized draw styles replace the precise marker with their own entry, and
 the picker follows the entry the chart's style draws with
-(`gpu_pick.rs::GpuPickDrawStyle`, the shader's `styled` modes):
+(`gpu_pick/types.rs::GpuPickDrawStyle`, the shader's `styled` modes):
 
 - **Sketch** (`fs_sketch`) perturbs `shape_distance` by
   `sketch_marker_distance`'s angular noise, seeded per marker from the

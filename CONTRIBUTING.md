@@ -112,9 +112,12 @@ series, line fills and step lines do with `FiggyError::InvalidSeriesConfig`.
 Regression tests should exercise the renderer's public APIs. Distinguish renderer
 tests from host event wiring and deployed application checks.
 
-To change a shared WGSL definition, edit its block in
-[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md) first, then
-every synced shader and its CPU struct, and run
+Shared WGSL code lives in `crates/renderer/src/data_render/common/`, one fragment
+per block, which `wgsl_module!` (`crates/renderer/src/shader_assembly.rs`) splices into every module
+that uses it at compile time. To change it, edit the fragment, then the Rust
+struct or constant that mirrors a changed layout, and the contract in
+[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md) it
+implements; follow that guide's steps and run
 `cargo test --locked -p figgy-renderer --test shader_consistency`.
 
 Public, non-draft PRs run the three-OS package/rendering matrix and CodeQL. There

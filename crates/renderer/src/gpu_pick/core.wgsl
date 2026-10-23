@@ -33,7 +33,7 @@ const PICK_FLAG_VECTOR: u32 = 64u;
 const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 
 // ───── exact-pass variants ─────
-// The point picker is assembled from fragments in Rust (`gpu_pick.rs`,
+// The point picker is assembled from fragments in Rust (`gpu_pick/shader.rs`,
 // `PickShader`): this core, the gate entries for the gate module, and for
 // each exact module the fragments of one primitive class (markers, vector
 // arrows, lines, or markers and lines) with the exact entry. Within an exact

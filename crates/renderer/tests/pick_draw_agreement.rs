@@ -2,7 +2,7 @@
 //! pickable at distance zero (or within its anti-aliasing fringe), and no
 //! pixel picks at distance zero where nothing is painted.
 //!
-//! The GPU/CPU parity tests in `gpu_pick.rs` compare the picker with itself.
+//! The GPU/CPU parity tests in `gpu_pick/tests.rs` compare the picker with itself.
 //! These tests compare it with the renderer's own output instead: each case
 //! exports the chart through the public `export_panel_rgba` at 1x and 2x,
 //! exports it again without the series under test, and asks the GPU picker

@@ -330,7 +330,7 @@ the sole issuer of its checked revisions:
 | host `redraw_pending` | Host-only surface state such as clear color changed; draw without duplicating chart state |
 
 Browser frame flow, simplified from `FiggyChart::frame` in
-[`crates/web/src/lib.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/lib.rs):
+[`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs):
 
 ```rust
 renderer.sync_external_invalidations()?;
@@ -626,7 +626,7 @@ pool 컬럼 (x, y) ──┐                       Transform uniform (144 B writ
 | 호스트의 `view_dirty` | 화면 크기·DPR로 미리보기 배치가 바뀌면 축 이미지를 갱신하고 다시 그린다. |
 | 호스트의 `redraw_pending` | 배경색 등 화면 상태가 바뀌면 차트 설정을 복제하지 않고 다시 그린다. |
 
-브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/lib.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/lib.rs)의 `FiggyChart::frame`을 줄인 예시다.
+브라우저의 프레임 처리 순서는 다음과 같다. [`crates/web/src/web/chart.rs`](https://github.com/shim9610/figgy/blob/master/crates/web/src/web/chart.rs)의 `FiggyChart::frame`을 줄인 예시다.
 
 ```rust
 renderer.sync_external_invalidations()?;

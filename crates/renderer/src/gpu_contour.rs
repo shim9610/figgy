@@ -9,7 +9,7 @@
 //! Two halves, both one-directional (no GPU→CPU readback, no ticket):
 //!
 //! - **CPU**: bake each level's string into one cell of a 2D label atlas
-//!   (`axis_render::bake_contour_label_atlas`). The content comes from `levels`,
+//!   (`bake_contour_label_atlas` in `data_render/contour.rs`). The content comes from `levels`,
 //!   which is config, so it is known before the frame starts.
 //! - **GPU**: `contour_anchor.wgsl` seeds a lattice over the data area and Newton
 //!   projects each seed onto its level's isoline, then a single serial pass keeps

@@ -191,7 +191,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let pixel_to_ndc = [2.0 / chart_w, 2.0 / chart_h];
 
     // Per-style shader parameters, packed by the style table's `pack_params`
-    // (renderer.rs). Precise mode writes zeros — the precise entry points
+    // (renderer/style.rs). Precise mode writes zeros — the precise entry points
     // never read them, so the output is unaffected. The export path's
     // `Config::scaled` already multiplied the style's pixel dims (e.g. sketch
     // amplitude/wavelength) by the DPI scale; pack functions read them as-is.
