@@ -3,6 +3,10 @@
 
 use super::*;
 
+/// The assembled field (heatmap and contour) module.
+pub(crate) const FIELD_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/field_columnar.wgsl");
+
 /// Vertices per field draw. The field is **one** quad for the whole grid, not
 /// one per cell — `field_columnar.wgsl`'s header has the two reasons (25M
 /// instances at matrix scale, and MSAA seams between adjacent quads).

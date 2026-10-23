@@ -25,6 +25,13 @@
 use std::rc::Rc;
 use std::sync::Arc;
 
+/// The assembled contour label anchor module.
+pub(crate) const CONTOUR_ANCHOR_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("contour_anchor.wgsl");
+/// The assembled contour label draw module.
+pub(crate) const CONTOUR_LABEL_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("contour_label.wgsl");
+
 #[cfg(not(target_arch = "wasm32"))]
 type GpuRef<T> = Arc<T>;
 #[cfg(target_arch = "wasm32")]
@@ -310,7 +317,7 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::with_anchor_source(device, field_bgl, include_str!("contour_anchor.wgsl"), true)
+        Self::with_anchor_source(device, field_bgl, CONTOUR_ANCHOR_SHADER, true)
     }
 
     fn with_anchor_source(
@@ -435,7 +442,7 @@ impl ContourLabelPipelines {
                 &device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy contour label shader"),
-                    source: wgpu::ShaderSource::Wgsl(include_str!("contour_label.wgsl").into()),
+                    source: wgpu::ShaderSource::Wgsl(CONTOUR_LABEL_SHADER.into()),
                 },
             ),
             label_bgl,
@@ -452,7 +459,7 @@ impl ContourLabelPipelines {
         // coordinate ABI/math as production. Otherwise the oracle itself loses
         // hi/lo residuals on Metal and cannot test dispatch equivalence there.
         let legacy = include_str!("../tests/fixtures/contour_anchor_v013.wgsl");
-        let current = include_str!("contour_anchor.wgsl");
+        let current = CONTOUR_ANCHOR_SHADER;
         let common = |source: &str| {
             let start = source.find("// ───── BEGIN common block").unwrap();
             let end = source.find("// ───── END common block").unwrap();
@@ -1206,7 +1213,7 @@ mod tests {
             assert_eq!(attribute.shader_location, location);
         }
 
-        let shader = include_str!("contour_label.wgsl");
+        let shader = CONTOUR_LABEL_SHADER;
         for input in [
             "@location(0) a_x: vec2<f32>",
             "@location(1) a_y: vec2<f32>",
@@ -1237,7 +1244,7 @@ mod tests {
 
     #[test]
     fn label_shader_maps_levels_to_grid_cells_and_clamps_texel_centres() {
-        let shader = include_str!("contour_label.wgsl");
+        let shader = CONTOUR_LABEL_SHADER;
         for contract in [
             "let column = a_level % lp.columns;",
             "let row = a_level / lp.columns;",

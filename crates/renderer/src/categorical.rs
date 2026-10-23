@@ -9,6 +9,11 @@ use crate::{RasterImage, RendererDevice};
 pub use model::categorical::*;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// The assembled categorical module.
+pub(crate) const CATEGORICAL_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("categorical.wgsl");
+
 #[path = "categorical_layout.rs"]
 mod layout;
 
@@ -227,7 +232,7 @@ impl CategoricalRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            include_str!("categorical.wgsl"),
+            CATEGORICAL_SHADER,
             &[("categorical surfaces", "categorical surfaces")],
             format,
             1,
@@ -304,7 +309,7 @@ impl CategoricalRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("categorical surfaces"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("categorical.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(CATEGORICAL_SHADER.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(

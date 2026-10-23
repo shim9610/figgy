@@ -752,7 +752,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.bar.async",
-                include_str!("data_render/bar_columnar.wgsl"),
+                crate::data_render::BAR_SHADER,
                 &[("pick_histogram_bin", "pick_histogram_bin")],
                 observer,
             )
@@ -773,7 +773,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.field.async",
-                include_str!("data_render/field_columnar.wgsl"),
+                crate::data_render::FIELD_SHADER,
                 &[("pick_field_data", "pick_field_data")],
                 observer,
             )
@@ -782,9 +782,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.vector.async",
-                &crate::data_render::vector::assemble(
-                    crate::data_render::vector::VectorInput::Grid,
-                ),
+                crate::data_render::vector::assemble(crate::data_render::vector::VectorInput::Grid),
                 &[("pick_vector_cell", "pick_vector_cell")],
                 observer,
             )
@@ -1412,18 +1410,14 @@ mod stream_tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("data_render/bar_columnar.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::BAR_SHADER.into()),
             },
         );
         let field = crate::gpu_compile::shader_module(
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("data_render/field_columnar.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.into()),
             },
         );
         let vector_grid =

@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// The assembled bar (histogram) module.
+pub(crate) const BAR_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/bar_columnar.wgsl");
+
 /// Vertices per bar instance: five axis-aligned quads (fill + four border
 /// edges) as a TriangleList. Must match `bar_columnar.wgsl`'s `BAR_SEGMENTS`.
 pub const BAR_VERTICES_PER_INSTANCE: u32 = 30;

@@ -9,6 +9,10 @@ use crate::{RasterImage, RendererDevice};
 pub use model::boxplot::*;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// The assembled boxplot module.
+pub(crate) const BOXPLOT_SHADER: &str = crate::shader_assembly::wgsl_module!("boxplot.wgsl");
+
 #[path = "boxplot_layout.rs"]
 mod layout;
 
@@ -264,7 +268,7 @@ impl BoxPlotRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            include_str!("boxplot.wgsl"),
+            BOXPLOT_SHADER,
             &[("boxplot surfaces", "boxplot surfaces")],
             format,
             1,
@@ -341,7 +345,7 @@ impl BoxPlotRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("boxplot surfaces"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("boxplot.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(BOXPLOT_SHADER.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(

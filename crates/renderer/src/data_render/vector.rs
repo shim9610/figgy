@@ -15,11 +15,12 @@
 //! - `glyph_arrow.wgsl`: the arrow geometry and its analytic coverage.
 //! - `vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
-//! [`assemble`] concatenates the fragments in that order; the list is the
-//! module's identity and there is no runtime templating. Every assembled
-//! combination is listed in [`VectorInput::ALL`], compiled by the shader
-//! compilation test, recorded in the pipeline contract and warmed in the
-//! browser like any other shader.
+//! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
+//! in that order at compile time (`wgsl_module!`); the list is the module's
+//! identity and there is no runtime templating. Every assembled combination
+//! is listed in [`VectorInput::ALL`], compiled by the shader compilation
+//! test, recorded in the pipeline contract and warmed in the browser like
+//! any other shader.
 
 use super::{GridColumnGpu, multisample_state};
 
@@ -68,18 +69,33 @@ pub fn fragments(input: VectorInput) -> [(&'static str, &'static str); 5] {
     ]
 }
 
-/// The assembled WGSL source: the fragments concatenated in declared order,
-/// each followed by one newline. Deterministic; the test
+/// The assembled vector module for [`VectorInput::Points`].
+pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_points.wgsl",
+    "data_render/vector/glyph_arrow.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+);
+
+/// The assembled vector module for [`VectorInput::Grid`].
+pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_grid.wgsl",
+    "data_render/vector/glyph_arrow.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+);
+
+/// The assembled WGSL source: the fragments of [`fragments`] joined with one
+/// newline, spliced at compile time. The test
 /// `assembled_vector_shaders_are_their_fragments_concatenated` holds it to
 /// exactly this.
-pub fn assemble(input: VectorInput) -> String {
-    let parts = fragments(input);
-    let mut source = String::with_capacity(parts.iter().map(|(_, s)| s.len() + 1).sum());
-    for (_, fragment) in parts {
-        source.push_str(fragment);
-        source.push('\n');
+pub const fn assemble(input: VectorInput) -> &'static str {
+    match input {
+        VectorInput::Points => VECTOR_POINTS_SHADER,
+        VectorInput::Grid => VECTOR_GRID_SHADER,
     }
-    source
 }
 
 pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::ShaderModule {
@@ -437,9 +453,11 @@ mod tests {
         for input in VectorInput::ALL {
             let assembled = assemble(input);
             let mut expected = String::new();
-            for (_, fragment) in fragments(input) {
+            for (i, (_, fragment)) in fragments(input).into_iter().enumerate() {
+                if i > 0 {
+                    expected.push('\n');
+                }
                 expected.push_str(fragment);
-                expected.push('\n');
             }
             assert_eq!(assembled, expected, "{input:?}");
             // Each fragment is present verbatim, so every shipped fragment file
@@ -463,8 +481,8 @@ mod tests {
     fn assembled_vector_shaders_parse() {
         for input in VectorInput::ALL {
             let source = assemble(input);
-            if let Err(error) = wgpu::naga::front::wgsl::parse_str(&source) {
-                panic!("{input:?}: {}", error.emit_to_string(&source));
+            if let Err(error) = wgpu::naga::front::wgsl::parse_str(source) {
+                panic!("{input:?}: {}", error.emit_to_string(source));
             }
         }
     }

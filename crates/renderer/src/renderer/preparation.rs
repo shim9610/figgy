@@ -203,7 +203,7 @@ impl PipelinePreparation {
                 crate::init::prewarm_compute_entries_js(
                     &self.device,
                     "contour.label.async",
-                    include_str!("../contour_anchor.wgsl"),
+                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER,
                     &[
                         ("anchor_project", "anchor_seed"),
                         ("anchor_project", "anchor_step"),

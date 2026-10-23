@@ -44,7 +44,7 @@ fn gather_checkpoint(@builtin(global_invocation_id) gid: vec3<u32>) {
 fn test_shader() -> String {
     let mut source = format!(
         "{}\n{}",
-        include_str!("../src/data_render/line_arc.wgsl"),
+        renderer::shader_assembly::module("line_arc"),
         EXTRA
     );
     source.push_str(

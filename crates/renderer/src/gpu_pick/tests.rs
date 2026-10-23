@@ -3213,9 +3213,11 @@ fn assembled_pick_shaders_are_their_fragments_concatenated() {
     let mut used = std::collections::HashSet::new();
     for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
         let mut expected = String::new();
-        for name in shader.fragments() {
+        for (i, name) in shader.fragments().iter().enumerate() {
+            if i > 0 {
+                expected.push('\n');
+            }
             expected.push_str(&read(name));
-            expected.push('\n');
             used.insert(*name);
         }
         assert_eq!(shader.source(), expected, "{shader:?}");

@@ -47,39 +47,64 @@ fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The point picker's fragments (`src/gpu_pick/*.wgsl`), concatenated in
-/// file-name order: every twin a pick module carries lives in one of them.
+/// The point picker's assembled modules, concatenated: every twin a pick
+/// module carries is in one of them.
 const PICK_FRAGMENTS: &str = "src/gpu_pick/*.wgsl";
 
+/// The assembled module that compiles a shader file's text, by the file it
+/// started from: the twins and content checks below read what the GPU
+/// compiles, wherever the assembler took each piece from.
+fn assembled_module_for(path_rel: &str) -> Option<&'static str> {
+    Some(match path_rel {
+        "src/data_render/scatter_columnar.wgsl" => "scatter",
+        "src/data_render/line_columnar.wgsl" => "line",
+        "src/data_render/errorbar_columnar.wgsl" => "errorbar",
+        "src/data_render/bar_columnar.wgsl" => "bar",
+        "src/data_render/field_columnar.wgsl" => "field",
+        "src/data_render/line_arc.wgsl" => "line_arc",
+        "src/contour_anchor.wgsl" => "contour_anchor",
+        "src/contour_label.wgsl" => "contour_label",
+        "src/gpu_errorbar.wgsl" => "errorbar_fit",
+        "src/data_render/vector/project_cartesian2d.wgsl"
+        | "src/data_render/vector/vector_input_common.wgsl"
+        | "src/data_render/vector/glyph_arrow.wgsl" => "vector_grid",
+        _ => return None,
+    })
+}
+
+/// A source file, except that a shader is read as the assembled module it is
+/// part of (see [`assembled_module_for`]), [`PICK_FRAGMENTS`] as every pick
+/// module and [`SSOT_PATH`] as the document followed by the shared fragment
+/// files under `src/data_render/common/`.
 fn read(path_rel: &str) -> String {
-    if let Some(dir) = path_rel.strip_suffix("/*.wgsl") {
-        let mut names: Vec<_> = fs::read_dir(workspace_root().join(dir))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
-            .collect();
-        names.sort();
-        return names
+    if path_rel == PICK_FRAGMENTS {
+        return renderer::shader_assembly::MODULES
             .iter()
-            .map(|path| {
-                read(
-                    path.strip_prefix(workspace_root())
-                        .unwrap()
-                        .to_str()
-                        .unwrap(),
-                )
-            })
+            .filter(|(name, _)| name.starts_with("pick_"))
+            .map(|(_, source)| *source)
             .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
+            .join("\n");
+    }
+    if let Some(name) = assembled_module_for(path_rel) {
+        return renderer::shader_assembly::module(name).to_string();
     }
     let p = workspace_root().join(path_rel);
     let raw = fs::read_to_string(&p).unwrap_or_else(|e| panic!("Failed to read {:?}: {}", p, e));
     // Normalize line endings so CRLF (Windows) vs LF doesn't trip substring
     // matching when comparing SSoT text against shader source.
-    raw.replace("\r\n", "\n")
+    let mut text = raw.replace("\r\n", "\n");
+    if path_rel == SSOT_PATH {
+        let common = workspace_root().join("src/data_render/common");
+        if let Ok(entries) = fs::read_dir(&common) {
+            let mut fragments: Vec<_> = entries.map(|entry| entry.unwrap().path()).collect();
+            fragments.sort();
+            for fragment in fragments {
+                text.push('\n');
+                text.push_str(&fs::read_to_string(fragment).unwrap().replace("\r\n", "\n"));
+            }
+        }
+    }
+    text
 }
 
 fn shader_path_for(short: &str) -> &'static str {
