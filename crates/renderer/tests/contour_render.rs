@@ -1799,6 +1799,156 @@ fn contour_line_is_interrupted_under_a_transparent_label() {
     );
 }
 
+/// z = 100 (x + y) on the `plane_fixture` lattice: the same anti-diagonal
+/// isolines, with three-digit levels, so a label is clearly longer than tall.
+fn hundreds_plane_fixture(renderer: &mut Renderer) {
+    plane_fixture(renderer);
+    renderer
+        .add_columns(&[
+            (
+                "h0",
+                &col_f64(vec![0.0, 100.0, 200.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h1",
+                &col_f64(vec![100.0, 200.0, 300.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "h2",
+                &col_f64(vec![200.0, 300.0, 400.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("grid upload");
+}
+
+/// `data_to_px` without the rounding, in physical pixels at `scale`.
+fn data_to_px_f(chart: &Chart, x: f64, y: f64, scale: f64) -> (f64, f64) {
+    let cfg = chart.config();
+    let da = cfg.data_area().expect("data area");
+    let tx = (x - cfg.bottom_x.min) / (cfg.bottom_x.max - cfg.bottom_x.min);
+    let ty = (y - cfg.left_y.min) / (cfg.left_y.max - cfg.left_y.min);
+    (
+        (da.x as f64 + tx * da.width as f64) * scale,
+        ((da.y + da.height) as f64 - ty * da.height as f64) * scale,
+    )
+}
+
+/// A rotated label's stroke gap lies inside its quad, at 1x and 2x.
+///
+/// The label sits on the level-200 isoline with a tangent pointing left, so
+/// the quad turns upright by 180° and runs along the isoline. Its frame
+/// (`common/contour_label_box.wgsl`) is shared by the quad and the gap; the
+/// gap reaches `LABEL_GAP_EDGE_PX` (0.5) past the content, the quad
+/// `LABEL_EDGE_PX` (2), and the baked background fades out over the gutter
+/// between them. So with a background every pixel the label changes, the
+/// stroke it removes included, is a pixel the label paints: no blanked stroke
+/// shows past the box. With a transparent label the gap alone shows: it
+/// blanks the stroke along the whole box, in the label's rotated frame, and
+/// nothing past the box.
+#[test]
+fn a_rotated_label_gap_lies_inside_its_quad() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    hundreds_plane_fixture(&mut renderer);
+    let chart = bare_chart(colorbar(0.0, 400.0));
+    let series = |line: Color, labels: Option<ContourLabelConfig>| {
+        let mut cfg = contour_only(&["h0", "h1", "h2"], vec![200.0], None);
+        if let DataRenderType::Contour { contour, .. } = &mut cfg.render_type {
+            contour.line.line_color = line;
+            contour.labels = labels;
+        }
+        cfg
+    };
+    let clear = Color::new(0.0, 0.0, 0.0, 0.0);
+    let mut boxed = label_config(vec![anchor(0, 1.0, 1.0, -1.0, 1.0)], true);
+    boxed.color = LINE_B;
+    boxed.bg_color = Some(LABEL_BG);
+    boxed.bg_padding_px = 3.0;
+    let mut transparent = boxed.clone();
+    transparent.color = clear;
+    transparent.bg_color = None;
+    for scale in [1.0f32, 2.0] {
+        let s = f64::from(scale);
+        let mut export = |line: Color, labels: Option<ContourLabelConfig>| {
+            renderer
+                .export_panel_rgba(&chart, &[series(line, labels)], scale)
+                .unwrap()
+        };
+        let stroke = export(LINE_A, None);
+        let with_box = export(LINE_A, Some(boxed.clone()));
+        let label_only = export(clear, Some(boxed.clone()));
+        let nothing = export(clear, None);
+        let gapped = export(LINE_A, Some(transparent.clone()));
+
+        // The label frame in canvas pixels: the anchor and the isoline's
+        // direction through the drawn axes, and its normal.
+        let centre = data_to_px_f(&chart, 1.0, 1.0, s);
+        let ahead = data_to_px_f(&chart, 0.5, 1.5, s);
+        let (dx, dy) = (ahead.0 - centre.0, ahead.1 - centre.1);
+        let len = (dx * dx + dy * dy).sqrt();
+        let (ux, uy) = (dx / len, dy / len);
+        let local = |x: u32, y: u32| {
+            let (px, py) = (x as f64 + 0.5 - centre.0, y as f64 + 0.5 - centre.1);
+            ((px * ux + py * uy).abs(), (py * ux - px * uy).abs())
+        };
+        let differs =
+            |a: &RasterImage, b: &RasterImage, x: u32, y: u32| pixel(a, x, y) != pixel(b, x, y);
+
+        // The painted box: every pixel the label alone changes.
+        let (mut box_u, mut box_v) = (0.0f64, 0.0f64);
+        for y in 0..label_only.height {
+            for x in 0..label_only.width {
+                if differs(&label_only, &nothing, x, y) {
+                    let (u, v) = local(x, y);
+                    box_u = box_u.max(u);
+                    box_v = box_v.max(v);
+                }
+            }
+        }
+        assert!(
+            box_u > box_v + 4.0 * s,
+            "{scale}x: the label box is not longer along the isoline: {box_u} x {box_v}"
+        );
+        let in_box = |u: f64, v: f64| u <= box_u && v <= box_v;
+
+        let (mut stroke_inside, mut stroke_outside, mut gap) = (0, 0, 0);
+        for y in 0..stroke.height {
+            for x in 0..stroke.width {
+                let (u, v) = local(x, y);
+                if differs(&with_box, &stroke, x, y) {
+                    assert!(
+                        differs(&label_only, &nothing, x, y),
+                        "{scale}x: the label changed ({x}, {y}), which its box does not paint: {u} x {v} in {box_u} x {box_v}"
+                    );
+                }
+                if differs(&gapped, &stroke, x, y) {
+                    gap += 1;
+                    assert!(
+                        in_box(u, v),
+                        "{scale}x: the stroke gap reaches ({x}, {y}) past the label box: {u} x {v} past {box_u} x {box_v}"
+                    );
+                }
+                if is_blue(pixel(&stroke, x, y)) {
+                    if u < box_u - 3.0 && v < box_v - 3.0 {
+                        stroke_inside += 1;
+                        assert!(
+                            !is_blue(pixel(&gapped, x, y)),
+                            "{scale}x: the stroke survives at ({x}, {y}) inside the label box"
+                        );
+                    } else if !in_box(u, v) {
+                        stroke_outside += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            stroke_inside > 0 && stroke_outside > 0 && gap > 0,
+            "{scale}x: the fixture proves nothing: {stroke_inside} stroke pixels inside the box, {stroke_outside} outside, {gap} blanked"
+        );
+    }
+}
+
 /// Two renders of the same input are **byte-identical**.
 ///
 /// Fixed candidate slots and one serial selection pass make the result independent

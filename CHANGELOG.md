@@ -226,6 +226,16 @@ Collected on `integration/0.19`; the release entry replaces this section.
   the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
   their defaults); model 0.12.1 and older reject it. Migration: a Rust
   `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
+- **Contour label box.** The label quad and the contour stroke gap under it
+  take their frame (centre, reading direction, upright turn) from one WGSL
+  fragment, `common/contour_label_box.wgsl`
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 4). The gap keeps
+  its 0.5 px edge inside the quad's 2 px edge; no pixel changes.
+- **Radial inside-label lift.** The vertical offset of a lifted sector's
+  inside label is computed once where the sector is built and passed to the
+  shader in `Sector.effects.w` (reserved zero before)
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 5); the layout,
+  the hit map and the shader read the same value. No pixel changes.
 - **Histogram selection outline.** A selected bin's outline resolves the
   bin's gap and width ratio with the bar draw's own resolver on the GPU
   (`resolve_bar_style` in `bar_columnar.wgsl`) instead of a CPU copy of it

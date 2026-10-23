@@ -49,7 +49,11 @@ struct Sector {
     outline: [f32; 4],
     outline_color: [f32; 4],
     // reserved (0, highlight moved), reserved (0, texture angle moved),
-    // inside-label flag, reserved (0)
+    // inside-label flag, inside-label lift: how far the lifted top face moves
+    // up the screen in physical pixels (`rounding[2] * sin(arc[2]) *
+    // geometry[2]`), computed once where the sector is built
+    // (`radial_layout.rs`). The layout moves the inside labels or their hit
+    // map by it and the shader moves the inside glyphs by it.
     effects: [f32; 4],
     light: [f32; 4],
 }
