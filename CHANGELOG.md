@@ -172,9 +172,11 @@ Collected on `integration/0.19`; the release entry replaces this section.
     `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
     `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
 - **One tick plan.** The Cartesian spacing rule (`Chart::set_x_range`,
-  `set_y_range` and the fits), `AxisOptions::compute_nice_ticks`, the
-  renderer's tick walkers and guards and the contour levels of
-  `ContourConfig::nice_levels` now share `model::tick` (`renderer::tick`)
+  `set_y_range` and the fits), `AxisOptions::compute_nice_ticks`, the tick
+  marks, labels and grid lines of Cartesian axes and the colourbar, the
+  radar rings, the box plot and categorical value ticks and the contour
+  levels of `ContourConfig::nice_levels` now share one spacing rule and
+  one walk in `model::tick` (`renderer::tick`)
   ([#58](https://github.com/shim9610/figgy/issues/58) item 14). New public
   items: `AXIS_LINEAR_TARGET` (10), `AXIS_LOG_TARGET` (7), `LooseRange`,
   `nice_linear_step`, `nice_log_step`, `axis_major_spacing`, the walkers
@@ -186,30 +188,41 @@ Collected on `integration/0.19`; the release entry replaces this section.
   `effective_log_decade_step`, and the walk limits. `SpacingRejection`
   moves to `model::tick` and stays exported as
   `renderer::SpacingRejection`. Output changes:
-  - a linear spacing that `set_x_range` / `set_y_range` or a fit writes can
-    differ in its last bits (at most 2 ulp; `2·10^(k-1)` where it was
-    `0.2·10^k`), and a step below `f64::MIN_POSITIVE` can be rounded
-    differently. Tick labels are unchanged except Decimal labels of
-    values past 2^53, which print every integer digit, and of steps below
-    1e-15, where the 15-decimal cap already merges neighbouring labels;
-  - a span above about 1e308 keeps its 1·2·5 step class instead of falling
-    back after the loose range overflowed (`compute_nice_ticks` of
-    `0..1.05e308` at target 5 steps `5e307`, not `2e307`; `set_x_range`
-    steps `2e307`, as below the overflow);
-  - `nice_levels` returns the level-limit error for ranges whose level
-    indices passed `i64` (the walk saturated and returned no levels), and
-    no levels for a step that moves neither range end at `f64` precision
-    (the walk repeated the few representable values).
-  The box plot, radar and categorical value ticks, the Cartesian log
-  decades (`powf` instead of `powi`) and the grid lines move to the shared
-  walkers in a follow-up.
+  1. a linear spacing that `set_x_range` / `set_y_range` or a fit writes
+     can differ in its last bits (at most 2 ulp; `2·10^(k-1)` where it was
+     `0.2·10^k`), and a step below `f64::MIN_POSITIVE` can be rounded
+     differently. Tick labels are unchanged except Decimal labels of
+     values past 2^53, which print every integer digit, and of steps below
+     1e-15, where the 15-decimal cap already merges neighbouring labels;
+  2. a span above about 1e308 keeps its 1·2·5 step class instead of
+     falling back after the loose range overflowed (`compute_nice_ticks`
+     of `0..1.05e308` at target 5 steps `5e307`, not `2e307`;
+     `set_x_range` steps `2e307`, as below the overflow);
+  3. radar rings and box plot value ticks keep a ring or tick that
+     rounding put just past a range end, through the walk's 1e-9 step
+     slack (`value_range [0, 0.3]` with `ring_spacing 0.1` draws the 0.3
+     ring). Fitted ranges gain it most: in a seeded sample, 0.7 % of
+     fitted radar axes gain the outer ring and 7 % of fitted box plot axes
+     gain an end tick; fixed ranges rarely change;
+  4. categorical value ticks are `k · step` instead of `min + i · step`:
+     about one value in ten moves by an ulp, and a label changes only on a
+     rounding tie of the exponent form (28 of 525,313 in the sample);
+  5. the log decades of Cartesian axes, grid lines and the colourbar are
+     computed with `powf` instead of `powi`, as contour levels already
+     were: a decade value can move by up to 7 ulp at large exponents, and
+     an axis reaching subnormal decades gains the ticks `powi` lost;
+  6. `nice_levels` returns the level-limit error for ranges whose level
+     indices passed `i64` (the walk saturated and returned no levels), and
+     no levels for a step that moves neither range end at `f64` precision
+     (the walk repeated the few representable values).
 - **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
   decimals, trim_zeros })` writes a value alone, ignoring scale, spacing
   and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is
   the bounded value axes' tick form (`2.5`, `1000`, `1.23e6`), `Some(d)`
   exactly `d` decimals, trailing zeros trimmed with `trim_zeros`. The
-  categorical, radial, box plot and radar data labels use it, with the
-  same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
+  categorical, radial, box plot and radar data labels and the value-axis
+  tick labels of the categorical, box plot and radar charts use it, with
+  the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
   their defaults); model 0.12.1 and older reject it. Migration: a Rust
   `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
 

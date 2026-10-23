@@ -5,6 +5,8 @@ use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
+use model::tick::LinearGrid;
 
 pub(super) struct Layout {
     pub bars: Vec<Bar>,
@@ -80,19 +82,18 @@ pub(super) fn layout(
     }
     // Distant clipped geometry is bounded before converting to f32.
     let norm = |v: f64| ((v / unit - plan.min) / span).clamp(-10000.0, 10000.0) as f32;
-    let start = (plan.min / plan.major_spacing).ceil() * plan.major_spacing;
-    let tick_count = ((plan.max - start) / plan.major_spacing).floor().max(0.0) as usize;
-    if tick_count > 100 {
+    // The axes' grid walk over the plan (a fixed range is not widened).
+    let grid = LinearGrid::new(plan.min, plan.max, plan.major_spacing, 100);
+    if grid.is_some_and(|grid| grid.last_index() - grid.first_index() > 100.0) {
         return Err(invalid("too many value ticks"));
     }
     let mut ticks = Vec::new();
-    for i in 0..=tick_count {
-        let normalized = start + i as f64 * plan.major_spacing;
+    for (_, normalized) in grid.iter().flat_map(|grid| grid.iter()) {
         let value = normalized * unit;
         if !value.is_finite() {
             return Err(invalid("boxplot axis tick overflow"));
         }
-        let label = crate::axis_render::plain_number(value);
+        let label = PlainNumberFormat::AUTO.format(value);
         if ticks.last().is_some_and(|t: &(f32, String)| t.1 == label) {
             return Err(invalid("value ticks need a wider range to remain distinct"));
         }

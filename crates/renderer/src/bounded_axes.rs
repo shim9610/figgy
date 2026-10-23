@@ -209,21 +209,6 @@ pub(crate) fn draw_bounded_decorations(
 /// The legend rows every bounded family lays out the same way: centred
 /// rows at the bottom of the canvas, a colour swatch and the label per
 /// entry. Entries are `(row, x within the row, width, label, colour)`.
-/// A value as a bounded chart's tick or data label: plain decimals, trailing
-/// zeros trimmed, exponent form past six digits either way.
-pub(crate) fn plain_number(v: f64) -> String {
-    if v == 0.0 {
-        return "0".into();
-    }
-    if v.abs() >= 1e6 || v.abs() < 0.001 {
-        format!("{v:.2e}")
-    } else {
-        format!("{v:.6}")
-            .trim_end_matches('0')
-            .trim_end_matches('.')
-            .to_owned()
-    }
-}
 pub(crate) struct BoundedLegend<'a> {
     pub size: (u32, u32),
     pub entries: &'a [(usize, f32, f32, &'a str, Color)],

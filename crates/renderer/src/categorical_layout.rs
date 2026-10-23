@@ -5,6 +5,8 @@ use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
+use model::tick::LinearGrid;
 
 pub(super) struct Layout {
     pub bars: Vec<Bar>,
@@ -61,18 +63,19 @@ pub(super) fn layout(
         .map_err(|_| invalid("categorical axis range cannot be represented"))?;
     let span = plan.max - plan.min;
     let norm = |v: f64| ((v / unit - plan.min) / span) as f32;
-    let tick_count = ((plan.max - plan.min) / plan.major_spacing).round() as usize;
+    // The axes' grid walk over the widened plan: ticks at `k · step`.
+    let grid = LinearGrid::new(plan.min, plan.max, plan.major_spacing, 100)
+        .ok_or_else(|| invalid("categorical axis range cannot be represented"))?;
     let mut ticks = Vec::new();
-    for i in 0..=tick_count {
-        let normalized = plan.min + i as f64 * plan.major_spacing;
+    for (_, normalized) in grid.iter() {
         let value = normalized * unit;
         if !value.is_finite() {
             return Err(invalid("categorical axis tick overflow"));
         }
         let label = if percent {
-            format!("{}%", crate::axis_render::plain_number(value))
+            format!("{}%", PlainNumberFormat::AUTO.format(value))
         } else {
-            crate::axis_render::plain_number(value)
+            PlainNumberFormat::AUTO.format(value)
         };
         ticks.push((((normalized - plan.min) / span) as f32, label));
     }

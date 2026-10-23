@@ -8,25 +8,8 @@ use super::*;
 // every axis family walks the same grid.
 pub(crate) use crate::tick::effective_major_spacing;
 pub(super) use crate::tick::{
-    MAX_LOG_DECADES, MAX_MAJOR_INTERVALS, drawn_minor_count, effective_log_decade_step,
-    major_spacing_rejection, spacing_advances_range,
+    drawn_minor_count, effective_log_decade_step, major_spacing_rejection, walkable_range,
 };
-
-/// The first and last whole decade exponents inside the guarded log range.
-/// It stays here with the Vec walkers below until they move to the model's
-/// `major_ticks` / `minor_ticks`.
-pub(super) fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
-    let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
-    let first = min
-        .log10()
-        .ceil()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    let last = max
-        .log10()
-        .floor()
-        .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-    (first, last)
-}
 
 pub(super) fn major_tick_values_for_axis(
     axis: &AxisOptions,
@@ -82,109 +65,18 @@ pub(super) fn axis_pixel_len(side: Side, da: &DataArea) -> f32 {
     }
 }
 
+/// The major tick values the numeric walker draws: [`crate::tick::major_ticks`],
+/// anchored to absolute multiples of the spacing (or whole decades), so tick
+/// values stay round whatever the range ends are.
 pub(crate) fn major_tick_values(axis: &AxisOptions) -> Vec<f64> {
-    let mut out = Vec::new();
-    match axis.scale {
-        AxisScale::Linear => {
-            if !walkable_range(axis) {
-                return out;
-            }
-            // Anchor ticks to ABSOLUTE multiples of the spacing, not to
-            // axis.min: uniform-margin fits make the range ends arbitrary
-            // (0.137…), but tick values must stay nice regardless.
-            out.extend(
-                linear_grid_values(axis, effective_major_spacing(axis), MAX_MAJOR_INTERVALS)
-                    .into_iter()
-                    .map(|(_, value)| value),
-            );
-        }
-        AxisScale::Logarithmic => {
-            // major_spacing = decade step.
-            let (start_exp, end_exp) = log_exponent_bounds(axis);
-            let step = effective_log_decade_step(axis);
-            let mut exponent = start_exp;
-            for _ in 0..MAX_LOG_DECADES {
-                if exponent > end_exp {
-                    break;
-                }
-                let value = 10f64.powi(exponent);
-                if value.is_finite() && value > 0.0 {
-                    out.push(value);
-                }
-                let Some(next) = exponent.checked_add(step) else {
-                    break;
-                };
-                if next <= exponent {
-                    break;
-                }
-                exponent = next;
-            }
-        }
-    }
-    out
+    crate::tick::major_ticks(axis).collect()
 }
 
-/// Minor tick positions on the same ABSOLUTE grid the majors use — including
-/// the partial intervals before the first and after the last major (range
-/// ends are arbitrary under uniform-margin fits, and subdividing only
-/// between consecutive majors left those edge strips empty).
+/// The minor tick values on the majors' absolute grid, including the partial
+/// intervals before the first and after the last major:
+/// [`crate::tick::minor_ticks`].
 pub(super) fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
-    let mut out = Vec::new();
-    if axis.minor_count == 0 {
-        return out;
-    }
-    match axis.scale {
-        AxisScale::Linear => {
-            // The subdivision count is SSoT input too — clamp it so the
-            // walk stays O(majors × subdivisions) no matter what arrives.
-            if !walkable_range(axis) {
-                return out;
-            }
-            let subdivisions = drawn_minor_count(axis) + 1;
-            let step = effective_major_spacing(axis) / subdivisions as f64;
-            let max_intervals = MAX_MAJOR_INTERVALS
-                .saturating_mul(subdivisions)
-                .saturating_add(1);
-            for (index, value) in linear_grid_values(axis, step, max_intervals) {
-                // Multiples of the major spacing are the majors themselves.
-                if index.rem_euclid(subdivisions as f64) == 0.0 {
-                    continue;
-                }
-                out.push(value);
-            }
-        }
-        AxisScale::Logarithmic => {
-            // 2a..9a for EVERY decade overlapping the range, anchored at the
-            // decade powers — not at the majors, so partial edge decades
-            // (and multi-decade major steps) keep their minors.
-            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
-            let mut exponent =
-                min.log10()
-                    .floor()
-                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-            let last_decade =
-                max.log10()
-                    .floor()
-                    .clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32;
-            for _ in 0..MAX_LOG_DECADES {
-                if exponent > last_decade {
-                    break;
-                }
-                let a = 10f64.powi(exponent);
-                for k in 2..=9 {
-                    let v = a * (k as f64);
-                    if v.is_finite() && v >= min && v <= max {
-                        out.push(v);
-                    }
-                }
-                let Some(next) = exponent.checked_add(1) else {
-                    break;
-                };
-                exponent = next;
-            }
-        }
-    }
-    out
+    crate::tick::minor_ticks(axis).collect()
 }
 
 // Tick-guard warnings.
