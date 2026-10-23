@@ -1014,7 +1014,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
         &[
             "contour_anchor.wgsl",
-            "data_render/field_columnar_a.wgsl",
+            "data_render/common/grid_pair.wgsl",
             "gpu_errorbar.wgsl",
         ],
         &[
@@ -1060,12 +1060,10 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "cell_edge_pair",
             "contour_sample",
             "f32_is_finite",
-            "field_flag",
             "grad_px",
             "grid_value",
             "lattice_is_samples",
             "locate",
-            "pool_pair",
             "quad_count",
             "sample_point_pair",
             "vec2_f32_is_finite",
@@ -1084,6 +1082,10 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "sketch_marker_distance",
             "sketch_marker_wobble_px",
         ],
+    ),
+    (
+        &["contour_anchor.wgsl", "data_render/field_columnar_b.wgsl"],
+        &["field_flag", "pool_pair"],
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
