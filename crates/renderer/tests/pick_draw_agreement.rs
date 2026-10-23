@@ -176,6 +176,24 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
     }
 }
 
+/// A one-point circle series of base size `base` whose point 0 carries a
+/// sparse size override `size`.
+fn scatter_with_size_override(base: f32, size: f32) -> SeriesConfig {
+    let mut series = scatter("marker", ScatterShape::Circle, base, RED);
+    let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+        unreachable!()
+    };
+    scatter.point_style_overrides =
+        Some(vec![renderer::data_config::DataScatterPointStyleOverride {
+            index: 0,
+            style: renderer::data_config::DataScatterPointStyleConfig {
+                point_size: Some(size),
+                ..Default::default()
+            },
+        }]);
+    series
+}
+
 pub fn upload_xy(renderer: &mut Renderer, xs: Vec<f64>, ys: Vec<f64>) {
     renderer
         .add_columns(&[
@@ -1454,12 +1472,13 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         });
     };
     // `geometry`: the marker's coverage edge is its painted edge (else its
-    // farthest painted pixel counts); `tight`: the gap has an upper bound.
+    // farthest painted pixel counts); `slack`: the gap's upper bound past
+    // the wanted one, if any.
     let check = |renderer: &mut Renderer,
                  chart: &Chart,
                  series: &[SeriesConfig],
                  scale: f32,
-                 (geometry, tight): (bool, bool),
+                 (geometry, slack): (bool, Option<f64>),
                  what: &str| {
         let mut ringed = Chart::new(chart.config().clone());
         ring(&mut ringed);
@@ -1483,9 +1502,9 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             gap >= want - if geometry { 1.5 } else { 2.5 },
             "{what} at {scale}x: ring {ring_near:.2} only {gap:.2} px past the marker {marker_far:.2} (want {want})"
         );
-        if tight {
+        if let Some(slack) = slack {
             assert!(
-                gap <= want + 1.5,
+                gap <= want + slack,
                 "{what} at {scale}x: ring {ring_near:.2} {gap:.2} px past the marker {marker_far:.2} (want {want})"
             );
         }
@@ -1499,7 +1518,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                 &chart,
                 &series,
                 scale,
-                (true, true),
+                (true, Some(1.5)),
                 &format!("{shape:?}"),
             );
         }
@@ -1509,8 +1528,36 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             &chart,
             &zero,
             scale,
-            (true, true),
+            (true, Some(1.5)),
             "zero-size circle",
+        );
+        // A size override: Precise draws it through the style map, so the
+        // ring takes the mapped entry and rings the override's radius.
+        let overridden = [scatter_with_size_override(4.0, 12.0)];
+        check(
+            &mut renderer,
+            &chart,
+            &overridden,
+            scale,
+            (true, Some(1.5)),
+            "size override under Precise",
+        );
+        // Sketch ignores the overrides and draws the base radius, so the
+        // unmapped ring rings that radius: a ring at the override's 12 px
+        // would sit 8 px too far, past the wobble's 3 px amplitude.
+        const SKETCH_AMPLITUDE_PX: f32 = 3.0;
+        let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+            amplitude_px: SKETCH_AMPLITUDE_PX,
+            wavelength_px: 15.0,
+            seed: 3,
+        }));
+        check(
+            &mut renderer,
+            &sketch,
+            &overridden,
+            scale,
+            (true, Some(f64::from(SKETCH_AMPLITUDE_PX * scale) + 1.5)),
+            "size override under Sketch",
         );
 
         // A point vector's anchor rings at the glyph's half width (the head's
@@ -1578,7 +1625,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                     &chart,
                     &series,
                     scale,
-                    (geometry, false),
+                    (geometry, None),
                     &format!("{style:?} {shape:?}"),
                 );
             }
