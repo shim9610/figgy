@@ -341,6 +341,13 @@ with the renderer dependency and is not published (`publish = false`).
   with its hit region and selection box. `pick_draw_agreement.rs` does the
   same for every data family at 1x and 2x. `scale_consistency.rs` checks
   bounds, label sets and box-filtered images at 1x, 2x and 3x.
+- **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
+  that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag
+  as a factor of a hand-written blend (`x + f * (y - x)`,
+  `(1.0 - f) * x + f * y`) and a `select` by a log flag. The flags it checks
+  (`scale_log`, `polar_angle.x`, `is_log` and `select(0.0, 1.0, …)` locals)
+  are listed in SHADER_COMMON §3.1
+  ([#47](https://github.com/shim9610/figgy/issues/47)).
 
 Additions:
 

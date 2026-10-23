@@ -208,6 +208,38 @@ The code is the fragment [`data_render/common/projection.wgsl`](common/projectio
 호출자는 `transform.scale_log.x` 또는 `transform.scale_log.y`를 `is_log`로
 넣어 X·Y축을 독립적으로 선택한다.
 
+### 3.1 Flags that choose between two values
+
+`shader_consistency::flag_choices_never_blend_by_arithmetic` reads every
+shader under `src/` (comments stripped, each shared fragment once) and holds
+the flags below to the form above. A flag operand may carry a `[i]` index or
+a `.x` swizzle, and may be a field of a path (`transform.scale_log.x`,
+`pick_query_params.transform.scale_log[axis]`).
+
+| Flag | Kind | Where |
+| --- | --- | --- |
+| `scale_log` | f32 0/1 uniform field, one lane per axis | `Transform` (`common/transform.wgsl`), the pick transform |
+| `polar_angle.x` | f32 0/1 uniform lane (the other lanes are not flags) | `Transform`, the pick transform |
+| `is_log` | parameter name | `maybe_log`, `axis_pair_to_t`, `axis_px_per_unit_at` |
+| `let`/`var NAME = select(0.0, 1.0, …)` or `select(1.0, 0.0, …)` | local, flag within its function | `ramp_t` (`is_log`) |
+
+Every row must still match at least one shader, so renaming a flag fails the
+test until the table (here and in the test's `BLEND_FLAGS`) follows. The test
+rejects:
+
+- `mix(a, b, flag)` unless the same function returns the chosen value under
+  an `if flag > 0.5` before the `mix`, or overrides the `mix` under that `if`
+  within the next two lines; a `mix` weight computed from a flag
+  (`1.0 - flag`, `flag * k`) has no exemption;
+- a flag as a factor of a product, directly or as a term of a parenthesized
+  sum (`x + f * (y - x)`, `f * y + (1.0 - f) * x`), which no guard can make
+  exact;
+- `select` by a log flag (`scale_log`, `is_log`), except the
+  `select(0.0, 1.0, …)` that makes a flag.
+
+At least four guarded choices must be found: `maybe_log`, `axis_pair_to_t`,
+`ramp_t` and `axis_px_per_unit_at`.
+
 ---
 
 ## 4. hi/lo 데이터 좌표를 NDC로 변환(`axis_pair_to_t` / `data_to_ndc`)
@@ -563,6 +595,9 @@ When shared shader code changes:
 - [ ] A changed flag or constant that Rust also defines has the same value
       on both sides (`wgsl_constants_equal_their_rust_constants`).
 - [ ] The CPU twins the behaviour tests compare follow the change.
+- [ ] A new flag that chooses between two values is in the §3.1 table and
+      chooses through a guarded `mix` only
+      (`flag_choices_never_blend_by_arithmetic`).
 - [ ] `cargo test -p figgy-renderer --test shader_consistency` passes.
 - [ ] `cargo test -p figgy-renderer` passes (the shader compile test in
       `src/shader_compile_tests.rs` needs a GPU adapter).
