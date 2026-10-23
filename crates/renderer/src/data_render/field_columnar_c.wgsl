@@ -1,0 +1,516 @@
+/// `z` mapped to ramp position, or a negative number when it cannot be placed.
+fn z_ramp_t(zv: vec2<f32>) -> f32 {
+    return ramp_t(zv, field.z_min, field.z_max, field_flag(FIELD_LOG_Z));
+}
+
+fn vec4_f32_is_finite(v: vec4<f32>) -> bool {
+    return vec2_f32_is_finite(v.xy) && vec2_f32_is_finite(v.zw);
+}
+
+const CONTOUR_LEVEL_BLOCK_SIZE: u32 = 32u;
+
+fn contour_level_block_count() -> u32 {
+    return (field.level_count + CONTOUR_LEVEL_BLOCK_SIZE - 1u) / CONTOUR_LEVEL_BLOCK_SIZE;
+}
+
+fn contour_search_record(sorted_index: u32) -> vec4<f32> {
+    return stops[max(field.stop_count, 1u) + sorted_index];
+}
+
+/// First sorted position in one block whose value is >= `needle`.
+fn contour_lower_bound(block_start: u32, block_len: u32, needle: f32) -> u32 {
+    var lo = 0u;
+    var hi = block_len;
+    while (lo < hi) {
+        let mid = lo + (hi - lo) / 2u;
+        let value = contour_search_record(block_start + mid).x;
+        if (value < needle) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+/// First sorted position in one block whose value is > `needle`.
+fn contour_upper_bound(block_start: u32, block_len: u32, needle: f32) -> u32 {
+    var lo = 0u;
+    var hi = block_len;
+    while (lo < hi) {
+        let mid = lo + (hi - lo) / 2u;
+        let value = contour_search_record(block_start + mid).x;
+        if (value <= needle) {
+            lo = mid + 1u;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo;
+}
+
+/// Ramp position quantized into the bands between the contour levels.
+///
+/// The band index is how many levels `z` reaches. Each 32-entry source-order
+/// block has a sorted lookup copy, so this is at most 32 binary searches for the
+/// 1024-level ceiling. The original list remains untouched. The band's colour
+/// is the ramp at its own midpoint, so `n` levels give `n + 1` flat bands and
+/// none is an endpoint colour. Levels are compared in data units.
+fn band_t(raw: f32) -> f32 {
+    var reached = 0u;
+    for (var block = 0u; block < contour_level_block_count(); block = block + 1u) {
+        let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
+        let metadata = contour_lookup_metadata[block];
+        reached = reached + metadata.negative_infinity_count
+            + contour_upper_bound(start, metadata.finite_count, raw);
+    }
+    return (f32(reached) + 0.5) / f32(field.level_count + 1u);
+}
+
+/// The colourmap at `t`. Twin of `model::colormap::sample` through the shared
+/// `ramp_segment` / `ramp_blend`; only the stop lookup is this shader's.
+fn ramp(t: f32) -> vec4<f32> {
+    let n = field.stop_count;
+    if (n == 0u) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    if (n == 1u) {
+        return stops[0];
+    }
+    let segment = ramp_segment(t, n);
+    let index = u32(segment.x);
+    return ramp_blend(stops[index], stops[index + 1u], segment.y);
+}
+
+/// The stroke colour of contour level `i`, premultiplied.
+///
+/// A level past the end of the table takes the last entry rather than nothing:
+/// the host writes one entry per level, and a short table is a mismatch to draw
+/// through with the last declared colour, not a reason to drop the contour.
+fn level_color(i: u32) -> vec4<f32> {
+    if (field.level_color_count == 0u) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return level_colors[min(i, field.level_color_count - 1u)];
+}
+
+struct FieldOut {
+    @builtin(position) pos: vec4<f32>,
+    /// Axis `t` of this fragment, i.e. its position in the chart area — the
+    /// same quantity `axis_pair_to_t` returns for a data value, which is what
+    /// lets the cell search compare the two directly.
+    @location(0) axis_t: vec2<f32>,
+};
+
+/// One full-clip-space quad. `Transform` already maps the data range onto
+/// NDC +/-1 across the chart area, and the caller's scissor trims it to the
+/// data area, so the quad needs no data-dependent extent — the fragment stage
+/// reports a miss wherever the field is not.
+@vertex
+fn vs_main(@builtin(vertex_index) vid: u32) -> FieldOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(-1.0, 1.0),
+        vec2<f32>(1.0, -1.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, 1.0),
+    );
+    let ndc = corners[vid];
+    var out: FieldOut;
+    out.pos = vec4<f32>(ndc, 0.0, 1.0);
+    out.axis_t = (ndc + vec2<f32>(1.0, 1.0)) * 0.5;
+    return out;
+}
+
+// Field fills use one shade at the pixel center for all covered MSAA samples.
+// Canonicalize the fullscreen varying so the two quad triangles and the
+// bounded compute replay select the same cell at exactly aligned boundaries.
+fn field_fragment_center_t(t: vec2<f32>) -> vec2<f32> {
+    return field_pixel_center_t(t, round(vec2<f32>(2.0) / transform.pixel_to_ndc));
+}
+
+fn field_pixel_center_t(t: vec2<f32>, size: vec2<f32>) -> vec2<f32> {
+    return (round(t * size - vec2<f32>(0.5)) + vec2<f32>(0.5)) / size;
+}
+
+@fragment
+fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
+    let s = field_cell_sample(field_fragment_center_t(in.axis_t));
+    if (!s.hit) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return field_fill_color(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr, style.color_premul);
+}
+
+/// The grid samples the fill shades at axis `t`: the located cell's value
+/// and, for interpolated shading, its three neighbours with the in-cell
+/// fractions. `hit` is false outside the grid.
+struct FieldCellSample {
+    hit: bool,
+    z00: GridValue,
+    z10: GridValue,
+    z01: GridValue,
+    z11: GridValue,
+    fc: f32,
+    fr: f32,
+};
+
+/// The fill fragment's cell lookup at pixel-centre axis `t`
+/// (`field_fragment_center_t`); the cell pick calls it at the cursor's pixel
+/// centre, so a cell picks exactly where it paints.
+fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {
+    var out: FieldCellSample;
+    out.hit = false;
+    out.fc = 0.0;
+    out.fr = 0.0;
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    // The constituent index runs along x unless the declaration says otherwise;
+    // the within-column index runs along the other axis. Never inferred from
+    // the lengths.
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let across_cells = select(field.rows, field.cols, columns_are_y);
+    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_QUADS), 0u, t.x, LATTICE_QUADS);
+    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_QUADS), 1u, t.y, LATTICE_QUADS);
+    if (!x.hit || !y.hit) {
+        return out;
+    }
+    let c = select(x.index, y.index, columns_are_y);
+    let r = select(y.index, x.index, columns_are_y);
+    out.fc = select(x.frac, y.frac, columns_are_y);
+    out.fr = select(y.frac, x.frac, columns_are_y);
+    out.z00 = grid_value(c, r);
+    if (field_flag(FIELD_INTERPOLATED)) {
+        out.z10 = grid_value(c + 1u, r);
+        out.z01 = grid_value(c, r + 1u);
+        out.z11 = grid_value(c + 1u, r + 1u);
+    }
+    out.hit = true;
+    return out;
+}
+
+/// The value the fill shades from its samples: the cell's value, or the
+/// bilinear blend of the four, with `placeable` false where it paints
+/// `nan_color` instead (a bounds miss, a non-finite value or blend).
+struct FieldFillValue {
+    placeable: bool,
+    z: vec2<f32>,
+    /// `z_ramp_t(z)`; negative is unplaceable.
+    t: f32,
+};
+
+fn field_fill_value(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32) -> FieldFillValue {
+    var out: FieldFillValue;
+    out.placeable = false;
+    out.z = vec2<f32>(0.0, 0.0);
+    out.t = -1.0;
+    var z: vec2<f32>;
+    if (field_flag(FIELD_INTERPOLATED)) {
+        // Bilinear over the four surrounding sample points. Done on the axis
+        // `t` fractions, so on a logarithmic axis the interpolation is in
+        // screen space, matching the weak nonlinearity of common plotting tools.
+        // Bounds misses and actual non-finite data are both unplaceable, but
+        // they remain distinct until this consumer applies the paint policy.
+        if (!z00.valid || !z10.valid || !z01.valid || !z11.valid) {
+            return out;
+        }
+        if (!vec2_f32_is_finite(z00.pair) || !vec2_f32_is_finite(z10.pair)
+            || !vec2_f32_is_finite(z01.pair) || !vec2_f32_is_finite(z11.pair)) {
+            return out;
+        }
+        let low = z00.pair + (z10.pair - z00.pair) * fc;
+        let high = z01.pair + (z11.pair - z01.pair) * fc;
+        if (!vec2_f32_is_finite(low) || !vec2_f32_is_finite(high)) {
+            return out;
+        }
+        z = low + (high - low) * fr;
+        if (!vec2_f32_is_finite(z)) {
+            return out;
+        }
+    } else {
+        let sample = z00;
+        if (!sample.valid) {
+            return out;
+        }
+        z = sample.pair;
+    }
+    out.z = z;
+    out.t = z_ramp_t(z);
+    // Unplaceable on the colourbar: `nan_color` as well.
+    out.placeable = out.t >= 0.0;
+    return out;
+}
+
+// Resident storage and bounded replay share all final field colour arithmetic.
+// `nan_color` is the premultiplied colour of an unplaceable sample.
+fn field_fill_color(z00: GridValue, z10: GridValue, z01: GridValue,
+    z11: GridValue, fc: f32, fr: f32, nan_color: vec4<f32>) -> vec4<f32> {
+    let v = field_fill_value(z00, z10, z01, z11, fc, fr);
+    if (!v.placeable) {
+        // `nan_color`, already premultiplied by the caller. Not multiplied by
+        // `opacity` — that multiplies the *ramp*'s alpha.
+        return nan_color;
+    }
+    let position = select(v.t, band_t(v.z.x + v.z.y), field_flag(FIELD_BANDS));
+    let color = ramp(position);
+    let alpha = color.a * field.opacity;
+    return vec4<f32>(color.rgb * alpha, alpha);
+}
+
+/// Whether the fill paints anything where it shades `v`: `nan_color`'s alpha
+/// for an unplaceable value, else the ramp's alpha times the opacity. The
+/// band position needs the contour lookup table, which the pick cannot bind
+/// (it would put the anchor pass over the storage-binding limit), so a band
+/// fill answers with the opacity alone: a transparent ramp stop under
+/// `FillMode::Bands` still picks.
+fn field_fill_paints(v: FieldFillValue, nan_color: vec4<f32>) -> bool {
+    if (!v.placeable) {
+        return nan_color.a > 0.0;
+    }
+    if (field_flag(FIELD_BANDS)) {
+        return field.opacity > 0.0;
+    }
+    return ramp(v.t).a * field.opacity > 0.0;
+}
+
+/// Screen-space differential terms shared by contour painting and contour
+/// picking. Keeping the quadratic distance root behind this one helper is what
+/// prevents the visible stroke and its hit target from drifting apart.
+struct ContourMetric {
+    valid: bool,
+    g_len: f32,
+    kappa: f32,
+    gradient_square: f32,
+};
+
+fn contour_metric(s: ContourSample) -> ContourMetric {
+    var out: ContourMetric;
+    out.valid = false;
+    out.g_len = 0.0;
+    out.kappa = 0.0;
+    out.gradient_square = 0.0;
+    if (!s.hit) {
+        return out;
+    }
+    let g = grad_px(s.dz);
+    let g_len = length(g);
+    // The Hessian in pixels. `grad_px` scales each axis by `pixel_to_ndc / 2`, so
+    // the mixed second derivative takes that factor once per axis.
+    let hxy = s.d2 * transform.pixel_to_ndc.x * transform.pixel_to_ndc.y * 0.25;
+    if (!vec2_f32_is_finite(g) || !f32_is_finite(g_len) || !f32_is_finite(hxy)) {
+        return out;
+    }
+    // Normal curvature of the level set. With `H = [[0, hxy], [hxy, 0]]` the
+    // quadratic form collapses to this.
+    var kappa = 0.0;
+    if (g_len > 0.0) {
+        let n = g / g_len;
+        kappa = 2.0 * hxy * n.x * n.y;
+    }
+    let gradient_square = g_len * g_len;
+    if (!f32_is_finite(kappa) || !f32_is_finite(gradient_square)) {
+        return out;
+    }
+    if (g_len <= 0.0 && kappa == 0.0) {
+        // A plateau: no gradient and no curvature. Its level set is the whole
+        // flat region, and painting/picking that solid would invent a line.
+        return out;
+    }
+    out.valid = true;
+    out.g_len = g_len;
+    out.kappa = kappa;
+    out.gradient_square = gradient_square;
+    return out;
+}
+
+/// Distance in pixels to one level along the bilinear field's gradient normal.
+/// Returns -1 for an unplaceable level/root.
+fn contour_level_distance_px(s: ContourSample, metric: ContourMetric, level: f32) -> f32 {
+    if (!metric.valid || !f32_is_finite(level)) {
+        return -1.0;
+    }
+    // z is bilinear, so along a straight line it is exactly quadratic. Written
+    // rationalized so it degrades to `f / |grad|` as curvature tends to zero.
+    let f = s.z - level;
+    let curvature_term = 2.0 * metric.kappa * f;
+    let disc = metric.gradient_square - curvature_term;
+    if (!f32_is_finite(f) || !f32_is_finite(curvature_term)
+        || !f32_is_finite(disc) || disc < 0.0) {
+        return -1.0;
+    }
+    let root = sqrt(disc);
+    let denom = metric.g_len + root;
+    if (!f32_is_finite(root) || !f32_is_finite(denom) || denom <= 0.0) {
+        return -1.0;
+    }
+    let distance_to_level = abs((2.0 * f) / denom);
+    if (!f32_is_finite(distance_to_level)) {
+        return -1.0;
+    }
+    return distance_to_level;
+}
+
+/// Contour lines, drawn as the level set of the bilinear field.
+///
+/// Same quad and same fragment machinery as the fill, so the two agree by
+/// construction — the band boundary a `FillMode::Bands` fill paints and the line
+/// drawn here come out of one interpolation, including on a logarithmic axis
+/// without materializing or tracing a marching-squares segment list.
+///
+/// Coverage uses the quadratic root obtained by restricting the current cell's
+/// bilinear polynomial to the fragment's gradient-normal line. That root is
+/// algebraically exact for that polynomial and line; it is not asserted to stay
+/// inside the cell or to be the globally shortest Euclidean distance to the
+/// piecewise-bilinear isoline. The analytic gradient is the bilinear form's own
+/// derivative, not a `dpdx` finite difference.
+///
+/// A point with no gradient can still have mixed curvature, which the quadratic
+/// handles. Only a plateau (`|grad z| == 0` and zero mixed curvature) is left
+/// blank: its level set is the whole flat region, so painting it solid would
+/// state a line position the data does not contain.
+///
+/// Cost is the data area's pixel count, not the cell count: a 5000 x 5000 grid
+/// costs what a 100 x 100 one does. Per fragment, each 32-level block is searched
+/// by z range and only reachable candidates run the coverage math.
+fn contour_color(in: FieldOut) -> vec4<f32> {
+    var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    let s = contour_sample(in.axis_t);
+    if (!s.hit) {
+        return acc;
+    }
+    let metric = contour_metric(s);
+    if (!metric.valid) {
+        return acc;
+    }
+    if (!f32_is_finite(field.line_width_px)) {
+        return acc;
+    }
+    let half_w = max(field.line_width_px, 0.0) * 0.5;
+    // The reject below must keep a neighbouring cell's line, which legitimately
+    // reaches into this fragment: `margin` is how much z changes over half a
+    // stroke plus a pixel of antialiasing.
+    let margin = (half_w + 1.0) * metric.g_len;
+    let search_lo = s.z_lo - margin;
+    let search_hi = s.z_hi + margin;
+    if (!f32_is_finite(half_w) || !f32_is_finite(margin)
+        || !f32_is_finite(search_lo) || !f32_is_finite(search_hi)) {
+        return acc;
+    }
+    for (var block = 0u; block < contour_level_block_count(); block = block + 1u) {
+        let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
+        let count = contour_lookup_metadata[block].finite_count;
+        let first = contour_lower_bound(start, count, search_lo);
+        let last = contour_upper_bound(start, count, search_hi);
+        var candidates = 0u;
+        for (var sorted = first; sorted < last; sorted = sorted + 1u) {
+            let record = contour_search_record(start + sorted);
+            let original = u32(record.y) - start;
+            candidates = candidates | (1u << original);
+        }
+        // A single mask restores the block's declaration order. That preserves
+        // duplicate-level colour and source-over behavior without walking all 32
+        // levels when only a few can reach this cell.
+        while (candidates != 0u) {
+            let original = firstTrailingBit(candidates);
+            candidates = candidates & ~(1u << original);
+            let i = start + original;
+            let lv = levels[i];
+            if (!f32_is_finite(lv)) {
+                continue;
+            }
+            let distance_to_level = contour_level_distance_px(s, metric, lv);
+            let coverage_unclamped = half_w - distance_to_level + 0.5;
+            if (distance_to_level < 0.0 || !f32_is_finite(coverage_unclamped)) {
+                continue;
+            }
+            let cov = clamp(coverage_unclamped, 0.0, 1.0);
+            if (!f32_is_finite(cov) || cov <= 0.0) {
+                continue;
+            }
+            let c = level_color(i) * cov;
+            let composited = c + acc * (1.0 - c.a);
+            if (!vec4_f32_is_finite(c) || !vec4_f32_is_finite(composited)) {
+                continue;
+            }
+            acc = composited;
+        }
+    }
+    return acc;
+}
+
+/// Whether this contour fragment sits under one of the exact label quads that
+/// the next draw will composite. The count comes from the same indirect args
+/// buffer as that draw, so automatic placement never needs a CPU readback and
+/// the gap cannot disagree with the labels that actually appear.
+fn contour_label_gap_contains(axis_t_value: vec2<f32>) -> bool {
+    let count = min(label_gap_draw_args[1], 1024u);
+    let fragment_ndc = axis_t_value * 2.0 - 1.0;
+    for (var i = 0u; i < count; i = i + 1u) {
+        let anchor = label_gap_anchors[i];
+        if (anchor.level >= label_gap_params.level_count) {
+            continue;
+        }
+        let w = anchor.width_px;
+        let h = label_gap_params.cell_stride_h - 2.0 * label_gap_params.gutter;
+        if (!f32_is_finite(w) || !f32_is_finite(h) || w <= 0.0 || h <= 0.0) {
+            continue;
+        }
+        let centre = data_to_ndc(anchor.x, anchor.y);
+        let along = data_to_ndc(
+            anchor.x + vec2<f32>(anchor.dir.x, 0.0),
+            anchor.y + vec2<f32>(anchor.dir.y, 0.0),
+        );
+        let tangent_px = (along - centre) / transform.pixel_to_ndc;
+        var right = vec2<f32>(1.0, 0.0);
+        if (dot(tangent_px, tangent_px) > 0.0) {
+            right = normalize(tangent_px);
+        }
+        let up = vec2<f32>(-right.y, right.x);
+        let delta_px = (fragment_ndc - centre) / transform.pixel_to_ndc;
+        let local = vec2<f32>(dot(delta_px, right), dot(delta_px, up));
+        // Half a pixel covers the antialiased edge of both the stroke and the
+        // atlas quad. `bg_padding_px` is already included in w/h, even when the
+        // label background itself is transparent.
+        if (abs(local.x) <= w * 0.5 + 0.5 && abs(local.y) <= h * 0.5 + 0.5) {
+            return true;
+        }
+    }
+    return false;
+}
+
+@fragment
+fn fs_contour(in: FieldOut) -> @location(0) vec4<f32> {
+    return contour_color(in);
+}
+
+@fragment
+fn fs_contour_labelled(in: FieldOut) -> @location(0) vec4<f32> {
+    let color = contour_color(in);
+    // The anchor scan is paid only on pixels where a contour actually has
+    // coverage, not across the field's whole rectangle.
+    if (color.a > 0.0 && contour_label_gap_contains(in.axis_t)) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    return color;
+}
+
+// ───── Exact data picking (compute entry) ───────────────────────────────────
+
+const DATA_PICK_FLAG_FILL: u32 = 1u;
+const DATA_PICK_FLAG_CONTOUR: u32 = 2u;
+// Resident fills: pick the pixel-centre cell, and only where it paints.
+const DATA_PICK_FLAG_PAINTED: u32 = 4u;
+const DATA_PICK_KIND_MATRIX_CELL: u32 = 2u;
+const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3u;
+
+struct DataPickQuery {
+    // xy = cursor NDC, zw = cursor axis-t.
+    cursor_ndc_t: vec4<f32>,
+    // x = max distance px, y = scaled bar gap px, z = contour width px.
+    limits: vec4<f32>,
+    // x = flags, y = source paint order, z/w are primitive-specific.
+    data: vec4<u32>,
+    bases: vec4<u32>,
+    baseline: vec4<f32>,
+};
