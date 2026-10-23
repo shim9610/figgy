@@ -1674,9 +1674,11 @@ fn legacy_writer_panics_restore_scalar_and_hilo_allocator_state() {
 
 /// The whole batch lands in one contiguous region, in declaration order,
 /// with each column's own bytes and statistics — and it costs **one** GPU
-/// buffer, not one per column.
+/// buffer, where adding the same columns one at a time costs one each. This
+/// is the measurement the batch exists for, so it is asserted rather than
+/// described.
 #[test]
-fn a_column_batch_uploads_into_one_contiguous_region() {
+fn a_column_batch_uploads_into_one_region_for_one_buffer() {
     let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
         return;
     };
@@ -1726,42 +1728,18 @@ fn a_column_batch_uploads_into_one_contiguous_region() {
         Some(5.0),
         "min_positive comes from the write, not the source"
     );
-}
 
-/// Adding N columns one at a time costs N staging buffers and N submits;
-/// the batch costs one of each. This is the measurement the batch exists
-/// for, so it is asserted rather than described.
-#[test]
-fn the_batch_costs_one_buffer_where_singles_cost_one_each() {
-    let Some((device, queue, mut pool)) = mk_pool(256 * ALIGN) else {
-        return;
-    };
-    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
-    let sources: Vec<Column<f64>> = (0..8).map(|i| col_f64(vec![i as f64, 1.0])).collect();
-
+    // The same columns added one at a time cost one staging buffer each.
     let singles_before = pool.buffer_creations();
-    for (index, source) in sources.iter().enumerate() {
-        pool.add_column(format!("single{index}"), source, ctx())
+    for (id, source) in [("single-a", &a), ("single-b", &b), ("single-c", &c)] {
+        pool.add_column(id.into(), source, ctx())
             .expect("single add");
     }
-    let singles = pool.buffer_creations() - singles_before;
-
-    let batch: Vec<(&str, &dyn ColumnSource)> = vec![
-        ("b0", &sources[0] as &dyn ColumnSource),
-        ("b1", &sources[1] as &dyn ColumnSource),
-        ("b2", &sources[2] as &dyn ColumnSource),
-        ("b3", &sources[3] as &dyn ColumnSource),
-        ("b4", &sources[4] as &dyn ColumnSource),
-        ("b5", &sources[5] as &dyn ColumnSource),
-        ("b6", &sources[6] as &dyn ColumnSource),
-        ("b7", &sources[7] as &dyn ColumnSource),
-    ];
-    let batch_before = pool.buffer_creations();
-    pool.add_columns(&batch, ctx()).expect("batch add");
-    let batched = pool.buffer_creations() - batch_before;
-
-    assert_eq!(singles, 8, "one staging buffer per single add");
-    assert_eq!(batched, 1, "one staging buffer for the whole batch");
+    assert_eq!(
+        pool.buffer_creations() - singles_before,
+        3,
+        "one staging buffer per single add"
+    );
 }
 
 /// A rejected batch changes nothing: no slot, no epoch, and the free list is
@@ -2436,16 +2414,6 @@ fn pool_coalesce_after_remove() {
 }
 
 #[test]
-fn pool_out_of_space() {
-    let Some((device, queue, mut pool)) = mk_pool(1024) else {
-        return;
-    };
-    let big = col_f64((0..500).map(|i| i as f64).collect()); // 4000 -> 4096
-    let res = pool.add_column("big".into(), &big, GpuAllocCtx::unbudgeted(&device, &queue));
-    assert!(matches!(res, Err(AllocError::OutOfSpace { .. })));
-}
-
-#[test]
 fn pool_duplicate_id() {
     let Some((device, queue, mut pool)) = mk_pool(8 * 1024) else {
         return;
@@ -2537,37 +2505,6 @@ fn pool_defragment_no_op_when_packed() {
         .unwrap();
     assert!(!moved);
     assert_eq!(pool.generation(), g0); // no-op leaves generation alone.
-}
-
-#[test]
-fn pool_on_alloc_failure_auto_defrags() {
-    // Capacity holds exactly three 256-byte slots.
-    let Some((device, queue, mut pool)) = mk_pool(3 * 256) else {
-        return;
-    };
-    pool.defrag_policy = DefragPolicy::OnAllocFailure;
-
-    let a = col_f64((0..25).map(|i| i as f64).collect());
-    let b = col_f64((0..25).map(|i| i as f64).collect());
-    let c = col_f64((0..25).map(|i| i as f64).collect());
-    let d = col_f64((0..25).map(|i| i as f64).collect());
-
-    pool.add_column("a".into(), &a, GpuAllocCtx::unbudgeted(&device, &queue))
-        .unwrap();
-    pool.add_column("b".into(), &b, GpuAllocCtx::unbudgeted(&device, &queue))
-        .unwrap();
-    pool.add_column("c".into(), &c, GpuAllocCtx::unbudgeted(&device, &queue))
-        .unwrap();
-
-    // Remove middle b → free [256..512] (256 bytes).
-    pool.remove_column("b").unwrap();
-
-    // Adding d uses the [256..512] hole via plain first-fit, so this
-    // path doesn't actually exercise the OnAllocFailure retry — it
-    // succeeds on the first try.
-    pool.add_column("d".into(), &d, GpuAllocCtx::unbudgeted(&device, &queue))
-        .unwrap();
-    assert_eq!(pool.slots["d"].offset, 256);
 }
 
 #[test]

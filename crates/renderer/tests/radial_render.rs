@@ -619,7 +619,8 @@ fn radial_ssot_fields_are_explicit() {
         // changes pixels; `annotations` is the container the annotation layer
         // fills later. `frame_key` strips both before the frame and label
         // raster cache comparisons, so editing either reuses the cached frame
-        // (covered by `layer_fields_reuse_cached_frames` in bounded_interaction).
+        // (covered by the empty-layer cases of `family_contract!` and
+        // `family_routing!` in annotation_layer).
         active_layer: _,
         annotations: _,
         slices: _,

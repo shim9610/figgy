@@ -1508,6 +1508,13 @@ fn ssot_edits_reuse_packed_rows_only_when_valid() {
     matrix(false, true);
 }
 
+/// Every selection edit reaches the first frame through the selection
+/// suffix alone, on the resident path and the stream path with and without
+/// the packed cache. One renderer per path takes every case: each starts
+/// from the baseline selection, redrawn and equal to the first baseline
+/// frame, and is compared with a fresh-render oracle: a chart registered
+/// with the final state on one shared oracle renderer per data path, whose
+/// first frame has no invalidation history.
 #[test]
 fn ssot_selection_edits_replace_only_the_overlay() {
     use crate::config::{PickedPointRef, PickedPointsConfig};
@@ -1524,47 +1531,87 @@ fn ssot_selection_edits_replace_only_the_overlay() {
         ("point_index", |s| s.refs[0].point_index = 5),
         ("refs.clear", |s| s.refs.clear()),
     ];
+    let mut base = baseline();
+    base.picked_points = Some(PickedPointsConfig {
+        refs: vec![PickedPointRef {
+            source_id: None,
+            series_id: "s".into(),
+            point_index: 2,
+        }],
+        ..Default::default()
+    });
+    let edited = |name: &str, edit: fn(&mut PickedPointsConfig)| {
+        let mut c = base.clone();
+        edit(c.picked_points.as_mut().unwrap());
+        assert_ne!(c, base, "{name} must edit the selection");
+        c
+    };
+    let series = || {
+        let mut series = declaration("s", "x", "a");
+        let line = super::super::extract_line(&series.render_type)
+            .unwrap()
+            .clone();
+        series.render_type = DataRenderType::ScatterLine {
+            line,
+            scatter: DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_size: 4.0,
+                point_shape: ScatterShape::CircleFilled,
+                point_style_index_column: None,
+                point_style_table: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            },
+        };
+        series
+    };
+    let setup = |c: &Config, resident: bool, cache: bool| {
+        let (mut r, id) = fixture(c, resident, cache);
+        r.set_chart_series(id, vec![series()]).unwrap();
+        (r, id)
+    };
+    // The oracle frames of every final state, per data path.
+    let oracle = |resident: bool| -> Vec<Vec<u8>> {
+        let (mut fresh, unused) = fixture(&base, resident, false);
+        fresh.remove_chart(unused).unwrap();
+        cases
+            .iter()
+            .map(|&(name, edit)| {
+                let id = fresh
+                    .register_chart(edited(name, edit), vec![series()])
+                    .unwrap();
+                let (expected, _) = frame(&mut fresh, id, resident);
+                fresh.remove_chart(id).unwrap();
+                expected
+            })
+            .collect()
+    };
+    let resident_oracle = oracle(true);
+    let stream_oracle = oracle(false);
     for (resident, cache) in [(true, false), (false, false), (false, true)] {
-        for &(name, edit) in cases {
-            let mut c = baseline();
-            c.picked_points = Some(PickedPointsConfig {
-                refs: vec![PickedPointRef {
-                    source_id: None,
-                    series_id: "s".into(),
-                    point_index: 2,
-                }],
-                ..Default::default()
-            });
-            let setup = |c: &Config, cache: bool| {
-                let (mut r, id) = fixture(c, resident, cache);
-                let mut series = declaration("s", "x", "a");
-                let line = super::super::extract_line(&series.render_type)
-                    .unwrap()
-                    .clone();
-                series.render_type = DataRenderType::ScatterLine {
-                    line,
-                    scatter: DataScatterStyleConfig {
-                        point_color: Color::BLACK,
-                        point_size: 4.0,
-                        point_shape: ScatterShape::CircleFilled,
-                        point_style_index_column: None,
-                        point_style_table: None,
-                        point_style_overrides: None,
-                        point_color_map: None,
-                        point_size_map: None,
-                    },
-                };
-                r.set_chart_series(id, vec![series]).unwrap();
-                (r, id)
-            };
-            let (mut r, id) = setup(&c, cache);
+        let expected_frames = if resident {
+            &resident_oracle
+        } else {
+            &stream_oracle
+        };
+        let (mut r, id) = setup(&base, resident, cache);
+        let (baseline_frame, _) = frame(&mut r, id, resident);
+        for (&(name, edit), expected) in cases.iter().zip(expected_frames) {
+            if r.chart_config(id).unwrap() != &base {
+                r.set_chart_config(id, base.clone()).unwrap();
+            }
             let (before, _) = frame(&mut r, id, resident);
+            assert_eq!(
+                before, baseline_frame,
+                "{name}: the baseline selection did not redraw, resident={resident} cache={cache}"
+            );
             let job = r.active_stream_job(id);
             let prefix = job.map(|j| r.chart_stream_prefix_for_test(j).unwrap());
             let data_pixels = prefix.as_ref().map(|t| read_draw_target(&r, t));
-            edit(c.picked_points.as_mut().unwrap());
+            let c = edited(name, edit);
             let revisions = r.chart_states[&id].revisions;
-            r.set_chart_config(id, c.clone()).unwrap();
+            r.set_chart_config(id, c).unwrap();
             let updated = r.chart_states[&id].revisions;
             assert_ne!(updated.desired, revisions.desired, "{name}: no draw");
             assert_ne!(
@@ -1580,10 +1627,8 @@ fn ssot_selection_edits_replace_only_the_overlay() {
                 "{name}: selection changed the view"
             );
             let (actual, reads) = frame(&mut r, id, resident);
-            let (mut fresh, fresh_id) = setup(&c, false);
-            let (expected, _) = frame(&mut fresh, fresh_id, resident);
             assert_eq!(
-                actual, expected,
+                &actual, expected,
                 "{name}: stale selection, resident={resident} cache={cache}"
             );
             assert_ne!(actual, before, "{name}: selection oracle unchanged");
