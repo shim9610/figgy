@@ -5,6 +5,7 @@ use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
 use model::tick::LinearGrid;
 
 pub(super) struct Layout {
@@ -72,9 +73,9 @@ pub(super) fn layout(
             return Err(invalid("categorical axis tick overflow"));
         }
         let label = if percent {
-            format!("{}%", crate::axis_render::plain_number(value))
+            format!("{}%", PlainNumberFormat::AUTO.format(value))
         } else {
-            crate::axis_render::plain_number(value)
+            PlainNumberFormat::AUTO.format(value)
         };
         ticks.push((((normalized - plan.min) / span) as f32, label));
     }

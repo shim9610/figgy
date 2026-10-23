@@ -5,6 +5,7 @@ use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
 use model::tick::LinearGrid;
 
 pub(super) struct Layout {
@@ -92,7 +93,7 @@ pub(super) fn layout(
         if !value.is_finite() {
             return Err(invalid("boxplot axis tick overflow"));
         }
-        let label = crate::axis_render::plain_number(value);
+        let label = PlainNumberFormat::AUTO.format(value);
         if ticks.last().is_some_and(|t: &(f32, String)| t.1 == label) {
             return Err(invalid("value ticks need a wider range to remain distinct"));
         }

@@ -218,8 +218,9 @@ Collected on `integration/0.19`; the release entry replaces this section.
   and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is
   the bounded value axes' tick form (`2.5`, `1000`, `1.23e6`), `Some(d)`
   exactly `d` decimals, trailing zeros trimmed with `trim_zeros`. The
-  categorical, radial, box plot and radar data labels use it, with the
-  same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
+  categorical, radial, box plot and radar data labels and the value-axis
+  tick labels of the categorical, box plot and radar charts use it, with
+  the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
   their defaults); model 0.12.1 and older reject it. Migration: a Rust
   `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
 

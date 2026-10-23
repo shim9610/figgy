@@ -5,6 +5,7 @@ use crate::raster::{Canvas, Paint};
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
 use model::tick::LinearGrid;
 
 const TAU: f32 = std::f32::consts::TAU;
@@ -216,7 +217,7 @@ pub(super) fn layout(
         for value in &axis.rings {
             let t = norm(*value).unwrap_or(1.0);
             let p = point(0, t);
-            let label = crate::axis_render::plain_number(*value);
+            let label = PlainNumberFormat::AUTO.format(*value);
             let tw = measure(c, &label, fs);
             let x = p[0] + nx * 6.0 - if nx < 0.0 { tw } else { 0.0 };
             let y = p[1] + ny * 6.0 + fs * 0.35;

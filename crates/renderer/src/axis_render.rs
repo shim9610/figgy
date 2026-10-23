@@ -333,7 +333,7 @@ mod bounded;
 mod polar;
 pub(crate) use bounded::{
     BoundedAxisDecorations, BoundedLegend, draw_bounded_decorations, draw_bounded_legend,
-    plain_number, plan_bounded_legend,
+    plan_bounded_legend,
 };
 
 #[cfg(test)]
