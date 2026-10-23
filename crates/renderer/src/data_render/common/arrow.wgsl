@@ -161,3 +161,29 @@ fn arrow_coverage(p: vec2<f32>, placed: ArrowPlacement, width_px: f32, aa_px: f3
     let aa = max(aa_px, 1e-3);
     return clamp(0.5 - distance / aa, 0.0, 1.0);
 }
+
+/// `pair + s` as a `(hi, lo)` pair: the error-free sum keeps the low part, so a
+/// large-offset coordinate still resolves a small data-space step.
+fn pair_add(pair: vec2<f32>, s: f32) -> vec2<f32> {
+    let sum = fma(1.0, pair.x, s);
+    let b_virtual = fma(1.0, sum, -pair.x);
+    let a_virtual = fma(1.0, sum, -b_virtual);
+    let b_roundoff = fma(1.0, s, -b_virtual);
+    let a_roundoff = fma(1.0, pair.x, -a_virtual);
+    return vec2<f32>(sum, fma(1.0, a_roundoff, b_roundoff) + pair.y);
+}
+
+/// Pixels per data unit along one axis whose range is `range` (the hi/lo
+/// sum), at `pair`: the derivative of `axis_pair_to_t` mapped through NDC.
+/// Exact on a linear axis; the local direction on a logarithmic one, the way
+/// the contour labels orient themselves.
+fn axis_px_per_unit_at(range: f32, panel_scale: f32, is_log: f32, pixel_to_ndc: f32, pair: vec2<f32>) -> f32 {
+    let linear = 2.0 * panel_scale / (range * pixel_to_ndc);
+    // d(log10 v)/dv = 1 / (v ln 10); `sample_valid` has already excluded v <= 0.
+    let value = pair.x + pair.y;
+    let log_slope = linear / (value * log(10.0));
+    if is_log > 0.5 {
+        return log_slope;
+    }
+    return mix(linear, log_slope, is_log);
+}

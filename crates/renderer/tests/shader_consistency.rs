@@ -1022,14 +1022,9 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "arrow_place",
             "arrow_sd_segment",
             "arrow_sd_triangle",
+            "axis_px_per_unit_at",
+            "pair_add",
         ],
-    ),
-    (
-        &[
-            "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/vector.wgsl",
-        ],
-        &["axis_px_per_unit_at", "pair_add"],
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
