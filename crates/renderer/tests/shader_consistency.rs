@@ -1032,19 +1032,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["axis_px_per_unit_at", "pair_add"],
     ),
     (
-        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
-        &[
-            "cons_ring_angle",
-            "constellation_star_radius",
-            "planet_rim_glow",
-            "planet_ring_frame",
-            "planet_ring_phi",
-            "planet_ring_rho",
-            "sketch_marker_distance",
-            "sketch_marker_wobble_px",
-        ],
-    ),
-    (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
         &["hash", "noise"],
     ),
@@ -1068,13 +1055,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["ramp_finite"],
     ),
     (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
-    (
-        &[
-            "data_render/scatter_columnar_c.wgsl",
-            "gpu_pick/marker.wgsl",
-        ],
-        &["size_map_radius"],
-    ),
 ];
 
 /// Rule from #46 (the hand-off convention): code that builds one struct from

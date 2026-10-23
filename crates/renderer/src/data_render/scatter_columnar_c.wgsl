@@ -1,20 +1,3 @@
-/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
-/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
-/// marker area when `area`, else by radius. Negative when the value is not
-/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
-fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
-    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
-        return -1.0;
-    }
-    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
-    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
-    let t = clamp(num / span, 0.0, 1.0);
-    if (area) {
-        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
-    }
-    return lo + (hi - lo) * t;
-}
-
 /// The colour-map value as a ramp position, or a negative number when it
 /// cannot be placed.
 fn value_ramp_t(zv: vec2<f32>) -> f32 {

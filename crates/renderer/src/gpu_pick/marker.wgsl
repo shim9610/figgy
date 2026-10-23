@@ -31,23 +31,6 @@ fn ramp_finite(v: f32) -> bool {
     return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
 }
 
-/// The marker radius for a size-map value `sv` (a hi/lo pair) over the
-/// domain `domain_min..domain_max` (hi/lo pairs) onto `lo..hi` pixels, by
-/// marker area when `area`, else by radius. Negative when the value is not
-/// finite: the point is hidden. Twin of `PointSizeMap::radius_px`.
-fn size_map_radius(sv: vec2<f32>, domain_min: vec2<f32>, domain_max: vec2<f32>, lo: f32, hi: f32, area: bool) -> f32 {
-    if (!ramp_finite(sv.x) || !ramp_finite(sv.y) || !ramp_finite(sv.x + sv.y)) {
-        return -1.0;
-    }
-    let num = (sv.x - domain_min.x) + (sv.y - domain_min.y);
-    let span = (domain_max.x - domain_min.x) + (domain_max.y - domain_min.y);
-    let t = clamp(num / span, 0.0, 1.0);
-    if (area) {
-        return sqrt(lo * lo + (hi * hi - lo * lo) * t);
-    }
-    return lo + (hi - lo) * t;
-}
-
 // The marker radius a size value maps to, or a negative number when the value
 // is not finite and the point is hidden.
 fn pick_size_map_radius(point_index: u32) -> f32 {
@@ -124,92 +107,6 @@ fn pick_resolve_scatter_marker(point_index: u32) -> PickMarker {
 
 // ───── shared styled markers (SHADER_COMMON.md §5.7; `shader_consistency`
 // compares these function bodies and constants with the scatter shader) ─────
-
-const SKETCH_TAU: f32 = 6.28318530718;
-// Six noise periods around the contour keep marker wobble visually local.
-const SKETCH_CONTOUR_WOBBLES: f32 = 6.0;
-const CONSTELLATION_POINT_STAR_GAIN: f32 = 1.0;
-// Ring radii relative to the planet radius, and the apparent inclination of
-// the ring plane (minor/major axis ratio of the projected ellipse).
-const RING_INNER: f32 = 1.45;
-const RING_OUTER: f32 = 2.3;
-const RING_INCL: f32 = 0.32;
-// Quad half-extent multiplier — room for the ring + rim glow + AA.
-const PLANET_QUAD_EXTENT: f32 = 2.5;
-// A planet fragment whose composed alpha is at or below this is discarded.
-const PLANET_ALPHA_FLOOR: f32 = 0.003;
-
-/// A sketch marker's contour wobble amplitude in pixels: half the style's
-/// amplitude, at most 0.35 of the marker radius.
-fn sketch_marker_wobble_px(amplitude_px: f32, radius_px: f32) -> f32 {
-    return min(max(amplitude_px, 0.0) * 0.5, radius_px * 0.35);
-}
-
-/// A sketch marker's signed contour distance: the precise `shape_distance`
-/// perturbed with angle-parameterized noise, d' = d + k·noise(θ/τ·C), seeded
-/// per marker so every point gets its own hand-drawn outline. The noise
-/// lattice has a seam at θ = ±π; its magnitude is ≤ wobble_px (≤ 0.75 px at
-/// default amplitude) and reads as part of the hand-drawn look.
-fn sketch_marker_distance(base: u32, p: vec2<f32>, r: f32, filled: bool, wobble_px: f32, seed: u32) -> f32 {
-    let theta = atan2(p.y, p.x); // [-π, π]
-    return shape_distance(base, p, r, filled)
-        + wobble_px * sketch_noise(theta / SKETCH_TAU * SKETCH_CONTOUR_WOBBLES, seed);
-}
-
-/// A constellation marker star's core radius in pixels: the marker radius
-/// with a per-point size jitter hashed from the point index, at least half a
-/// pixel. The star's quad (and its PSF sprite) spans four times this plus
-/// `QUAD_MARGIN_PX`.
-fn constellation_star_radius(radius_px: f32, index: u32, seed: u32) -> f32 {
-    let size_jitter = 0.86 + 0.30 * sketch_hash01(index, seed ^ 0x51A7u);
-    return max(radius_px * CONSTELLATION_POINT_STAR_GAIN * size_jitter, 0.5);
-}
-
-// ScatterShape code → ring position angle. The first legacy shapes get hand-
-// picked angles; newer marker codes share a deterministic fallback.
-fn cons_ring_angle(shape_id: u32) -> f32 {
-    switch shape_id {
-        case 0u: { return 0.0; }          // Circle
-        case 1u: { return 0.52; }         // Square        (+30°)
-        case 2u: { return 1.05; }         // Triangle      (+60°)
-        case 3u: { return -0.52; }        // Diamond       (−30°)
-        case 4u: { return -1.05; }        // Cross         (−60°)
-        case 5u: { return 0.26; }         // CircleFilled  (+15°)
-        case 6u: { return 0.79; }         // SquareFilled  (+45°)
-        case 7u: { return -0.26; }        // TriangleFilled(−15°)
-        case 8u: { return -0.79; }        // DiamondFilled (−45°)
-        default: {
-            return -1.2 + f32(shape_id % 11u) * 0.24;
-        }
-    }
-}
-
-/// A planet's ring position angle: the series shape's tilt plus a small
-/// per-point jitter (real systems aren't aligned).
-fn planet_ring_phi(shape_id: u32, seed_inst: u32) -> f32 {
-    let h_jit = sketch_hash01(seed_inst, 0x717Au);
-    return cons_ring_angle(shape_id) + (h_jit - 0.5) * 0.12;
-}
-
-/// `p` rotated into the ring frame of position angle `phi`.
-fn planet_ring_frame(p: vec2<f32>, phi: f32) -> vec2<f32> {
-    let cphi = cos(phi);
-    let sphi = sin(phi);
-    return vec2<f32>(p.x * cphi + p.y * sphi, -p.x * sphi + p.y * cphi);
-}
-
-/// The ring-plane radius of ring-frame point `q`, in planet radii: the ring
-/// band is drawn where it lies between `RING_INNER` and `RING_OUTER`.
-fn planet_ring_rho(q: vec2<f32>, r_planet: f32) -> f32 {
-    return length(vec2<f32>(q.x, q.y / RING_INCL)) / r_planet;
-}
-
-/// The atmospheric rim glow's alpha at distance `dist` from the planet's
-/// centre: a soft exponential falloff outside the disc.
-fn planet_rim_glow(dist: f32, r_planet: f32, rim_gain: f32) -> f32 {
-    let rim_d = max(dist - r_planet, 0.0);
-    return rim_gain * exp(-rim_d / max(r_planet * 0.10, 1.0));
-}
 
 // ───── end shared styled markers ─────
 
