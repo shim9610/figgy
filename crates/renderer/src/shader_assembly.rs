@@ -3,12 +3,12 @@
 //! WGSL has no `import`. A block of WGSL that several shaders need lives in
 //! one fragment file under `src/data_render/common/` (or, for the layered
 //! vector and pick shaders, next to them), and every module that needs it is
-//! declared with [`wgsl_module!`]: the fragments' text spliced in order, one
+//! declared with `wgsl_module!`: the fragments' text spliced in order, one
 //! newline between two fragments, as a `&'static str` built by `concat!` at
 //! compile time. There is no runtime templating and no allocation; the
 //! fragment list is the module's identity.
 //!
-//! [`MODULES`] names every assembled module, so a test can parse and
+//! `MODULES` names every assembled module, so a test can parse and
 //! validate each one without a GPU and the integration tests can read the
 //! source a pipeline compiles.
 
