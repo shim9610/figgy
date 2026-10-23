@@ -21,8 +21,10 @@ fn pick_apply_style(radius_in: f32, shape_in: u32, slot: PickScatterStyleSlot) -
     return vec2<f32>(radius, f32(shape));
 }
 
-// ───── shared size-map radius (SHADER_COMMON.md §5.4; `shader_consistency`
-// compares these function bodies with the scatter shader) ─────
+// `ramp_finite` of common/ramp.wgsl, which the size-map radius in
+// common/marker.wgsl calls. The pick modules cannot splice the ramp fragment
+// (its `ramp_t` calls `maybe_log`, which they lack), so this is a copy; the
+// WGSL guard in `shader_consistency` holds it to the fragment's text.
 
 /// A finite f32 by its exponent bits. Every ramp input is checked
 /// explicitly: NaN and infinity propagation through arithmetic is not
@@ -104,11 +106,6 @@ fn pick_resolve_scatter_marker(point_index: u32) -> PickMarker {
     }
     return PickMarker(radius * pick_query_params.scatter_line.z, shape, hidden);
 }
-
-// ───── shared styled markers (SHADER_COMMON.md §5.7; `shader_consistency`
-// compares these function bodies and constants with the scatter shader) ─────
-
-// ───── end shared styled markers ─────
 
 // A Milkyway planet's hit distance at `p_screen` (pixels from its centre, y
 // up): `fs_planet`'s disc, the rim glow where it stays above

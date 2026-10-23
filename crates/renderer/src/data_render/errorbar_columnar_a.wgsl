@@ -121,7 +121,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     return style.color_premul;
 }
 
-// Per-point errorbar style mapping (NOT part of the common block). The mapped
+// Per-point errorbar style mapping. The mapped
 // precise path adds a seventh per-instance f32 slot for
 // error_bar_style_index_column and group 2 bindings 5..7 for style rows.
 struct VsMappedIn {
@@ -315,6 +315,6 @@ fn fs_mapped(in: MappedOut) -> @location(0) vec4<f32> {
     return in.color_premul;
 }
 
-// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// ──────────────── sketch mode ────────────────
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.

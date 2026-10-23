@@ -87,5 +87,4 @@ fn vector_scale_mode() -> u32 {
     return select(VECTOR_SCALE_DATA, VECTOR_SCALE_PIXELS, vector_flag(VECTOR_FLAG_SCALE_PIXELS));
 }
 
-// ───── shared colour ramp (SHADER_COMMON.md §5.4; `shader_consistency` compares
-// these function bodies with the field and scatter shaders) ─────
+// ───── shared colour ramp (common/ramp.wgsl) ─────

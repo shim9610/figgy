@@ -35,5 +35,4 @@ struct ContourLookupMetadata {
 /// never searches contour levels, so binding 6 is not compute-visible.
 @group(2) @binding(6) var<storage, read> contour_lookup_metadata: array<ContourLookupMetadata>;
 
-// ───── shared colour ramp (SHADER_COMMON.md §5.4; `shader_consistency` compares
-// these function bodies with the scatter and vector shaders) ─────
+// ───── shared colour ramp (common/ramp.wgsl) ─────

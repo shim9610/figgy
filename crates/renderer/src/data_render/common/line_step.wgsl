@@ -1,12 +1,11 @@
-// ──────────── step interpolation (NOT part of the common block) ────────────
+// ──────────────────────────── step interpolation ────────────────────────────
 // A step mode draws every instance (segment a → b) as axis-aligned pieces.
 // Piece corners live in DATA space so every consumer projects the same
 // points: the line, area, sketch, ribbon and star entries here, the
 // arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick/line.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
-// and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
-// and line_arc.wgsl (shader_consistency checks); the CPU twin is
-// `line_step::step_pieces` in the renderer crate.
+// (gpu_pick/line.wgsl, in its own pick_* ABI). The line and arc modules splice
+// this one fragment, so both split a segment into the same pieces; the CPU
+// twin is `line_step::step_pieces` in the renderer crate.
 const LINE_STEP_SHIFT: u32 = 2u;
 const LINE_STEP_MASK: u32 = 3u;
 const LINE_STEP_LINEAR: u32 = 0u;

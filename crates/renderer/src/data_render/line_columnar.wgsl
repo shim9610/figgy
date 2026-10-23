@@ -182,7 +182,7 @@ fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
     return line_fragment_color(in, vec4<f32>(style.color_premul.rgb * a, style.color_premul.a * a));
 }
 
-// ───────────────── area fill (NOT part of the common block) ─────────────────
+// ───────────────── area fill ─────────────────
 // `vs_area` fills under the line or between two lines. Slots 0-3 are the
 // line's own (x_a, y_a, x_b, y_b); slots 4/5 carry the second y column as
 // (hi, lo) pairs with the same one-value shift (fill to a series), or the y
@@ -278,7 +278,7 @@ fn fs_area(in: AreaOut) -> @location(0) vec4<f32> {
     return style.color_premul;
 }
 
-// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// ──────────────── sketch mode ────────────────
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
 
@@ -355,7 +355,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
-// ────────────── constellation mode (NOT part of the common block) ───────────
+// ────────────── constellation mode ───────────
 // Star-chain line style. Two entries reuse the line pipeline's six instance
 // slots:
 //   vs_ribbon/fs_ribbon — the unresolved-starlight haze (series-colored

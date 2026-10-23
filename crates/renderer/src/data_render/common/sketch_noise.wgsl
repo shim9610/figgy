@@ -1,6 +1,5 @@
-// Deliberately duplicated per data shader (scatter/line/errorbar/pick) and
-// NOT in the SHADER_COMMON.md common block: line_arc.wgsl shares that block
-// but has no use for noise.
+// Sketch hash and value noise (SHADER_COMMON.md §5.6): the sketch stroke, the
+// sketch errorbar and the styled markers draw and pick with it.
 fn sketch_hash01(i: u32, seed: u32) -> f32 {
     var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
     h = (h ^ (h >> 16u)) * 0x45D9F3Bu;

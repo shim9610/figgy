@@ -181,7 +181,7 @@ fn add_global_offset(@builtin(global_invocation_id) gid: vec3<u32>) {
     dst[params.start + i] = dst[params.start + i] + replay_sums0[replay.block - 1u];
 }
 
-// ── Constellation star-pass indirect args (NOT part of the common block) ──
+// ── Constellation star-pass indirect args ──
 // After the scan, dst[start+len-1] of the LAST chunk is the polyline's total
 // pixel arc. One thread converts it into DrawIndirect args for the
 // arc-driven star pass: candidate star slots are budgeted by TOTAL arc (one

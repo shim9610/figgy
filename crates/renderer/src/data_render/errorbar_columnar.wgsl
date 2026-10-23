@@ -91,7 +91,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
-// ────────────── constellation mode (NOT part of the common block) ───────────
+// ────────────── constellation mode ───────────
 // Bipolar-jet errorbars render the error range as a glowing astrophysical jet:
 // stem quads become tapered beams brightest at the data point, and the cap
 // quads become terminal shock KNOTS — diffuse radial glows that mark the

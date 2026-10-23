@@ -73,5 +73,4 @@ fn pick_step_piece(ax: vec2<f32>, ay: vec2<f32>, bx: vec2<f32>, by: vec2<f32>, m
     return p;
 }
 
-// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
-// compares these function bodies and constants with the line shader) ─────
+// ───── shared line stroke (common/line_stroke.wgsl) ─────

@@ -1,8 +1,3 @@
-// ───── shared styled markers (SHADER_COMMON.md §5.7; `shader_consistency`
-// compares these function bodies and constants with the pick shader) ─────
-
-// ───── end shared styled markers ─────
-
 // Sketch varyings. The fragment stage must not read `transform` (the shared
 // transform bind group is vertex-only), so the vertex stage forwards the
 // resolved per-marker seed and the clamped wobble amplitude as flat values.
@@ -73,7 +68,7 @@ fn fs_sketch(in: VsSketchOut) -> @location(0) vec4<f32> {
     return style.color_premul * alpha;
 }
 
-// ────────────── constellation mode (NOT part of the common block) ───────────
+// ────────────── constellation mode ───────────
 //   - The ring's POSITION ANGLE encodes the series: the existing
 //     ScatterShape SSoT maps to a tilt (see cons_ring_angle) — no new
 //     per-series fields.

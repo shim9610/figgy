@@ -77,7 +77,7 @@ fn vector_sample(i: u32) -> VectorSample {
 // ───── Grid arrow pick (compute entry, typed data pick) ─────────────────────
 //
 // Only the grid form has a typed data pick (a point vector is a point pick,
-// `gpu_pick/vector.wgsl`, through the SHADER_COMMON.md §5.8 twins), so its entry
+// `gpu_pick/vector.wgsl`, through the same arrow fragment), so its entry
 // closes this fragment: every assembled module's entry points are compiled
 // and measured. It walks the samples `vs_main` draws through the same
 // projection, placement and glyph distance, so a grid vector picks the arrow

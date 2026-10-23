@@ -1,5 +1,5 @@
 // Independent radial geometry in screen/radius coordinates. No Cartesian
-// Transform/Style blocks from SHADER_COMMON.md are used here.
+// Transform/Style fragments are used here.
 struct Globals {
     size: vec4<f32>, // width, height, slice count, AA grid side (2 or 3)
     background: vec4<f32>,

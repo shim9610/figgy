@@ -5,7 +5,7 @@ struct VsIn {
     @location(3) y_b: vec2<f32>,
 };
 
-// Line-only extra instance inputs (outside the common block): cumulative
+// Line-only extra instance inputs: cumulative
 // arc length at the segment's two endpoints, from the GPU-computed prefix.
 struct VsArc {
     @location(4) arc_a: f32,
@@ -30,5 +30,4 @@ struct VsOut {
 };
 
 
-// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
-// compares these function bodies and constants with the pick shader) ─────
+// ───── shared line stroke (common/line_stroke.wgsl) ─────

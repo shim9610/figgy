@@ -46,14 +46,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return style.color_premul * alpha;
 }
 
-// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// ──────────────── sketch mode ────────────────
 // Hand-drawn entry points selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
 
-// Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
-// the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep these helpers byte-identical in all three shaders.
-// Per-point style mapping (NOT part of the common block). The default precise
+// Per-point style mapping. The default precise
 // path above remains the three-slot fast path; this entry is selected only for
 // scatter series with a style table, style-index column, or sparse overrides.
 struct VsMappedIn {
@@ -97,7 +94,7 @@ struct ScatterStyleMapMeta {
 @group(2) @binding(6) var<storage, read> scatter_style_overrides: array<ScatterStyleOverride>;
 @group(2) @binding(7) var<uniform> scatter_style_meta: ScatterStyleMapMeta;
 
-// Continuous value maps (group 3, NOT part of the common block). The colour
+// Continuous value maps (group 3). The colour
 // side mirrors the field shader: the colourbar's bounds (already log10 when
 // `VALUE_MAP_LOG_Z` is set), its `nan_color` and its ramp control points, so a
 // colour-mapped point and a heatmap cell with the same z draw the same colour.
@@ -129,6 +126,4 @@ fn value_map_flag(bit: u32) -> bool {
 }
 
 
-// ───── shared colour ramp and size-map radius (SHADER_COMMON.md §5.4;
-// `shader_consistency` compares these function bodies with the field, vector
-// and pick shaders) ─────
+// ───── shared colour ramp (common/ramp.wgsl) ─────

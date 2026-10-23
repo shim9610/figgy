@@ -21,5 +21,4 @@ struct VsOut {
 // the margin the quad edge would clip them. fs_main must reconstruct
 // pixel coordinates with this same expanded scale.
 
-// ───── shared marker shape (SHADER_COMMON.md §5.5; `shader_consistency`
-// compares these function bodies and constants with the pick shader) ─────
+// ───── shared marker shape (common/marker.wgsl) ─────
