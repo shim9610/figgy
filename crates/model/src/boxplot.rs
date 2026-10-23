@@ -1,4 +1,5 @@
 //! Small, precomputed box plots. Statistical policy belongs to the host.
+use crate::format::PlainNumberFormat;
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
 
@@ -377,8 +378,9 @@ impl BoxPlotChart {
             return None;
         }
         let median = format!(
-            "{:.*}{}",
-            self.label_decimals, summary.median, self.value_suffix
+            "{}{}",
+            PlainNumberFormat::fixed(self.label_decimals, false).format(summary.median),
+            self.value_suffix
         );
         Some(if mode == BoxPlotLabels::MedianAndCount {
             format!(

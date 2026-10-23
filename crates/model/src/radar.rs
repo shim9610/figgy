@@ -2,6 +2,7 @@
 //! categories, one spoke per category, drawn as closed polygons over one
 //! shared value axis. Values are the host's; the renderer never normalizes a
 //! spoke to its own range.
+use crate::format::PlainNumberFormat;
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
 
@@ -369,7 +370,11 @@ impl RadarChart {
     }
     /// A data label: `value` at `label_decimals` with `value_suffix`.
     pub fn label_text(&self, value: f64) -> String {
-        format!("{:.*}{}", self.label_decimals, value, self.value_suffix)
+        format!(
+            "{}{}",
+            PlainNumberFormat::fixed(self.label_decimals, false).format(value),
+            self.value_suffix
+        )
     }
     /// Reorder the spokes to `ids`, a permutation of the category ids,
     /// moving every series' values with them.

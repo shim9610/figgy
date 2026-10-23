@@ -1,6 +1,7 @@
 //! Small categorical charts. Values and appearance are independent of Cartesian
 //! axes and column streams. The renderer consumes a complete validated snapshot.
 use crate::Color;
+use crate::format::PlainNumberFormat;
 
 pub const MAX_RADIAL_SLICES: usize = 64;
 
@@ -510,23 +511,9 @@ impl RadialChart {
     /// use the detail subtotal. Formatting never changes numeric data.
     /// Call on a validated chart and pass the positive finite sum for this circle.
     pub fn label_lines(&self, slice: &RadialSlice, total: f64) -> Vec<String> {
-        let d = self.label_decimals;
-        let trim = |s: String| {
-            if d == 0 {
-                s
-            } else {
-                s.trim_end_matches('0').trim_end_matches('.').to_owned()
-            }
-        };
-        let value = format!(
-            "{}{}",
-            trim(format!("{:.*}", d, slice.value)),
-            self.value_suffix
-        );
-        let pct = format!(
-            "{}%",
-            trim(format!("{:.*}", d, slice.value / total * 100.0))
-        );
+        let plain = PlainNumberFormat::fixed(self.label_decimals, true);
+        let value = format!("{}{}", plain.format(slice.value), self.value_suffix);
+        let pct = format!("{}%", plain.format(slice.value / total * 100.0));
         match slice.label_format.unwrap_or(self.label_format) {
             RadialLabelFormat::Name => vec![slice.label.clone()],
             RadialLabelFormat::Value => vec![value],

@@ -1,6 +1,7 @@
 //! Bounded categorical bars. Values are model-owned, not ColumnSource payloads.
 //! Stable category/series IDs identify edits and selection; values follow category order.
 use crate::Color;
+use crate::format::PlainNumberFormat;
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -511,14 +512,8 @@ impl CategoricalChart {
         Ok(out)
     }
     pub fn label_text(&self, segment: &CategoryBarSegment) -> String {
-        let number = |v: f64| {
-            let s = format!("{:.*}", self.label_decimals, v);
-            if self.label_decimals == 0 {
-                s
-            } else {
-                s.trim_end_matches('0').trim_end_matches('.').to_owned()
-            }
-        };
+        let plain = PlainNumberFormat::fixed(self.label_decimals, true);
+        let number = |v: f64| plain.format(v);
         let value = format!("{}{}", number(segment.value), self.value_suffix);
         let pct = segment
             .percent

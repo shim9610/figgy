@@ -59,6 +59,15 @@ impl PlainNumberFormat {
         trim_zeros: false,
     };
 
+    /// Exactly `decimals` decimals, saturated to the `u8` field: the label
+    /// form of the bounded families' `label_decimals`.
+    pub(crate) fn fixed(decimals: usize, trim_zeros: bool) -> Self {
+        Self {
+            decimals: Some(u8::try_from(decimals).unwrap_or(u8::MAX)),
+            trim_zeros,
+        }
+    }
+
     /// `value` written in this form.
     pub fn format(&self, value: f64) -> String {
         match self.decimals {
