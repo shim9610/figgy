@@ -878,9 +878,10 @@ impl ContourConfig {
     /// wrong by one.
     ///
     /// The spacing is the axis machinery's own: `compute_nice_ticks` picks it,
-    /// and the walk anchors to absolute multiples of it, so the levels are round
-    /// numbers even when the range ends are not. A logarithmic colourbar gets
-    /// decades from the same call, with no separate rule here.
+    /// and the walk is the axes' [`crate::tick::LinearGrid`], anchored to
+    /// absolute multiples of it, so the levels are round numbers even when the
+    /// range ends are not. A logarithmic colourbar gets every step-th decade
+    /// from [`crate::tick::LogDecades`], with no separate rule here.
     pub fn nice_levels(axis: &AxisOptions, target_count: usize) -> Result<Vec<f64>, TickError> {
         // `compute_nice_ticks` widens min/max to nice bounds; a level outside the
         // colourbar's range has no colour, so only its spacing is used.
@@ -900,10 +901,21 @@ impl ContourConfig {
                 if !(step.is_finite() && step > 0.0) {
                     return Err(TickError::InvalidRange);
                 }
-                let first = ((axis.min / step) - 1e-9).ceil() as i64;
-                let last = ((axis.max / step) + 1e-9).floor() as i64;
-                for i in first..=last {
-                    let value = i as f64 * step;
+                // No interval cap: `MAX_CONTOUR_LEVELS` bounds the walk.
+                let Some(grid) = crate::tick::LinearGrid::new(axis.min, axis.max, step, usize::MAX)
+                else {
+                    // No multiple of the step lies inside, or the step is too
+                    // small to move the range ends at `f64` precision; then
+                    // the range holds more levels than the limit when it
+                    // holds more steps.
+                    let steps = axis.max / step - axis.min / step;
+                    return if steps > MAX_CONTOUR_LEVELS as f64 {
+                        Err(TickError::InvalidRange)
+                    } else {
+                        Ok(out)
+                    };
+                };
+                for (_, value) in grid.iter() {
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
                     }
@@ -924,28 +936,11 @@ impl ContourConfig {
                 {
                     return Err(TickError::InvalidRange);
                 }
-                let step = step as i32;
-                let start = start as i32;
-                let end = end as i32;
-                if start > end {
-                    return Ok(out);
-                }
-                let exponent_span = end.checked_sub(start).ok_or(TickError::InvalidRange)?;
-                let iteration_count = exponent_span
-                    .checked_div(step)
-                    .and_then(|count| count.checked_add(1))
-                    .and_then(|count| usize::try_from(count).ok())
+                let decades = crate::tick::LogDecades::new(start as i32, end as i32, step as i32)
                     .ok_or(TickError::InvalidRange)?;
-                let mut exponent = start;
-                for index in 0..iteration_count {
-                    // `powi` can overflow the reciprocal's intermediate power
-                    // for negative exponents, losing valid subnormal decades.
-                    let value = 10f64.powf(f64::from(exponent));
+                for (_, value) in decades {
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
-                    }
-                    if index + 1 < iteration_count {
-                        exponent = exponent.checked_add(step).ok_or(TickError::InvalidRange)?;
                     }
                 }
             }
@@ -2209,6 +2204,12 @@ mod contour_level_tests {
         Ok(out)
     }
 
+    /// `nice_levels` on the shared walkers gives the replaced walk's levels,
+    /// except where that walk was wrong: indices past `i64` saturated it into
+    /// an empty list (now the level-limit error, as for any range with too
+    /// many levels), and a step too small to move the range ends at `f64`
+    /// precision walked the few representable values repeatedly (now no
+    /// levels, or the limit error).
     #[test]
     fn nice_levels_match_the_replaced_walk() {
         let below_max = f64::from_bits(f64::MAX.to_bits() - 1);
@@ -2249,19 +2250,48 @@ mod contour_level_tests {
             ranges.push((a, a + unit() * magnitude));
         }
         let mut compared = 0usize;
+        let mut saturated = 0usize;
+        let mut below_resolution = 0usize;
         for scale in [AxisScale::Linear, AxisScale::Logarithmic] {
             for &(min, max) in &ranges {
                 for target in [0, 1, 2, 3, 5, 7, 11, 50, 1000, 2001, usize::MAX] {
                     let axis = axis(min, max, scale.clone());
-                    assert_eq!(
-                        ContourConfig::nice_levels(&axis, target),
-                        old_nice_levels(&axis, target),
-                        "{scale:?} {min:?}..{max:?} target {target}"
-                    );
+                    let label = format!("{scale:?} {min:?}..{max:?} target {target}");
+                    let new = ContourConfig::nice_levels(&axis, target);
+                    let old = old_nice_levels(&axis, target);
+                    if new != old {
+                        let step =
+                            AxisOptions::compute_nice_ticks(scale.clone(), min, max, target.max(1))
+                                .unwrap()
+                                .major_spacing;
+                        if (min / step).abs().max((max / step).abs()) >= i64::MAX as f64 {
+                            // The old walk saturated its `i64` indices and
+                            // found no level; the grid counts past the limit.
+                            assert_eq!(old, Ok(Vec::new()), "{label}");
+                            assert_eq!(new, Err(TickError::InvalidRange), "{label}");
+                            saturated += 1;
+                        } else {
+                            // A step that moves neither end of the range at
+                            // `f64` precision: the old walk pushed the few
+                            // representable values, repeated.
+                            assert!(min + step == min && max - step == max, "{label}");
+                            assert!(
+                                matches!(&new, Ok(levels) if levels.is_empty())
+                                    || new == Err(TickError::InvalidRange),
+                                "{label}"
+                            );
+                            below_resolution += 1;
+                        }
+                    }
                     compared += 1;
                 }
             }
         }
         assert!(compared > 40_000);
+        eprintln!(
+            "contour parity: {compared} cases; {saturated} past the old i64 indices now \
+             exceed the level limit, {below_resolution} with a step below the range's \
+             resolution now get no levels or the limit error"
+        );
     }
 }
