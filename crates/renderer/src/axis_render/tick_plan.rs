@@ -13,8 +13,8 @@ pub(super) use crate::tick::{
 };
 
 /// The first and last whole decade exponents inside the guarded log range.
-/// It stays here, beside `chart::guarded_log_range`, until that guard moves
-/// to the model.
+/// It stays here with the Vec walkers below until they move to the model's
+/// `major_ticks` / `minor_ticks`.
 pub(super) fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
     let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
     let first = min

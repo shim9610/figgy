@@ -445,10 +445,9 @@ mod tick_plan_parity {
             );
 
             let old_majors = major_tick_values(axis);
-            let log_range = crate::chart::guarded_log_range(axis.min, axis.max);
-            let new_majors: Vec<f64> = model_tick::major_ticks(axis, log_range).collect();
+            let new_majors: Vec<f64> = model_tick::major_ticks(axis).collect();
             let old_minors = minor_tick_values(axis);
-            let new_minors: Vec<f64> = model_tick::minor_ticks(axis, log_range).collect();
+            let new_minors: Vec<f64> = model_tick::minor_ticks(axis).collect();
             match axis.scale {
                 AxisScale::Linear => {
                     assert_eq!(old_majors, new_majors, "{label}");
