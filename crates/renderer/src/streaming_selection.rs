@@ -423,13 +423,7 @@ impl Renderer {
             let overhead = if entry.field.is_some() {
                 field::OVERHEAD
             } else {
-                std::mem::size_of::<PrimitiveStyle>() as u64
-                    + if entry.bar {
-                        std::mem::size_of::<data_render::DataSelectionGpu>() as u64
-                    } else {
-                        0
-                    }
-                    + if mapped { 16 } else { 0 }
+                std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
             };
             bytes = bytes
                 .checked_add(work + overhead)
@@ -921,13 +915,7 @@ impl Renderer {
         let headroom = if entry.field.is_some() {
             field::OVERHEAD
         } else {
-            std::mem::size_of::<PrimitiveStyle>() as u64
-                + if entry.bar {
-                    std::mem::size_of::<data_render::DataSelectionGpu>() as u64
-                } else {
-                    0
-                }
-                + if mapped { 16 } else { 0 }
+            std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
         };
         let mut encoder = self
             .device

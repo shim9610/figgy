@@ -107,12 +107,13 @@ pub(crate) fn create_bar_columnar_mapped_pipeline_with_sample_count(
     )
 }
 
+/// The selected bin's outline for a series drawn without a style map: the
+/// bar layouts, groups 0 and 1 only (`vs_bar_selection`).
 pub(crate) fn create_bar_selection_pipeline_with_sample_count(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
-    selection_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
     sample_count: u32,
 ) -> wgpu::RenderPipeline {
@@ -121,11 +122,36 @@ pub(crate) fn create_bar_selection_pipeline_with_sample_count(
         shader,
         transform_bgl,
         style_bgl,
-        Some(selection_bgl),
+        None,
         target_format,
         sample_count,
         "vs_bar_selection",
         "figgy selected histogram bin pipeline",
+    )
+}
+
+/// The selected bin's outline for a series drawn through its style map: the
+/// mapped bar layout, group 2 = the series' bar style map
+/// (`vs_bar_selection_mapped`).
+pub(crate) fn create_bar_selection_mapped_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    create_bar_columnar_pipeline_with_entry(
+        device,
+        shader,
+        transform_bgl,
+        style_bgl,
+        Some(style_map_bgl),
+        target_format,
+        sample_count,
+        "vs_bar_selection_mapped",
+        "figgy selected mapped histogram bin pipeline",
     )
 }
 
@@ -142,9 +168,9 @@ pub(super) fn create_bar_columnar_pipeline_with_entry(
     label: &str,
 ) -> wgpu::RenderPipeline {
     let base_layouts = [Some(transform_bgl), Some(group_one_bgl)];
-    let selection_layouts = [Some(transform_bgl), Some(group_one_bgl), group_two_bgl];
+    let mapped_layouts = [Some(transform_bgl), Some(group_one_bgl), group_two_bgl];
     let bind_group_layouts = if group_two_bgl.is_some() {
-        &selection_layouts[..]
+        &mapped_layouts[..]
     } else {
         &base_layouts[..]
     };
@@ -248,13 +274,15 @@ pub struct ColumnBarLayer<'a> {
 
 /// One selected histogram bin. The instance index is the only geometric
 /// selection state: the vertex entry reads the exact edge/value pairs from the
-/// same pool columns as the normal bar draw.
+/// same pool columns as the normal bar draw. `style_bg` is the selection's
+/// bar `Style` (the highlight lanes, see `bar_columnar.wgsl`); `style_map_bg`
+/// is the series' bar style map exactly when the bar draw binds it, and
+/// selects the mapped outline entry.
 pub struct ColumnBarSelectionLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: wgpu::BindGroup,
-    pub selection_bg: wgpu::BindGroup,
-    pub selection_charge: crate::gpu_memory::SharedCharge,
+    pub style_map_bg: Option<&'a wgpu::BindGroup>,
     pub pool_buffer: &'a wgpu::Buffer,
     pub edges: ColumnHandle,
     pub values: ColumnHandle,
