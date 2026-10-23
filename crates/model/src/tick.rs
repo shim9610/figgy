@@ -325,6 +325,549 @@ fn apply_plan(axis: &mut AxisOptions, p: TickPlan) {
     axis.minor_count = p.minor_count;
 }
 
+// Tick walks.
+//
+// The walks every axis shares: the absolute linear grid, the log decades and
+// the 2a..9a log minors, and the guards that keep a written spacing, minor
+// count or decade step from blanking an axis or walking it without bound.
+// None of them allocates; each is a `Copy` state with an iterator.
+
+/// Slack, in steps, that keeps a tick landing on a range end through
+/// floating-point noise (`floor(2.9999999999999996)`) on the grid.
+pub const GRID_EPSILON: f64 = 1.0e-9;
+
+/// Hard ceiling on majors the linear walker may emit. A finite-but-tiny
+/// spacing (a mis-typed magnitude arriving through the SSoT) would otherwise
+/// walk the whole range in near-zero steps, which reads as a frozen chart.
+pub const MAX_MAJOR_INTERVALS: usize = 1000;
+
+/// Minor subdivisions per major interval the linear walker draws at most,
+/// counting the major itself: `minor_count` is clamped to one less.
+pub const MAX_MINOR_SUBDIVISIONS: usize = 100;
+
+/// Decades the log walkers visit at most.
+pub const MAX_LOG_DECADES: usize = 1024;
+
+/// The largest decade step the log walker takes; the renderer's
+/// `RenderWarning::LogDecadeStepAdjusted` message states the same bound.
+pub const MAX_LOG_DECADE_STEP: i32 = i32::MAX;
+
+/// Fallback lower bound for invalid manual log-axis ranges.
+pub const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
+
+/// Why the linear tick walker did not walk a requested `major_spacing`.
+///
+/// New reasons may be added as new variants. The fields of existing variants
+/// are frozen.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub enum SpacingRejection {
+    /// NaN or infinite.
+    NonFinite,
+    /// Zero or negative.
+    NotPositive,
+    /// Too small to move either end of the axis range at `f64` precision
+    /// (`min + spacing == min` and `max - spacing == max`), so the walk could
+    /// not advance.
+    BelowResolution,
+    /// The axis range holds more than `limit` intervals of this spacing.
+    TooManyTicks {
+        /// The most major intervals the walker draws (1000).
+        limit: usize,
+    },
+}
+
+fn range_is_walkable(min: f64, max: f64) -> bool {
+    min.is_finite() && max.is_finite() && max > min
+}
+
+fn spacing_advances(min: f64, max: f64, spacing: f64) -> bool {
+    let forward = min + spacing;
+    let backward = max - spacing;
+    (forward.is_finite() && forward > min) || (backward.is_finite() && backward < max)
+}
+
+/// Range a tick walker may iterate: finite ends, positive span. NaN/±inf
+/// ends otherwise slip past plain `max <= min` comparisons and saturate the
+/// integer step bounds (`inf as i64` = i64::MAX, an unbounded walk).
+pub fn walkable_range(axis: &AxisOptions) -> bool {
+    range_is_walkable(axis.min, axis.max)
+}
+
+/// The axis range measured in `spacing` units, or `None` when the range is
+/// not walkable, the spacing is not finite and positive, or the count does
+/// not fit an `f64`.
+pub fn range_in_spacing_units(axis: &AxisOptions, spacing: f64) -> Option<f64> {
+    if !walkable_range(axis) || !spacing.is_finite() || spacing <= 0.0 {
+        return None;
+    }
+    let span = axis.max - axis.min;
+    let units = if span.is_finite() {
+        span / spacing
+    } else {
+        // Divide before subtracting so `-MAX..MAX` can still be measured when
+        // the requested spacing is large enough to make the walk bounded.
+        axis.max / spacing - axis.min / spacing
+    };
+    (units.is_finite() && units >= 0.0).then_some(units)
+}
+
+/// Whether one `spacing` moves either end of the axis range at `f64`
+/// precision.
+pub fn spacing_advances_range(axis: &AxisOptions, spacing: f64) -> bool {
+    spacing_advances(axis.min, axis.max, spacing)
+}
+
+/// The spacing the linear walkers fall back to: [`axis_major_spacing`] for
+/// the current range, or the span itself when that does not advance the
+/// range at `f64` precision.
+pub fn automatic_linear_spacing(axis: &AxisOptions) -> f64 {
+    if !walkable_range(axis) {
+        return 1.0;
+    }
+    let span = axis.max - axis.min;
+    let mut spacing = if span.is_finite() {
+        axis_major_spacing(&AxisScale::Linear, axis.min, axis.max)
+    } else {
+        let scale = axis.min.abs().max(axis.max.abs());
+        let normalized_span = axis.max / scale - axis.min / scale;
+        scale * (normalized_span / 8.0)
+    };
+    if !spacing.is_finite() || spacing <= 0.0 {
+        spacing = if span.is_finite() && span > 0.0 {
+            span
+        } else {
+            1.0
+        };
+    }
+    if !spacing_advances_range(axis, spacing) && span.is_finite() && span > 0.0 {
+        spacing = span;
+    }
+    spacing
+}
+
+/// The major spacing the linear walkers actually walk. The SSoT accepts
+/// whatever the host sends (a live spacing input passes through 0 mid-edit),
+/// so the guard lives here, in the one place shared by tick marks, grid
+/// lines, minors, and label decimals, which therefore can never disagree. A
+/// non-finite or ≤ 0 spacing, or one that would emit an absurd tick count,
+/// falls back to [`automatic_linear_spacing`] instead of blanking the axis.
+/// Callers must have validated the range as finite and non-empty.
+pub fn effective_major_spacing(axis: &AxisOptions) -> f64 {
+    match major_spacing_rejection(axis) {
+        None => axis.major_spacing,
+        Some(_) => automatic_linear_spacing(axis),
+    }
+}
+
+/// Why [`effective_major_spacing`] does not walk `axis.major_spacing`, or
+/// `None` when it does. The one decision behind both the fallback and the
+/// renderer's warning about it, so the two cannot disagree.
+///
+/// The reason is meaningful for a walkable range only, the same precondition
+/// [`effective_major_spacing`] has: any other range refuses every spacing
+/// (reported as `TooManyTicks`, because its interval count cannot be measured)
+/// and the walkers draw no linear ticks on it.
+pub fn major_spacing_rejection(axis: &AxisOptions) -> Option<SpacingRejection> {
+    let sp = axis.major_spacing;
+    if !sp.is_finite() {
+        Some(SpacingRejection::NonFinite)
+    } else if sp <= 0.0 {
+        Some(SpacingRejection::NotPositive)
+    } else if !range_in_spacing_units(axis, sp)
+        .is_some_and(|units| units <= MAX_MAJOR_INTERVALS as f64)
+    {
+        Some(SpacingRejection::TooManyTicks {
+            limit: MAX_MAJOR_INTERVALS,
+        })
+    } else if !spacing_advances_range(axis, sp) {
+        Some(SpacingRejection::BelowResolution)
+    } else {
+        None
+    }
+}
+
+/// Minor ticks the linear walker draws per major interval: `minor_count`,
+/// clamped so the walk stays O(majors × subdivisions) whatever arrives.
+pub fn drawn_minor_count(axis: &AxisOptions) -> usize {
+    axis.minor_count.min(MAX_MINOR_SUBDIVISIONS - 1)
+}
+
+/// Renderer-side guard for log-axis ranges: a finite, positive, ordered
+/// range for any input.
+pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
+    let min = if min.is_finite() && min > 0.0 {
+        min
+    } else {
+        LOG_RANGE_FALLBACK_MIN
+    };
+    if max.is_finite() && max > min {
+        return (min, max);
+    }
+
+    let upper = min * 10.0;
+    if upper.is_finite() && upper > min {
+        return (min, upper);
+    }
+
+    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
+    // finite, ordered fallback by putting the synthetic decade below it.
+    let lower = min / 10.0;
+    if lower.is_finite() && lower > 0.0 && lower < min {
+        return (lower, min);
+    }
+
+    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
+}
+
+fn clamped_exponent(value: f64) -> i32 {
+    value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
+}
+
+/// The first and last whole decade exponents inside the guarded log range.
+pub fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
+    let (min, max) = guarded_log_range(axis.min, axis.max);
+    (
+        clamped_exponent(min.log10().ceil()),
+        clamped_exponent(max.log10().floor()),
+    )
+}
+
+/// The decade step the log walker takes: `major_spacing` floored, at least 1
+/// and at most [`MAX_LOG_DECADE_STEP`]; a non-finite spacing walks 1.
+pub fn effective_log_decade_step(axis: &AxisOptions) -> i32 {
+    let step = if axis.major_spacing.is_finite() {
+        axis.major_spacing.max(1.0).floor()
+    } else {
+        1.0
+    };
+    step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32
+}
+
+/// The multiples of a step inside a range, anchored to absolute multiples
+/// (`k · step`) rather than to the range's start, so tick values stay round
+/// whatever the range ends are.
+///
+/// Index `k` runs from `ceil(min / step - GRID_EPSILON)` to
+/// `floor(max / step + GRID_EPSILON)`, at most `max_intervals + 1` indices.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LinearGrid {
+    first: f64,
+    last: f64,
+    step: f64,
+    max_intervals: usize,
+}
+
+impl LinearGrid {
+    /// The grid of `step` over `min..max`, walking at most `max_intervals`
+    /// intervals. `None` when the range is not finite with `min < max`, the
+    /// step is not finite and positive, the step does not move either end of
+    /// the range at `f64` precision, or no multiple of it lies in the range.
+    pub fn new(min: f64, max: f64, step: f64, max_intervals: usize) -> Option<Self> {
+        if !range_is_walkable(min, max)
+            || !step.is_finite()
+            || step <= 0.0
+            || !spacing_advances(min, max, step)
+        {
+            return None;
+        }
+        let first = ((min / step) - GRID_EPSILON).ceil();
+        let last = ((max / step) + GRID_EPSILON).floor();
+        if !first.is_finite() || !last.is_finite() || last < first {
+            return None;
+        }
+        Some(Self {
+            first,
+            last,
+            step,
+            max_intervals,
+        })
+    }
+
+    /// The index of the first multiple, `ceil(min / step - GRID_EPSILON)`.
+    pub fn first_index(&self) -> f64 {
+        self.first
+    }
+
+    /// The index of the last multiple, `floor(max / step + GRID_EPSILON)`.
+    pub fn last_index(&self) -> f64 {
+        self.last
+    }
+
+    /// The step the grid walks.
+    pub fn step(&self) -> f64 {
+        self.step
+    }
+
+    /// The `(index, index · step)` pairs, in increasing order. A value that
+    /// is not finite is skipped, and one equal to the previous value (an
+    /// index past 2^53) is yielded once.
+    pub fn iter(&self) -> LinearGridIter {
+        LinearGridIter {
+            grid: *self,
+            next_offset: Some(0),
+            previous: None,
+        }
+    }
+}
+
+/// The iterator of [`LinearGrid::iter`].
+#[derive(Debug, Clone)]
+pub struct LinearGridIter {
+    grid: LinearGrid,
+    next_offset: Option<usize>,
+    previous: Option<f64>,
+}
+
+impl Iterator for LinearGridIter {
+    type Item = (f64, f64);
+
+    fn next(&mut self) -> Option<(f64, f64)> {
+        while let Some(offset) = self.next_offset {
+            self.next_offset = offset
+                .checked_add(1)
+                .filter(|next| *next <= self.grid.max_intervals);
+            let index = self.grid.first + offset as f64;
+            if !index.is_finite() || index > self.grid.last {
+                self.next_offset = None;
+                return None;
+            }
+            let value = index * self.grid.step;
+            if !value.is_finite() || self.previous == Some(value) {
+                continue;
+            }
+            self.previous = Some(value);
+            return Some((index, value));
+        }
+        None
+    }
+}
+
+/// Decade exponents `first..=last` by `step`, each with its value
+/// `10^exponent` (`powf`, which keeps subnormal decades).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LogDecades {
+    next: Option<i32>,
+    last: i32,
+    step: i32,
+}
+
+impl LogDecades {
+    /// The decades `first, first + step, …` up to `last`. Empty when
+    /// `first > last`; `None` when `step` is below 1.
+    pub fn new(first: i32, last: i32, step: i32) -> Option<Self> {
+        (step >= 1).then_some(Self {
+            next: Some(first),
+            last,
+            step,
+        })
+    }
+}
+
+impl Iterator for LogDecades {
+    type Item = (i32, f64);
+
+    fn next(&mut self) -> Option<(i32, f64)> {
+        let exponent = self.next.filter(|exponent| *exponent <= self.last)?;
+        self.next = exponent.checked_add(self.step);
+        Some((exponent, 10f64.powf(f64::from(exponent))))
+    }
+}
+
+/// The log minor ticks `2a..9a` of every decade `a` overlapping `min..max`
+/// that fall inside it, in increasing order: anchored at the decade powers,
+/// not at the majors, so partial edge decades (and multi-decade major steps)
+/// keep their minors. At most [`MAX_LOG_DECADES`] decades are visited.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogMinors {
+    min: f64,
+    max: f64,
+    decade: Option<i32>,
+    last: i32,
+    decades_left: usize,
+    base: f64,
+    multiple: u8,
+}
+
+impl LogMinors {
+    /// The minors over `min..max`, which should be a guarded log range
+    /// ([`guarded_log_range`]).
+    pub fn new(min: f64, max: f64) -> Self {
+        let first = clamped_exponent(min.log10().floor());
+        Self {
+            min,
+            max,
+            decade: Some(first),
+            last: clamped_exponent(max.log10().floor()),
+            decades_left: MAX_LOG_DECADES,
+            base: 0.0,
+            // Past 9: the next call opens the first decade.
+            multiple: 10,
+        }
+    }
+}
+
+impl Iterator for LogMinors {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        loop {
+            if self.multiple > 9 {
+                let decade = self.decade.filter(|decade| *decade <= self.last)?;
+                if self.decades_left == 0 {
+                    self.decade = None;
+                    return None;
+                }
+                self.decades_left -= 1;
+                self.decade = decade.checked_add(1);
+                self.base = 10f64.powf(f64::from(decade));
+                self.multiple = 2;
+            }
+            let value = self.base * f64::from(self.multiple);
+            self.multiple += 1;
+            if value.is_finite() && value >= self.min && value <= self.max {
+                return Some(value);
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum MajorWalk {
+    Empty,
+    Linear(LinearGridIter),
+    Log { decades: LogDecades, left: usize },
+}
+
+/// The major tick values of an axis, from [`major_ticks`].
+#[derive(Debug, Clone)]
+pub struct MajorTicks(MajorWalk);
+
+impl Iterator for MajorTicks {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        match &mut self.0 {
+            MajorWalk::Empty => None,
+            MajorWalk::Linear(grid) => grid.next().map(|(_, value)| value),
+            MajorWalk::Log { decades, left } => loop {
+                if *left == 0 {
+                    return None;
+                }
+                *left -= 1;
+                let (_, value) = decades.next()?;
+                if value.is_finite() && value > 0.0 {
+                    return Some(value);
+                }
+            },
+        }
+    }
+}
+
+/// The major tick values an axis draws, in increasing order.
+///
+/// Linear: absolute multiples of [`effective_major_spacing`] inside the
+/// range, at most [`MAX_MAJOR_INTERVALS`] + 1, none on a range that is not
+/// [`walkable_range`]. Logarithmic: every [`effective_log_decade_step`]-th
+/// decade inside the [`guarded_log_range`], at most [`MAX_LOG_DECADES`].
+pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
+    MajorTicks(match axis.scale {
+        AxisScale::Linear => {
+            if !walkable_range(axis) {
+                MajorWalk::Empty
+            } else {
+                LinearGrid::new(
+                    axis.min,
+                    axis.max,
+                    effective_major_spacing(axis),
+                    MAX_MAJOR_INTERVALS,
+                )
+                .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter()))
+            }
+        }
+        AxisScale::Logarithmic => {
+            let (first, last) = log_exponent_bounds(axis);
+            LogDecades::new(first, last, effective_log_decade_step(axis)).map_or(
+                MajorWalk::Empty,
+                |decades| MajorWalk::Log {
+                    decades,
+                    left: MAX_LOG_DECADES,
+                },
+            )
+        }
+    })
+}
+
+#[derive(Debug, Clone)]
+enum MinorWalk {
+    Empty,
+    Linear {
+        grid: LinearGridIter,
+        subdivisions: f64,
+    },
+    Log(LogMinors),
+}
+
+/// The minor tick values of an axis, from [`minor_ticks`].
+#[derive(Debug, Clone)]
+pub struct MinorTicks(MinorWalk);
+
+impl Iterator for MinorTicks {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        match &mut self.0 {
+            MinorWalk::Empty => None,
+            MinorWalk::Linear { grid, subdivisions } => loop {
+                let (index, value) = grid.next()?;
+                // Multiples of the major spacing are the majors themselves.
+                if index.rem_euclid(*subdivisions) != 0.0 {
+                    return Some(value);
+                }
+            },
+            MinorWalk::Log(minors) => minors.next(),
+        }
+    }
+}
+
+/// The minor tick values an axis draws, in increasing order, on the same
+/// absolute grid the majors use, including the partial intervals before the
+/// first and after the last major.
+///
+/// None when `minor_count` is 0. Linear: [`drawn_minor_count`] subdivisions
+/// of each [`effective_major_spacing`] interval, the majors left out.
+/// Logarithmic: [`LogMinors`] over the [`guarded_log_range`], whatever the
+/// count.
+pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
+    if axis.minor_count == 0 {
+        return MinorTicks(MinorWalk::Empty);
+    }
+    MinorTicks(match axis.scale {
+        AxisScale::Linear => {
+            if !walkable_range(axis) {
+                MinorWalk::Empty
+            } else {
+                let subdivisions = drawn_minor_count(axis) + 1;
+                let step = effective_major_spacing(axis) / subdivisions as f64;
+                let max_intervals = MAX_MAJOR_INTERVALS
+                    .saturating_mul(subdivisions)
+                    .saturating_add(1);
+                LinearGrid::new(axis.min, axis.max, step, max_intervals).map_or(
+                    MinorWalk::Empty,
+                    |grid| MinorWalk::Linear {
+                        grid: grid.iter(),
+                        subdivisions: subdivisions as f64,
+                    },
+                )
+            }
+        }
+        AxisScale::Logarithmic => {
+            let (min, max) = guarded_log_range(axis.min, axis.max);
+            MinorWalk::Log(LogMinors::new(min, max))
+        }
+    })
+}
+
 // Invariant tests.
 
 #[cfg(test)]
@@ -661,6 +1204,140 @@ mod tests {
             nice_linear_step(1.05e308, AXIS_LINEAR_TARGET, LooseRange::Above),
             Some(2e307)
         );
+    }
+
+    fn axis(
+        scale: AxisScale,
+        min: f64,
+        max: f64,
+        major_spacing: f64,
+        minor_count: usize,
+    ) -> AxisOptions {
+        let mut axis = default_config().bottom_x;
+        axis.scale = scale;
+        axis.min = min;
+        axis.max = max;
+        axis.major_spacing = major_spacing;
+        axis.minor_count = minor_count;
+        axis
+    }
+
+    /// The walk is anchored to absolute multiples, and the slack keeps an end
+    /// that floating-point noise puts just short of a multiple.
+    #[test]
+    fn linear_grid_walks_absolute_multiples_with_slack() {
+        let grid = LinearGrid::new(0.0, 0.3, 0.1, 100).unwrap();
+        assert_eq!((grid.first_index(), grid.last_index()), (0.0, 3.0));
+        assert_eq!(grid.step(), 0.1);
+        let indices: Vec<f64> = grid.iter().map(|(index, _)| index).collect();
+        assert_eq!(indices, [0.0, 1.0, 2.0, 3.0]);
+
+        let values: Vec<f64> = LinearGrid::new(0.137, 9.42, 2.0, 100)
+            .unwrap()
+            .iter()
+            .map(|(_, value)| value)
+            .collect();
+        assert_eq!(values, [2.0, 4.0, 6.0, 8.0]);
+    }
+
+    #[test]
+    fn linear_grid_refuses_what_it_cannot_walk_and_caps_the_rest() {
+        for (min, max, step) in [
+            (1.0, 1.0, 0.1),
+            (2.0, 1.0, 0.1),
+            (f64::NAN, 1.0, 0.1),
+            (0.0, f64::INFINITY, 0.1),
+            (0.0, 1.0, 0.0),
+            (0.0, 1.0, -1.0),
+            (0.0, 1.0, f64::NAN),
+            (1.0e16, 1.0e16 + 2.0, 0.1),
+            (0.25, 0.75, 1.0),
+        ] {
+            assert_eq!(
+                LinearGrid::new(min, max, step, 100),
+                None,
+                "{min:?}..{max:?} by {step:?}"
+            );
+        }
+        assert_eq!(
+            LinearGrid::new(0.0, 1.0, 1e-6, 10).unwrap().iter().count(),
+            11
+        );
+        assert_eq!(
+            LinearGrid::new(0.0, 1.0, 1e-6, 0).unwrap().iter().count(),
+            1
+        );
+    }
+
+    #[test]
+    fn log_decades_step_and_stop_at_the_last_exponent() {
+        let decades: Vec<(i32, f64)> = LogDecades::new(-2, 3, 2).unwrap().collect();
+        assert_eq!(decades, [(-2, 0.01), (0, 1.0), (2, 100.0)]);
+        assert_eq!(LogDecades::new(3, 2, 1).unwrap().count(), 0);
+        assert_eq!(LogDecades::new(0, 1, 0), None);
+        assert_eq!(
+            LogDecades::new(i32::MAX - 1, i32::MAX, i32::MAX)
+                .unwrap()
+                .count(),
+            1
+        );
+        // `powf` keeps the subnormal decades.
+        assert_eq!(
+            LogDecades::new(-323, -323, 1).unwrap().next(),
+            Some((-323, 1e-323))
+        );
+    }
+
+    #[test]
+    fn log_minors_cover_partial_edge_decades() {
+        let minors: Vec<f64> = LogMinors::new(3.0, 50.0).collect();
+        assert_eq!(
+            minors,
+            [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 20.0, 30.0, 40.0, 50.0]
+        );
+    }
+
+    #[test]
+    fn axis_walkers_follow_the_guards() {
+        let majors: Vec<f64> = major_ticks(&axis(AxisScale::Linear, 0.0, 10.0, 2.5, 4)).collect();
+        assert_eq!(majors, [0.0, 2.5, 5.0, 7.5, 10.0]);
+        let minors: Vec<f64> = minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 1)).collect();
+        assert_eq!(minors, [0.25, 0.75]);
+        // A rejected spacing walks the automatic one.
+        let fallback = axis(AxisScale::Linear, 0.0, 10.0, 0.0, 4);
+        assert_eq!(
+            major_spacing_rejection(&fallback),
+            Some(SpacingRejection::NotPositive)
+        );
+        assert_eq!(effective_major_spacing(&fallback), 2.0);
+        assert_eq!(major_ticks(&fallback).count(), 6);
+        assert_eq!(
+            major_spacing_rejection(&axis(AxisScale::Linear, 0.0, 10.0, 1e-9, 4)),
+            Some(SpacingRejection::TooManyTicks {
+                limit: MAX_MAJOR_INTERVALS
+            })
+        );
+        assert_eq!(
+            drawn_minor_count(&axis(AxisScale::Linear, 0.0, 1.0, 1.0, usize::MAX)),
+            99
+        );
+        assert_eq!(
+            major_ticks(&axis(AxisScale::Linear, 1.0, 1.0, 1.0, 4)).count(),
+            0
+        );
+        assert_eq!(
+            minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 0)).count(),
+            0
+        );
+
+        let log = axis(AxisScale::Logarithmic, 0.5, 2000.0, 2.7, 8);
+        assert_eq!(effective_log_decade_step(&log), 2);
+        assert_eq!(log_exponent_bounds(&log), (0, 3));
+        assert_eq!(major_ticks(&log).collect::<Vec<_>>(), [1.0, 100.0]);
+        // 0.5..0.9, three whole decades, then 2000.
+        assert_eq!(minor_ticks(&log).count(), 5 + 3 * 8 + 1);
+        assert_eq!(guarded_log_range(-1.0, f64::NAN), (1e-12, 1e-11));
+        assert_eq!(guarded_log_range(f64::MAX, f64::MAX).1, f64::MAX);
     }
 
     // compute_nice_ticks is pure.
