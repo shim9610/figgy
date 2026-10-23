@@ -969,6 +969,7 @@ impl GpuPickEngine {
                 override_count,
                 style_index_base,
                 style_index_len,
+                exact_key: series_exact_key(flags, line_dash_len, base_shape_id),
             },
         })
     }

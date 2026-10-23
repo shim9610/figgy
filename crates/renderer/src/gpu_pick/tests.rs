@@ -309,6 +309,7 @@ struct PickSeriesMetadataSnapshot {
     override_count: u32,
     style_index_base: u32,
     style_index_len: u32,
+    exact_key: PickExactKey,
 }
 
 impl PickSeriesMetadataSnapshot {
@@ -341,7 +342,51 @@ impl PickSeriesMetadataSnapshot {
             override_count: series.override_count,
             style_index_base: series.style_index_base,
             style_index_len: series.style_index_len,
+            exact_key: series.exact_key,
         }
+    }
+}
+
+/// The per-series part of the exact variant follows the built slot: the
+/// module from the primitive flags, the dash walk only for a dashed line
+/// and the series' shape only without a style map. The query's bits are
+/// added per pick (`series_exact_variant`).
+#[test]
+fn the_stored_exact_key_is_the_slots_module_dash_and_shape() {
+    use super::exact_variant::DASH;
+    let key = |shader, bits, shape| PickExactKey {
+        shader,
+        bits,
+        shape,
+    };
+    let any = PickExactKey::ANY_SHAPE;
+    for (flags, dash_len, expected) in [
+        (FLAG_SCATTER, 0, key(PickShader::Marker, 0, 7)),
+        (FLAG_SCATTER, 4, key(PickShader::Marker, 0, 7)),
+        (
+            FLAG_SCATTER | FLAG_STYLE_MAP,
+            0,
+            key(PickShader::Marker, 0, any),
+        ),
+        (FLAG_LINE, 0, key(PickShader::Line, 0, any)),
+        (FLAG_LINE, 2, key(PickShader::Line, DASH, any)),
+        (
+            FLAG_SCATTER | FLAG_LINE,
+            2,
+            key(PickShader::MarkerLine, DASH, 7),
+        ),
+        (
+            FLAG_SCATTER | FLAG_LINE | FLAG_STYLE_MAP,
+            0,
+            key(PickShader::MarkerLine, 0, any),
+        ),
+        (FLAG_SCATTER | FLAG_VECTOR, 0, key(PickShader::Vector, 0, 7)),
+    ] {
+        assert_eq!(
+            series_exact_key(flags, dash_len, 7),
+            expected,
+            "flags {flags:#x}, dash length {dash_len}"
+        );
     }
 }
 

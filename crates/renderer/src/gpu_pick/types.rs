@@ -759,6 +759,9 @@ pub(super) struct PickSeriesGpu {
     pub(super) override_count: u32,
     pub(super) style_index_base: u32,
     pub(super) style_index_len: u32,
+    /// The per-series part of the exact variant, fixed at build
+    /// (`series_exact_key`).
+    pub(super) exact_key: PickExactKey,
 }
 
 pub(super) fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
