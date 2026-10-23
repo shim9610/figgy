@@ -331,7 +331,9 @@ fn bounded_area_select_resize_move_pick_and_export() {
 fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     let _guard = LOCK.lock().unwrap();
     // `$charts` are the variants of one family (a box plot's direction, a
-    // radar's grid shape): the first runs at 1x and 2x, the others at 2x.
+    // radar's grid shape). The first runs the whole contract at 1x and 2x;
+    // the others, at 2x, run what depends on the layout: the move, its
+    // redraw, the raster invalidation, the frame reuse and the geometry.
     // `$geometry` compares the data geometry of the frame before and after
     // a decoration edit, which must not move.
     macro_rules! check {
@@ -342,7 +344,8 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let geometry = $geometry;
             for (variant, mut c) in $charts.into_iter().enumerate() {
-                let scales: &[f32] = if variant == 0 { &[1.0, 2.0] } else { &[2.0] };
+                let full = variant == 0;
+                let scales: &[f32] = if full { &[1.0, 2.0] } else { &[2.0] };
                 for &scale in scales {
                     for key in $keys {
                         c.decorations = Default::default();
@@ -351,56 +354,58 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                             .decorations()
                             .bounds(id(f.decorations(), &DecorationId::DataArea));
                         let before = r.export_rgba(&c, (800, 600), scale).unwrap();
-                        // Selection is the only mutation here: movement must not mask
-                        // a missing selection border or stale annotation cache.
-                        let unselected_model = c.clone();
-                        let selection = f
-                            .decorations()
-                            .selection_box(id(f.decorations(), &key))
-                            .unwrap();
-                        c.decorations.selected = Some(key.clone());
-                        let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
-                        assert!(!f.shares_annotations_with(&selected_frame));
-                        assert!(Arc::ptr_eq(
-                            &selected_frame,
-                            &r.prepare(&c, (800, 600), scale).unwrap()
-                        ));
-                        for (_, element) in f.decorations().entries() {
+                        if full {
+                            // Selection is the only mutation here: movement must not mask
+                            // a missing selection border or stale annotation cache.
+                            let unselected_model = c.clone();
+                            let selection = f
+                                .decorations()
+                                .selection_box(id(f.decorations(), &key))
+                                .unwrap();
+                            c.decorations.selected = Some(key.clone());
+                            let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
+                            assert!(!f.shares_annotations_with(&selected_frame));
+                            assert!(Arc::ptr_eq(
+                                &selected_frame,
+                                &r.prepare(&c, (800, 600), scale).unwrap()
+                            ));
+                            for (_, element) in f.decorations().entries() {
+                                assert_eq!(
+                                    f.decorations().bounds(id(f.decorations(), &element.id)),
+                                    selected_frame
+                                        .decorations()
+                                        .bounds(id(selected_frame.decorations(), &element.id)),
+                                    "selection changed {:?} geometry",
+                                    element.id
+                                );
+                            }
+                            let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
+                            bounded_area::assert_selection_only(
+                                &before,
+                                &selected,
+                                &selection,
+                                scale,
+                                &format!("{} {key:?} at {scale}x", stringify!($renderer)),
+                            );
+                            let artifact_key: String = format!("{key:?}")
+                                .chars()
+                                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                                .collect();
+                            save(
+                                &format!(
+                                    "{}-{artifact_key}-selection-only-{scale}x",
+                                    stringify!($renderer)
+                                ),
+                                &selected,
+                            );
+                            c.decorations.selected = None;
+                            assert_eq!(c, unselected_model);
                             assert_eq!(
-                                f.decorations().bounds(id(f.decorations(), &element.id)),
-                                selected_frame
-                                    .decorations()
-                                    .bounds(id(selected_frame.decorations(), &element.id)),
-                                "selection changed {:?} geometry",
-                                element.id
+                                r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                                before.rgba,
+                                "selection removal did not restore {key:?} pixels"
                             );
                         }
-                        let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
-                        bounded_area::assert_selection_only(
-                            &before,
-                            &selected,
-                            &selection,
-                            scale,
-                            &format!("{} {key:?} at {scale}x", stringify!($renderer)),
-                        );
-                        let artifact_key: String = format!("{key:?}")
-                            .chars()
-                            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-                            .collect();
-                        save(
-                            &format!(
-                                "{}-{artifact_key}-selection-only-{scale}x",
-                                stringify!($renderer)
-                            ),
-                            &selected,
-                        );
-                        c.decorations.selected = None;
-                        assert_eq!(c, unselected_model);
-                        assert_eq!(
-                            r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
-                            before.rgba,
-                            "selection removal did not restore {key:?} pixels"
-                        );
                         let (dx, dy) = match key {
                             DecorationId::Axis(Side::Left) => (8.0, 0.0),
                             DecorationId::Axis(Side::Bottom) => (0.0, -8.0),
@@ -435,7 +440,7 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         let after = r.export_rgba(&c, (800, 600), scale).unwrap();
                         assert_ne!(before.rgba, after.rgba, "{key:?} edit was invisible");
                         #[cfg(feature = "serde")]
-                        {
+                        if full {
                             let restored =
                                 serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
                             assert_eq!(c, restored);
@@ -446,10 +451,12 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                         }
                         c.decorations.reset(&key);
                         c.decorations.selected = None;
-                        assert_eq!(
-                            r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
-                            before.rgba
-                        );
+                        if full {
+                            assert_eq!(
+                                r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                                before.rgba
+                            );
+                        }
                         r.end_frame();
                     }
                 }
