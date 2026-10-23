@@ -482,6 +482,78 @@ mod tick_plan_parity {
         );
     }
 
+    /// Values for the `Plain` parity tests: both signs, every decade from 1e-12
+    /// to 1e12, the exponent switch at 0.001 and 1e6 with their neighbours,
+    /// rounding edges, ±0, NaN, ±inf and a seeded log-uniform sample.
+    fn plain_parity_values() -> Vec<f64> {
+        let mut values = vec![
+            0.0,
+            -0.0,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            999_999.999_999_6,
+            999_999.999_999_4,
+            0.000_999_999_6,
+            0.000_999_999_4,
+            0.000_000_5,
+            2.5e-7,
+            1_234.567_890_5,
+            0.125,
+            0.05,
+            0.15,
+            2.675,
+            f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            f64::MAX,
+        ];
+        for edge in [0.001f64, 1e6] {
+            for delta in 0..=3u64 {
+                values.push(f64::from_bits(edge.to_bits() + delta));
+                values.push(f64::from_bits(edge.to_bits() - delta));
+            }
+        }
+        for exponent in -12..=12 {
+            for mantissa in [
+                "1",
+                "1.5",
+                "2.345",
+                "5",
+                "9.999995",
+                "9.9999996",
+                "9.99999949",
+            ] {
+                values.push(format!("{mantissa}e{exponent}").parse().unwrap());
+            }
+        }
+        let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..20_000 {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            let unit = (seed >> 11) as f64 / (1u64 << 53) as f64;
+            values.push(10f64.powf(-13.0 + unit * 26.0));
+        }
+        let negatives: Vec<f64> = values.iter().map(|v| -v).collect();
+        values.extend(negatives);
+        values
+    }
+
+    /// `PlainNumberFormat::AUTO` is the bounded axes' `plain_number`, which
+    /// it replaces.
+    #[test]
+    fn plain_auto_matches_plain_number() {
+        let values = plain_parity_values();
+        for &value in &values {
+            assert_eq!(
+                crate::format::PlainNumberFormat::AUTO.format(value),
+                plain_number(value),
+                "{value:?}"
+            );
+        }
+        eprintln!("plain number parity: {} values, all equal", values.len());
+    }
+
     /// The bounded families' current inline walks (radar rings, box plot and
     /// categorical value ticks) against the `LinearGrid` walks that will
     /// replace them. Differences 3 (the grid's 1e-9 slack keeps end ticks)
