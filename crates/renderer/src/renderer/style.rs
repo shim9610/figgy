@@ -406,6 +406,10 @@ pub(super) fn apply_bar_bin_style(bar: &mut DataBarStyleConfig, slot: &DataBarBi
     }
 }
 
+// TODO(#38): the selection outline of a histogram bin resolves the bin
+// override here, a second placement of `bar_columnar.wgsl`'s
+// `resolve_bar_style`; it goes when the selection pass reads the style map
+// on the GPU (a shader change).
 pub(super) fn resolved_bar_primitive_style(
     bar: &DataBarStyleConfig,
     bin_index: usize,

@@ -24,6 +24,10 @@ pub(super) fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig)
     }
 }
 
+// TODO(#38): the ring of an unmapped scatter series resolves sparse size
+// overrides here, a second placement of `scatter_columnar.wgsl`'s
+// `resolve` of the same overrides; it goes when the ring shader reads the
+// style map for every series (a shader change).
 pub(super) fn scatter_config_radius_px(
     scatter: &DataScatterStyleConfig,
     point_index: usize,
