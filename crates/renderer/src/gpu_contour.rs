@@ -30,7 +30,6 @@ pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_modu
     "contour_anchor_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
-    "data_render/field_columnar_b.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
     "contour_anchor.wgsl"
@@ -476,7 +475,6 @@ impl ContourLabelPipelines {
         let common = crate::shader_assembly::wgsl_module!(
             "data_render/common/transform.wgsl",
             "data_render/common/projection.wgsl",
-            "data_render/field_columnar_b.wgsl",
             "data_render/common/grid_pair.wgsl",
             "data_render/common/field_grid.wgsl",
         );

@@ -9,7 +9,6 @@ pub(crate) const FIELD_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
-    "data_render/field_columnar_b.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
     "data_render/field_columnar_a.wgsl",
