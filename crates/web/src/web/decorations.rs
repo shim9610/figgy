@@ -477,13 +477,14 @@ impl FiggyChart {
                 .filter_map(|(id, e)| {
                     let item = items.get(e.index)?;
                     let b = map.selection_box(id)?;
+                    let r = b.rect();
                     Some(serde_json::json!({
                         "index": e.index,
                         "id": item.id,
                         "element": e.id().element_id(),
                         "kind": annotation_kind_name(&item.kind),
-                        "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
-                        "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                        "rect": [r.x, r.y, r.width, r.height],
+                        "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
                         "selected": self.selected_annotation == Some(e.index),
                     }))
                 })
@@ -649,9 +650,10 @@ impl FiggyChart {
             .find(|(_, e)| e.id().element_id() == target)
             .and_then(|(id, _)| annotations.selection_box(id))
         {
+            let r = b.rect();
             let value = serde_json::json!({
-                "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
-                "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                "rect": [r.x, r.y, r.width, r.height],
+                "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
             });
             return serde_json::to_string(&value).map_err(js_err);
         }
@@ -660,25 +662,24 @@ impl FiggyChart {
         let value = id
                 .and_then(|id| self.hitmap.selection_box(id, &config, &measure))
                 .map(|b| {
+                    let r = b.rect();
                     let mut value = serde_json::json!({
-                        "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
-                        "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                        "rect": [r.x, r.y, r.width, r.height],
+                        "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
                     });
                     // Polar tick labels are outlined one box per drawn label;
                     // the host gets the same boxes the canvas draws.
-                    if let renderer::SelectionOutline::TickLabels(side) = &b.outline {
-                        let mut labels = Vec::new();
-                        renderer::MeasureText::drawn_parts(
-                            &measure,
-                            &config,
-                            &renderer::layout::Element::AxisLabel(side.clone()),
-                            &mut |part| {
-                                if let renderer::layout::DrawnPart::Text(r) = part {
+                    if let renderer::SelectionOutline::Parts(parts) = b.outline() {
+                        let labels: Vec<Vec<f32>> = parts
+                            .iter()
+                            .filter_map(|part| match part {
+                                renderer::DrawnPart::Text(r) => {
                                     let r = r.expanded(renderer::select::SELECTION_PADDING);
-                                    labels.push(vec![r.x, r.y, r.width, r.height]);
+                                    Some(vec![r.x, r.y, r.width, r.height])
                                 }
-                            },
-                        );
+                                _ => None,
+                            })
+                            .collect();
                         value["labels"] = serde_json::json!(labels);
                     }
                     value

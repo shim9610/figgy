@@ -6,104 +6,75 @@ use crate::axis_render::*;
 // Colourbar.
 //
 // No GPU pipeline: the strip is a CPU ramp and its ticks, labels, and title go
-// through the *same* helpers the four chart axes use (`draw_tick`,
-// `draw_tick_label`, `colorbar_title_placement`, `major_tick_values`,
+// through the *same* helpers the four chart axes use (`tick_segment`,
+// `tick_label_placement`, `colorbar_title_placement`, `major_tick_values`,
 // `format_tick_value`, `format_tick_power`). That reuse is the point — the bar's
 // axis is an `AxisOptions`, so a log colourbar gets decade ticks and 10ⁿ labels
 // from the code that already does it for a log axis, instead of a second
 // implementation that drifts.
 
-/// Draw the colourbar: strip, border, axis line, ticks, tick labels, title.
+/// The colourbar: its strip and border (the model's `Element::ColorBar`
+/// placement), its axis line and ticks, its tick labels and its title (the
+/// model's `Element::ColorBarTitle` placement).
 ///
-/// A no-op when there is no colourbar or it is hidden — and `colorbar_parts` has
-/// then reserved no band for it, so there is nothing to leave blank.
-pub(crate) fn draw_colorbar(
-    canvas: &mut Canvas,
+/// A no-op when there is no colourbar or it is hidden — and `colorbar_parts`
+/// has then reserved no band for it, so there is nothing to leave blank.
+pub(crate) fn emit_colorbar(
     config: &Config,
     da: &DataArea,
-    stroker: &DecoStroker,
     fp: FontPolicy,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
 ) {
     let Some((bar, rect)) = drawn_colorbar(config, da) else {
         return;
     };
+    emit_element(config, &Element::ColorBar, measure, sink);
+    emit_colorbar_axis_strokes(&bar.axis, bar.side.clone(), &rect, sink);
+    emit_colorbar_tick_labels(&bar.axis, bar.side.clone(), &rect, fp, sink);
+    emit_element(config, &Element::ColorBarTitle, measure, sink);
+}
 
-    draw_colorbar_strip(canvas, bar, &rect);
-
-    // Border. Precise fill, wobbled outline — the same split as the legend box,
-    // for the same reason: perturbing the fill too would visibly disagree with
-    // the independently wobbled border.
-    if bar.border_width > 0.0 {
-        let paint = Paint::stroke(&bar.border_color, bar.border_width);
-        stroker.stroke_rect_outline(
-            canvas,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            &paint,
-            "colorbar_strip",
-        );
-    }
-
-    let axis = &bar.axis;
-    let side = bar.side.clone();
-
-    // Like a chart axis, the colourbar axis chrome may detach perpendicular to
-    // its direction. The strip and title stay put; line, ticks, and tick labels
-    // share this one transform so they cannot drift from one another.
+/// The colourbar axis' line and ticks along the strip `rect`
+/// (`Element::ColorBarAxis`). Like a chart axis, the colourbar axis chrome
+/// may detach perpendicular to its direction; the strip and title stay put,
+/// and the labels share the same translation.
+pub(crate) fn emit_colorbar_axis_strokes(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    sink: &mut dyn Sink,
+) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let detached = off_x != 0.0 || off_y != 0.0;
-    if detached {
-        canvas.save();
-        canvas.translate(off_x, off_y);
-    }
-
-    // Line and ticks, from the walk `drawn_parts` reports.
     let majors = major_tick_values(axis);
-    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-    each_colorbar_axis_stroke(axis, side.clone(), &rect, &majors, |stroke, a, b| {
+    let dash = axis.line_style.pattern();
+    each_colorbar_axis_stroke(axis, side, rect, &majors, |stroke, a, b| {
         let tag = match stroke {
             AxisStroke::Line => "axis_colorbar".to_string(),
             AxisStroke::Tick(i) => format!("tick_colorbar_{i}"),
         };
-        stroker.stroke_segment(canvas, a, b, &paint, &tag);
+        sink.stroke(
+            Slot::Above,
+            [a.0 + off_x, a.1 + off_y],
+            [b.0 + off_x, b.1 + off_y],
+            &StrokeStyle {
+                width: axis.line_width,
+                color: axis.line_color,
+                dash,
+                tag: &tag,
+            },
+        );
     });
-
-    // Tick labels, through the walk `drawn_parts` reports.
-    each_colorbar_tick_label(axis, side.clone(), &rect, fp, &majors, |text, pos| {
-        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
-    });
-
-    if detached {
-        canvas.restore();
-    }
-
-    // Title. Its anchor is the painted strip rather than the full data area,
-    // so shortening, aligning, dragging, or resizing the bar moves the title
-    // with it. The title keeps its own offset and does not follow a separately
-    // detached axis line.
-    let to = &axis.title_option;
-    if to.visible {
-        let m = measure_rich_text(&to.text, fp);
-        let placement = colorbar_title_placement(side, &rect, axis, (to.offset_x, to.offset_y), m);
-        draw_placed_title(canvas, &to.text, placement, fp);
-    }
 }
 
-/// The colourbar and its strip rect when [`draw_colorbar`] draws one: present,
-/// visible and not degenerate. [`tick_warnings`] reports the bar's axis only
-/// then.
+/// The colourbar and its strip rect when it is drawn
+/// ([`crate::layout::visible_colorbar_rect`]). [`tick_warnings`] reports the
+/// bar's axis only then.
 pub(crate) fn drawn_colorbar<'a>(
     config: &'a Config,
-    da: &DataArea,
+    _da: &DataArea,
 ) -> Option<(&'a crate::config::ColorBarOptions, RectF)> {
-    let bar = config.colorbar.as_ref()?;
-    if !bar.visible {
-        return None;
-    }
-    let rect = colorbar_rect(&config.chart_area, da, config.chart_title.top_margin, bar);
-    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
+    visible_colorbar_rect(config)
 }
 
 /// Paint the ramp into the strip rect.
@@ -120,7 +91,7 @@ pub(crate) fn drawn_colorbar<'a>(
 /// `t` runs from the `axis.min` end of the bar. `axis.inverted` swaps which
 /// screen end that is — it does not reverse the ramp, because inverting an axis
 /// changes where a value is drawn and not what colour it has.
-pub(super) fn draw_colorbar_strip(
+pub(crate) fn draw_colorbar_strip(
     canvas: &mut Canvas,
     bar: &crate::config::ColorBarOptions,
     rect: &RectF,

@@ -210,7 +210,7 @@ either object automatically in the caller-owned `prepare` path.
 
 | Change | Required work before the next `prepare` |
 | --- | --- |
-| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection` when displaying selection boxes. |
+| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection(view, chart, panel_rect, Some(element_id))` when displaying a selection: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. |
 | Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
 | Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
 | Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |

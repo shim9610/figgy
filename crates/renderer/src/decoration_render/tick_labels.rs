@@ -40,19 +40,16 @@ pub(crate) fn visible_numeric_labels(
 ) -> Vec<NumericTickLabel> {
     let ls = &axis.label_style;
     prune_numeric_labels(axis, fp, majors, position, |position, metrics| {
-        let (x, y) = label_origin(
-            side.clone(),
-            position,
-            axis.major_tick_length,
-            (ls.label_offset_x, ls.label_offset_y),
+        label_rect(
+            label_origin(
+                side.clone(),
+                position,
+                axis.major_tick_length,
+                (ls.label_offset_x, ls.label_offset_y),
+                metrics,
+            ),
             metrics,
-        );
-        RectF {
-            x,
-            y: y - metrics.ascent,
-            width: metrics.width,
-            height: metrics.ascent + metrics.descent,
-        }
+        )
     })
 }
 
@@ -250,9 +247,8 @@ pub(crate) enum TickText<'a> {
 }
 
 /// Where a tick label at `tick_pos` is drawn: its baseline origin and its
-/// glyph extents. [`draw_tick_text`] draws there and [`drawn_parts`]
-/// reports the same rectangle, so a label's selection and hit geometry
-/// cannot leave the drawn text.
+/// glyph extents. The emits place the label there, so a label's pixels and
+/// its selection and hit geometry come from one origin.
 pub(crate) fn tick_label_placement(
     text: &TickText<'_>,
     tick_pos: (f32, f32),
@@ -277,35 +273,54 @@ pub(crate) fn tick_label_placement(
     (origin, m)
 }
 
-pub(crate) fn draw_tick_text(
-    canvas: &mut Canvas,
+/// Place one tick label at its tick, moved by `offset` (the detached-axis
+/// translation), above the data.
+pub(crate) fn place_tick_text(
     text: &TickText<'_>,
     tick_pos: (f32, f32),
     side: Side,
     axis: &AxisOptions,
     fp: FontPolicy,
+    offset: (f32, f32),
+    sink: &mut dyn Sink,
 ) {
-    let (origin, _) = tick_label_placement(text, tick_pos, side, axis, fp);
+    let (origin, extents) = tick_label_placement(text, tick_pos, side, axis, fp);
     let ls: &LabelStyle = &axis.label_style;
-    match text {
-        TickText::Plain(text) => draw_plain_text(
-            canvas,
-            text,
-            origin,
-            ls.color,
-            &ls.label_font,
-            ls.font_size,
-            false,
-            false,
-            fp,
-        ),
-        TickText::Power(rt) => draw_rich_text(canvas, rt, origin, fp),
-    }
+    let placed = PlacedText {
+        text: match text {
+            TickText::Plain(text) => TextRef::Plain {
+                text,
+                family: &ls.label_font,
+                size: ls.font_size,
+                color: ls.color,
+            },
+            TickText::Power(rt) => TextRef::Rich(rt),
+        },
+        origin: (origin.0 + offset.0, origin.1 + offset.1),
+        extents,
+        rotation: None,
+    };
+    sink.text(Slot::Above, &placed);
 }
 
-/// Every tick label [`draw_axis`] draws on `side`, with its tick position,
-/// in draw order. Drawing and [`drawn_parts`] both walk this, so the
-/// labels a selection boxes are the labels on screen.
+/// The colourbar's tick labels along the strip `rect`
+/// (`Element::ColorBarLabel`), moved by the bar axis' detached translation.
+pub(crate) fn emit_colorbar_tick_labels(
+    axis: &AxisOptions,
+    side: Side,
+    rect: &RectF,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let majors = major_tick_values(axis);
+    let offset = axis_offset(side.clone(), axis.line_offset);
+    each_colorbar_tick_label(axis, side.clone(), rect, fp, &majors, |text, pos| {
+        place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
+    });
+}
+
+/// Every tick label the axis on `side` draws, with its tick position, in
+/// draw order, before the detached-axis translation.
 pub(crate) fn each_axis_tick_label(
     axis: &AxisOptions,
     side: Side,
@@ -332,7 +347,7 @@ pub(crate) fn each_axis_tick_label(
     }
 }
 
-/// Every tick label [`draw_colorbar`] draws along the strip `rect`, with its
+/// Every tick label the colourbar draws along the strip `rect`, with its
 /// tick position, in draw order. Timestamps are not offered: a z value is a
 /// magnitude, and the timestamp planner needs an axis pixel length and
 /// collision pruning that belong to a time axis. `LabelFormat::Timestamp` on a
