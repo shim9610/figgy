@@ -475,7 +475,7 @@ constants, structs and `arrow_*` functions), `vector/project_cartesian2d.wgsl`
 compares every body, struct and constant with this document. CPU twin:
 `pick.rs::vector_arrow_distance` with `arrow_place` / `arrow_distance`.
 
-The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules by `wgsl_module!` (`shader_assembly.rs`); the pick vector fragment still carries a copy of its picking subset.
+The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
 
 ---
 ## 변경 체크리스트

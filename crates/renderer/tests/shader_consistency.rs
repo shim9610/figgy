@@ -1015,18 +1015,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &["data_render/common/arrow.wgsl", "gpu_pick/vector.wgsl"],
-        &[
-            "arrow_distance",
-            "arrow_finite",
-            "arrow_place",
-            "arrow_sd_segment",
-            "arrow_sd_triangle",
-            "axis_px_per_unit_at",
-            "pair_add",
-        ],
-    ),
-    (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
         &["hash", "noise"],
     ),

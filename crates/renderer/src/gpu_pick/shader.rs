@@ -86,6 +86,8 @@ impl PickShader {
             ],
             PickShader::Vector => &[
                 "gpu_pick/core.wgsl",
+                "gpu_pick/vector_a.wgsl",
+                "data_render/common/arrow.wgsl",
                 "gpu_pick/vector.wgsl",
                 "gpu_pick/no_line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -133,6 +135,8 @@ impl PickShader {
             ),
             PickShader::Vector => wgsl_module!(
                 "gpu_pick/core.wgsl",
+                "gpu_pick/vector_a.wgsl",
+                "data_render/common/arrow.wgsl",
                 "gpu_pick/vector.wgsl",
                 "gpu_pick/no_line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
