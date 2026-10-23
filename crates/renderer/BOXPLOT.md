@@ -132,8 +132,11 @@ There is no perspective displacement of quartiles or whiskers.
 
 Auto range includes **all supplied statistics**, even hidden means/outliers/CI,
 so toggling their visibility does not silently rescale the chart. It adds padding
-and linear nice ticks. Fixed ranges clip all data components and picking to the
-plot. The value axis is linear; there is no logarithmic scale. Unrepresentable ranges
+and linear nice ticks. Tick values are the multiples of the step inside the
+range, walked by the shared `model::tick::LinearGrid`, so a tick that rounding
+puts just past a range end is kept; tick labels use the automatic
+`PlainNumberFormat` form (`2.5`, `1000`, `1.23e6`). Fixed ranges clip all data
+components and picking to the plot. The value axis is linear; there is no logarithmic scale. Unrepresentable ranges
 or indistinguishable tick strings return a layout error rather than misleading
 labels. All-missing charts get a finite default range.
 
@@ -240,6 +243,9 @@ editing, color changes, resets, direction, grid, legend and category reordering.
 
 색이나 호버 강조를 바꿔도 통계값의 좌표는 움직이지 않는다. 기본 자동 범위는 숨긴
 평균·이상치·신뢰구간까지 포함하므로 표시 옵션을 켜고 끄는 것만으로 축이 바뀌지 않는다.
+눈금 값은 범위 안에 있는 간격의 정수배로, 다른 축과 같은 `model::tick::LinearGrid`로 고른다.
+반올림 오차로 범위 끝을 살짝 넘은 눈금도 그린다. 눈금 라벨은 `PlainNumberFormat`의 자동
+형식(`2.5`, `1000`, `1.23e6`)으로 적는다.
 직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다.
 
 네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다.

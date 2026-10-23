@@ -59,7 +59,10 @@ or a chart that fails `RadarChart::validate`, returns `RadarError::Invalid`.
   negative value) and ends on a ring; `Some([min, max])` fixes it. Values below
   the start sit at the centre, values above the end on the outer ring.
   `ring_spacing` chooses the ring interval; `None` picks a nice spacing for
-  about five rings. Per-spoke scaling is the host's job: write normalized
+  about five rings. Rings are the multiples of the spacing inside the range,
+  walked by the shared `model::tick::LinearGrid`, so a ring that rounding puts
+  just past the end (0.3 with spacing 0.1) is kept; ring labels use the
+  automatic `PlainNumberFormat` form. Per-spoke scaling is the host's job: write normalized
   values and label the spokes accordingly.
 - A non-finite value breaks the outline at that spoke, drops the series' fill
   and draws no marker there.
@@ -166,7 +169,9 @@ cargo test --locked -p figgy-renderer --test radar_render
 
 값 축은 모든 스포크가 공유한다. `value_range: None`이면 보기 좋은 고리 간격을 골라, 0에서 시작해
 데이터 최댓값 이상인 첫 고리에서 끝나는 범위를 쓴다. 음수 값이 있으면 가장 작은 값 이하의 고리에서
-시작한다. `Some([min, max])`는 범위를 고정하고, `ring_spacing`은 고리 간격을 정한다. 범위 아래 값은
+시작한다. `Some([min, max])`는 범위를 고정하고, `ring_spacing`은 고리 간격을 정한다. 고리는 범위 안에 있는
+간격의 정수배이며 다른 축과 같은 `model::tick::LinearGrid`로 고르므로, 반올림 오차로 끝을 살짝 넘은
+고리(간격 0.1일 때 0.3)도 그린다. 고리 라벨은 `PlainNumberFormat`의 자동 형식으로 적는다. 범위 아래 값은
 중심에, 위 값은 바깥 고리에 놓인다. 스포크별 정규화는 호스트가 미리 계산해 값으로 넣고 스포크
 라벨도 그에 맞춘다. 유한하지 않은 값은 그 스포크에서 외곽선을 끊고 채움과 마커를 생략한다.
 
