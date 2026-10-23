@@ -4,13 +4,11 @@ use super::*;
 
 /// The assembled bar (histogram) module.
 pub(crate) const BAR_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "data_render/bar_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
-    "data_render/bar_columnar_a.wgsl",
     "data_render/common/data_pick.wgsl",
-    "data_render/bar_columnar.wgsl"
+    "data_render/bar_columnar.wgsl",
 );
 
 /// Vertices per bar instance: five axis-aligned quads (fill + four border

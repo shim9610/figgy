@@ -12,7 +12,6 @@ use wgpu::util::DeviceExt;
 
 /// The assembled categorical module.
 pub(crate) const CATEGORICAL_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "categorical_header.wgsl",
     "data_render/common/bounded_shading.wgsl",
     "categorical.wgsl",
 );

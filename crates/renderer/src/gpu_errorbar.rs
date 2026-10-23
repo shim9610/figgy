@@ -22,11 +22,8 @@ use crate::gpu_memory::{
 use crate::init::{InitEvent, finished, observe_value, started};
 
 /// The assembled fit-bounds reduction module.
-pub(crate) const ERRORBAR_FIT_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "gpu_errorbar_a.wgsl",
-    "data_render/common/grid_pair.wgsl",
-    "gpu_errorbar.wgsl"
-);
+pub(crate) const ERRORBAR_FIT_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
 
 const INIT_SCOPE: &str = "renderer.errorbar_extent";
 

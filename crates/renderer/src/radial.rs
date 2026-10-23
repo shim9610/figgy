@@ -11,7 +11,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radial module.
-pub(crate) const RADIAL_SHADER: &str = crate::shader_assembly::wgsl_module!("radial.wgsl");
+pub(crate) const RADIAL_SHADER: &str = crate::shader_assembly::wgsl_module!("radial.wgsl",);
 
 #[path = "radial_geometry.rs"]
 mod geometry;

@@ -27,19 +27,17 @@ use std::sync::Arc;
 
 /// The assembled contour label anchor module.
 pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "contour_anchor_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
-    "contour_anchor.wgsl"
+    "contour_anchor.wgsl",
 );
 /// The assembled contour label draw module.
 pub(crate) const CONTOUR_LABEL_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "contour_label_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
-    "contour_label.wgsl"
+    "contour_label.wgsl",
 );
 
 #[cfg(not(target_arch = "wasm32"))]

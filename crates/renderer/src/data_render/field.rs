@@ -5,17 +5,14 @@ use super::*;
 
 /// The assembled field (heatmap and contour) module.
 pub(crate) const FIELD_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "data_render/field_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
-    "data_render/field_columnar_a.wgsl",
     "data_render/common/ramp.wgsl",
-    "data_render/field_columnar_c.wgsl",
     "data_render/common/data_pick.wgsl",
-    "data_render/field_columnar.wgsl"
+    "data_render/field_columnar.wgsl",
 );
 
 /// Vertices per field draw. The field is **one** quad for the whole grid, not

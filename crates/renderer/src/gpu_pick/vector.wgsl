@@ -1,4 +1,5 @@
-// ───── end shared arrow glyph ─────
+// Exact fragment: point vector arrows (SHADER_COMMON.md §5.8) as the
+// scatter primitive of a vector series.
 
 // `axis_px_per_unit` of the vector shader's projection fragment, on this
 // shader's transform.

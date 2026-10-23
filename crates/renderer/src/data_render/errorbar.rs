@@ -4,15 +4,12 @@ use super::*;
 
 /// The assembled error-bar module.
 pub(crate) const ERRORBAR_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "data_render/errorbar_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
-    "data_render/errorbar_columnar_b.wgsl",
     "data_render/common/grid_pair.wgsl",
-    "data_render/errorbar_columnar_a.wgsl",
     "data_render/common/sketch_noise.wgsl",
-    "data_render/errorbar_columnar.wgsl"
+    "data_render/errorbar_columnar.wgsl",
 );
 
 /// Columnar errorbar pipeline.

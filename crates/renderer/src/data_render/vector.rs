@@ -3,17 +3,19 @@
 //! The arrow drawing is split into WGSL fragments with fixed interfaces, so
 //! the glyph does not depend on the projection:
 //!
-//! - `project_cartesian2d.wgsl`: the common `Transform` / `Style` blocks and
-//!   `project_arrow`, which maps a `VectorSample` to a tail and a tip in
-//!   chart-area pixels under either scale mode.
-//! - `vector_input_common.wgsl`: the group-2 bindings (the column pool as
-//!   storage, the grid table, the colourmap stops, `VectorParams`) and the
-//!   colour ramp.
-//! - `vector_input_points.wgsl` / `vector_input_grid.wgsl`: `vector_sample`,
-//!   one `VectorSample` per instance index from index-aligned columns or from
-//!   a grid declaration.
-//! - `../common/arrow.wgsl`: the arrow geometry and its analytic coverage.
-//! - `vector_entry.wgsl`: `vs_main` / `fs_main`.
+//! - the shared fragments under `data_render/common/`: `transform`, `style`,
+//!   `projection` and `sample_validity` (as in every Cartesian data shader),
+//!   `ramp` (the colourbar ramp), `arrow` (the arrow geometry and its
+//!   analytic coverage) and, for the grid form, `grid_pair` and `data_pick`;
+//! - `vector/project_cartesian2d.wgsl`: `project_arrow`, which maps a
+//!   `VectorSample` to a tail and a tip in chart-area pixels under either
+//!   scale mode;
+//! - `vector/vector_input_common.wgsl`: the group-2 bindings (the column pool
+//!   as storage, the grid table, the colourmap stops, `VectorParams`);
+//! - `vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`:
+//!   `vector_sample`, one `VectorSample` per instance index from
+//!   index-aligned columns or from a grid declaration;
+//! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
 //! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
 //! in that order at compile time (`wgsl_module!`); the list is the module's
@@ -48,37 +50,31 @@ impl VectorInput {
 
 /// The assembled vector module for [`VectorInput::Points`].
 pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "data_render/vector/project_cartesian2d_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
-    "data_render/vector/project_cartesian2d.wgsl",
-    "data_render/vector/vector_input_common_a.wgsl",
     "data_render/common/ramp.wgsl",
+    "data_render/common/arrow.wgsl",
+    "data_render/vector/project_cartesian2d.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_points.wgsl",
-    "data_render/common/arrow.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
 
 /// The assembled vector module for [`VectorInput::Grid`].
 pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
-    "data_render/vector/project_cartesian2d_header.wgsl",
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
-    "data_render/vector/project_cartesian2d.wgsl",
-    "data_render/vector/vector_input_common_a.wgsl",
-    "data_render/common/ramp.wgsl",
-    "data_render/vector/vector_input_common.wgsl",
-    "data_render/vector/vector_input_grid_b.wgsl",
     "data_render/common/grid_pair.wgsl",
-    "data_render/vector/vector_input_grid_a.wgsl",
-    "data_render/common/data_pick.wgsl",
-    "data_render/vector/vector_input_grid.wgsl",
+    "data_render/common/ramp.wgsl",
     "data_render/common/arrow.wgsl",
+    "data_render/common/data_pick.wgsl",
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_grid.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
 
@@ -447,35 +443,29 @@ mod tests {
     fn fragments(input: VectorInput) -> &'static [&'static str] {
         match input {
             VectorInput::Points => &[
-                "data_render/vector/project_cartesian2d_header.wgsl",
                 "data_render/common/transform.wgsl",
                 "data_render/common/style.wgsl",
                 "data_render/common/projection.wgsl",
                 "data_render/common/sample_validity.wgsl",
-                "data_render/vector/project_cartesian2d.wgsl",
-                "data_render/vector/vector_input_common_a.wgsl",
                 "data_render/common/ramp.wgsl",
+                "data_render/common/arrow.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
                 "data_render/vector/vector_input_common.wgsl",
                 "data_render/vector/vector_input_points.wgsl",
-                "data_render/common/arrow.wgsl",
                 "data_render/vector/vector_entry.wgsl",
             ],
             VectorInput::Grid => &[
-                "data_render/vector/project_cartesian2d_header.wgsl",
                 "data_render/common/transform.wgsl",
                 "data_render/common/style.wgsl",
                 "data_render/common/projection.wgsl",
                 "data_render/common/sample_validity.wgsl",
-                "data_render/vector/project_cartesian2d.wgsl",
-                "data_render/vector/vector_input_common_a.wgsl",
-                "data_render/common/ramp.wgsl",
-                "data_render/vector/vector_input_common.wgsl",
-                "data_render/vector/vector_input_grid_b.wgsl",
                 "data_render/common/grid_pair.wgsl",
-                "data_render/vector/vector_input_grid_a.wgsl",
-                "data_render/common/data_pick.wgsl",
-                "data_render/vector/vector_input_grid.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/arrow.wgsl",
+                "data_render/common/data_pick.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
+                "data_render/vector/vector_input_common.wgsl",
+                "data_render/vector/vector_input_grid.wgsl",
                 "data_render/vector/vector_entry.wgsl",
             ],
         }

@@ -969,7 +969,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "data_render/vector/vector_input_grid_a.wgsl",
+            "data_render/vector/vector_input_grid.wgsl",
             "data_render/vector/vector_input_points.wgsl",
         ],
         &["vector_sample"],
@@ -992,7 +992,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         &[
             "data_render/bar_columnar.wgsl",
             "data_render/line_arc.wgsl",
-            "gpu_errorbar_a.wgsl",
+            "gpu_errorbar.wgsl",
             "gpu_pick/core.wgsl",
         ],
         &["figgy_zero_workgroup"],
