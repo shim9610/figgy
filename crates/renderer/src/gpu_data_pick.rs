@@ -24,36 +24,36 @@ use futures_channel::oneshot;
 
 const INIT_SCOPE: &str = "renderer.gpu_data_pick";
 const DATA_PICK_CANDIDATE_BYTES: u64 = 32;
-const DATA_PICK_FLAG_FILL: u32 = 1;
-const DATA_PICK_FLAG_CONTOUR: u32 = 2;
+pub(crate) const DATA_PICK_FLAG_FILL: u32 = 1;
+pub(crate) const DATA_PICK_FLAG_CONTOUR: u32 = 2;
 /// Resident fills pick the cell painted at the cursor's pixel centre, and
 /// only where its colour is not clear (`field_pick_cell`).
-const DATA_PICK_FLAG_PAINTED: u32 = 4;
-const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
-const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
-const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
+pub(crate) const DATA_PICK_FLAG_PAINTED: u32 = 4;
+pub(crate) const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
+pub(crate) const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
+pub(crate) const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DataPickQueryGpu {
-    cursor_ndc_t: [f32; 4],
-    limits: [f32; 4],
-    data: [u32; 4],
-    bases: [u32; 4],
-    baseline: [f32; 4],
+pub(crate) struct DataPickQueryGpu {
+    pub(crate) cursor_ndc_t: [f32; 4],
+    pub(crate) limits: [f32; 4],
+    pub(crate) data: [u32; 4],
+    pub(crate) bases: [u32; 4],
+    pub(crate) baseline: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct DataPickCandidateGpu {
-    valid: u32,
-    paint_order: u32,
-    kind: u32,
-    index0: u32,
-    index1: u32,
-    index2: u32,
-    distance_px: f32,
-    primitive_order: u32,
+pub(crate) struct DataPickCandidateGpu {
+    pub(crate) valid: u32,
+    pub(crate) paint_order: u32,
+    pub(crate) kind: u32,
+    pub(crate) index0: u32,
+    pub(crate) index1: u32,
+    pub(crate) index2: u32,
+    pub(crate) distance_px: f32,
+    pub(crate) primitive_order: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<DataPickQueryGpu>() == 80);

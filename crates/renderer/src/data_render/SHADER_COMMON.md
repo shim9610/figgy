@@ -12,7 +12,11 @@ To change shared shader code:
 1. Edit the fragment under `data_render/common/`.
 2. If a uniform or storage layout changed, change the Rust struct that
    mirrors it (`mod.rs::ScatterTransform` / `PrimitiveStyle` and the others
-   §1–§5 name) the same way.
+   §1–§5 name) the same way, and a flag or constant Rust also defines on
+   both sides. `shader_assembly.rs` tests both:
+   `mirrored_struct_layouts_match_their_rust_twins` compares every mirrored
+   struct's member names, offsets and size with naga's layout, and
+   `wgsl_constants_equal_their_rust_constants` every shared `u32` constant.
 3. A CPU twin (`pick.rs`, `polar_projection.rs` and the model functions
    named below) is test support: it follows the shader where the behaviour
    tests (`pick_draw_agreement`, `gpu_pick` tests) require it.
@@ -85,7 +89,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
-`gpu_pick/core.wgsl`의 `PickQueryTransform`은 같은 배치를 공통 블록 밖에서 따로 선언한다. 픽 셰이더는 변환을 매개변수 유니폼 `PickQueryParams`의 첫 필드로 받고, CPU 쪽 `gpu_pick.rs::PickQueryParamsGpu`도 `ScatterTransform`을 그대로 담는다. `shader_consistency`는 이 사본을 검사하지 않고 `gpu_pick.rs`의 크기 단언(320바이트)은 크기 변화만 잡으므로, `Transform`을 바꿀 때 이 사본도 함께 고쳐야 한다.
+`gpu_pick/core.wgsl` declares the same layout as `PickQueryTransform`: the pick modules bind no `transform` uniform and take the transform as the first member of their parameter uniform `PickQueryParams` (CPU `gpu_pick::types::PickQueryParamsGpu`, which holds a `ScatterTransform`). `mirrored_struct_layouts_match_their_rust_twins` (`shader_assembly.rs`) compares `Transform`, `PickQueryTransform` and `PickQueryParams` with their Rust structs member by member, offsets and sizes included.
 
 `style_params[2].z` is reserved independently of the active style: it carries
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
@@ -475,9 +479,10 @@ The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arro
 When shared shader code changes:
 
 - [ ] The fragment under `data_render/common/` is edited, not a module file.
-- [ ] A changed layout is changed the same way in its Rust struct.
+- [ ] A changed layout is changed the same way in its Rust struct
+      (`mirrored_struct_layouts_match_their_rust_twins`).
 - [ ] A changed flag or constant that Rust also defines has the same value
-      on both sides.
+      on both sides (`wgsl_constants_equal_their_rust_constants`).
 - [ ] The CPU twins the behaviour tests compare follow the change.
 - [ ] `cargo test -p figgy-renderer --test shader_consistency` passes.
 - [ ] `cargo test -p figgy-renderer` passes (the shader compile test in

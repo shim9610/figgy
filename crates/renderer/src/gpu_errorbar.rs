@@ -29,10 +29,10 @@ const INIT_SCOPE: &str = "renderer.errorbar_extent";
 
 const WORKGROUP_SIZE: u32 = 64;
 const LEGACY_AXIS_MODE: u32 = 5;
-const FIELD_EDGES_CELLS_MODE: u32 = 6;
-const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
-const FIELD_CENTERS_CELLS_MODE: u32 = 8;
-const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
+pub(crate) const FIELD_EDGES_CELLS_MODE: u32 = 6;
+pub(crate) const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
+pub(crate) const FIELD_CENTERS_CELLS_MODE: u32 = 8;
+pub(crate) const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
 const EMPTY_MINIMUM_BOUND: [f32; 2] = [f32::MAX, f32::MAX];
 const EMPTY_MAXIMUM_BOUND: [f32; 2] = [-f32::MAX, -f32::MAX];
 
