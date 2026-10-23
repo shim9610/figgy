@@ -9,7 +9,7 @@
 //! so it does not render as a `.notdef` box.
 //!
 //! Layering: the segment layout policy (super/subscript scaling and shifts,
-//! kerning gaps, underline bars, greek mapping, the measure envelope) lives
+//! kerning gaps, underline bars, character-set mapping, the measure envelope) lives
 //! here and is backend-independent. The glyph layer below it — metrics and
 //! alpha-mask rasterization — is fontdb (font lookup) + swash (scaling), all
 //! pure Rust, so the whole stack compiles for wasm32-unknown-unknown.
@@ -27,7 +27,7 @@ use swash::scale::{Render, ScaleContext, Source};
 use crate::color::Color;
 use crate::layout::RectF;
 use crate::raster::Canvas;
-use crate::text::{RichSegment, RichText, greek_char};
+use crate::text::{RichSegment, RichText};
 
 type FontLookupKey = (String, bool, bool);
 /// Per-character fallback decisions depend only on the character and the
@@ -916,11 +916,7 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
             let center = y_offset - base * RULE_Y_RATIO;
             (field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
-            };
+            let ch = seg.char_set.glyph_char(seg.text);
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             let g = glyph_extents(font, size, ch);
             // A fixed field replaces both the kern and the glyph advance.
@@ -1018,11 +1014,7 @@ fn draw_line_segments(
             }
             field
         } else {
-            let ch = if seg.greek {
-                greek_char(seg.text)
-            } else {
-                seg.text
-            };
+            let ch = seg.char_set.glyph_char(seg.text);
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
             match seg.field_em {
                 Some(f) => {
@@ -1375,7 +1367,7 @@ pub fn measure_plain_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::{TextAlign, rich_segments_from_text};
+    use crate::text::{CharSet, TextAlign, rich_segments_from_text};
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -2246,5 +2238,33 @@ mod tests {
         draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
         let rgba = canvas.into_rgba();
         assert!(rgba.chunks_exact(4).any(|p| p[3] > 0));
+    }
+
+    // `Greek` draws the Adobe Symbol letter of its Latin character, exactly as
+    // a segment holding that letter; `Math` draws the character as given, so
+    // until the math font exists it is pixel-identical to `Text`.
+    #[test]
+    fn char_set_picks_the_drawn_character() {
+        let with = |text: char, char_set: CharSet| RichText {
+            segments: vec![RichSegment {
+                char_set,
+                ..RichSegment::plain(text)
+            }],
+            ..RichText::plain("", Color::BLACK, 20.0, "")
+        };
+        let draw = |rt: &RichText| draw_to_rgba(rt, (40, 40), (5.0, 30.0));
+
+        let greek = with('a', CharSet::Greek);
+        let alpha = with('α', CharSet::Text);
+        assert_eq!(draw(&greek), draw(&alpha));
+        assert_eq!(measure_rich_text_std(&greek), measure_rich_text_std(&alpha));
+        assert_ne!(draw(&greek), draw(&with('a', CharSet::Text)));
+
+        for c in ['a', '∑', '≤', '∂'] {
+            let math = with(c, CharSet::Math);
+            let text = with(c, CharSet::Text);
+            assert_eq!(draw(&math), draw(&text), "math {c} draws as given");
+            assert_eq!(measure_rich_text_std(&math), measure_rich_text_std(&text));
+        }
     }
 }
