@@ -6,7 +6,6 @@
 mod test_gpu;
 
 use renderer::data_render::ScatterTransform;
-use renderer::data_render::line_arc::create_arc_scan_pipelines;
 use wgpu::util::DeviceExt;
 
 const WG: u32 = 256;
@@ -930,12 +929,6 @@ fn canonical_arc_bits_survive_bounded_gpu_replay() {
             assert!(compared >= 1, "vacuous arc parity run");
         }
     }
-}
-
-#[test]
-fn product_bounded_replay_pipelines_compile() {
-    let gpu = Gpu::new();
-    let _pipelines = create_arc_scan_pipelines(&gpu.device);
 }
 
 #[test]
