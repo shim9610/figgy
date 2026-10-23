@@ -559,6 +559,69 @@ fn every_marker_shape_picks_where_it_is_drawn() {
     }
 }
 
+/// G10: a marker drawn at radius zero still paints (an outline is a dot of
+/// the stroke's half width, a filled shape its anti-aliased point) and picks
+/// where it paints, whichever way the radius reaches zero: the series size,
+/// a style-table slot or a size map's `min_px`. Every shape, at 1x and 2x;
+/// each case paints at least one pixel and every painted pixel picks the
+/// series.
+#[test]
+fn zero_size_markers_pick_their_drawn_dot() {
+    use renderer::data_config::{DataScatterPointStyleConfig, PointSizeMap, SizeScale};
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![5.0], vec![5.0]);
+    renderer
+        .add_columns(&[
+            ("style", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+            ("size", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    for shape in ALL_SHAPES {
+        let size_zero = scatter("dot", shape.clone(), 0.0, RED);
+        let mut slot_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let mut map_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let DataRenderType::Scatter { scatter: slot } = &mut slot_zero.render_type else {
+            unreachable!()
+        };
+        slot.point_style_index_column = Some("style".into());
+        slot.point_style_table = Some(vec![DataScatterPointStyleConfig {
+            point_color: None,
+            point_shape: None,
+            point_size: Some(0.0),
+        }]);
+        let DataRenderType::Scatter { scatter: map } = &mut map_zero.render_type else {
+            unreachable!()
+        };
+        map.point_size_map = Some(PointSizeMap {
+            column: "size".into(),
+            domain_min: 0.0,
+            domain_max: 1.0,
+            min_px: 0.0,
+            max_px: 9.0,
+            scale: SizeScale::Radius,
+        });
+        for (series, how) in [
+            (size_zero, "series size 0"),
+            (slot_zero, "style slot radius 0"),
+            (map_zero, "size map min_px 0"),
+        ] {
+            for scale in [1.0, 2.0] {
+                let series = [series.clone()];
+                let painted = assert_painted_pixels_pick(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "dot",
+                    scale,
+                    &format!("{shape:?} {how}"),
+                );
+                assert!(painted >= 1, "{shape:?} {how} at {scale}x painted nothing");
+            }
+        }
+    }
+}
+
 /// G12 across colours: two overlapping markers of one series, the painted
 /// colour under the cursor names the index the picker answers.
 #[test]

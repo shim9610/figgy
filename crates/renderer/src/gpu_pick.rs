@@ -48,7 +48,10 @@ use registry::{GpuPickSeriesIdentities, PickIdentity, PickRegistry, PickSeriesSl
 use registry::{series_arc, series_exact_key, series_exact_variant, stream_exact_variant};
 use shader::exact_variant;
 #[cfg(test)]
-use shader::{INIT_SCOPE, create_pipeline_bundle_observed, validate_device_limits};
+use shader::{
+    EXACT_LAYOUT, INIT_SCOPE, create_pipeline_bundle_observed, exact_layout_storage_buffers,
+    validate_device_limits,
+};
 pub(crate) use shader::{PickExactKey, PickExactPipelines, PickPipelineBundle, PickShader};
 pub use types::GpuPickError;
 use types::{CANDIDATE_BYTES, FLAG_LINE, FLAG_SCATTER, FLAG_SIZE_AREA, FLAG_SIZE_MAP};

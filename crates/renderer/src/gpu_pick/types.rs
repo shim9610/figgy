@@ -764,7 +764,7 @@ pub(super) struct PickSeriesGpu {
     pub(super) exact_key: PickExactKey,
 }
 
-pub(super) fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
+pub(super) const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,
@@ -777,7 +777,7 @@ pub(super) fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLay
     }
 }
 
-pub(super) fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+pub(super) const fn uniform_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
     wgpu::BindGroupLayoutEntry {
         binding,
         visibility: wgpu::ShaderStages::COMPUTE,

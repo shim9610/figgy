@@ -3325,6 +3325,55 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
     }
 }
 
+/// `validate_device_limits` checks the exact layout: seven storage buffers
+/// in three groups. Every binding `pick_exact_candidates` reaches in any
+/// exact module (at the default variant, which carries every path) is an
+/// entry of that layout of the same kind, so the check covers the pass.
+#[test]
+fn device_limit_check_covers_the_exact_pass_bindings() {
+    use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+    assert_eq!(exact_layout_storage_buffers(), 7);
+    assert_eq!(EXACT_LAYOUT.len(), 3);
+    for shader in PickShader::EXACT {
+        let source = shader.source();
+        let module = wgpu::naga::front::wgsl::parse_str(source).unwrap();
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module)
+            .unwrap();
+        let (index, _) = module
+            .entry_points
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == "pick_exact_candidates")
+            .unwrap_or_else(|| panic!("{shader:?}: no exact entry"));
+        let uses = info.get_entry_point(index);
+        for (handle, global) in module.global_variables.iter() {
+            let Some(binding) = global.binding.as_ref() else {
+                continue;
+            };
+            if uses[handle].is_empty() {
+                continue;
+            }
+            let entry = EXACT_LAYOUT
+                .get(binding.group as usize)
+                .and_then(|group| group.iter().find(|entry| entry.binding == binding.binding))
+                .unwrap_or_else(|| panic!("{shader:?}: {binding:?} is not in the exact layout"));
+            let storage = matches!(global.space, wgpu::naga::AddressSpace::Storage { .. });
+            assert_eq!(
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                ),
+                storage,
+                "{shader:?}: {binding:?}"
+            );
+        }
+    }
+}
+
 /// Compile cost of the point picker per module, entry point and exact
 /// variant: the wall time of `create_shader_module` and of
 /// `create_compute_pipeline(layout: None)` per entry, three rounds, each
