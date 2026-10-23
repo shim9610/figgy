@@ -1,6 +1,7 @@
-//! The panel composite: the order in which a panel's layers are drawn
-//! (grid, annotation underlay, data fills, bodies and picked highlights,
-//! decorations, annotation overlay) and the series layer set it draws from.
+//! The data slot of a panel: the series layer set and the order its
+//! primitives are issued in (every fill, then every body, then every picked
+//! highlight, in SSOT series order). Where the slot sits between the chrome
+//! below and above the data is the compositor's (`renderer::composite`).
 
 use super::*;
 
@@ -8,7 +9,7 @@ use super::*;
 pub struct SeriesLayers<'a> {
     /// A line's area fill. Not drawn by `issue_series_data`: every series'
     /// fill is issued first by `issue_series_fill`, in series order, before
-    /// any series body — see `draw_chart_panel_columnar`.
+    /// any series body — see `issue_series_bodies`.
     pub area: Option<ColumnAreaLayer<'a>>,
     /// The field covers the whole grid, so it goes under everything else —
     /// see `issue_series_data` for the full order.
@@ -54,7 +55,7 @@ pub(crate) fn clamp_rect_to_target(r: Rect, target: (u32, u32)) -> Option<Rect> 
 }
 
 /// Issue one series' area fill. Called for every series before any series
-/// body (`draw_chart_panel_columnar`): the data pass is "every fill → every
+/// body (`issue_series_bodies`): the data pass is "every fill → every
 /// body → every picked highlight", in SSOT series order with no sorting, so
 /// a fill composites over earlier fills and under every line.
 pub(crate) fn issue_series_fill(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
@@ -243,12 +244,9 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     }
 }
 
-/// Draw one chart panel: grid → every series → decoration. The function
-/// configures viewport and scissor itself, so callers only supply rects.
-///
-/// `target_size` is the pixel size of the current color attachment;
-/// `panel_rect` / `data_area` are clamped to it to avoid wgpu validation
-/// errors when a panel partially exits the surface.
+/// Issue one series' picked highlights: the selected bars and fields and the
+/// pick rings, after every body. The caller must have already set the
+/// viewport (panel) and scissor (data_area).
 pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
     for selection in &series.selected_bars {
         pass.set_pipeline(selection.pipeline);
@@ -310,35 +308,10 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn draw_chart_panel_columnar(
-    pass: &mut wgpu::RenderPass<'_>,
-    target_size: (u32, u32),
-    panel_rect: Rect,
-    data_area: Rect,
-    grid: AxisLayer<'_>,
-    annotation_underlay: Option<AxisLayer<'_>>,
-    series_list: &[SeriesLayers<'_>],
-    decoration: AxisLayer<'_>,
-    annotation_overlay: Option<AxisLayer<'_>>,
-) {
-    draw_chart_panel_with_bodies(
-        pass,
-        target_size,
-        panel_rect,
-        data_area,
-        grid,
-        annotation_underlay,
-        series_list,
-        None,
-        decoration,
-        annotation_overlay,
-    );
-}
-
 /// Every series' fill, then every body, each loop in SSOT series order: the
 /// part of a panel a resident composite caches. The fill loop comes first by
 /// construction so another series' fill can never cover this series' line.
+/// The caller has set the viewport (panel) and the scissor (data area).
 pub(crate) fn issue_series_bodies(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
@@ -348,112 +321,5 @@ pub(crate) fn issue_series_bodies(
     }
     for s in series_list {
         issue_series_data(pass, s);
-    }
-}
-
-/// [`draw_chart_panel_columnar`], with the fills and bodies taken from
-/// `cached_bodies` when given: a panel-sized texture of exactly what
-/// [`issue_series_bodies`] draws. The picked highlights always come from
-/// `series_list`, so a selection never needs the bodies drawn again.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn draw_chart_panel_with_bodies(
-    pass: &mut wgpu::RenderPass<'_>,
-    target_size: (u32, u32),
-    panel_rect: Rect,
-    data_area: Rect,
-    grid: AxisLayer<'_>,
-    annotation_underlay: Option<AxisLayer<'_>>,
-    series_list: &[SeriesLayers<'_>],
-    cached_bodies: Option<AxisLayer<'_>>,
-    decoration: AxisLayer<'_>,
-    annotation_overlay: Option<AxisLayer<'_>>,
-) {
-    let Some(panel_clamped) = clamp_rect_to_target(panel_rect, target_size) else {
-        return;
-    };
-    let Some(data_clamped) = clamp_rect_to_target(data_area, target_size) else {
-        return;
-    };
-
-    pass.set_viewport(
-        panel_clamped.x as f32,
-        panel_clamped.y as f32,
-        panel_clamped.width as f32,
-        panel_clamped.height as f32,
-        0.0,
-        1.0,
-    );
-
-    // 1) Grid layer (under data).
-    pass.set_scissor_rect(
-        panel_clamped.x,
-        panel_clamped.y,
-        panel_clamped.width,
-        panel_clamped.height,
-    );
-    pass.set_pipeline(grid.pipeline);
-    pass.set_bind_group(0, grid.bind_group, &[]);
-    pass.draw(0..3, 0..1);
-
-    // 1b) Annotation underlay (spans): below the data, above the grid.
-    if let Some(layer) = annotation_underlay {
-        pass.set_pipeline(layer.pipeline);
-        pass.set_bind_group(0, layer.bind_group, &[]);
-        pass.draw(0..3, 0..1);
-    }
-
-    // 2) Data primitives — scissor once to data_area, then issue every series:
-    //    every fill, then every body, then every picked highlight, each loop
-    //    in SSOT series order. The fill loop comes first by construction so
-    //    another series' fill can never cover this series' line.
-    pass.set_scissor_rect(
-        data_clamped.x,
-        data_clamped.y,
-        data_clamped.width,
-        data_clamped.height,
-    );
-    match cached_bodies {
-        Some(layer) => {
-            // The composite was clipped to the data area when it was drawn;
-            // clipping its blit again would apply the data scissor twice at
-            // the edge samples, which a direct draw applies once.
-            pass.set_scissor_rect(
-                panel_clamped.x,
-                panel_clamped.y,
-                panel_clamped.width,
-                panel_clamped.height,
-            );
-            pass.set_pipeline(layer.pipeline);
-            pass.set_bind_group(0, layer.bind_group, &[]);
-            pass.draw(0..3, 0..1);
-            pass.set_scissor_rect(
-                data_clamped.x,
-                data_clamped.y,
-                data_clamped.width,
-                data_clamped.height,
-            );
-        }
-        None => issue_series_bodies(pass, series_list),
-    }
-    for s in series_list {
-        issue_series_picked(pass, s);
-    }
-
-    // 3) Decoration layer (over data).
-    pass.set_scissor_rect(
-        panel_clamped.x,
-        panel_clamped.y,
-        panel_clamped.width,
-        panel_clamped.height,
-    );
-    pass.set_pipeline(decoration.pipeline);
-    pass.set_bind_group(0, decoration.bind_group, &[]);
-    pass.draw(0..3, 0..1);
-
-    // 4) Annotation overlay: topmost, above every decoration.
-    if let Some(layer) = annotation_overlay {
-        pass.set_pipeline(layer.pipeline);
-        pass.set_bind_group(0, layer.bind_group, &[]);
-        pass.draw(0..3, 0..1);
     }
 }

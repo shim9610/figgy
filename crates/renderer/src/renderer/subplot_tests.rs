@@ -4,7 +4,6 @@
 //! is always a fresh renderer given the final state.
 use super::*;
 use crate::layout::{ChartArea, Rect};
-use crate::select::SelectionBox;
 use crate::text::RichText;
 use crate::{CellRef, HitMap, LayerRef, OverlayLayer, Subplot, SubplotAxis, WarningAxis};
 
@@ -142,11 +141,32 @@ fn fresh_frame_with(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     frame_with_view(&mut r, id, &view)
 }
 
-fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
-    let config = r.chart_config(id).unwrap().clone();
+/// Refresh every panel of `id`, selecting the element `selected` names on
+/// the layer it names (`None` clears the selection). The selection is
+/// resolved on that layer's hit map, so the layer is set on the chart handed
+/// to the refresh; the raster ignores the active layer. Returns the box the
+/// renderer drew.
+fn refresh(
+    r: &mut Renderer,
+    id: ChartId,
+    view: &mut ChartView,
+    selected: Option<(LayerRef, &str)>,
+) -> Option<crate::layout::RectF> {
+    let mut config = r.chart_config(id).unwrap().clone();
     let panel = config.chart_area.0;
-    r.refresh_axis_with_selection(view, &Chart::new(config), panel, selection)
+    let element = selected.map(|(layer, element)| {
+        config.active_layer = layer;
+        element
+    });
+    let chart = Chart::new(config);
+    let drawn = element.map(|element| {
+        r.selection_box(&chart, element)
+            .unwrap_or_else(|| panic!("{element} has no selection box"))
+            .rect()
+    });
+    r.refresh_axis_with_selection(view, &chart, panel, element)
         .unwrap();
+    drawn
 }
 
 /// The `(x, y)` pixels at which `a` and `b` (320 wide) differ.
@@ -157,21 +177,6 @@ fn differing(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
         .filter(|(_, (p, q))| p != q)
         .map(|(i, _)| (i % 320, i / 320))
         .collect()
-}
-
-fn selection_box_at(x: f32, y: f32) -> SelectionBox {
-    SelectionBox {
-        rect: crate::layout::RectF {
-            x,
-            y,
-            width: 40.0,
-            height: 20.0,
-        },
-        color: crate::select::SELECTION_COLOR,
-        stroke_width: crate::select::SELECTION_STROKE_WIDTH,
-        handles: Vec::new(),
-        outline: crate::select::SelectionOutline::Rect,
-    }
 }
 
 // Each subplot draws as a chart of its own, in its own area, with its own
@@ -267,7 +272,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             after.needs_raster_since(Some(&before)),
             format!("{name}: an edit must refresh the raster"),
         );
-        refresh(&mut r, id, &mut view, &[]);
+        refresh(&mut r, id, &mut view, None);
         check(
             view.layer_raster_generations() == expected,
             format!(
@@ -294,7 +299,18 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
         "the member edit did not move the link group".into(),
     );
 
-    refresh(&mut r, id, &mut view, &[selection_box_at(220.0, 160.0)]);
+    // Subplot 1's data area sits in the lower right panel.
+    let drawn = refresh(
+        &mut r,
+        id,
+        &mut view,
+        Some((LayerRef::Subplot(1), "subplot_1:data_area")),
+    )
+    .expect("a selection was drawn");
+    check(
+        drawn.x >= 160.0 && drawn.y >= 120.0,
+        format!("subplot 1's data area box {drawn:?} is not in its panel"),
+    );
     check(
         view.layer_raster_generations() == vec![3, 4, 3, 4],
         format!("subplot 1 selection: {:?}", view.layer_raster_generations()),
@@ -306,12 +322,18 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             .all(|&(x, y)| x >= 160 && y >= 120),
         "the selection box was drawn outside subplot 1".into(),
     );
-    refresh(&mut r, id, &mut view, &[selection_box_at(60.0, 40.0)]);
+    // The parent's data area sits in the upper panel.
+    let drawn = refresh(&mut r, id, &mut view, Some((LayerRef::Base, "data_area")))
+        .expect("a selection was drawn");
+    check(
+        drawn.y + drawn.height <= 120.0,
+        format!("the parent's data area box {drawn:?} is not in its panel"),
+    );
     check(
         view.layer_raster_generations() == vec![4, 4, 3, 5],
         format!("parent selection: {:?}", view.layer_raster_generations()),
     );
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     check(
         frame_with_view(&mut r, id, &view) == previous,
         "clearing the selection did not restore the frame".into(),
@@ -340,7 +362,7 @@ fn a_linked_view_state_edit_moves_the_group_in_one_call() {
     state.subplots[0].left_y.max = 80.0;
     r.set_chart_view_state(id, state.clone()).unwrap();
     let edited = r.chart_config(id).unwrap().clone();
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     let after = frame_with_view(&mut r, id, &view);
     let fresh = fresh_frame(&edited);
 

@@ -1003,9 +1003,11 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
     );
 }
 
+#[cfg(feature = "cpu-twin")]
 struct F32Columns(Vec<(String, Vec<f32>)>);
 
-impl renderer::PointColumnLookup for F32Columns {
+#[cfg(feature = "cpu-twin")]
+impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
             .iter()
@@ -1018,6 +1020,7 @@ impl renderer::PointColumnLookup for F32Columns {
 /// under every draw style: the styled marker distances, the sketch stroke's
 /// wobble on the arc prefix the CPU sums itself, the ribbon envelope and the
 /// dash phase.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions, SketchOptions};
@@ -1077,13 +1080,13 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
             for y in (y0 as u32..y1 as u32).step_by(3) {
                 for x in (x0 as u32..x1 as u32).step_by(3) {
                     let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                    let cpu = renderer::pick_nearest_point(
+                    let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                         chart.config(),
                         &series,
                         &columns,
                         x as f32 + 0.5,
                         y as f32 + 0.5,
-                        renderer::PointPickOptions {
+                        renderer::pick::cpu_twin::PointPickOptions {
                             max_distance_px: 3.0,
                         },
                     );
@@ -1116,6 +1119,7 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 fn arrows(
     id: &str,
     scale: renderer::data_config::VectorScale,
@@ -1151,6 +1155,7 @@ fn arrows(
 /// pivot, the scale mode and the head scaled down on a short arrow — and an
 /// arrow that is not drawn (a zero vector, one under the minimum length)
 /// picks nowhere, at 1x and 2x.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn point_vectors_pick_the_arrow_they_draw() {
     use renderer::data_config::{VectorPivot, VectorScale};
@@ -1221,13 +1226,13 @@ fn point_vectors_pick_the_arrow_they_draw() {
         for y in (y0 as u32..y1 as u32).step_by(3) {
             for x in (x0 as u32..x1 as u32).step_by(3) {
                 let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     chart.config(),
                     &series,
                     &columns,
                     x as f32 + 0.5,
                     y as f32 + 0.5,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 );
@@ -2106,6 +2111,7 @@ fn contour_strokes_pick_where_they_paint() {
 
 /// A data value's export pixel along one axis, in f64, linear or
 /// logarithmic: the reference both the CPU and the GPU must hit.
+#[cfg(feature = "cpu-twin")]
 fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length: f64) -> f64 {
     let t = match axis.scale {
         renderer::config::AxisScale::Linear => (value - axis.min) / (axis.max - axis.min),
@@ -2121,6 +2127,7 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
 /// of the f64 reference, on linear and logarithmic axes at every magnitude.
 /// Past 2^24 the GPU once lost the logarithm (a log flag blended with
 /// `mix`) while the CPU kept it.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
     use renderer::config::AxisScale;
@@ -2221,13 +2228,13 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 )
                 .unwrap()
                 .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
                     &series,
                     &columns,
                     at.0,
                     at.1,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 )

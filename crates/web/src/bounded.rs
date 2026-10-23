@@ -628,7 +628,7 @@ impl FiggyBoundedChart {
     /// Renderer-measured logical pixel bounds and resize handles.
     pub fn decorations(&self) -> Result<String, JsValue> {
         let map = self.frame.decorations();
-        let values=map.entries().filter_map(|(id,e)|map.selection_box(id).map(|b|json!({"id":e.id.element_id(),"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}))).collect::<Vec<_>>();
+        let values=map.entries().filter_map(|(id,e)|map.selection_box(id).map(|b|{let r=b.rect();json!({"id":e.id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})})).collect::<Vec<_>>();
         serde_json::to_string(&values).map_err(js_err)
     }
     /// The topmost decoration under a point, as its stable id. While the
@@ -799,8 +799,8 @@ impl FiggyBoundedChart {
                     "id": item.id,
                     "element": e.id().element_id(),
                     "kind": crate::annotation_kind_name(&item.kind),
-                    "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
-                    "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                    "rect": [b.rect().x, b.rect().y, b.rect().width, b.rect().height],
+                    "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
                     "selected": selected == Some(e.index),
                 }))
             })

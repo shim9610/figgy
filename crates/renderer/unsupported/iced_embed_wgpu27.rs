@@ -48,7 +48,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
     DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
-    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    RendererDevice, ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -402,12 +402,13 @@ impl shader::Primitive for FiggyPrimitive {
                 && let Some((pi, id)) = pipeline.selected
                 && let Some(panel) = pipeline.panels.get_mut(pi)
             {
+                let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
                 if let Some(handle) = pipeline.active_resize {
                     if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                        let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
+                        let _ = rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy);
                     }
                 } else if let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) {
-                    let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
+                    let _ = drag.drag_by(panel.chart.config_mut(), &measure, dx, dy);
                 }
             }
             if RELEASE_EVENT.swap(false, Ordering::Relaxed) {
@@ -430,17 +431,11 @@ impl shader::Primitive for FiggyPrimitive {
         // Cleared up-front so an early return below can't leave `draw` with
         // a token from an older frame; repopulated at the end on success.
         panel.prepared = None;
-        let sel_boxes: Vec<SelectionBox> = match selected {
-            Some((pi, id)) if pi == self.panel_idx => panel
-                .hitmap
-                .selection_box(
-                    id,
-                    panel.chart.config(),
-                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                )
-                .into_iter()
-                .collect(),
-            _ => Vec::new(),
+        let selected_id: Option<String> = match selected {
+            Some((pi, id)) if pi == self.panel_idx => {
+                panel.hitmap.get(id).map(|el| el.element_id())
+            }
+            _ => None,
         };
         let cur = panel.view.panel_rect();
         if cur != self.panel_rect_px {
@@ -449,7 +444,7 @@ impl shader::Primitive for FiggyPrimitive {
                 &mut panel.view,
                 &panel.chart,
                 self.panel_rect_px,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 return;
@@ -467,7 +462,7 @@ impl shader::Primitive for FiggyPrimitive {
                     &mut panel.view,
                     &panel.chart,
                     cur,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 ) {
                     eprintln!("[figgy] refresh_axis failed: {e}");
                     return;

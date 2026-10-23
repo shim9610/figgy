@@ -405,16 +405,6 @@ impl LineInterpolation {
     pub fn is_linear(&self) -> bool {
         matches!(self, Self::Linear)
     }
-
-    /// Axis-aligned pieces one segment is drawn as: 1 for `Linear`, 2 for
-    /// `StepPre` / `StepPost`, 3 for `StepMid`.
-    pub fn piece_count(self) -> u32 {
-        match self {
-            Self::Linear => 1,
-            Self::StepPre | Self::StepPost => 2,
-            Self::StepMid => 3,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1907,12 +1897,8 @@ mod line_style_tests {
     }
 
     #[test]
-    fn step_modes_split_a_segment_into_axis_aligned_pieces() {
+    fn the_default_interpolation_is_linear() {
         assert!(LineInterpolation::default().is_linear());
-        assert_eq!(LineInterpolation::Linear.piece_count(), 1);
-        assert_eq!(LineInterpolation::StepPre.piece_count(), 2);
-        assert_eq!(LineInterpolation::StepPost.piece_count(), 2);
-        assert_eq!(LineInterpolation::StepMid.piece_count(), 3);
     }
 }
 

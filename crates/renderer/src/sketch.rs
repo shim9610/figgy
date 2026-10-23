@@ -61,7 +61,9 @@ pub(crate) fn noise1(t: f32, seed: u32) -> f32 {
     let i = cell as i64 as u32;
     let a = hash01(i, seed);
     let b = hash01(i.wrapping_add(1), seed);
-    (a + (b - a) * u) * 2.0 - 1.0 // mix(a, b, u) * 2 - 1
+    // WGSL `mix(a, b, u)`, the form the shaders evaluate, so the CPU twin
+    // of the pick shader can share this function bit for bit.
+    (a * (1.0 - u) + b * u) * 2.0 - 1.0
 }
 
 /// FNV-1a 32-bit hash of `tag`'s UTF-8 bytes. The deco layer derives each
@@ -253,6 +255,7 @@ const SKETCH_MIN_STROKE_PX: f32 = 1.4;
 /// `"grid_major_x_2"`, `"legend_box"`) mixed into the global seed as
 /// `seed ^ fnv1a(tag)`, so every element wobbles differently but
 /// identically across re-rasters.
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum DecoStroker {
     Precise,
     Sketch {

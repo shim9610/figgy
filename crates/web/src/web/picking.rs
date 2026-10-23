@@ -714,9 +714,12 @@ impl FiggyChart {
         };
         let (dx, dy) = self.display_delta_to_document(dx, dy);
         let mut config = self.chart_config().clone();
+        // Containment is measured on the drawn parts, with the font the
+        // document draws with.
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
         if let Some(handle) = self.resizing {
             if let Some(rz) = self.hitmap.get(id).and_then(|el| el.as_resizable())
-                && rz.resize_by(&mut config, handle, dx, dy) == NudgeResult::Moved
+                && rz.resize_by(&mut config, &measure, handle, dx, dy) == NudgeResult::Moved
             {
                 self.replace_chart_config(config)?;
             }
@@ -727,7 +730,7 @@ impl FiggyChart {
         {
             let at = self.drag_pointer;
             self.drag_pointer = [at[0] + dx, at[1] + dy];
-            if drag.drag_from(&mut config, at, dx, dy) == NudgeResult::Moved {
+            if drag.drag_from(&mut config, &measure, at, dx, dy) == NudgeResult::Moved {
                 self.replace_chart_config(config)?;
             }
         }

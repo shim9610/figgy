@@ -367,31 +367,32 @@ impl TextExtents {
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
 
-    /// The parts of decoration `element` a renderer draws under `cfg`: call
-    /// `each` with every one, in `cfg`'s chart frame, and return `true`.
-    /// Tick labels ([`Element::AxisLabel`], [`Element::ColorBarLabel`])
-    /// report one [`DrawnPart::Text`] per drawn label; axes
-    /// ([`Element::Axis`], [`Element::ColorBarAxis`]) report their line and
-    /// ticks as [`DrawnPart::Segment`]s.
+    /// Place the parts of decoration `element` a renderer draws under `cfg`
+    /// into `sink`, in `cfg`'s chart frame, and return `true`. Tick labels
+    /// ([`Element::AxisLabel`], [`Element::ColorBarLabel`]) are one
+    /// [`PlacedText`] per drawn label; axes ([`Element::Axis`],
+    /// [`Element::ColorBarAxis`]) are their line and ticks as strokes.
     ///
     /// Tick generation, formatting and pruning belong to the renderer, so the
     /// model cannot know which labels and ticks are drawn. A measure that
-    /// lays them out lets selection and hit testing follow the drawn parts.
-    /// The default lays out nothing and returns `false`; tick labels and axes
-    /// then have no bounds, since nothing tells the model where they are
-    /// drawn.
+    /// lays them out lets selection, hit testing and drag containment follow
+    /// the drawn parts: the renderer's measure runs the same `emit` function
+    /// its raster draws with. The default lays out nothing and returns
+    /// `false`; tick labels and axes then have no bounds, since nothing tells
+    /// the model where they are drawn. The elements the model places itself
+    /// (titles, the legend, the colourbar strip and title, the data area)
+    /// never reach this method: [`crate::select::emit_element`] places them.
     ///
     /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
     /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel
     /// [`Element::Axis`]: crate::layout::Element::Axis
     /// [`Element::ColorBarAxis`]: crate::layout::Element::ColorBarAxis
-    /// [`DrawnPart::Text`]: crate::layout::DrawnPart::Text
-    /// [`DrawnPart::Segment`]: crate::layout::DrawnPart::Segment
-    fn drawn_parts(
+    /// [`PlacedText`]: crate::sink::PlacedText
+    fn emit(
         &self,
         _cfg: &crate::config::Config,
         _element: &crate::layout::Element,
-        _each: &mut dyn FnMut(crate::layout::DrawnPart),
+        _sink: &mut dyn crate::sink::Sink,
     ) -> bool {
         false
     }

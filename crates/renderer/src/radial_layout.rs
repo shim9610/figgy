@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_render::MaterialGpu;
 use crate::decoration::{DecorationMap, DecorationPainter};
 use crate::raster::{Canvas, Paint};
 use crate::text_render::{FontPolicy, measure_plain_text};
@@ -210,29 +211,21 @@ pub(super) fn layout(
                 ],
                 arc: [a, b - a, style.tilt_degrees.to_radians(), style.depth],
                 color: [slice.color.r, slice.color.g, slice.color.b, 1.0],
-                material: [
-                    match style.material {
-                        RadialMaterial::Flat => 0.0,
-                        RadialMaterial::Matte => 1.0,
-                        RadialMaterial::Ceramic => 2.0,
-                        RadialMaterial::BrushedMetal => 3.0,
-                        RadialMaterial::Paper => 4.0,
-                        RadialMaterial::Wood => 5.0,
-                        RadialMaterial::SatinMetal => 6.0,
-                        RadialMaterial::Toon => 7.0,
-                        RadialMaterial::Enamel => 8.0,
-                        RadialMaterial::Hatch => 9.0,
-                        RadialMaterial::Pearl => 10.0,
-                    },
+                material: MaterialGpu::pack(
+                    style.material,
                     style.roughness,
                     style.texture_strength,
                     style.texture_scale,
-                ],
+                    style.gloss,
+                    index as f32 * 13.17,
+                    style.texture_angle_degrees.rem_euclid(360.0).to_radians(),
+                    amount * style.hover_brightness,
+                ),
                 rounding: [
                     style.inner_corner,
                     style.outer_corner,
                     style.hover_lift * amount,
-                    style.gloss,
+                    0.0,
                 ],
                 outline: [
                     if style.outline.rim { 1.0 } else { 0.0 },
@@ -253,8 +246,8 @@ pub(super) fn layout(
                     if style.shadow { 1.0 } else { 0.0 },
                 ],
                 effects: [
-                    amount * style.hover_brightness,
-                    style.texture_angle_degrees.rem_euclid(360.0).to_radians(),
+                    0.0,
+                    0.0,
                     if slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside
                         && !raster_moves_inside_labels(chart)
                     {
@@ -268,7 +261,7 @@ pub(super) fn layout(
                     slice.explode,
                     style.gap_degrees.to_radians().min((b - a) * 0.2),
                     style.bevel,
-                    index as f32 * 13.17,
+                    0.0,
                 ],
             });
         }
@@ -308,16 +301,17 @@ pub(super) fn layout(
                     chart.label_color
                 });
                 for (i, line) in lines.iter().enumerate() {
-                    decorations.text(
-                        DecorationId::RadialLabel(*target),
-                        &mut canvas,
-                        &chart.font_family,
-                        line,
-                        (x - width(chart, line, fs) * 0.5) / scale,
-                        (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs) / scale,
-                        fs / scale,
-                        color,
-                    );
+                    decorations
+                        .on(DecorationId::RadialLabel(*target), &mut canvas)
+                        .plain_text(
+                            &chart.font_family,
+                            line,
+                            (x - width(chart, line, fs) * 0.5) / scale,
+                            (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs)
+                                / scale,
+                            fs / scale,
+                            color,
+                        );
                 }
                 if !raster_moves_inside_labels(chart) {
                     decorations.shift_hit(&DecorationId::RadialLabel(*target), 0., -lift / scale);
@@ -389,16 +383,16 @@ pub(super) fn layout(
                         } else {
                             tx
                         };
-                        decorations.text(
-                            DecorationId::RadialLabel(target),
-                            &mut canvas,
-                            &chart.font_family,
-                            line,
-                            x / scale,
-                            (y + (i as f32 * 1.2 - 0.15) * fs) / scale,
-                            fs / scale,
-                            slice.label_color.unwrap_or(chart.label_color),
-                        );
+                        decorations
+                            .on(DecorationId::RadialLabel(target), &mut canvas)
+                            .plain_text(
+                                &chart.font_family,
+                                line,
+                                x / scale,
+                                (y + (i as f32 * 1.2 - 0.15) * fs) / scale,
+                                fs / scale,
+                                slice.label_color.unwrap_or(chart.label_color),
+                            );
                     }
                 }
             }

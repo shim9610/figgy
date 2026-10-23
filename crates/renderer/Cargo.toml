@@ -61,6 +61,9 @@ web-sys = { version = "0.3", features = ["Window"] }
 # iced_wgpu = { version = "0.14", optional = true }
 
 [dev-dependencies]
+# The crate's own tests enable `cpu-twin`, so the CPU picker in
+# `tests/support/cpu_twin.rs` compiles for `cargo test` only.
+figgy-renderer = { path = ".", features = ["cpu-twin"] }
 winit = "0.30.13"
 serde_json = "1"
 # The cache-key mutation tests walk serialized documents through a recording
@@ -69,6 +72,8 @@ serde = { version = "1", features = ["derive"] }
 
 [features]
 serde = ["model/serde"]
+# Test support: the CPU twins of the shader coverage (`renderer::pick::cpu_twin`).
+cpu-twin = []
 egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
 
 [[example]]

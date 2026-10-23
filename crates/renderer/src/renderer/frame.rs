@@ -1290,13 +1290,24 @@ pub(super) fn layer_views(view: &ChartView, panels: usize) -> Result<Vec<&ChartV
         .collect())
 }
 
-/// The grid texture of one panel. An overlay panel in the Milkyway style gets
-/// a transparent texture: the backdrop is the base panel's.
-pub(super) fn raster_grid_layer(config: &Config, overlay: bool, w: u32, h: u32) -> Result<Vec<u8>> {
-    if overlay && matches!(config.draw_style, DrawStyle::Milkyway(_)) {
-        return Ok(vec![0; (w as usize) * (h as usize) * 4]);
+/// The grid and decoration rasters of one panel, laid out once. An overlay
+/// panel in the Milkyway style gets a transparent grid texture: the backdrop
+/// is the base panel's. With `grid` false the grid buffer is empty: the
+/// caller fills the grid texture from the cached backdrop instead.
+pub(super) fn raster_panel_layers(
+    config: &Config,
+    overlay: bool,
+    selection: &[crate::select::SelectionBox],
+    grid: bool,
+) -> Result<(Vec<u8>, Vec<u8>)> {
+    let milkyway = matches!(config.draw_style, DrawStyle::Milkyway(_));
+    let (grid_rgba, dec_rgba) =
+        axis_render::raster_panel_layers(config, selection, grid && !(overlay && milkyway))?;
+    if grid && overlay && milkyway {
+        let (w, h) = (config.chart_area.0.width, config.chart_area.0.height);
+        return Ok((vec![0; (w as usize) * (h as usize) * 4], dec_rgba));
     }
-    axis_render::try_raster_chart_layer_to_rgba(config, axis_render::AxisLayerKind::Grid)
+    Ok((grid_rgba, dec_rgba))
 }
 
 /// Every panel's tick warnings as one list. An overlay panel reports only
@@ -1391,8 +1402,7 @@ pub(super) fn route_selection_boxes(
 ) -> Vec<Vec<crate::select::SelectionBox>> {
     let mut routed = vec![Vec::new(); places.len()];
     for selection_box in selection {
-        let cx = selection_box.rect.x + selection_box.rect.width * 0.5;
-        let cy = selection_box.rect.y + selection_box.rect.height * 0.5;
+        let (cx, cy) = selection_box.rect().center();
         let index = places
             .iter()
             .rposition(|place| crate::layout::RectF::from_rect(&place.rect).contains(cx, cy))
@@ -1506,15 +1516,12 @@ impl Renderer {
         let w = panel_rect.width.max(1);
         let h = panel_rect.height.max(1);
 
-        // Grid layer (drawn below data): raster + texture + bind group.
-        let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
+        // Both raster layers from one placement pass: the grid (drawn below
+        // data) and the decoration (drawn above). An overlay panel in the
+        // Milkyway style gets a transparent grid: the backdrop is the base
+        // panel's.
+        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, &[], true)?;
         let grid = self.create_layer_texture(&grid_rgba, w, h)?;
-
-        // Decoration layer (drawn above data).
-        let dec_rgba = axis_render::try_raster_chart_layer_to_rgba(
-            config,
-            axis_render::AxisLayerKind::Decoration,
-        )?;
         let decoration = self.create_layer_texture(&dec_rgba, w, h)?;
 
         let t = data_render::scatter_transform_from_config(config);
@@ -1705,20 +1712,29 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
-        self.refresh_axis_with_selection(view, chart, panel_rect, &[])
+        self.refresh_axis_with_selection(view, chart, panel_rect, None)
     }
 
-    /// [`Self::refresh_axis`] plus selection highlight boxes composited into
-    /// the decoration layer (selection draws above the data, never below).
-    /// `selection` comes from `Selectable::selection_box` / `HitMap` and is in
-    /// absolute surface coordinates.
+    /// [`Self::refresh_axis`] plus the selection highlight of the element
+    /// `selected` names composited into the decoration layer (selection draws
+    /// above the data, never below). `selected` is the element id the hit
+    /// map reports (`Selectable::element_id`, `"axis_bottom"`,
+    /// `"overlay_0:legend"`, ...); the box is built from the element's drawn
+    /// parts on the document's active layer, the same box
+    /// [`Self::selection_box`] returns for host UI. An id no element of the
+    /// active layer has draws nothing.
     pub fn refresh_axis_with_selection(
         &mut self,
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
-        selection: &[crate::select::SelectionBox],
+        selected: Option<&str>,
     ) -> Result<()> {
+        let selection: Vec<crate::select::SelectionBox> = selected
+            .and_then(|id| self.selection_box(chart, id))
+            .into_iter()
+            .collect();
+        let selection = &selection[..];
         let panels = expand_for_render(chart.config())?;
         let places = panel_places(chart.config(), &panels, panel_rect);
         let font_generation = crate::text_render::font_generation();
@@ -1764,6 +1780,26 @@ impl Renderer {
         Ok(())
     }
 
+    /// The selection box of the element `element_id` names on the active
+    /// layer of `chart`, in absolute surface coordinates: what
+    /// [`Self::refresh_axis_with_selection`] draws, for host UI that outlines
+    /// or hit-tests the selection itself. `None` for an id the active layer
+    /// has no element for, or an element that draws nothing.
+    pub fn selection_box(
+        &self,
+        chart: &Chart,
+        element_id: &str,
+    ) -> Option<crate::select::SelectionBox> {
+        let config = chart.config();
+        let map = crate::select::HitMap::for_active_layer(config);
+        let id = map.find(element_id)?;
+        map.selection_box(
+            id,
+            config,
+            &crate::text_render::CpuTextMeasure::for_style(&config.draw_style),
+        )
+    }
+
     /// Refresh one panel's textures from its internal config, unless the
     /// textures already hold exactly this raster.
     pub(super) fn refresh_panel_view(
@@ -1792,11 +1828,11 @@ impl Renderer {
             return Ok(());
         }
 
-        let dec_rgba = axis_render::try_raster_chart_layer_to_rgba_with_selection(
-            config,
-            axis_render::AxisLayerKind::Decoration,
-            selection,
-        )?;
+        // One placement pass lays out both layers; a base panel in the
+        // Milkyway style takes its grid texture from the cached backdrop
+        // instead of a grid raster.
+        let backdrop = matches!(config.draw_style, DrawStyle::Milkyway(_)) && !overlay;
+        let (grid_rgba, dec_rgba) = raster_panel_layers(config, overlay, selection, !backdrop)?;
         if view.panel_rect != panel_rect {
             view.advance_stream_revision()?;
         }
@@ -1812,7 +1848,6 @@ impl Renderer {
         {
             self.refresh_space_backdrop(view, c, w, h)?;
         } else {
-            let grid_rgba = raster_grid_layer(config, overlay, w, h)?;
             self.refresh_one_layer(
                 &mut view.grid_texture,
                 &mut view.grid_bind_group,
@@ -2587,23 +2622,25 @@ impl Renderer {
                     pipeline: &item.axis_pipeline,
                     bind_group: &display.bind_group,
                 });
-            data_render::draw_chart_panel_with_bodies(
+            super::composite::draw_chart_panel(
                 pass,
                 target_size,
                 panel_rect,
                 item.data_area,
-                AxisLayer {
-                    pipeline: &item.axis_pipeline,
-                    bind_group: &item.view.grid_bind_group,
+                super::composite::PanelChrome {
+                    below: AxisLayer {
+                        pipeline: &item.axis_pipeline,
+                        bind_group: &item.view.grid_bind_group,
+                    },
+                    annotation_underlay,
+                    above: AxisLayer {
+                        pipeline: &item.axis_pipeline,
+                        bind_group: &item.view.decoration_bind_group,
+                    },
+                    annotation_overlay,
                 },
-                annotation_underlay,
                 &series_list,
                 cached,
-                AxisLayer {
-                    pipeline: &item.axis_pipeline,
-                    bind_group: &item.view.decoration_bind_group,
-                },
-                annotation_overlay,
             );
         }
         Ok(())

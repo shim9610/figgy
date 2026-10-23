@@ -562,10 +562,19 @@ impl<'w> WindowedRenderer<'w> {
         view: &mut ChartView,
         chart: &Chart,
         panel_rect: Rect,
-        selection: &[crate::select::SelectionBox],
+        selected: Option<&str>,
     ) -> Result<()> {
         self.inner
-            .refresh_axis_with_selection(view, chart, panel_rect, selection)
+            .refresh_axis_with_selection(view, chart, panel_rect, selected)
+    }
+
+    /// [`Renderer::selection_box`].
+    pub fn selection_box(
+        &self,
+        chart: &Chart,
+        element_id: &str,
+    ) -> Option<crate::select::SelectionBox> {
+        self.inner.selection_box(chart, element_id)
     }
 
     pub fn refresh_annotations(

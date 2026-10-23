@@ -751,6 +751,7 @@ dependencies = [
  "egui",
  "egui-wgpu",
  "figgy-model",
+ "figgy-renderer",
  "fontdb",
  "futures-channel",
  "js-sys",

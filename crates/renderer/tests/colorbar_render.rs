@@ -187,7 +187,7 @@ fn colorbar_strip_raster_cost() {
 fn colorbar_selection_and_resize_probe() {
     use renderer::layout::{Element, NudgeResult};
     use renderer::resize::{Resizable, ResizeHandle};
-    use renderer::select::{ColorBarElement, Selectable};
+    use renderer::select::{ColorBarElement, SelectionGeometry};
     use renderer::{CpuTextMeasure, Draggable};
 
     let dir = output_dir();
@@ -203,13 +203,14 @@ fn colorbar_selection_and_resize_probe() {
 
     // Same config, then dragged left/down and grown from its north-west corner.
     let mut edited = selected.clone();
+    let measure = CpuTextMeasure::for_style(&edited.draw_style);
     assert_eq!(
-        ColorBarElement.drag_by(&mut edited, -70.0, 30.0),
+        ColorBarElement.drag_by(&mut edited, &measure, -70.0, 30.0),
         NudgeResult::Moved
     );
     for _ in 0..6 {
         assert_eq!(
-            ColorBarElement.resize_by(&mut edited, ResizeHandle::NW, -4.0, -6.0),
+            ColorBarElement.resize_by(&mut edited, &measure, ResizeHandle::NW, -4.0, -6.0),
             NudgeResult::Moved
         );
     }
@@ -228,7 +229,7 @@ fn colorbar_selection_and_resize_probe() {
         let box_ = ColorBarElement
             .selection_box(&config, &measure)
             .expect("the colourbar is selectable");
-        assert_eq!(box_.handles.len(), 8, "{name}: eight resize handles");
+        assert_eq!(box_.handles().len(), 8, "{name}: eight resize handles");
 
         let rgba = try_raster_chart_layer_to_rgba_with_selection(
             &config,

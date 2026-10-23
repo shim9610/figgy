@@ -1,109 +1,78 @@
-//! Axis strokes: the axis line and its tick marks, and the value-to-screen
-//! mapping along an axis that every axis element shares.
+//! Axis strokes: the axis line and its tick marks, placed through the sink,
+//! and the value-to-screen mapping along an axis that every axis element
+//! shares.
 
 use super::*;
 
-pub(super) fn draw_axis_segment(
-    canvas: &mut Canvas,
-    p0: (f32, f32),
-    p1: (f32, f32),
-    paint: &Paint,
-    stroker: &DecoStroker,
-    tag: &str,
-) {
-    stroker.stroke_segment(canvas, p0, p1, paint, tag);
-}
-
-pub(crate) fn draw_precise_axis_segment(
-    canvas: &mut Canvas,
-    p0: (f32, f32),
-    p1: (f32, f32),
-    color: Color,
-    width: f32,
-) {
-    draw_axis_segment(
-        canvas,
-        p0,
-        p1,
-        &Paint::stroke(&color, width),
-        &DecoStroker::Precise,
-        "bounded_axis",
-    );
-}
-
-pub(super) fn draw_axis(
-    canvas: &mut Canvas,
+/// One axis: its line and ticks, then its tick labels, every part moved by
+/// the detached-axis offset (`axis.line_offset`, perpendicular to the
+/// axis). The data area and grid stay put; tick positions along the axis are
+/// unaffected.
+pub(super) fn emit_axis(
     axis: &AxisOptions,
     side: Side,
     da: &DataArea,
-    stroker: &DecoStroker,
     fp: FontPolicy,
+    sink: &mut dyn Sink,
 ) {
-    // Detached-axis offset: shift the whole axis chrome (line + ticks +
-    // labels) perpendicular to the axis. The data area and grid stay put;
-    // tick positions along the axis are unaffected.
-    let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let detached = off_x != 0.0 || off_y != 0.0;
-    if detached {
-        canvas.save();
-        canvas.translate(off_x, off_y);
-    }
+    emit_axis_strokes(axis, side.clone(), da, fp, sink);
+    emit_axis_tick_labels(axis, side, da, fp, sink);
+}
 
-    // 1) Axis line and 2) major / minor ticks, from the walk `drawn_parts`
-    // reports.
+/// The line and the major and minor ticks of `axis` on `side`
+/// (`Element::Axis`), from the walk [`each_axis_stroke`] reports, offset by
+/// the detached-axis translation. Tick stroker tags share one running index
+/// per side (majors first, minors after) so every tick gets its own wobble
+/// shape.
+pub(crate) fn emit_axis_strokes(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
     let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
-    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
+    let dash = axis.line_style.pattern();
     each_axis_stroke(axis, side.clone(), da, fp, &majors, |stroke, a, b| {
-        // Tick stroker tags share one running index per side (majors first,
-        // minors after) so every tick gets its own wobble shape.
         let tag = match stroke {
             AxisStroke::Line => format!("axis_{}", side_tag(&side)),
             AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
         };
-        draw_axis_segment(canvas, a, b, &paint, stroker, &tag);
+        sink.stroke(
+            Slot::Above,
+            [a.0 + off_x, a.1 + off_y],
+            [b.0 + off_x, b.1 + off_y],
+            &StrokeStyle {
+                width: axis.line_width,
+                color: axis.line_color,
+                dash,
+                tag: &tag,
+            },
+        );
     });
-
-    // 3) Major tick labels
-    each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
-        draw_tick_text(canvas, &text, pos, side.clone(), axis, fp);
-    });
-
-    if detached {
-        canvas.restore();
-    }
 }
 
-/// Where `value` falls along its axis, as a fraction of the axis' screen length
-/// measured from the axis' visual start, `inverted` included.
-///
-/// **Not clamped**: a tick outside the range lands outside the axis, which is
-/// what puts a stale tick visibly off the end instead of piled at it. The
-/// colourbar's `ColorBarOptions::normalized_z` is the clamped z→colour twin, and
-/// `colorbar_ticks_match_the_strip_ramp` pins the two to agree in range.
+/// The tick labels of `axis` on `side` (`Element::AxisLabel`): every label
+/// [`each_axis_tick_label`] walks, placed at its tick and moved by the
+/// detached-axis translation.
+pub(crate) fn emit_axis_tick_labels(
+    axis: &AxisOptions,
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
+    let offset = axis_offset(side.clone(), axis.line_offset);
+    each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
+        place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
+    });
+}
+
+/// Where `value` falls along its axis ([`crate::layout::axis_fraction`]).
 pub(crate) fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
-    let t = match axis.scale {
-        AxisScale::Linear => {
-            let range = axis.max - axis.min;
-            if range == 0.0 {
-                0.0
-            } else {
-                (value - axis.min) / range
-            }
-        }
-        AxisScale::Logarithmic => {
-            let (min, max) = crate::chart::guarded_log_range(axis.min, axis.max);
-            let log_min = min.log10();
-            let log_max = max.log10();
-            let range = log_max - log_min;
-            if range == 0.0 || value <= 0.0 {
-                0.0
-            } else {
-                (value.log10() - log_min) / range
-            }
-        }
-    };
-    let t = if axis.inverted { 1.0 - t } else { t };
-    t as f32
+    crate::layout::axis_fraction(value, axis)
 }
 
 pub(super) fn data_area_rect(da: &DataArea) -> RectF {
@@ -132,9 +101,8 @@ pub(crate) enum AxisStroke {
     Tick(usize),
 }
 
-/// Every segment [`draw_axis`] strokes for `axis` on `side`, before the
-/// detached-axis translate: the line, then the major and minor ticks.
-/// Drawing and [`drawn_parts`] both walk this.
+/// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
+/// the detached-axis translation: the line, then the major and minor ticks.
 pub(super) fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
@@ -163,8 +131,8 @@ pub(super) fn each_axis_stroke(
     }
 }
 
-/// Every segment [`draw_colorbar`] strokes for the bar's axis along the strip
-/// `rect`, before the detached-axis translate: the line, then the ticks.
+/// Every segment the colourbar's axis is stroked along the strip `rect`,
+/// before the detached-axis translation: the line, then the ticks.
 pub(crate) fn each_colorbar_axis_stroke(
     axis: &AxisOptions,
     side: Side,
@@ -199,7 +167,7 @@ pub(crate) fn each_colorbar_axis_stroke(
 }
 
 /// The segment a tick at `pos` is stroked along, or `None` when ticks are
-/// hidden. Drawing and [`drawn_parts`] both use it.
+/// hidden.
 pub(super) fn tick_segment(
     pos: (f32, f32),
     side: Side,
@@ -221,10 +189,4 @@ pub(super) fn tick_segment(
         TickVisibility::Inside => Some((pos, inside)),
         TickVisibility::Both => Some((inside, outside)),
     }
-}
-
-// Skia Paint helpers.
-
-pub(crate) fn stroke_paint(color: &Color, width: f32, style: &LineStylePreset) -> Paint {
-    Paint::stroke(color, width).with_dash(style.pattern())
 }

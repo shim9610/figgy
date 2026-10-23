@@ -229,7 +229,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (max_x_hi, max_x_lo) = crate::data::split_f64_to_f32_pair(data_max_x);
     let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);
     let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
-    let (polar_angle, polar_extent) = crate::polar_projection::transform_constants(config);
+    let (polar_angle, polar_extent) = transform_constants(config);
     ScatterTransform {
         data_min: [min_x_hi, min_y_hi],
         data_max: [max_x_hi, max_y_hi],
@@ -243,4 +243,27 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         polar_angle,
         polar_extent,
     }
+}
+
+/// `(polar_angle, polar_extent)` of [`ScatterTransform`] for `config`: all
+/// zero for a rectangular chart.
+pub(crate) fn transform_constants(config: &Config) -> ([f32; 4], [f32; 4]) {
+    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+        return ([0.0; 4], [0.0; 4]);
+    };
+    let [start, end] = polar.sector.unwrap_or([0.0, 0.0]);
+    (
+        [
+            1.0,
+            polar.zero_angle_degrees.to_radians() as f32,
+            (polar.direction() * polar.angle_unit.radians_per_unit()) as f32,
+            polar.inner_radius_fraction,
+        ],
+        [
+            start as f32,
+            end as f32,
+            crate::line_step::arc_pieces(config.polar.as_ref()) as f32,
+            geometry.radius,
+        ],
+    )
 }

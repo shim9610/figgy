@@ -5,7 +5,10 @@ use crate::{
     raster::Canvas,
     text_render::measure_rich_text,
 };
-use model::{BoundedTitleOptions, DecorationId, TextExtents};
+use model::{
+    BoundedTitleOptions, DecorationId, TextExtents,
+    sink::{PlacedText, Sink, Slot, TextRef},
+};
 
 pub(crate) struct TitleLayout {
     title: BoundedTitleOptions,
@@ -56,12 +59,16 @@ impl TitleLayout {
         if self.metrics.width > width - 32. {
             return Err("title does not fit; increase chart width or shorten it");
         }
-        painter.rich_text(
-            DecorationId::ChartTitle,
-            canvas,
-            &self.title.text,
-            (width - self.metrics.width) * 0.5,
-            self.baseline,
+        // The extents measured for the layout are the placed extents: the
+        // title is measured once.
+        painter.on(DecorationId::ChartTitle, canvas).text(
+            Slot::Above,
+            &PlacedText {
+                text: TextRef::Rich(&self.title.text),
+                origin: ((width - self.metrics.width) * 0.5, self.baseline),
+                extents: self.metrics,
+                rotation: None,
+            },
         );
         Ok(())
     }

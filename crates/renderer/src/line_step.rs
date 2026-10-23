@@ -25,7 +25,9 @@ pub(crate) const AREA_FILL_TO_SERIES: u32 = 1 << 4;
 /// and up the pieces (0 for chords and rectangular charts). The pieces ride
 /// the transform (`polar_extent.z`), never the style.
 pub(crate) const LINE_ARC_SHIFT: u32 = 4;
-/// The most pieces one segment is drawn as: the polar arc limit.
+/// The most pieces one segment is drawn as: the polar arc limit. Read by
+/// the CPU twin of the line shader (test support).
+#[cfg(feature = "cpu-twin")]
 pub(crate) const MAX_LINE_PIECES: usize = crate::polar::MAX_POLAR_ARC_PIECES as usize;
 
 /// The shader's step mode code: 0 linear, 1 step-pre, 2 step-post, 3 step-mid.
@@ -90,7 +92,9 @@ pub(crate) fn strip_vertex_count(per_piece: u32, mode: u32) -> u32 {
     pieces * per_piece + 2 * (pieces - 1)
 }
 
-/// One axis-aligned piece of a stepped segment, in data units.
+/// One axis-aligned piece of a stepped segment, in data units (the CPU
+/// twin of the line shader, test support).
+#[cfg(feature = "cpu-twin")]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StepPiece {
     pub a: [f32; 2],
@@ -102,7 +106,8 @@ pub(crate) struct StepPiece {
 /// Step-pre: riser at `a.x`, run at `b.y`. Step-post: run at `a.y`, riser at
 /// `b.x`. Step-mid: run, riser at the data-space midpoint of the x values,
 /// run. A polar arc: equal subdivisions of `a → b` in data space. Twin of the
-/// shaders' `step_piece`.
+/// shaders' `step_piece` (test support).
+#[cfg(feature = "cpu-twin")]
 pub(crate) fn line_pieces(
     a: [f32; 2],
     b: [f32; 2],
@@ -156,7 +161,7 @@ pub(crate) fn line_pieces(
 }
 
 /// Test helper: the pieces of a rectangular chart's step mode.
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu-twin"))]
 pub(crate) fn step_pieces(
     a: [f32; 2],
     b: [f32; 2],
@@ -167,7 +172,7 @@ pub(crate) fn step_pieces(
     (out, count)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu-twin"))]
 mod tests {
     use super::*;
 
@@ -224,7 +229,13 @@ mod tests {
             LineInterpolation::StepMid,
         ] {
             let (pieces, count) = step_pieces(a, b, mode);
-            assert_eq!(count as u32, mode.piece_count());
+            // Axis-aligned pieces one segment is drawn as.
+            let expected = match mode {
+                LineInterpolation::Linear => 1,
+                LineInterpolation::StepPre | LineInterpolation::StepPost => 2,
+                LineInterpolation::StepMid => 3,
+            };
+            assert_eq!(count, expected, "{mode:?}");
             assert_eq!(pieces[0].a, a);
             assert_eq!(pieces[count - 1].b, b);
             for pair in pieces[..count].windows(2) {

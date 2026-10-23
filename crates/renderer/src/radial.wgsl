@@ -12,12 +12,12 @@ struct Sector {
     geometry: vec4<f32>, // center.xy, radius, inner radius
     arc: vec4<f32>, // start, span, tilt, depth
     color: vec4<f32>,
-    material: vec4<f32>, // kind, roughness, texture strength, frequency
-    detail: vec4<f32>, // explode, angular gap, bevel, seed
-    rounding: vec4<f32>, // inner corner, outer corner, vertical lift, gloss
+    material: Material, // SHADER_COMMON.md §5.9
+    detail: vec4<f32>, // explode, angular gap, bevel, reserved (0)
+    rounding: vec4<f32>, // inner corner, outer corner, vertical lift, reserved (0)
     outline: vec4<f32>, // rim, separators, emphasis amount, physical width
     outline_color: vec4<f32>,
-    effects: vec4<f32>, // highlight brightness, texture angle, reserved
+    effects: vec4<f32>, // reserved (0), reserved (0), inside-label flag, reserved (0)
     light: vec4<f32>, // direction.xyz, shadow enabled
 };
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -77,92 +77,6 @@ fn hit_sector(ro: vec3<f32>,rd: vec3<f32>,s: Sector) -> Hit {
     }
     return Hit(10000.0,vec3(0.0),vec3(0.0));
 }
-fn hash(p:vec2<f32>)->f32 { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
-fn noise(p:vec2<f32>)->f32 { let i=floor(p);let f=fract(p);let u=f*f*(3.0-2.0*f);return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),u.x),mix(hash(i+vec2(0.0,1.0)),hash(i+1.0),u.x),u.y); }
-// Continuous solid noise: rough surfaces must vary in z on an extruded wall, not
-// repeat a top-plane sample down its entire height. No face UV seams.
-fn material_noise(p: vec3<f32>) -> f32 {
-    let z=floor(p.z);let f=fract(p.z);let blend=f*f*(3.0-2.0*f);
-    return mix(noise(p.xy+z*vec2(37.0,91.0)),noise(p.xy+(z+1.0)*vec2(37.0,91.0)),blend);
-}
-fn material_band(p: vec3<f32>,frequency: vec3<f32>,pixels: f32) -> f32 {
-    // Keep coordinates fixed in object space. Fade frequencies that cannot be
-    // resolved at this output size/angle instead of changing the pattern scale.
-    let cycles=max(max(frequency.x,frequency.y),frequency.z)/max(pixels,1.0);
-    let resolved=1.0-smoothstep(0.3,0.85,cycles);
-    return (material_noise(p*frequency)-0.5)*resolved;
-}
-fn surface(s: Sector,h: Hit,view: vec3<f32>) -> vec3<f32> {
-    let kind=u32(s.material.x);
-    if kind==0u { return min(s.color.rgb+vec3(s.effects.x),vec3(1.0)); }
-    let l=normalize(s.light.xyz);let half_dir=normalize(l+view);
-    let diffuse=max(dot(h.n,l),0.0);
-    let ca=cos(s.effects.y);let sa=sin(s.effects.y);
-    let p=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.w;
-    let grain=noise(p*90.0+vec2(s.detail.w));
-    var base=s.color.rgb;
-    var spec=0.0;
-    var lighting=0.32+0.68*diffuse;
-    if kind==2u {
-        spec=pow(max(dot(h.n,half_dir),0.0),mix(120.0,12.0,s.material.y))*s.rounding.w;
-        base*=1.0+(noise(p*7.0)-0.5)*s.material.z*0.1;
-    }
-    if kind==3u || kind==6u {
-        // Radius-dependent frequency is filtered before pixel-scale aliasing.
-        let frequency=min(450.0*s.material.w,s.geometry.z*0.4);
-        let brush=noise(vec2(length(h.p.xy)*frequency,atan2(p.y,p.x)*2.0));
-        base*=0.95+(brush-0.5)*s.material.z*select(0.16,0.035,kind==6u);
-        let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
-        let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
-        let nh=max(dot(h.n,half_dir),0.0);
-        let th=dot(tangent,half_dir);
-        let bitangent=normalize(cross(h.n,tangent)+vec3(0.00001,0.0,0.0));
-        let bh=dot(bitangent,half_dir);
-        let stretch=mix(0.15,0.35,s.material.y);
-        spec=exp(-(th*th/(stretch*stretch)+bh*bh/0.65)/max(nh*nh,0.01))*s.rounding.w*0.8;
-        lighting=0.45+0.55*diffuse;
-    }
-    if kind==4u {
-        let q=vec3(p,h.p.z*s.material.w)+vec3(s.detail.w);
-        let pixels=s.geometry.z*max(abs(dot(h.n,view)),0.08)/s.material.w;
-        let paper_grain=material_band(q,vec3(90.0),pixels);
-        let fibres=material_band(q,vec3(32.0,90.0,80.0),pixels);
-        let pulp=material_band(q,vec3(22.0),pixels);
-        base*=1.0+s.material.z*(paper_grain*0.14+fibres*0.045+pulp*0.012);
-        lighting=0.8+0.2*diffuse;
-    }
-    if kind==5u {
-        // Unpatterned, rough plywood: irregular fine fibres, not decorative
-        // annual rings. Object-space z varies the grain along the wall
-        // height and shares the same surface treatment with the top face.
-        let q=vec3(p,h.p.z*s.material.w)+vec3(s.detail.w);
-        let pixels=s.geometry.z*max(abs(dot(h.n,view)),0.08)/s.material.w;
-        let fibres=material_band(q,vec3(72.0,85.0,90.0),pixels);
-        let fine=material_band(q,vec3(150.0,125.0,135.0),pixels);
-        let pores=material_band(q,vec3(22.0,28.0,24.0),pixels);
-        base*=1.0+s.material.z*(fibres*0.22+fine*0.10+pores*0.04);
-        lighting=0.7+0.3*diffuse;
-        spec=pow(max(dot(h.n,half_dir),0.0),mix(48.0,8.0,s.material.y))*s.rounding.w*0.025*(1.0-s.material.y);
-    }
-    if kind==7u { lighting=select(select(0.5,0.76,diffuse>0.3),1.0,diffuse>0.7); }
-    if kind==8u {
-        spec=pow(max(dot(h.n,half_dir),0.0),mix(180.0,22.0,s.material.y))*s.rounding.w;
-        lighting=0.65+0.35*diffuse;
-    }
-    if kind==9u {
-        let frequency=min(45.0*s.material.w,s.geometry.z*0.15);
-        let hatch=smoothstep(0.15,0.4,abs(sin((p.x+p.y)*frequency)));
-        base*=1.0-(1.0-hatch)*s.material.z*0.35;
-    }
-    if kind==10u {
-        let fresnel=pow(1.0-max(dot(h.n,view),0.0),3.0);
-        let pearl=0.5+0.5*cos(vec3(0.0,2.1,4.2)+dot(h.n,view)*9.0);
-        base=mix(base,pearl,fresnel*s.material.z*0.25);
-        spec=pow(max(dot(h.n,half_dir),0.0),32.0)*s.rounding.w;
-    }
-    if kind==1u { base*=1.0+(grain-0.5)*s.material.z*0.08; }
-    return clamp(base*lighting+vec3(s.effects.x)+mix(vec3(spec),base*spec,select(0.0,0.7,kind==3u || kind==6u)),vec3(0.0),vec3(1.0));
-}
 fn hit_pixel(pixel: vec2<f32>,s: Sector) -> Hit {
     let cs=cos(s.arc.z);let sn=sin(s.arc.z);let mid=s.arc.x+s.arc.y*0.5;
     let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid)*cs);
@@ -201,7 +115,15 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
         let h=hit_pixel(pixel,s);
         if h.t<closest {
             closest=h.t;
-            var rgb=surface(s,h,-rd);
+            // The brush of BrushedMetal and SatinMetal runs around the
+            // center: its tangent is circumferential in the turned texture
+            // frame, its coordinates are (radius, twice the turned angle).
+            let ca=cos(s.material.finish.z);let sa=sin(s.material.finish.z);
+            let turned=vec2(h.p.x*ca-h.p.y*sa,h.p.x*sa+h.p.y*ca)*s.material.params.w;
+            let direction=vec3(-h.p.y*ca-h.p.x*sa,-h.p.y*sa+h.p.x*ca,0.0);
+            let tangent=normalize(direction-h.n*dot(h.n,direction)+vec3(0.000001,0.0,0.0));
+            var rgb=material_surface(s.material,s.color.rgb,h.p,h.n,-rd,normalize(s.light.xyz),tangent,
+                vec2(length(h.p.xy),atan2(turned.y,turned.x)*2.0),s.geometry.z);
             let d=edges(h.p.xy,s);
             let rim_distance=min(abs(d.x),abs(d.y));
             let separation=abs(d.z);

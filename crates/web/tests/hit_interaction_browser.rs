@@ -6,7 +6,7 @@ use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, Rect, Side};
 use renderer::line::LineStylePreset;
 use renderer::select::{
-    ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, Selectable,
+    ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, SelectionGeometry,
 };
 use wasm_bindgen::JsCast;
 use wasm_bindgen_test::*;

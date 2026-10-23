@@ -2055,9 +2055,9 @@ mod web {
         Chart, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView, Color,
         ColumnSource, CpuTextMeasure, DataLineStyleConfig, DataRenderType, DefragPolicy, FitExtent,
         HiLoColumnSource, HitId, HitMap, LayerHit, RegisteredChartDrawItem, Renderer,
-        ResizeHandle as ModelResizeHandle, SelectionBox, Series, SeriesConfig, StreamColumn,
-        StreamEncoding, StreamRangeSourceBinding, StreamReplay, StreamSourceBinding,
-        StreamStatistics, StreamingChartOptions, StreamingLimits, WindowedRenderer,
+        ResizeHandle as ModelResizeHandle, Series, SeriesConfig, StreamColumn, StreamEncoding,
+        StreamRangeSourceBinding, StreamReplay, StreamSourceBinding, StreamStatistics,
+        StreamingChartOptions, StreamingLimits, WindowedRenderer,
     };
 
     use renderer::data_render::{AllocError, GrowthPolicy};

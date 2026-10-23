@@ -1,7 +1,7 @@
 // Independent bounded categorical rectangles. No Cartesian shared blocks.
 struct Globals { size:vec4<f32>, background:vec4<f32> };
 struct Bar {
-    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:vec4<f32>,
+    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:Material,
     outline:vec4<f32>, outline_color:vec4<f32>, effects:vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> globals:Globals;
@@ -40,6 +40,6 @@ struct Vertex { @builtin(position) position:vec4<f32>, @location(0) @interpolate
         coverage+=select(0.0,0.25,d<=0.0);
         border+=select(0.0,0.25,d<=0.0 && d>=-b.outline.y && b.outline.x>0.5);
     }}
-    let c=mix(shade(p,b),b.outline_color.rgb,b.outline_color.a*border/max(coverage,0.001));
+    let c=mix(bar_surface(p,b),b.outline_color.rgb,b.outline_color.a*border/max(coverage,0.001));
     return output(vec4(c*coverage,coverage));
 }

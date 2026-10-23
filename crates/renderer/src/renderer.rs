@@ -31,6 +31,8 @@ mod series;
 pub use series::*;
 mod window;
 pub use window::*;
+mod composite;
+pub use composite::draw_chart_panel_columnar;
 mod frame;
 pub use frame::*;
 mod prepare;

@@ -23,16 +23,18 @@ use crate::config::{AxisOptions, AxisScale, Config};
 use crate::decoration::scaled_rich_text;
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedTexture};
 use crate::layout::RectF;
-use crate::raster::{Canvas, Paint};
+use crate::raster::Canvas;
 use crate::render_warning::{AnnotationSkip, RenderWarning};
-use crate::text_render::{FontPolicy, draw_rich_text, measure_rich_text};
+use crate::text_render::{FontPolicy, measure_rich_text};
 use crate::{CpuTextMeasure, HitId, HitMap, RendererDevice};
 use model::annotation::geometry;
 pub use model::annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationGeometry,
-    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationShape, AnnotationSpace,
-    ArrowStyle, AxisMap, AxisSpace, BoxStyle, PixelSpace, annotation_shapes,
+    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
+    AxisSpace, BoxStyle, MeasuredText, PixelSpace, emit_annotation,
 };
+use model::select::SelectionGeometry;
+use model::sink::{Sink, Slot};
 use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
 /// The anchor space of a Cartesian chart: the chart area is the panel, the
@@ -172,7 +174,12 @@ impl AnnotationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(self.map.get(id)?.as_draggable()?.drag_by(layer, dx, dy))
+        Some(
+            self.map
+                .get(id)?
+                .as_draggable()?
+                .drag_by(layer, &CpuTextMeasure::default(), dx, dy),
+        )
     }
 
     pub fn hit_resize_handle(
@@ -196,12 +203,13 @@ impl AnnotationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(
-            self.map
-                .get(id)?
-                .as_resizable()?
-                .resize_by(layer, handle, dx, dy),
-        )
+        Some(self.map.get(id)?.as_resizable()?.resize_by(
+            layer,
+            &CpuTextMeasure::default(),
+            handle,
+            dx,
+            dy,
+        ))
     }
 }
 
@@ -289,31 +297,27 @@ pub(crate) struct RasterRequest<'a> {
     pub policy: FontPolicy,
 }
 
-/// Measured size of a text block in logical pixels, plus the first line's
-/// ascent in physical pixels for baseline placement.
-struct Measured {
-    size: [f32; 2],
-    ascent: f32,
-    padding: f32,
-}
-
+/// Measure a text block in logical pixels: the renderer's glyph stack at
+/// the raster's physical scale, so the hit map and the raster agree at every
+/// output scale.
 fn measure(
     text: &model::text::RichText,
     padding: f32,
     scale: f32,
     policy: FontPolicy,
-) -> Option<Measured> {
+) -> Option<MeasuredText> {
     if text.segments.is_empty() {
         return None;
     }
     let m = measure_rich_text(&scaled_rich_text(text, scale), policy);
-    Some(Measured {
+    Some(MeasuredText {
         size: [
             m.width / scale + padding * 2.0,
             m.height() / scale + padding * 2.0,
         ],
-        ascent: m.ascent,
+        ascent: m.ascent / scale,
         padding,
+        em: text.font_size,
     })
 }
 
@@ -374,13 +378,89 @@ fn skip_reason(
     }
 }
 
-fn dash(style: &model::line::LineStylePreset, scale: f32) -> Vec<f32> {
-    style.pattern().iter().map(|v| v * scale).collect()
+/// The annotation raster's sink: one canvas per slot, each created by the
+/// first part placed into it, so a layer with nothing below (or above) the
+/// data has no texture for that slot.
+struct LayerSink {
+    underlay: Option<Canvas>,
+    overlay: Option<Canvas>,
+    size: (u32, u32),
+    origin: [f32; 2],
+    scale: f32,
+    policy: FontPolicy,
+}
+
+impl LayerSink {
+    fn ensure(&mut self, slot: Slot) {
+        let (w, h) = self.size;
+        let canvas = match slot {
+            Slot::Below => &mut self.underlay,
+            Slot::Above => &mut self.overlay,
+        };
+        if canvas.is_none() {
+            *canvas = Canvas::new(w, h);
+        }
+    }
+
+    fn canvas_sink(&mut self) -> crate::decoration_render::CanvasSink<'_> {
+        crate::decoration_render::CanvasSink::placed(
+            self.underlay.as_mut(),
+            self.overlay.as_mut(),
+            crate::sketch::DecoStroker::Precise,
+            self.policy,
+            self.origin,
+            self.scale,
+        )
+    }
+}
+
+impl Sink for LayerSink {
+    fn text(&mut self, slot: Slot, text: &model::sink::PlacedText<'_>) {
+        self.ensure(slot);
+        self.canvas_sink().text(slot, text);
+    }
+
+    fn stroke(
+        &mut self,
+        slot: Slot,
+        a: [f32; 2],
+        b: [f32; 2],
+        style: &model::sink::StrokeStyle<'_>,
+    ) {
+        self.ensure(slot);
+        self.canvas_sink().stroke(slot, a, b, style);
+    }
+
+    fn rect(
+        &mut self,
+        slot: Slot,
+        rect: RectF,
+        fill: Option<model::Color>,
+        border: Option<model::sink::Border<'_>>,
+    ) {
+        if fill.is_none() && border.is_none() {
+            return;
+        }
+        self.ensure(slot);
+        self.canvas_sink().rect(slot, rect, fill, border);
+    }
+
+    fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: model::Color) {
+        self.ensure(slot);
+        self.canvas_sink().triangle(slot, points, color);
+    }
+
+    fn ramp(&mut self, slot: Slot, rect: RectF, bar: &model::config::ColorBarOptions) {
+        self.ensure(slot);
+        self.canvas_sink().ramp(slot, rect, bar);
+    }
 }
 
 /// Rasterize `request.layer` into the underlay and overlay and register the
 /// drawn items in an [`AnnotationMap`]. Items are drawn in index order; a
 /// hidden or unplaceable item is skipped and, when unplaceable, reported.
+/// Each item is placed once, through [`AnnotationElement::emit`]: the
+/// canvas sink paints the parts and the hit map's sinks read the same parts.
 pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     let (w, h) = request.size;
     let scale = request.scale;
@@ -395,16 +475,14 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
             map,
         };
     }
-    let mut underlay: Option<Canvas> = None;
-    let mut overlay: Option<Canvas> = None;
-    fn canvas(slot: &mut Option<Canvas>, w: u32, h: u32) -> Option<&mut Canvas> {
-        if slot.is_none() {
-            *slot = Canvas::new(w, h);
-        }
-        slot.as_mut()
-    }
-    // Logical map coordinate -> physical raster pixel.
-    let px = |p: [f32; 2]| ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale);
+    let mut sink = LayerSink {
+        underlay: None,
+        overlay: None,
+        size: (w, h),
+        origin,
+        scale,
+        policy: request.policy,
+    };
     let mut registered = Vec::new();
     for (index, item) in request.layer.items.iter().enumerate() {
         if !item.visible {
@@ -427,119 +505,21 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
                 .as_ref()
                 .and_then(|t| measure(t, 0.0, scale, request.policy)),
         };
-        let text_size = measured.as_ref().map(|m| m.size);
-        let Some(geometry) = geometry(&item.kind, &space, text_size) else {
+        let text_size = measured.map(|m| m.size);
+        if geometry(&item.kind, &space, text_size).is_none() {
             map.warnings.push(RenderWarning::AnnotationSkipped {
                 index,
                 reason: skip_reason(&item.kind, &space, text_size),
             });
             continue;
-        };
+        }
         let element = AnnotationElement {
             index,
             space,
-            text_size,
+            text: measured,
             handle: None,
         };
-        // Paint exactly the item's shapes; its bounds, hit test and
-        // selection box are computed from the same shapes.
-        for shape in annotation_shapes(&item.kind, &geometry, text_size)
-            .into_iter()
-            .flatten()
-        {
-            match (&item.kind, shape) {
-                (AnnotationKind::Span { fill, .. }, AnnotationShape::Rect(rect)) => {
-                    if let Some(c) = canvas(&mut underlay, w, h) {
-                        let (x, y) = px([rect.x, rect.y]);
-                        c.draw_rect(
-                            x,
-                            y,
-                            rect.width * scale,
-                            rect.height * scale,
-                            &Paint::fill(fill),
-                        );
-                    }
-                }
-                (
-                    AnnotationKind::Text {
-                        text, box_style, ..
-                    },
-                    AnnotationShape::Rect(rect),
-                ) => {
-                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
-                        let (x, y) = px([rect.x, rect.y]);
-                        if let Some(b) = box_style {
-                            let (pw, ph) = (rect.width * scale, rect.height * scale);
-                            if b.fill.a > 0.0 {
-                                c.draw_rect(x, y, pw, ph, &Paint::fill(&b.fill));
-                            }
-                            if b.border_width > 0.0 && b.border_color.a > 0.0 {
-                                let bw = b.border_width * scale;
-                                c.draw_rect(
-                                    x + bw * 0.5,
-                                    y + bw * 0.5,
-                                    (pw - bw).max(0.0),
-                                    (ph - bw).max(0.0),
-                                    &Paint::stroke(&b.border_color, bw),
-                                );
-                            }
-                        }
-                        let pad = m.padding * scale;
-                        draw_rich_text(
-                            c,
-                            &scaled_rich_text(text, scale),
-                            (x + pad, y + pad + m.ascent),
-                            request.policy,
-                        );
-                    }
-                }
-                (
-                    AnnotationKind::ReferenceLine { style, .. }
-                    | AnnotationKind::Arrow {
-                        style: model::annotation::ArrowStyle { line: style, .. },
-                        ..
-                    },
-                    AnnotationShape::Stroke { a, b, width },
-                ) => {
-                    if let Some(c) = canvas(&mut overlay, w, h) {
-                        c.draw_line(
-                            px(a),
-                            px(b),
-                            &Paint::stroke(&style.color, width * scale)
-                                .with_dash(&dash(&style.style, scale)),
-                        );
-                    }
-                }
-                (AnnotationKind::Arrow { style, .. }, AnnotationShape::Triangle(t)) => {
-                    if let Some(c) = canvas(&mut overlay, w, h) {
-                        c.fill_polygon(
-                            &[px(t[0]), px(t[1]), px(t[2])],
-                            &Paint::fill(&style.line.color),
-                        );
-                    }
-                }
-                (
-                    AnnotationKind::ReferenceLine {
-                        label: Some(text), ..
-                    }
-                    | AnnotationKind::Arrow {
-                        text: Some(text), ..
-                    },
-                    AnnotationShape::Label(rect),
-                ) => {
-                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
-                        let (x, y) = px([rect.x, rect.y]);
-                        draw_rich_text(
-                            c,
-                            &scaled_rich_text(text, scale),
-                            (x, y + m.ascent),
-                            request.policy,
-                        );
-                    }
-                }
-                _ => unreachable!("the shapes follow the item kind"),
-            }
-        }
+        element.emit(request.layer, &mut sink);
         registered.push(element);
     }
     for element in registered {
@@ -548,25 +528,16 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     }
     if let Some(index) = request.selected
         && let Some(id) = map.find(index)
-        && let Some(mut selection) = map.selection_box(id)
-        && let Some(c) = canvas(&mut overlay, w, h)
+        && let Some(selection) = map.selection_box(id)
     {
-        let shift = |r: RectF| RectF {
-            x: (r.x - origin[0]) * scale,
-            y: (r.y - origin[1]) * scale,
-            width: r.width * scale,
-            height: r.height * scale,
-        };
-        selection.rect = shift(selection.rect);
-        selection.stroke_width *= scale;
-        for handle in &mut selection.handles {
-            *handle = shift(*handle);
+        sink.ensure(Slot::Above);
+        if let Some(c) = sink.overlay.as_mut() {
+            crate::axis_render::draw_selection_box(c, &selection, origin, scale);
         }
-        crate::axis_render::draw_selection_boxes(c, &[selection]);
     }
     AnnotationRaster {
-        underlay: underlay.map(Canvas::into_rgba),
-        overlay: overlay.map(Canvas::into_rgba),
+        underlay: sink.underlay.map(Canvas::into_rgba),
+        overlay: sink.overlay.map(Canvas::into_rgba),
         map,
     }
 }
@@ -1075,13 +1046,13 @@ mod tests {
         let _ = map.register(AnnotationElement {
             index: 0,
             space: space(),
-            text_size: None,
+            text: None,
             handle: None,
         });
         map.register(AnnotationElement {
             index: 1,
             space: space(),
-            text_size: None,
+            text: None,
             handle: None,
         })
     }
@@ -1201,7 +1172,7 @@ mod tests {
             assert_eq!(index_at([80., 64.]), Some(0));
             assert_eq!(raster.map.hit_test([5., 5.]), None);
             let selection = raster.map.selection_box(hit).unwrap();
-            assert_eq!(selection.handles.len(), 2);
+            assert_eq!(selection.handles().len(), 2);
         }
     }
 

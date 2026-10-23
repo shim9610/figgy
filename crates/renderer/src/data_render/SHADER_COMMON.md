@@ -17,8 +17,9 @@ To change shared shader code:
    `mirrored_struct_layouts_match_their_rust_twins` compares every mirrored
    struct's member names, offsets and size with naga's layout, and
    `wgsl_constants_equal_their_rust_constants` every shared `u32` constant.
-3. A CPU twin (`pick.rs`, `polar_projection.rs` and the model functions
-   named below) is test support: it follows the shader where the behaviour
+3. A CPU twin (the picker twins in `tests/support/cpu_twin.rs`, compiled as
+   `renderer::pick::cpu_twin` only under the `cpu-twin` feature, and the model
+   functions named below) is test support: it follows the shader where the behaviour
    tests (`pick_draw_agreement`, `gpu_pick` tests) require it.
 4. Run `cargo test -p figgy-renderer --test shader_consistency` and the
    renderer's shader unit tests (`every_assembled_module_parses_and_validates`
@@ -42,18 +43,18 @@ To change shared shader code:
 | `line_step.wgsl` | line, line_arc |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `bounded_shading.wgsl` | boxplot, categorical |
+| `material.wgsl` (§5.9) | boxplot, categorical, radial |
+| `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
 `gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. Four functions stay copied where
+`shader_assembly::MODULES` names every one. Three functions stay copied where
 a module cannot splice their fragment, held to the fragment's text by
 `shader_consistency`: the pick modules' `ramp_finite` and
 `polar_fragment_visible` (they bind no draw `transform` and have no
 `maybe_log`, which the rest of those fragments read) and the radar `output`
-and radial `hash` / `noise` (they declare no `Bar`, which the rest of
-`bounded_shading.wgsl` takes).
+(it declares no `Bar`, which the rest of `bounded_shading.wgsl` takes).
 
 ### Module notes
 
@@ -83,7 +84,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 | `scale_log` | 축별 로그 변환 여부. 0.0은 선형, 1.0은 log10 |
 | `pixel_to_ndc` | `(2/chart_w, 2/chart_h)`. `chart_w`·`chart_h`는 데이터 영역이 아닌 `Config.chart_area`의 픽셀 너비·높이다. 픽셀 크기를 NDC 크기로 바꾸는 비율이며 선 두께·점 반지름·오차 막대 끝선 길이에 사용한다. |
 | `data_to_panel_scale`, `data_to_panel_offset` | 축 범위로 정규화한 좌표를 패널 좌표로 바꾸는 데이터 영역의 아핀 변환. 축 범위와 배치 여백을 분리한다. |
-| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 투영이 `polar_projection::ndc`, 표본 유효성이 `polar_projection::sample_valid`다. |
+| `polar_angle`, `polar_extent` | `Config.polar`의 극좌표 상수. 직교 차트에서는 모두 0이다. `polar_angle` = (플래그, 0도 방향(라디안), 각도 단위당 라디안에 방향 부호(+1/−1)를 곱한 값, 안쪽 반지름 비율), `polar_extent` = (섹터 시작, 섹터 끝(각도 단위; 끝 ≤ 시작이면 전체 원), 세그먼트당 호 조각 수(현이면 0), 바깥 반지름 px). `line_columnar.wgsl`의 `line_step_mode`와 `gpu_pick/*.wgsl`의 선 판정은 호 조각 수를 이 값에서 읽어 `step_piece_count`의 모드 워드(비트 0–1 계단 모드, 비트 4 이상 호 조각 수)에 합친다. 플래그가 1이면 `data_to_ndc`가 `polar_ndc`로 분기해 각도 컬럼을 데이터 영역 중심 둘레의 각도로, 반지름 축의 정규화 좌표를 안쪽 고리와 바깥 반지름 사이로 사상한다. 극좌표는 `Scatter`·`Line`·`ScatterLine` 시리즈(면 채움 포함)에만 허용된다. 히스토그램·행렬·등고선·오차 막대·벡터 시리즈는 `renderer.rs::validate_polar_series`가 거부하므로 해당 셰이더에서는 이 분기가 실행되지 않는다. CPU 쌍둥이는 `tests/support/cpu_twin.rs`에 있으며 투영이 `cpu_twin::ndc`, 표본 유효성이 `cpu_twin::sample_valid`다. |
 | `style_params` | Three generic style parameter slots. The active style's shader entries interpret them; the precise entries never read them. The slot layout is in the block comment above (sketch `[0]`, milkyway `[0]`–`[2]`, constellation `[0]`; every other lane is 0). Seeds are stored as f32 and recovered as `u32(...)`, exact up to 2^24. `[2].z` is reserved for the streamed point base under every style (see below). CPU packing: `StyleVariant::pack_params` in `renderer.rs` (`[f32; 12]`). |
 
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
@@ -372,7 +373,7 @@ Nothing a marker draws lies farther than `visual_shape_radius +
 QUAD_MARGIN_PX` from its centre on either axis (the quad `vs_main` emits),
 which is the reach the picker's axis gates allow around each centre.
 
-CPU twin: the `marker_*` functions of `pick.rs` (`styled_marker_distance`).
+CPU twin: the `marker_*` functions of `tests/support/cpu_twin.rs` (`cpu_twin::styled_marker_distance`).
 
 The functions and constants are the fragment [`data_render/common/marker.wgsl`](common/marker.wgsl), spliced into the scatter and pick marker modules by `wgsl_module!` (`shader_assembly.rs`).
 
@@ -416,7 +417,7 @@ ribbon is never dashed; its strip and the star field scattered along it pick
 as one rectangle of the larger half extent (`gpu_pick.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
-CPU twin: `pick.rs::line_segment_pick` (precise strokes and dashes) with
+CPU twin: `cpu_twin::line_segment_pick` (precise strokes and dashes) with
 its arc sum.
 
 The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
@@ -445,7 +446,7 @@ the picker follows the entry the chart's style draws with
   (`mod.rs::bake_psf_rgba`), so that disc is what picks. A zero star or line
   opacity draws nothing and picks nothing.
 
-CPU twin: `pick.rs::styled_marker_distance`.
+CPU twin: `cpu_twin::styled_marker_distance`.
 
 The functions and constants are the end of the fragment [`data_render/common/marker.wgsl`](common/marker.wgsl), after the marker shape and the size-map radius.
 
@@ -468,10 +469,75 @@ growing a round dot at the tail: the fragment stage recomputes the length from
 the pivot-shifted tail and tip, and that rounding used to leave a shaft of a
 few ulps whose round end the draw painted and the pick did not.
 
-CPU twin: `pick.rs::vector_arrow_distance` with `arrow_place` /
+CPU twin: `cpu_twin::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
+
+### 5.9 Material surface
+
+Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
+into one per-instance value, `struct Material { params: vec4<f32>, finish:
+vec4<f32> }`, embedded as the `material` member of the categorical and
+boxplot `Bar` and the radial `Sector`:
+
+| Lane | Meaning |
+|---|---|
+| `params.x` | kind: `MATERIAL_FLAT` (0) … `MATERIAL_PEARL` (10), the `model::Material` variant order |
+| `params.y` | roughness (sectors: `RadialStyle::roughness`) |
+| `params.z` | texture strength |
+| `params.w` | texture scale |
+| `finish.x` | gloss |
+| `finish.y` | grain seed (stable per bar, box or slice identity) |
+| `finish.z` | texture angle in radians |
+| `finish.w` | emphasis brightness, added after shading |
+
+Rust twin: `data_render::MaterialGpu` (`data_render/style.rs`), packed by
+`MaterialGpu::pack`, with the `MATERIAL_*` constants.
+
+One function shades every family:
+
+```wgsl
+fn material_surface(m: Material, color: vec3<f32>, p: vec3<f32>, n: vec3<f32>,
+    view: vec3<f32>, light: vec3<f32>, tangent: vec3<f32>, brush: vec2<f32>,
+    pixels: f32) -> vec3<f32>
+```
+
+- `p` is the object-space surface point. One object unit is `pixels`
+  output pixels: the sector radius. The function turns `p` by the texture
+  angle and scales it by the texture scale, so grain, paper, wood and hatch
+  stay fixed to the object and fade (`material_band`) where the output
+  cannot resolve them.
+- `n`, `view` and `light` are unit vectors: the surface normal, the
+  direction to the viewer and the direction to the light. A sector passes
+  its raymarched normal, the camera direction and `RadialStyle::light`.
+- `tangent` and `brush` describe the brush of `BrushedMetal` and
+  `SatinMetal`: the unit brush direction on the surface, and the (across,
+  along) brush coordinates; the noise runs at a pixel-limited frequency
+  across the brush and at `brush.y` along it. A sector's brush is
+  circumferential: (radius, twice the turned angle).
+- `Flat` returns the color plus the emphasis, ignoring every parameter.
+
+A bar or a box is a flat body, shaded like a flat (zero depth, zero tilt)
+pie top by `bar_surface` in `bounded_shading.wgsl`: normal and view
+`(0, 0, 1)`, the normalized default `RadialStyle::light` (`BAR_LIGHT`),
+the radial default roughness (packed by the layouts) and texture angle 0.
+Its object point is the logical-pixel offset from the bar's top-left corner
+divided by `BAR_UNIT_PX` (150), which plays the sector radius, and its
+brush runs along the bar: (across, twice along). With a constant normal the
+lighting and the specular lobes are uniform over a bar: at that light
+`n·h` is 0.945, so `Enamel`'s lobe is below one 8-bit step and `gloss` has
+no visible effect on an `Enamel` bar, and on a `Ceramic` bar it lifts the
+whole bar by at most 2.5/255. `SatinMetal` and `BrushedMetal` keep a
+visible uniform sheen; their brush runs at `min(450 · scale, 0.4 · pixels)`
+cycles per unit, so at 1x (150 px per unit) a `texture_scale` above 0.13
+leaves a metal bar unchanged, as it does a sector of that radius. `Toon`
+and `Pearl`, which only respond to a turning normal, are rejected by the
+model (`Material::supported_on_flat_body`).
+
+`hash`, `noise`, `material_noise`, `material_band`, the struct, the
+constants and `material_surface` are the fragment
+[`data_render/common/material.wgsl`](common/material.wgsl).
 
 ---
 ## Checklist

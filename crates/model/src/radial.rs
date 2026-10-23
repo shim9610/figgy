@@ -1,7 +1,7 @@
 //! Small categorical charts. Values and appearance are independent of Cartesian
 //! axes and column streams. The renderer consumes a complete validated snapshot.
-use crate::Color;
 use crate::format::PlainNumberFormat;
+use crate::{Color, Material};
 
 pub const MAX_RADIAL_SLICES: usize = 64;
 
@@ -59,21 +59,10 @@ impl RadialKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RadialMaterial {
-    Flat,
-    Matte,
-    Ceramic,
-    BrushedMetal,
-    Paper,
-    Wood,
-    SatinMetal,
-    Toon,
-    Enamel,
-    Hatch,
-    Pearl,
-}
+/// The former sector material enum, now the shared [`Material`]. Sectors
+/// accept every variant.
+#[deprecated(since = "0.13.0", note = "use Material")]
+pub type RadialMaterial = crate::Material;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -201,7 +190,7 @@ impl RadialInteraction {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct RadialStyle {
-    pub material: RadialMaterial,
+    pub material: Material,
     /// Orthographic camera tilt, 0..65 degrees. Zero is an undistorted top view.
     pub tilt_degrees: f32,
     /// Extrusion height / radius, 0..0.4. Does not change slice proportions.
@@ -258,7 +247,7 @@ impl RadialStyle {
             texture_angle_degrees,
         } = Self::default();
         Self {
-            material: RadialMaterial::Ceramic,
+            material: Material::Ceramic,
             tilt_degrees: 55.0,
             depth: 0.16,
             bevel: 0.025,
@@ -282,7 +271,7 @@ impl RadialStyle {
 impl Default for RadialStyle {
     fn default() -> Self {
         Self {
-            material: RadialMaterial::Flat,
+            material: Material::Flat,
             tilt_degrees: 0.0,
             depth: 0.0,
             bevel: 0.015,
@@ -435,6 +424,8 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
     Ok(sum)
 }
 fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
+    // No material check: a sector has a curved, lit surface and draws every
+    // `Material`, unlike the flat bodies of bars and boxes.
     if !range(s.tilt_degrees, 0.0, 65.0)
         || !range(s.depth, 0.0, 0.4)
         || !range(s.bevel, 0.0, 0.1)
@@ -614,6 +605,32 @@ mod tests {
         assert!(c.validate().is_ok());
     }
     #[test]
+    fn sectors_accept_every_material() {
+        for material in [
+            Material::Flat,
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Toon,
+            Material::Enamel,
+            Material::Hatch,
+            Material::Pearl,
+        ] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+            let mut c = chart();
+            c.slices[0].style = Some(RadialStyle {
+                material,
+                ..Default::default()
+            });
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+        }
+    }
+    #[test]
     fn radial_detail_conserves_parent_total() {
         let mut c = chart();
         c.split = Some(RadialSplit {
@@ -700,7 +717,7 @@ mod editing_contract {
             ..Default::default()
         };
         chart.style.outer_corner = 0.05;
-        chart.style.material = RadialMaterial::SatinMetal;
+        chart.style.material = Material::SatinMetal;
         chart.slices[0].label_format = Some(RadialLabelFormat::Value);
         chart.interaction.selected = Some(RadialTarget::main(0));
         let json = serde_json::to_value(&chart).unwrap();

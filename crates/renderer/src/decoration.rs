@@ -1,12 +1,19 @@
 #![doc = include_str!("../INTERACTION.md")]
 //! Renderer-measured decoration hit maps. Data picking remains on the chart frame.
 //! Coordinates and drag deltas are chart-local logical pixels, not framebuffer pixels.
-use crate::raster::{Canvas, Paint};
-use crate::text_render::{draw_plain_text, draw_rich_text, measure_plain_text, measure_rich_text};
+use crate::decoration_render::CanvasSink;
+use crate::raster::Canvas;
+use crate::sketch::DecoStroker;
+use crate::text_render::measure_plain_text;
 use crate::{CpuTextMeasure, FontPolicy, HitId, HitMap};
 use model::{
     DecorationElement, DecorationId, DecorationLayout,
+    color::Color,
+    config::ColorBarOptions,
     layout::{NudgeResult, RectF},
+    select::{STROKE_GRAB_HALF_WIDTH, SelectionGeometry},
+    sink::{Border, DrawnPart, PlacedText, Sink, Slot, StrokeStyle, TextRef},
+    text::TextExtents,
 };
 
 /// Bounded, deterministic placement of automatic label rectangles. Manual
@@ -160,7 +167,12 @@ impl DecorationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(self.map.get(id)?.as_draggable()?.drag_by(layout, dx, dy))
+        Some(self.map.get(id)?.as_draggable()?.drag_by(
+            layout,
+            &CpuTextMeasure::for_style(&Default::default()),
+            dx,
+            dy,
+        ))
     }
     pub fn hit_resize_handle(
         &self,
@@ -182,12 +194,13 @@ impl DecorationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(
-            self.map
-                .get(id)?
-                .as_resizable()?
-                .resize_by(layout, handle, dx, dy),
-        )
+        Some(self.map.get(id)?.as_resizable()?.resize_by(
+            layout,
+            &CpuTextMeasure::for_style(&Default::default()),
+            handle,
+            dx,
+            dy,
+        ))
     }
     pub(crate) fn draw_selection(&self, canvas: &mut Canvas, scale: f32) {
         let Some((id, _)) = self
@@ -197,19 +210,8 @@ impl DecorationMap {
         else {
             return;
         };
-        if let Some(mut selection) = self.selection_box(*id) {
-            selection.rect.x *= scale;
-            selection.rect.y *= scale;
-            selection.rect.width *= scale;
-            selection.rect.height *= scale;
-            selection.stroke_width *= scale;
-            for handle in &mut selection.handles {
-                handle.x *= scale;
-                handle.y *= scale;
-                handle.width *= scale;
-                handle.height *= scale;
-            }
-            crate::axis_render::draw_selection_boxes(canvas, &[selection]);
+        if let Some(selection) = self.selection_box(*id) {
+            crate::axis_render::draw_selection_box(canvas, &selection, [0.0, 0.0], scale);
         }
     }
 }
@@ -288,182 +290,23 @@ impl<'a> DecorationPainter<'a> {
             });
         }
     }
-    pub fn text(
-        &mut self,
-        id: DecorationId,
-        canvas: &mut Canvas,
-        family: &str,
-        text: &str,
-        x: f32,
-        y: f32,
-        size: f32,
-        color: crate::Color,
-    ) {
-        if text.is_empty() || color.a == 0. {
-            return;
-        }
-        let m = measure_plain_text(
-            text,
-            family,
-            size * self.scale,
-            false,
-            false,
-            FontPolicy::Standard,
-        );
-        self.add(
-            id.clone(),
-            RectF {
-                x,
-                y: y - m.ascent / self.scale,
-                width: m.width / self.scale,
-                height: (m.ascent + m.descent) / self.scale,
-            },
-        );
-        let p = self.offset(&id);
-        if self.enabled {
-            draw_plain_text(
-                canvas,
-                text,
-                ((x + p[0]) * self.scale, (y + p[1]) * self.scale),
-                color,
-                family,
-                size * self.scale,
-                false,
-                false,
-                FontPolicy::Standard,
-            );
+    /// The sink an element's parts are placed through: every part is
+    /// recorded in `id`'s bounds and, when the painter draws, painted on
+    /// `canvas` at the element's effective offset.
+    pub fn on<'c>(&'c mut self, id: DecorationId, canvas: &'c mut Canvas) -> ElementSink<'c, 'a> {
+        ElementSink {
+            painter: self,
+            id: Some(id),
+            canvas,
         }
     }
-    pub fn rich_text(
-        &mut self,
-        id: DecorationId,
-        canvas: &mut Canvas,
-        text: &model::text::RichText,
-        x: f32,
-        baseline: f32,
-    ) {
-        if text.segments.is_empty() {
-            return;
-        }
-        let text = scaled_rich_text(text, self.scale);
-        let m = measure_rich_text(&text, FontPolicy::Standard);
-        self.add(
-            id.clone(),
-            RectF {
-                x,
-                y: baseline - m.ascent / self.scale,
-                width: m.width / self.scale,
-                height: m.height() / self.scale,
-            },
-        );
-        let p = self.offset(&id);
-        if self.enabled {
-            draw_rich_text(
-                canvas,
-                &text,
-                ((x + p[0]) * self.scale, (baseline + p[1]) * self.scale),
-                FontPolicy::Standard,
-            );
-        }
-    }
-    /// A -90 degree axis title. Offsets remain screen-space, so horizontal
-    /// pointer motion always moves the visible text horizontally.
-    pub fn rotated_text(
-        &mut self,
-        id: DecorationId,
-        canvas: &mut Canvas,
-        family: &str,
-        text: &str,
-        x: f32,
-        y: f32,
-        size: f32,
-        color: crate::Color,
-    ) {
-        let m = measure_plain_text(
-            text,
-            family,
-            size * self.scale,
-            false,
-            false,
-            FontPolicy::Standard,
-        );
-        self.add(
-            id.clone(),
-            RectF {
-                x: x - m.ascent / self.scale,
-                y: y - m.width / self.scale * 0.5,
-                width: (m.ascent + m.descent) / self.scale,
-                height: m.width / self.scale,
-            },
-        );
-        let p = self.offset(&id);
-        if self.enabled {
-            canvas.save();
-            canvas.translate(p[0] * self.scale, p[1] * self.scale);
-            canvas.rotate_at(-90., x * self.scale, y * self.scale);
-            draw_plain_text(
-                canvas,
-                text,
-                (x * self.scale - m.width * 0.5, y * self.scale),
-                color,
-                family,
-                size * self.scale,
-                false,
-                false,
-                FontPolicy::Standard,
-            );
-            canvas.restore();
-        }
-    }
-    pub fn rect(
-        &mut self,
-        id: DecorationId,
-        canvas: &mut Canvas,
-        rect: RectF,
-        color: crate::Color,
-    ) {
-        if color.a == 0. {
-            return;
-        }
-        self.add(id.clone(), rect);
-        let p = self.offset(&id);
-        if self.enabled {
-            canvas.draw_rect(
-                (rect.x + p[0]) * self.scale,
-                (rect.y + p[1]) * self.scale,
-                rect.width * self.scale,
-                rect.height * self.scale,
-                &Paint::fill(&color),
-            );
-        }
-    }
-    pub fn axis(
-        &mut self,
-        id: DecorationId,
-        canvas: &mut Canvas,
-        a: (f32, f32),
-        b: (f32, f32),
-        color: crate::Color,
-    ) {
-        if color.a == 0. {
-            return;
-        }
-        let rect = RectF {
-            x: a.0.min(b.0) - 3.,
-            y: a.1.min(b.1) - 3.,
-            width: (a.0 - b.0).abs() + 6.,
-            height: (a.1 - b.1).abs() + 6.,
-        };
-        self.add(id.clone(), rect);
-        let p = self.offset(&id);
-        if self.enabled {
-            crate::axis_render::draw_precise_axis_segment(
-                canvas,
-                ((a.0 + p[0]) * self.scale, (a.1 + p[1]) * self.scale),
-                ((b.0 + p[0]) * self.scale, (b.1 + p[1]) * self.scale),
-                color,
-                self.scale,
-            );
+    /// The sink for chrome that is no element, such as grid lines and radar
+    /// spokes: parts are painted at zero offset and recorded nowhere.
+    pub fn chrome<'c>(&'c mut self, canvas: &'c mut Canvas) -> ElementSink<'c, 'a> {
+        ElementSink {
+            painter: self,
+            id: None,
+            canvas,
         }
     }
     pub fn finish(mut self) -> DecorationMap {
@@ -502,6 +345,205 @@ impl<'a> DecorationPainter<'a> {
             map,
             entries,
             size: self.size,
+        }
+    }
+}
+
+/// One element (or chrome) being placed by a bounded chart: the bounded
+/// canvas-plus-bounds sink. Every part is recorded in the element's bounds
+/// (chrome records nothing) and, when the painter draws, painted through a
+/// [`CanvasSink`] so a part placed at logical `p` lands at
+/// `(p + offset) * scale`. The caller chose the canvas, so the slot only
+/// tells the canvas sink where to find it.
+pub(crate) struct ElementSink<'c, 'a> {
+    painter: &'c mut DecorationPainter<'a>,
+    id: Option<DecorationId>,
+    canvas: &'c mut Canvas,
+}
+
+impl ElementSink<'_, '_> {
+    fn record(&mut self, part: DrawnPart) {
+        if let Some(id) = &self.id {
+            self.painter.add(id.clone(), part.extent());
+        }
+    }
+
+    /// The canvas sink a part is painted through, `None` when the painter
+    /// only measures.
+    fn paint(&mut self, slot: Slot) -> Option<CanvasSink<'_>> {
+        if !self.painter.enabled {
+            return None;
+        }
+        let origin = match &self.id {
+            Some(id) => {
+                let offset = self.painter.offset(id);
+                [-offset[0], -offset[1]]
+            }
+            None => [0.0, 0.0],
+        };
+        let canvas = &mut *self.canvas;
+        let (below, above) = match slot {
+            Slot::Below => (Some(canvas), None),
+            Slot::Above => (None, Some(canvas)),
+        };
+        Some(CanvasSink::placed(
+            below,
+            above,
+            DecoStroker::Precise,
+            FontPolicy::Standard,
+            origin,
+            self.painter.scale,
+        ))
+    }
+
+    /// Plain text at baseline origin `(x, y)`, `size` logical pixels high,
+    /// measured once at the painter's scale.
+    pub fn plain_text(
+        &mut self,
+        family: &str,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: Color,
+    ) {
+        if text.is_empty() || color.a == 0. {
+            return;
+        }
+        let extents = self.plain_extents(family, text, size);
+        self.text(
+            Slot::Above,
+            &PlacedText {
+                text: TextRef::Plain {
+                    text,
+                    family,
+                    size,
+                    color,
+                },
+                origin: (x, y),
+                extents,
+                rotation: None,
+            },
+        );
+    }
+
+    /// A -90 degree axis title centred on `(x, y)`. Offsets remain
+    /// screen-space, so horizontal pointer motion always moves the visible
+    /// text horizontally.
+    pub fn rotated_text(
+        &mut self,
+        family: &str,
+        text: &str,
+        x: f32,
+        y: f32,
+        size: f32,
+        color: Color,
+    ) {
+        let extents = self.plain_extents(family, text, size);
+        self.text(
+            Slot::Above,
+            &PlacedText {
+                text: TextRef::Plain {
+                    text,
+                    family,
+                    size,
+                    color,
+                },
+                origin: (x - extents.width * 0.5, y),
+                extents,
+                rotation: Some((-90.0, (x, y))),
+            },
+        );
+    }
+
+    /// A filled rectangle, such as a legend swatch.
+    pub fn fill(&mut self, rect: RectF, color: Color) {
+        if color.a == 0. {
+            return;
+        }
+        self.rect(Slot::Above, rect, Some(color), None);
+    }
+
+    /// A one logical pixel wide line: an element's axis above the data, or
+    /// chrome such as a grid line or a radar spoke below it.
+    pub fn line(&mut self, a: [f32; 2], b: [f32; 2], color: Color) {
+        if color.a == 0. {
+            return;
+        }
+        let slot = if self.id.is_some() {
+            Slot::Above
+        } else {
+            Slot::Below
+        };
+        self.stroke(
+            slot,
+            a,
+            b,
+            &StrokeStyle {
+                width: 1.0,
+                color,
+                dash: &[],
+                tag: "bounded_axis",
+            },
+        );
+    }
+
+    fn plain_extents(&self, family: &str, text: &str, size: f32) -> TextExtents {
+        let scale = self.painter.scale;
+        let m = measure_plain_text(
+            text,
+            family,
+            size * scale,
+            false,
+            false,
+            FontPolicy::Standard,
+        );
+        TextExtents {
+            width: m.width / scale,
+            ascent: m.ascent / scale,
+            descent: m.descent / scale,
+        }
+    }
+}
+
+impl Sink for ElementSink<'_, '_> {
+    fn text(&mut self, slot: Slot, text: &PlacedText<'_>) {
+        self.record(DrawnPart::Text(text.rect()));
+        if let Some(mut sink) = self.paint(slot) {
+            sink.text(slot, text);
+        }
+    }
+
+    fn stroke(&mut self, slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
+        // A thin line keeps the grab band its hit test answers within.
+        self.record(DrawnPart::Segment {
+            a,
+            b,
+            width: style.width.max(2.0 * STROKE_GRAB_HALF_WIDTH),
+        });
+        if let Some(mut sink) = self.paint(slot) {
+            sink.stroke(slot, a, b, style);
+        }
+    }
+
+    fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>) {
+        self.record(DrawnPart::Rect(rect));
+        if let Some(mut sink) = self.paint(slot) {
+            sink.rect(slot, rect, fill, border);
+        }
+    }
+
+    fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color) {
+        self.record(DrawnPart::Triangle(points));
+        if let Some(mut sink) = self.paint(slot) {
+            sink.triangle(slot, points, color);
+        }
+    }
+
+    fn ramp(&mut self, slot: Slot, rect: RectF, bar: &ColorBarOptions) {
+        self.record(DrawnPart::Rect(rect));
+        if let Some(mut sink) = self.paint(slot) {
+            sink.ramp(slot, rect, bar);
         }
     }
 }

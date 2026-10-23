@@ -40,6 +40,9 @@ mod contour;
 pub use contour::*;
 mod composite;
 pub use composite::*;
+// The panel draw in slot order lives with the compositor; the name stays
+// here for hosts that issue panels themselves.
+pub use crate::renderer::draw_chart_panel_columnar;
 pub mod bar_envelope;
 pub mod column_pool;
 pub mod contour_label_atlas;

@@ -32,15 +32,33 @@ fn moved(
 ) -> RectF {
     let id = id(map, key);
     let old = map.bounds(id).unwrap();
-    let hit = map
-        .hit_test([old.x + old.width * 0.5, old.y + old.height * 0.5])
-        .expect("visible decoration must pick");
+    // Elements hit inside their padded selection box, so a later element
+    // drawn next to this one (a radar value label on the rim beside its
+    // spoke label) can cover the centre of its bounds. Press the first point
+    // of a grid over the bounds, centre first, that picks the element.
+    let samples = (0..=8).flat_map(|j| (0..=8).map(move |i| (i, j)));
+    let hit = std::iter::once((4, 4))
+        .chain(samples)
+        .map(|(i, j)| {
+            [
+                old.x + old.width * i as f32 / 8.0,
+                old.y + old.height * j as f32 / 8.0,
+            ]
+        })
+        .filter_map(|p| map.hit_test(p))
+        .find(|hit| &map.element(*hit).unwrap().id == key)
+        .unwrap_or_else(|| panic!("visible decoration {key:?} must pick"));
     assert_eq!(&map.element(hit).unwrap().id, key);
     // The same trait-object workflow as existing Cartesian charts.
     let element = map.hit_map().get(hit).unwrap();
     assert_eq!(element.element_id(), key.element_id());
     assert_eq!(
-        element.as_draggable().unwrap().drag_by(state, dx, dy),
+        element.as_draggable().unwrap().drag_by(
+            state,
+            &CpuTextMeasure::for_style(&Default::default()),
+            dx,
+            dy
+        ),
         NudgeResult::Moved
     );
     old

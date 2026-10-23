@@ -1,14 +1,19 @@
 //! Native SSOT editor. Click a bar, change its color/style/label, or edit the chart.
 //! cargo run -p figgy-renderer --example categorical_editor --features egui_demo
 use eframe::egui_wgpu::RenderState;
-use renderer::{Color, RendererDevice, categorical::*};
+use renderer::{Color, Material, RendererDevice, categorical::*};
 use std::sync::Arc;
-const MATERIALS: &[CategoryBarMaterial] = &[
-    CategoryBarMaterial::Flat,
-    CategoryBarMaterial::Matte,
-    CategoryBarMaterial::SatinMetal,
-    CategoryBarMaterial::Enamel,
-    CategoryBarMaterial::Paper,
+// Every material but Toon and Pearl, which bars reject.
+const MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
 ];
 const FORMATS: &[CategoryBarLabelFormat] = &[
     CategoryBarLabelFormat::Value,
@@ -107,7 +112,7 @@ impl Editor {
             value_title: "Value".into(),
             ..Default::default()
         };
-        chart.style.material = CategoryBarMaterial::Matte;
+        chart.style.material = Material::Matte;
         Ok(Self {
             state,
             renderer,
