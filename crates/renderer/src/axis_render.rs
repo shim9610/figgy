@@ -226,7 +226,9 @@ pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
 }
 
 /// Draw the full axis chrome (grid + decoration) into the regions specified
-/// by `config`. If `data_area()` fails, this is a no-op.
+/// by `config`. If `data_area()` fails, this is a no-op. One canvas cannot
+/// back both slots at once, so this entry runs the placement once per slot;
+/// `raster_panel_layers` is the single pass the renderer uses.
 pub fn draw_axes(canvas: &mut Canvas, config: &Config) {
     draw_grid_layer(canvas, config);
     draw_decoration_layer(canvas, config);

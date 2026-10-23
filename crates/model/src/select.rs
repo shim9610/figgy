@@ -43,9 +43,8 @@ pub const SELECTION_COLOR: Color = Color {
 pub const SELECTION_STROKE_WIDTH: f32 = 1.5;
 /// Gap between the element bounds and the highlight box, px.
 pub const SELECTION_PADDING: f32 = 2.0;
-/// Least half thickness by which a stroke is grabbed where an element hits
-/// on its parts: a thin line is grabbed within this distance either side, a
-/// wider one across its whole width.
+/// Least half width of the box a stroke is outlined and grabbed with where
+/// an element hits on its parts (see [`segment_grab_half_width`]).
 pub const STROKE_GRAB_HALF_WIDTH: f32 = 3.0;
 
 /// What a selection highlight outlines.
@@ -64,8 +63,10 @@ pub enum SelectionOutline {
 }
 
 /// The blue box drawn around a selected element. Built only by
-/// [`SelectionGeometry::selection_box`], from the element's emitted parts;
-/// consumed by the renderer's raster pass and by host UI.
+/// [`SelectionGeometry::selection_box`], from the element's emitted parts,
+/// and moved or scaled as a whole by [`SelectionBox::translated`] and
+/// [`SelectionBox::scaled`]; consumed by the renderer's raster pass and by
+/// host UI.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionBox {
     rect: RectF,
@@ -204,10 +205,10 @@ pub trait SelectionGeometry<C: DragConfig = Config> {
 
     /// Whether `(x, y)` is inside what the selection outlines: the box
     /// [`SELECTION_PADDING`] px around the bounds, or, for an element that
-    /// [`Selectable::outlines_parts`], one of its parts within its grab
-    /// slack (a text block or rectangle grown by the padding, a stroke
-    /// within half its width and at least [`STROKE_GRAB_HALF_WIDTH`], a
-    /// triangle inside or within the padding of an edge).
+    /// [`Selectable::outlines_parts`], the outline of one of its parts (a
+    /// text block or rectangle grown by the padding, the box
+    /// [`segment_grab_half_width`] either side of a stroke and the padding
+    /// beyond its ends, the [`padded_triangle`] of a triangle).
     fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool;
 
     /// The selection policy: a blue box [`SELECTION_PADDING`] px outside the
@@ -222,31 +223,73 @@ fn part_extent(part: &DrawnPart) -> RectF {
     part.extent()
 }
 
-/// Whether `(x, y)` is on a drawn part within its grab slack.
+/// Whether `(x, y)` is inside the outline of a drawn part: the renderer
+/// draws exactly these shapes around a per-part selection.
 fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
     match *part {
         DrawnPart::Text(r) | DrawnPart::Rect(r) => r.expanded(SELECTION_PADDING).contains(x, y),
-        DrawnPart::Segment { a, b, width } => {
-            segment_distance([x, y], a, b) <= (width * 0.5).max(STROKE_GRAB_HALF_WIDTH)
-        }
-        DrawnPart::Triangle(t) => {
-            in_triangle([x, y], t)
-                || (0..3)
-                    .any(|i| segment_distance([x, y], t[i], t[(i + 1) % 3]) <= SELECTION_PADDING)
-        }
+        DrawnPart::Segment { a, b, width } => segment_contains([x, y], a, b, width),
+        DrawnPart::Triangle(t) => in_triangle([x, y], padded_triangle(t)),
     }
 }
 
-/// Distance from `p` to the segment `a`..`b`.
-pub fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+/// Half the width of the box a stroke `width` across is outlined and
+/// grabbed with: half the stroke plus [`SELECTION_PADDING`], at least
+/// [`STROKE_GRAB_HALF_WIDTH`].
+pub fn segment_grab_half_width(width: f32) -> f32 {
+    (width * 0.5 + SELECTION_PADDING).max(STROKE_GRAB_HALF_WIDTH)
+}
+
+/// Whether `p` is inside the outline of the segment `a`..`b` stroked
+/// `width` across: within [`segment_grab_half_width`] of its line and
+/// within [`SELECTION_PADDING`] beyond either end.
+pub fn segment_contains(p: [f32; 2], a: [f32; 2], b: [f32; 2], width: f32) -> bool {
     let d = [b[0] - a[0], b[1] - a[1]];
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let t = if len2 > 0.0 {
-        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
+    let len = d[0].hypot(d[1]);
+    let rel = [p[0] - a[0], p[1] - a[1]];
+    let (along, across) = if len > 0.0 {
+        let dir = [d[0] / len, d[1] / len];
+        (
+            rel[0] * dir[0] + rel[1] * dir[1],
+            rel[0] * dir[1] - rel[1] * dir[0],
+        )
     } else {
-        0.0
+        (0.0, rel[0].hypot(rel[1]))
     };
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+    (-SELECTION_PADDING..=len + SELECTION_PADDING).contains(&along)
+        && across.abs() <= segment_grab_half_width(width)
+}
+
+/// The triangle `t` with every edge moved [`SELECTION_PADDING`] px outward:
+/// the outline of a triangle part. A degenerate triangle is returned as it
+/// is.
+pub fn padded_triangle(t: [[f32; 2]; 3]) -> [[f32; 2]; 3] {
+    let cx = (t[0][0] + t[1][0] + t[2][0]) / 3.0;
+    let cy = (t[0][1] + t[1][1] + t[2][1]) / 3.0;
+    // The unit normal of the edge `a`..`b` that points away from the centroid.
+    let outward = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len <= 0.0 {
+            return None;
+        }
+        let n = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+        let to_centroid = (cx - a[0]) * n[0] + (cy - a[1]) * n[1];
+        Some(if to_centroid > 0.0 { [-n[0], -n[1]] } else { n })
+    };
+    let mut out = t;
+    for i in 0..3 {
+        let (prev, v, next) = (t[(i + 2) % 3], t[i], t[(i + 1) % 3]);
+        let (Some(n1), Some(n2)) = (outward(prev, v), outward(v, next)) else {
+            return t;
+        };
+        let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+        if denom <= 1e-6 {
+            return t;
+        }
+        let k = SELECTION_PADDING / denom;
+        out[i] = [v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])];
+    }
+    out
 }
 
 fn in_triangle(p: [f32; 2], t: [[f32; 2]; 3]) -> bool {
@@ -305,7 +348,15 @@ impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
         } else {
             SelectionOutline::Rect
         };
-        let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
+        let rect = match &outline {
+            // The parts are in hand: their union is the bounds.
+            SelectionOutline::Parts(parts) => parts
+                .iter()
+                .map(DrawnPart::extent)
+                .reduce(crate::sink::union)?,
+            SelectionOutline::Rect => self.bounds(cfg, measure)?,
+        }
+        .expanded(SELECTION_PADDING);
         let mut handles = Vec::new();
         if let Some(resizable) = self.as_resizable() {
             resizable.resize_handles(cfg, measure, &mut |_, square| handles.push(square));
@@ -1440,6 +1491,37 @@ impl Draggable for OverlayLegendElement {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn part_outlines_are_what_is_grabbed() {
+        // A 1 px horizontal stroke from (10, 10) to (50, 10): grabbed within
+        // 3 px either side and 2 px beyond either end, as its box is drawn.
+        let (a, b) = ([10.0, 10.0], [50.0, 10.0]);
+        assert_eq!(segment_grab_half_width(1.0), STROKE_GRAB_HALF_WIDTH);
+        assert_eq!(segment_grab_half_width(6.0), 3.0 + SELECTION_PADDING);
+        assert!(segment_contains([30.0, 12.9], a, b, 1.0));
+        assert!(!segment_contains([30.0, 13.1], a, b, 1.0));
+        assert!(segment_contains([8.1, 10.0], a, b, 1.0));
+        assert!(!segment_contains([7.9, 10.0], a, b, 1.0));
+        assert!(segment_contains([51.9, 10.0], a, b, 1.0));
+        assert!(!segment_contains([52.1, 10.0], a, b, 1.0));
+        // A degenerate stroke is a dot grabbed within the same half width.
+        assert!(segment_contains([12.0, 10.0], a, a, 1.0));
+        assert!(!segment_contains([13.5, 10.0], a, a, 1.0));
+
+        // A right triangle grows 2 px outward on every edge: the point 1 px
+        // outside the bottom edge is inside the padded triangle, 3 px is not.
+        let t = [[0.0, 0.0], [40.0, 0.0], [0.0, 30.0]];
+        let padded = padded_triangle(t);
+        assert!(in_triangle([20.0, -1.0], padded));
+        assert!(!in_triangle([20.0, -3.0], padded));
+        assert!((padded[0][0] + SELECTION_PADDING).abs() < 1e-5);
+        assert!((padded[0][1] + SELECTION_PADDING).abs() < 1e-5);
+        for v in t {
+            assert!(in_triangle(v, padded));
+        }
+        assert_eq!(padded_triangle([a, a, b]), [a, a, b]);
+    }
+
     use super::*;
     use crate::default::default_config;
     use crate::layout::{

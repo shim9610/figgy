@@ -27,7 +27,8 @@ pub enum Slot {
     /// spokes, annotation spans.
     Below,
     /// Over the data: axis lines and ticks, tick labels, titles, the legend,
-    /// the colourbar, selection boxes, annotation lines, arrows and text.
+    /// the colourbar, annotation lines, arrows and text. The renderer draws
+    /// the selection box over this slot itself; no element emits it.
     Above,
 }
 

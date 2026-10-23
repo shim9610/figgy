@@ -64,8 +64,10 @@ Collected on `integration/0.19`; the release entry replaces this section.
     `AnnotationShape`, `annotation_shapes`, `shapes`, `label_rect` and
     `geometry_bounds` are gone (`emit_annotation` and
     `AnnotationElement::emit` place the parts). An annotation's bounds are its
-    drawn parts without grab slack; the hit slack stays (half the stroke width
-    and at least 3 px, 2 px around a rectangle). Its label gaps are relative to
+    drawn parts without grab slack; it hits inside the outlines its selection
+    draws (`segment_contains`, `padded_triangle`: a stroke's box is half its
+    width plus 2 px, at least 3 px, either side and 2 px beyond the ends; a
+    triangle grows 2 px outward; a rectangle 2 px). Its label gaps are relative to
     the label font (`LINE_LABEL_INSET_EM`, `ARROW_LABEL_GAP_EM`), so they scale
     with the display scale.
   - The polar ray is grabbed within 3 px of each stroke (was 4); the data area,

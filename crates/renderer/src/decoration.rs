@@ -464,13 +464,19 @@ impl ElementSink<'_, '_> {
         self.rect(Slot::Above, rect, Some(color), None);
     }
 
-    /// A one logical pixel wide line, such as a bounded axis or a grid line.
+    /// A one logical pixel wide line: an element's axis above the data, or
+    /// chrome such as a grid line or a radar spoke below it.
     pub fn line(&mut self, a: [f32; 2], b: [f32; 2], color: Color) {
         if color.a == 0. {
             return;
         }
+        let slot = if self.id.is_some() {
+            Slot::Above
+        } else {
+            Slot::Below
+        };
         self.stroke(
-            Slot::Above,
+            slot,
             a,
             b,
             &StrokeStyle {

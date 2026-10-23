@@ -12,7 +12,9 @@ use crate::config::ColorBarOptions;
 use crate::decoration_render::draw_colorbar_strip;
 use crate::layout::RectF;
 use crate::raster::{Canvas, Paint};
-use crate::select::{SELECTION_PADDING, SelectionBox, SelectionOutline};
+use crate::select::{
+    SELECTION_PADDING, SelectionBox, SelectionOutline, padded_triangle, segment_grab_half_width,
+};
 use crate::sink::{Border, DrawnPart, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::DecoStroker;
 use crate::text_render::{FontPolicy, draw_plain_text, draw_rich_text};
@@ -253,7 +255,7 @@ fn draw_part_outline(canvas: &mut Canvas, part: &DrawnPart, outline: &Paint) {
             } else {
                 ([1.0, 0.0], [0.0, 1.0])
             };
-            let half = width * 0.5 + SELECTION_PADDING;
+            let half = segment_grab_half_width(width);
             let along = SELECTION_PADDING;
             let p = |s: f32, t: f32| (a[0] + dir[0] * s + n[0] * t, a[1] + dir[1] * s + n[1] * t);
             let corners = [
@@ -266,6 +268,7 @@ fn draw_part_outline(canvas: &mut Canvas, part: &DrawnPart, outline: &Paint) {
             canvas.draw_polyline(&corners, outline);
         }
         DrawnPart::Triangle(t) => {
+            let t = padded_triangle(t);
             let pts = [
                 (t[0][0], t[0][1]),
                 (t[1][0], t[1][1]),
