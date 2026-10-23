@@ -93,10 +93,11 @@ mod tests {
             .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)))
     }
 
-    /// Every `u32` constant a WGSL module declares that a Rust constant also
-    /// defines has the Rust value, in every module that declares it. The
-    /// pairs are (WGSL name, Rust value); a WGSL name that no module declares
-    /// fails too, so a renamed constant cannot drop out of the check.
+    /// Every `u32` and `f32` constant a WGSL module declares that a Rust
+    /// constant also defines has the Rust value, in every module that
+    /// declares it; an `f32` matches bit for bit. The pairs are (WGSL name,
+    /// Rust value); a WGSL name that no module declares fails too, so a
+    /// renamed constant cannot drop out of the check.
     #[test]
     fn wgsl_constants_equal_their_rust_constants() {
         use crate::data_config::LineInterpolation as Step;
@@ -139,6 +140,11 @@ mod tests {
             ("PICK_MARKER_SKETCH", pick::PICK_MARKER_SKETCH),
             ("PICK_MARKER_PLANET", pick::PICK_MARKER_PLANET),
             ("PICK_MARKER_STAR", pick::PICK_MARKER_STAR),
+            // The ring measures the marker under the same draw-style modes.
+            ("RING_MARKER_PRECISE", pick::PICK_MARKER_PRECISE),
+            ("RING_MARKER_SKETCH", pick::PICK_MARKER_SKETCH),
+            ("RING_MARKER_PLANET", pick::PICK_MARKER_PLANET),
+            ("RING_MARKER_STAR", pick::PICK_MARKER_STAR),
             ("PICK_LINE_PRECISE", pick::PICK_LINE_PRECISE),
             ("PICK_LINE_SKETCH", pick::PICK_LINE_SKETCH),
             ("PICK_LINE_RIBBON", pick::PICK_LINE_RIBBON),
@@ -195,17 +201,27 @@ mod tests {
                 fit::FIELD_CENTERS_SAMPLES_MODE,
             ),
         ];
+        let rust_f32: &[(&str, f32)] = &[
+            ("QUAD_MARGIN_PX", dr::MARKER_QUAD_MARGIN_PX),
+            ("STROKE_HALF_PX", dr::MARKER_STROKE_HALF_PX),
+            ("PLANET_QUAD_EXTENT", crate::gpu_pick::PLANET_QUAD_EXTENT),
+        ];
         let mut declared: Vec<(&str, String, u32)> = Vec::new();
+        let mut declared_f32: Vec<(&str, String, f32)> = Vec::new();
         for (module_name, source) in super::MODULES {
             let module = parse(module_name, source);
             for (_, constant) in module.constants.iter() {
                 let Some(name) = &constant.name else {
                     continue;
                 };
-                if let wgpu::naga::Expression::Literal(wgpu::naga::Literal::U32(value)) =
-                    module.global_expressions[constant.init]
-                {
-                    declared.push((module_name, name.clone(), value));
+                match module.global_expressions[constant.init] {
+                    wgpu::naga::Expression::Literal(wgpu::naga::Literal::U32(value)) => {
+                        declared.push((module_name, name.clone(), value));
+                    }
+                    wgpu::naga::Expression::Literal(wgpu::naga::Literal::F32(value)) => {
+                        declared_f32.push((module_name, name.clone(), value));
+                    }
+                    _ => {}
                 }
             }
         }
@@ -216,6 +232,17 @@ mod tests {
                 assert_eq!(
                     wgsl, value,
                     "{module}: `{name}` differs from its Rust constant"
+                );
+            }
+        }
+        for (name, value) in rust_f32 {
+            let found: Vec<_> = declared_f32.iter().filter(|(_, n, _)| n == name).collect();
+            assert!(!found.is_empty(), "no assembled module declares `{name}`");
+            for (module, _, wgsl) in found {
+                assert_eq!(
+                    wgsl.to_bits(),
+                    value.to_bits(),
+                    "{module}: `{name}` is {wgsl}, its Rust constant {value}"
                 );
             }
         }

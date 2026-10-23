@@ -34,6 +34,8 @@ pub(crate) mod types;
 
 pub(crate) use engine::GpuPickEngine;
 pub use engine::GpuPickTicket;
+#[cfg(test)]
+pub(crate) use engine::PLANET_QUAD_EXTENT;
 #[cfg(feature = "cpu-twin")]
 pub(crate) use engine::milkyway_line_half_extent;
 use engine::query_params;
@@ -43,7 +45,7 @@ use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_
 use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};
 use registry::{GpuPickSeriesIdentities, PickIdentity, PickRegistry, PickSeriesSlot};
-use registry::{series_arc, series_exact_variant, stream_exact_variant};
+use registry::{series_arc, series_exact_key, series_exact_variant, stream_exact_variant};
 use shader::exact_variant;
 #[cfg(test)]
 use shader::{INIT_SCOPE, create_pipeline_bundle_observed, validate_device_limits};

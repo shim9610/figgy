@@ -1412,9 +1412,7 @@ fn active_picker_ignores_unrelated_mutations_and_reuses_source_only_changes() {
         query_buffer
     );
     assert_eq!(
-        active_picker(&renderer).signature.slots[0]
-            .source_id
-            .as_deref(),
+        active_picker(&renderer).descriptors[0].source_id.as_deref(),
         Some("new")
     );
 }
@@ -1436,15 +1434,16 @@ fn precise_mode_without_point_mapping_reuses_stylized_picker_resources() {
         .engine
         .query_params_buffer(0)
         .unwrap();
-    assert!(matches!(
-        active_picker(&renderer).signature.slots[0]
+    // No style table, index column or override: the slot has no style map.
+    assert!(
+        active_picker(&renderer).descriptors[0]
             .resource
             .scatter
             .as_ref()
             .unwrap()
-            .style_mapping,
-        PickStyleMappingSignature::Inactive
-    ));
+            .style_meta
+            .is_none()
+    );
 
     let mut sketch = renderer.chart_config(chart).unwrap().clone();
     sketch.draw_style = DrawStyle::Sketch(Default::default());
@@ -1461,19 +1460,110 @@ fn precise_mode_without_point_mapping_reuses_stylized_picker_resources() {
             .unwrap(),
         query_buffer
     );
-    assert_eq!(
-        active_picker(&renderer).signature.slots[0]
-            .resource
-            .primitives,
-        EffectiveSeriesPrimitives {
-            field: false,
-            contour: false,
-            line: false,
-            scatter: true,
-            bar: false,
-            vector: false,
+    // The sketch plan picks the same markers and nothing else.
+    let resource = &active_picker(&renderer).descriptors[0].resource;
+    assert!(resource.scatter.is_some());
+    assert_eq!(resource.line_width_px, None);
+    assert!(resource.vector.is_none());
+}
+
+/// The pick never reads colour, so a colour-only edit leaves the pick
+/// descriptor equal and reuses the slot: the series colour, a style table
+/// colour and an override colour. A size edit in the same rows rebuilds it.
+#[test]
+fn colour_only_edits_reuse_the_pick_slot() {
+    use crate::data_config::DataScatterPointStyleConfig;
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+    renderer
+        .add_column("style", &col_f64(vec![0.0, 1.0]))
+        .unwrap();
+    let styled = |series_color: Color, slot_color: Color, override_color: Color, size: f32| {
+        let mut scatter = test_scatter_style();
+        scatter.point_color = series_color;
+        scatter.point_style_table = Some(vec![
+            DataScatterPointStyleConfig {
+                point_color: Some(slot_color),
+                point_shape: None,
+                point_size: Some(7.0),
+            },
+            DataScatterPointStyleConfig {
+                point_color: Some(slot_color),
+                point_shape: Some(crate::data_config::ScatterShape::Square),
+                point_size: None,
+            },
+        ]);
+        scatter.point_style_index_column = Some("style".into());
+        scatter.point_style_overrides = Some(vec![DataScatterPointStyleOverride {
+            index: 1,
+            style: DataScatterPointStyleConfig {
+                point_color: Some(override_color),
+                point_shape: None,
+                point_size: Some(size),
+            },
+        }]);
+        SeriesConfig {
+            series_id: "styled".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Scatter { scatter },
         }
+    };
+    let red = Color::new(1.0, 0.0, 0.0, 1.0);
+    let green = Color::new(0.0, 1.0, 0.0, 1.0);
+    let blue = Color::new(0.0, 0.0, 1.0, 0.5);
+    let chart = renderer
+        .register_chart(
+            crate::default::default_config(),
+            vec![styled(red, green, blue, 9.0)],
+        )
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+    let generation = active_picker(&renderer).engine.registry_generation();
+    let query_buffer = active_picker(&renderer)
+        .engine
+        .query_params_buffer(0)
+        .unwrap();
+    let descriptors = active_picker(&renderer).descriptors.clone();
+    assert!(
+        descriptors[0]
+            .resource
+            .scatter
+            .as_ref()
+            .unwrap()
+            .style_meta
+            .is_some(),
+        "the case runs the precise style map"
     );
+
+    for (what, series) in [
+        ("series colour", styled(blue, green, blue, 9.0)),
+        ("style table colour", styled(blue, red, blue, 9.0)),
+        ("override colour", styled(blue, red, green, 9.0)),
+    ] {
+        renderer.set_chart_series(chart, vec![series]).unwrap();
+        let active = active_picker(&renderer);
+        assert_eq!(active.engine.registry_generation(), generation, "{what}");
+        assert_eq!(
+            active.engine.query_params_buffer(0).unwrap(),
+            query_buffer,
+            "{what}"
+        );
+        assert_eq!(active.descriptors, descriptors, "{what}");
+    }
+
+    renderer
+        .set_chart_series(chart, vec![styled(blue, red, green, 11.0)])
+        .unwrap();
+    let active = active_picker(&renderer);
+    assert!(active.engine.registry_generation() > generation);
+    assert_ne!(active.engine.query_params_buffer(0).unwrap(), query_buffer);
+    assert_ne!(active.descriptors, descriptors);
 }
 
 #[test]
@@ -1499,8 +1589,8 @@ fn constellation_picker_support_matches_rendered_scatter_line_only() {
 
     let active = active_picker(&renderer);
     assert_eq!(active.engine.registered_series_count(), 1);
-    assert_eq!(active.signature.slots.len(), 1);
-    assert_eq!(active.signature.slots[0].series_id, "scatter-line");
+    assert_eq!(active.descriptors.len(), 1);
+    assert_eq!(active.descriptors[0].series_id, "scatter-line");
 
     let mut precise = renderer.chart_config(chart).unwrap().clone();
     precise.draw_style = DrawStyle::Precise;
@@ -1544,9 +1634,7 @@ fn picker_switches_charts_without_recreating_equal_series_resources() {
         first_buffer
     );
     assert_eq!(
-        active_picker(&renderer).signature.slots[0]
-            .source_id
-            .as_deref(),
+        active_picker(&renderer).descriptors[0].source_id.as_deref(),
         Some("second")
     );
 
@@ -1607,10 +1695,9 @@ fn picker_reorder_reuses_gpu_slots_and_publishes_new_identity_order() {
     );
     assert_eq!(
         active
-            .signature
-            .slots
+            .descriptors
             .iter()
-            .map(|slot| slot.series_id.as_str())
+            .map(|descriptor| descriptor.series_id.as_str())
             .collect::<Vec<_>>(),
         vec!["b", "a"]
     );
@@ -1630,7 +1717,7 @@ fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
     renderer.enable_gpu_picking().unwrap();
     renderer.prepare_gpu_picking_for_chart(chart).unwrap();
     let generation = active_picker(&renderer).engine.registry_generation();
-    let signature = active_picker(&renderer).signature.clone();
+    let descriptors = active_picker(&renderer).descriptors.clone();
     let render_stamp = renderer.chart_render_stamp(chart).unwrap();
     let visual_revision = renderer.visual_revision();
     active_picker(&renderer).engine.fail_next_registry_prepare();
@@ -1662,7 +1749,7 @@ fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
         active_picker(&renderer).engine.registry_generation(),
         generation
     );
-    assert_eq!(active_picker(&renderer).signature, signature);
+    assert_eq!(active_picker(&renderer).descriptors, descriptors);
 
     renderer
         .set_chart_state(chart, changed_config.clone(), changed_series.clone())
@@ -1675,7 +1762,7 @@ fn composite_picker_prepare_failure_preserves_all_state_and_retry_succeeds() {
     assert_ne!(renderer.chart_render_stamp(chart).unwrap(), render_stamp);
     assert_ne!(renderer.visual_revision(), visual_revision);
     assert!(active_picker(&renderer).engine.registry_generation() > generation);
-    assert_ne!(active_picker(&renderer).signature, signature);
+    assert_ne!(active_picker(&renderer).descriptors, descriptors);
 }
 
 #[test]
@@ -3405,7 +3492,7 @@ fn load_demo_guard_drop_preserves_renderer_authority_and_retry_commits() {
     let epochs = DEMO_COLUMN_IDS.map(|id| renderer.pool().allocation_epoch(id).unwrap());
     let handles = DEMO_COLUMN_IDS.map(|id| renderer.pool().handle_for(id).unwrap());
     let picker_generation = active_picker(&renderer).engine.registry_generation();
-    let picker_signature = active_picker(&renderer).signature.clone();
+    let picker_descriptors = active_picker(&renderer).descriptors.clone();
     let columns = demo_test_columns();
     let mut final_config = initial_config.clone();
     final_config.chart_title.text.segments = crate::text::rich_segments_from_text("atomic demo");
@@ -3450,7 +3537,7 @@ fn load_demo_guard_drop_preserves_renderer_authority_and_retry_commits() {
         active_picker(&renderer).engine.registry_generation(),
         picker_generation
     );
-    assert_eq!(active_picker(&renderer).signature, picker_signature);
+    assert_eq!(active_picker(&renderer).descriptors, picker_descriptors);
 
     renderer
         .begin_load_demo(
@@ -3786,7 +3873,7 @@ fn column_removal_with_chart_config_picker_failure_preserves_all_authority() {
     let render_stamp = renderer.chart_render_stamp(chart).unwrap();
     let visual_revision = renderer.visual_revision();
     let picker_generation = active_picker(&renderer).engine.registry_generation();
-    let picker_signature = active_picker(&renderer).signature.clone();
+    let picker_descriptors = active_picker(&renderer).descriptors.clone();
     active_picker(&renderer).engine.fail_next_registry_prepare();
 
     assert!(matches!(
@@ -3810,7 +3897,7 @@ fn column_removal_with_chart_config_picker_failure_preserves_all_authority() {
         active_picker(&renderer).engine.registry_generation(),
         picker_generation
     );
-    assert_eq!(active_picker(&renderer).signature, picker_signature);
+    assert_eq!(active_picker(&renderer).descriptors, picker_descriptors);
     assert!(!renderer.has_pending_maintenance());
 
     assert!(
@@ -3855,7 +3942,7 @@ fn column_removal_with_chart_config_counter_failure_preserves_all_authority() {
     let pool_generation = renderer.pool().generation();
     let visual_revision = renderer.visual_revision();
     let picker_generation = active_picker(&renderer).engine.registry_generation();
-    let picker_signature = active_picker(&renderer).signature.clone();
+    let picker_descriptors = active_picker(&renderer).descriptors.clone();
     let pending_maintenance = renderer.has_pending_maintenance();
 
     assert!(matches!(
@@ -3876,7 +3963,7 @@ fn column_removal_with_chart_config_counter_failure_preserves_all_authority() {
         active_picker(&renderer).engine.registry_generation(),
         picker_generation
     );
-    assert_eq!(active_picker(&renderer).signature, picker_signature);
+    assert_eq!(active_picker(&renderer).descriptors, picker_descriptors);
     assert_eq!(renderer.has_pending_maintenance(), pending_maintenance);
 }
 
@@ -3900,7 +3987,7 @@ fn column_removal_with_invalid_chart_config_preserves_all_authority() {
     let render_stamp = renderer.chart_render_stamp(chart).unwrap();
     let visual_revision = renderer.visual_revision();
     let picker_generation = active_picker(&renderer).engine.registry_generation();
-    let picker_signature = active_picker(&renderer).signature.clone();
+    let picker_descriptors = active_picker(&renderer).descriptors.clone();
 
     assert!(matches!(
         renderer.remove_column_with_chart_config("x", chart, invalid_config),
@@ -3922,7 +4009,7 @@ fn column_removal_with_invalid_chart_config_preserves_all_authority() {
         active_picker(&renderer).engine.registry_generation(),
         picker_generation
     );
-    assert_eq!(active_picker(&renderer).signature, picker_signature);
+    assert_eq!(active_picker(&renderer).descriptors, picker_descriptors);
     assert!(!renderer.has_pending_maintenance());
 }
 

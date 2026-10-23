@@ -256,15 +256,11 @@ impl PrepareContext<'_> {
                 ring_style.primitive_flags =
                     crate::gpu_pick::GpuPickDrawStyle::of(&chart_config.draw_style).marker_mode();
                 if let Some(scatter) = scatter_cfg {
-                    ring_style.point_radius_px = if uses_mapped_pick {
-                        series.style.scatter_radius_px
-                    } else {
-                        scatter_config_radius_px(
-                            scatter,
-                            visual.point_index,
-                            use_scatter_style_mapping,
-                        ) * series.style.display_scale
-                    };
+                    // The draw's own base radius in both branches: the mapped
+                    // ring resolves overrides per point as `vs_mapped` does,
+                    // and an unmapped ring rings a draw that reads no
+                    // overrides (a stylized style, or none exist).
+                    ring_style.point_radius_px = series.style.scatter_radius_px;
                     ring_style.shape_id = data_render::shape_id(&scatter.point_shape);
                 } else {
                     ring_style.point_radius_px = vector_points.map_or(0.0, |style| {

@@ -3,14 +3,16 @@
 
 use super::*;
 
-/// The exact module and variant that pick `series` as the query draws it:
-/// its primitive class, the styled marker and line paths when the draw
-/// style uses them, the dash walk for a dashed line and the polar paths on
-/// polar axes.
-pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
-    let scatter = series.flags & FLAG_SCATTER != 0;
-    let line = series.flags & FLAG_LINE != 0;
-    let shader = if series.flags & FLAG_VECTOR != 0 {
+/// The part of a series' exact variant its build fixes, from the built
+/// slot's `flags`, dash length and base shape: the module for its primitive
+/// class, the dash walk for a dashed line, and the marker shape when every
+/// point has the series' shape. `prepare_series_buffer` stores it on the
+/// slot (`PickSeriesGpu::exact_key`); [`series_exact_variant`] adds the
+/// query's bits.
+pub(super) fn series_exact_key(flags: u32, line_dash_len: u32, base_shape_id: u32) -> PickExactKey {
+    let scatter = flags & FLAG_SCATTER != 0;
+    let line = flags & FLAG_LINE != 0;
+    let shader = if flags & FLAG_VECTOR != 0 {
         PickShader::Vector
     } else {
         match (scatter, line) {
@@ -19,24 +21,14 @@ pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery)
             _ => PickShader::Marker,
         }
     };
-    let mut bits = 0;
-    if scatter && shader != PickShader::Vector && query.draw_style.marker != PICK_MARKER_PRECISE {
-        bits |= exact_variant::STYLED_MARKER;
-    }
-    if line {
-        if series.line_dash_len > 0 {
-            bits |= exact_variant::DASH;
-        }
-        if query.draw_style.line != PICK_LINE_PRECISE {
-            bits |= exact_variant::STYLED_LINE;
-        }
-    }
-    if query.transform.polar_angle[0] > 0.5 {
-        bits |= exact_variant::POLAR;
-    }
+    let bits = if line && line_dash_len > 0 {
+        exact_variant::DASH
+    } else {
+        0
+    };
     // Without a style map every point has the series' shape.
-    let shape = if scatter && series.flags & FLAG_STYLE_MAP == 0 {
-        series.base_shape_id
+    let shape = if scatter && flags & FLAG_STYLE_MAP == 0 {
+        base_shape_id
     } else {
         PickExactKey::ANY_SHAPE
     };
@@ -45,6 +37,27 @@ pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery)
         bits,
         shape,
     }
+}
+
+/// The exact module and variant that pick `series` as the query draws it:
+/// the slot's stored key (its primitive class, the dash walk for a dashed
+/// line and its shape) plus the query's bits, the styled marker and line
+/// paths when the draw style uses them and the polar paths on polar axes.
+pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
+    let mut key = series.exact_key;
+    if series.flags & FLAG_SCATTER != 0
+        && key.shader != PickShader::Vector
+        && query.draw_style.marker != PICK_MARKER_PRECISE
+    {
+        key.bits |= exact_variant::STYLED_MARKER;
+    }
+    if series.flags & FLAG_LINE != 0 && query.draw_style.line != PICK_LINE_PRECISE {
+        key.bits |= exact_variant::STYLED_LINE;
+    }
+    if query.transform.polar_angle[0] > 0.5 {
+        key.bits |= exact_variant::POLAR;
+    }
+    key
 }
 
 /// The exact variant a streamed chunk of `series` scans with: the resident

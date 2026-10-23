@@ -24,32 +24,6 @@ pub(super) fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig)
     }
 }
 
-// TODO(#38): the ring of an unmapped scatter series resolves sparse size
-// overrides here, a second placement of `scatter_columnar.wgsl`'s
-// `resolve` of the same overrides; it goes when the ring shader reads the
-// style map for every series (a shader change).
-pub(super) fn scatter_config_radius_px(
-    scatter: &DataScatterStyleConfig,
-    point_index: usize,
-    use_style_mapping: bool,
-) -> f32 {
-    let mut radius = scatter.point_size;
-    if use_style_mapping && scatter.point_style_index_column.is_none() {
-        // A style table has no effect without an index column. Sparse
-        // overrides are explicit by point index and can be resolved here.
-        if let Some(overrides) = scatter.point_style_overrides.as_deref() {
-            for ov in overrides {
-                if ov.index == point_index
-                    && let Some(size) = ov.style.point_size
-                {
-                    radius = size;
-                }
-            }
-        }
-    }
-    radius.max(0.0)
-}
-
 // Which primitives a render type draws.
 //
 // Derived from the extractors rather than listed again, following `has_errorbar`

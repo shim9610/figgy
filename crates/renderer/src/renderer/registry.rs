@@ -867,7 +867,7 @@ pub(super) fn prepare_picker_for_pool_mutation<'picker>(
     let Some((chart_id, rebuild)) = picker.active.as_ref().map(|active| {
         (
             active.chart_id,
-            active.signature.references_any_column(changed_columns),
+            active.references_any_column(changed_columns),
         )
     }) else {
         return Ok(None);
