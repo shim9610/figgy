@@ -242,32 +242,6 @@ mod tests {
         );
     }
 
-    /// Instance creation must not panic, even on driver-less environments
-    /// (it does not talk to any GPU yet).
-    #[test]
-    fn instance_creation_succeeds() {
-        let _instance = create_instance();
-    }
-
-    /// Print adapter info; a missing adapter is a test failure.
-    /// Mostly useful locally with `cargo test -- --nocapture`.
-    #[test]
-    fn adapter_request_prints_info_when_available() {
-        let instance = create_instance();
-        match request_adapter(&instance) {
-            Ok(adapter) => {
-                let info = adapter.get_info();
-                println!("adapter name    : {}", info.name);
-                println!("adapter backend : {:?}", info.backend);
-                println!("adapter type    : {:?}", info.device_type);
-                println!("adapter driver  : {} / {}", info.driver, info.driver_info);
-            }
-            Err(e) => {
-                panic!("required GPU test: adapter initialization failed: {e}");
-            }
-        }
-    }
-
     /// The constellation star picks on the disc its quad inscribes
     /// (SHADER_COMMON.md §5.7): the sprite is zero from 0.98 of the half
     /// width out, so even a bilinear tap a texel further stays inside it.
@@ -645,13 +619,19 @@ mod tests {
         });
     }
 
-    /// Open a device + queue without a surface and print a few limits.
+    /// Open a device + queue without a surface and print the adapter and a
+    /// few limits (useful locally with `cargo test -- --nocapture`).
     /// Fails when no adapter is available.
     #[test]
     fn device_request_opens_device_and_queue() {
         let instance = create_instance();
         let adapter =
             request_adapter(&instance).expect("required GPU test: adapter initialization failed");
+        let info = adapter.get_info();
+        println!("adapter name    : {}", info.name);
+        println!("adapter backend : {:?}", info.backend);
+        println!("adapter type    : {:?}", info.device_type);
+        println!("adapter driver  : {} / {}", info.driver, info.driver_info);
         match request_device(&adapter) {
             Ok((device, _queue)) => {
                 let limits = device.limits();
