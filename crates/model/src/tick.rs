@@ -264,12 +264,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_zero_target_count() {
-        let e = AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 10.0, 0).unwrap_err();
-        assert_eq!(e, TickError::ZeroTargetCount);
-    }
-
-    #[test]
     fn rejects_every_non_finite_bound_and_reversed_ranges() {
         for (data_min, data_max) in [
             (f64::NAN, 1.0),
@@ -290,6 +284,10 @@ mod tests {
 
     #[test]
     fn target_count_then_range_then_log_domain_define_error_priority() {
+        assert_eq!(
+            AxisOptions::compute_nice_ticks(AxisScale::Linear, 0.0, 10.0, 0),
+            Err(TickError::ZeroTargetCount)
+        );
         assert_eq!(
             AxisOptions::compute_nice_ticks(AxisScale::Logarithmic, f64::NAN, 0.0, 0),
             Err(TickError::ZeroTargetCount)
