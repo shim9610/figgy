@@ -265,20 +265,15 @@ radius are computed on every draw from the bound columns.
 
 ### 5.3 Vector fields — group 2 (assembled vector shader)
 
-The vector shader is not one file: `vector.rs::assemble` concatenates
-`vector/project_cartesian2d.wgsl` (the five common blocks above plus the
-projection), `vector/vector_input_common.wgsl`, one of
-`vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`,
-`common/arrow.wgsl` and `vector/vector_entry.wgsl`, in that order. Only
-the projection fragment carries common blocks; the consistency test compares
-it as the `vector` target. `vector/vector_input_grid.wgsl` also carries
-renamed copies of the §5 pair functions (`vector_rounded_add`,
-`vector_rounded_subtract`, `vector_normalize_pair`, `vector_add_pairs`,
-`vector_scale_pair` and `vector_midpoint_pair`, twins of `grid_rounded_add`,
-`grid_rounded_subtract`, `normalize_grid_pair`, `add_grid_pairs`,
-`scale_grid_pair` and `midpoint_grid_pair`) so that an `Edges` arrow sits on
-the field's cell centre. No test compares these copies, so a change to those
-§5 functions has to be copied into them by hand.
+The vector shader is not one file: `VECTOR_POINTS_SHADER` /
+`VECTOR_GRID_SHADER` (`vector.rs`) splice the common fragments
+(`transform`, `style`, `projection`, `sample_validity`), the projection
+(`vector/project_cartesian2d.wgsl`), the input layer
+(`vector/vector_input_common.wgsl` with the `ramp` fragment, then
+`vector/vector_input_points.wgsl` or `vector/vector_input_grid*.wgsl` with
+the `grid_pair` and `data_pick` fragments), `common/arrow.wgsl` and
+`vector/vector_entry.wgsl`, in that order. The grid input places an `Edges`
+arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
 
 Group 2 is the series' data. Binding 0 is the column pool as read-only
 storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the
