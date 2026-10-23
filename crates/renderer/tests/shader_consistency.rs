@@ -1014,7 +1014,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
         &[
             "contour_anchor.wgsl",
-            "data_render/field_columnar.wgsl",
+            "data_render/field_columnar_a.wgsl",
             "gpu_errorbar.wgsl",
         ],
         &[
@@ -1056,7 +1056,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["axis_px_per_unit_at", "pair_add"],
     ),
     (
-        &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
+        &["contour_anchor.wgsl", "data_render/field_columnar_a.wgsl"],
         &[
             "axis_t",
             "boundary_t",
@@ -1075,16 +1075,13 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
+        &[
+            "data_render/scatter_columnar_a.wgsl",
+            "gpu_pick/marker.wgsl",
+        ],
         &[
             "base_shape_id",
-            "cons_ring_angle",
-            "constellation_star_radius",
             "marker_edge",
-            "planet_rim_glow",
-            "planet_ring_frame",
-            "planet_ring_phi",
-            "planet_ring_rho",
             "regular_vertex",
             "rotate2",
             "sd_box",
@@ -1095,11 +1092,22 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "sd_triangle",
             "shape_distance",
             "shape_is_filled",
+            "star_vertex",
+            "visual_shape_radius",
+        ],
+    ),
+    (
+        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
+        &[
+            "cons_ring_angle",
+            "constellation_star_radius",
+            "planet_rim_glow",
+            "planet_ring_frame",
+            "planet_ring_phi",
+            "planet_ring_rho",
             "size_map_radius",
             "sketch_marker_distance",
             "sketch_marker_wobble_px",
-            "star_vertex",
-            "visual_shape_radius",
         ],
     ),
     (
@@ -1130,20 +1138,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["polar_fragment_visible"],
     ),
     (
-        &[
-            "data_render/field_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
-        ],
-        &["ramp_blend", "ramp_segment", "ramp_t"],
-    ),
-    (
-        &[
-            "data_render/field_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
-            "gpu_pick/marker.wgsl",
-        ],
+        &["data_render/common/ramp.wgsl", "gpu_pick/marker.wgsl"],
         &["ramp_finite"],
     ),
     (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
