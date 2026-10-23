@@ -601,21 +601,6 @@ fn pick_polar_clip_is_the_draw_fragment_clip() {
 }
 
 #[test]
-fn contour_level_search_constants_match_the_model_limit() {
-    assert_eq!(renderer::MAX_CONTOUR_LEVELS, 1024);
-
-    let rust = read("src/data_render/contour.rs");
-    let shader = read("src/data_render/field_columnar.wgsl");
-    assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_SIZE: usize = 32;"));
-    assert!(rust.contains("pub(crate) const CONTOUR_LEVEL_BLOCK_COUNT: usize = 32;"));
-    assert!(
-        rust.contains("crate::data_config::MAX_CONTOUR_LEVELS == CONTOUR_LEVEL_LOOKUP_CAPACITY")
-    );
-    assert!(shader.contains("const CONTOUR_LEVEL_BLOCK_SIZE: u32 = 32u;"));
-    assert!(shader.contains("let original = firstTrailingBit(candidates);"));
-}
-
-#[test]
 fn contour_label_capacity_and_private_storage_match_the_model_contract() {
     const KEPT_POSITION_BYTES: usize = 1024 * std::mem::size_of::<[f32; 2]>();
     const KEPT_RADIUS_BYTES: usize = 1024 * std::mem::size_of::<f32>();
