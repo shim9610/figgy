@@ -327,6 +327,523 @@ fn log_tick_walkers_bound_every_finite_extreme_range() {
     }
 }
 
+// Parity with the replaced code; removed with the old walkers in the follow-up PR.
+//
+// The tick plan moved to `crate::tick` (#58 item 14). These tests compare the
+// renderer's previous spacing rule and walkers with the model's over wide
+// grids of inputs, and pin the differences the plan accepted.
+mod tick_plan_parity {
+    use super::*;
+    use crate::tick as model_tick;
+
+    fn ulps(a: f64, b: f64) -> u64 {
+        if a == b {
+            return 0;
+        }
+        if !(a.is_finite() && b.is_finite()) || a.is_sign_negative() != b.is_sign_negative() {
+            return u64::MAX;
+        }
+        a.to_bits().abs_diff(b.to_bits())
+    }
+
+    /// Seeded xorshift64: the same inputs on every run.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        /// Uniform in [0, 1).
+        fn unit(&mut self) -> f64 {
+            (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+        }
+
+        /// Log-uniform over the positive finite doubles.
+        fn log_uniform(&mut self) -> f64 {
+            10f64.powf(-323.0 + self.unit() * (308.25 + 323.0))
+        }
+    }
+
+    fn spacing_cases() -> Vec<f64> {
+        let mut spans = Vec::new();
+        for exponent in -324..=308 {
+            for mantissa in [
+                "1", "1.5", "2", "2.5", "3", "4", "5", "6", "7.2", "8", "9.99",
+            ] {
+                let span: f64 = format!("{mantissa}e{exponent}").parse().unwrap();
+                if span.is_finite() && span > 0.0 {
+                    spans.push(span);
+                }
+            }
+            for boundary in ["1", "2", "5", "10"] {
+                let span: f64 = format!("{boundary}e{exponent}").parse().unwrap();
+                if !(span.is_finite() && span > 0.0) {
+                    continue;
+                }
+                for delta in 1..=3u64 {
+                    spans.push(f64::from_bits(span.to_bits() + delta));
+                    if span.to_bits() > delta {
+                        spans.push(f64::from_bits(span.to_bits() - delta));
+                    }
+                }
+            }
+        }
+        let mut rng = XorShift(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..20_000 {
+            let span = rng.log_uniform();
+            if span.is_finite() && span > 0.0 {
+                spans.push(span);
+            }
+        }
+        spans.extend([
+            f64::MAX,
+            f64::from_bits(f64::MAX.to_bits() - 1),
+            f64::from_bits(1),
+        ]);
+        spans
+    }
+
+    fn linear_axis(min: f64, max: f64, major_spacing: f64) -> AxisOptions {
+        let mut axis = default_config().bottom_x.clone();
+        axis.scale = AxisScale::Linear;
+        axis.min = min;
+        axis.max = max;
+        axis.major_spacing = major_spacing;
+        axis.minor_count = 4;
+        axis
+    }
+
+    fn labels(axis: &AxisOptions) -> Vec<String> {
+        major_tick_values(axis)
+            .into_iter()
+            .map(|value| {
+                format_tick_value(
+                    value,
+                    &LabelFormat::Decimal,
+                    3,
+                    &AxisScale::Linear,
+                    axis.major_spacing,
+                    axis.min,
+                    axis.max,
+                )
+            })
+            .collect()
+    }
+
+    /// The Cartesian rule (`nice_spacing`) and the model's
+    /// `axis_major_spacing` agree to 4 ulp on every span, with the same
+    /// label decimals, tick count and label text on shifted ranges. The only
+    /// difference for a normal step is its last bits (accepted output
+    /// difference 1); spans above 1e308 (difference 2) keep the Cartesian
+    /// class. A subnormal step can differ more, and is only checked to be
+    /// finite and positive.
+    #[test]
+    fn linear_spacing_matches_nice_spacing() {
+        let spans = spacing_cases();
+        let mut ulp_differences = 0usize;
+        let mut worst = 0u64;
+        let mut subnormal_differences = 0usize;
+        let mut capped_label_differences = 0usize;
+        let mut large_label_differences = 0usize;
+        for &span in &spans {
+            let old = crate::chart::nice_spacing(span);
+            let new = model_tick::axis_major_spacing(&AxisScale::Linear, 0.0, span);
+            let distance = ulps(old, new);
+            if distance == 0 {
+                continue;
+            }
+            if old < f64::MIN_POSITIVE || new < f64::MIN_POSITIVE {
+                // A subnormal step has fewer than 53 bits, and the two
+                // formulas round it differently (unexpected difference 7,
+                // spans below about 1e-307 only).
+                assert!(new.is_finite() && new > 0.0, "span {span:?}");
+                subnormal_differences += 1;
+                continue;
+            }
+            worst = worst.max(distance);
+            assert!(distance <= 4, "span {span:?}: old {old:?}, new {new:?}");
+            ulp_differences += 1;
+            assert_eq!(
+                decimals_from_spacing(old),
+                decimals_from_spacing(new),
+                "span {span:?}"
+            );
+            for offset in [0.0, -0.5 * span, 0.37 * span, 3.0 * span] {
+                let (min, max) = (offset, offset + span);
+                if !(min.is_finite() && max.is_finite() && max > min) {
+                    continue;
+                }
+                let before = linear_axis(min, max, old);
+                let after = linear_axis(min, max, new);
+                assert_eq!(
+                    major_tick_values(&before).len(),
+                    major_tick_values(&after).len(),
+                    "span {span:?} at {offset:?}"
+                );
+                if labels(&before) != labels(&after) {
+                    if old < 1e-15 {
+                        // The label decimals are capped at 15, so the labels
+                        // of adjacent ticks already collapse and the last
+                        // bits of the step decide where.
+                        capped_label_differences += 1;
+                    } else {
+                        // Past 2^53 a Decimal label prints every integer
+                        // digit of the double, so the last bits show.
+                        assert!(
+                            min.abs().max(max.abs()) >= 2f64.powi(53),
+                            "span {span:?} at {offset:?}"
+                        );
+                        large_label_differences += 1;
+                    }
+                }
+            }
+        }
+        for span in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            0.0,
+            -0.0,
+            -1.0,
+            -f64::MAX,
+        ] {
+            assert_eq!(crate::chart::nice_spacing(span), 1.0);
+            assert_eq!(
+                model_tick::axis_major_spacing(&AxisScale::Linear, 0.0, span),
+                1.0
+            );
+        }
+        eprintln!(
+            "linear spacing parity: {} spans, {ulp_differences} normal steps differ by \
+             1..={worst} ulp, {subnormal_differences} subnormal steps differ, \
+             {capped_label_differences} shifted ranges with steps below 1e-15 and \
+             {large_label_differences} with values past 2^53 change labels",
+            spans.len()
+        );
+    }
+
+    /// `log_decade_step` and the model's log spacing with target 7 are equal
+    /// on every range.
+    #[test]
+    fn log_spacing_matches_log_decade_step() {
+        let mut ranges = Vec::new();
+        let mut exponent = -324;
+        while exponent <= 308 {
+            for mantissa in ["1", "2.5", "9.99"] {
+                let min: f64 = format!("{mantissa}e{exponent}").parse().unwrap();
+                for decades in 0..=40 {
+                    for upper in ["1", "3"] {
+                        let max: f64 = format!("{upper}e{}", exponent + decades).parse().unwrap();
+                        ranges.push((min, max));
+                    }
+                }
+            }
+            exponent += 7;
+        }
+        let mut rng = XorShift(0xD1B5_4A32_D192_ED03);
+        for _ in 0..20_000 {
+            let (a, b) = (rng.log_uniform(), rng.log_uniform());
+            ranges.push((a.min(b), a.max(b)));
+        }
+        ranges.extend([
+            (0.0, 10.0),
+            (-1.0, 10.0),
+            (10.0, 1.0),
+            (5.0, 5.0),
+            (f64::NAN, 10.0),
+            (1.0, f64::INFINITY),
+            (f64::from_bits(1), f64::MAX),
+        ]);
+        for &(min, max) in &ranges {
+            assert_eq!(
+                crate::chart::log_decade_step(min, max).to_bits(),
+                model_tick::axis_major_spacing(&AxisScale::Logarithmic, min, max).to_bits(),
+                "{min:?}..{max:?}"
+            );
+        }
+        eprintln!("log spacing parity: {} ranges, all equal", ranges.len());
+    }
+
+    fn walker_axes() -> Vec<AxisOptions> {
+        let below_max = f64::from_bits(f64::MAX.to_bits() - 1);
+        let ranges: [(f64, f64); 18] = [
+            (0.0, 10.0),
+            (0.137, 9.42),
+            (-3.7, 12.9),
+            (1e-9, 3e-9),
+            (1e9, 1e9 + 1000.0),
+            (-1e300, 1e300),
+            (-f64::MAX, f64::MAX),
+            (0.0, f64::from_bits(1)),
+            (below_max, f64::MAX),
+            (10.0, 1.0),
+            (f64::NAN, 1.0),
+            (1.0, f64::INFINITY),
+            (1e16, 1e16 + 4.0),
+            (0.003, 250.0),
+            (1e-300, 1e300),
+            (f64::from_bits(1), f64::MAX),
+            (0.0, 1000.0),
+            (1e-320, 1e-300),
+        ];
+        let mut axes = Vec::new();
+        for scale in [AxisScale::Linear, AxisScale::Logarithmic] {
+            for (min, max) in ranges {
+                let valid = match scale {
+                    AxisScale::Linear => crate::chart::nice_spacing(max - min),
+                    AxisScale::Logarithmic => crate::chart::log_decade_step(min, max),
+                };
+                for spacing in [
+                    valid,
+                    1.0,
+                    2.7,
+                    0.0,
+                    -1.0,
+                    f64::NAN,
+                    f64::INFINITY,
+                    1e-300,
+                    1e300,
+                    f64::MAX,
+                ] {
+                    for minor_count in [0, 1, 4, 9, 99, 100, 1000] {
+                        let mut axis = default_config().bottom_x.clone();
+                        axis.scale = scale.clone();
+                        axis.min = min;
+                        axis.max = max;
+                        axis.major_spacing = spacing;
+                        axis.minor_count = minor_count;
+                        axes.push(axis);
+                    }
+                }
+            }
+        }
+        axes
+    }
+
+    /// The model's guards are the renderer's, and the model's walkers draw
+    /// the renderer's ticks. Linear walks are bit-identical whenever the
+    /// spacing walked is (it differs only through the automatic spacing's
+    /// last bits, difference 1). Log decades use `powf` instead of `powi`
+    /// (difference 5): values move by a few ulp, and only ranges that reach
+    /// subnormal decades gain ticks.
+    #[test]
+    fn model_walkers_match_the_renderer_walkers() {
+        let axes = walker_axes();
+        let mut spacing_differences = 0usize;
+        let mut log_value_differences = 0usize;
+        let mut subnormal_gains = 0usize;
+        let mut worst_log = 0u64;
+        for axis in &axes {
+            let label = format!(
+                "{:?} {:?}..{:?} spacing {:?} minors {}",
+                axis.scale, axis.min, axis.max, axis.major_spacing, axis.minor_count
+            );
+            assert_eq!(
+                walkable_range(axis),
+                model_tick::walkable_range(axis),
+                "{label}"
+            );
+            assert_eq!(
+                major_spacing_rejection(axis),
+                model_tick::major_spacing_rejection(axis),
+                "{label}"
+            );
+            assert_eq!(
+                drawn_minor_count(axis),
+                model_tick::drawn_minor_count(axis),
+                "{label}"
+            );
+            assert_eq!(
+                log_exponent_bounds(axis),
+                model_tick::log_exponent_bounds(axis),
+                "{label}"
+            );
+            assert_eq!(
+                effective_log_decade_step(axis),
+                model_tick::effective_log_decade_step(axis),
+                "{label}"
+            );
+            assert_eq!(
+                crate::chart::guarded_log_range(axis.min, axis.max),
+                model_tick::guarded_log_range(axis.min, axis.max),
+                "{label}"
+            );
+            for spacing in [axis.major_spacing, 1.0, 1e-300] {
+                assert_eq!(
+                    range_in_spacing_units(axis, spacing),
+                    model_tick::range_in_spacing_units(axis, spacing),
+                    "{label}"
+                );
+                assert_eq!(
+                    spacing_advances_range(axis, spacing),
+                    model_tick::spacing_advances_range(axis, spacing),
+                    "{label}"
+                );
+            }
+            let old_spacing = effective_major_spacing(axis);
+            let new_spacing = model_tick::effective_major_spacing(axis);
+            assert!(ulps(old_spacing, new_spacing) <= 4, "{label}");
+
+            let old_majors = major_tick_values(axis);
+            let new_majors: Vec<f64> = model_tick::major_ticks(axis).collect();
+            let old_minors = minor_tick_values(axis);
+            let new_minors: Vec<f64> = model_tick::minor_ticks(axis).collect();
+            match axis.scale {
+                AxisScale::Linear if old_spacing == new_spacing => {
+                    assert_eq!(old_majors, new_majors, "{label}");
+                    assert_eq!(old_minors, new_minors, "{label}");
+                }
+                AxisScale::Linear => {
+                    spacing_differences += 1;
+                    for (old, new) in [(&old_majors, &new_majors), (&old_minors, &new_minors)] {
+                        assert_eq!(old.len(), new.len(), "{label}");
+                        for (a, b) in old.iter().zip(new) {
+                            assert!(ulps(*a, *b) <= 8, "{label}: {a:?} vs {b:?}");
+                        }
+                    }
+                }
+                AxisScale::Logarithmic => {
+                    for (old, new) in [(&old_majors, &new_majors), (&old_minors, &new_minors)] {
+                        if old.len() != new.len() {
+                            // `powi` loses the subnormal decades `powf` keeps.
+                            assert!(new.len() > old.len(), "{label}");
+                            assert!(new[0] < f64::MIN_POSITIVE, "{label}: {new:?}");
+                            subnormal_gains += 1;
+                            continue;
+                        }
+                        for (a, b) in old.iter().zip(new) {
+                            let distance = ulps(*a, *b);
+                            assert!(distance <= 16, "{label}: {a:?} vs {b:?}");
+                            if distance > 0 {
+                                log_value_differences += 1;
+                                worst_log = worst_log.max(distance);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "walker parity: {} axes; {spacing_differences} linear axes walk an automatic \
+             spacing that differs by ulps; {log_value_differences} log values differ by 1..={worst_log} ulp; \
+             {subnormal_gains} log walks gain subnormal decades",
+            axes.len()
+        );
+    }
+
+    /// The bounded families' current inline walks (radar rings, box plot and
+    /// categorical value ticks) against the `LinearGrid` walks that will
+    /// replace them. Differences 3 (the grid's 1e-9 slack keeps end ticks)
+    /// and 4 (categorical values become `k · step`) are counted, with the
+    /// categorical labels that change.
+    #[test]
+    fn bounded_walks_match_linear_grid() {
+        let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
+        // [user range, widened plan]
+        let mut radar_gains = [0usize; 2];
+        let mut boxplot_gains = [0usize; 2];
+        let mut categorical_ticks = 0usize;
+        let mut categorical_value_differences = 0usize;
+        let mut categorical_label_differences = 0usize;
+        let cases = 100_000;
+        for case in 0..cases {
+            let magnitude = 10f64.powf(-6.0 + rng.unit() * 12.0);
+            let a = (rng.unit() - 0.5) * 2.0 * magnitude;
+            let b = a + rng.unit() * magnitude + f64::EPSILON * a.abs().max(1.0);
+            let Ok(plan) = AxisOptions::compute_nice_ticks(AxisScale::Linear, a, b, 5) else {
+                continue;
+            };
+            let step = plan.major_spacing;
+
+            // Radar rings over a user range with a user or planned spacing.
+            let user_range = case % 2 == 0;
+            let (min, max) = if user_range {
+                (a, b)
+            } else {
+                (plan.min, plan.max)
+            };
+            let span = max - min;
+            if span / step <= 100.0 {
+                let first = (min / step).ceil() as i64;
+                let last = (max / step).floor() as i64;
+                let old: Vec<f64> = (first..=last)
+                    .map(|k| k as f64 * step)
+                    .filter(|v| *v > min + span * 1e-9)
+                    .collect();
+                let new: Vec<f64> = model_tick::LinearGrid::new(min, max, step, 100)
+                    .into_iter()
+                    .flat_map(|grid| grid.iter())
+                    .map(|(_, v)| v)
+                    .filter(|v| *v > min + span * 1e-9)
+                    .collect();
+                if old.len() != new.len() {
+                    assert_eq!(new.len(), old.len() + 1, "{old:?} vs {new:?}");
+                    radar_gains[usize::from(!user_range)] += 1;
+                }
+            }
+
+            // Box plot ticks over a fixed range.
+            let start = (min / step).ceil() * step;
+            let count = ((max - start) / step).floor().max(0.0) as usize;
+            if count <= 100 {
+                let old: Vec<f64> = (0..=count).map(|i| start + i as f64 * step).collect();
+                let new: Vec<f64> = model_tick::LinearGrid::new(min, max, step, 100)
+                    .into_iter()
+                    .flat_map(|grid| grid.iter())
+                    .map(|(_, v)| v)
+                    .collect();
+                if old.len() != new.len() {
+                    // The slack can keep a tick at either end.
+                    assert!(
+                        new.len() > old.len() && new.len() <= old.len() + 2,
+                        "{min:?}..{max:?} by {step:?}: {old:?} vs {new:?}"
+                    );
+                    boxplot_gains[usize::from(!user_range)] += 1;
+                }
+            }
+
+            // Categorical ticks over the widened plan.
+            let tick_count = ((plan.max - plan.min) / step).round() as usize;
+            let old: Vec<f64> = (0..=tick_count)
+                .map(|i| plan.min + i as f64 * step)
+                .collect();
+            let new: Vec<f64> = model_tick::LinearGrid::new(plan.min, plan.max, step, 100)
+                .unwrap()
+                .iter()
+                .map(|(_, v)| v)
+                .collect();
+            assert_eq!(old.len(), new.len(), "{plan:?}");
+            categorical_ticks += old.len();
+            for (x, y) in old.iter().zip(&new) {
+                if x != y {
+                    categorical_value_differences += 1;
+                    assert!(
+                        ulps(*x, *y) <= 1 || (x - y).abs() <= step * 1e-12,
+                        "{x:?} vs {y:?}"
+                    );
+                }
+                if plain_number(*x) != plain_number(*y) {
+                    // A value on a rounding tie of the exponent form
+                    // (`7.005e-5` as `7.00e-5` or `7.01e-5`).
+                    categorical_label_differences += 1;
+                }
+            }
+        }
+        eprintln!(
+            "bounded parity: {cases} ranges, half user ranges and half widened plans; \
+             radar gains an outer ring in {radar_gains:?}, box plot gains end ticks in \
+             {boxplot_gains:?}; {categorical_value_differences} of {categorical_ticks} \
+             categorical tick values move, {categorical_label_differences} of their labels change"
+        );
+    }
+}
+
 /// The default config with a 0..10 bottom axis at `major_spacing`. Every
 /// other tick setting draws as written.
 fn spacing_config(major_spacing: f64) -> Config {
