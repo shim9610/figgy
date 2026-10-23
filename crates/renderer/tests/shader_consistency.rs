@@ -238,6 +238,18 @@ const INLINE_COPIES: &[(&str, &[&str])] = &[
         "src/data_render/common/projection.wgsl",
         &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
     ),
+    (
+        "src/data_render/field_columnar_b.wgsl",
+        &["src/contour_anchor.wgsl"],
+    ),
+    (
+        "src/data_render/common/grid_pair.wgsl",
+        &["src/contour_anchor.wgsl"],
+    ),
+    (
+        "src/data_render/common/field_grid.wgsl",
+        &["src/contour_anchor.wgsl"],
+    ),
 ];
 
 /// Every block SHADER_COMMON.md still fences is pasted verbatim into each
@@ -1053,7 +1065,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["axis_px_per_unit_at", "pair_add"],
     ),
     (
-        &["contour_anchor.wgsl", "data_render/field_columnar_a.wgsl"],
+        &["contour_anchor.wgsl", "data_render/common/field_grid.wgsl"],
         &[
             "axis_t",
             "boundary_t",
