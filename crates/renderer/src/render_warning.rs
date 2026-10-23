@@ -17,7 +17,7 @@
 
 use std::fmt;
 
-use crate::axis_render::MAX_LOG_DECADE_STEP;
+use crate::tick::MAX_LOG_DECADE_STEP;
 
 /// The axis a [`RenderWarning`] is about, named after its `Config` field.
 ///

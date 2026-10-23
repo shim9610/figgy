@@ -352,9 +352,6 @@ pub const MAX_LOG_DECADES: usize = 1024;
 /// `RenderWarning::LogDecadeStepAdjusted` message states the same bound.
 pub const MAX_LOG_DECADE_STEP: i32 = i32::MAX;
 
-/// Fallback lower bound for invalid manual log-axis ranges.
-pub const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
-
 /// Why the linear tick walker did not walk a requested `major_spacing`.
 ///
 /// New reasons may be added as new variants. The fields of existing variants
@@ -493,44 +490,8 @@ pub fn drawn_minor_count(axis: &AxisOptions) -> usize {
     axis.minor_count.min(MAX_MINOR_SUBDIVISIONS - 1)
 }
 
-/// Renderer-side guard for log-axis ranges: a finite, positive, ordered
-/// range for any input.
-pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
-    let min = if min.is_finite() && min > 0.0 {
-        min
-    } else {
-        LOG_RANGE_FALLBACK_MIN
-    };
-    if max.is_finite() && max > min {
-        return (min, max);
-    }
-
-    let upper = min * 10.0;
-    if upper.is_finite() && upper > min {
-        return (min, upper);
-    }
-
-    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
-    // finite, ordered fallback by putting the synthetic decade below it.
-    let lower = min / 10.0;
-    if lower.is_finite() && lower > 0.0 && lower < min {
-        return (lower, min);
-    }
-
-    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
-}
-
 fn clamped_exponent(value: f64) -> i32 {
     value.clamp(f64::from(i32::MIN), f64::from(i32::MAX)) as i32
-}
-
-/// The first and last whole decade exponents inside the guarded log range.
-pub fn log_exponent_bounds(axis: &AxisOptions) -> (i32, i32) {
-    let (min, max) = guarded_log_range(axis.min, axis.max);
-    (
-        clamped_exponent(min.log10().ceil()),
-        clamped_exponent(max.log10().floor()),
-    )
 }
 
 /// The decade step the log walker takes: `major_spacing` floored, at least 1
@@ -690,8 +651,8 @@ pub struct LogMinors {
 }
 
 impl LogMinors {
-    /// The minors over `min..max`, which should be a guarded log range
-    /// ([`guarded_log_range`]).
+    /// The minors over `min..max`, a finite, positive, ordered log range
+    /// (the renderer guards a written one with `chart::guarded_log_range`).
     pub fn new(min: f64, max: f64) -> Self {
         let first = clamped_exponent(min.log10().floor());
         Self {
@@ -769,8 +730,12 @@ impl Iterator for MajorTicks {
 /// Linear: absolute multiples of [`effective_major_spacing`] inside the
 /// range, at most [`MAX_MAJOR_INTERVALS`] + 1, none on a range that is not
 /// [`walkable_range`]. Logarithmic: every [`effective_log_decade_step`]-th
-/// decade inside the [`guarded_log_range`], at most [`MAX_LOG_DECADES`].
-pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
+/// whole decade inside `log_range`, at most [`MAX_LOG_DECADES`].
+///
+/// `log_range` is the range a logarithmic axis walks: `axis.min..axis.max`
+/// guarded to a finite, positive, ordered range by the renderer's
+/// `chart::guarded_log_range`. A linear axis ignores it.
+pub fn major_ticks(axis: &AxisOptions, log_range: (f64, f64)) -> MajorTicks {
     MajorTicks(match axis.scale {
         AxisScale::Linear => {
             if !walkable_range(axis) {
@@ -786,7 +751,9 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
             }
         }
         AxisScale::Logarithmic => {
-            let (first, last) = log_exponent_bounds(axis);
+            let (min, max) = log_range;
+            let first = clamped_exponent(min.log10().ceil());
+            let last = clamped_exponent(max.log10().floor());
             LogDecades::new(first, last, effective_log_decade_step(axis)).map_or(
                 MajorWalk::Empty,
                 |decades| MajorWalk::Log {
@@ -836,9 +803,9 @@ impl Iterator for MinorTicks {
 ///
 /// None when `minor_count` is 0. Linear: [`drawn_minor_count`] subdivisions
 /// of each [`effective_major_spacing`] interval, the majors left out.
-/// Logarithmic: [`LogMinors`] over the [`guarded_log_range`], whatever the
-/// count.
-pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
+/// Logarithmic: [`LogMinors`] over `log_range`, whatever the count;
+/// `log_range` is the one [`major_ticks`] takes.
+pub fn minor_ticks(axis: &AxisOptions, log_range: (f64, f64)) -> MinorTicks {
     if axis.minor_count == 0 {
         return MinorTicks(MinorWalk::Empty);
     }
@@ -861,10 +828,7 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
                 )
             }
         }
-        AxisScale::Logarithmic => {
-            let (min, max) = guarded_log_range(axis.min, axis.max);
-            MinorWalk::Log(LogMinors::new(min, max))
-        }
+        AxisScale::Logarithmic => MinorWalk::Log(LogMinors::new(log_range.0, log_range.1)),
     })
 }
 
@@ -1299,9 +1263,13 @@ mod tests {
 
     #[test]
     fn axis_walkers_follow_the_guards() {
-        let majors: Vec<f64> = major_ticks(&axis(AxisScale::Linear, 0.0, 10.0, 2.5, 4)).collect();
+        // A linear axis ignores the log range.
+        const UNUSED: (f64, f64) = (f64::NAN, f64::NAN);
+        let majors: Vec<f64> =
+            major_ticks(&axis(AxisScale::Linear, 0.0, 10.0, 2.5, 4), UNUSED).collect();
         assert_eq!(majors, [0.0, 2.5, 5.0, 7.5, 10.0]);
-        let minors: Vec<f64> = minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 1)).collect();
+        let minors: Vec<f64> =
+            minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 1), UNUSED).collect();
         assert_eq!(minors, [0.25, 0.75]);
         // A rejected spacing walks the automatic one.
         let fallback = axis(AxisScale::Linear, 0.0, 10.0, 0.0, 4);
@@ -1310,7 +1278,7 @@ mod tests {
             Some(SpacingRejection::NotPositive)
         );
         assert_eq!(effective_major_spacing(&fallback), 2.0);
-        assert_eq!(major_ticks(&fallback).count(), 6);
+        assert_eq!(major_ticks(&fallback, UNUSED).count(), 6);
         assert_eq!(
             major_spacing_rejection(&axis(AxisScale::Linear, 0.0, 10.0, 1e-9, 4)),
             Some(SpacingRejection::TooManyTicks {
@@ -1322,22 +1290,22 @@ mod tests {
             99
         );
         assert_eq!(
-            major_ticks(&axis(AxisScale::Linear, 1.0, 1.0, 1.0, 4)).count(),
+            major_ticks(&axis(AxisScale::Linear, 1.0, 1.0, 1.0, 4), UNUSED).count(),
             0
         );
         assert_eq!(
-            minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 0)).count(),
+            minor_ticks(&axis(AxisScale::Linear, 0.0, 1.0, 0.5, 0), UNUSED).count(),
             0
         );
 
         let log = axis(AxisScale::Logarithmic, 0.5, 2000.0, 2.7, 8);
         assert_eq!(effective_log_decade_step(&log), 2);
-        assert_eq!(log_exponent_bounds(&log), (0, 3));
-        assert_eq!(major_ticks(&log).collect::<Vec<_>>(), [1.0, 100.0]);
+        assert_eq!(
+            major_ticks(&log, (log.min, log.max)).collect::<Vec<_>>(),
+            [1.0, 100.0]
+        );
         // 0.5..0.9, three whole decades, then 2000.
-        assert_eq!(minor_ticks(&log).count(), 5 + 3 * 8 + 1);
-        assert_eq!(guarded_log_range(-1.0, f64::NAN), (1e-12, 1e-11));
-        assert_eq!(guarded_log_range(f64::MAX, f64::MAX).1, f64::MAX);
+        assert_eq!(minor_ticks(&log, (log.min, log.max)).count(), 5 + 3 * 8 + 1);
     }
 
     // compute_nice_ticks is pure.

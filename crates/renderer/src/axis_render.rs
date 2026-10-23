@@ -12,7 +12,7 @@ use crate::layout::{
     DataArea, DrawnPart, RectF, Side, axis_anchor, axis_offset, point_on_rect_side,
 };
 use crate::line::LineStylePreset;
-use crate::render_warning::{RenderWarning, SpacingRejection, WarningAxis};
+use crate::render_warning::{RenderWarning, WarningAxis};
 use crate::select::{SELECTION_PADDING, SelectionBox, SelectionOutline};
 use crate::sketch::DecoStroker;
 use crate::text_render::{
