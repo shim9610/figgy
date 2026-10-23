@@ -700,6 +700,153 @@ fn one_bin_override_controls_fill_outline_width_and_selection_geometry() {
     );
 }
 
+/// The pixel bounding box `(x0, y0, x1, y1)` of every pixel matching `pred`.
+fn bounding_box(img: &RasterImage, pred: fn(&[u8]) -> bool) -> Option<(u32, u32, u32, u32)> {
+    let mut found: Option<(u32, u32, u32, u32)> = None;
+    for y in 0..img.height {
+        for x in 0..img.width {
+            if pred(pixel(img, x, y)) {
+                found = Some(found.map_or((x, y, x, y), |(x0, y0, x1, y1)| {
+                    (x0.min(x), y0.min(y), x1.max(x), y1.max(y))
+                }));
+            }
+        }
+    }
+    found
+}
+
+fn is_override_paint(p: &[u8]) -> bool {
+    is_override_fill(p) || is_override_border(p)
+}
+
+/// A selected bin whose gap and width ratio are overridden is outlined
+/// exactly around the bar it paints: the outline resolves the bin's overrides
+/// with the draw's own resolver, for full bars and for subpixel bins painted
+/// by the envelope pass, in both orientations, at 1x and 2x.
+#[test]
+fn selected_override_bin_outline_is_exactly_its_painted_bar() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    const DENSE: usize = 2048;
+    const DENSE_SELECTED: usize = 700;
+    renderer
+        .add_column("edges", &col_f64(EDGES.to_vec()))
+        .unwrap();
+    renderer
+        .add_column("counts", &col_f64(COUNTS.to_vec()))
+        .unwrap();
+    renderer
+        .add_column(
+            "dense_edges",
+            &col_f64((0..=DENSE).map(|i| i as f64).collect()),
+        )
+        .unwrap();
+    // Only the selected dense bin rises above the baseline, so every
+    // painted pixel of the envelope belongs to it.
+    renderer
+        .add_column(
+            "dense_counts",
+            &col_f64(
+                (0..DENSE)
+                    .map(|i| if i == DENSE_SELECTED { 1.5 } else { 0.0 })
+                    .collect(),
+            ),
+        )
+        .unwrap();
+    for (dense, selected) in [(false, 1usize), (true, DENSE_SELECTED)] {
+        for orientation in [BarOrientation::Vertical, BarOrientation::Horizontal] {
+            let (edges, counts, span, top) = if dense {
+                ("dense_edges", "dense_counts", DENSE as f64, 2.0)
+            } else {
+                ("edges", "counts", 4.0, 5.0)
+            };
+            let mut chart = bare_chart();
+            let mut s = match orientation {
+                BarOrientation::Vertical => {
+                    chart.set_x_range(0.0, span);
+                    chart.set_y_range(0.0, top);
+                    histogram(edges, counts, orientation.clone(), 1.0, 0.0)
+                }
+                BarOrientation::Horizontal => {
+                    chart.set_x_range(0.0, top);
+                    chart.set_y_range(0.0, span);
+                    histogram(counts, edges, orientation.clone(), 1.0, 0.0)
+                }
+            };
+            let DataRenderType::Histogram { bar } = &mut s.render_type else {
+                unreachable!()
+            };
+            bar.width_ratio = 0.95;
+            bar.bar_style_overrides = Some(vec![DataBarStyleOverride {
+                index: selected,
+                style: DataBarBinStyleConfig {
+                    fill_color: Some(Color::new(0.0, 1.0, 0.0, 1.0)),
+                    border_color: Some(Color::new(1.0, 1.0, 0.0, 1.0)),
+                    border_width: Some(if dense { 0.0 } else { 2.0 }),
+                    gap_px: Some(9.0),
+                    width_ratio: Some(0.4),
+                },
+            }]);
+            let series = [s];
+            for scale in [1.0, 2.0] {
+                let case = format!("dense={dense} {orientation:?} {scale}x");
+                chart.config_mut().picked_data = None;
+                let painted = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let bar_box =
+                    bounding_box(&painted, is_override_paint).expect("the selected bin paints");
+                if !dense {
+                    let (x0, y0, x1, y1) = bar_box;
+                    let (narrow, raw) = match orientation {
+                        BarOrientation::Vertical => (
+                            x1 - x0,
+                            data_x_to_px(&chart, 1.0) - data_x_to_px(&chart, 0.0),
+                        ),
+                        BarOrientation::Horizontal => (
+                            y1 - y0,
+                            data_y_to_px(&chart, 0.0) - data_y_to_px(&chart, 1.0),
+                        ),
+                    };
+                    let (narrow, raw) = (narrow as f32, raw * scale);
+                    assert!(
+                        narrow < raw * 0.5,
+                        "{case}: the override did not narrow the bar ({narrow} of {raw} px)"
+                    );
+                }
+                chart.config_mut().picked_data = Some(DataSelectionsConfig {
+                    visible: true,
+                    refs: vec![PickedDataRef::HistogramBin {
+                        source_id: None,
+                        series_id: "hist".into(),
+                        bin_index: selected,
+                    }],
+                    highlight_color: Color::new(1.0, 0.0, 1.0, 1.0),
+                    outline_width_px: 3.0,
+                    point_radius_extra_px: 0.0,
+                    contour_width_extra_px: 0.0,
+                });
+                let outlined = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let outline_box =
+                    bounding_box(&outlined, is_selection).expect("the selected bin is outlined");
+                // One pixel of slack per edge: a partly covered edge pixel
+                // reads as the bar's colour but blends the outline below the
+                // `is_selection` threshold. The unresolved base style would
+                // miss by the 9 px gap and the 0.95 / 0.4 width ratios.
+                let edges = [
+                    (outline_box.0, bar_box.0),
+                    (outline_box.1, bar_box.1),
+                    (outline_box.2, bar_box.2),
+                    (outline_box.3, bar_box.3),
+                ];
+                assert!(
+                    edges.iter().all(|(a, b)| a.abs_diff(*b) <= 1),
+                    "{case}: the outline {outline_box:?} does not trace the painted bar {bar_box:?}"
+                );
+            }
+        }
+    }
+}
+
 /// `orientation` alone swaps the roles: the same two columns draw bars running
 /// along x instead of y.
 #[test]

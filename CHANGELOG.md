@@ -1,9 +1,10 @@
 # Release history
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
-history is the separate browser integration example in `crates/web`; its version
-does not imply a standalone JavaScript product or a deployment of the separate
-[figgyplot.com Studio](https://figgyplot.com/) application.
+history is the browser product in `crates/web` (the wasm-bindgen wrapper and the
+`<figgy-chart>` element), built from this repository with its own version; earlier
+entries call it the browser integration example. Its version does not imply a
+deployment of the separate [figgyplot.com Studio](https://figgyplot.com/) application.
 
 Publication statements in older source-release entries describe those releases
 at the time. The first crates.io publication is recorded below.
@@ -235,6 +236,25 @@ Collected on `integration/0.19`; the release entry replaces this section.
   shader in `Sector.effects.w` (reserved zero before)
   ([#46](https://github.com/shim9610/figgy/issues/46) item 5); the layout,
   the hit map and the shader read the same value. No pixel changes.
+- **Histogram selection outline.** A selected bin's outline resolves the
+  bin's gap and width ratio with the bar draw's own resolver on the GPU
+  (`resolve_bar_style` in `bar_columnar.wgsl`) instead of a CPU copy of it
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 2). The selection
+  writes the series' bar `Style` with the highlight colour, the outline width
+  and the bin's global index in lanes a bar never reads, and a series drawn
+  through its bar style map is outlined by the new `vs_bar_selection_mapped`
+  entry over the same map. The outline covers the same pixels as before; one
+  bind group per selected bin is gone. Migration:
+  `data_render::ColumnBarSelectionLayer` drops `selection_bg` and
+  `selection_charge` and gains `style_map_bg: Option<&wgpu::BindGroup>`, the
+  series' bar style map exactly when the bar draw binds it.
+- **Browser product status**
+  ([#57](https://github.com/shim9610/figgy/issues/57)). The documentation describes
+  `crates/web` (`figgy`: `FiggyChart`, `FiggyBoundedChart` and `<figgy-chart>`)
+  as figgy's browser product, maintained with the renderer, instead of an
+  integration example. The package keeps its own version and `publish = false`;
+  its publication target is still open. No API, serialized field or build
+  change.
 
 <a id="release-0181"></a>
 
@@ -331,6 +351,13 @@ with the renderer dependency and is not published (`publish = false`).
   with its hit region and selection box. `pick_draw_agreement.rs` does the
   same for every data family at 1x and 2x. `scale_consistency.rs` checks
   bounds, label sets and box-filtered images at 1x, 2x and 3x.
+- **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
+  that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag
+  as a factor of a hand-written blend (`x + f * (y - x)`,
+  `(1.0 - f) * x + f * y`) and a `select` by a log flag. The flags it checks
+  (`scale_log`, `polar_angle.x`, `is_log` and `select(0.0, 1.0, …)` locals)
+  are listed in SHADER_COMMON §3.1
+  ([#47](https://github.com/shim9610/figgy/issues/47)).
 
 Additions:
 

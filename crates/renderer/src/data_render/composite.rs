@@ -252,7 +252,9 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_pipeline(selection.pipeline);
         pass.set_bind_group(0, selection.transform_bg, &[]);
         pass.set_bind_group(1, &selection.style_bg, &[]);
-        pass.set_bind_group(2, &selection.selection_bg, &[]);
+        if let Some(map) = selection.style_map_bg {
+            pass.set_bind_group(2, map, &[]);
+        }
         let edges = selection.edges.byte_range();
         let edges_next = (edges.start + crate::data::COLUMN_VALUE_BYTES as u64)..edges.end;
         pass.set_vertex_buffer(0, selection.pool_buffer.slice(edges.clone()));

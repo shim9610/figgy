@@ -284,6 +284,7 @@ impl Renderer {
                     && p.bar_envelope.is_some()
                     && p.bar_mapped.is_some()
                     && p.bar_selection.is_some()
+                    && p.bar_selection_mapped.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -386,6 +387,7 @@ impl TargetPipelines {
             bar_envelope: None,
             bar_mapped: None,
             bar_selection: None,
+            bar_selection_mapped: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -432,6 +434,9 @@ impl TargetPipelines {
         }
         if self.bar_selection.is_none() {
             self.bar_selection = other.bar_selection;
+        }
+        if self.bar_selection_mapped.is_none() {
+            self.bar_selection_mapped = other.bar_selection_mapped;
         }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;

@@ -19,8 +19,8 @@ local checkout, replace `version` with a `path` to `crates/renderer` or
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
 `egui_demo` enables optional GUI example dependencies. Default features do not
-require a windowing or GUI framework. The `figgy` WASM wrapper is a separate
-consumer and has `publish = false` for the Rust registry.
+require a windowing or GUI framework. The `figgy` WASM wrapper, figgy's browser
+product, is a separate consumer and has `publish = false` for the Rust registry.
 
 Rust 1.99 is the declared support floor (`rust-version`), not a claim that
 earlier toolchains cannot compile the code. CI tests with the toolchain pinned

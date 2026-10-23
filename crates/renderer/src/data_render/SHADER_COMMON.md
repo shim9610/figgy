@@ -148,6 +148,19 @@ The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), s
 
 `DataBarStyleConfig.bar_style_overrides`를 지정하면 개별 막대 스타일용 파이프라인이 group 2의 덮어쓰기 표를 읽는다. 채움색·테두리색·두께·간격·너비 비율만 바꾸며 기준선과 방향은 시리즈 공통값을 유지한다. 그리기·데이터 피킹·선택 테두리는 같은 해석 규칙을 적용한다.
 
+**Selection outline.** A selected bin's outline (`vs_bar_selection`,
+`vs_bar_selection_mapped`) reads a per-selection `Style` written as
+`PrimitiveStyle::from_bar` for the series (the draw's unresolved base), with
+three lanes reinterpreted: `color_premul` is the premultiplied highlight
+colour, `line_width_px` the outline width in pixels (unscaled), and
+`dash_len` the selected bin's global index. Gap, width ratio, orientation and
+baseline stay the draw's, so the outline takes the draw's resolver: the
+mapped entry, used exactly when the draw binds the bar style map, runs
+`resolve_bar_style(base_bar_style(), style.dash_len)` over the same group 2.
+The global index keeps a streamed selection, whose instance is local zero,
+on the bin's own overrides without a stream map binding. The highlight
+colour and outline width are never taken from the resolved fill or border.
+
 ### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`
 
 선 아래(또는 두 선 사이) 면 채움은 선 셰이더의 별도 엔트리와 별도 파이프라인("figgy line area pipeline")으로 그린다. 공통 `Style` 구조체를 그대로 쓰되 일부 필드를 막대처럼 다른 용도로 쓴다. CPU 쪽 작성자는 `renderer.rs::create_style_for_series_scaled_inner`(`area` 스타일)이며 아래 표와 일치해야 한다.
@@ -195,6 +208,38 @@ The code is the fragment [`data_render/common/projection.wgsl`](common/projectio
 
 호출자는 `transform.scale_log.x` 또는 `transform.scale_log.y`를 `is_log`로
 넣어 X·Y축을 독립적으로 선택한다.
+
+### 3.1 Flags that choose between two values
+
+`shader_consistency::flag_choices_never_blend_by_arithmetic` reads every
+shader under `src/` (comments stripped, each shared fragment once) and holds
+the flags below to the form above. A flag operand may carry a `[i]` index or
+a `.x` swizzle, and may be a field of a path (`transform.scale_log.x`,
+`pick_query_params.transform.scale_log[axis]`).
+
+| Flag | Kind | Where |
+| --- | --- | --- |
+| `scale_log` | f32 0/1 uniform field, one lane per axis | `Transform` (`common/transform.wgsl`), the pick transform |
+| `polar_angle.x` | f32 0/1 uniform lane (the other lanes are not flags) | `Transform`, the pick transform |
+| `is_log` | parameter name | `maybe_log`, `axis_pair_to_t`, `axis_px_per_unit_at` |
+| `let`/`var NAME = select(0.0, 1.0, …)` or `select(1.0, 0.0, …)` | local, flag within its function | `ramp_t` (`is_log`) |
+
+Every row must still match at least one shader, so renaming a flag fails the
+test until the table (here and in the test's `BLEND_FLAGS`) follows. The test
+rejects:
+
+- `mix(a, b, flag)` unless the same function returns the chosen value under
+  an `if flag > 0.5` before the `mix`, or overrides the `mix` under that `if`
+  within the next two lines; a `mix` weight computed from a flag
+  (`1.0 - flag`, `flag * k`) has no exemption;
+- a flag as a factor of a product, directly or as a term of a parenthesized
+  sum (`x + f * (y - x)`, `f * y + (1.0 - f) * x`), which no guard can make
+  exact;
+- `select` by a log flag (`scale_log`, `is_log`), except the
+  `select(0.0, 1.0, …)` that makes a flag.
+
+At least four guarded choices must be found: `maybe_log`, `axis_pair_to_t`,
+`ramp_t` and `axis_px_per_unit_at`.
 
 ---
 
@@ -596,6 +641,9 @@ When shared shader code changes:
 - [ ] A changed flag or constant that Rust also defines has the same value
       on both sides (`wgsl_constants_equal_their_rust_constants`).
 - [ ] The CPU twins the behaviour tests compare follow the change.
+- [ ] A new flag that chooses between two values is in the §3.1 table and
+      chooses through a guarded `mix` only
+      (`flag_choices_never_blend_by_arithmetic`).
 - [ ] `cargo test -p figgy-renderer --test shader_consistency` passes.
 - [ ] `cargo test -p figgy-renderer` passes (the shader compile test in
       `src/shader_compile_tests.rs` needs a GPU adapter).

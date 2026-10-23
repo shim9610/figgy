@@ -28,8 +28,9 @@ shown below.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Direct host GPU
-sharing requires wgpu 30. The WASM wrapper remains a separate consumer and is
-excluded from Rust registry publishing.
+sharing requires wgpu 30. The WASM wrapper (`figgy`, the browser product) is a
+separate package with `publish = false`; its publication target is
+[open](https://github.com/shim9610/figgy/issues/57).
 See [Rust API contracts](API.md) for ownership, frame lifetimes,
 render targets and compatibility policy.
 
@@ -322,7 +323,7 @@ Each example shows:
 - Legends
 - DPI input + Save PNG button (egui) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
 
-### Browser integration example — timestamp axes
+### Browser timestamp axes demo
 
 `crates/web/timestamp-demo.html` exercises the browser timestamp path with
 absolute Unix time values uploaded through `register_column_f64(Float64Array)`
@@ -587,7 +588,7 @@ Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`이고 Rust 라이브�
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. GPU를 직접 공유하려면 호스트도 wgpu 30을 사용해야 한다.
-WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서는 제외한다.
+브라우저용 제품인 WASM 래퍼(`figgy`)는 별도 패키지이며 `publish = false`다. 배포 대상은 [아직 정하지 않았다](https://github.com/shim9610/figgy/issues/57).
 소유권·프레임 수명·출력 타깃·호환성은 [API 계약](API.md)을 참고한다.
 
 ```toml
@@ -841,7 +842,7 @@ cargo run -p figgy-renderer --example egui_embed --features egui_demo
 
 <a id="브라우저-timestamp-축-데모"></a>
 
-### 브라우저 통합 예제 — 시간축
+### 브라우저 시간축 데모
 
 `crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 눈금 간격을 자동으로 조절한다.
 
