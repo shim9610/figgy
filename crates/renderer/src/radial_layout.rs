@@ -201,15 +201,23 @@ pub(super) fn layout(
             let style = slice.style.as_ref().unwrap_or(&chart.style);
             let target = RadialTarget { group: g, index };
             let amount = chart.interaction.amount(target);
+            let radius_px = radius * scale;
+            let tilt = style.tilt_degrees.to_radians();
+            let vertical_lift = style.hover_lift * amount;
+            // How far the lifted top face moves up the screen, in physical
+            // pixels. Computed once here; the inside-label code below, the
+            // shader's moving inside glyphs and their hit map all read it from
+            // `effects[3]`.
+            let label_lift = vertical_lift * tilt.sin() * radius_px;
             out.targets.push(target);
             out.sectors.push(Sector {
                 geometry: [
                     center[0] * scale,
                     center[1] * scale,
-                    radius * scale,
+                    radius_px,
                     kind.inner_radius(),
                 ],
-                arc: [a, b - a, style.tilt_degrees.to_radians(), style.depth],
+                arc: [a, b - a, tilt, style.depth],
                 color: [slice.color.r, slice.color.g, slice.color.b, 1.0],
                 material: MaterialGpu::pack(
                     style.material,
@@ -221,12 +229,7 @@ pub(super) fn layout(
                     style.texture_angle_degrees.rem_euclid(360.0).to_radians(),
                     amount * style.hover_brightness,
                 ),
-                rounding: [
-                    style.inner_corner,
-                    style.outer_corner,
-                    style.hover_lift * amount,
-                    0.0,
-                ],
+                rounding: [style.inner_corner, style.outer_corner, vertical_lift, 0.0],
                 outline: [
                     if style.outline.rim { 1.0 } else { 0.0 },
                     if style.outline.separators { 1.0 } else { 0.0 },
@@ -255,7 +258,7 @@ pub(super) fn layout(
                     } else {
                         0.0
                     },
-                    0.0,
+                    label_lift,
                 ],
                 detail: [
                     slice.explode,
@@ -275,7 +278,7 @@ pub(super) fn layout(
                 let mid = s.arc[0] + s.arc[1] * 0.5;
                 let r = (s.geometry[3] + 1.0) * 0.5;
                 let (x, mut y) = projected(s, mid, r.max(0.6));
-                let lift = s.rounding[2] * s.arc[2].sin() * s.geometry[2];
+                let lift = s.effects[3];
                 if raster_moves_inside_labels(chart) {
                     y -= lift;
                 }
