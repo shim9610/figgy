@@ -1,9 +1,10 @@
 # Release history
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
-history is the separate browser integration example in `crates/web`; its version
-does not imply a standalone JavaScript product or a deployment of the separate
-[figgyplot.com Studio](https://figgyplot.com/) application.
+history is the browser product in `crates/web` (the wasm-bindgen wrapper and the
+`<figgy-chart>` element), built from this repository with its own version; earlier
+entries call it the browser integration example. Its version does not imply a
+deployment of the separate [figgyplot.com Studio](https://figgyplot.com/) application.
 
 Publication statements in older source-release entries describe those releases
 at the time. The first crates.io publication is recorded below.
@@ -225,6 +226,13 @@ Collected on `integration/0.19`; the release entry replaces this section.
   the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
   their defaults); model 0.12.1 and older reject it. Migration: a Rust
   `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
+- **Browser product status**
+  ([#57](https://github.com/shim9610/figgy/issues/57)). The documentation describes
+  `crates/web` (`figgy`: `FiggyChart`, `FiggyBoundedChart` and `<figgy-chart>`)
+  as figgy's browser product, maintained with the renderer, instead of an
+  integration example. The package keeps its own version and `publish = false`;
+  its publication target is still open. No API, serialized field or build
+  change.
 
 <a id="release-0181"></a>
 

@@ -2,7 +2,7 @@
 
 # Config / SeriesConfig JSON 설정 명세
 
-`crates/web`의 [브라우저 통합 예제](README.md)가 사용하는 JSON 형식이다.
+figgy의 브라우저용 제품인 [`crates/web`](README.md)이 사용하는 JSON 형식이다.
 설정 타입 자체는 Rust 모델에 정의되며 `serde`로 직렬화할 수 있다.
 
 이 문서는 `figgy` 0.15.1과 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1의 JSON 형식을 설명한다. `crates/web`은 같은 체크아웃의 렌더러를 경로 의존성으로 빌드한다. Rust 호스트에서 같은 JSON을 읽고 쓰려면 렌더러의 `serde` 기능을 켠다.

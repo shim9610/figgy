@@ -1,15 +1,19 @@
-# Browser integration example
+# figgy for the browser
 
-This crate is an example application adapter for the Rust chart renderer. It
-demonstrates wasm-bindgen exports and a `<figgy-chart>` custom element that owns
-a canvas, forwards pointer events, schedules frames and adapts async calls.
+`crates/web` is figgy's browser product: the wasm-bindgen wrapper (`FiggyChart`,
+`FiggyBoundedChart`) and the `<figgy-chart>` custom element, which owns a
+canvas, forwards pointer events, schedules frames and adapts async calls. It is
+maintained with the renderer: every renderer feature ships its wrapper methods.
 
-The library packages are `figgy-renderer` 0.18.0 and `figgy-model` 0.12.0. This
-example is the Cargo package `figgy` 0.15.1, named for its generated JS/WASM
-filenames, and has `publish = false`. It builds against the renderer and model
-sources in this checkout through path dependencies. An application that reuses
-this wrapper in its own crate depends on the published renderer with the
-`serde` feature, which the wrapper's JSON methods need:
+The library packages are `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1. The
+browser product is the Cargo package `figgy` 0.15.1, which has its own version
+and is named for its generated JS/WASM filenames. It is built from this
+repository against the renderer and model sources in the checkout through path
+dependencies (`publish = false`; the publication target is open,
+[#57](https://github.com/shim9610/figgy/issues/57)). The `figgy` crate on crates.io and the
+`figgy` package on npm are unrelated projects. An application that reuses this
+wrapper in its own crate depends on the published renderer with the `serde`
+feature, which the wrapper's JSON methods need:
 
 ```toml
 renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"] }
@@ -41,14 +45,18 @@ The pages and [figgy-chart.js](figgy-chart.js) load the generated `pkg/` files.
 Keep the JavaScript and WASM from the same build together. `pkg/` is generated,
 not checked into the source snapshot.
 
+The browser tests (`tests/*_browser.rs`) compile in CI but do not run there yet.
+Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cjs)
+(Playwright Chromium), as the [CI guide](../../ci/README.md) describes.
+
 | Source / guide | Purpose |
 |---|---|
 | [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG output |
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
-| [figgy-chart.js](figgy-chart.js) | Example host lifecycle, events and Promise adaptation |
+| [figgy-chart.js](figgy-chart.js) | `<figgy-chart>` element: host lifecycle, events and Promise adaptation |
 | [src/lib.rs](src/lib.rs) | wasm-bindgen bridge to the renderer |
 | [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
-| [JSON reference](SCHEMA.md) | The example wrapper's representation of the shared model |
+| [JSON reference](SCHEMA.md) | The wrapper's JSON representation of the shared model |
 
 ## Readiness and selected values
 
@@ -87,18 +95,25 @@ above can be hosted on an HTTPS static site such as GitHub Pages after building
 the matching `pkg/`. Do not publish an empty `pkg/` or link to an unbuilt page.
 A link to a repository HTML file opens its source on GitHub, not a running chart.
 
-The repository links no hosted build of this example.
+The repository links no hosted build of these pages.
 [figgyplot.com Studio](https://figgyplot.com/) is a separate application built
 on the renderer, with its own deployment and UI.
 
 ## 한국어 안내
 
-이 디렉터리는 Rust 렌더러를 브라우저에 연결하는 예제다. WASM으로 컴파일되는 렌더러와
-캔버스·이벤트·비동기 호출을 연결하는 이 래퍼는 서로 다른 계층이다.
-`FiggyChart`나 `<figgy-chart>`가 모든 Rust 차트 API를 제공하는 것은 아니다.
+이 디렉터리는 figgy의 브라우저용 제품이다. wasm-bindgen 래퍼(`FiggyChart`, `FiggyBoundedChart`)와
+`<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결한다. 렌더러와 함께 관리하므로
+렌더러에 기능이 추가되면 래퍼 메서드도 함께 추가된다. WASM으로 컴파일되는 렌더러와 이 래퍼는
+서로 다른 계층이며, `FiggyChart`나 `<figgy-chart>`가 모든 Rust 차트 API를 제공하는 것은 아니다.
 
-위 명령으로 빌드하고 로컬 서버를 열면 히스토그램과 시간축 예제를 조작할 수 있다.
+Cargo 패키지 `figgy` 0.15.1은 렌더러와 별도로 버전을 매기며 이 저장소에서 빌드한다
+(`publish = false`, 배포 대상은 아직 정하지 않았다: [#57](https://github.com/shim9610/figgy/issues/57)).
+crates.io의 `figgy` 크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없다.
+브라우저 테스트(`tests/*_browser.rs`)는 CI에서 컴파일만 하고 아직 실행하지 않는다.
+로컬에서는 `ci/wasm_browser_test.cjs`(Playwright Chromium)로 실행한다.
+
+위 명령으로 빌드하고 로컬 서버를 열면 히스토그램과 시간축 데모를 조작할 수 있다.
 GitHub README 안에서는 JavaScript와 WASM을 실행할 수 없으므로, 직접 조작하는 데모는
-별도 HTTPS 페이지에 올리고 링크로 연결한다. 저장소에는 이 예제를 배포한 실행 페이지 링크가
+별도 HTTPS 페이지에 올리고 링크로 연결한다. 저장소에는 이 데모를 배포한 실행 페이지 링크가
 아직 없다. [figgyplot.com Studio](https://figgyplot.com/)는 렌더러를 사용하는 별도
-애플리케이션이며 배포와 UI도 이 예제와 별개다.
+애플리케이션이며 배포와 UI도 이 저장소의 브라우저용 제품과 별개다.
