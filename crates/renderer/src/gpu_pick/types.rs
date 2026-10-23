@@ -21,8 +21,7 @@ pub(super) const FLAG_VECTOR: u32 = 64;
 
 /// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
 pub(super) const VECTOR_SCALE_PIXELS: u32 = 256;
-pub(super) const STYLE_MASK_RADIUS: u32 = 2;
-pub(super) const STYLE_MASK_SHAPE: u32 = 4;
+pub(super) use crate::data_render::{STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 /// The pick shader's marker draw modes (`PICK_MARKER_*`).
 pub(super) const PICK_MARKER_PRECISE: u32 = 0;
 pub(super) const PICK_MARKER_SKETCH: u32 = 1;

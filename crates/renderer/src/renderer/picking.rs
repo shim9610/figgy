@@ -355,9 +355,7 @@ impl PickChartPlan {
         config: &Config,
         series: &[SeriesConfig],
     ) -> std::result::Result<Self, crate::gpu_pick::GpuPickError> {
-        const MASK_COLOR: u32 = 1;
-        const MASK_RADIUS: u32 = 2;
-        const MASK_SHAPE: u32 = 4;
+        use data_render::{STYLE_MASK_COLOR, STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 
         let mut descriptors = Vec::new();
         descriptors.try_reserve_exact(series.len()).map_err(|_| {
@@ -426,9 +424,9 @@ impl PickChartPlan {
                         style_slots.push(scatter_style_slot_gpu(
                             slot,
                             1.0,
-                            MASK_COLOR,
-                            MASK_RADIUS,
-                            MASK_SHAPE,
+                            STYLE_MASK_COLOR,
+                            STYLE_MASK_RADIUS,
+                            STYLE_MASK_SHAPE,
                         ));
                         style_signatures.push(pick_point_style_signature(slot));
                     }
@@ -452,9 +450,9 @@ impl PickChartPlan {
                         let slot = scatter_style_slot_gpu(
                             &override_.style,
                             1.0,
-                            MASK_COLOR,
-                            MASK_RADIUS,
-                            MASK_SHAPE,
+                            STYLE_MASK_COLOR,
+                            STYLE_MASK_RADIUS,
+                            STYLE_MASK_SHAPE,
                         );
                         style_overrides.push(data_render::ScatterStyleOverrideGpu {
                             point_index,
