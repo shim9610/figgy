@@ -436,18 +436,7 @@ The functions and constants below are copied byte-for-byte into
 compares every body and constant with this document. CPU twin:
 `pick.rs::line_segment_pick` (precise strokes and dashes) with its arc sum.
 
-The stroke constants, `line_stroke_distance` and `dash_pattern_on` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl); `sketch_line_offset` is still copied:
-
-```wgsl
-/// The sketch line's perpendicular displacement at arc position `arc_px`:
-/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
-/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
-/// layers degrade identically.
-fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
-    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
-    return select(0.0, wobble, wavelength_px > 0.0);
-}
-```
+The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
 
 ### 5.7 Styled markers — function twins
 

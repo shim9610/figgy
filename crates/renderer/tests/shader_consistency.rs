@@ -1075,10 +1075,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
         &["size_map_radius"],
     ),
-    (
-        &["data_render/line_columnar_b.wgsl", "gpu_pick/line.wgsl"],
-        &["sketch_line_offset"],
-    ),
 ];
 
 /// Rule from #46 (the hand-off convention): code that builds one struct from
