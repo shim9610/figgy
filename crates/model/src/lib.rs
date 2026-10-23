@@ -17,7 +17,7 @@ pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
-    PixelSpace,
+    MeasuredText, PixelSpace,
 };
 pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
 pub mod format;
@@ -28,6 +28,7 @@ pub mod preset;
 pub mod radial;
 pub mod resize;
 pub mod select;
+pub mod sink;
 pub mod text;
 pub mod tick;
 
@@ -54,8 +55,10 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionOutline, SubplotElement,
+    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
+    SubplotElement,
 };
+pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use text::{MeasureText, TextAlign, TextExtents};
 
 pub use radial::{

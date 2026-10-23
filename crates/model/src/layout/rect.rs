@@ -65,6 +65,21 @@ impl RectF {
             ..*self
         }
     }
+
+    /// The rect at `scale` times its size about the origin.
+    pub fn scaled(&self, scale: f32) -> Self {
+        Self {
+            x: self.x * scale,
+            y: self.y * scale,
+            width: self.width * scale,
+            height: self.height * scale,
+        }
+    }
+
+    /// The centre of the rect.
+    pub fn center(&self) -> (f32, f32) {
+        (self.x + self.width * 0.5, self.y + self.height * 0.5)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

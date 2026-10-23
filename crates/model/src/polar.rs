@@ -53,14 +53,6 @@ pub enum PolarInterpolation {
 }
 
 impl PolarInterpolation {
-    /// The pieces one segment is drawn as; a chord is one piece.
-    pub fn piece_count(self) -> u32 {
-        match self {
-            Self::Chord => 1,
-            Self::Arc { pieces } => pieces.max(1),
-        }
-    }
-
     /// Whether segments are straight chords (the default).
     pub fn is_chord(&self) -> bool {
         matches!(self, Self::Chord)
@@ -321,8 +313,6 @@ mod tests {
         assert!(polar.contains_angle(0.5));
         assert!(!polar.contains_angle(1.5));
         assert_eq!(polar.sector_radians(), Some([0.0, 1.0]));
-        assert_eq!(PolarInterpolation::Chord.piece_count(), 1);
-        assert_eq!(PolarInterpolation::Arc { pieces: 8 }.piece_count(), 8);
     }
 
     #[test]

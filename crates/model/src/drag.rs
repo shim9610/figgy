@@ -38,6 +38,7 @@ use crate::select::{
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, LegendElement,
     Selectable,
 };
+use crate::text::MeasureText;
 
 /// State that owns position changes: [`Config`] for Cartesian and polar
 /// charts, [`DecorationLayout`](crate::decoration::DecorationLayout) for
@@ -46,24 +47,53 @@ use crate::select::{
 /// module.
 pub trait DragConfig {
     type Element;
-    fn nudge(&mut self, element: Self::Element, dx: f32, dy: f32) -> NudgeResult;
+    /// Move `element` by a screen delta. `measure` lays the element out so
+    /// containment is checked on what is drawn ([`Config::nudge`]); states
+    /// whose elements carry their measured bounds ignore it.
+    fn nudge(
+        &mut self,
+        element: Self::Element,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult;
     /// [`Self::nudge`] with the pointer position `at` (chart-local logical
     /// pixels) the delta was measured from. Elements whose rule depends on
     /// where they were grabbed read it (a polar chart's ray turns around the
     /// centre, its angle labels move along the spoke under the pointer);
     /// the default ignores it.
-    fn nudge_at(&mut self, element: Self::Element, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+    fn nudge_at(
+        &mut self,
+        element: Self::Element,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let _ = at;
-        self.nudge(element, dx, dy)
+        self.nudge(element, measure, dx, dy)
     }
 }
 impl DragConfig for Config {
     type Element = Element;
-    fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
-        Config::nudge(self, element, dx, dy)
+    fn nudge(
+        &mut self,
+        element: Element,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        Config::nudge(self, element, measure, dx, dy)
     }
-    fn nudge_at(&mut self, element: Element, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
-        Config::nudge_from(self, element, Some(at), dx, dy)
+    fn nudge_at(
+        &mut self,
+        element: Element,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        Config::nudge_from(self, element, measure, Some(at), dx, dy)
     }
 }
 
@@ -86,17 +116,28 @@ pub trait Draggable<C: DragConfig = Config>: Selectable<C> {
     /// `label_offset_x` / `label_offset_y`, the data-area margins or a polar
     /// chart's `radial_label_angle_degrees`), so a drop needs no extra commit
     /// step.
-    fn drag_by(&self, cfg: &mut C, dx: f32, dy: f32) -> NudgeResult {
-        cfg.nudge(self.nudge_element(), dx, dy)
+    ///
+    /// `measure` lays the element out, so the move is contained on the
+    /// element's drawn parts (the renderer's `CpuTextMeasure`; a measure
+    /// that cannot place the element rejects its drag).
+    fn drag_by(&self, cfg: &mut C, measure: &dyn MeasureText, dx: f32, dy: f32) -> NudgeResult {
+        cfg.nudge(self.nudge_element(), measure, dx, dy)
     }
 
     /// [`Self::drag_by`] with the pointer position `at` the delta was
     /// measured from, for hosts that have it. Elements whose move depends on
     /// where they were grabbed route it through [`DragConfig::nudge_at`];
     /// the default is [`Self::drag_by`].
-    fn drag_from(&self, cfg: &mut C, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+    fn drag_from(
+        &self,
+        cfg: &mut C,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let _ = at;
-        self.drag_by(cfg, dx, dy)
+        self.drag_by(cfg, measure, dx, dy)
     }
 }
 
@@ -117,8 +158,15 @@ impl Draggable for AxisLabelElement {
         Element::AxisLabel(self.side.clone())
     }
 
-    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
-        cfg.nudge_at(self.nudge_element(), at, dx, dy)
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
     }
 }
 
@@ -127,8 +175,15 @@ impl Draggable for AxisElement {
         Element::Axis(self.side.clone())
     }
 
-    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
-        cfg.nudge_at(self.nudge_element(), at, dx, dy)
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        cfg.nudge_at(self.nudge_element(), measure, at, dx, dy)
     }
 }
 
@@ -173,6 +228,8 @@ mod tests {
     use super::*;
     use crate::default::default_config;
     use crate::layout::{ChartArea, NudgeReject, Rect, Side};
+    use crate::select::SelectionGeometry;
+    use crate::select::tests::LaysOut;
     use crate::text::rich_segments_from_text;
 
     fn cfg_800x600() -> Config {
@@ -190,7 +247,7 @@ mod tests {
     #[test]
     fn drag_moves_chart_title_offset() {
         let mut cfg = cfg_800x600();
-        let r = ChartTitleElement.drag_by(&mut cfg, 5.0, 3.0);
+        let r = ChartTitleElement.drag_by(&mut cfg, &LaysOut, 5.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.chart_title.offset_x, 5.0);
         assert_eq!(cfg.chart_title.offset_y, 3.0);
@@ -198,11 +255,20 @@ mod tests {
 
     #[test]
     fn drag_matches_direct_nudge_path() {
+        // The title must draw something: an empty one cannot be grabbed and
+        // would be rejected on both paths.
         let mut via_drag = cfg_800x600();
-        let mut via_nudge = cfg_800x600();
+        via_drag.left_y.title_option.text.segments = rich_segments_from_text("Y");
+        let mut via_nudge = via_drag.clone();
         let el = AxisTitleElement { side: Side::Left };
-        el.drag_by(&mut via_drag, 4.0, -2.0);
-        via_nudge.nudge(Element::AxisTitle(Side::Left), 4.0, -2.0);
+        assert_eq!(
+            el.drag_by(&mut via_drag, &LaysOut, 4.0, -2.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(
+            via_nudge.nudge(Element::AxisTitle(Side::Left), &LaysOut, 4.0, -2.0),
+            NudgeResult::Moved
+        );
         assert_eq!(via_drag, via_nudge);
     }
 
@@ -210,7 +276,7 @@ mod tests {
     fn rejected_drag_leaves_config_unchanged() {
         let mut cfg = cfg_800x600();
         let before = cfg.clone();
-        let r = ChartTitleElement.drag_by(&mut cfg, -1e6, 0.0);
+        let r = ChartTitleElement.drag_by(&mut cfg, &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }
@@ -222,7 +288,7 @@ mod tests {
         let mut cfg = cfg_800x600();
         cfg.left_y.title_option.text.segments = rich_segments_from_text("Y");
         let el = AxisTitleElement { side: Side::Left };
-        let r = el.drag_by(&mut cfg, 3.0, 7.0);
+        let r = el.drag_by(&mut cfg, &LaysOut, 3.0, 7.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.title_option.offset_x, -7.0);
         assert_eq!(cfg.left_y.title_option.offset_y, 3.0);
@@ -237,7 +303,7 @@ mod tests {
         let da_before = cfg.data_area().unwrap();
 
         let el = AxisElement { side: Side::Left };
-        let r = el.drag_by(&mut cfg, 12.0, -40.0);
+        let r = el.drag_by(&mut cfg, &LaysOut, 12.0, -40.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.line_offset, 12.0);
         assert_eq!(cfg.data_area().unwrap(), da_before);
@@ -248,7 +314,7 @@ mod tests {
         let mut cfg = cfg_800x600();
         let da_before = cfg.data_area().unwrap();
         let el = AxisElement { side: Side::Bottom };
-        let r = el.drag_by(&mut cfg, -40.0, -6.0);
+        let r = el.drag_by(&mut cfg, &LaysOut, -40.0, -6.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.bottom_x.line_offset, -6.0);
         assert_eq!(cfg.data_area().unwrap(), da_before);
@@ -258,7 +324,7 @@ mod tests {
     fn axis_label_drag_moves_label_offsets() {
         let mut cfg = cfg_800x600();
         let el = AxisLabelElement { side: Side::Bottom };
-        let r = el.drag_by(&mut cfg, 2.0, 5.0);
+        let r = el.drag_by(&mut cfg, &LaysOut, 2.0, 5.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.bottom_x.label_style.label_offset_x, 2.0);
         assert_eq!(cfg.bottom_x.label_style.label_offset_y, 5.0);
@@ -267,7 +333,7 @@ mod tests {
     // The hit-map round trip hosts use: hit → as_draggable → drag_by.
     #[test]
     fn as_draggable_exposes_drag_through_hitmap() {
-        use crate::select::{HitMap, Selectable};
+        use crate::select::HitMap;
         use crate::text::{MeasureText, RichText, TextExtents};
 
         struct FixedMeasure;
@@ -294,7 +360,10 @@ mod tests {
             .unwrap()
             .as_draggable()
             .expect("title is draggable");
-        assert_eq!(drag.drag_by(&mut cfg, 4.0, 2.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &LaysOut, 4.0, 2.0),
+            NudgeResult::Moved
+        );
         assert_eq!(cfg.chart_title.offset_x, 4.0);
 
         // The data area is draggable too (whole-area translation).
@@ -320,7 +389,7 @@ mod tests {
         let mut cfg = cfg_800x600();
         let da_before = cfg.data_area().unwrap();
 
-        let r = DataAreaElement.drag_by(&mut cfg, 5.0, 3.0);
+        let r = DataAreaElement.drag_by(&mut cfg, &LaysOut, 5.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
         assert_eq!(da_after.x, da_before.x + 5);
@@ -337,7 +406,7 @@ mod tests {
         let da_before = cfg.data_area().unwrap();
         let right_margin = cfg.right_y.out_margin; // +50 px past the right margin overflows
 
-        let r = DataAreaElement.drag_by(&mut cfg, right_margin + 50.0, 3.0);
+        let r = DataAreaElement.drag_by(&mut cfg, &LaysOut, right_margin + 50.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
         assert_eq!(
@@ -351,7 +420,7 @@ mod tests {
     fn data_area_drag_rejected_when_fully_blocked() {
         let mut cfg = cfg_800x600();
         let before = cfg.clone();
-        let r = DataAreaElement.drag_by(&mut cfg, 1e6, -1e6);
+        let r = DataAreaElement.drag_by(&mut cfg, &LaysOut, 1e6, -1e6);
         assert_eq!(
             r,
             NudgeResult::Rejected(crate::layout::NudgeReject::OutOfBounds)
@@ -373,7 +442,7 @@ mod tests {
         let area_before = cfg.data_area().expect("data area");
 
         assert_eq!(
-            ColorBarElement.drag_by(&mut cfg, 7.0, -3.0),
+            ColorBarElement.drag_by(&mut cfg, &LaysOut, 7.0, -3.0),
             NudgeResult::Moved
         );
         let bar = cfg.colorbar.as_ref().expect("colourbar");
@@ -395,7 +464,7 @@ mod tests {
                 probe.colorbar.as_ref().expect("colourbar"),
             )
         };
-        ColorBarElement.drag_by(&mut cfg, 1.0, 1.0);
+        ColorBarElement.drag_by(&mut cfg, &LaysOut, 1.0, 1.0);
         let bar = cfg.colorbar.as_ref().expect("colourbar");
         assert_eq!((bar.offset_x, bar.offset_y), (8.0, -2.0));
         let moved =
@@ -406,7 +475,7 @@ mod tests {
         // A drag that would leave the chart area is rejected, state untouched.
         let before = cfg.clone();
         assert_eq!(
-            ColorBarElement.drag_by(&mut cfg, 10_000.0, 0.0),
+            ColorBarElement.drag_by(&mut cfg, &LaysOut, 10_000.0, 0.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
@@ -415,7 +484,7 @@ mod tests {
         let mut bare = cfg_800x600();
         bare.colorbar = None;
         assert_eq!(
-            ColorBarElement.drag_by(&mut bare, 1.0, 1.0),
+            ColorBarElement.drag_by(&mut bare, &LaysOut, 1.0, 1.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         let _ = Side::Right;
@@ -437,20 +506,20 @@ mod tests {
         };
 
         assert_eq!(
-            ColorBarAxisElement.drag_by(&mut cfg, 6.0, 99.0),
+            ColorBarAxisElement.drag_by(&mut cfg, &LaysOut, 6.0, 99.0),
             NudgeResult::Moved
         );
         assert_eq!(cfg.colorbar.as_ref().unwrap().axis.line_offset, 6.0);
 
         assert_eq!(
-            ColorBarLabelElement.drag_by(&mut cfg, 4.0, -2.0),
+            ColorBarLabelElement.drag_by(&mut cfg, &LaysOut, 4.0, -2.0),
             NudgeResult::Moved
         );
         let labels = &cfg.colorbar.as_ref().unwrap().axis.label_style;
         assert_eq!((labels.label_offset_x, labels.label_offset_y), (4.0, -2.0));
 
         assert_eq!(
-            ColorBarTitleElement.drag_by(&mut cfg, 3.0, 7.0),
+            ColorBarTitleElement.drag_by(&mut cfg, &LaysOut, 3.0, 7.0),
             NudgeResult::Moved
         );
         let title = &cfg.colorbar.as_ref().unwrap().axis.title_option;
@@ -481,14 +550,17 @@ mod tests {
         let at = [cx, cy - r * 0.5];
         let to = [cx + r * 0.5 * 0.7071, cy - r * 0.5 * 0.7071];
         assert_eq!(
-            ray.drag_from(&mut cfg, at, to[0] - at[0], to[1] - at[1]),
+            ray.drag_from(&mut cfg, &LaysOut, at, to[0] - at[0], to[1] - at[1]),
             NudgeResult::Moved
         );
         let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
         assert!((angle - 45.0).abs() < 0.5, "{angle}");
         // Without a pointer, a drag across the ray by r/2 turns by 0.5 rad.
         let mut cfg = polar_cfg();
-        assert_eq!(ray.drag_by(&mut cfg, -r * 0.5, 0.0), NudgeResult::Moved);
+        assert_eq!(
+            ray.drag_by(&mut cfg, &LaysOut, -r * 0.5, 0.0),
+            NudgeResult::Moved
+        );
         let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
         assert!(
             (angle - (90.0 + 0.5f64.to_degrees())).abs() < 0.5,
@@ -496,12 +568,24 @@ mod tests {
         );
         // A full turn wraps.
         let mut cfg = polar_cfg();
-        cfg.nudge_from(Element::Axis(Side::Left), Some([cx, cy - r]), 0.0, 2.0 * r);
+        cfg.nudge_from(
+            Element::Axis(Side::Left),
+            &LaysOut,
+            Some([cx, cy - r]),
+            0.0,
+            2.0 * r,
+        );
         let angle = cfg.polar.as_ref().unwrap().radial_label_angle_degrees;
         assert!((angle - 270.0).abs() < 0.5, "{angle}");
         let before = cfg.clone();
         assert_eq!(
-            AxisElement { side: Side::Bottom }.drag_from(&mut cfg, [cx + r, cy], 5.0, 5.0),
+            AxisElement { side: Side::Bottom }.drag_from(
+                &mut cfg,
+                &LaysOut,
+                [cx + r, cy],
+                5.0,
+                5.0
+            ),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
@@ -518,7 +602,7 @@ mod tests {
         let labels = AxisLabelElement { side: Side::Bottom };
         // Grab the label at 180 degrees and drag left: outward there.
         assert_eq!(
-            labels.drag_from(&mut cfg, [cx - r - 12.0, cy], -10.0, 0.0),
+            labels.drag_from(&mut cfg, &LaysOut, [cx - r - 12.0, cy], -10.0, 0.0),
             NudgeResult::Moved
         );
         assert!((cfg.bottom_x.label_style.label_offset_y - 10.0).abs() < 1e-5);
@@ -526,16 +610,19 @@ mod tests {
         // Grab the label at 90 degrees and drag down: inward there; the
         // tangential part is dropped.
         assert_eq!(
-            labels.drag_from(&mut cfg, [cx, cy - r - 12.0], 30.0, 4.0),
+            labels.drag_from(&mut cfg, &LaysOut, [cx, cy - r - 12.0], 30.0, 4.0),
             NudgeResult::Moved
         );
         assert!((cfg.bottom_x.label_style.label_offset_y - 6.0).abs() < 1e-5);
         // Without a pointer the spoke at the zero angle (right) is used.
-        assert_eq!(labels.drag_by(&mut cfg, 5.0, 0.0), NudgeResult::Moved);
+        assert_eq!(
+            labels.drag_by(&mut cfg, &LaysOut, 5.0, 0.0),
+            NudgeResult::Moved
+        );
         assert!((cfg.bottom_x.label_style.label_offset_y - 11.0).abs() < 1e-5);
         // Far past the chart area the move is rejected.
         assert_eq!(
-            labels.drag_from(&mut cfg, [cx - r - 12.0, cy], -2000.0, 0.0),
+            labels.drag_from(&mut cfg, &LaysOut, [cx - r - 12.0, cy], -2000.0, 0.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
 
@@ -543,7 +630,7 @@ mod tests {
         // screen left is `across` (the label side).
         let radius_labels = AxisLabelElement { side: Side::Left };
         assert_eq!(
-            radius_labels.drag_from(&mut cfg, [cx - 20.0, cy - r * 0.5], -7.0, -9.0),
+            radius_labels.drag_from(&mut cfg, &LaysOut, [cx - 20.0, cy - r * 0.5], -7.0, -9.0),
             NudgeResult::Moved
         );
         assert!(
@@ -558,7 +645,7 @@ mod tests {
         let mut cfg = polar_cfg();
         cfg.polar.as_mut().unwrap().radial_label_angle_degrees = 0.0;
         assert_eq!(
-            radius_labels.drag_by(&mut cfg, -7.0, -9.0),
+            radius_labels.drag_by(&mut cfg, &LaysOut, -7.0, -9.0),
             NudgeResult::Moved
         );
         assert!(
@@ -573,7 +660,7 @@ mod tests {
         let mut cfg = polar_cfg();
         let title = ChartTitleElement;
         assert_eq!(
-            title.drag_from(&mut cfg, [10.0, 10.0], 4.0, 3.0),
+            title.drag_from(&mut cfg, &LaysOut, [10.0, 10.0], 4.0, 3.0),
             NudgeResult::Moved
         );
         assert_eq!(cfg.chart_title.offset_x, 4.0);

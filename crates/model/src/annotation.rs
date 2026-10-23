@@ -21,8 +21,9 @@ use crate::layer::AnnotationLayer;
 use crate::layout::{NudgeReject, NudgeResult, RectF};
 use crate::line::LineStylePreset;
 use crate::resize::{HANDLE_SIZE, Resizable, ResizeHandle};
-use crate::select::{SELECTION_COLOR, SELECTION_PADDING, SELECTION_STROKE_WIDTH, Selectable};
-use crate::text::{MeasureText, RichText};
+use crate::select::{SELECTION_PADDING, Selectable};
+use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, StrokeStyle, TextRef, union};
+use crate::text::{MeasureText, RichText, TextExtents};
 
 /// The most items one annotation layer accepts.
 pub const MAX_ANNOTATIONS: usize = 1024;
@@ -655,28 +656,53 @@ pub enum AnnotationHandle {
     To,
 }
 
+/// The renderer-measured text block of an annotation item, in logical
+/// pixels: its size including box padding, the first line's ascent, the
+/// padding and the font size the label gaps are relative to. The renderer
+/// measures once when it registers the element, so hit bounds and the raster
+/// use the same metrics.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredText {
+    /// `[width, height]` of the block, padding included.
+    pub size: [f32; 2],
+    /// The first line's rise above its baseline.
+    pub ascent: f32,
+    /// The box padding on every side (zero without a box).
+    pub padding: f32,
+    /// The text's font size: the em the label gaps are measured in.
+    pub em: f32,
+}
+
+impl MeasuredText {
+    /// The text extents without the padding.
+    fn extents(&self) -> TextExtents {
+        TextExtents {
+            width: (self.size[0] - self.padding * 2.0).max(0.0),
+            ascent: self.ascent,
+            descent: (self.size[1] - self.padding * 2.0 - self.ascent).max(0.0),
+        }
+    }
+}
+
 /// A registered annotation: the item index, the frame's anchor space and the
-/// renderer-measured size of the item's text block (logical pixels, already
-/// including box padding), so hit bounds use the same metrics as the raster
-/// at every output scale.
+/// renderer-measured text block of the item ([`MeasuredText`]), so hit
+/// bounds use the same metrics as the raster at every output scale.
 #[derive(Clone, Debug, PartialEq)]
 pub struct AnnotationElement {
     pub index: usize,
     pub space: PixelSpace,
-    /// `[width, height]` of the text block, `None` without text.
-    pub text_size: Option<[f32; 2]>,
+    /// The measured text block, `None` without text.
+    pub text: Option<MeasuredText>,
     /// Set on the nudge-path copies a handle drag produces; `None` moves the
     /// whole item.
     pub handle: Option<AnnotationHandle>,
 }
 
-/// Least half thickness by which a stroke can be grabbed: a thin line is
-/// grabbed within this distance, a wider one across its whole width.
-const LINE_HIT_HALF_WIDTH: f32 = 3.0;
-/// Gap between an arrow's shaft and its label.
-pub const ARROW_LABEL_GAP: f32 = 6.0;
-/// Inset of a reference-line label from the plot edge and the line.
-pub const LINE_LABEL_INSET: f32 = 4.0;
+/// Gap between an arrow's shaft and its label, in em of the label's font.
+pub const ARROW_LABEL_GAP_EM: f32 = 0.5;
+/// Inset of a reference-line label from the plot edge and the line, in em
+/// of the label's font.
+pub const LINE_LABEL_INSET_EM: f32 = 1.0 / 3.0;
 
 /// Screen-space geometry of one item under a layer state, shared by the
 /// hit bounds and the raster so they cannot disagree.
@@ -704,6 +730,11 @@ impl AnnotationElement {
         }
     }
 
+    /// `[width, height]` of the text block, `None` without text.
+    pub fn text_size(&self) -> Option<[f32; 2]> {
+        self.text.map(|t| t.size)
+    }
+
     /// Where the item of `cfg` at this element's index is drawn, or `None`
     /// when it is hidden, absent, outside the plot or unplaceable.
     pub fn geometry(&self, cfg: &AnnotationLayer) -> Option<AnnotationGeometry> {
@@ -711,49 +742,47 @@ impl AnnotationElement {
         if !item.visible {
             return None;
         }
-        geometry(&item.kind, &self.space, self.text_size)
+        geometry(&item.kind, &self.space, self.text_size())
     }
 
-    /// The label rectangle of a reference line or an arrow, when it has one.
-    pub fn label_rect(&self, cfg: &AnnotationLayer) -> Option<RectF> {
-        let size = self.text_size?;
-        match self.geometry(cfg)? {
-            AnnotationGeometry::Line { a, b } => Some(line_label_rect(a, b, size)),
-            AnnotationGeometry::Arrow { from, to } => Some(arrow_label_rect(from, to, size)),
-            _ => None,
-        }
-    }
-
-    /// What the raster paints for this item ([`annotation_shapes`]).
-    pub fn shapes(&self, cfg: &AnnotationLayer) -> [Option<AnnotationShape>; 3] {
-        match (cfg.items.get(self.index), self.geometry(cfg)) {
-            (Some(item), Some(geometry)) => {
-                annotation_shapes(&item.kind, &geometry, self.text_size)
-            }
-            _ => [None, None, None],
-        }
+    /// The parts of this item that are its own, not its label: the union of
+    /// everything but the text of a line or an arrow. An item that paints
+    /// only its label keeps the label's box.
+    fn own_extent(&self, cfg: &AnnotationLayer) -> Option<RectF> {
+        let mut own: Option<RectF> = None;
+        let mut all: Option<RectF> = None;
+        let text_only = matches!(
+            cfg.items.get(self.index).map(|item| &item.kind),
+            Some(AnnotationKind::Text { .. })
+        );
+        AnnotationElement::emit(
+            self,
+            cfg,
+            &mut Parts(&mut |part| {
+                let r = part.extent();
+                all = Some(all.map_or(r, |u| union(u, r)));
+                if text_only || !matches!(part, DrawnPart::Text(_)) {
+                    own = Some(own.map_or(r, |u| union(u, r)));
+                }
+            }),
+        );
+        own.or(all)
     }
 
     /// The handles this item exposes, as compass names on its selection box
     /// and the part each one drags, with the square's centre.
-    fn handles(&self, cfg: &AnnotationLayer) -> Vec<(ResizeHandle, AnnotationHandle, [f32; 2])> {
+    fn handles(
+        &self,
+        cfg: &AnnotationLayer,
+        mut each: impl FnMut(ResizeHandle, AnnotationHandle, [f32; 2]),
+    ) {
         let Some(geometry) = self.geometry(cfg) else {
-            return Vec::new();
+            return;
         };
-        // The handles sit on the item's own shapes, not on its label; an
-        // item that paints only its label keeps the label's box.
-        let shapes = self.shapes(cfg);
-        let own = union_rects(
-            shapes
-                .iter()
-                .flatten()
-                .filter(|s| !matches!(s, AnnotationShape::Label(_)))
-                .map(AnnotationShape::extent),
-        );
-        let Some(rect) =
-            own.or_else(|| union_rects(shapes.iter().flatten().map(AnnotationShape::extent)))
-        else {
-            return Vec::new();
+        // The handles sit on the selection box around the item's own
+        // shapes, not on its label.
+        let Some(rect) = self.own_extent(cfg).map(|r| r.expanded(SELECTION_PADDING)) else {
+            return;
         };
         let (x0, y0) = (rect.x, rect.y);
         let (x1, y1) = (rect.x + rect.width, rect.y + rect.height);
@@ -761,15 +790,11 @@ impl AnnotationElement {
         match geometry {
             AnnotationGeometry::Line { a, b } => {
                 if a[0] == b[0] {
-                    vec![
-                        (ResizeHandle::W, AnnotationHandle::Value, [x0, cy]),
-                        (ResizeHandle::E, AnnotationHandle::Value, [x1, cy]),
-                    ]
+                    each(ResizeHandle::W, AnnotationHandle::Value, [x0, cy]);
+                    each(ResizeHandle::E, AnnotationHandle::Value, [x1, cy]);
                 } else {
-                    vec![
-                        (ResizeHandle::N, AnnotationHandle::Value, [cx, y0]),
-                        (ResizeHandle::S, AnnotationHandle::Value, [cx, y1]),
-                    ]
+                    each(ResizeHandle::N, AnnotationHandle::Value, [cx, y0]);
+                    each(ResizeHandle::S, AnnotationHandle::Value, [cx, y1]);
                 }
             }
             AnnotationGeometry::Span(_) => {
@@ -778,28 +803,36 @@ impl AnnotationElement {
                     ..
                 }) = cfg.items.get(self.index)
                 else {
-                    return Vec::new();
+                    return;
                 };
                 match axis {
-                    AnnotationAxis::X => vec![
-                        (ResizeHandle::W, AnnotationHandle::Start, [x0, cy]),
-                        (ResizeHandle::E, AnnotationHandle::End, [x1, cy]),
-                    ],
-                    AnnotationAxis::Y => vec![
-                        (ResizeHandle::N, AnnotationHandle::Start, [cx, y0]),
-                        (ResizeHandle::S, AnnotationHandle::End, [cx, y1]),
-                    ],
+                    AnnotationAxis::X => {
+                        each(ResizeHandle::W, AnnotationHandle::Start, [x0, cy]);
+                        each(ResizeHandle::E, AnnotationHandle::End, [x1, cy]);
+                    }
+                    AnnotationAxis::Y => {
+                        each(ResizeHandle::N, AnnotationHandle::Start, [cx, y0]);
+                        each(ResizeHandle::S, AnnotationHandle::End, [cx, y1]);
+                    }
                 }
             }
-            AnnotationGeometry::Text(_) => Vec::new(),
+            AnnotationGeometry::Text(_) => {}
             AnnotationGeometry::Arrow { from, to } => {
                 let (from_name, to_name) = arrow_handle_names(from, to);
-                vec![
-                    (from_name, AnnotationHandle::From, from),
-                    (to_name, AnnotationHandle::To, to),
-                ]
+                each(from_name, AnnotationHandle::From, from);
+                each(to_name, AnnotationHandle::To, to);
             }
         }
+    }
+
+    /// Place every part the raster paints for this item into `sink`: the
+    /// one placement its bounds, hit test, selection box and pixels share.
+    /// A hidden, absent or unplaceable item places nothing.
+    pub fn emit(&self, cfg: &AnnotationLayer, sink: &mut dyn Sink) -> bool {
+        if let (Some(item), Some(geometry)) = (cfg.items.get(self.index), self.geometry(cfg)) {
+            emit_annotation(&item.kind, &geometry, self.text.as_ref(), sink);
+        }
+        true
     }
 }
 
@@ -826,20 +859,20 @@ fn handle_square(center: [f32; 2]) -> RectF {
     }
 }
 
-/// The label of a reference line: inset from the line's top (vertical) or
-/// left (horizontal) end, on the line's right or upper side.
-pub fn line_label_rect(a: [f32; 2], b: [f32; 2], size: [f32; 2]) -> RectF {
+/// The label of a reference line: inset by `inset` from the line's top
+/// (vertical) or left (horizontal) end, on the line's right or upper side.
+pub fn line_label_rect(a: [f32; 2], b: [f32; 2], size: [f32; 2], inset: f32) -> RectF {
     if a[0] == b[0] {
         RectF {
-            x: a[0] + LINE_LABEL_INSET,
-            y: a[1].min(b[1]) + LINE_LABEL_INSET,
+            x: a[0] + inset,
+            y: a[1].min(b[1]) + inset,
             width: size[0],
             height: size[1],
         }
     } else {
         RectF {
-            x: a[0].min(b[0]) + LINE_LABEL_INSET,
-            y: a[1] - LINE_LABEL_INSET - size[1],
+            x: a[0].min(b[0]) + inset,
+            y: a[1] - inset - size[1],
             width: size[0],
             height: size[1],
         }
@@ -847,8 +880,8 @@ pub fn line_label_rect(a: [f32; 2], b: [f32; 2], size: [f32; 2]) -> RectF {
 }
 
 /// The label of an arrow: centred on the shaft's midpoint, pushed off the
-/// shaft towards the top of the screen by [`ARROW_LABEL_GAP`].
-pub fn arrow_label_rect(from: [f32; 2], to: [f32; 2], size: [f32; 2]) -> RectF {
+/// shaft towards the top of the screen by `gap`.
+pub fn arrow_label_rect(from: [f32; 2], to: [f32; 2], size: [f32; 2], gap: f32) -> RectF {
     let mid = [(from[0] + to[0]) * 0.5, (from[1] + to[1]) * 0.5];
     let d = [to[0] - from[0], to[1] - from[1]];
     let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
@@ -860,7 +893,7 @@ pub fn arrow_label_rect(from: [f32; 2], to: [f32; 2], size: [f32; 2]) -> RectF {
     if n[1] > 0.0 || (n[1] == 0.0 && n[0] < 0.0) {
         n = [-n[0], -n[1]];
     }
-    let reach = ARROW_LABEL_GAP + size[0].abs() * 0.5 * n[0].abs() + size[1] * 0.5 * n[1].abs();
+    let reach = gap + size[0].abs() * 0.5 * n[0].abs() + size[1] * 0.5 * n[1].abs();
     RectF {
         x: mid[0] + n[0] * reach - size[0] * 0.5,
         y: mid[1] + n[1] * reach - size[1] * 0.5,
@@ -958,151 +991,90 @@ fn inside_panel(space: &PixelSpace, rect: &RectF) -> bool {
         && rect.y + rect.height <= p.y + p.height
 }
 
-/// Hit bounds for a geometry: a thin strip for lines, the rectangle for
-/// spans and text, the endpoint bounding box plus the head for arrows. The
-/// label of a line or arrow is not part of the item's bounds.
-pub fn geometry_bounds(geometry: &AnnotationGeometry, head_half_width: f32) -> RectF {
-    match *geometry {
-        AnnotationGeometry::Line { a, b } => RectF {
-            x: a[0].min(b[0]) - LINE_HIT_HALF_WIDTH,
-            y: a[1].min(b[1]) - LINE_HIT_HALF_WIDTH,
-            width: (a[0] - b[0]).abs() + LINE_HIT_HALF_WIDTH * 2.0,
-            height: (a[1] - b[1]).abs() + LINE_HIT_HALF_WIDTH * 2.0,
+/// A label block placed at `rect`: its text baseline sits `ascent` below the
+/// block's top.
+fn placed_label<'a>(text: &'a RichText, rect: RectF, measured: &MeasuredText) -> PlacedText<'a> {
+    PlacedText {
+        text: TextRef::Rich(text),
+        origin: (rect.x, rect.y + measured.ascent),
+        extents: TextExtents {
+            width: measured.size[0],
+            ascent: measured.ascent,
+            descent: (measured.size[1] - measured.ascent).max(0.0),
         },
-        AnnotationGeometry::Span(rect) | AnnotationGeometry::Text(rect) => rect,
-        AnnotationGeometry::Arrow { from, to } => {
-            let pad = head_half_width.max(LINE_HIT_HALF_WIDTH);
-            RectF {
-                x: from[0].min(to[0]) - pad,
-                y: from[1].min(to[1]) - pad,
-                width: (from[0] - to[0]).abs() + pad * 2.0,
-                height: (from[1] - to[1]).abs() + pad * 2.0,
-            }
-        }
+        rotation: None,
     }
 }
 
-/// One shape the raster paints for an annotation item, in the layer's
-/// pixel space.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum AnnotationShape {
-    /// A segment stroked `width` across with butt ends, dashed as the item's
-    /// line style says.
-    Stroke {
-        a: [f32; 2],
-        b: [f32; 2],
-        width: f32,
-    },
-    /// A filled triangle: an arrow head, tip first.
-    Triangle([[f32; 2]; 3]),
-    /// A span's fill or a text block's box, padding included.
-    Rect(RectF),
-    /// The block of a reference line's or an arrow's label.
-    Label(RectF),
-}
-
-impl AnnotationShape {
-    /// Whether `p` is on the shape, within the grab slack: a stroke within
-    /// half its width and at least 3 px, a filled shape
-    /// within [`SELECTION_PADDING`] of its edge.
-    pub fn contains(&self, p: [f32; 2]) -> bool {
-        match *self {
-            AnnotationShape::Stroke { a, b, width } => {
-                segment_distance(p, a, b) <= stroke_hit_half_width(width)
-            }
-            AnnotationShape::Triangle(t) => {
-                in_triangle(p, t)
-                    || (0..3)
-                        .any(|i| segment_distance(p, t[i], t[(i + 1) % 3]) <= SELECTION_PADDING)
-            }
-            AnnotationShape::Rect(r) | AnnotationShape::Label(r) => {
-                r.expanded(SELECTION_PADDING).contains(p[0], p[1])
-            }
-        }
-    }
-
-    /// The axis-aligned extent of the shape's hit region.
-    pub fn extent(&self) -> RectF {
-        match *self {
-            AnnotationShape::Stroke { a, b, width } => {
-                let half = stroke_hit_half_width(width);
-                RectF {
-                    x: a[0].min(b[0]) - half,
-                    y: a[1].min(b[1]) - half,
-                    width: (a[0] - b[0]).abs() + half * 2.0,
-                    height: (a[1] - b[1]).abs() + half * 2.0,
-                }
-            }
-            AnnotationShape::Triangle(t) => {
-                let x0 = t[0][0].min(t[1][0]).min(t[2][0]);
-                let y0 = t[0][1].min(t[1][1]).min(t[2][1]);
-                let x1 = t[0][0].max(t[1][0]).max(t[2][0]);
-                let y1 = t[0][1].max(t[1][1]).max(t[2][1]);
-                RectF {
-                    x: x0,
-                    y: y0,
-                    width: x1 - x0,
-                    height: y1 - y0,
-                }
-                .expanded(SELECTION_PADDING)
-            }
-            AnnotationShape::Rect(r) | AnnotationShape::Label(r) => r.expanded(SELECTION_PADDING),
-        }
-    }
-}
-
-fn stroke_hit_half_width(width: f32) -> f32 {
-    (width * 0.5).max(LINE_HIT_HALF_WIDTH)
-}
-
-/// Distance from `p` to the segment `a`..`b`.
-fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
-    let d = [b[0] - a[0], b[1] - a[1]];
-    let len2 = d[0] * d[0] + d[1] * d[1];
-    let t = if len2 > 0.0 {
-        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
-}
-
-fn in_triangle(p: [f32; 2], t: [[f32; 2]; 3]) -> bool {
-    let side =
-        |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]);
-    let (d0, d1, d2) = (side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0]));
-    (d0 >= 0.0 && d1 >= 0.0 && d2 >= 0.0) || (d0 <= 0.0 && d1 <= 0.0 && d2 <= 0.0)
-}
-
-/// What the raster paints for `kind` at `geometry`, `text_size` being the
-/// measured label or text block: at most three shapes, in paint order. The
-/// raster draws exactly these, and the item's bounds, hit test and selection
-/// box are computed from them, so what is selectable is what is drawn.
-/// A stroke or head with no width or no alpha paints nothing and is absent.
-pub fn annotation_shapes(
+/// Place what the raster paints for `kind` at `geometry` into `sink`,
+/// `text` being the measured label or text block: spans below the data,
+/// everything else above. The raster draws exactly these parts, and the
+/// item's bounds, hit test and selection box are computed from them, so
+/// what is selectable is what is drawn. A stroke or head with no width or
+/// no alpha paints nothing and is absent.
+pub fn emit_annotation(
     kind: &AnnotationKind,
     geometry: &AnnotationGeometry,
-    text_size: Option<[f32; 2]>,
-) -> [Option<AnnotationShape>; 3] {
+    text: Option<&MeasuredText>,
+    sink: &mut dyn Sink,
+) {
     match (kind, *geometry) {
         (AnnotationKind::ReferenceLine { style, label, .. }, AnnotationGeometry::Line { a, b }) => {
-            let stroke =
-                (style.width > 0.0 && style.color.a > 0.0).then_some(AnnotationShape::Stroke {
-                    a,
-                    b,
-                    width: style.width,
-                });
-            let label = label
-                .as_ref()
-                .and(text_size)
-                .map(|size| AnnotationShape::Label(line_label_rect(a, b, size)));
-            [stroke, label, None]
+            if style.width > 0.0 && style.color.a > 0.0 {
+                sink.stroke(Slot::Above, a, b, &stroke_style(style, "annotation_line"));
+            }
+            if let (Some(label), Some(t)) = (label, text) {
+                let rect = line_label_rect(a, b, t.size, LINE_LABEL_INSET_EM * t.em);
+                sink.text(Slot::Above, &placed_label(label, rect, t));
+            }
         }
-        (AnnotationKind::Span { .. }, AnnotationGeometry::Span(rect))
-        | (AnnotationKind::Text { .. }, AnnotationGeometry::Text(rect)) => {
-            [Some(AnnotationShape::Rect(rect)), None, None]
+        (AnnotationKind::Span { fill, .. }, AnnotationGeometry::Span(rect)) => {
+            sink.rect(Slot::Below, rect, Some(*fill), None);
         }
-        (AnnotationKind::Arrow { style, text, .. }, AnnotationGeometry::Arrow { from, to }) => {
+        (
+            AnnotationKind::Text {
+                text: content,
+                box_style,
+                ..
+            },
+            AnnotationGeometry::Text(rect),
+        ) => {
+            if let Some(b) = box_style {
+                sink.rect(Slot::Above, rect, (b.fill.a > 0.0).then_some(b.fill), None);
+                if b.border_width > 0.0 && b.border_color.a > 0.0 {
+                    // The border is stroked inside the box.
+                    sink.rect(
+                        Slot::Above,
+                        rect.expanded(-b.border_width * 0.5),
+                        None,
+                        Some(Border {
+                            color: b.border_color,
+                            width: b.border_width,
+                            tag: "annotation_box",
+                        }),
+                    );
+                }
+            } else {
+                sink.rect(Slot::Above, rect, None, None);
+            }
+            if let Some(t) = text {
+                sink.text(
+                    Slot::Above,
+                    &PlacedText {
+                        text: TextRef::Rich(content),
+                        origin: (rect.x + t.padding, rect.y + t.padding + t.ascent),
+                        extents: t.extents(),
+                        rotation: None,
+                    },
+                );
+            }
+        }
+        (
+            AnnotationKind::Arrow {
+                style, text: label, ..
+            },
+            AnnotationGeometry::Arrow { from, to },
+        ) => {
             let d = [to[0] - from[0], to[1] - from[1]];
             let len = d[0].hypot(d[1]);
             let head_len = style.head_length.min(len);
@@ -1113,45 +1085,43 @@ pub fn annotation_shapes(
             };
             let base = [to[0] - dir[0] * head_len, to[1] - dir[1] * head_len];
             let visible = style.line.color.a > 0.0;
-            let shaft = (style.line.width > 0.0 && visible && len > head_len).then_some(
-                AnnotationShape::Stroke {
-                    a: from,
-                    b: base,
-                    width: style.line.width,
-                },
-            );
-            let head = (head_len > 0.0 && style.head_width > 0.0 && visible).then(|| {
+            if style.line.width > 0.0 && visible && len > head_len {
+                sink.stroke(
+                    Slot::Above,
+                    from,
+                    base,
+                    &stroke_style(&style.line, "annotation_arrow"),
+                );
+            }
+            if head_len > 0.0 && style.head_width > 0.0 && visible {
                 let half = style.head_width * 0.5;
                 let n = [-dir[1] * half, dir[0] * half];
-                AnnotationShape::Triangle([
-                    to,
-                    [base[0] + n[0], base[1] + n[1]],
-                    [base[0] - n[0], base[1] - n[1]],
-                ])
-            });
-            let label = text
-                .as_ref()
-                .and(text_size)
-                .map(|size| AnnotationShape::Label(arrow_label_rect(from, to, size)));
-            [shaft, head, label]
+                sink.triangle(
+                    Slot::Above,
+                    [
+                        to,
+                        [base[0] + n[0], base[1] + n[1]],
+                        [base[0] - n[0], base[1] - n[1]],
+                    ],
+                    style.line.color,
+                );
+            }
+            if let (Some(label), Some(t)) = (label, text) {
+                let rect = arrow_label_rect(from, to, t.size, ARROW_LABEL_GAP_EM * t.em);
+                sink.text(Slot::Above, &placed_label(label, rect, t));
+            }
         }
-        _ => [None, None, None],
+        _ => {}
     }
 }
 
-/// The union of `rects`.
-fn union_rects(rects: impl Iterator<Item = RectF>) -> Option<RectF> {
-    rects.reduce(|u, r| {
-        let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
-        let x1 = (u.x + u.width).max(r.x + r.width);
-        let y1 = (u.y + u.height).max(r.y + r.height);
-        RectF {
-            x: x0,
-            y: y0,
-            width: x1 - x0,
-            height: y1 - y0,
-        }
-    })
+fn stroke_style<'a>(style: &'a AnnotationLineStyle, tag: &'a str) -> StrokeStyle<'a> {
+    StrokeStyle {
+        width: style.width,
+        color: style.color,
+        dash: style.style.pattern(),
+        tag,
+    }
 }
 
 /// A measure for tests: annotation bounds never depend on glyph metrics at
@@ -1171,46 +1141,15 @@ impl MeasureText for NoMeasure {
 }
 
 impl Selectable<AnnotationLayer> for AnnotationElement {
-    /// The extent of everything the raster paints for the item
-    /// ([`Self::shapes`]), grab slack included; the selection box adds the
-    /// padding around it.
-    fn bounds(&self, cfg: &AnnotationLayer, _: &dyn MeasureText) -> Option<RectF> {
-        union_rects(
-            self.shapes(cfg)
-                .iter()
-                .flatten()
-                .map(AnnotationShape::extent),
-        )
+    /// Everything the raster paints for the item ([`emit_annotation`]).
+    fn emit(&self, cfg: &AnnotationLayer, _: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        AnnotationElement::emit(self, cfg, sink)
     }
 
-    /// On one of the painted shapes ([`AnnotationShape::contains`]).
-    fn contains(&self, cfg: &AnnotationLayer, _: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.shapes(cfg)
-            .iter()
-            .flatten()
-            .any(|s| s.contains([x, y]))
-    }
-
-    /// The common blue box, carrying only this item's own handles: a span's
-    /// two edges, a reference line's two value handles, an arrow's two
-    /// endpoints, none for a text box.
-    fn selection_box(
-        &self,
-        cfg: &AnnotationLayer,
-        measure: &dyn MeasureText,
-    ) -> Option<crate::select::SelectionBox> {
-        let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
-        Some(crate::select::SelectionBox {
-            rect,
-            color: SELECTION_COLOR,
-            stroke_width: SELECTION_STROKE_WIDTH,
-            handles: self
-                .handles(cfg)
-                .into_iter()
-                .map(|(_, _, center)| handle_square(center))
-                .collect(),
-            outline: crate::select::SelectionOutline::Rect,
-        })
+    /// An item is outlined and hit on its parts: a diagonal arrow's box
+    /// would cover the chart.
+    fn outlines_parts(&self, _cfg: &AnnotationLayer) -> bool {
+        true
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable<AnnotationLayer>> {
@@ -1238,7 +1177,7 @@ impl Draggable<AnnotationLayer> for AnnotationElement {
 impl Resizable<AnnotationLayer> for AnnotationElement {
     /// The nominal part a compass handle drags: `W` / `N` the edge in
     /// screen order at the smaller coordinate, `E` / `S` the other. Only the
-    /// handles [`Selectable::selection_box`] shows are live; `resize_by`
+    /// handles [`Resizable::resize_handles`] reports are live; `resize_by`
     /// resolves a reference line's value and an arrow's endpoints itself.
     fn resize_targets(
         &self,
@@ -1257,17 +1196,15 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
         )
     }
 
-    fn hit_resize_handle(
+    /// Only this item's own handles: a span's two edges, a reference line's
+    /// two value handles, an arrow's two endpoints, none for a text box.
+    fn resize_handles(
         &self,
         cfg: &AnnotationLayer,
         _: &dyn MeasureText,
-        x: f32,
-        y: f32,
-    ) -> Option<ResizeHandle> {
-        self.handles(cfg)
-            .into_iter()
-            .find(|(_, _, center)| handle_square(*center).contains(x, y))
-            .map(|(name, _, _)| name)
+        each: &mut dyn FnMut(ResizeHandle, RectF),
+    ) {
+        self.handles(cfg, |name, _, center| each(name, handle_square(center)));
     }
 
     /// Arrow endpoints take both motion components through one nudge, so a
@@ -1275,6 +1212,7 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
     fn resize_by(
         &self,
         cfg: &mut AnnotationLayer,
+        measure: &dyn MeasureText,
         handle: ResizeHandle,
         dx: f32,
         dy: f32,
@@ -1296,7 +1234,7 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
                 } else {
                     return reject;
                 };
-                cfg.nudge(self.with_handle(part), dx, dy)
+                cfg.nudge(self.with_handle(part), measure, dx, dy)
             }
             AnnotationKind::ReferenceLine { axis, .. } | AnnotationKind::Span { axis, .. } => {
                 use ResizeHandle::*;
@@ -1316,7 +1254,7 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
                     AnnotationAxis::X => (dx, 0.0),
                     AnnotationAxis::Y => (0.0, dy),
                 };
-                cfg.nudge(self.with_handle(part), dx, dy)
+                cfg.nudge(self.with_handle(part), measure, dx, dy)
             }
             AnnotationKind::Text { .. } => reject,
         }
@@ -1329,10 +1267,18 @@ impl DragConfig for AnnotationLayer {
     /// Move an item or one of its handles by a screen delta. Values and
     /// anchors are converted back through the element's space, keeping
     /// their anchor kind. A move is rejected atomically when the result
-    /// would be unplaceable: a line or span edge outside the axis range, a
-    /// span entirely outside the plot, a text box or arrow endpoint outside
-    /// the panel.
-    fn nudge(&mut self, element: AnnotationElement, dx: f32, dy: f32) -> NudgeResult {
+    /// could not be drawn ([`geometry`] places nothing: a line outside the
+    /// axis range, a span entirely outside the plot, a text box or arrow
+    /// endpoint outside the panel), and a dragged span edge stays inside the
+    /// axis range so its handle stays on screen. The element carries its
+    /// measured text, so `measure` is not read.
+    fn nudge(
+        &mut self,
+        element: AnnotationElement,
+        _measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
         if !dx.is_finite() || !dy.is_finite() {
             return reject;
@@ -1356,11 +1302,7 @@ impl DragConfig for AnnotationLayer {
         };
         let moved_anchor = |anchor: &Anchor| -> Option<Anchor> {
             let p = space.anchor_to_px(anchor)?;
-            let next = [p[0] + dx, p[1] + dy];
-            if !space.panel.contains(next[0], next[1]) {
-                return None;
-            }
-            space.px_to_anchor(next, anchor.kind())
+            space.px_to_anchor([p[0] + dx, p[1] + dy], anchor.kind())
         };
         let next = match (&item.kind, element.handle) {
             (
@@ -1372,7 +1314,7 @@ impl DragConfig for AnnotationLayer {
                 },
                 _,
             ) => {
-                let Some(v) = moved(*value, *axis).filter(|v| in_range(*v, *axis)) else {
+                let Some(v) = moved(*value, *axis) else {
                     return reject;
                 };
                 AnnotationKind::ReferenceLine {
@@ -1397,14 +1339,6 @@ impl DragConfig for AnnotationLayer {
                         let (Some(na), Some(nb)) = (moved(a, *axis), moved(b, *axis)) else {
                             return reject;
                         };
-                        let (Some(ta), Some(tb)) =
-                            (space.fraction(*axis, na), space.fraction(*axis, nb))
-                        else {
-                            return reject;
-                        };
-                        if ta.max(tb) < 0.0 || ta.min(tb) > 1.0 {
-                            return reject;
-                        }
                         a = na;
                         b = nb;
                     }
@@ -1443,19 +1377,10 @@ impl DragConfig for AnnotationLayer {
                 },
                 None,
             ) => {
-                let (Some(p), Some(size)) = (space.anchor_to_px(anchor), element.text_size) else {
+                let Some(p) = space.anchor_to_px(anchor) else {
                     return reject;
                 };
-                let rect = RectF {
-                    x: p[0] + dx,
-                    y: p[1] + dy,
-                    width: size[0],
-                    height: size[1],
-                };
-                let Some(next) = inside_panel(&space, &rect)
-                    .then(|| space.px_to_anchor([rect.x, rect.y], anchor.kind()))
-                    .flatten()
-                else {
+                let Some(next) = space.px_to_anchor([p[0] + dx, p[1] + dy], anchor.kind()) else {
                     return reject;
                 };
                 AnnotationKind::Text {
@@ -1505,6 +1430,10 @@ impl DragConfig for AnnotationLayer {
             }
             _ => return reject,
         };
+        // The moved item must still be drawn: the one placement decides.
+        if geometry(&next, &space, element.text_size()).is_none() {
+            return reject;
+        }
         self.items[element.index].kind = next;
         NudgeResult::Moved
     }
@@ -1513,6 +1442,7 @@ impl DragConfig for AnnotationLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::select::SelectionGeometry;
     use crate::text::rich_segments_from_text;
 
     fn space() -> PixelSpace {
@@ -1553,11 +1483,19 @@ mod tests {
         }
     }
 
+    /// An element of item `index` whose text block, when it has one, is
+    /// `text_size` with no padding, a 12 px font and its baseline at the
+    /// block's bottom.
     fn element(index: usize, text_size: Option<[f32; 2]>) -> AnnotationElement {
         AnnotationElement {
             index,
             space: space(),
-            text_size,
+            text: text_size.map(|size| MeasuredText {
+                size,
+                ascent: size[1],
+                padding: 0.,
+                em: 12.,
+            }),
             handle: None,
         }
     }
@@ -1705,31 +1643,37 @@ mod tests {
         };
         let before = layer.clone();
         let line = element(0, None);
-        assert_eq!(line.drag_by(&mut layer, 30., 99.), NudgeResult::Moved);
+        assert_eq!(
+            line.drag_by(&mut layer, &NoMeasure, 30., 99.),
+            NudgeResult::Moved
+        );
         match layer.items[0].kind {
             AnnotationKind::ReferenceLine { value, .. } => assert!((value - 3.).abs() < 1e-5),
             _ => unreachable!(),
         }
         assert!(matches!(
-            line.drag_by(&mut layer, 1000., 0.),
+            line.drag_by(&mut layer, &NoMeasure, 1000., 0.),
             NudgeResult::Rejected(_)
         ));
         assert!(matches!(
-            line.drag_by(&mut layer, f32::NAN, 0.),
+            line.drag_by(&mut layer, &NoMeasure, f32::NAN, 0.),
             NudgeResult::Rejected(_)
         ));
         // A vertical line's live handles are W and E; N drives nothing.
         assert_eq!(
-            line.resize_by(&mut layer, ResizeHandle::E, 30., 0.),
+            line.resize_by(&mut layer, &NoMeasure, ResizeHandle::E, 30., 0.),
             NudgeResult::Moved
         );
         assert!(matches!(
-            line.resize_by(&mut layer, ResizeHandle::N, 0., 30.),
+            line.resize_by(&mut layer, &NoMeasure, ResizeHandle::N, 0., 30.),
             NudgeResult::Rejected(_)
         ));
 
         let span = element(1, None);
-        assert_eq!(span.drag_by(&mut layer, 30., 0.), NudgeResult::Moved);
+        assert_eq!(
+            span.drag_by(&mut layer, &NoMeasure, 30., 0.),
+            NudgeResult::Moved
+        );
         match layer.items[1].kind {
             AnnotationKind::Span { from, to, .. } => {
                 assert!((from - 7.).abs() < 1e-5 && (to - 5.).abs() < 1e-5)
@@ -1738,7 +1682,7 @@ mod tests {
         }
         // `Start` is the left edge in screen order: here `to`, the smaller value.
         assert_eq!(
-            span.resize_by(&mut layer, ResizeHandle::W, -30., 0.),
+            span.resize_by(&mut layer, &NoMeasure, ResizeHandle::W, -30., 0.),
             NudgeResult::Moved
         );
         match layer.items[1].kind {
@@ -1748,7 +1692,7 @@ mod tests {
             _ => unreachable!(),
         }
         assert!(matches!(
-            span.drag_by(&mut layer, 400., 0.),
+            span.drag_by(&mut layer, &NoMeasure, 400., 0.),
             NudgeResult::Rejected(_)
         ));
 
@@ -1756,7 +1700,10 @@ mod tests {
         let p0 = space()
             .anchor_to_px(&Anchor::Data { x: 5., y: 10. })
             .unwrap();
-        assert_eq!(text_box.drag_by(&mut layer, 10., -20.), NudgeResult::Moved);
+        assert_eq!(
+            text_box.drag_by(&mut layer, &NoMeasure, 10., -20.),
+            NudgeResult::Moved
+        );
         match layer.items[2].kind {
             AnnotationKind::Text { anchor, .. } => {
                 let p = space().anchor_to_px(&anchor).unwrap();
@@ -1766,16 +1713,22 @@ mod tests {
             _ => unreachable!(),
         }
         // Anywhere in the panel, but not beyond it.
-        assert_eq!(text_box.drag_by(&mut layer, 150., 0.), NudgeResult::Moved);
+        assert_eq!(
+            text_box.drag_by(&mut layer, &NoMeasure, 150., 0.),
+            NudgeResult::Moved
+        );
         assert!(matches!(
-            text_box.drag_by(&mut layer, 100., 0.),
+            text_box.drag_by(&mut layer, &NoMeasure, 100., 0.),
             NudgeResult::Rejected(_)
         ));
 
         let arrow = element(3, None);
-        assert_eq!(arrow.drag_by(&mut layer, 10., 10.), NudgeResult::Moved);
         assert_eq!(
-            arrow.resize_by(&mut layer, ResizeHandle::E, 5., -5.),
+            arrow.drag_by(&mut layer, &NoMeasure, 10., 10.),
+            NudgeResult::Moved
+        );
+        assert_eq!(
+            arrow.resize_by(&mut layer, &NoMeasure, ResizeHandle::E, 5., -5.),
             NudgeResult::Moved
         );
         match layer.items[3].kind {
@@ -1789,7 +1742,7 @@ mod tests {
             _ => unreachable!(),
         }
         assert!(matches!(
-            arrow.resize_by(&mut layer, ResizeHandle::W, -1000., 0.),
+            arrow.resize_by(&mut layer, &NoMeasure, ResizeHandle::W, -1000., 0.),
             NudgeResult::Rejected(_)
         ));
         assert_ne!(layer, before);
@@ -1822,14 +1775,14 @@ mod tests {
         };
         let span = element(0, None);
         let sb = span.selection_box(&layer, &NoMeasure).unwrap();
-        assert_eq!(sb.handles.len(), 2);
-        let top = sb.handles[0];
+        assert_eq!(sb.handles().len(), 2);
+        let top = sb.handles()[0];
         assert_eq!(
             span.hit_resize_handle(&layer, &NoMeasure, top.x + 4., top.y + 4.),
             Some(ResizeHandle::N)
         );
         assert_eq!(
-            span.hit_resize_handle(&layer, &NoMeasure, sb.rect.x, sb.rect.y),
+            span.hit_resize_handle(&layer, &NoMeasure, sb.rect().x, sb.rect().y),
             None
         );
         let text_box = element(1, Some([10., 10.]));
@@ -1837,12 +1790,12 @@ mod tests {
             text_box
                 .selection_box(&layer, &NoMeasure)
                 .unwrap()
-                .handles
+                .handles()
                 .is_empty()
         );
         let arrow = element(2, None);
         let sb = arrow.selection_box(&layer, &NoMeasure).unwrap();
-        assert_eq!(sb.handles.len(), 2);
+        assert_eq!(sb.handles().len(), 2);
         // `from` is to the right of `to`, so it is the E handle.
         assert_eq!(
             arrow.hit_resize_handle(&layer, &NoMeasure, 200., 120.),
