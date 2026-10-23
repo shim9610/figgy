@@ -58,21 +58,9 @@ impl RadialKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RadialMaterial {
-    Flat,
-    Matte,
-    Ceramic,
-    BrushedMetal,
-    Paper,
-    Wood,
-    SatinMetal,
-    Toon,
-    Enamel,
-    Hatch,
-    Pearl,
-}
+/// The sector material: the shared [`Material`](crate::Material). Sectors
+/// accept every variant.
+pub type RadialMaterial = crate::Material;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -434,6 +422,8 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
     Ok(sum)
 }
 fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
+    // No material check: a sector has a curved, lit surface and draws every
+    // `Material`, unlike the flat bodies of bars and boxes.
     if !range(s.tilt_degrees, 0.0, 65.0)
         || !range(s.depth, 0.0, 0.4)
         || !range(s.bevel, 0.0, 0.1)
@@ -625,6 +615,33 @@ mod tests {
         let mut c = chart();
         c.slices[0].value = 0.0;
         assert!(c.validate().is_ok());
+    }
+    #[test]
+    fn sectors_accept_every_material() {
+        use crate::Material;
+        for material in [
+            Material::Flat,
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Toon,
+            Material::Enamel,
+            Material::Hatch,
+            Material::Pearl,
+        ] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+            let mut c = chart();
+            c.slices[0].style = Some(RadialStyle {
+                material,
+                ..Default::default()
+            });
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+        }
     }
     #[test]
     fn radial_detail_conserves_parent_total() {

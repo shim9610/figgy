@@ -381,6 +381,9 @@ pub(super) fn layout(
                             BoxPlotMaterial::Flat => 0.0,
                             BoxPlotMaterial::Matte => 1.0,
                             BoxPlotMaterial::SatinMetal => 2.0,
+                            // The other looks reach boxes with the shared
+                            // material shader; until then they draw as Flat.
+                            _ => 0.0,
                         },
                         st.texture_strength,
                         st.texture_scale,

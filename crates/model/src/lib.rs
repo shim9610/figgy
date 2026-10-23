@@ -58,6 +58,9 @@ pub use select::{
 };
 pub use text::{MeasureText, TextAlign, TextExtents};
 
+pub mod material;
+pub use material::Material;
+
 pub use radial::{
     RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,
     RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,

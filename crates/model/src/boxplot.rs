@@ -89,14 +89,10 @@ pub enum BoxPlotDirection {
     Vertical,
     Horizontal,
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum BoxPlotMaterial {
-    Flat,
-    #[default]
-    Matte,
-    SatinMetal,
-}
+/// The box material: the shared [`Material`](crate::Material). Boxes reject
+/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
+/// excludes. The box style's default stays `Matte` (`BoxPlotStyle::default`).
+pub type BoxPlotMaterial = crate::Material;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BoxPlotLabels {
@@ -514,6 +510,10 @@ fn color(c: Color) -> bool {
     [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0.0, 1.0))
 }
 fn validate_style(s: &BoxPlotStyle) -> Result<(), &'static str> {
+    // A box is a flat body; see `Material::supported_on_flat_body`.
+    if !s.material.supported_on_flat_body() {
+        return Err("material not supported by boxes");
+    }
     if !range(s.corner_radius, 0.0, 3.0)
         || !range(s.outline_width, 0.0, 8.0)
         || !range(s.median_width, 0.0, 8.0)
@@ -556,6 +556,45 @@ mod tests {
             )],
             ..Default::default()
         }
+    }
+    #[test]
+    fn boxes_reject_toon_and_pearl_at_every_style_level() {
+        use crate::Material;
+        for material in [Material::Toon, Material::Pearl] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Err("material not supported by boxes"));
+            let mut c = chart();
+            c.series[0].style = Some(BoxPlotStyle {
+                material,
+                ..Default::default()
+            });
+            assert_eq!(c.validate(), Err("material not supported by boxes"));
+            let mut c = chart();
+            let mut o = BoxPlotOverride::new(BoxPlotTarget::new("a", "s"));
+            o.style = Some(BoxPlotStyle {
+                material,
+                ..Default::default()
+            });
+            c.overrides.push(o);
+            assert_eq!(c.validate(), Err("material not supported by boxes"));
+        }
+        for material in [
+            Material::Flat,
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Enamel,
+            Material::Hatch,
+        ] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+        }
+        assert_eq!(BoxPlotStyle::default().material, Material::Matte);
     }
     #[test]
     fn summaries_reject_invalid_order_nonfinite_and_nonoutliers() {

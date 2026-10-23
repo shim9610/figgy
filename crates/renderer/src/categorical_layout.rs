@@ -288,6 +288,9 @@ pub(super) fn layout(
                 CategoryBarMaterial::SatinMetal => 2.0,
                 CategoryBarMaterial::Enamel => 3.0,
                 CategoryBarMaterial::Paper => 4.0,
+                // The other looks reach bars with the shared material
+                // shader; until then they draw as Flat.
+                _ => 0.0,
             };
             let emphasized =
                 c.hovered.as_ref() == Some(&s.target) || c.selected.as_ref() == Some(&s.target);
