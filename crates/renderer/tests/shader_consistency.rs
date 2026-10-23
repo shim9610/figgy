@@ -1111,12 +1111,8 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
-        &[
-            "dash_pattern_on",
-            "line_stroke_distance",
-            "sketch_line_offset",
-        ],
+        &["data_render/line_columnar_a.wgsl", "gpu_pick/line.wgsl"],
+        &["dash_pattern_on", "line_stroke_distance"],
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
@@ -1144,12 +1140,15 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
     (
         &[
+            "data_render/common/sketch_noise.wgsl",
             "data_render/errorbar_columnar.wgsl",
-            "data_render/line_columnar.wgsl",
             "data_render/scatter_columnar.wgsl",
-            "gpu_pick/noise.wgsl",
         ],
         &["sketch_hash01", "sketch_noise"],
+    ),
+    (
+        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
+        &["sketch_line_offset"],
     ),
     (
         &[

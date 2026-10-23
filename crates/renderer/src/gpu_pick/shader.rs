@@ -55,6 +55,7 @@ impl PickShader {
             PickShader::Marker => &[
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/no_line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -62,6 +63,7 @@ impl PickShader {
             PickShader::MarkerLine => &[
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -69,6 +71,7 @@ impl PickShader {
             PickShader::Line => &[
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/no_scatter.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -91,6 +94,7 @@ impl PickShader {
             PickShader::Marker => wgsl_module!(
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/no_line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -98,6 +102,7 @@ impl PickShader {
             PickShader::MarkerLine => wgsl_module!(
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
@@ -105,6 +110,7 @@ impl PickShader {
             PickShader::Line => wgsl_module!(
                 "gpu_pick/core.wgsl",
                 "gpu_pick/noise.wgsl",
+                "data_render/common/sketch_noise.wgsl",
                 "gpu_pick/no_scatter.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
