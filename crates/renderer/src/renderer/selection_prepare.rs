@@ -191,8 +191,9 @@ impl PrepareContext<'_> {
                 // takes the ring too; a size-mapped point the map hides
                 // (negative radius) is dropped by the mapped ring entry.
                 let has_scatter_anchor = scatter_cfg.is_some();
-                let has_vector_anchor = vector_points
-                    .is_some_and(|style| crate::pick::vector_anchor_radius_px(style) > 0.0);
+                let has_vector_anchor = vector_points.is_some_and(|style| {
+                    crate::data_render::vector::vector_anchor_radius_px(style) > 0.0
+                });
                 if !has_line_anchor && !has_scatter_anchor && !has_vector_anchor {
                     continue;
                 }
@@ -267,7 +268,8 @@ impl PrepareContext<'_> {
                     ring_style.shape_id = data_render::shape_id(&scatter.point_shape);
                 } else {
                     ring_style.point_radius_px = vector_points.map_or(0.0, |style| {
-                        crate::pick::vector_anchor_radius_px(style) * series.style.display_scale
+                        crate::data_render::vector::vector_anchor_radius_px(style)
+                            * series.style.display_scale
                     });
                     ring_style.shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
                     ring_style.primitive_flags = 0;

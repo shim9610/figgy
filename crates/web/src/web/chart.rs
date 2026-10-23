@@ -1169,19 +1169,16 @@ impl FiggyChart {
         let (display_config, panel_rect, _) = self.display_config();
         let display_chart = Chart::new(display_config);
         if refresh_raster {
-            let sel_boxes: Vec<SelectionBox> = self
+            let selected_id: Option<String> = self
                 .chart_selection()
-                .and_then(|id| {
-                    self.hitmap.selection_box(
-                        id,
-                        display_chart.config(),
-                        &CpuTextMeasure::for_style(&display_chart.config().draw_style),
-                    )
-                })
-                .into_iter()
-                .collect();
+                .and_then(|id| self.hitmap.get(id).map(|el| el.element_id()));
             self.renderer
-                .refresh_axis_with_selection(&mut self.view, &display_chart, panel_rect, &sel_boxes)
+                .refresh_axis_with_selection(
+                    &mut self.view,
+                    &display_chart,
+                    panel_rect,
+                    selected_id.as_deref(),
+                )
                 .map_err(js_err)?;
         }
         if (annotation_dirty && !refresh_raster)

@@ -38,7 +38,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
     DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
-    RendererDevice, ResizeHandle, SelectionBox, Series, SeriesConfig, dpi_to_scale,
+    RendererDevice, ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -199,16 +199,17 @@ impl FiggyState {
         let Some(panel) = self.panels.get_mut(pi) else {
             return;
         };
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
         if let Some(handle) = self.active_resize {
             if let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) {
-                let _ = rz.resize_by(panel.chart.config_mut(), handle, dx, dy);
+                let _ = rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy);
             }
             return;
         }
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        let _ = drag.drag_by(panel.chart.config_mut(), dx, dy);
+        let _ = drag.drag_by(panel.chart.config_mut(), &measure, dx, dy);
     }
 }
 
@@ -446,17 +447,13 @@ impl CallbackTrait for FiggyCallback {
         let Some(panel) = state.panels.get_mut(self.panel_idx) else {
             return Vec::new();
         };
-        let sel_boxes: Vec<SelectionBox> = match selected {
-            Some((pi, id)) if pi == self.panel_idx => panel
-                .hitmap
-                .selection_box(
-                    id,
-                    panel.chart.config(),
-                    &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                )
-                .into_iter()
-                .collect(),
-            _ => Vec::new(),
+        // The renderer draws the selection from the element's own placement;
+        // the host only names the element.
+        let selected_id: Option<String> = match selected {
+            Some((pi, id)) if pi == self.panel_idx => {
+                panel.hitmap.get(id).map(|el| el.element_id())
+            }
+            _ => None,
         };
 
         // If the panel rect changed (or on first grading) or the raster is
@@ -470,7 +467,7 @@ impl CallbackTrait for FiggyCallback {
                 &mut panel.view,
                 &panel.chart,
                 self.panel_rect_px,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[figgy] refresh_axis failed: {e}");
                 panel.prepared = None;
@@ -488,7 +485,7 @@ impl CallbackTrait for FiggyCallback {
                     &mut panel.view,
                     &panel.chart,
                     cur_rect,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 )
             {
                 eprintln!("[figgy] refresh_axis failed: {e}");

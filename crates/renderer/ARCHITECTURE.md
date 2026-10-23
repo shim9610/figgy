@@ -349,7 +349,7 @@ renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
 if raster || view_dirty {
     // Also redoes the annotation rasters.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
+    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, selected_id.as_deref())?;
 } else if annotations {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }
@@ -645,7 +645,7 @@ renderer.process_pending_maintenance()?;
 let stamp = renderer.chart_render_stamp(chart_id)?;
 if raster || view_dirty {
     // 주석 래스터도 함께 다시 만든다.
-    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, &boxes)?;
+    renderer.refresh_axis_with_selection(&mut view, &display_chart, rect, selected_id.as_deref())?;
 } else if annotations {
     renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
 }

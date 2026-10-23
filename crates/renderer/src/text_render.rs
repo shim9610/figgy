@@ -1222,6 +1222,11 @@ impl CpuTextMeasure {
             policy: FontPolicy::for_style(style),
         }
     }
+
+    /// Measure with an explicit font policy.
+    pub(crate) fn with_policy(policy: FontPolicy) -> Self {
+        Self { policy }
+    }
 }
 
 impl crate::text::MeasureText for CpuTextMeasure {
@@ -1230,14 +1235,14 @@ impl crate::text::MeasureText for CpuTextMeasure {
     }
 
     /// The tick labels, axis lines and ticks the axis raster draws, from the
-    /// same walks and placement it draws them with.
-    fn drawn_parts(
+    /// same emit it draws them with.
+    fn emit(
         &self,
         cfg: &crate::config::Config,
         element: &crate::layout::Element,
-        each: &mut dyn FnMut(crate::layout::DrawnPart),
+        sink: &mut dyn crate::sink::Sink,
     ) -> bool {
-        crate::axis_render::drawn_parts(cfg, element, self.policy, each)
+        crate::axis_render::emit_part_of(cfg, element, self.policy, sink)
     }
 }
 

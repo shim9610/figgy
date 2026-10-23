@@ -794,7 +794,7 @@ pub(super) fn nonnegative(v: f32) -> f32 {
 /// The factor `visual_shape_radius` gives shape `shape_id` (SHADER_COMMON.md
 /// §5.5): its drawn radius per unit of reference radius.
 pub(super) fn shape_scale(shape_id: u32) -> f32 {
-    crate::pick::marker_visual_scale(crate::pick::marker_base_shape_id(shape_id))
+    crate::data_render::marker_visual_scale(crate::data_render::marker_base_shape_id(shape_id))
 }
 
 pub(super) fn gpu_meta_u32(v: f32) -> Option<u32> {

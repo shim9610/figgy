@@ -506,19 +506,15 @@ pub(super) fn layout(
                     };
                     let (x, y) =
                         decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
-                    decorations.text(
-                        DecorationId::DataLabel {
-                            category_id: target.category_id.clone(),
-                            series_id: target.series_id.clone(),
-                        },
-                        &mut front,
-                        &c.font_family,
-                        &label,
-                        x,
-                        y,
-                        fs,
-                        c.text_color,
-                    );
+                    decorations
+                        .on(
+                            DecorationId::DataLabel {
+                                category_id: target.category_id.clone(),
+                                series_id: target.series_id.clone(),
+                            },
+                            &mut front,
+                        )
+                        .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
                 }
             }
         }

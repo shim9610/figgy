@@ -1,3 +1,4 @@
+#[cfg(feature = "cpu-twin")]
 use std::collections::HashMap;
 
 use super::engine::{GPU_PICK_GATE_WORD_POINTS, same_storage};
@@ -8,21 +9,25 @@ use crate::color::Color;
 use crate::config::{AxisScale, Config};
 use crate::data::{Column, split_f64_to_f32_pair};
 use crate::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterPointStyleOverride, DataScatterStyleConfig, ScatterShape, SeriesConfig,
+    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
 };
+#[cfg(feature = "cpu-twin")]
+use crate::data_config::{DataScatterPointStyleConfig, DataScatterPointStyleOverride};
 use crate::layout::{ChartArea, Rect};
 use crate::line::LineStylePreset;
-use crate::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
+#[cfg(feature = "cpu-twin")]
+use crate::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 
 /// The largest `visual_shape_radius` factor (the triangles').
 const MAX_SHAPE_SCALE: f32 = 1.555_120_3;
 /// `STROKE_HALF_PX`: an outline marker's stroke reaches this far either
 /// side of its contour.
-const STROKE_HALF: f32 = crate::pick::MARKER_STROKE_HALF_PX;
+const STROKE_HALF: f32 = crate::data_render::MARKER_STROKE_HALF_PX;
 
+#[cfg(feature = "cpu-twin")]
 struct CpuColumns(HashMap<ColumnId, Vec<f32>>);
 
+#[cfg(feature = "cpu-twin")]
 impl CpuColumns {
     fn new(entries: &[(&str, &[f32])]) -> Self {
         Self(
@@ -34,6 +39,7 @@ impl CpuColumns {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 impl PointColumnLookup for CpuColumns {
     fn get_f32_column(&self, id: &ColumnId) -> Option<&[f32]> {
         self.0.get(id).map(Vec::as_slice)
@@ -138,6 +144,7 @@ fn resolve_pick_scaled(
     .unwrap()
 }
 
+#[cfg(feature = "cpu-twin")]
 fn cpu_pick(
     config: &Config,
     series: &[SeriesConfig],
@@ -155,6 +162,7 @@ fn cpu_pick(
     )
 }
 
+#[cfg(feature = "cpu-twin")]
 fn assert_pick_parity(cpu: Option<PickedPoint>, gpu: Option<PickedPoint>) {
     match (cpu, gpu) {
         (None, None) => {}
@@ -173,6 +181,7 @@ fn assert_pick_parity(cpu: Option<PickedPoint>, gpu: Option<PickedPoint>) {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 fn scatter_series(
     series_id: &str,
     source_id: Option<&str>,
@@ -190,6 +199,7 @@ fn scatter_series(
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 fn line_series(
     series_id: &str,
     source_id: Option<&str>,
@@ -1011,6 +1021,7 @@ fn reduce_resources_grow_only_when_live_count_exceeds_capacity() {
     assert_ne!(engine.registry.reduce.candidates, at_two);
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1174,6 +1185,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
 /// A `point_size_map` resolves each point's pick radius from its value on
 /// both pickers: the domain ends map to `min_px` / `max_px`, and a
 /// non-finite value hides the point from both.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1513,6 +1525,7 @@ fn invalid_display_scales_fail_closed_without_gpu_submission() {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1581,6 +1594,7 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1823,6 +1837,7 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
     assert_eq!(left.distance_px, 0.0);
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -1929,6 +1944,7 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
 /// pickers: hits on a run, on a riser and near the corners resolve to the
 /// same source index at the same distance, on linear and logarithmic
 /// axes, and the straight chord between two samples is not pickable.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
     use crate::data_config::LineInterpolation;
@@ -2116,6 +2132,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
     let Some((device, queue)) = crate::data_render::shared_device() else {

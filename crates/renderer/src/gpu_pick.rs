@@ -34,6 +34,8 @@ pub(crate) mod types;
 
 pub(crate) use engine::GpuPickEngine;
 pub use engine::GpuPickTicket;
+#[cfg(feature = "cpu-twin")]
+pub(crate) use engine::milkyway_line_half_extent;
 use engine::query_params;
 use engine::{GPU_PICK_DIRECT_SCAN_POINTS, GPU_PICK_WORKGROUP_SIZE, GpuPickTicketState};
 use engine::{ReduceResources, create_buffer_checked, gate_dispatch_layout, lane_base};

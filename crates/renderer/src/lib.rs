@@ -24,7 +24,6 @@ mod gpu_pick;
 pub mod init;
 pub(crate) mod line_step;
 pub mod pick;
-pub(crate) mod polar_projection;
 pub mod radial;
 pub mod raster;
 mod render_warning;
@@ -50,12 +49,12 @@ mod time_axis;
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::{
     color, colormap, config, data_config, default, drag, expand, format, layout, legend, line,
-    preset, resize, select, text, tick,
+    preset, resize, select, sink, text, tick,
 };
 
 // Public API re-exports.
 pub use annotation::{AnnotationMap, BoundedAnnotationFrame, FrameBackground, LayerHit};
-pub use chart::{Chart, FitExtent, errorbar_extent};
+pub use chart::{Chart, FitExtent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
@@ -90,7 +89,7 @@ pub use gpu_memory::{
 };
 pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
-pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
+pub use pick::{PickedData, PickedPoint};
 pub use preset::{AxisPreset, ColorCycle};
 pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
@@ -110,8 +109,10 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionOutline, SubplotElement,
+    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
+    SubplotElement,
 };
+pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use streaming_source::{
     AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
     AutoStreamingRequest, LogicalColumn, RenderInterruptStatus, StreamBounds, StreamColumn,

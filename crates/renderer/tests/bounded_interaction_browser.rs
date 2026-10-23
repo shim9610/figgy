@@ -22,7 +22,13 @@ fn edit(map: &DecorationMap, state: &mut DecorationLayout, key: DecorationId) {
             .unwrap()
             .as_draggable()
             .unwrap()
-            .drag_by(state, 0., 12.),
+            .drag_by(
+                state,
+                // The measure the decoration map lays its elements out with.
+                &renderer::CpuTextMeasure::for_style(&Default::default()),
+                0.,
+                12.
+            ),
         NudgeResult::Moved
     );
     state.selected = Some(element.id.clone());

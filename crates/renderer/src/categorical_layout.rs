@@ -398,19 +398,15 @@ pub(super) fn layout(
         } else {
             c.text_color
         };
-        decorations.text(
-            DecorationId::DataLabel {
-                category_id: s.target.category_id.clone(),
-                series_id: s.target.series_id.clone(),
-            },
-            &mut front,
-            &c.font_family,
-            &label,
-            x,
-            y,
-            fs,
-            ink,
-        );
+        decorations
+            .on(
+                DecorationId::DataLabel {
+                    category_id: s.target.category_id.clone(),
+                    series_id: s.target.series_id.clone(),
+                },
+                &mut front,
+            )
+            .plain_text(&c.font_family, &label, x, y, fs, ink);
     }
     out.decorations = decorations.finish();
     if annotate {

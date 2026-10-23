@@ -1,9 +1,10 @@
-use crate::text::TextExtents;
+use crate::select::{emit_element, on_drawn_panel};
+use crate::sink::Parts;
+use crate::text::MeasureText;
 
 use super::{
-    Config, LABEL_GAP, Side, TitleBand, axis_mut, axis_offset, axis_ref,
-    axis_title_offset_to_screen, axis_title_placement, chart_title_placement, colorbar_rect,
-    colorbar_title_placement, legend_rect, point_on_rect_side, screen_offset_to_axis_title,
+    Config, RectF, Side, axis_anchor, axis_mut, axis_ref, colorbar_rect, point_on_rect_side,
+    screen_offset_to_axis_title,
 };
 
 // Nudge types.
@@ -64,156 +65,149 @@ pub enum NudgeReject {
     OutOfBounds,
 }
 
-// Per-element anchor and current offset.
+// Containment.
 
-/// Measurement-free label extent estimate used only for nudge containment.
-const LABEL_EXTENT_EST: f32 = 10.0;
-const ZERO_EXTENTS: TextExtents = TextExtents {
-    width: 0.0,
-    ascent: 0.0,
-    descent: 0.0,
-};
+impl Config {
+    /// Whether `element` stays grabbable where it is drawn: at least one of
+    /// the parts it draws keeps its centre inside the chart area, so a
+    /// moved element can always be selected again. `None` when `measure`
+    /// cannot lay the element out. The parts come from the element's one
+    /// placement ([`emit_element`]), on the panel the base layer is drawn
+    /// with: a layered document expands its base panel for this on every
+    /// step (SSOT configuration, the renderer's own expansion); a
+    /// single-layer document copies nothing.
+    fn grabbable(&self, element: &Element, measure: &dyn MeasureText) -> Option<bool> {
+        let chart_area = RectF::from_rect(&self.chart_area.0);
+        let mut inside = false;
+        let mut sink = Parts(&mut |part| {
+            let (cx, cy) = part.extent().center();
+            inside |= chart_area.contains(cx, cy);
+        });
+        let laid_out = on_drawn_panel(self, |panel| {
+            emit_element(panel, element, measure, &mut sink)
+        });
+        laid_out.then_some(inside)
+    }
 
-/// Measurement-free representative screen anchor used by nudge containment.
-/// Exact measured bounds remain the `Selectable` policy.
-fn element_anchor(cfg: &Config, element: &Element) -> Option<(f32, f32)> {
-    let ca = &cfg.chart_area;
-    let da = cfg.data_area().ok()?;
+    /// The stored offset an element is moved through: `None` for an element
+    /// with none (a missing colourbar), or one that moves by another rule.
+    fn offset_of(&self, element: &Element) -> Option<(f32, f32)> {
+        Some(match element {
+            Element::ChartTitle => (self.chart_title.offset_x, self.chart_title.offset_y),
+            Element::AxisTitle(side) => {
+                let a = axis_ref(self, side);
+                (a.title_option.offset_x, a.title_option.offset_y)
+            }
+            Element::AxisLabel(side) => {
+                let a = axis_ref(self, side);
+                (a.label_style.label_offset_x, a.label_style.label_offset_y)
+            }
+            Element::Legend => (self.legend.offset_x, self.legend.offset_y),
+            Element::ColorBar => {
+                let bar = self.colorbar.as_ref()?;
+                (bar.offset_x, bar.offset_y)
+            }
+            Element::ColorBarLabel => {
+                let bar = self.colorbar.as_ref()?;
+                (
+                    bar.axis.label_style.label_offset_x,
+                    bar.axis.label_style.label_offset_y,
+                )
+            }
+            Element::ColorBarTitle => {
+                let bar = self.colorbar.as_ref()?;
+                (
+                    bar.axis.title_option.offset_x,
+                    bar.axis.title_option.offset_y,
+                )
+            }
+            Element::Axis(_)
+            | Element::ColorBarAxis
+            | Element::DataAreaEdge(_)
+            | Element::DataArea
+            | Element::ColorBarEdge(_) => return None,
+        })
+    }
 
-    let anchor = match element {
-        Element::ChartTitle => {
-            chart_title_placement(ca, cfg.chart_title.top_margin, (0.0, 0.0), ZERO_EXTENTS).origin
+    /// Store `offset` as the element's offset: the exact value, so a
+    /// rejected move restores the previous state bit for bit.
+    fn set_offset(&mut self, element: &Element, offset: (f32, f32)) {
+        match element {
+            Element::ChartTitle => {
+                self.chart_title.offset_x = offset.0;
+                self.chart_title.offset_y = offset.1;
+            }
+            Element::AxisTitle(side) => {
+                let a = axis_mut(self, side);
+                a.title_option.offset_x = offset.0;
+                a.title_option.offset_y = offset.1;
+            }
+            Element::AxisLabel(side) => {
+                let a = axis_mut(self, side);
+                a.label_style.label_offset_x = offset.0;
+                a.label_style.label_offset_y = offset.1;
+            }
+            Element::Legend => {
+                self.legend.offset_x = offset.0;
+                self.legend.offset_y = offset.1;
+            }
+            Element::ColorBar => {
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.offset_x = offset.0;
+                    bar.offset_y = offset.1;
+                }
+            }
+            Element::ColorBarLabel => {
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.axis.label_style.label_offset_x = offset.0;
+                    bar.axis.label_style.label_offset_y = offset.1;
+                }
+            }
+            Element::ColorBarTitle => {
+                if let Some(bar) = self.colorbar.as_mut() {
+                    bar.axis.title_option.offset_x = offset.0;
+                    bar.axis.title_option.offset_y = offset.1;
+                }
+            }
+            Element::Axis(_)
+            | Element::ColorBarAxis
+            | Element::DataAreaEdge(_)
+            | Element::DataArea
+            | Element::ColorBarEdge(_) => {}
         }
-        Element::AxisTitle(side) => {
-            let axis = axis_ref(cfg, side);
-            axis_title_placement(
-                side.clone(),
-                ca,
-                &da,
-                TitleBand {
-                    out_margin: axis.out_margin,
-                    chart_title_margin: cfg.chart_title.top_margin,
-                    edge_inset: cfg.colorbar_band(side),
-                },
-                (0.0, 0.0),
-                ZERO_EXTENTS,
-            )
-            .origin
-        }
-        // Axis label: just outside the tick end (with approximate label extent).
-        Element::AxisLabel(Side::Top) => (
-            da.x as f32 + da.width as f32 * 0.5,
-            da.y as f32 - cfg.top_x.major_tick_length - LABEL_GAP - LABEL_EXTENT_EST,
-        ),
-        Element::AxisLabel(Side::Bottom) => (
-            da.x as f32 + da.width as f32 * 0.5,
-            (da.y + da.height) as f32
-                + cfg.bottom_x.major_tick_length
-                + LABEL_GAP
-                + LABEL_EXTENT_EST,
-        ),
-        Element::AxisLabel(Side::Left) => (
-            da.x as f32 - cfg.left_y.major_tick_length - LABEL_GAP - LABEL_EXTENT_EST,
-            da.y as f32 + da.height as f32 * 0.5,
-        ),
-        Element::AxisLabel(Side::Right) => (
-            (da.x + da.width) as f32 + cfg.right_y.major_tick_length + LABEL_GAP + LABEL_EXTENT_EST,
-            da.y as f32 + da.height as f32 * 0.5,
-        ),
-        // Legend: corner anchor point (inset corner of the data area). The
-        // box extent isn't known here (it needs text measurement), but the
-        // chart_area containment check only needs a representative point.
-        Element::Legend => {
-            let rect = legend_rect(&da, cfg.legend.corner, 0.0, (0.0, 0.0), ZERO_EXTENTS);
-            (rect.x, rect.y)
-        }
-        // Colourbar: the un-offset strip corner. Same shape as the legend —
-        // a representative point is all the chart_area containment check needs.
-        Element::ColorBar => {
-            let bar = cfg.colorbar.as_ref()?;
-            let mut anchored = bar.clone();
-            anchored.offset_x = 0.0;
-            anchored.offset_y = 0.0;
-            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, &anchored);
-            (rect.x, rect.y)
-        }
-        Element::ColorBarLabel => {
-            let bar = cfg.colorbar.as_ref()?;
-            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, bar);
-            let pos = point_on_rect_side(0.5, &bar.side, &rect);
-            let (axis_dx, axis_dy) = axis_offset(bar.side.clone(), bar.axis.line_offset);
-            let reach = bar.axis.major_tick_length + LABEL_GAP + LABEL_EXTENT_EST;
-            let (out_x, out_y) = match bar.side {
-                Side::Top => (0.0, -reach),
-                Side::Bottom => (0.0, reach),
-                Side::Left => (-reach, 0.0),
-                Side::Right => (reach, 0.0),
-            };
-            (pos.0 + axis_dx + out_x, pos.1 + axis_dy + out_y)
-        }
-        Element::ColorBarTitle => {
-            let bar = cfg.colorbar.as_ref()?;
-            let rect = colorbar_rect(ca, &da, cfg.chart_title.top_margin, bar);
-            colorbar_title_placement(bar.side.clone(), &rect, &bar.axis, (0.0, 0.0), ZERO_EXTENTS)
-                .origin
-        }
-        // Axis / data-area / colourbar-edge moves have their own rules —
-        // dispatched before this function is reached.
-        Element::Axis(_)
-        | Element::ColorBarAxis
-        | Element::DataAreaEdge(_)
-        | Element::DataArea
-        | Element::ColorBarEdge(_) => return None,
-    };
+    }
 
-    Some(anchor)
-}
-
-fn current_offset(cfg: &Config, element: &Element) -> (f32, f32) {
-    match element {
-        Element::ChartTitle => (cfg.chart_title.offset_x, cfg.chart_title.offset_y),
-        Element::AxisTitle(side) => {
-            let a = axis_ref(cfg, side);
-            (a.title_option.offset_x, a.title_option.offset_y)
-        }
-        Element::AxisLabel(side) => {
-            let a = axis_ref(cfg, side);
-            (a.label_style.label_offset_x, a.label_style.label_offset_y)
-        }
-        Element::Legend => (cfg.legend.offset_x, cfg.legend.offset_y),
-        Element::ColorBar => cfg
-            .colorbar
-            .as_ref()
-            .map_or((0.0, 0.0), |bar| (bar.offset_x, bar.offset_y)),
-        Element::ColorBarLabel => cfg.colorbar.as_ref().map_or((0.0, 0.0), |bar| {
-            (
-                bar.axis.label_style.label_offset_x,
-                bar.axis.label_style.label_offset_y,
-            )
-        }),
-        Element::ColorBarTitle => cfg.colorbar.as_ref().map_or((0.0, 0.0), |bar| {
-            (
-                bar.axis.title_option.offset_x,
-                bar.axis.title_option.offset_y,
-            )
-        }),
-        // Dispatched before the offset path.
-        Element::Axis(_)
-        | Element::ColorBarAxis
-        | Element::DataAreaEdge(_)
-        | Element::DataArea
-        | Element::ColorBarEdge(_) => (0.0, 0.0),
+    /// A screen delta in the frame the element's offset is stored in: the
+    /// rotated local frame of a left or right title, the screen frame of
+    /// everything else.
+    fn local_delta(&self, element: &Element, dx: f32, dy: f32) -> Option<(f32, f32)> {
+        Some(match element {
+            Element::AxisTitle(side) => screen_offset_to_axis_title(side.clone(), (dx, dy)),
+            Element::ColorBarTitle => {
+                let side = self.colorbar.as_ref()?.side.clone();
+                screen_offset_to_axis_title(side, (dx, dy))
+            }
+            _ => (dx, dy),
+        })
     }
 }
 
 // Nudge methods.
 
 impl Config {
-    /// Apply a measurement-free approximate containment policy. Text-bearing
-    /// elements use representative anchors here; exact glyph bounds are kept
-    /// in the `Selectable` path and no text measurer is required by nudge.
-    pub fn nudge(&mut self, element: Element, dx: f32, dy: f32) -> NudgeResult {
-        self.nudge_from(element, None, dx, dy)
+    /// Move `element` by a screen delta. The move accumulates in the config
+    /// field the element is drawn from and is contained on what is drawn:
+    /// `measure` lays the element out (the renderer's `CpuTextMeasure`), and
+    /// the move is rejected, leaving the config untouched, when the element
+    /// would no longer be grabbable afterwards or `measure` cannot place it.
+    pub fn nudge(
+        &mut self,
+        element: Element,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        self.nudge_from(element, measure, None, dx, dy)
     }
 
     /// [`Self::nudge`] with the pointer position `at` the delta was measured
@@ -225,6 +219,7 @@ impl Config {
     pub fn nudge_from(
         &mut self,
         element: Element,
+        measure: &dyn MeasureText,
         at: Option<[f32; 2]>,
         dx: f32,
         dy: f32,
@@ -233,7 +228,7 @@ impl Config {
             match &element {
                 Element::Axis(side) => return self.nudge_polar_axis(side.clone(), at, dx, dy),
                 Element::AxisLabel(side) => {
-                    return self.nudge_polar_axis_label(side.clone(), at, dx, dy);
+                    return self.nudge_polar_axis_label(side.clone(), measure, at, dx, dy);
                 }
                 _ => {}
             }
@@ -255,91 +250,18 @@ impl Config {
         if let Element::ColorBarEdge(side) = element {
             return self.nudge_colorbar_edge(side, dx, dy);
         }
-        let anchor = match element_anchor(self, &element) {
-            Some(a) => a,
-            None => return NudgeResult::Rejected(NudgeReject::OutOfBounds),
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let (Some(previous), Some((local_dx, local_dy))) =
+            (self.offset_of(&element), self.local_delta(&element, dx, dy))
+        else {
+            return reject;
         };
-        // Compute the current screen position by converting the stored local
-        // offset to screen frame (identity except for rotated axis titles).
-        let (ox, oy) = current_offset(self, &element);
-        let (screen_ox, screen_oy) = match &element {
-            Element::AxisTitle(side) => axis_title_offset_to_screen(side.clone(), (ox, oy)),
-            Element::ColorBarTitle => {
-                let Some(side) = self.colorbar.as_ref().map(|bar| bar.side.clone()) else {
-                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-                };
-                axis_title_offset_to_screen(side, (ox, oy))
-            }
-            _ => (ox, oy),
-        };
-        let new_x = anchor.0 + screen_ox + dx;
-        let new_y = anchor.1 + screen_oy + dy;
-
-        let ca = &self.chart_area;
-        let x_min = ca.x as f32;
-        let y_min = ca.y as f32;
-        let x_max = (ca.x + ca.width) as f32;
-        let y_max = (ca.y + ca.height) as f32;
-
-        if new_x < x_min || new_x > x_max || new_y < y_min || new_y > y_max {
-            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-        }
-
-        match element {
-            Element::ChartTitle => {
-                self.chart_title.offset_x += dx;
-                self.chart_title.offset_y += dy;
-            }
-            Element::AxisTitle(side) => {
-                // Left/Right axis titles are drawn with a canvas rotate, so we
-                // map screen dx/dy back into the rotated local frame so the
-                // title moves in the direction the user expects on screen.
-                let (local_dx, local_dy) = screen_offset_to_axis_title(side.clone(), (dx, dy));
-                let a = axis_mut(self, &side);
-                a.title_option.offset_x += local_dx;
-                a.title_option.offset_y += local_dy;
-            }
-            Element::AxisLabel(side) => {
-                // label_offset_{x,y} is a margin-noncontributing visual offset
-                // in screen coordinates; add directly.
-                let a = axis_mut(self, &side);
-                a.label_style.label_offset_x += dx;
-                a.label_style.label_offset_y += dy;
-            }
-            Element::Legend => {
-                self.legend.offset_x += dx;
-                self.legend.offset_y += dy;
-            }
-            Element::ColorBar => {
-                // `element_anchor` already returned `None` for a missing bar, so
-                // reaching here means there is one.
-                if let Some(bar) = self.colorbar.as_mut() {
-                    bar.offset_x += dx;
-                    bar.offset_y += dy;
-                }
-            }
-            Element::ColorBarLabel => {
-                if let Some(bar) = self.colorbar.as_mut() {
-                    bar.axis.label_style.label_offset_x += dx;
-                    bar.axis.label_style.label_offset_y += dy;
-                }
-            }
-            Element::ColorBarTitle => {
-                let Some(side) = self.colorbar.as_ref().map(|bar| bar.side.clone()) else {
-                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-                };
-                let (local_dx, local_dy) = screen_offset_to_axis_title(side, (dx, dy));
-                if let Some(bar) = self.colorbar.as_mut() {
-                    bar.axis.title_option.offset_x += local_dx;
-                    bar.axis.title_option.offset_y += local_dy;
-                }
-            }
-            // Dispatched at the top of `nudge`.
-            Element::Axis(_)
-            | Element::ColorBarAxis
-            | Element::DataAreaEdge(_)
-            | Element::DataArea
-            | Element::ColorBarEdge(_) => {}
+        // Write, then keep the element grabbable where it is now drawn, or
+        // put the previous offset back exactly.
+        self.set_offset(&element, (previous.0 + local_dx, previous.1 + local_dy));
+        if self.grabbable(&element, measure) != Some(true) {
+            self.set_offset(&element, previous);
+            return reject;
         }
         NudgeResult::Moved
     }
@@ -430,29 +352,25 @@ impl Config {
     /// Polar: the angle tick labels move along their spokes by the drag's
     /// radial component at the pointer (`label_offset_y`, outward positive);
     /// the radius tick labels move in the ray frame (`label_offset_x` along,
-    /// `label_offset_y` across). A representative label point must stay in
-    /// the chart area, as for every other element.
+    /// `label_offset_y` across). The moved labels must stay grabbable, as
+    /// every other element.
     fn nudge_polar_axis_label(
         &mut self,
         side: Side,
+        measure: &dyn MeasureText,
         at: Option<[f32; 2]>,
         dx: f32,
         dy: f32,
     ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
         let Some(geometry) = self.polar_geometry() else {
-            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+            return reject;
         };
         let Some(polar) = self.polar.as_ref() else {
-            return NudgeResult::Rejected(NudgeReject::OutOfBounds);
+            return reject;
         };
-        let ca = &self.chart_area;
-        let inside = |p: (f32, f32)| {
-            p.0 >= ca.x as f32
-                && p.0 <= (ca.x + ca.width) as f32
-                && p.1 >= ca.y as f32
-                && p.1 <= (ca.y + ca.height) as f32
-        };
-        match side {
+        let element = Element::AxisLabel(side.clone());
+        let delta = match side {
             Side::Bottom => {
                 let spoke = at
                     .and_then(|p| geometry.spoke_direction(p))
@@ -460,49 +378,27 @@ impl Config {
                         let a = polar.zero_angle_degrees.to_radians();
                         [a.cos() as f32, -(a.sin() as f32)]
                     });
-                let delta = dx * spoke[0] + dy * spoke[1];
-                let ls = &self.bottom_x.label_style;
-                let reach = geometry.radius
-                    + self.bottom_x.major_tick_length.max(0.0)
-                    + LABEL_GAP
-                    + LABEL_EXTENT_EST
-                    + ls.label_offset_y
-                    + delta;
-                let point = (
-                    geometry.center[0] + spoke[0] * reach,
-                    geometry.center[1] + spoke[1] * reach,
-                );
-                if !inside(point) {
-                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-                }
-                self.bottom_x.label_style.label_offset_y += delta;
-                NudgeResult::Moved
+                (0.0, dx * spoke[0] + dy * spoke[1])
             }
             Side::Left => {
                 let dir = polar.ray_direction();
                 let across_dir = polar.ray_side();
-                let along = dx * dir[0] + dy * dir[1];
-                let across = dx * across_dir[0] + dy * across_dir[1];
-                let ls = &self.left_y.label_style;
-                let a = (geometry.inner_radius + geometry.radius) * 0.5 + ls.label_offset_x + along;
-                let c = self.left_y.major_tick_length.max(0.0)
-                    + LABEL_GAP
-                    + LABEL_EXTENT_EST
-                    + ls.label_offset_y
-                    + across;
-                let point = (
-                    geometry.center[0] + dir[0] * a + across_dir[0] * c,
-                    geometry.center[1] + dir[1] * a + across_dir[1] * c,
-                );
-                if !inside(point) {
-                    return NudgeResult::Rejected(NudgeReject::OutOfBounds);
-                }
-                self.left_y.label_style.label_offset_x += along;
-                self.left_y.label_style.label_offset_y += across;
-                NudgeResult::Moved
+                (
+                    dx * dir[0] + dy * dir[1],
+                    dx * across_dir[0] + dy * across_dir[1],
+                )
             }
-            Side::Top | Side::Right => NudgeResult::Rejected(NudgeReject::OutOfBounds),
+            Side::Top | Side::Right => return reject,
+        };
+        let Some(previous) = self.offset_of(&element) else {
+            return reject;
+        };
+        self.set_offset(&element, (previous.0 + delta.0, previous.1 + delta.1));
+        if self.grabbable(&element, measure) != Some(true) {
+            self.set_offset(&element, previous);
+            return reject;
         }
+        NudgeResult::Moved
     }
 
     /// Detached-axis drag rule: the axis line (with its ticks and labels)
@@ -510,8 +406,8 @@ impl Config {
     /// vertically — via `line_offset`. The parallel component is discarded.
     /// The data area / grid / data transform are untouched, so tick positions
     /// along the axis stay aligned with the data; the constraint is only that
-    /// the axis line stays inside the chart area (it may cross into the data
-    /// area, e.g. a y-axis at x = 0).
+    /// the axis line, where [`axis_anchor`] draws it, stays inside the chart
+    /// area (it may cross into the data area, e.g. a y-axis at x = 0).
     fn nudge_axis(&mut self, side: Side, dx: f32, dy: f32) -> NudgeResult {
         let d = match side {
             Side::Left | Side::Right => dx,
@@ -527,11 +423,10 @@ impl Config {
         let new_offset = axis_ref(self, &side).line_offset + d;
 
         // The shifted axis line must stay inside the chart area.
+        let (anchor, _) = axis_anchor(side.clone(), &da);
         let line_pos = match side {
-            Side::Left => da.x as f32 + new_offset,
-            Side::Right => (da.x + da.width) as f32 + new_offset,
-            Side::Top => da.y as f32 + new_offset,
-            Side::Bottom => (da.y + da.height) as f32 + new_offset,
+            Side::Left | Side::Right => anchor.0 + new_offset,
+            Side::Top | Side::Bottom => anchor.1 + new_offset,
         };
         let ca = &self.chart_area;
         let (lo, hi) = match side {
@@ -566,11 +461,12 @@ impl Config {
         };
         let rect = colorbar_rect(&self.chart_area, &da, self.chart_title.top_margin, bar);
         let new_offset = bar.axis.line_offset + d;
+        // The axis runs along the strip's outer long edge, where
+        // `point_on_rect_side` puts it.
+        let (line_x, line_y) = point_on_rect_side(0.0, &side, &rect);
         let line_pos = match side {
-            Side::Left => rect.x + new_offset,
-            Side::Right => rect.x + rect.width + new_offset,
-            Side::Top => rect.y + new_offset,
-            Side::Bottom => rect.y + rect.height + new_offset,
+            Side::Left | Side::Right => line_x + new_offset,
+            Side::Top | Side::Bottom => line_y + new_offset,
         };
         let ca = &self.chart_area;
         let (lo, hi) = match side {
@@ -647,7 +543,8 @@ impl Config {
             };
             // Growing the strip grows its band, which shrinks the data area —
             // so the same check `nudge_data_area_edge` makes applies, by the
-            // same write-then-revert (no Config clone on a pointer-move path).
+            // same write-then-revert (no Config clone on a pointer-move path
+            // beyond the base-panel expansion of a layered document).
             // Thickness and the outer-handle offset are one transaction: a
             // rejected resize must not leave the strip translated.
             {
@@ -730,12 +627,12 @@ impl Config {
         NudgeResult::Moved
     }
 
-    pub fn nudge_x(&mut self, element: Element, dx: f32) -> NudgeResult {
-        self.nudge(element, dx, 0.0)
+    pub fn nudge_x(&mut self, element: Element, measure: &dyn MeasureText, dx: f32) -> NudgeResult {
+        self.nudge(element, measure, dx, 0.0)
     }
 
-    pub fn nudge_y(&mut self, element: Element, dy: f32) -> NudgeResult {
-        self.nudge(element, 0.0, dy)
+    pub fn nudge_y(&mut self, element: Element, measure: &dyn MeasureText, dy: f32) -> NudgeResult {
+        self.nudge(element, measure, 0.0, dy)
     }
 }
 
@@ -745,13 +642,23 @@ impl Config {
 mod tests {
     use super::*;
     use crate::default::default_config;
+    use crate::select::tests::LaysOut;
+    use crate::text::rich_segments_from_text;
+
+    /// The default config with a visible chart title: a title that draws
+    /// nothing cannot be grabbed, so it has no move.
+    fn titled_config() -> Config {
+        let mut cfg = default_config();
+        cfg.chart_title.text.segments = rich_segments_from_text("T");
+        cfg
+    }
 
     // data_area() must be identical before and after nudge().
     #[test]
     fn nudge_preserves_data_area() {
-        let mut cfg = default_config();
+        let mut cfg = titled_config();
         let da_before = cfg.data_area().unwrap();
-        let r = cfg.nudge(Element::ChartTitle, 5.0, 3.0);
+        let r = cfg.nudge(Element::ChartTitle, &LaysOut, 5.0, 3.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
         assert_eq!(da_before, da_after);
@@ -760,19 +667,34 @@ mod tests {
     // On Rejected, Config must remain unchanged.
     #[test]
     fn nudge_rejected_preserves_state() {
-        let mut cfg = default_config();
+        let mut cfg = titled_config();
         let before = cfg.clone();
-        let r = cfg.nudge(Element::ChartTitle, -1e6, 0.0);
+        let r = cfg.nudge(Element::ChartTitle, &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }
 
-    // On Moved, only the target offset must change.
+    // On Moved, only the target offset must change. The tick labels are
+    // contained on their drawn parts, so the measure must lay them out: one
+    // that cannot place them rejects the move and leaves the config as it was.
     #[test]
     fn nudge_moved_changes_only_target_offset() {
         let mut cfg = default_config();
         let before = cfg.clone();
-        cfg.nudge(Element::AxisLabel(Side::Left), 1.0, 0.0);
+        assert_eq!(
+            cfg.nudge(
+                Element::AxisLabel(Side::Left),
+                &crate::select::tests::FixedMeasure,
+                1.0,
+                0.0
+            ),
+            NudgeResult::Rejected(NudgeReject::OutOfBounds)
+        );
+        assert_eq!(cfg, before);
+        assert_eq!(
+            cfg.nudge(Element::AxisLabel(Side::Left), &LaysOut, 1.0, 0.0),
+            NudgeResult::Moved
+        );
         let mut expected = before.clone();
         expected.left_y.label_style.label_offset_x += 1.0;
         assert_eq!(cfg, expected);
@@ -792,7 +714,7 @@ mod tests {
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
-        let r = cfg.nudge(Element::Axis(Side::Left), 10.0, 999.0);
+        let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, 10.0, 999.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.line_offset, 10.0);
         // Layout untouched — margin and data area identical.
@@ -801,7 +723,10 @@ mod tests {
 
         let mut dragged = default_config();
         let el = AxisElement { side: Side::Left };
-        assert_eq!(el.drag_by(&mut dragged, 12.0, -40.0), NudgeResult::Moved);
+        assert_eq!(
+            el.drag_by(&mut dragged, &LaysOut, 12.0, -40.0),
+            NudgeResult::Moved
+        );
         assert_eq!(dragged.left_y.line_offset, 12.0);
         assert_eq!(dragged.left_y.out_margin, margin_before);
         assert_eq!(dragged.data_area().unwrap(), da_before);
@@ -818,7 +743,7 @@ mod tests {
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.bottom_x.out_margin;
 
-        let r = cfg.nudge(Element::Axis(Side::Bottom), 999.0, -8.0);
+        let r = cfg.nudge(Element::Axis(Side::Bottom), &LaysOut, 999.0, -8.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.bottom_x.line_offset, -8.0);
         assert_eq!(cfg.bottom_x.out_margin, margin_before);
@@ -826,7 +751,10 @@ mod tests {
 
         let mut dragged = default_config();
         let el = AxisElement { side: Side::Bottom };
-        assert_eq!(el.drag_by(&mut dragged, -40.0, -6.0), NudgeResult::Moved);
+        assert_eq!(
+            el.drag_by(&mut dragged, &LaysOut, -40.0, -6.0),
+            NudgeResult::Moved
+        );
         assert_eq!(dragged.bottom_x.line_offset, -6.0);
         assert_eq!(dragged.bottom_x.out_margin, margin_before);
         assert_eq!(dragged.data_area().unwrap(), da_before);
@@ -837,7 +765,7 @@ mod tests {
     #[test]
     fn axis_nudge_allows_crossing_into_data_area() {
         let mut cfg = default_config();
-        let r = cfg.nudge(Element::Axis(Side::Left), 50.0, 0.0);
+        let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, 50.0, 0.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.line_offset, 50.0);
     }
@@ -846,7 +774,7 @@ mod tests {
     fn axis_nudge_rejects_leaving_chart_area() {
         let mut cfg = default_config();
         let before = cfg.clone();
-        let r = cfg.nudge(Element::Axis(Side::Left), -1e6, 0.0);
+        let r = cfg.nudge(Element::Axis(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }
@@ -858,7 +786,7 @@ mod tests {
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
 
-        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), 10.0, 999.0);
+        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, 10.0, 999.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.out_margin, margin_before + 10.0);
         let da_after = cfg.data_area().unwrap();
@@ -870,7 +798,7 @@ mod tests {
     fn data_area_edge_rejects_negative_margin() {
         let mut cfg = default_config();
         let before = cfg.clone();
-        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), -1e6, 0.0);
+        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, -1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }
@@ -880,7 +808,7 @@ mod tests {
         let mut cfg = default_config();
         let before = cfg.clone();
         let w = cfg.chart_area.width as f32;
-        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), w * 2.0, 0.0);
+        let r = cfg.nudge(Element::DataAreaEdge(Side::Left), &LaysOut, w * 2.0, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }

@@ -60,7 +60,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
     CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    SelectionBox, Series, SeriesConfig, WindowedRenderer, encode_png,
+    Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
 const AXIS_PRESETS: [AxisPreset; 5] = [
@@ -685,7 +685,8 @@ impl App {
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        if drag.drag_by(panel.chart.config_mut(), dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if drag.drag_by(panel.chart.config_mut(), &measure, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -703,7 +704,8 @@ impl App {
         let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else {
             return;
         };
-        if rz.resize_by(panel.chart.config_mut(), handle, dx, dy) == NudgeResult::Moved
+        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
+        if rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -802,23 +804,15 @@ impl App {
         let rects = compute_panel_rects(w, h);
         for (i, (panel, rect)) in self.panels.iter_mut().zip(rects.iter()).enumerate() {
             panel.chart.config_mut().chart_area = ChartArea(*rect);
-            let sel_boxes: Vec<SelectionBox> = match selected {
-                Some((pi, id)) if pi == i => panel
-                    .hitmap
-                    .selection_box(
-                        id,
-                        panel.chart.config(),
-                        &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                    )
-                    .into_iter()
-                    .collect(),
-                _ => Vec::new(),
+            let selected_id: Option<String> = match selected {
+                Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
+                _ => None,
             };
             if let Err(e) = renderer.refresh_axis_with_selection(
                 &mut panel.view,
                 &panel.chart,
                 *rect,
-                &sel_boxes,
+                selected_id.as_deref(),
             ) {
                 eprintln!("[refresh_axis] {e}");
                 return;
@@ -850,23 +844,15 @@ impl App {
             // only needs resetting.
             let _ = panel.chart.consume_data_dirty();
             if raster_dirty {
-                let sel_boxes: Vec<SelectionBox> = match selected {
-                    Some((pi, id)) if pi == i => panel
-                        .hitmap
-                        .selection_box(
-                            id,
-                            panel.chart.config(),
-                            &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
-                        )
-                        .into_iter()
-                        .collect(),
-                    _ => Vec::new(),
+                let selected_id: Option<String> = match selected {
+                    Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
+                    _ => None,
                 };
                 if let Err(e) = renderer.refresh_axis_with_selection(
                     &mut panel.view,
                     &panel.chart,
                     panel_rect,
-                    &sel_boxes,
+                    selected_id.as_deref(),
                 ) {
                     eprintln!("[refresh_axis] {e}");
                     return;

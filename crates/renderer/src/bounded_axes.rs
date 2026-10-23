@@ -3,6 +3,9 @@
 use super::*;
 use crate::decoration::{DecorationPainter, LabelPlacer};
 use model::{Category, DecorationId};
+
+/// The grid line colour of every bounded value axis.
+const GRID_COLOR: Color = Color::from_rgb8(224, 229, 235);
 pub(crate) struct BoundedAxisDecorations<'a> {
     pub size: (u32, u32),
     pub plot: [f32; 4],
@@ -64,21 +67,13 @@ pub(crate) fn draw_bounded_decorations(
         let (x, y, side) = if p.horizontal {
             let x = left + t * (right - left);
             if p.grid {
-                back.draw_line(
-                    (x * d.scale, top * d.scale),
-                    (x * d.scale, bottom * d.scale),
-                    &Paint::stroke(&Color::from_rgb8(224, 229, 235), d.scale),
-                );
+                d.chrome(back).line([x, top], [x, bottom], GRID_COLOR);
             }
             (x - measure(label, fs) * 0.5, bottom + fs + 8., Side::Bottom)
         } else {
             let y = bottom - t * (bottom - top);
             if p.grid {
-                back.draw_line(
-                    (left * d.scale, y * d.scale),
-                    (right * d.scale, y * d.scale),
-                    &Paint::stroke(&Color::from_rgb8(224, 229, 235), d.scale),
-                );
+                d.chrome(back).line([left, y], [right, y], GRID_COLOR);
             }
             (left - measure(label, fs) - 10., y + fs * 0.32, Side::Left)
         };
@@ -94,9 +89,7 @@ pub(crate) fn draw_bounded_decorations(
             y,
             fs,
         );
-        d.text(
-            DecorationId::AxisLabel(side),
-            front,
+        d.on(DecorationId::AxisLabel(side), front).plain_text(
             p.font_family,
             label,
             x,
@@ -114,20 +107,10 @@ pub(crate) fn draw_bounded_decorations(
     } else {
         (left, bottom)
     };
-    d.axis(
-        DecorationId::Axis(Side::Bottom),
-        back,
-        (left, ay),
-        (right, ay),
-        p.color,
-    );
-    d.axis(
-        DecorationId::Axis(Side::Left),
-        back,
-        (ax, top),
-        (ax, bottom),
-        p.color,
-    );
+    d.on(DecorationId::Axis(Side::Bottom), back)
+        .line([left, ay], [right, ay], p.color);
+    d.on(DecorationId::Axis(Side::Left), back)
+        .line([ax, top], [ax, bottom], p.color);
     let slot = if p.horizontal {
         (bottom - top) / p.categories.len() as f32
     } else {
@@ -164,9 +147,7 @@ pub(crate) fn draw_bounded_decorations(
             y,
             fs,
         );
-        d.text(
-            DecorationId::AxisLabel(side),
-            front,
+        d.on(DecorationId::AxisLabel(side), front).plain_text(
             p.font_family,
             &cat.label,
             x,
@@ -185,31 +166,29 @@ pub(crate) fn draw_bounded_decorations(
         if tw > right - left {
             return Err("axis title does not fit");
         }
-        d.text(
-            DecorationId::AxisTitle(Side::Bottom),
-            front,
-            p.font_family,
-            axis_title,
-            (left + right - tw) * 0.5,
-            bottom + 2. * fs + 22.,
-            fs,
-            p.color,
-        );
+        d.on(DecorationId::AxisTitle(Side::Bottom), front)
+            .plain_text(
+                p.font_family,
+                axis_title,
+                (left + right - tw) * 0.5,
+                bottom + 2. * fs + 22.,
+                fs,
+                p.color,
+            );
     }
     if !side_title.is_empty() {
         if measure(side_title, fs) > bottom - top {
             return Err("axis title does not fit");
         }
-        d.rotated_text(
-            DecorationId::AxisTitle(Side::Left),
-            front,
-            p.font_family,
-            side_title,
-            p.left_title_x,
-            (top + bottom) * 0.5,
-            fs,
-            p.color,
-        );
+        d.on(DecorationId::AxisTitle(Side::Left), front)
+            .rotated_text(
+                p.font_family,
+                side_title,
+                p.left_title_x,
+                (top + bottom) * 0.5,
+                fs,
+                p.color,
+            );
     }
     draw_bounded_legend(
         &BoundedLegend {
@@ -310,9 +289,7 @@ pub(crate) fn draw_bounded_legend(
             .sum::<f32>();
         let lx = (w - total) * 0.5 + x;
         let ly = h - p.height + 12. + *row as f32 * (fs + 12.);
-        d.rect(
-            DecorationId::Legend,
-            back,
+        d.on(DecorationId::Legend, back).fill(
             RectF {
                 x: lx,
                 y: ly - fs * 0.65,
@@ -321,9 +298,7 @@ pub(crate) fn draw_bounded_legend(
             },
             *color,
         );
-        d.text(
-            DecorationId::Legend,
-            front,
+        d.on(DecorationId::Legend, front).plain_text(
             p.font_family,
             label,
             lx + fs + 7.,

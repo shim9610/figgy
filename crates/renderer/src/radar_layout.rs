@@ -192,9 +192,10 @@ pub(super) fn layout(
             };
             back.draw_polyline(&points, &ring_paint);
         }
-        let spoke_paint = Paint::stroke(&c.style.spoke_color, scale);
         for i in 0..n {
-            back.draw_line(physical(center), physical(point(i, 1.0)), &spoke_paint);
+            decorations
+                .chrome(&mut back)
+                .line(center, point(i, 1.0), c.style.spoke_color);
         }
     }
     // Value labels along the first spoke, beside the rings they name.
@@ -218,16 +219,9 @@ pub(super) fn layout(
             let x = p[0] + nx * 6.0 - if nx < 0.0 { tw } else { 0.0 };
             let y = p[1] + ny * 6.0 + fs * 0.35;
             let (x, y) = decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
-            decorations.text(
-                DecorationId::AxisLabel(Side::Left),
-                &mut front,
-                &c.font_family,
-                &label,
-                x,
-                y,
-                fs,
-                c.text_color,
-            );
+            decorations
+                .on(DecorationId::AxisLabel(Side::Left), &mut front)
+                .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
         }
     }
     // Category labels outside the outer ring, aligned away from the centre.
@@ -241,18 +235,14 @@ pub(super) fn layout(
         let x = p[0] - tw * (1.0 - a.cos()) * 0.5;
         let y = p[1] + fs * 0.35 + a.sin() * fs * 0.45;
         let (x, y) = decorations.place_text(&mut labels, &c.font_family, &category.label, x, y, fs);
-        decorations.text(
-            DecorationId::SpokeLabel {
-                category_id: category.id.clone(),
-            },
-            &mut front,
-            &c.font_family,
-            &category.label,
-            x,
-            y,
-            fs,
-            c.text_color,
-        );
+        decorations
+            .on(
+                DecorationId::SpokeLabel {
+                    category_id: category.id.clone(),
+                },
+                &mut front,
+            )
+            .plain_text(&c.font_family, &category.label, x, y, fs, c.text_color);
     }
     crate::axis_render::draw_bounded_legend(
         &crate::axis_render::BoundedLegend {
@@ -431,19 +421,15 @@ pub(super) fn layout(
                 let y = p[1] + 9.0 * a.sin() + fs * 0.35;
                 let (x, y) =
                     decorations.place_text(&mut data_labels, &c.font_family, &label, x, y, fs);
-                decorations.text(
-                    DecorationId::DataLabel {
-                        category_id: c.categories[i].id.clone(),
-                        series_id: series.id.clone(),
-                    },
-                    &mut front,
-                    &c.font_family,
-                    &label,
-                    x,
-                    y,
-                    fs,
-                    c.text_color,
-                );
+                decorations
+                    .on(
+                        DecorationId::DataLabel {
+                            category_id: c.categories[i].id.clone(),
+                            series_id: series.id.clone(),
+                        },
+                        &mut front,
+                    )
+                    .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
             }
         }
     }

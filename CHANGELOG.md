@@ -30,6 +30,85 @@ Collected on `integration/0.19`; the release entry replaces this section.
   - the browser integration's series extent job identity had no vector
     `factor`, so a factor edit reused the previous extent.
   No public API or serialized field changes.
+- **One placement per element, interchangeable sinks**
+  ([#38](https://github.com/shim9610/figgy/issues/38),
+  [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
+  element has one placement function, its `emit`, which hands the parts it
+  draws to a `Sink` (`model::sink`): the renderer's canvas sink paints them,
+  the model's sinks answer bounds, hit tests and selection boxes from the
+  same parts, and drag containment reads the same parts. There is no second
+  placement left for the 15 cases the inventory listed; the ones that need a
+  shader change are marked `TODO(#38)` in the code. Migration:
+  - `Selectable` requires `emit(&self, cfg, measure, sink) -> bool` instead of
+    `bounds`; `bounds`, `contains` and `selection_box` are provided by the
+    blanket trait `SelectionGeometry` (import it next to `Selectable`) and
+    cannot be overridden. `MeasureText::drawn_parts` is replaced by
+    `MeasureText::emit(cfg, element, sink)`; `DrawnPart` moved to
+    `model::sink` (still re-exported from `layout`) and gained `Rect` and
+    `Triangle`.
+  - `SelectionBox` has private fields: read `rect()`, `handles()`, `color()`,
+    `stroke_width()`, `outline()`; `SelectionOutline::TickLabels(side)` is
+    `SelectionOutline::Parts(Vec<DrawnPart>)`, which polar tick labels, the
+    polar ray and annotations use (an arrow's shaft is outlined as its thin
+    oriented box). `Renderer::refresh_axis_with_selection` takes the selected
+    element's id (`Selectable::element_id`, `Option<&str>`) instead of boxes;
+    `Renderer::selection_box(chart, id)` returns the box it draws.
+  - `Config::nudge` / `nudge_from` / `nudge_x` / `nudge_y`, `Draggable::drag_by`
+    / `drag_from`, `Resizable::resize_by` and `DragConfig::nudge` / `nudge_at`
+    take a `&dyn MeasureText`. A move is contained on the drawn parts: it is
+    rejected unless one of the element's parts keeps its centre inside the
+    chart area, and when the measure cannot place the element or it draws
+    nothing. `Resizable::resize_handles` reports its handles through a
+    callback.
+  - `AnnotationElement.text_size` is `text: Option<MeasuredText>`;
+    `AnnotationShape`, `annotation_shapes`, `shapes`, `label_rect` and
+    `geometry_bounds` are gone (`emit_annotation` and
+    `AnnotationElement::emit` place the parts). An annotation's bounds are its
+    drawn parts without grab slack; it hits inside the outlines its selection
+    draws (`segment_contains`, `padded_triangle`: a stroke's box is half its
+    width plus 2 px, at least 3 px, either side and 2 px beyond the ends; a
+    triangle grows 2 px outward; a rectangle 2 px). Its label gaps are relative to
+    the label font (`LINE_LABEL_INSET_EM`, `ARROW_LABEL_GAP_EM`), so they scale
+    with the display scale.
+  - Every element hits inside its padded selection box (2 px outside its
+    bounds): the data area, the legend, the colourbar strip, the chart and
+    axis titles and every bounded chart decoration, like the axes and tick
+    labels did before. An element that outlines its parts hits inside each
+    part's outline (`select::part_outline`, the one shape of the hit test,
+    the canvas highlight and a host's outline): a text block or rectangle as
+    its box grown by 2 px, a stroke as the box `max(width / 2 + 2, 3)` px
+    either side of its line and 2 px beyond its ends (the plan said
+    `max(width / 2, 3)`; the polar ray is grabbed within 3 px, was 4), an
+    arrow head as its triangle grown 2 px outward. A text annotation is one
+    box.
+  - `ARROW_LABEL_GAP` and `LINE_LABEL_INSET` (pixels) are gone; the gaps are
+    `ARROW_LABEL_GAP_EM` and `LINE_LABEL_INSET_EM` (em of the label font).
+  - A host element registered in its own `HitMap` (its default `element_id`
+    is `"custom"`) or a map built for another layer is not highlighted by
+    `refresh_axis_with_selection`, which resolves ids on the active layer's
+    standard registration; a host draws such a highlight itself from the
+    element's `SelectionGeometry::selection_box` with
+    `axis_render::draw_selection_box(canvas, &box, origin, scale)`.
+    `Renderer::selection_box` and a refresh with a selected id build the
+    active layer's `HitMap` once per refresh to resolve the id (a `Vec` of
+    boxed elements and a `String` per compared id).
+  - A layered document expands its base panel (`select::on_drawn_panel`,
+    the renderer's own expansion, SSOT configuration) for every placement
+    the model runs for a hit test or a drag step; a single-layer document
+    copies nothing.
+  - The browser wrapper's `decoration_bounds(id)` returns `outline` (one
+    polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
+    instead of `labels` for an element that outlines its parts.
+  - Removed: `pick_nearest_point`, `PointPickOptions`, `PointColumnLookup`
+    (hosts pick through `pick_chart` / `pick_chart_data`; the CPU twins are
+    test support under the `cpu-twin` feature), `errorbar_extent`,
+    `LineInterpolation::piece_count`, `PolarInterpolation::piece_count`,
+    `layout::axis_visibility_extent` / `axis_visibility_rect` /
+    `rect_axis_visibility_rect`. Added: `layout::axis_fraction`,
+    `guarded_log_range`, `visible_colorbar_rect`, `Config::title_band`.
+  - `data_render::draw_chart_panel_with_bodies` moved to the compositor
+    (`renderer::composite`), which alone orders the slots below the data, the
+    data and above the data; `draw_chart_panel_columnar` is unchanged.
 - **Annotation revision.** `ChartRenderStamp::needs_annotation_raster_since`
   now reports an annotation raster after a demo load whose items differ, a
   column removal whose replacement config edits the items, and a font

@@ -26,9 +26,11 @@ pub async fn check(gpu: RendererDevice) {
                     .expect(concat!(stringify!($renderer), " omitted data area"));
                 let key = element.id.clone();
                 let bounds = map.bounds(hit).unwrap();
-                assert_eq!(map.selection_box(hit).unwrap().handles.len(), 8);
+                assert_eq!(map.selection_box(hit).unwrap().handles().len(), 8);
                 let target = map.hit_map().get(hit).unwrap();
                 let resizable = target.as_resizable().expect("area must expose Resizable");
+                // The measure the decoration map lays its elements out with.
+                let measure = CpuTextMeasure::for_style(&Default::default());
                 let before = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
                 r.end_frame();
                 c.decorations.selected = Some(key.clone());
@@ -53,6 +55,7 @@ pub async fn check(gpu: RendererDevice) {
                 assert!(matches!(
                     resizable.resize_by(
                         &mut c.decorations,
+                        &measure,
                         resize::ResizeHandle::NW,
                         -10000.,
                         -10000.
@@ -64,7 +67,13 @@ pub async fn check(gpu: RendererDevice) {
                     "rejected corner resize partially changed state"
                 );
                 assert_eq!(
-                    resizable.resize_by(&mut c.decorations, resize::ResizeHandle::SE, -100., -80.),
+                    resizable.resize_by(
+                        &mut c.decorations,
+                        &measure,
+                        resize::ResizeHandle::SE,
+                        -100.,
+                        -80.
+                    ),
                     layout::NudgeResult::Moved
                 );
                 c.decorations.selected = Some(key.clone());
@@ -74,7 +83,7 @@ pub async fn check(gpu: RendererDevice) {
                 let sh = smap.entries().find(|(_, e)| e.id == key).unwrap().0;
                 let sb = smap.bounds(sh).unwrap();
                 let selection = smap.selection_box(sh).unwrap();
-                let rect = selection.rect;
+                let rect = selection.rect();
                 let (left, top) = (rect.x, rect.y);
                 let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
                 let (cx, cy) = ((left + right) * 0.5, (top + bottom) * 0.5);
@@ -183,7 +192,7 @@ pub async fn check(gpu: RendererDevice) {
                 }
                 let resized = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
                 assert_ne!(before.rgba, resized.rgba, "area edit reused stale pixels");
-                for handle in smap.selection_box(sh).unwrap().handles {
+                for handle in smap.selection_box(sh).unwrap().handles() {
                     let mut blue = 0;
                     for y in (handle.y * scale).floor() as u32
                         ..((handle.y + handle.height) * scale).ceil() as u32

@@ -301,16 +301,17 @@ pub(super) fn layout(
                     chart.label_color
                 });
                 for (i, line) in lines.iter().enumerate() {
-                    decorations.text(
-                        DecorationId::RadialLabel(*target),
-                        &mut canvas,
-                        &chart.font_family,
-                        line,
-                        (x - width(chart, line, fs) * 0.5) / scale,
-                        (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs) / scale,
-                        fs / scale,
-                        color,
-                    );
+                    decorations
+                        .on(DecorationId::RadialLabel(*target), &mut canvas)
+                        .plain_text(
+                            &chart.font_family,
+                            line,
+                            (x - width(chart, line, fs) * 0.5) / scale,
+                            (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs)
+                                / scale,
+                            fs / scale,
+                            color,
+                        );
                 }
                 if !raster_moves_inside_labels(chart) {
                     decorations.shift_hit(&DecorationId::RadialLabel(*target), 0., -lift / scale);
@@ -382,16 +383,16 @@ pub(super) fn layout(
                         } else {
                             tx
                         };
-                        decorations.text(
-                            DecorationId::RadialLabel(target),
-                            &mut canvas,
-                            &chart.font_family,
-                            line,
-                            x / scale,
-                            (y + (i as f32 * 1.2 - 0.15) * fs) / scale,
-                            fs / scale,
-                            slice.label_color.unwrap_or(chart.label_color),
-                        );
+                        decorations
+                            .on(DecorationId::RadialLabel(target), &mut canvas)
+                            .plain_text(
+                                &chart.font_family,
+                                line,
+                                x / scale,
+                                (y + (i as f32 * 1.2 - 0.15) * fs) / scale,
+                                fs / scale,
+                                slice.label_color.unwrap_or(chart.label_color),
+                            );
                     }
                 }
             }
