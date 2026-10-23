@@ -22,8 +22,8 @@ use crate::gpu_memory::{
 use crate::init::{InitEvent, finished, observe_value, started};
 
 /// The assembled fit-bounds reduction module.
-pub(crate) const ERRORBAR_FIT_SHADER: &str =
-    crate::shader_assembly::wgsl_module!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
+pub(crate) const ERRORBAR_FIT_SHADER: crate::shader_assembly::Assembled =
+    crate::shader_assembly::assembled!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
 
 const INIT_SCOPE: &str = "renderer.errorbar_extent";
 
@@ -427,7 +427,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorb
     crate::init::prewarm_compute_entries_js(
         device,
         "gpu.extent.async",
-        ERRORBAR_FIT_SHADER,
+        ERRORBAR_FIT_SHADER.source,
         &[
             ("reduce_values", "reduce_values"),
             ("reduce_states", "reduce_states"),
@@ -483,7 +483,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
             },
         );
 
@@ -587,7 +587,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
             },
         );
 
@@ -1361,7 +1361,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<AxisStateGpu>(), 3 * 8);
         assert_eq!(std::mem::size_of::<SeriesStateGpu>(), 6 * 8);
 
-        let shader = ERRORBAR_FIT_SHADER;
+        let shader = ERRORBAR_FIT_SHADER.source;
         for forbidden in [
             "struct Endpoint",
             "source_index",

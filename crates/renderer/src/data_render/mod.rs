@@ -177,7 +177,7 @@ mod tests {
             crate::data_config::MAX_CONTOUR_LEVELS
         );
 
-        let shader = FIELD_SHADER;
+        let shader = FIELD_SHADER.source;
         assert!(shader.contains("const CONTOUR_LEVEL_BLOCK_SIZE: u32 = 32u;"));
         assert!(shader.contains("let original = firstTrailingBit(candidates);"));
         assert!(shader.contains("let original = u32(record.y) - start;"));

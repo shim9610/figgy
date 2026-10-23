@@ -3251,35 +3251,22 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
     ));
 }
 
-/// Every assembled pick module is its fragments concatenated in the
-/// declared order, each fragment verbatim, and every fragment file under
-/// `src/gpu_pick/` is in some module; the twinned blocks live in the
-/// fragments `shader_consistency` compares.
+/// Every assembled pick module starts with the core and ends with its entry
+/// fragment, and every fragment file under `src/gpu_pick/` is in some
+/// module. (`shader_assembly`'s `every_module_is_its_fragments_concatenated`
+/// holds each source to its fragment list.)
 #[test]
-fn assembled_pick_shaders_are_their_fragments_concatenated() {
-    let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let dir = src.join("gpu_pick");
-    let read = |name: &str| std::fs::read_to_string(src.join(name)).unwrap();
+fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
     let mut used = std::collections::HashSet::new();
     for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
-        let mut expected = String::new();
-        for (i, name) in shader.fragments().iter().enumerate() {
-            if i > 0 {
-                expected.push('\n');
-            }
-            expected.push_str(&read(name));
-            used.insert(*name);
-        }
-        assert_eq!(shader.source(), expected, "{shader:?}");
+        used.extend(shader.fragments().iter().copied());
         assert_eq!(shader.fragments()[0], "gpu_pick/core.wgsl", "{shader:?}");
         let last = *shader.fragments().last().unwrap();
         if shader == PickShader::Gate {
             assert_eq!(last, "gpu_pick/gate_entries.wgsl");
         } else {
             assert_eq!(last, "gpu_pick/exact_entry.wgsl", "{shader:?}");
-            if let Err(error) = wgpu::naga::front::wgsl::parse_str(shader.source()) {
-                panic!("{shader:?}: {}", error.emit_to_string(shader.source()));
-            }
         }
     }
     for entry in std::fs::read_dir(&dir).unwrap() {
@@ -3291,6 +3278,49 @@ fn assembled_pick_shaders_are_their_fragments_concatenated() {
         assert!(
             used.contains(format!("gpu_pick/{name}").as_str()),
             "{name} is in no pick module"
+        );
+    }
+}
+
+/// Each exact pick module splices the same shared `common/` fragments as the
+/// draw module whose primitives it measures, so the pick projects, validates
+/// and shapes a point with the draw's code: Marker the scatter's, Line the
+/// line's, MarkerLine both, Vector the point vector's. Only `transform.wgsl`
+/// (its uniform takes the binding the pick's pool holds) and `style.wgsl` (the
+/// pick reads its own style rows) are the draw's alone.
+#[test]
+fn pick_modules_splice_their_draw_modules_common_fragments() {
+    use std::collections::BTreeSet;
+    const DRAW_ONLY: [&str; 2] = [
+        "data_render/common/transform.wgsl",
+        "data_render/common/style.wgsl",
+    ];
+    let common = |fragments: &[&'static str]| -> BTreeSet<&'static str> {
+        fragments
+            .iter()
+            .copied()
+            .filter(|f| f.starts_with("data_render/common/") && !DRAW_ONLY.contains(f))
+            .collect()
+    };
+    let draw = |name: &str| {
+        let (_, assembled) = crate::shader_assembly::MODULES
+            .iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("no module {name}"));
+        common(assembled.fragments)
+    };
+    for (shader, draws) in [
+        (PickShader::Marker, &["scatter"][..]),
+        (PickShader::Line, &["line"][..]),
+        (PickShader::MarkerLine, &["scatter", "line"][..]),
+        (PickShader::Vector, &["vector_points"][..]),
+    ] {
+        let expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        assert!(!expected.is_empty(), "{shader:?}");
+        assert_eq!(
+            common(shader.fragments()),
+            expected,
+            "{shader:?} vs {draws:?}"
         );
     }
 }

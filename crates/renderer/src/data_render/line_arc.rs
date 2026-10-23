@@ -41,7 +41,7 @@ use crate::init::{InitEvent, finished, observe_value, started};
 use super::ScatterTransform;
 
 /// The assembled arc-length scan module.
-pub(crate) const LINE_ARC_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const LINE_ARC_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
@@ -238,7 +238,7 @@ pub fn create_arc_scan_pipelines_observed(
         &device,
         wgpu::ShaderModuleDescriptor {
             label: Some("figgy line arc scan shader"),
-            source: wgpu::ShaderSource::Wgsl(LINE_ARC_SHADER.into()),
+            source: wgpu::ShaderSource::Wgsl(LINE_ARC_SHADER.source.into()),
         },
     );
 
@@ -424,7 +424,7 @@ pub async fn create_arc_scan_pipelines_observed_async(
     crate::init::prewarm_compute_entries_js(
         device,
         "line.arc.async",
-        LINE_ARC_SHADER,
+        LINE_ARC_SHADER.source,
         &[
             ("seg_init", "seg_init"),
             ("scan_block", "scan_block"),

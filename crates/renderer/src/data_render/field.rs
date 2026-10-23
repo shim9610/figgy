@@ -4,7 +4,7 @@
 use super::*;
 
 /// The assembled field (heatmap and contour) module.
-pub(crate) const FIELD_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",

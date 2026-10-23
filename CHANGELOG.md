@@ -121,7 +121,9 @@ Collected on `integration/0.19`; the release entry replaces this section.
   ([#46](https://github.com/shim9610/figgy/issues/46)). No shader changes
   what it computes. Migration: `data_render::vector::assemble` returns
   `&'static str` (the module is a constant now, also exported as
-  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`); call `.to_string()` where
+  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`, each a
+  `shader_assembly::Assembled` whose `source` is the WGSL and whose
+  `fragments` are the files it is spliced from); call `.to_string()` where
   a `String` was used.
 - **Character sets.** `RichSegment.greek: bool` becomes
   `char_set: CharSet` (`Text`, `Greek`, `Math`), so a segment cannot be

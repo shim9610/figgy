@@ -11,7 +11,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled boxplot module.
-pub(crate) const BOXPLOT_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const BOXPLOT_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
     "data_render/common/srgb_output.wgsl",
@@ -275,7 +275,7 @@ impl BoxPlotRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            BOXPLOT_SHADER,
+            BOXPLOT_SHADER.source,
             &[("boxplot surfaces", "boxplot surfaces")],
             format,
             1,
@@ -354,7 +354,7 @@ impl BoxPlotRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("boxplot surfaces"),
-                source: wgpu::ShaderSource::Wgsl(BOXPLOT_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(BOXPLOT_SHADER.source.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(

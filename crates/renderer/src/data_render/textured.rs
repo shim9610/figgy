@@ -220,7 +220,7 @@ impl ShaderModules {
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy line columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::LINE_SHADER.source.into()),
             },
         )
     }
@@ -229,7 +229,7 @@ impl ShaderModules {
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy scatter columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::SCATTER_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::SCATTER_SHADER.source.into()),
             },
         )
     }
@@ -238,7 +238,7 @@ impl ShaderModules {
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy errorbar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::ERRORBAR_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::ERRORBAR_SHADER.source.into()),
             },
         )
     }
@@ -247,7 +247,7 @@ impl ShaderModules {
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy bar columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.source.into()),
             },
         )
     }
@@ -256,7 +256,7 @@ impl ShaderModules {
             device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy field columnar shader"),
-                source: wgpu::ShaderSource::Wgsl(super::FIELD_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::FIELD_SHADER.source.into()),
             },
         )
     }
@@ -276,7 +276,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             &[("fullscreen textured", "figgy fullscreen textured pipeline")],
         ),
         (
-            super::LINE_SHADER,
+            super::LINE_SHADER.source,
             &[
                 ("precise line", "figgy line columnar pipeline"),
                 ("line area fill", "figgy line area pipeline"),
@@ -290,7 +290,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::SCATTER_SHADER,
+            super::SCATTER_SHADER.source,
             &[
                 ("precise scatter", "figgy scatter columnar pipeline"),
                 ("mapped scatter", "figgy scatter mapped pipeline"),
@@ -308,7 +308,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::ERRORBAR_SHADER,
+            super::ERRORBAR_SHADER.source,
             &[
                 ("precise errorbar", "figgy errorbar columnar pipeline"),
                 ("mapped errorbar", "figgy errorbar mapped pipeline"),
@@ -317,7 +317,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::BAR_SHADER,
+            super::BAR_SHADER.source,
             &[
                 ("histogram bars", "figgy bar columnar pipeline"),
                 (
@@ -332,7 +332,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            super::FIELD_SHADER,
+            super::FIELD_SHADER.source,
             &[
                 ("heatmap field", "figgy field columnar pipeline"),
                 ("contour field", "figgy field contour pipeline"),
@@ -344,7 +344,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             ],
         ),
         (
-            crate::gpu_contour::CONTOUR_LABEL_SHADER,
+            crate::gpu_contour::CONTOUR_LABEL_SHADER.source,
             &[("contour labels", "figgy contour label pipeline")],
         ),
     ];

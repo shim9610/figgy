@@ -18,7 +18,7 @@
 //! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
 //! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
-//! in that order at compile time (`wgsl_module!`); the list is the module's
+//! in that order at compile time (`assembled!`); the list is the module's
 //! identity and there is no runtime templating. Every assembled combination
 //! is listed in [`VectorInput::ALL`], compiled by the shader compilation
 //! test, recorded in the pipeline contract and warmed in the browser like
@@ -49,7 +49,7 @@ impl VectorInput {
 }
 
 /// The assembled vector module for [`VectorInput::Points`].
-pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub const VECTOR_POINTS_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
@@ -63,7 +63,7 @@ pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
 );
 
 /// The assembled vector module for [`VectorInput::Grid`].
-pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
@@ -78,13 +78,13 @@ pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/vector/vector_entry.wgsl",
 );
 
-/// The assembled WGSL source of one input form, spliced at compile time. The
-/// test `assembled_vector_shaders_are_their_fragments_concatenated` holds it
+/// The assembled WGSL source of one input form, spliced at compile time.
+/// `shader_assembly`'s `every_module_is_its_fragments_concatenated` holds it
 /// to its fragment list.
 pub const fn assemble(input: VectorInput) -> &'static str {
     match input {
-        VectorInput::Points => VECTOR_POINTS_SHADER,
-        VectorInput::Grid => VECTOR_GRID_SHADER,
+        VectorInput::Points => VECTOR_POINTS_SHADER.source,
+        VectorInput::Grid => VECTOR_GRID_SHADER.source,
     }
 }
 
@@ -445,48 +445,18 @@ pub struct ColumnVectorLayer<'a> {
 mod tests {
     use super::*;
 
-    /// The parts of one assembled module, in assembly order, relative to
-    /// `src/`: the list each `wgsl_module!` above splices.
+    /// The fragment list of one input form (the text is held to it by
+    /// `shader_assembly`'s `every_module_is_its_fragments_concatenated`).
     fn fragments(input: VectorInput) -> &'static [&'static str] {
         match input {
-            VectorInput::Points => &[
-                "data_render/common/transform.wgsl",
-                "data_render/common/style.wgsl",
-                "data_render/common/projection.wgsl",
-                "data_render/common/sample_validity.wgsl",
-                "data_render/common/ramp.wgsl",
-                "data_render/common/arrow.wgsl",
-                "data_render/vector/project_cartesian2d.wgsl",
-                "data_render/vector/vector_input_common.wgsl",
-                "data_render/vector/vector_input_points.wgsl",
-                "data_render/vector/vector_entry.wgsl",
-            ],
-            VectorInput::Grid => &[
-                "data_render/common/transform.wgsl",
-                "data_render/common/style.wgsl",
-                "data_render/common/projection.wgsl",
-                "data_render/common/sample_validity.wgsl",
-                "data_render/common/grid_pair.wgsl",
-                "data_render/common/ramp.wgsl",
-                "data_render/common/arrow.wgsl",
-                "data_render/common/data_pick.wgsl",
-                "data_render/vector/project_cartesian2d.wgsl",
-                "data_render/vector/vector_input_common.wgsl",
-                "data_render/vector/vector_input_grid.wgsl",
-                "data_render/vector/vector_entry.wgsl",
-            ],
+            VectorInput::Points => VECTOR_POINTS_SHADER.fragments,
+            VectorInput::Grid => VECTOR_GRID_SHADER.fragments,
         }
     }
 
     #[test]
-    fn assembled_vector_shaders_are_their_fragments_concatenated() {
-        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    fn assembled_vector_shaders_end_in_the_entry_and_differ_by_input() {
         for input in VectorInput::ALL {
-            let parts: Vec<String> = fragments(input)
-                .iter()
-                .map(|name| std::fs::read_to_string(src.join(name)).unwrap())
-                .collect();
-            assert_eq!(assemble(input), parts.join("\n"), "{input:?}");
             // The entry is last: the interfaces the other layers declare are
             // in place before the entry calls them.
             assert_eq!(

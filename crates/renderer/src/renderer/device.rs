@@ -2215,7 +2215,7 @@ impl Renderer {
             crate::init::prewarm_compute_entries_js(
                 &self.device,
                 "contour.label.async",
-                crate::gpu_contour::CONTOUR_ANCHOR_SHADER,
+                crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
                 &[
                     ("anchor_project", "anchor_seed"),
                     ("anchor_project", "anchor_step"),

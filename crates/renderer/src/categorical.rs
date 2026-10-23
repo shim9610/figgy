@@ -11,7 +11,7 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled categorical module.
-pub(crate) const CATEGORICAL_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const CATEGORICAL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
     "data_render/common/srgb_output.wgsl",
@@ -238,7 +238,7 @@ impl CategoricalRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            CATEGORICAL_SHADER,
+            CATEGORICAL_SHADER.source,
             &[("categorical surfaces", "categorical surfaces")],
             format,
             1,
@@ -317,7 +317,7 @@ impl CategoricalRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("categorical surfaces"),
-                source: wgpu::ShaderSource::Wgsl(CATEGORICAL_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(CATEGORICAL_SHADER.source.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(

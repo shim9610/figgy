@@ -47,10 +47,15 @@ To change shared shader code:
 | `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
 | `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, categorical, radar |
 
-The module lists are the `wgsl_module!` invocations next to each pipeline
+The module lists are the `assembled!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
-`gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. No module carries a copy of a
+`gpu_pick/shader.rs`, `vector.rs`, the bounded charts): one literal list per
+module gives both its source (`wgsl_module!` over the list) and its fragment
+names, and `shader_assembly::MODULES` carries both for every module. A test
+holds each source to its list, and another holds each exact pick module to
+the `common/` fragments of the draw module it measures (marker to scatter,
+line to line, marker-line to both, vector to the point vector), apart from
+`transform.wgsl` and `style.wgsl`. No module carries a copy of a
 fragment's function: `shader_consistency`'s duplicate guard lists only the
 per-variant interface functions the assembler chooses between.
 

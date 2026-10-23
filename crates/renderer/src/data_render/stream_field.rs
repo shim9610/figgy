@@ -1048,7 +1048,7 @@ mod tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
             },
         );
         let budget = Budget {
@@ -1304,7 +1304,7 @@ mod tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
             },
         );
         let ledger = Arc::new(GpuLedger::new());
