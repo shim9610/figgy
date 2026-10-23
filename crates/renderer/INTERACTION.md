@@ -656,11 +656,17 @@ step pieces (`DataLineStyleConfig.interpolation`); see the
 [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#area-fill-and-step-lines).
 Interaction contracts:
 
-- The fill is a property of the line, not a hit target. `pick_chart` and
-  `pick_chart_data` (`pick_point` and `pick_data` in the WASM wrapper) keep
-  resolving the line's samples; the picked-point ring and the
-  typed selection overlay are drawn after every fill and every body, so a fill
-  never covers a highlight. Selecting the series selects its fill.
+- The fill is a property of the line and picks as part of it. `pick_chart`
+  and `pick_chart_data` (`pick_point` and `pick_data` in the WASM wrapper)
+  hit a fill only where the cursor lies inside a trapezoid it paints
+  (distance zero), and resolve the hit to the line's samples: the filled
+  segment's nearer endpoint, by the stepped-path rule below. Every fill is
+  drawn before every series body, so a fill loses every tie to a stroke, a
+  marker or an error bar, and among fills the later series wins. A fill whose
+  colour has zero alpha paints nothing and does not pick. Streamed series
+  have no fill. The picked-point ring and the typed selection overlay are
+  drawn after every fill and every body, so a fill never covers a highlight.
+  Selecting the series selects its fill.
 - A pick on a stepped line walks the same axis-aligned pieces the line draws.
   The nearest piece wins and the result snaps to the nearer source index by
   position along the stepped path, so a hit on a riser still names one of the

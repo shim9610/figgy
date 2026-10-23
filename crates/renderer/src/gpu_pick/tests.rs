@@ -246,6 +246,8 @@ fn scatter_descriptor(
         line_interpolation: crate::data_config::LineInterpolation::Linear,
         line_style: crate::line::LineStylePreset::Solid,
         vector: None,
+        errorbar: None,
+        area: None,
     }
 }
 
@@ -348,44 +350,73 @@ impl PickSeriesMetadataSnapshot {
 }
 
 /// The per-series part of the exact variant follows the built slot: the
-/// module from the primitive flags, the dash walk only for a dashed line
-/// and the series' shape only without a style map. The query's bits are
-/// added per pick (`series_exact_variant`).
+/// module from the primitive flags, the dash walk only for a dashed line,
+/// the error-bar path only for a marker series with error bars, the fill
+/// path only for a line with a fill, and the series' shape only without a
+/// style map. The query's bits are added per pick (`series_exact_variant`).
 #[test]
 fn the_stored_exact_key_is_the_slots_module_dash_and_shape() {
-    use super::exact_variant::DASH;
+    use super::exact_variant::{AREA, DASH, ERRORBAR};
     let key = |shader, bits, shape| PickExactKey {
         shader,
         bits,
         shape,
     };
     let any = PickExactKey::ANY_SHAPE;
-    for (flags, dash_len, expected) in [
-        (FLAG_SCATTER, 0, key(PickShader::Marker, 0, 7)),
-        (FLAG_SCATTER, 4, key(PickShader::Marker, 0, 7)),
+    for (flags, dash_len, errorbar, area, expected) in [
+        (FLAG_SCATTER, 0, false, false, key(PickShader::Marker, 0, 7)),
+        (FLAG_SCATTER, 4, false, false, key(PickShader::Marker, 0, 7)),
         (
             FLAG_SCATTER | FLAG_STYLE_MAP,
             0,
+            false,
+            false,
             key(PickShader::Marker, 0, any),
         ),
-        (FLAG_LINE, 0, key(PickShader::Line, 0, any)),
-        (FLAG_LINE, 2, key(PickShader::Line, DASH, any)),
+        (FLAG_LINE, 0, false, false, key(PickShader::Line, 0, any)),
+        (FLAG_LINE, 2, false, false, key(PickShader::Line, DASH, any)),
         (
             FLAG_SCATTER | FLAG_LINE,
             2,
+            false,
+            false,
             key(PickShader::MarkerLine, DASH, 7),
         ),
         (
             FLAG_SCATTER | FLAG_LINE | FLAG_STYLE_MAP,
             0,
+            false,
+            false,
             key(PickShader::MarkerLine, 0, any),
         ),
-        (FLAG_SCATTER | FLAG_VECTOR, 0, key(PickShader::Vector, 0, 7)),
+        (
+            FLAG_SCATTER | FLAG_VECTOR,
+            0,
+            false,
+            false,
+            key(PickShader::Vector, 0, 7),
+        ),
+        (
+            FLAG_SCATTER,
+            0,
+            true,
+            false,
+            key(PickShader::Marker, ERRORBAR, 7),
+        ),
+        (FLAG_SCATTER, 0, false, true, key(PickShader::Marker, 0, 7)),
+        (FLAG_LINE, 0, true, true, key(PickShader::Line, AREA, any)),
+        (
+            FLAG_SCATTER | FLAG_LINE,
+            3,
+            true,
+            true,
+            key(PickShader::MarkerLine, DASH | ERRORBAR | AREA, 7),
+        ),
     ] {
         assert_eq!(
-            series_exact_key(flags, dash_len, 7),
+            series_exact_key(flags, dash_len, 7, errorbar, area),
             expected,
-            "flags {flags:#x}, dash length {dash_len}"
+            "flags {flags:#x}, dash length {dash_len}, errorbar {errorbar}, area {area}"
         );
     }
 }
@@ -555,6 +586,8 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
         line_interpolation: crate::data_config::LineInterpolation::Linear,
         line_style: crate::line::LineStylePreset::Solid,
         vector: None,
+        errorbar: None,
+        area: None,
     };
     for logarithmic in [false, true] {
         let origin = if logarithmic {
@@ -784,6 +817,8 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             line_interpolation: crate::data_config::LineInterpolation::Linear,
             line_style: crate::line::LineStylePreset::Solid,
             vector: None,
+            errorbar: None,
+            area: None,
         };
         let query = test_query(cursor);
         let mut exact = PickExactPipelines::default();
@@ -1195,6 +1230,8 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1305,6 +1342,8 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1405,6 +1444,8 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1436,6 +1477,8 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1452,6 +1495,8 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1620,6 +1665,8 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1691,6 +1738,8 @@ fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1755,6 +1804,8 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1839,6 +1890,8 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -1948,6 +2001,8 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -2078,6 +2133,8 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
                         line_interpolation: mode,
                         line_style: crate::line::LineStylePreset::Solid,
                         vector: None,
+                        errorbar: None,
+                        area: None,
                     },
                 )
                 .unwrap();
@@ -2274,6 +2331,8 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -2312,6 +2371,8 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -2372,6 +2433,8 @@ fn exact_gpu_f64_residual_selects_point_index() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -2986,6 +3049,8 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
                 line_interpolation: crate::data_config::LineInterpolation::Linear,
                 line_style: crate::line::LineStylePreset::Solid,
                 vector: None,
+                errorbar: None,
+                area: None,
             },
         )
         .unwrap();
@@ -3283,9 +3348,10 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
 }
 
 /// Each exact pick module splices the same shared `common/` fragments as the
-/// draw module whose primitives it measures, so the pick projects, validates
-/// and shapes a point with the draw's code: Marker the scatter's, Line the
-/// line's, MarkerLine both, Vector the point vector's. Only `transform.wgsl`
+/// draw modules whose primitives it measures, so the pick projects, validates
+/// and shapes a point with the draw's code: Marker the scatter's and the
+/// error bars', Line the line's (its fill included), MarkerLine all three,
+/// Vector the point vector's. Only `transform.wgsl`
 /// (its uniform takes the binding the pick's pool holds) and `style.wgsl` (the
 /// pick reads its own style rows) are the draw's alone.
 #[test]
@@ -3310,9 +3376,9 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
         common(assembled.fragments)
     };
     for (shader, draws) in [
-        (PickShader::Marker, &["scatter"][..]),
+        (PickShader::Marker, &["scatter", "errorbar"][..]),
         (PickShader::Line, &["line"][..]),
-        (PickShader::MarkerLine, &["scatter", "line"][..]),
+        (PickShader::MarkerLine, &["scatter", "line", "errorbar"][..]),
         (PickShader::Vector, &["vector_points"][..]),
     ] {
         let expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
@@ -3322,6 +3388,55 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
             expected,
             "{shader:?} vs {draws:?}"
         );
+    }
+}
+
+/// `validate_device_limits` checks the exact layout: seven storage buffers
+/// in three groups. Every binding `pick_exact_candidates` reaches in any
+/// exact module (at the default variant, which carries every path) is an
+/// entry of that layout of the same kind, so the check covers the pass.
+#[test]
+fn device_limit_check_covers_the_exact_pass_bindings() {
+    use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+    assert_eq!(exact_layout_storage_buffers(), 7);
+    assert_eq!(EXACT_LAYOUT.len(), 3);
+    for shader in PickShader::EXACT {
+        let source = shader.source();
+        let module = wgpu::naga::front::wgsl::parse_str(source).unwrap();
+        let info = Validator::new(ValidationFlags::all(), Capabilities::all())
+            .validate(&module)
+            .unwrap();
+        let (index, _) = module
+            .entry_points
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| entry.name == "pick_exact_candidates")
+            .unwrap_or_else(|| panic!("{shader:?}: no exact entry"));
+        let uses = info.get_entry_point(index);
+        for (handle, global) in module.global_variables.iter() {
+            let Some(binding) = global.binding.as_ref() else {
+                continue;
+            };
+            if uses[handle].is_empty() {
+                continue;
+            }
+            let entry = EXACT_LAYOUT
+                .get(binding.group as usize)
+                .and_then(|group| group.iter().find(|entry| entry.binding == binding.binding))
+                .unwrap_or_else(|| panic!("{shader:?}: {binding:?} is not in the exact layout"));
+            let storage = matches!(global.space, wgpu::naga::AddressSpace::Storage { .. });
+            assert_eq!(
+                matches!(
+                    entry.ty,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { .. },
+                        ..
+                    }
+                ),
+                storage,
+                "{shader:?}: {binding:?}"
+            );
+        }
     }
 }
 

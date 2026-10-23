@@ -2507,7 +2507,7 @@
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 114.0
+            "PICK_VARIANT": 126.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2515,13 +2515,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "27cb208372605f10"
+      "source": "51264f75c73621f3"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 114.0
+            "PICK_VARIANT": 126.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2529,13 +2529,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "4a8cada2a7695015"
+      "source": "7049814f3406bde4"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 114.0
+            "PICK_VARIANT": 126.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2543,13 +2543,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "81c28cb62c46a242"
+      "source": "d4bf866d711dad48"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 114.0
+            "PICK_VARIANT": 126.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2557,7 +2557,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "b75989073d0cb6da"
+      "source": "dd251bdb718d7bc4"
     },
     {
       "descriptor": {
@@ -2797,7 +2797,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "73d1bc5313158ee5"
+      "source": "4d3630f39f1b7bc1"
     },
     {
       "descriptor": {
@@ -2809,7 +2809,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "73d1bc5313158ee5"
+      "source": "4d3630f39f1b7bc1"
     },
     {
       "descriptor": {
@@ -2833,7 +2833,7 @@
         "layout": 41
       },
       "kind": "compute",
-      "source": "73d1bc5313158ee5"
+      "source": "4d3630f39f1b7bc1"
     },
     {
       "descriptor": {
@@ -3238,7 +3238,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -3351,7 +3351,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -3648,7 +3648,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -3761,7 +3761,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -4402,7 +4402,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -4515,7 +4515,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -5024,7 +5024,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -5137,7 +5137,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -5250,7 +5250,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -5363,7 +5363,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -5660,7 +5660,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -5773,7 +5773,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -5886,7 +5886,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -5999,7 +5999,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -7187,7 +7187,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -7311,7 +7311,7 @@
         }
       },
       "kind": "render",
-      "source": "8e0b4b5f4d490786"
+      "source": "20a090d99af40733"
     },
     {
       "descriptor": {
@@ -8196,7 +8196,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -8309,7 +8309,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -8515,7 +8515,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {
@@ -8561,7 +8561,7 @@
         }
       },
       "kind": "render",
-      "source": "2dd30d08ab81f1f2"
+      "source": "7ea8acb9011c263f"
     },
     {
       "descriptor": {

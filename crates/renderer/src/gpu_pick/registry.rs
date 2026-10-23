@@ -4,12 +4,19 @@
 use super::*;
 
 /// The part of a series' exact variant its build fixes, from the built
-/// slot's `flags`, dash length and base shape: the module for its primitive
-/// class, the dash walk for a dashed line, and the marker shape when every
+/// slot's `flags`, dash length and base shape and whether it carries error
+/// bars and a fill: the module for its primitive class, the dash walk for a
+/// dashed line, the error-bar and fill paths, and the marker shape when every
 /// point has the series' shape. `prepare_series_buffer` stores it on the
 /// slot (`PickSeriesGpu::exact_key`); [`series_exact_variant`] adds the
 /// query's bits.
-pub(super) fn series_exact_key(flags: u32, line_dash_len: u32, base_shape_id: u32) -> PickExactKey {
+pub(super) fn series_exact_key(
+    flags: u32,
+    line_dash_len: u32,
+    base_shape_id: u32,
+    errorbar: bool,
+    area: bool,
+) -> PickExactKey {
     let scatter = flags & FLAG_SCATTER != 0;
     let line = flags & FLAG_LINE != 0;
     let shader = if flags & FLAG_VECTOR != 0 {
@@ -21,11 +28,17 @@ pub(super) fn series_exact_key(flags: u32, line_dash_len: u32, base_shape_id: u3
             _ => PickShader::Marker,
         }
     };
-    let bits = if line && line_dash_len > 0 {
+    let mut bits = if line && line_dash_len > 0 {
         exact_variant::DASH
     } else {
         0
     };
+    if scatter && errorbar {
+        bits |= exact_variant::ERRORBAR;
+    }
+    if line && area {
+        bits |= exact_variant::AREA;
+    }
     // Without a style map every point has the series' shape.
     let shape = if scatter && flags & FLAG_STYLE_MAP == 0 {
         base_shape_id
@@ -62,11 +75,15 @@ pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery)
 
 /// The exact variant a streamed chunk of `series` scans with: the resident
 /// series' own variant, so a streamed pick answers bit for bit what the
-/// resident pick does, without the dash walk. A stream binds no arc prefix,
-/// so with or without that walk its dash gaps pick like its dashes.
+/// resident pick does, without the dash walk, the error bars and the fill.
+/// A stream binds no arc prefix, so with or without that walk its dash gaps
+/// pick like its dashes; streaming is not extended (rule 8), so a streamed
+/// chunk carries neither error bars nor a fill (`prepare_series_buffer`
+/// builds them for resident series only) and its variant leaves their paths
+/// out.
 pub(super) fn stream_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
     let mut key = series_exact_variant(series, query);
-    key.bits &= !exact_variant::DASH;
+    key.bits &= !(exact_variant::DASH | exact_variant::ERRORBAR | exact_variant::AREA);
     key
 }
 

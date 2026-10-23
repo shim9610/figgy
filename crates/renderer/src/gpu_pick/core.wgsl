@@ -42,6 +42,8 @@ const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 // folds the others away at pipeline creation. The default carries every
 // path, which is what a streamed pick uses.
 const PICK_VARIANT_STYLED_MARKER: u32 = 2u; // sketch, planet and star markers (§5.7)
+const PICK_VARIANT_ERRORBAR: u32 = 4u;      // error-bar stems and caps (§5.11)
+const PICK_VARIANT_AREA: u32 = 8u;          // a line's area fill (§2.2)
 const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
@@ -118,6 +120,28 @@ struct PickQueryParams {
     vector_px: vec4<f32>,
     // (minimum length, 0, 0, 0), canvas pixels.
     vector_min: vec4<f32>,
+    // The error bars drawn with the markers (`gpu_pick/errorbar.wgsl`): (bar
+    // count — the shortest of the six columns the error-bar shader reads,
+    // zero without error bars —, the `ERRORBAR_HAS_*` directions,
+    // error-bar style-index f32-lane base, style-index logical length; zero
+    // without an index column).
+    errorbar: vec4<u32>,
+    // The error columns' f32-lane bases: (y lower, y upper, x lower, x upper).
+    errorbar_lanes: vec4<u32>,
+    // The error-bar style rows, after the marker rows in `pick_style_slots`
+    // and `pick_style_overrides`: (first slot row, slot count, first
+    // override row, override count).
+    errorbar_rows: vec4<u32>,
+    // (stem width, cap half length, cap width, 1 when the base colour
+    // paints else 0), logical pixels; the display scale is applied with the
+    // other sizes.
+    errorbar_px: vec4<f32>,
+    // The line's area fill (`gpu_pick/area.wgsl`): (second y column's f32-lane
+    // base, filled segment count — zero without a fill —, 1 when it fills to
+    // that series else to the baseline, 0).
+    area: vec4<u32>,
+    // (baseline hi, baseline lo, 0, 0): `Style.dash[1].xy` of the fill.
+    area_baseline: vec4<f32>,
 };
 
 struct PickScatterStyleSlot {
@@ -141,7 +165,7 @@ struct PickCandidate {
     valid: u32,
     series_order: u32,
     point_index: u32,
-    primitive_kind: u32, // scatter=0, line=1 (CPU traversal order)
+    primitive_kind: u32, // `PICK_KIND_*`
     primitive_index: u32,
     distance_sq: f32,
     distance_px: f32,
@@ -220,16 +244,20 @@ fn pick_polar() -> bool {
     return pick_variant(PICK_VARIANT_POLAR) && pick_query_params.transform.polar_angle.x > 0.5;
 }
 
+// NDC into canvas pixels (y down) on this query's chart rectangle.
+fn pick_ndc_to_canvas(ndc: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
+        pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
+        pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
+    );
+}
+
 // The draw's projection in canvas pixels. A polar sample goes through the
 // draw's NDC (`data_to_ndc`); a rectangular one maps each axis' panel `t`
 // straight to pixels, which keeps the precision `t * 2 - 1` would round off.
 fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
     if pick_polar() {
-        let ndc = data_to_ndc(pick_query_params.transform, x, y);
-        return vec2<f32>(
-            pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
-            pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
-        );
+        return pick_ndc_to_canvas(data_to_ndc(pick_query_params.transform, x, y));
     }
     return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
 }
@@ -369,6 +397,15 @@ fn pick_flip(v: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(v.x, -v.y);
 }
 
+// `PickCandidate.primitive_kind`, numbered so that within one series a lower
+// kind is painted over a higher one: markers over the line over the error
+// bars (`issue_series_data`). Fills are painted before every series' body
+// (`issue_series_fill`).
+const PICK_KIND_MARKER: u32 = 0u;
+const PICK_KIND_LINE: u32 = 1u;
+const PICK_KIND_ERRORBAR: u32 = 2u;
+const PICK_KIND_FILL: u32 = 3u;
+
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
     return PickCandidate(
         0u,
@@ -392,10 +429,18 @@ fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) 
     if candidate.distance_sq != incumbent.distance_sq {
         return candidate.distance_sq < incumbent.distance_sq;
     }
-    // An exact tie goes to whatever is painted on top. Series paint in
-    // order, so a later series covers an earlier one; within a series the
-    // markers paint over the line; and instances paint in index order, so a
-    // higher marker or segment index covers a lower one.
+    // An exact tie goes to whatever is painted on top. Every fill paints
+    // before every series' body, so a fill loses a tie to anything else;
+    // series paint in order, so a later series covers an earlier one (a
+    // later fill an earlier fill too); within a series the markers paint
+    // over the line and the line over the error bars; and instances paint
+    // in index order, so a higher marker, bar or segment index covers a
+    // lower one.
+    let candidate_fill = candidate.primitive_kind == PICK_KIND_FILL;
+    let incumbent_fill = incumbent.primitive_kind == PICK_KIND_FILL;
+    if candidate_fill != incumbent_fill {
+        return incumbent_fill;
+    }
     if candidate.series_order != incumbent.series_order {
         return candidate.series_order > incumbent.series_order;
     }

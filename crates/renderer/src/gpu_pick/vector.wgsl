@@ -70,7 +70,7 @@ fn pick_vector_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCa
         1u,
         series_order,
         pick_source_row(point_index),
-        0u,
+        PICK_KIND_MARKER,
         pick_source_row(point_index),
         distance_sq,
         hit_distance,

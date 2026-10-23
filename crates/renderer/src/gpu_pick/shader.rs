@@ -10,12 +10,16 @@ pub(super) const INIT_SCOPE: &str = "renderer.gpu_pick";
 /// optional paths one `pick_exact_candidates` pipeline carries.
 pub(crate) mod exact_variant {
     pub(crate) const STYLED_MARKER: u32 = 2;
+    /// Error-bar stems and caps with the markers (`gpu_pick/errorbar.wgsl`).
+    pub(crate) const ERRORBAR: u32 = 4;
+    /// A line's area fill (`gpu_pick/area.wgsl`).
+    pub(crate) const AREA: u32 = 8;
     pub(crate) const DASH: u32 = 16;
     pub(crate) const STYLED_LINE: u32 = 32;
     pub(crate) const POLAR: u32 = 64;
     /// Every path: the shader's default.
     #[cfg(test)]
-    pub(crate) const ALL: u32 = STYLED_MARKER | DASH | STYLED_LINE | POLAR;
+    pub(crate) const ALL: u32 = STYLED_MARKER | ERRORBAR | AREA | DASH | STYLED_LINE | POLAR;
     /// The override's name in `gpu_pick/core.wgsl`.
     pub(crate) const CONSTANT: &str = "PICK_VARIANT";
 }
@@ -60,9 +64,12 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
+            "data_render/common/grid_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
+            "data_render/common/errorbar_segment.wgsl",
             "data_render/common/marker.wgsl",
             "gpu_pick/marker.wgsl",
+            "gpu_pick/errorbar.wgsl",
             "gpu_pick/no_line.wgsl",
             "gpu_pick/exact_entry.wgsl",
         ),
@@ -74,12 +81,17 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
+            "data_render/common/grid_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
+            "data_render/common/errorbar_segment.wgsl",
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
+            "data_render/common/area_piece.wgsl",
             "data_render/common/marker.wgsl",
             "gpu_pick/marker.wgsl",
+            "gpu_pick/errorbar.wgsl",
             "gpu_pick/line.wgsl",
+            "gpu_pick/area.wgsl",
             "gpu_pick/exact_entry.wgsl",
         ),
     ),
@@ -92,8 +104,10 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/sketch_noise.wgsl",
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
+            "data_render/common/area_piece.wgsl",
             "gpu_pick/no_scatter.wgsl",
             "gpu_pick/line.wgsl",
+            "gpu_pick/area.wgsl",
             "gpu_pick/exact_entry.wgsl",
         ),
     ),
@@ -344,23 +358,14 @@ pub(super) fn create_pipeline_bundle_observed(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick query data bgl"),
-            entries: &[
-                storage_entry(0, true),
-                storage_entry(1, false),
-                storage_entry(2, false),
-            ],
+            entries: &QUERY_DATA_ENTRIES,
         },
     );
     let query_work_bgl = crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick query work bgl"),
-            entries: &[
-                uniform_entry(0),
-                storage_entry(1, true),
-                storage_entry(2, true),
-                storage_entry(3, false),
-            ],
+            entries: &QUERY_WORK_ENTRIES,
         },
     );
     let reduce_bgl = crate::gpu_compile::bind_group_layout(
@@ -383,7 +388,7 @@ pub(super) fn create_pipeline_bundle_observed(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick arc prefix bgl"),
-            entries: &[storage_entry(0, true)],
+            entries: &ARC_ENTRIES,
         },
     );
     let exact_layout = crate::gpu_compile::pipeline_layout(
@@ -541,23 +546,14 @@ pub(super) async fn create_pipeline_bundle_observed_async(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick query data bgl"),
-            entries: &[
-                storage_entry(0, true),
-                storage_entry(1, false),
-                storage_entry(2, false),
-            ],
+            entries: &QUERY_DATA_ENTRIES,
         },
     );
     let query_work_bgl = crate::gpu_compile::bind_group_layout(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick query work bgl"),
-            entries: &[
-                uniform_entry(0),
-                storage_entry(1, true),
-                storage_entry(2, true),
-                storage_entry(3, false),
-            ],
+            entries: &QUERY_WORK_ENTRIES,
         },
     );
     let reduce_bgl = crate::gpu_compile::bind_group_layout(
@@ -580,7 +576,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
         &device,
         &wgpu::BindGroupLayoutDescriptor {
             label: Some("figgy GPU pick arc prefix bgl"),
-            entries: &[storage_entry(0, true)],
+            entries: &ARC_ENTRIES,
         },
     );
     let exact_layout = crate::gpu_compile::pipeline_layout(
@@ -663,6 +659,46 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     }))
 }
 
+/// Group 0 of the gate and exact passes: the pool, the gate masks and the
+/// workgroup candidates.
+pub(super) const QUERY_DATA_ENTRIES: [wgpu::BindGroupLayoutEntry; 3] = [
+    storage_entry(0, true),
+    storage_entry(1, false),
+    storage_entry(2, false),
+];
+/// Group 1: the query parameters, the style slots and overrides and the
+/// series result.
+pub(super) const QUERY_WORK_ENTRIES: [wgpu::BindGroupLayoutEntry; 4] = [
+    uniform_entry(0),
+    storage_entry(1, true),
+    storage_entry(2, true),
+    storage_entry(3, false),
+];
+/// Group 2 of the exact pass: the arc prefix.
+pub(super) const ARC_ENTRIES: [wgpu::BindGroupLayoutEntry; 1] = [storage_entry(0, true)];
+/// The exact pass's layout (`exact_layout`), in group order: the widest
+/// layout a pick pipeline uses, so the one the device limits are checked
+/// against.
+pub(super) const EXACT_LAYOUT: [&[wgpu::BindGroupLayoutEntry]; 3] =
+    [&QUERY_DATA_ENTRIES, &QUERY_WORK_ENTRIES, &ARC_ENTRIES];
+
+/// The storage buffers the exact layout binds per shader stage.
+pub(super) fn exact_layout_storage_buffers() -> u32 {
+    EXACT_LAYOUT
+        .iter()
+        .flat_map(|group| group.iter())
+        .filter(|entry| {
+            matches!(
+                entry.ty,
+                wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Storage { .. },
+                    ..
+                }
+            )
+        })
+        .count() as u32
+}
+
 pub(super) fn validate_device_limits(device: &wgpu::Device) -> Result<(), GpuPickError> {
     let limits = device.limits();
     if limits.max_compute_workgroup_size_x < GPU_PICK_WORKGROUP_SIZE {
@@ -679,17 +715,20 @@ pub(super) fn validate_device_limits(device: &wgpu::Device) -> Result<(), GpuPic
             limit: u64::from(limits.max_compute_invocations_per_workgroup),
         });
     }
-    if limits.max_bind_groups < 2 {
+    // The exact layout is the widest a pick pipeline binds.
+    let groups = EXACT_LAYOUT.len() as u32;
+    if limits.max_bind_groups < groups {
         return Err(GpuPickError::DeviceLimit {
             resource: "max_bind_groups",
-            requested: 2,
+            requested: u64::from(groups),
             limit: u64::from(limits.max_bind_groups),
         });
     }
-    if limits.max_storage_buffers_per_shader_stage < 6 {
+    let storage_buffers = exact_layout_storage_buffers();
+    if limits.max_storage_buffers_per_shader_stage < storage_buffers {
         return Err(GpuPickError::DeviceLimit {
             resource: "max_storage_buffers_per_shader_stage",
-            requested: 6,
+            requested: u64::from(storage_buffers),
             limit: u64::from(limits.max_storage_buffers_per_shader_stage),
         });
     }

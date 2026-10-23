@@ -488,8 +488,9 @@ impl FiggyChart {
 
     /// Pick the nearest visible data primitive to canvas pixel `(x, y)`.
     /// Scatter hits use the visible marker size, including per-point style
-    /// mapping; line strokes snap to the nearest endpoint data point on
-    /// the hit segment. Errorbar stems/caps are not pick targets.
+    /// mapping; error-bar stems and caps name their point; line strokes and
+    /// the inside of a line's fill snap to the nearest endpoint data point on
+    /// the hit segment.
     /// Resolves to a JSON string
     /// `{ source_id, series_id, point_index, distance_px }`, or
     /// `undefined` when no visible primitive is within `max_distance_px`.

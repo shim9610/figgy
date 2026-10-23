@@ -559,6 +559,69 @@ fn every_marker_shape_picks_where_it_is_drawn() {
     }
 }
 
+/// G10: a marker drawn at radius zero still paints (an outline is a dot of
+/// the stroke's half width, a filled shape its anti-aliased point) and picks
+/// where it paints, whichever way the radius reaches zero: the series size,
+/// a style-table slot or a size map's `min_px`. Every shape, at 1x and 2x;
+/// each case paints at least one pixel and every painted pixel picks the
+/// series.
+#[test]
+fn zero_size_markers_pick_their_drawn_dot() {
+    use renderer::data_config::{DataScatterPointStyleConfig, PointSizeMap, SizeScale};
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![5.0], vec![5.0]);
+    renderer
+        .add_columns(&[
+            ("style", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+            ("size", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    for shape in ALL_SHAPES {
+        let size_zero = scatter("dot", shape.clone(), 0.0, RED);
+        let mut slot_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let mut map_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let DataRenderType::Scatter { scatter: slot } = &mut slot_zero.render_type else {
+            unreachable!()
+        };
+        slot.point_style_index_column = Some("style".into());
+        slot.point_style_table = Some(vec![DataScatterPointStyleConfig {
+            point_color: None,
+            point_shape: None,
+            point_size: Some(0.0),
+        }]);
+        let DataRenderType::Scatter { scatter: map } = &mut map_zero.render_type else {
+            unreachable!()
+        };
+        map.point_size_map = Some(PointSizeMap {
+            column: "size".into(),
+            domain_min: 0.0,
+            domain_max: 1.0,
+            min_px: 0.0,
+            max_px: 9.0,
+            scale: SizeScale::Radius,
+        });
+        for (series, how) in [
+            (size_zero, "series size 0"),
+            (slot_zero, "style slot radius 0"),
+            (map_zero, "size map min_px 0"),
+        ] {
+            for scale in [1.0, 2.0] {
+                let series = [series.clone()];
+                let painted = assert_painted_pixels_pick(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "dot",
+                    scale,
+                    &format!("{shape:?} {how}"),
+                );
+                assert!(painted >= 1, "{shape:?} {how} at {scale}x painted nothing");
+            }
+        }
+    }
+}
+
 /// G12 across colours: two overlapping markers of one series, the painted
 /// colour under the cursor names the index the picker answers.
 #[test]
@@ -2305,4 +2368,467 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
         }
     }
     assert_eq!(checked, 3 * magnitudes.len() * fractions.len());
+}
+
+/// An error-bar style of stem width `width` with caps of half size `cap`
+/// and width `cap_width` in `color`, without per-point styles.
+pub fn errorbar_style(
+    color: Color,
+    width: f32,
+    cap: f32,
+    cap_width: f32,
+) -> renderer::data_config::DataErrorBarStyleConfig {
+    renderer::data_config::DataErrorBarStyleConfig {
+        error_bar_color: color,
+        error_bar_width: width,
+        error_bar_cap_size: cap,
+        cap_width,
+        error_bar_style_table: None,
+        error_bar_style_index_column: None,
+        error_bar_style_overrides: None,
+    }
+}
+
+/// A marker series `id` on the x / y columns whose error bars are `kind`:
+/// "x", "y", "xy" (symmetric, `ex` / `ey`) or "asym" (Y, `ey_lo` / `ey_hi`).
+pub fn errorbar_series(
+    id: &str,
+    kind: &str,
+    err_style: renderer::data_config::DataErrorBarStyleConfig,
+) -> SeriesConfig {
+    use renderer::data_config::ErrorRef;
+    let DataRenderType::Scatter { scatter } =
+        scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
+    else {
+        unreachable!()
+    };
+    let symmetric = |column: &str| ErrorRef::Symmetric {
+        column: column.into(),
+    };
+    let render_type = match kind {
+        "x" => DataRenderType::ScatterErrorbarX {
+            scatter,
+            err_x: symmetric("ex"),
+            err_style,
+        },
+        "y" => DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: symmetric("ey"),
+            err_style,
+        },
+        "xy" => DataRenderType::ScatterErrorbarXY {
+            scatter,
+            err_x: symmetric("ex"),
+            err_y: symmetric("ey"),
+            err_style,
+        },
+        "asym" => DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: ErrorRef::Asymmetric {
+                lower: "ey_lo".into(),
+                upper: "ey_hi".into(),
+            },
+            err_style,
+        },
+        other => panic!("no error-bar kind {other}"),
+    };
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type,
+    }
+}
+
+/// Three points with every error column the error-bar cases read.
+fn upload_errorbar_columns(renderer: &mut Renderer) {
+    upload_xy(renderer, vec![3.0, 5.0, 7.0], vec![4.0, 5.5, 6.5]);
+    renderer
+        .add_columns(&[
+            (
+                "ex",
+                &col(vec![0.8, 1.2, 0.6]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey",
+                &col(vec![1.5, 2.0, 1.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey_lo",
+                &col(vec![0.5, 2.5, 0.3]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey_hi",
+                &col(vec![2.0, 0.4, 1.8]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "bar_style",
+                &col(vec![1.0, 0.0, 1.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+}
+
+/// G10: an error bar picks its stems and caps exactly where the error-bar
+/// shader draws them, with the shared quads (`common/errorbar_segment.wgsl`):
+/// X, Y and XY bars, asymmetric errors, per-point widths of the precise
+/// style map, a log axis, Precise and Sketch (the hashed corner wobble), at
+/// 1x and 2x. A Milkyway jet picks within its beam and knot envelope: every
+/// painted pixel picks and nothing picks past the envelope. A transparent
+/// bar draws nothing and picks nothing.
+#[test]
+fn error_bars_pick_where_their_stems_and_caps_are_drawn() {
+    use renderer::config::{AxisScale, DrawStyle, MilkywayOptions, SketchOptions};
+    use renderer::data_config::{DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride};
+    let mut renderer = renderer();
+    upload_errorbar_columns(&mut renderer);
+    let plain = errorbar_style(RED, 2.0, 5.0, 1.5);
+    // Point 0 and 2 take slot 1, point 1 slot 0; point 2 also has an
+    // override of its cap.
+    let mut mapped = errorbar_style(RED, 1.5, 4.0, 1.0);
+    mapped.error_bar_style_index_column = Some("bar_style".into());
+    mapped.error_bar_style_table = Some(vec![
+        DataErrorBarPointStyleConfig {
+            error_bar_color: None,
+            error_bar_width: Some(4.0),
+            error_bar_cap_size: None,
+            cap_width: Some(3.0),
+        },
+        DataErrorBarPointStyleConfig {
+            error_bar_color: Some(BLUE),
+            error_bar_width: Some(1.0),
+            error_bar_cap_size: Some(7.0),
+            cap_width: None,
+        },
+    ]);
+    mapped.error_bar_style_overrides = Some(vec![DataErrorBarPointStyleOverride {
+        index: 2,
+        style: DataErrorBarPointStyleConfig {
+            error_bar_color: None,
+            error_bar_width: None,
+            error_bar_cap_size: Some(2.5),
+            cap_width: Some(2.0),
+        },
+    }]);
+    let precise = bare_chart();
+    let mut log = bare_chart();
+    log.config_mut().left_y.scale = AxisScale::Logarithmic;
+    log.set_y_range(1.0, 10.0);
+    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+        amplitude_px: 3.0,
+        wavelength_px: 12.0,
+        seed: 11,
+    }));
+    for scale in [1.0, 2.0] {
+        for (chart, style, what) in [
+            (&precise, &plain, "precise"),
+            (&precise, &mapped, "precise style map"),
+            (&log, &plain, "log y"),
+            (&sketch, &plain, "sketch"),
+        ] {
+            for kind in ["x", "y", "xy", "asym"] {
+                let series = [errorbar_series("bars", kind, style.clone())];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "bars",
+                    scale,
+                    None,
+                    &format!("{what} {kind} bars"),
+                    MSAA_EDGE,
+                );
+                assert!(painted > 40, "{what} {kind} at {scale}x: {painted}");
+            }
+        }
+
+        let options = MilkywayOptions::default();
+        let milkyway = styled_chart(DrawStyle::Milkyway(options));
+        let series = [errorbar_series("bars", "xy", plain.clone())];
+        let painted =
+            assert_painted_pixels_pick(&mut renderer, &milkyway, &series, "bars", scale, "jets");
+        assert!(painted > 100, "jets at {scale}x: {painted}");
+        // The envelope: a beam of 4 times the half stem (at least 1.2 px)
+        // either side of the stem, a knot disc of 1.7 times the cap (at
+        // least 3 px) around each bound. Point 1's Y stem runs from y 3.5
+        // to 7.5 at x 5.
+        let s = f64::from(scale);
+        let beam = (2.0 * s * 0.5).max(1.2) * 4.0;
+        let knot = (5.0 * s).max(3.0) * 1.7;
+        let (cx, cy) = data_to_px(&milkyway, 5.0, 6.5, scale);
+        let (_, top) = data_to_px(&milkyway, 5.0, 7.5, scale);
+        assert_nothing_picks_at(
+            &mut renderer,
+            &milkyway,
+            &series,
+            "bars",
+            scale,
+            &[
+                (cx - beam - 2.0, cy),
+                (cx + beam + 2.0, cy),
+                (cx, top - knot - 2.0),
+            ],
+            "beyond a jet's envelope",
+        );
+
+        // A transparent bar draws nothing: along point 1's Y stem, away
+        // from its marker, nothing picks.
+        let mut clear = plain.clone();
+        clear.error_bar_color = Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        let series = [errorbar_series("bars", "y", clear)];
+        let (x, y) = data_to_px(&precise, 5.0, 6.8, scale);
+        assert_nothing_picks_at(
+            &mut renderer,
+            &precise,
+            &series,
+            "bars",
+            scale,
+            &[(x, y)],
+            "transparent bar",
+        );
+    }
+}
+
+/// A line series `id` on the x / y columns filled by `fill` in opaque
+/// green, with a 1.5 px stroke.
+pub fn filled_line(
+    id: &str,
+    fill: Option<renderer::data_config::LineFill>,
+    interpolation: renderer::data_config::LineInterpolation,
+    fill_color: Color,
+) -> SeriesConfig {
+    let mut series = line(
+        id,
+        1.5,
+        renderer::line::LineStylePreset::Solid,
+        interpolation,
+    );
+    let DataRenderType::Line { line } = &mut series.render_type else {
+        unreachable!()
+    };
+    line.fill = fill;
+    line.fill_color = Some(fill_color);
+    series
+}
+
+const GREEN: Color = Color {
+    r: 0.0,
+    g: 0.6,
+    b: 0.0,
+    a: 1.0,
+};
+
+/// A fill has no anti-aliasing: its trapezoids are covered by the export's
+/// multisampling only, and the fragment at the pixel centre colours every
+/// covered sample. Along a straight edge a pixel whose centre lies outside
+/// paints at most two of four samples (ink 128 for these opaque fills) and
+/// one whose centre lies inside at least two, so a zero-distance pick must
+/// find half the ink. At a corner of the region three samples can cover a
+/// pixel whose centre is outside (a polar fill's base polygon), so only a
+/// pixel covered by all four samples must pick.
+pub const FILL_EDGE: Tolerance = Tolerance {
+    painted: 192,
+    fringe: 2.0,
+    zero_ink: 96,
+    skip_near: None,
+};
+
+/// [`FILL_EDGE`] for a fill reaching another series: that series' stroke is
+/// drawn over the fill's lower edge, so a pixel there is partly the
+/// stroke's. Where the stroke is a rounding step out of reach the fill picks
+/// it at zero distance, with the ink the stroke leaves visible.
+pub const FILL_UNDER_STROKE: Tolerance = Tolerance {
+    painted: 192,
+    fringe: 2.0,
+    zero_ink: 40,
+    skip_near: None,
+};
+
+/// G10: a line's area fill picks exactly where its trapezoids paint
+/// (`common/area_piece.wgsl`), at distance zero: to a baseline, to another
+/// series, in every step mode and on a polar chart, at 1x and 2x. A
+/// transparent fill paints nothing and picks nothing.
+#[test]
+fn area_fills_pick_where_they_paint() {
+    use renderer::data_config::{LineFill, LineInterpolation};
+    let mut renderer = renderer();
+    upload_xy(
+        &mut renderer,
+        vec![2.0, 4.0, 5.5, 7.5],
+        vec![5.0, 7.0, 4.0, 6.5],
+    );
+    renderer
+        .add_columns(&[
+            (
+                "y2",
+                &col(vec![2.0, 3.0, 1.5, 2.5]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "angle",
+                &col(vec![20.0, 110.0, 200.0, 320.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "radius",
+                &col(vec![0.6, 0.9, 0.5, 0.8]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    // A stroke edge on a pixel centre would leave the tie with the fill
+    // there to rounding: 1.25 px keeps the edges off the centres at 1x and
+    // 2x.
+    let mut lower = line(
+        "lower",
+        1.25,
+        renderer::line::LineStylePreset::Solid,
+        LineInterpolation::Linear,
+    );
+    lower.y_column = "y2".into();
+    let chart = bare_chart();
+    for scale in [1.0, 2.0] {
+        for interpolation in [
+            LineInterpolation::Linear,
+            LineInterpolation::StepPre,
+            LineInterpolation::StepPost,
+            LineInterpolation::StepMid,
+        ] {
+            for (fill, what) in [
+                (LineFill::ToBaseline(1.0), "baseline"),
+                (LineFill::ToSeries("lower".into()), "to series"),
+            ] {
+                let mut lower = lower.clone();
+                let DataRenderType::Line { line } = &mut lower.render_type else {
+                    unreachable!()
+                };
+                line.interpolation = interpolation;
+                // The second series only where the fill reaches it.
+                let to_series = matches!(fill, LineFill::ToSeries(_));
+                let mut series = vec![filled_line("area", Some(fill), interpolation, GREEN)];
+                if to_series {
+                    series.push(lower);
+                }
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "area",
+                    scale,
+                    None,
+                    &format!("{what} {interpolation:?} fill"),
+                    if to_series {
+                        FILL_UNDER_STROKE
+                    } else {
+                        FILL_EDGE
+                    },
+                );
+                assert!(
+                    painted > 2000,
+                    "{what} {interpolation:?} at {scale}x: {painted}"
+                );
+            }
+        }
+
+        let mut options = renderer::polar::PolarOptions::default();
+        options.inner_radius_fraction = 0.2;
+        let polar = bare_polar_chart(options);
+        let mut polar_series = filled_line(
+            "area",
+            Some(LineFill::ToBaseline(0.0)),
+            LineInterpolation::Linear,
+            GREEN,
+        );
+        polar_series.x_column = "angle".into();
+        polar_series.y_column = "radius".into();
+        let painted = assert_pick_matches_paint_with(
+            &mut renderer,
+            &polar,
+            &[polar_series],
+            "area",
+            scale,
+            None,
+            "polar fill",
+            FILL_EDGE,
+        );
+        assert!(painted > 1000, "polar fill at {scale}x: {painted}");
+
+        let clear = Color {
+            r: 0.0,
+            g: 0.6,
+            b: 0.0,
+            a: 0.0,
+        };
+        let series = [filled_line(
+            "area",
+            Some(LineFill::ToBaseline(1.0)),
+            LineInterpolation::Linear,
+            clear,
+        )];
+        let inside = [
+            data_to_px(&chart, 4.0, 3.0, scale),
+            data_to_px(&chart, 6.0, 2.0, scale),
+        ];
+        assert_nothing_picks_at(
+            &mut renderer,
+            &chart,
+            &series,
+            "area",
+            scale,
+            &inside,
+            "transparent fill",
+        );
+    }
+}
+
+/// G10 tie-break: a marker over a fill picks the marker, though its series
+/// comes first (every fill is drawn before every series body); inside the
+/// fill away from the marker the fill picks, naming the nearer endpoint of
+/// the filled segment.
+#[test]
+fn a_marker_over_a_fill_picks_the_marker() {
+    use renderer::data_config::{LineFill, LineInterpolation};
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![2.0, 8.0], vec![8.0, 8.0]);
+    renderer
+        .add_columns(&[
+            ("dot_x", &col(vec![4.0]) as &dyn renderer::ColumnSource),
+            ("dot_y", &col(vec![4.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    let mut dot = scatter("dot", ScatterShape::CircleFilled, 6.0, RED);
+    dot.x_column = "dot_x".into();
+    dot.y_column = "dot_y".into();
+    let area = filled_line(
+        "area",
+        Some(LineFill::ToBaseline(1.0)),
+        LineInterpolation::Linear,
+        GREEN,
+    );
+    let series = [dot, area];
+    for scale in [1.0, 2.0] {
+        let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let (mx, my) = data_to_px(&chart, 4.0, 4.0, scale);
+        let hit = probe
+            .pick(&mut renderer, mx as u32, my as u32, 0.0)
+            .expect("marker hit");
+        assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
+        for (x, index) in [(3.0, 0), (7.0, 1)] {
+            let (px, py) = data_to_px(&chart, x, 3.0, scale);
+            let hit = probe
+                .pick(&mut renderer, px as u32, py as u32, 0.0)
+                .expect("fill hit");
+            assert_eq!(
+                (hit.series_id.as_str(), hit.point_index, hit.distance_px),
+                ("area", index, 0.0),
+                "{scale}x at x {x}"
+            );
+        }
+        renderer.remove_chart(probe.id).unwrap();
+    }
 }

@@ -452,7 +452,8 @@ pub(super) fn effective_series_primitives(
 /// Whether a line series with a fill draws it under `draw_style`: the fill
 /// follows the line, so it is drawn exactly when the style draws the line.
 /// Not part of [`EffectiveSeriesPrimitives`] because the fill is a property of
-/// the line (no hit target, no pick registry entry of its own).
+/// the line (it picks as part of the line, with no pick registry entry of its
+/// own).
 pub(super) fn series_has_line_fill(draw_style: &DrawStyle, render_type: &DataRenderType) -> bool {
     effective_series_primitives(draw_style, render_type).line
         && extract_line(render_type).is_some_and(|line| line.fill.is_some())

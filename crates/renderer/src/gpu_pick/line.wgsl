@@ -1,5 +1,6 @@
 // Exact fragment: line strokes (SHADER_COMMON.md §5.6), their step pieces,
-// dash phase and styled extrusion, and the segment candidate.
+// dash phase and styled extrusion, and the segment candidate that measures
+// them with the line's fill (`gpu_pick/area.wgsl`).
 
 // The mode word of `step_piece_count` (common/line_step.wgsl): bits 0-1 the
 // step mode, bits 4 and up the polar arc pieces per segment
@@ -131,7 +132,18 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
     return max(best, PICK_F32_EPSILON);
 }
 
-fn pick_line_candidate(
+// The source point a hit on segment `segment_index` names, from `position`
+// along its stepped path (0 at A, 1 at B): the nearer endpoint. Projected
+// endpoints are f32. Reciprocal/fused evaluation can put an exact midpoint
+// a rounding step on either side of 0.5 across backends. Resolve that
+// uncertainty by the same lower-index rule as the CPU picker.
+fn pick_segment_endpoint(segment_index: u32, position: f32, coordinate_scale: f32, total_length: f32) -> u32 {
+    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
+    let use_b = position > 0.5 + midpoint_tolerance;
+    return select(segment_index, segment_index + 1u, use_b);
+}
+
+fn pick_stroke_candidate(
     segment_index: u32,
     ax: vec2<f32>,
     ay: vec2<f32>,
@@ -221,20 +233,37 @@ fn pick_line_candidate(
     if pieces > 1u {
         position = (best_prefix + best_t * best_length) / total_length;
     }
-    // Projected endpoints are f32. Reciprocal/fused evaluation can put an
-    // exact midpoint a rounding step on either side of 0.5 across backends.
-    // Resolve that uncertainty by the same lower-index rule as the CPU picker.
-    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
-    let use_b = position > 0.5 + midpoint_tolerance;
-    let point_index = select(segment_index, segment_index + 1u, use_b);
+    let point_index = pick_segment_endpoint(segment_index, position, coordinate_scale, total_length);
     return PickCandidate(
         1u,
         series_order,
         pick_source_row(point_index),
-        1u,
+        PICK_KIND_LINE,
         pick_source_row(segment_index),
         distance_sq,
         distance,
         0u,
     );
+}
+
+// A line series' segment primitive: the stroke and, when the line has a fill
+// (`PICK_VARIANT_AREA`, a non-zero filled segment count), the fill under the
+// segment. The fill only picks inside it, at distance zero, and loses every
+// tie (`pick_candidate_is_better`), so a stroke over it keeps picking.
+fn pick_line_candidate(
+    segment_index: u32,
+    ax: vec2<f32>,
+    ay: vec2<f32>,
+    bx: vec2<f32>,
+    by: vec2<f32>,
+) -> PickCandidate {
+    let stroke = pick_stroke_candidate(segment_index, ax, ay, bx, by);
+    if !pick_variant(PICK_VARIANT_AREA) || pick_query_params.area.y == 0u {
+        return stroke;
+    }
+    let fill = pick_area_candidate(segment_index, ax, ay, bx, by);
+    if pick_candidate_is_better(fill, stroke) {
+        return fill;
+    }
+    return stroke;
 }

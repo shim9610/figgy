@@ -46,13 +46,18 @@ use registry::GpuPickSeriesId;
 pub(crate) use registry::{GpuPickRegistrySlot, PreparedPickRegistryTransition};
 use registry::{GpuPickSeriesIdentities, PickIdentity, PickRegistry, PickSeriesSlot};
 use registry::{series_arc, series_exact_key, series_exact_variant, stream_exact_variant};
-use shader::exact_variant;
+pub(crate) use shader::exact_variant;
 #[cfg(test)]
-use shader::{INIT_SCOPE, create_pipeline_bundle_observed, validate_device_limits};
+use shader::{
+    EXACT_LAYOUT, INIT_SCOPE, create_pipeline_bundle_observed, exact_layout_storage_buffers,
+    validate_device_limits,
+};
 pub(crate) use shader::{PickExactKey, PickExactPipelines, PickPipelineBundle, PickShader};
 pub use types::GpuPickError;
 use types::{CANDIDATE_BYTES, FLAG_LINE, FLAG_SCATTER, FLAG_SIZE_AREA, FLAG_SIZE_MAP};
+use types::{ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, create_rows_buffer_checked};
 use types::{FLAG_STYLE_INDEX, FLAG_STYLE_MAP, FLAG_VECTOR, GATE_MASK_BYTES};
+pub(crate) use types::{GpuPickArea, GpuPickErrorBar, GpuPickErrorBarStyle};
 pub(crate) use types::{GpuPickDrawStyle, GpuPickQuery, GpuPickScatter, GpuPickScatterStyle};
 pub(crate) use types::{GpuPickSeriesDescriptor, GpuPickSizeMap, GpuPickVector, GpuStreamPick};
 pub(crate) use types::{GpuStreamPickColumns, validate_stream_handle};

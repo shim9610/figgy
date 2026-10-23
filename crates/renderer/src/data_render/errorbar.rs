@@ -9,6 +9,7 @@ pub(crate) const ERRORBAR_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/projection.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/sketch_noise.wgsl",
+    "data_render/common/errorbar_segment.wgsl",
     "data_render/errorbar_columnar.wgsl",
 );
 

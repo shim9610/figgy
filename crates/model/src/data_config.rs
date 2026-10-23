@@ -340,10 +340,11 @@ pub type SeriesRef = String;
 /// What a line series fills: the region between the line and a baseline or
 /// between the line and another series' line.
 ///
-/// The fill is a property of the line. It is not a hit target of its own —
-/// selecting the line selects its fill — and it is drawn before every series
-/// body, in series order, so another series' fill can never cover this
-/// series' line. Fills composite over each other in series order; there is no
+/// The fill is a property of the line. It picks as part of the line (a hit
+/// inside it names the filled segment's nearer sample, and it loses every tie
+/// to a stroke, marker or error bar), selecting the line selects its fill,
+/// and it is drawn before every series body, in series order, so another
+/// series' fill can never cover this series' line. Fills composite over each other in series order; there is no
 /// automatic sorting.
 ///
 /// A fill assumes an x-monotonic series. A series whose x runs back on itself
