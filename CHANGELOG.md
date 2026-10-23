@@ -44,6 +44,29 @@ Collected on `integration/0.19`; the release entry replaces this section.
   `&'static str` (the module is a constant now, also exported as
   `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`); call `.to_string()` where
   a `String` was used.
+- **Character sets.** `RichSegment.greek: bool` becomes
+  `char_set: CharSet` (`Text`, `Greek`, `Math`), so a segment cannot be
+  Greek and math at once
+  ([#45](https://github.com/shim9610/figgy/issues/45)). The JSON is
+  unchanged for every existing document: `Text` writes `"greek": false`,
+  `Greek` writes `"greek": true`, and `Math` writes `"greek": false`
+  followed by the new `"math": true`, which is written only for `Math`.
+  Documents written by model 0.12 and earlier parse and re-serialize byte
+  for byte; a segment with both `"greek": true` and `"math": true` is
+  rejected with an error. `Math` draws the character as given, from the
+  text font, until the math font is chosen on #45. Model 0.12.1 and older
+  ignore `math` and read such a segment as text. The browser
+  integration's `get_config` / `set_config`, `get_series` / `set_series`
+  and annotation calls carry the new key. Migration: write
+  `char_set: CharSet::Text` for `greek: false` (or start from
+  `RichSegment::plain`), `char_set: CharSet::Greek` for `greek: true`, and
+  `seg.char_set == CharSet::Greek` for reads of `seg.greek`; `CharSet` is
+  `model::text::CharSet` (`renderer::text::CharSet`), and
+  `CharSet::glyph_char` gives the character a set draws.
+- **Script layout.** Superscript and subscript segments, including the
+  exponents of `LabelFormat::Power` tick labels, are sized and shifted by
+  one renderer function that the math `Scripts` node of #45 will share.
+  No pixel, metric or public API changes.
 
 <a id="release-0181"></a>
 
