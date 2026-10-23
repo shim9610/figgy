@@ -1380,11 +1380,21 @@ mod draw_style_serde_tests {
         assert_eq!(back, radial);
     }
 
+    /// The default document is the shape of documents written before
+    /// `draw_style`, `picked_points` and `picked_data` existed: `Precise` is
+    /// not serialized, and each missing key parses to its default.
     #[test]
-    fn config_without_draw_style_key_deserializes_to_precise() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-sketch document parses");
+    fn a_document_without_the_additive_keys_parses_to_their_defaults() {
+        let json = default_config_json();
+        assert!(
+            json.get("draw_style").is_none(),
+            "Precise draw_style must be skipped in serialization: {json}"
+        );
+        let cfg: Config = serde_json::from_value(json)
+            .expect("pre-sketch, pre-picker and pre-data-pick document parses");
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
+        assert_eq!(cfg.picked_points, None);
+        assert_eq!(cfg.picked_data, None);
     }
 
     #[test]
@@ -1451,22 +1461,6 @@ mod draw_style_serde_tests {
     }
 
     #[test]
-    fn precise_serializes_without_key() {
-        let json = default_config_json();
-        assert!(
-            json.get("draw_style").is_none(),
-            "Precise draw_style must be skipped in serialization: {json}"
-        );
-    }
-
-    #[test]
-    fn config_without_picked_points_key_deserializes_to_none() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-picker document parses");
-        assert_eq!(cfg.picked_points, None);
-    }
-
-    #[test]
     fn picked_points_empty_object_yields_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1510,13 +1504,6 @@ mod draw_style_serde_tests {
         let picked = cfg.picked_points.expect("picked points");
         assert_eq!(picked.ring_width_px, 4.0);
         assert_eq!(picked.radius_extra_px, 6.0);
-    }
-
-    #[test]
-    fn config_without_picked_data_key_deserializes_to_none() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-data-pick document parses");
-        assert_eq!(cfg.picked_data, None);
     }
 
     #[test]

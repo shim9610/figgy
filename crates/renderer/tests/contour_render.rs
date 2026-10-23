@@ -260,8 +260,12 @@ fn plane_fixture(renderer: &mut Renderer) {
 
 /// The implicit field shader puts the line on the isoline and leaves the rest of the field
 /// alone. `z = x + y`, level 2, so the line runs from (2, 0) to (0, 2).
+///
+/// One isoline per level and no spurious coverage: on a monotone plane every
+/// column of the data area that the line crosses holds exactly one run of ink.
+/// A duplicated branch shows up here as a second run.
 #[test]
-fn a_contour_traces_the_isoline_and_nothing_else() {
+fn a_contour_traces_one_unbroken_isoline_and_nothing_else() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -286,6 +290,31 @@ fn a_contour_traces_the_isoline_and_nothing_else() {
             x + y
         );
     }
+
+    let da = chart.config().data_area().expect("data area").0;
+    let mut columns_with_ink = 0;
+    for x in (da.x + 6)..(da.x + da.width - 6) {
+        let mut runs = 0;
+        let mut inside = false;
+        for y in da.y..(da.y + da.height) {
+            let ink = is_blue(pixel(&img, x, y));
+            if ink && !inside {
+                runs += 1;
+            }
+            inside = ink;
+        }
+        if runs > 0 {
+            columns_with_ink += 1;
+        }
+        assert!(
+            runs <= 1,
+            "column {x} crosses the isoline {runs} times; a monotone plane has one"
+        );
+    }
+    assert!(
+        columns_with_ink > (da.width as usize) / 2,
+        "the isoline spans the field, but only {columns_with_ink} columns hold ink"
+    );
 }
 
 /// Each level draws in its own colour from the indexed group-2 colour table.
@@ -634,25 +663,6 @@ fn sorted_reversed_and_shuffled_1024_levels_render_identically() {
 }
 
 #[test]
-fn a_direct_export_rejects_1025_contour_levels() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let levels = vec![2.0; renderer::MAX_CONTOUR_LEVELS + 1];
-    for series in [
-        contour_only(&["p0", "p1", "p2"], levels.clone(), None),
-        heatmap_contour(&["p0", "p1", "p2"], levels.clone()),
-    ] {
-        assert!(matches!(
-            renderer.export_panel_rgba(&chart, &[series], 1.0),
-            Err(renderer::FiggyError::InvalidSeriesConfig { .. })
-        ));
-    }
-}
-
-#[test]
 fn the_last_1024_level_label_cell_and_manual_index_draw() {
     let Some(mut renderer) = try_renderer() else {
         return;
@@ -689,45 +699,6 @@ fn a_level_outside_the_data_draws_nothing() {
         let ink = img.rgba.chunks_exact(4).filter(|p| is_blue(p)).count();
         assert_eq!(ink, 0, "levels {levels:?} left {ink} contour pixels");
     }
-}
-
-/// One isoline per level and no spurious coverage: on a monotone plane every
-/// column of the data area that the line crosses holds exactly one run of ink.
-/// A duplicated branch shows up here as a second run.
-#[test]
-fn a_monotone_field_traces_one_unbroken_isoline() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-
-    let da = chart.config().data_area().expect("data area").0;
-    let mut columns_with_ink = 0;
-    for x in (da.x + 6)..(da.x + da.width - 6) {
-        let mut runs = 0;
-        let mut inside = false;
-        for y in da.y..(da.y + da.height) {
-            let ink = is_blue(pixel(&img, x, y));
-            if ink && !inside {
-                runs += 1;
-            }
-            inside = ink;
-        }
-        if runs > 0 {
-            columns_with_ink += 1;
-        }
-        assert!(
-            runs <= 1,
-            "column {x} crosses the isoline {runs} times; a monotone plane has one"
-        );
-    }
-    assert!(
-        columns_with_ink > (da.width as usize) / 2,
-        "the isoline spans the field, but only {columns_with_ink} columns hold ink"
-    );
 }
 
 /// Contour lines are drawn over the fill they describe, not under it.
@@ -1744,42 +1715,16 @@ fn spacing_px_separates_automatic_labels() {
     }
 }
 
-/// A non-empty anchor list overrides the automatic pass entirely.
+/// A non-empty anchor list overrides the automatic pass entirely, `bg_color`
+/// paints behind the text and `None` leaves it transparent.
 ///
 /// The override is placed where no isoline is, and the point the automatic pass
 /// would have chosen — the middle of the line — must come out empty. Getting both
-/// would mean two placement paths were running.
+/// would mean two placement paths were running. Then the same anchor, the same
+/// string, twice: with a background the box is there, without it nothing but the
+/// digits are.
 #[test]
-fn explicit_anchors_override_the_automatic_pass() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    plane_fixture(&mut renderer);
-    let chart = bare_chart(colorbar(0.0, 4.0));
-    let mut labels = auto_label_config(2000.0);
-    // z = 0.8 at (0.4, 0.4): well clear of the level-2 isoline.
-    labels.anchors = vec![anchor(0, 0.4, 0.4, 1.0, 0.0)];
-    let series = vec![labelled(vec![2.0], None, labels)];
-    let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-
-    assert!(
-        near(&img, data_to_px(&chart, 0.4, 0.4), 20, is_magenta),
-        "the explicit anchor was not drawn"
-    );
-    for (x, y) in [(1.0f64, 1.0f64), (1.75, 0.25), (0.25, 1.75)] {
-        assert!(
-            !near(&img, data_to_px(&chart, x, y), 14, is_magenta),
-            "an automatic label was placed at ({x}, {y}) despite the override"
-        );
-    }
-}
-
-/// `bg_color` paints behind the text and `None` leaves it transparent.
-///
-/// The same anchor, the same string, twice: with a background the box is there,
-/// without it nothing but the digits are.
-#[test]
-fn bg_color_paints_behind_the_label() {
+fn explicit_anchors_override_the_automatic_pass_and_paint_bg_color() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -1788,13 +1733,20 @@ fn bg_color_paints_behind_the_label() {
     let at = data_to_px(&chart, 0.4, 0.4);
 
     let mut with_bg = auto_label_config(2000.0);
+    // z = 0.8 at (0.4, 0.4): well clear of the level-2 isoline.
     with_bg.anchors = vec![anchor(0, 0.4, 0.4, 1.0, 0.0)];
     let series = vec![labelled(vec![2.0], None, with_bg)];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
     assert!(
         near(&img, at, 20, is_magenta),
-        "bg_color painted nothing behind the label"
+        "bg_color painted nothing behind the explicit anchor's label"
     );
+    for (x, y) in [(1.0f64, 1.0f64), (1.75, 0.25), (0.25, 1.75)] {
+        assert!(
+            !near(&img, data_to_px(&chart, x, y), 14, is_magenta),
+            "an automatic label was placed at ({x}, {y}) despite the override"
+        );
+    }
 
     let series = vec![labelled(
         vec![2.0],

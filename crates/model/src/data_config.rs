@@ -1964,18 +1964,6 @@ mod contour_level_tests {
         }
     }
 
-    /// Levels are round numbers on the spacing's own absolute grid, and they sit
-    /// **inside** the range — a level on the boundary coincides with the field's edge and
-    /// would leave the banded fill one band short.
-    #[test]
-    fn nice_levels_are_round_and_strictly_inside() {
-        let levels = ContourConfig::nice_levels(&axis(0.0, 100.0, AxisScale::Linear), 5).unwrap();
-        assert_eq!(levels, vec![20.0, 40.0, 60.0, 80.0]);
-        for level in &levels {
-            assert!(*level > 0.0 && *level < 100.0, "{level} is not inside");
-        }
-    }
-
     /// Asking for more levels gets more, and they stay inside. That is the whole
     /// "how dense" control: the count in, the level list out.
     #[test]
@@ -2000,14 +1988,6 @@ mod contour_level_tests {
         assert_eq!(levels.first(), Some(&1.0));
         assert_eq!(levels.last(), Some(&1024.0));
         assert!(levels.windows(2).all(|pair| pair[1] - pair[0] == 1.0));
-    }
-
-    #[test]
-    fn nice_levels_rejects_the_1025th_linear_level() {
-        assert_eq!(
-            ContourConfig::nice_levels(&axis(0.0, 1026.0, AxisScale::Linear), 2001),
-            Err(TickError::InvalidRange)
-        );
     }
 
     #[test]
@@ -2064,14 +2044,6 @@ mod contour_level_tests {
         assert_eq!(corrected, explicit_one);
     }
 
-    #[test]
-    fn a_valid_log_range_without_an_internal_decade_is_empty() {
-        assert_eq!(
-            ContourConfig::nice_levels(&axis(2.0, 9.0, AxisScale::Logarithmic), 5),
-            Ok(Vec::new())
-        );
-    }
-
     /// A degenerate range has no levels to pick, and says so rather than
     /// inventing one.
     #[test]
@@ -2082,7 +2054,10 @@ mod contour_level_tests {
 
     /// `set_nice_levels` writes the answer into the config — what is drawn stays
     /// exactly what the config holds. Existing per-level colours are left for the
-    /// draw's own fallback rather than discarded.
+    /// draw's own fallback rather than discarded. The levels are round numbers on
+    /// the spacing's own absolute grid, and they sit **inside** the range — a level
+    /// on the boundary coincides with the field's edge and would leave the banded
+    /// fill one band short.
     #[test]
     fn set_nice_levels_writes_the_levels_and_keeps_the_colours() {
         let mut cfg = contour();

@@ -918,15 +918,10 @@ mod tests {
     }
 
     #[test]
-    fn chart_dirty_starts_true() {
-        let c = Chart::new(dummy_config());
-        assert!(c.data_dirty());
-        assert!(c.raster_dirty());
-    }
-
-    #[test]
     fn chart_consume_clears_dirty() {
         let mut c = Chart::new(dummy_config());
+        assert!(c.data_dirty());
+        assert!(c.raster_dirty());
         assert!(c.consume_data_dirty());
         assert!(!c.data_dirty());
         assert!(c.consume_raster_dirty());

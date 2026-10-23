@@ -14,12 +14,11 @@
 //!
 //! JSON default round-trip coverage is not duplicated here; it lives in
 //! `draw_style_serde_tests` in
-//! `crates/model/src/config.rs` (config_without_draw_style_key_deserializes_to_precise,
+//! `crates/model/src/config.rs` (a_document_without_the_additive_keys_parses_to_their_defaults,
 //! sketch_tag_alone_yields_all_defaults,
 //! partial_sketch_fields_fill_remaining_defaults,
 //! sketch_round_trips_with_inline_fields,
-//! explicit_precise_mode_deserializes_to_precise,
-//! precise_serializes_without_key).
+//! explicit_precise_mode_deserializes_to_precise).
 
 #[path = "support/gpu.rs"]
 mod test_gpu;

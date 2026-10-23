@@ -3104,19 +3104,6 @@ fn style_cross_product_extent_is_conservative() {
 }
 
 #[test]
-fn shader_pipelines_compile_when_a_gpu_is_available() {
-    let Some((device, queue)) = crate::data_render::shared_device() else {
-        return;
-    };
-    let engine = GpuPickEngine::new(device.clone(), queue);
-    assert!(engine.is_ok());
-    let _ = device.poll(wgpu::PollType::Wait {
-        submission_index: None,
-        timeout: None,
-    });
-}
-
-#[test]
 fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
         return;

@@ -115,6 +115,33 @@ impl ColumnSource for CustomScalar {
     }
 }
 
+/// A downstream type may implement both source traits; each `dyn` view of it
+/// stays object safe.
+impl HiLoColumnSource for CustomScalar {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn min(&self) -> f64 {
+        ColumnSource::min(self)
+    }
+
+    fn max(&self) -> f64 {
+        ColumnSource::max(self)
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        for (pair, value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(&self.0) {
+            pair[..4].copy_from_slice(&value.to_le_bytes());
+            pair[4..].copy_from_slice(&0.0f32.to_le_bytes());
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        ColumnSource::write_f32_pair_le_into_with_stats(self, dst)
+    }
+}
+
 struct CustomHiLo(Vec<(f32, f32)>);
 
 impl HiLoColumnSource for CustomHiLo {
@@ -272,9 +299,13 @@ impl ColumnSource for PanickingScalar {
 
 #[test]
 fn required_fused_writer_keeps_source_traits_object_safe() {
-    let scalar: &dyn ColumnSource = &CustomScalar(vec![3.0]);
-    assert_eq!(scalar.len(), 1);
+    let both = CustomScalar(vec![3.0, 4.0]);
+    let scalar: &dyn ColumnSource = &both;
+    assert_eq!(scalar.len(), 2);
     assert!(!scalar.is_empty());
+    let scalar_as_hilo: &dyn HiLoColumnSource = &both;
+    assert_eq!(scalar_as_hilo.len(), 2);
+    assert!(!scalar_as_hilo.is_empty());
 
     let hilo: &dyn HiLoColumnSource = &CustomHiLo(vec![(3.0, 0.25)]);
     assert_eq!(hilo.len(), 1);

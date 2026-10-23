@@ -107,6 +107,32 @@ macro_rules! family_contract {
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c: $chart = $build;
             let edit: fn(&mut $chart) = $edit;
+            // 0) An empty layer: hiding it reuses the frame and its label
+            //    raster and changes no pixel, the cached export equals a
+            //    fresh one, and a title edit still rebuilds the frame.
+            {
+                let mut empty = c.clone();
+                empty.annotations.items.clear();
+                let f = r.prepare(&empty, SIZE, 1.).unwrap();
+                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                empty.annotations.visible = false;
+                let g = r.prepare(&empty, SIZE, 1.).unwrap();
+                assert!(Arc::ptr_eq(&f, &g), "empty layer: hiding rebuilt the frame");
+                assert!(
+                    f.shares_annotations_with(&g),
+                    "empty layer: hiding redrew the label raster"
+                );
+                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                assert!(cached == before, "empty layer: hiding changed pixels");
+                assert!(
+                    cached == fresh(&empty, 1.),
+                    "empty layer: cached export differs from fresh"
+                );
+                empty.title = "Edited".into();
+                assert!(!Arc::ptr_eq(&f, &r.prepare(&empty, SIZE, 1.).unwrap()));
+                assert!(r.export_rgba(&empty, SIZE, 1.).unwrap().rgba == fresh(&empty, 1.));
+                r.end_frame();
+            }
             for scale in [1., 2.] {
                 // The annotation frame rides the frame's anchor space; both
                 // come from the same cache state as a fresh renderer.
@@ -454,6 +480,32 @@ macro_rules! family_routing {
             let select_data: fn(&mut $chart) = $select_data;
             let data_selected: fn(&$chart) -> bool = $data_selected;
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+            // An empty layer: switching to it reuses the frame and its label
+            // raster and changes no pixel, and the cached export equals a
+            // fresh one.
+            {
+                let mut empty: $chart = $build;
+                empty.annotations.items.clear();
+                let f = r.prepare(&empty, SIZE, 1.).unwrap();
+                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                empty.active_layer = LayerRef::Annotations;
+                let g = r.prepare(&empty, SIZE, 1.).unwrap();
+                assert!(
+                    Arc::ptr_eq(&f, &g),
+                    "empty layer: the switch rebuilt the frame"
+                );
+                assert!(
+                    f.shares_annotations_with(&g),
+                    "empty layer: the switch redrew the label raster"
+                );
+                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
+                assert!(cached == before, "empty layer: the switch changed pixels");
+                assert!(
+                    cached == fresh(&empty, 1.),
+                    "empty layer: cached export differs from fresh"
+                );
+                r.end_frame();
+            }
             let mut routes = Vec::new();
             for scale in [1., 2.] {
                 let mut c: $chart = $build;

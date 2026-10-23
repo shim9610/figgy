@@ -701,9 +701,13 @@ mod tests {
     // A y-axis moves only horizontally, *detached*: the parallel (dy)
     // component is discarded, the motion lands in line_offset, and the data
     // area does NOT move — the axis floats away while tick positions along
-    // the axis stay aligned with the data.
+    // the axis stay aligned with the data. A drag on the axis element takes
+    // the same path.
     #[test]
-    fn axis_nudge_detaches_axis_and_keeps_data_area() {
+    fn y_axis_nudge_and_drag_detach_horizontally_and_keep_data_area() {
+        use crate::drag::Draggable;
+        use crate::select::AxisElement;
+
         let mut cfg = default_config();
         let da_before = cfg.data_area().unwrap();
         let margin_before = cfg.left_y.out_margin;
@@ -714,19 +718,44 @@ mod tests {
         // Layout untouched — margin and data area identical.
         assert_eq!(cfg.left_y.out_margin, margin_before);
         assert_eq!(cfg.data_area().unwrap(), da_before);
+
+        let mut dragged = default_config();
+        let el = AxisElement { side: Side::Left };
+        assert_eq!(
+            el.drag_by(&mut dragged, &LaysOut, 12.0, -40.0),
+            NudgeResult::Moved
+        );
+        assert_eq!(dragged.left_y.line_offset, 12.0);
+        assert_eq!(dragged.left_y.out_margin, margin_before);
+        assert_eq!(dragged.data_area().unwrap(), da_before);
     }
 
-    // An x-axis moves only vertically (the dx component is discarded).
+    // An x-axis moves only vertically (the dx component is discarded), by
+    // nudge or by drag, and neither its margin nor the data area moves.
     #[test]
-    fn bottom_axis_nudge_uses_dy_only() {
+    fn x_axis_nudge_and_drag_detach_vertically_and_keep_data_area() {
+        use crate::drag::Draggable;
+        use crate::select::AxisElement;
+
         let mut cfg = default_config();
+        let da_before = cfg.data_area().unwrap();
+        let margin_before = cfg.bottom_x.out_margin;
+
         let r = cfg.nudge(Element::Axis(Side::Bottom), &LaysOut, 999.0, -8.0);
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.bottom_x.line_offset, -8.0);
+        assert_eq!(cfg.bottom_x.out_margin, margin_before);
+        assert_eq!(cfg.data_area().unwrap(), da_before);
+
+        let mut dragged = default_config();
+        let el = AxisElement { side: Side::Bottom };
         assert_eq!(
-            cfg.bottom_x.out_margin,
-            default_config().bottom_x.out_margin
+            el.drag_by(&mut dragged, &LaysOut, -40.0, -6.0),
+            NudgeResult::Moved
         );
+        assert_eq!(dragged.bottom_x.line_offset, -6.0);
+        assert_eq!(dragged.bottom_x.out_margin, margin_before);
+        assert_eq!(dragged.data_area().unwrap(), da_before);
     }
 
     // The detached axis may cross INTO the data area (e.g. y-axis at x = 0)

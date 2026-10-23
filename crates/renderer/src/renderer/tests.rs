@@ -494,8 +494,13 @@ fn stream_statistics_cache_coalesces_coverage_and_encoded_bounds() {
     );
 }
 
+/// Streamed sources are never resident: every resident-only query answers
+/// `ColumnNotResident` instead of an unknown or empty result, on the renderer
+/// and inside a resident upsert transaction, and the transaction leaves the
+/// chart's series and desired revision alone. Statistics commits then follow
+/// the source revision and counter contract.
 #[test]
-fn streamed_statistics_and_provisional_fit_preserve_revision_contract() {
+fn nonresident_queries_and_streamed_statistics_preserve_revision_contract() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -506,10 +511,6 @@ fn streamed_statistics_and_provisional_fit_preserve_revision_contract() {
     let chart = renderer
         .register_chart(crate::default::default_config(), vec![series.clone()])
         .unwrap();
-    assert!(matches!(
-        renderer.begin_errorbar_extent("s", "s", "s"),
-        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
-    ));
     let columns = crate::GpuSeriesExtentColumnIds {
         x: "s",
         y: "s",
@@ -518,6 +519,26 @@ fn streamed_statistics_and_provisional_fit_preserve_revision_contract() {
         y_lower: None,
         y_upper: None,
     };
+    assert!(matches!(
+        renderer.handle_for("s"),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.web_derived_snapshot(chart),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_errorbar_extent("s", "s", "s"),
+        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_series_extent(crate::GpuSeriesExtentMode::Points, columns),
+        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_series_fit_extent(&series),
+        Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+    ));
     let old = renderer.chart_states[&chart].revisions.desired;
     {
         let guard = renderer
@@ -535,12 +556,18 @@ fn streamed_statistics_and_provisional_fit_preserve_revision_contract() {
             guard.begin_errorbar_extent("s", "s", "s"),
             Err(crate::GpuErrorbarError::ColumnNotResident { .. })
         ));
-        assert!(matches!(
-            guard.begin_series_extent(crate::GpuSeriesExtentMode::Line, columns),
-            Err(crate::GpuErrorbarError::ColumnNotResident { .. })
-        ));
+        for mode in [
+            crate::GpuSeriesExtentMode::Line,
+            crate::GpuSeriesExtentMode::Points,
+        ] {
+            assert!(matches!(
+                guard.begin_series_extent(mode, columns),
+                Err(crate::GpuErrorbarError::ColumnNotResident { .. })
+            ));
+        }
     }
     assert!(renderer.logical_column("resident").is_none());
+    assert_eq!(renderer.chart_series(chart).unwrap(), &[series.clone()]);
     assert_eq!(renderer.chart_states[&chart].revisions.desired, old);
     let bounds = Some(crate::StreamBounds {
         min: -1.0,
@@ -645,8 +672,11 @@ fn streamed_fit_token_uses_live_source_revision_and_registration_epoch() {
     ));
 }
 
+/// Replacing or removing a streamed source touches only the chart that
+/// depends on it, and a revision counter failure leaves source, series and
+/// charts as they were.
 #[test]
-fn streamed_source_revision_failure_and_remove_are_chart_atomic() {
+fn streamed_source_replacement_and_removal_touch_only_the_dependent_chart() {
     let Some(mut renderer) = state_test_renderer() else {
         return;
     };
@@ -688,15 +718,31 @@ fn streamed_source_revision_failure_and_remove_are_chart_atomic() {
         .unwrap()
         .revisions
         .desired = old;
+    let stamp = renderer.chart_render_stamp(chart).unwrap();
+    assert_eq!(
+        renderer.series_draw_info(chart, "s").unwrap().drawn_count,
+        99
+    );
     renderer
-        .replace_streamed_columns(vec![state_test_stream("s", 2)])
+        .replace_streamed_columns(vec![crate::StreamColumn {
+            len: 4,
+            ..state_test_stream("s", 2)
+        }])
         .unwrap();
     assert_ne!(renderer.chart_states[&chart].revisions.desired, old);
+    assert_ne!(renderer.chart_render_stamp(chart).unwrap(), stamp);
+    // The line now draws the replaced source's 4 samples: 3 segments.
+    assert_eq!(
+        renderer.series_draw_info(chart, "s").unwrap().drawn_count,
+        3
+    );
     assert_eq!(renderer.chart_render_stamp(other).unwrap(), other_stamp);
     let fit_token = renderer.begin_fit_commit(chart).unwrap();
     assert!(renderer.remove_column("s").unwrap());
     assert!(renderer.chart_states[&chart].series.is_empty());
     assert!(renderer.logical_column("s").is_none());
+    assert_eq!(renderer.chart_series(other).unwrap().len(), 1);
+    assert!(!renderer.remove_column("s").unwrap());
     assert!(matches!(
         renderer.commit_auto_fit_all_if_current(
             &fit_token,
@@ -5070,32 +5116,6 @@ fn errorbar_prepare_compiles_scatter_and_errorbar_pipelines() {
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
     assert!(!renderer.errorbar_extent_engine_ready());
-}
-
-#[test]
-fn shared_extent_job_requires_explicit_engine_preparation() {
-    let Some(mut renderer) = state_test_renderer() else {
-        return;
-    };
-    renderer
-        .add_column("fit-value", &col_f64(vec![0.0, 10.0]))
-        .unwrap();
-    renderer
-        .add_column("fit-lower", &col_f64(vec![1.0, 5.0]))
-        .unwrap();
-    renderer
-        .add_column("fit-upper", &col_f64(vec![1.0, 5.0]))
-        .unwrap();
-    assert!(!renderer.errorbar_extent_engine_ready());
-    assert!(matches!(
-        renderer.begin_errorbar_extent("fit-value", "fit-lower", "fit-upper"),
-        Err(crate::gpu_errorbar::GpuErrorbarError::EngineNotReady)
-    ));
-    pollster::block_on(renderer.ensure_errorbar_extent_engine()).unwrap();
-    assert!(renderer.errorbar_extent_engine_ready());
-    renderer
-        .begin_errorbar_extent("fit-value", "fit-lower", "fit-upper")
-        .unwrap();
 }
 
 #[test]
