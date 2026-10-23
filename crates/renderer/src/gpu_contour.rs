@@ -26,11 +26,22 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
-pub(crate) const CONTOUR_ANCHOR_SHADER: &str =
-    crate::shader_assembly::wgsl_module!("contour_anchor.wgsl");
+pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "contour_anchor_header.wgsl",
+    "data_render/common/transform.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/field_columnar_b.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/field_grid.wgsl",
+    "contour_anchor.wgsl"
+);
 /// The assembled contour label draw module.
-pub(crate) const CONTOUR_LABEL_SHADER: &str =
-    crate::shader_assembly::wgsl_module!("contour_label.wgsl");
+pub(crate) const CONTOUR_LABEL_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "contour_label_header.wgsl",
+    "data_render/common/transform.wgsl",
+    "data_render/common/projection.wgsl",
+    "contour_label.wgsl"
+);
 
 #[cfg(not(target_arch = "wasm32"))]
 type GpuRef<T> = Arc<T>;
@@ -460,13 +471,19 @@ impl ContourLabelPipelines {
         // hi/lo residuals on Metal and cannot test dispatch equivalence there.
         let legacy = include_str!("../tests/fixtures/contour_anchor_v013.wgsl");
         let current = CONTOUR_ANCHOR_SHADER;
-        let common = |source: &str| {
-            let start = source.find("// ───── BEGIN common block").unwrap();
-            let end = source.find("// ───── END common block").unwrap();
-            start..end
-        };
+        // The shared fragments `CONTOUR_ANCHOR_SHADER` splices, in its order:
+        // what the fixture's common block was copied from.
+        let common = crate::shader_assembly::wgsl_module!(
+            "data_render/common/transform.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/field_columnar_b.wgsl",
+            "data_render/common/grid_pair.wgsl",
+            "data_render/common/field_grid.wgsl",
+        );
+        let start = legacy.find("// ───── BEGIN common block").unwrap();
+        let end = legacy.find("// ───── END common block").unwrap();
         let mut source = legacy.to_owned();
-        source.replace_range(common(legacy), &current[common(current)]);
+        source.replace_range(start..end, common);
         // Selection is still one invocation in both versions. Keep its scratch
         // address space aligned, without changing the frozen projection loop.
         // Otherwise the oracle incurs WARP's slow workgroup initialization.

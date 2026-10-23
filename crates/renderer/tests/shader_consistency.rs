@@ -229,28 +229,7 @@ fn wgsl_function(source: &str, name: &str) -> String {
 
 /// Fragments that some module still carries as a pasted copy, until that
 /// module is assembled from the fragment too: (fragment, modules).
-const INLINE_COPIES: &[(&str, &[&str])] = &[
-    (
-        "src/data_render/common/transform.wgsl",
-        &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
-    ),
-    (
-        "src/data_render/common/projection.wgsl",
-        &["src/contour_anchor.wgsl", "src/contour_label.wgsl"],
-    ),
-    (
-        "src/data_render/field_columnar_b.wgsl",
-        &["src/contour_anchor.wgsl"],
-    ),
-    (
-        "src/data_render/common/grid_pair.wgsl",
-        &["src/contour_anchor.wgsl"],
-    ),
-    (
-        "src/data_render/common/field_grid.wgsl",
-        &["src/contour_anchor.wgsl"],
-    ),
-];
+const INLINE_COPIES: &[(&str, &[&str])] = &[];
 
 /// Every block SHADER_COMMON.md still fences is pasted verbatim into each
 /// module its `applies-to` names, and every fragment a module still carries
@@ -1024,11 +1003,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
 /// Shrinks with every merge; never grows.
 const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
-        &[
-            "contour_anchor.wgsl",
-            "data_render/common/grid_pair.wgsl",
-            "gpu_errorbar.wgsl",
-        ],
+        &["data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl"],
         &[
             "add_grid_pairs",
             "grid_rounded_add",
@@ -1051,35 +1026,10 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "contour_anchor.wgsl",
-            "contour_label.wgsl",
-            "data_render/common/projection.wgsl",
-        ],
-        &["axis_pair_to_t", "data_to_ndc", "maybe_log", "polar_ndc"],
-    ),
-    (
-        &[
             "data_render/vector/project_cartesian2d.wgsl",
             "gpu_pick/vector.wgsl",
         ],
         &["axis_px_per_unit_at", "pair_add"],
-    ),
-    (
-        &["contour_anchor.wgsl", "data_render/common/field_grid.wgsl"],
-        &[
-            "axis_t",
-            "boundary_t",
-            "cell_edge_pair",
-            "contour_sample",
-            "f32_is_finite",
-            "grad_px",
-            "grid_value",
-            "lattice_is_samples",
-            "locate",
-            "quad_count",
-            "sample_point_pair",
-            "vec2_f32_is_finite",
-        ],
     ),
     (
         &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
@@ -1094,10 +1044,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "sketch_marker_distance",
             "sketch_marker_wobble_px",
         ],
-    ),
-    (
-        &["contour_anchor.wgsl", "data_render/field_columnar_b.wgsl"],
-        &["field_flag", "pool_pair"],
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
@@ -1134,14 +1080,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
         &["data_render/line_columnar_b.wgsl", "gpu_pick/line.wgsl"],
         &["sketch_line_offset"],
-    ),
-    (
-        &[
-            "contour_anchor.wgsl",
-            "contour_label.wgsl",
-            "data_render/common/transform.wgsl",
-        ],
-        &["styled_point_index"],
     ),
 ];
 
