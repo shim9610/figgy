@@ -598,8 +598,9 @@ impl PointSizeMap {
     }
 
     /// The marker radius in logical pixels for `value`, or `None` when the
-    /// value is not finite (the point is hidden). The shader and CPU picking
-    /// both follow this formula.
+    /// value is not finite (the point is hidden). The draw and pick shaders
+    /// follow this formula (`size_map_radius`); the renderer's CPU twin, test
+    /// support, checks them against it.
     pub fn radius_px(&self, value: f64) -> Option<f32> {
         if !value.is_finite() {
             return None;

@@ -542,7 +542,7 @@ fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
 
 #[test]
 fn every_axis_the_decoration_layer_walks_is_reported() {
-    // draw_axis walks all four axes whatever their tick and label
+    // emit_chart_chrome walks all four axes whatever their tick and label
     // visibility, so hidden ticks still report.
     let mut cfg = default_config();
     for axis in [

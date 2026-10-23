@@ -47,8 +47,8 @@ The tabs at the top switch scenes.
 
 - **Left press**: select an axis, labels, title, legend, data area, colourbar
   or annotation, then drag it. A selected data area has eight resize handles.
-  A click on a point, bar, cell or isoline picks it (Shift adds); the data
-  area wins only once it is already selected.
+  A click on a point, line, error bar, line fill, bar, cell or isoline picks
+  it (Shift adds); the data area wins only once it is already selected.
 - **Wheel**: zoom around the cursor (Shift: X only, Ctrl or Cmd on macOS: Y
   only).
 - **Right or middle drag**: pan.

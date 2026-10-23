@@ -328,7 +328,7 @@ fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
 
 // The picked ring's marker mode (`Style.primitive_flags` of the ring entry):
 // the draw style whose marker it surrounds, numbered like the pick shader's
-// `PICK_MARKER_*` (`gpu_pick.rs::GpuPickDrawStyle`).
+// `PICK_MARKER_*` (`gpu_pick/types.rs::GpuPickDrawStyle`).
 const RING_MARKER_PRECISE: u32 = 0u;
 const RING_MARKER_SKETCH: u32 = 1u;
 const RING_MARKER_PLANET: u32 = 2u;

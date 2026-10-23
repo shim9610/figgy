@@ -54,7 +54,7 @@ Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cj
 | [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG output |
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | `<figgy-chart>` element: host lifecycle, events and Promise adaptation |
-| [src/lib.rs](src/lib.rs) | wasm-bindgen bridge to the renderer |
+| [src/lib.rs](src/lib.rs), [src/web/](src/web/chart.rs) and [src/bounded.rs](src/bounded.rs) | wasm-bindgen bridge to the renderer: `FiggyChart` in `src/web/` (one file per concern, `chart.rs` first), `FiggyBoundedChart` in `src/bounded.rs` |
 | [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The wrapper's JSON representation of the shared model |
 
