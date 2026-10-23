@@ -35,7 +35,7 @@
 
 ```rust,no_run
 use renderer::{
-    Color, RadialChart, RadialKind, RadialLabels, RadialMaterial,
+    Color, Material, RadialChart, RadialKind, RadialLabels,
     RadialRenderer, RadialSlice, RendererDevice, encode_png,
 };
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -116,6 +116,35 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 | `Pearl` | 곡면 가장자리의 약한 펄 색 변화 |
 | `Paper` | 윗면·옆면에 이어지는 미세한 무광 종이 결 |
 | `Wood` | 굵은 무늬 없이 미세하고 불규칙한 잔결을 가진 거친 무광 합판 |
+
+<a id="materials"></a>
+
+### Materials shared with bars and boxes
+
+`Material` is one enum for sectors (`RadialStyle::material`), bars
+(`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
+name has one look in every family: one shader function draws all three.
+`RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial` are deprecated
+aliases of it. A bar or a box is shaded like a flat (zero depth, zero tilt)
+pie top under the default light. Its normal is constant, so its lighting
+and highlights are uniform over the body; textures (grain, brush, paper,
+wood, hatching) still vary across it.
+
+| Material | Sectors | Bars and boxes |
+|---|---|---|
+| `Flat` | yes | yes; the bar default |
+| `Matte` | yes | yes; the box default |
+| `Ceramic` | yes | yes; `gloss` lifts the whole body by at most 2.5/255 |
+| `SatinMetal`, `BrushedMetal` | yes | yes; a uniform sheen and a brush along the bar; at 1x a `texture_scale` above 0.13 has no visible effect |
+| `Enamel` | yes | yes; `gloss` has no visible effect |
+| `Paper`, `Wood`, `Hatch` | yes | yes |
+| `Toon`, `Pearl` | yes | rejected by `validate`: "material not supported by bars" / "material not supported by boxes" |
+
+`Material::supported_on_flat_body` tells the two apart. Bar and box styles
+have no `roughness`, `light` or `texture_angle_degrees`; they use the
+`RadialStyle` defaults (0.35, `[-0.5, -0.6, 1.0]` and 0°). One bar texture
+unit is 150 logical pixels: a bar's texture matches that of a sector of
+radius 150 px, and Matte grain cells are 1.67 px.
 
 각 필드의 기본값과 허용 범위는 아래 '스타일 옵션 기본값과 범위' 표에 있다. 아주 작은 조각의 시각적 간격은 해당 조각 각도의 20% 이내로 제한한다.
 
@@ -203,7 +232,7 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 
 ```rust,no_run
 use renderer::radial::*;
-use renderer::Color;
+use renderer::{Color, Material};
 let mut chart = RadialChart {
     slices: vec![RadialSlice::new("Search", 40.0, Color::from_rgb8(51,132,245))],
     ..Default::default()
@@ -213,7 +242,7 @@ chart.label_decimals = 1; // 0..6, 불필요한 소수점 0은 제거
 chart.value_suffix = " units".into();
 let target = RadialTarget::main(0);
 let override_style = RadialStyle {
-    material: RadialMaterial::SatinMetal,
+    material: Material::SatinMetal,
     inner_corner: 0.05,
     outer_corner: 0.05,
     ..chart.style.clone()
@@ -323,7 +352,7 @@ fn update_hover(
 
 JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialSlice` 구조체 리터럴은 새 필드가
 필요하므로 `RadialSlice::new`를 사용하는 편이 좋다. 차트·스타일은 `..Default::default()`나
-기존 값의 복사본을 사용한다. `RadialMaterial`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
+기존 값의 복사본을 사용한다. `Material`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
 빠짐없이 분기하는 `match`는 컴파일되지 않는다. 버전을 올릴 때 새 재질을 분기에 추가한다.
 
 ## 네이티브 편집 예제

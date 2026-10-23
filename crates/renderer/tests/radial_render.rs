@@ -2,7 +2,7 @@
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
-use renderer::{Color, RendererDevice, radial::*};
+use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
@@ -93,7 +93,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     c.labels = RadialLabels::Outside;
     c.font_size = 12.0;
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.tilt_degrees = 25.0;
     c.style.depth = 0.18;
     c.style.texture_strength = 0.8;
@@ -126,10 +126,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
         ("explode", Box::new(|c| c.slices[0].explode = 0.18)),
         ("kind", Box::new(|c| c.kind = RadialKind::Pie)),
         ("angle", Box::new(|c| c.start_angle_degrees += 37.0)),
-        (
-            "material",
-            Box::new(|c| c.style.material = RadialMaterial::Wood),
-        ),
+        ("material", Box::new(|c| c.style.material = Material::Wood)),
         ("tilt", Box::new(|c| c.style.tilt_degrees = 45.0)),
         ("depth", Box::new(|c| c.style.depth = 0.3)),
         ("bevel", Box::new(|c| c.style.bevel = 0.08)),
@@ -184,7 +181,7 @@ fn radial_budget_validation_and_retirement_are_transactional() {
     assert_eq!(r.gpu_memory_usage(), before);
     r.set_memory_budget(before.total_bytes());
     let mut edit = c.clone();
-    edit.style.material = RadialMaterial::Paper;
+    edit.style.material = Material::Paper;
     assert!(matches!(
         r.prepare(&edit, (320, 320), 1.0),
         Err(RadialError::Budget { .. })
@@ -245,17 +242,17 @@ fn radial_detail_and_all_materials_render_and_change() {
     let mut r = renderer();
     let mut images = Vec::new();
     for material in [
-        RadialMaterial::Flat,
-        RadialMaterial::Matte,
-        RadialMaterial::Ceramic,
-        RadialMaterial::BrushedMetal,
-        RadialMaterial::Paper,
-        RadialMaterial::Wood,
-        RadialMaterial::SatinMetal,
-        RadialMaterial::Toon,
-        RadialMaterial::Enamel,
-        RadialMaterial::Hatch,
-        RadialMaterial::Pearl,
+        Material::Flat,
+        Material::Matte,
+        Material::Ceramic,
+        Material::BrushedMetal,
+        Material::Paper,
+        Material::Wood,
+        Material::SatinMetal,
+        Material::Toon,
+        Material::Enamel,
+        Material::Hatch,
+        Material::Pearl,
     ] {
         c.style.material = material;
         c.style.texture_strength = 0.8;
@@ -288,7 +285,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     let mut c = chart();
     c.kind = RadialKind::Donut { inner_radius: 0.5 };
     c.labels = RadialLabels::Outside;
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.tilt_degrees = 32.0;
     c.style.depth = 0.18;
     c.style.bevel = 0.025;
@@ -321,7 +318,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
             "individual style",
             Box::new(|c| {
                 c.slices[0].style = Some(RadialStyle {
-                    material: RadialMaterial::Toon,
+                    material: Material::Toon,
                     ..c.style.clone()
                 })
             }),
@@ -510,7 +507,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     c.label_format = RadialLabelFormat::NameValuePercent;
     c.slices[0].value = 25.1234;
     c.kind = RadialKind::Donut { inner_radius: 0.4 };
-    c.style.material = RadialMaterial::Ceramic;
+    c.style.material = Material::Ceramic;
     c.style.depth = 0.2;
     c.style.tilt_degrees = 35.0;
     c.style.inner_corner = 0.05;
@@ -575,7 +572,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
         );
         drain(&r);
     }
-    c.style.material = RadialMaterial::Paper;
+    c.style.material = Material::Paper;
     c.style.texture_strength = 0.8;
     let paper = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
     drain(&r);
@@ -757,7 +754,7 @@ fn radial_paper_wall_grain_varies_with_height_instead_of_extruding_stripes() {
         ..Default::default()
     };
     c.style = RadialStyle {
-        material: RadialMaterial::Paper,
+        material: Material::Paper,
         depth: 0.4,
         tilt_degrees: 55.0,
         bevel: 0.0,
@@ -948,7 +945,7 @@ fn radial_wood_is_matte_irregular_surface_grain_not_bands_or_wall_stripes() {
             Color::from_rgb8(180, 180, 180),
         )],
         style: RadialStyle {
-            material: RadialMaterial::Wood,
+            material: Material::Wood,
             depth: 0.4,
             tilt_degrees: 55.0,
             bevel: 0.0,

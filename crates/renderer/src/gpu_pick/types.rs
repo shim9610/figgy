@@ -7,31 +7,30 @@ use super::*;
 pub(super) const GATE_MASK_BYTES: u64 = 8;
 pub(super) const CANDIDATE_BYTES: u64 = 32;
 
-pub(super) const FLAG_SCATTER: u32 = 1;
-pub(super) const FLAG_LINE: u32 = 2;
-pub(super) const FLAG_STYLE_MAP: u32 = 4;
-pub(super) const FLAG_STYLE_INDEX: u32 = 8;
+pub(crate) const FLAG_SCATTER: u32 = 1;
+pub(crate) const FLAG_LINE: u32 = 2;
+pub(crate) const FLAG_STYLE_MAP: u32 = 4;
+pub(crate) const FLAG_STYLE_INDEX: u32 = 8;
 /// A `point_size_map` is bound: the exact pass resolves each point's radius
 /// from its size value, and the gate extent includes the map's `max_px`.
-pub(super) const FLAG_SIZE_MAP: u32 = 16;
+pub(crate) const FLAG_SIZE_MAP: u32 = 16;
 /// The size map scales marker area rather than radius.
-pub(super) const FLAG_SIZE_AREA: u32 = 32;
+pub(crate) const FLAG_SIZE_AREA: u32 = 32;
 /// The scatter primitive is a point vector's arrows (`PICK_FLAG_VECTOR`).
-pub(super) const FLAG_VECTOR: u32 = 64;
+pub(crate) const FLAG_VECTOR: u32 = 64;
 
 /// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
-pub(super) const VECTOR_SCALE_PIXELS: u32 = 256;
-pub(super) const STYLE_MASK_RADIUS: u32 = 2;
-pub(super) const STYLE_MASK_SHAPE: u32 = 4;
+pub(crate) const VECTOR_SCALE_PIXELS: u32 = 256;
+pub(super) use crate::data_render::{STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 /// The pick shader's marker draw modes (`PICK_MARKER_*`).
-pub(super) const PICK_MARKER_PRECISE: u32 = 0;
-pub(super) const PICK_MARKER_SKETCH: u32 = 1;
-pub(super) const PICK_MARKER_PLANET: u32 = 2;
-pub(super) const PICK_MARKER_STAR: u32 = 3;
+pub(crate) const PICK_MARKER_PRECISE: u32 = 0;
+pub(crate) const PICK_MARKER_SKETCH: u32 = 1;
+pub(crate) const PICK_MARKER_PLANET: u32 = 2;
+pub(crate) const PICK_MARKER_STAR: u32 = 3;
 /// The pick shader's line draw modes (`PICK_LINE_*`).
-pub(super) const PICK_LINE_PRECISE: u32 = 0;
-pub(super) const PICK_LINE_SKETCH: u32 = 1;
-pub(super) const PICK_LINE_RIBBON: u32 = 2;
+pub(crate) const PICK_LINE_PRECISE: u32 = 0;
+pub(crate) const PICK_LINE_SKETCH: u32 = 1;
+pub(crate) const PICK_LINE_RIBBON: u32 = 2;
 
 #[derive(Clone, Debug)]
 pub enum GpuPickError {
@@ -657,48 +656,48 @@ impl GpuStreamPick {
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct PickQueryParamsGpu {
-    pub(super) transform: ScatterTransform,
-    pub(super) cursor_chart: [f32; 4],
-    pub(super) chart_limits: [f32; 4],
-    pub(super) scatter_line: [f32; 4],
-    pub(super) data: [u32; 4],
-    pub(super) style: [u32; 4],
-    pub(super) series: [u32; 4],
-    pub(super) stream: [u32; 4],
-    pub(super) line: [u32; 4],
+pub(crate) struct PickQueryParamsGpu {
+    pub(crate) transform: ScatterTransform,
+    pub(crate) cursor_chart: [f32; 4],
+    pub(crate) chart_limits: [f32; 4],
+    pub(crate) scatter_line: [f32; 4],
+    pub(crate) data: [u32; 4],
+    pub(crate) style: [u32; 4],
+    pub(crate) series: [u32; 4],
+    pub(crate) stream: [u32; 4],
+    pub(crate) line: [u32; 4],
     /// `(size lane base, size logical length, 0, 0)`.
-    pub(super) size_map: [u32; 4],
+    pub(crate) size_map: [u32; 4],
     /// `(domain_min hi, domain_min lo, domain_max hi, domain_max lo)`.
-    pub(super) size_domain: [f32; 4],
+    pub(crate) size_domain: [f32; 4],
     /// `(min_px, max_px, 0, 0)`, logical pixels.
-    pub(super) size_px: [f32; 4],
+    pub(crate) size_px: [f32; 4],
     /// `(stroke half-width, milkyway half extent, line gate reach, 0)`,
     /// canvas pixels.
-    pub(super) line_px: [f32; 4],
+    pub(crate) line_px: [f32; 4],
     /// The dash pattern in canvas pixels.
-    pub(super) line_dash: [[f32; 4]; 2],
+    pub(crate) line_dash: [[f32; 4]; 2],
     /// `(marker mode, line mode, series salt, dash count)`.
-    pub(super) styled: [u32; 4],
+    pub(crate) styled: [u32; 4],
     /// `(u lane base, v lane base, arrow count, pivot | scale-pixels bit)`.
-    pub(super) vector: [u32; 4],
+    pub(crate) vector: [u32; 4],
     /// `(scale, shaft width, head length, head width)`, canvas pixels.
-    pub(super) vector_px: [f32; 4],
+    pub(crate) vector_px: [f32; 4],
     /// `(minimum length, 0, 0, 0)`, canvas pixels.
-    pub(super) vector_min: [f32; 4],
+    pub(crate) vector_min: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-pub(super) struct PickCandidateGpu {
-    pub(super) valid: u32,
-    pub(super) series_order: u32,
-    pub(super) point_index: u32,
-    pub(super) primitive_kind: u32,
-    pub(super) primitive_index: u32,
-    pub(super) distance_sq: f32,
-    pub(super) distance_px: f32,
-    pub(super) _pad: u32,
+pub(crate) struct PickCandidateGpu {
+    pub(crate) valid: u32,
+    pub(crate) series_order: u32,
+    pub(crate) point_index: u32,
+    pub(crate) primitive_kind: u32,
+    pub(crate) primitive_index: u32,
+    pub(crate) distance_sq: f32,
+    pub(crate) distance_px: f32,
+    pub(crate) _pad: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 432);

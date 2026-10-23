@@ -43,189 +43,6 @@
 // trapezoid per step piece. It is a separate pipeline ("figgy line area
 // pipeline") because its slots 4/5 are (hi, lo) pairs, not arc lengths.
 
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
-struct Style {
-    color_premul: vec4<f32>,
-    line_width_px: f32,
-    point_radius_px: f32,
-    cap_half_px: f32,
-    cap_width_px: f32,
-    shape_id: u32,
-    dash_len: u32,
-    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
-    // share a star/wobble pattern; precise entries never read it.
-    series_salt: u32,
-    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X. Line entries read bits 2-3 as the step interpolation mode
-    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
-    // also reads bit 4 (fill to a series instead of a baseline); every
-    // other primitive ignores this field.
-    primitive_flags: u32,
-    dash: array<vec4<f32>, 2>,
-};
-
-@group(1) @binding(0) var<uniform> style: Style;
-
-fn maybe_log(v: f32, is_log: f32) -> f32 {
-    let lv = log(max(v, 1e-30)) / log(10.0);
-    if is_log > 0.5 {
-        return lv;
-    }
-    return mix(v, lv, is_log);
-}
-
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
-    let raw = v.x + v.y;
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    if is_log > 0.5 {
-        return fma(log_num / range, panel_scale, panel_offset);
-    }
-    let data_t = mix(linear_num / range, log_num / range, is_log);
-    return fma(data_t, panel_scale, panel_offset);
-}
-
-// Polar (Config.polar): the angle column in radians around the centre of the
-// data area, the radius axis fraction between the inner ring and the outer
-// radius. A radius below the axis start sits on the inner ring (data samples
-// there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::ndc` on the CPU.
-fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    let angle = p.y + p.z * (xv.x + xv.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let r = mix(p.w, 1.0, max(rt, 0.0));
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
-}
-
-fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    if (transform.polar_angle.x > 0.5) {
-        return polar_ndc(ty, xv);
-    }
-    return vec2<f32>(tx, ty) * 2.0 - 1.0;
-}
-
-// Mask source samples explicitly: NaN/Inf clipping is not portable in WGSL.
-// Logarithmic coordinate domains exclude nonpositive samples, while bars and
-// errorbar extents retain their separate baseline/clipping rules.
-fn sample_finite(v: f32) -> bool {
-    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
-}
-
-// Polar: a radius below the axis start has no place on the plot (it would
-// fold onto the inner ring), so the sample is not drawn and a line breaks
-// there. Angles outside the sector and radii past the outer ring keep their
-// projection and are cut by the fragment clip below.
-fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
-    if (transform.polar_angle.x < 0.5) {
-        return true;
-    }
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    return rt >= 0.0;
-}
-
-fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
-    let x = xv.x + xv.y;
-    let y = yv.x + yv.y;
-    return sample_finite(xv.x) && sample_finite(xv.y)
-        && sample_finite(yv.x) && sample_finite(yv.y)
-        && sample_finite(x) && sample_finite(y)
-        && (transform.scale_log.x == 0.0 || x > 0.0)
-        && (transform.scale_log.y == 0.0 || y > 0.0)
-        && polar_sample_valid(xv, yv);
-}
-
-// Polar clip. The transform is vertex-visible only, so the vertex stage hands
-// the fragment stage the fragment's offset from the centre in pixels
-// (interpolated from the corner's NDC) and the bounds as flat varyings; the
-// fragment discards outside the outer ring, inside the hole and outside the
-// sector, cutting a primitive at the edge the way the data-area scissor cuts
-// a rectangular chart. A rectangular chart passes a zero flag.
-fn polar_clip_offset(ndc: vec2<f32>) -> vec2<f32> {
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return (ndc - center) / transform.pixel_to_ndc;
-}
-
-// (flag, outer radius px, inner radius px, sector flag)
-fn polar_clip_limits() -> vec4<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
-}
-
-// (zero angle rad, radians per angle unit signed by the direction, sector
-// start, sector end in angle units)
-fn polar_clip_sector() -> vec4<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    return vec4<f32>(p.y, p.z, e.x, e.y);
-}
-
-fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
-    if (limits.x < 0.5) {
-        return true;
-    }
-    let r = length(px);
-    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
-        return false;
-    }
-    if (limits.w < 0.5) {
-        return true;
-    }
-    // The data angle of the fragment, brought into the turn that starts at
-    // the sector start.
-    let turn = 6.283185307179586 / abs(sector.y);
-    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
-    a = a - floor((a - sector.z) / turn) * turn;
-    return a <= sector.w + 1e-6 * turn;
-}
-// ───── END common block ─────
-
 struct VsIn {
     @location(0) x_a: vec2<f32>,
     @location(1) y_a: vec2<f32>,
@@ -233,7 +50,7 @@ struct VsIn {
     @location(3) y_b: vec2<f32>,
 };
 
-// Line-only extra instance inputs (outside the common block): cumulative
+// Line-only extra instance inputs: cumulative
 // arc length at the segment's two endpoints, from the GPU-computed prefix.
 struct VsArc {
     @location(4) arc_a: f32,
@@ -257,195 +74,6 @@ struct VsOut {
     @location(6) @interpolate(flat) polar_sector: vec4<f32>,
 };
 
-
-// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
-// compares these function bodies and constants with the pick shader) ─────
-
-// Solid strokes grow their quad by this anti-aliasing fringe on every side;
-// dashed strokes keep the bare stroke so the measured dash lengths hold.
-const LINE_AA_EXTENT_PX: f32 = 0.5;
-// Subdivision count S per segment instance: the sketch pipeline draws
-// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
-// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
-const SKETCH_SUBDIV: u32 = 8u;
-
-/// Signed pixel distance from a stroke fragment to the edge of its piece's
-/// square-capped rectangle. `along` runs from the piece start along its
-/// direction, `side` across it; the rectangle is
-/// `[-half_w, len + half_w] x [-half_w, half_w]`. The stroke covers a pixel
-/// where this is below its anti-aliasing width.
-fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
-    let p = vec2<f32>(along - len * 0.5, side);
-    let half_rect = vec2<f32>(len * 0.5 + half_w, half_w);
-    let q = abs(p) - half_rect;
-    let outside = max(q, vec2<f32>(0.0, 0.0));
-    return length(outside) + min(max(q.x, q.y), 0.0);
-}
-
-/// Whether the dash pattern is "on" at arc position `dist_px`. `dash` packs
-/// up to eight sequential `[on, off, ...]` pixel lengths (`dash[0].xyzw`
-/// first) and `count` says how many are used; zero is a solid line, and so is
-/// a pattern whose spans are all zero or negative.
-fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool {
-    if count == 0u {
-        return true;
-    }
-    // A local copy, so the spans can be indexed at run time on every
-    // backend. Clamp to the 8-scalar capacity so a bad CPU-side count cannot
-    // index past the array.
-    var spans = dash;
-    let n = min(count, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(spans[i / 4u][i % 4u], 0.0);
-    }
-    if period <= 0.0 {
-        return true;
-    }
-    // The square-cap extension can push dist_px slightly negative at the
-    // polyline start — wrap into [0, period) with the sign-safe form.
-    let phase = ((dist_px % period) + period) % period;
-    var acc = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
-        acc = end;
-        if phase <= end || i == n - 1u {
-            // Even spans are "on", odd spans are "off". Dash membership is
-            // intentionally binary so the requested pattern length stays
-            // stable; antialiasing is applied to the stroke outline itself.
-            return (i & 1u) == 0u;
-        }
-    }
-    // phase == period can occur from float rounding; that point is the
-    // start of the next repetition, which always opens with an "on" span.
-    return true;
-}
-
-// Deliberately duplicated per data shader (scatter/line/errorbar/pick) and
-// NOT in the SHADER_COMMON.md common block: line_arc.wgsl shares that block
-// but has no use for noise.
-fn sketch_hash01(i: u32, seed: u32) -> f32 {
-    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
-    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
-    h = h ^ (h >> 16u);
-    return f32(h) / 4294967296.0;
-}
-
-// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
-// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
-// integer boundaries is preserved.
-fn sketch_noise(t: f32, seed: u32) -> f32 {
-    let i = u32(i32(floor(t)));
-    let f = fract(t);
-    let u = f * f * (3.0 - 2.0 * f);
-    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
-}
-
-/// The sketch line's perpendicular displacement at arc position `arc_px`:
-/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
-/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
-/// layers degrade identically.
-fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
-    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
-    return select(0.0, wobble, wavelength_px > 0.0);
-}
-
-// ───── end shared line stroke ─────
-
-// ──────────── step interpolation (NOT part of the common block) ────────────
-// A step mode draws every instance (segment a → b) as axis-aligned pieces.
-// Piece corners live in DATA space so every consumer projects the same
-// points: the line, area, sketch, ribbon and star entries here, the
-// arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick/line.wgsl, in its own pick_* ABI). `step_piece_count`, `step_piece`
-// and `step_piece_len_px` must stay byte-identical between line_columnar.wgsl
-// and line_arc.wgsl (shader_consistency checks); the CPU twin is
-// `line_step::step_pieces` in the renderer crate.
-const LINE_STEP_SHIFT: u32 = 2u;
-const LINE_STEP_MASK: u32 = 3u;
-const LINE_STEP_LINEAR: u32 = 0u;
-const LINE_STEP_PRE: u32 = 1u;
-const LINE_STEP_POST: u32 = 2u;
-const LINE_STEP_MID: u32 = 3u;
-const LINE_ARC_SHIFT: u32 = 4u;
-
-// The mode word: bits 0-1 the step mode, bits 4 and up the polar arc pieces
-// per segment (0 for chords). An arc overrides the step mode; the renderer
-// rejects the two together.
-fn step_piece_count(mode: u32) -> u32 {
-    let arc = mode >> LINE_ARC_SHIFT;
-    if (arc > 0u) {
-        return arc;
-    }
-    let step = mode & LINE_STEP_MASK;
-    if (step == LINE_STEP_PRE || step == LINE_STEP_POST) {
-        return 2u;
-    }
-    if (step == LINE_STEP_MID) {
-        return 3u;
-    }
-    return 1u;
-}
-
-// Data-space (hi, lo) corners of piece `k` of the stepped segment a → b.
-struct StepPiece {
-    x0: vec2<f32>,
-    y0: vec2<f32>,
-    x1: vec2<f32>,
-    y1: vec2<f32>,
-};
-
-fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: u32, k: u32) -> StepPiece {
-    var p: StepPiece;
-    p.x0 = xa;
-    p.y0 = ya;
-    p.x1 = xb;
-    p.y1 = yb;
-    let arc = mode >> LINE_ARC_SHIFT;
-    if (arc > 0u) {
-        // Polar arc: piece k of `arc` equal subdivisions of a -> b in data
-        // space, so a constant radius follows its ring once projected.
-        let t0 = f32(k) / f32(arc);
-        let t1 = f32(k + 1u) / f32(arc);
-        p.x0 = mix(xa, xb, t0);
-        p.y0 = mix(ya, yb, t0);
-        p.x1 = mix(xa, xb, t1);
-        p.y1 = mix(ya, yb, t1);
-        return p;
-    }
-    let step = mode & LINE_STEP_MASK;
-    if (step == LINE_STEP_PRE) {
-        // Riser at x_a, then the run at y_b.
-        if (k == 0u) { p.x1 = xa; } else { p.y0 = yb; }
-    } else if (step == LINE_STEP_POST) {
-        // Run at y_a, then the riser at x_b.
-        if (k == 0u) { p.y1 = ya; } else { p.x0 = xb; }
-    } else if (step == LINE_STEP_MID) {
-        // The riser sits at the DATA-space midpoint of the two x values, not
-        // the pixel midpoint — the two differ on a logarithmic axis, and the
-        // CPU picker places it in data units too.
-        let xm = (xa + xb) * 0.5;
-        if (k == 0u) {
-            p.x1 = xm;
-            p.y1 = ya;
-        } else if (k == 1u) {
-            p.x0 = xm;
-            p.x1 = xm;
-        } else {
-            p.x0 = xm;
-            p.y0 = yb;
-        }
-    }
-    return p;
-}
-
-// Pixel length of one piece, with the arc scan's projection.
-fn step_piece_len_px(p: StepPiece) -> f32 {
-    let a_px = data_to_ndc(p.x0, p.y0) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(p.x1, p.y1) / transform.pixel_to_ndc;
-    return distance(a_px, b_px);
-}
-// ─────────────────────── end step interpolation ───────────────────────
 
 const AREA_FILL_TO_SERIES: u32 = 16u;
 
@@ -631,7 +259,7 @@ fn fs_constellation_line(in: VsOut) -> @location(0) vec4<f32> {
     return line_fragment_color(in, vec4<f32>(style.color_premul.rgb * a, style.color_premul.a * a));
 }
 
-// ───────────────── area fill (NOT part of the common block) ─────────────────
+// ───────────────── area fill ─────────────────
 // `vs_area` fills under the line or between two lines. Slots 0-3 are the
 // line's own (x_a, y_a, x_b, y_b); slots 4/5 carry the second y column as
 // (hi, lo) pairs with the same one-value shift (fill to a series), or the y
@@ -727,7 +355,7 @@ fn fs_area(in: AreaOut) -> @location(0) vec4<f32> {
     return style.color_premul;
 }
 
-// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// ──────────────── sketch mode ────────────────
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
 
@@ -804,7 +432,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     return out;
 }
 
-// ────────────── constellation mode (NOT part of the common block) ───────────
+// ────────────── constellation mode ───────────
 // Star-chain line style. Two entries reuse the line pipeline's six instance
 // slots:
 //   vs_ribbon/fs_ribbon — the unresolved-starlight haze (series-colored

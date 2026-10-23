@@ -224,9 +224,7 @@ impl Renderer {
             &self.device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream field runtime"),
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("data_render/field_columnar.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.into()),
             },
         );
         let pipelines = Arc::new(field::Pipelines::new(

@@ -148,6 +148,10 @@ pub(super) fn trim_trailing_fraction_zeros(s: &str) -> String {
 /// Decompose `value` into mantissa × 10^exp and produce a RichText with the
 /// exponent as superscript. If the mantissa is very close to 1, only "10^exp"
 /// is shown (the conventional log major-tick form).
+///
+/// The exponent is plain `superscript` segments, so it is measured and drawn
+/// by the rich-text layout through `text_render::script_placement`, the one
+/// script layout; nothing here restates its size or shift.
 pub(crate) fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     let style_from = |segments: Vec<RichSegment>| RichText {
         segments,

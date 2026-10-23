@@ -1,6 +1,6 @@
 //! Direct renderer WebGPU tests: no Studio/figgy JS facade involved.
 #![cfg(target_arch = "wasm32")]
-use renderer::{Color, RendererDevice, categorical::*, radial::*};
+use renderer::{Color, Material, RendererDevice, categorical::*, radial::*};
 use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -90,10 +90,10 @@ async fn categorical_materials_cache_edits_and_async_png_work_on_webgpu() {
         .unwrap();
     let mut seen = vec![baseline.rgba.clone()];
     for material in [
-        CategoryBarMaterial::Matte,
-        CategoryBarMaterial::SatinMetal,
-        CategoryBarMaterial::Enamel,
-        CategoryBarMaterial::Paper,
+        Material::Matte,
+        Material::SatinMetal,
+        Material::Enamel,
+        Material::Paper,
     ] {
         chart.style.material = material;
         chart.style.texture_strength = 0.9;
@@ -238,7 +238,7 @@ async fn radial_paper_material_and_hover_render_on_webgpu() {
         labels: RadialLabels::Outside,
         ..Default::default()
     };
-    c.style.material = RadialMaterial::Paper;
+    c.style.material = Material::Paper;
     c.style.tilt_degrees = 55.;
     c.style.depth = 0.2;
     c.style.texture_strength = 0.8;

@@ -889,9 +889,7 @@ impl Renderer {
         scatter: &DataScatterStyleConfig,
         scale: f32,
     ) -> Option<data_render::ScatterStyleMap> {
-        const MASK_COLOR: u32 = 1;
-        const MASK_RADIUS: u32 = 2;
-        const MASK_SHAPE: u32 = 4;
+        use data_render::{STYLE_MASK_COLOR, STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 
         let has_index = scatter.point_style_index_column.is_some();
         let style_slots: Vec<data_render::ScatterStyleSlotGpu> = scatter
@@ -899,7 +897,15 @@ impl Renderer {
             .as_deref()
             .unwrap_or(&[])
             .iter()
-            .map(|slot| scatter_style_slot_gpu(slot, scale, MASK_COLOR, MASK_RADIUS, MASK_SHAPE))
+            .map(|slot| {
+                scatter_style_slot_gpu(
+                    slot,
+                    scale,
+                    STYLE_MASK_COLOR,
+                    STYLE_MASK_RADIUS,
+                    STYLE_MASK_SHAPE,
+                )
+            })
             .collect();
         let overrides: Vec<data_render::ScatterStyleOverrideGpu> = scatter
             .point_style_overrides
@@ -908,8 +914,13 @@ impl Renderer {
             .iter()
             .filter_map(|ov| {
                 let point_index = u32::try_from(ov.index).ok()?;
-                let slot =
-                    scatter_style_slot_gpu(&ov.style, scale, MASK_COLOR, MASK_RADIUS, MASK_SHAPE);
+                let slot = scatter_style_slot_gpu(
+                    &ov.style,
+                    scale,
+                    STYLE_MASK_COLOR,
+                    STYLE_MASK_RADIUS,
+                    STYLE_MASK_SHAPE,
+                );
                 Some(data_render::ScatterStyleOverrideGpu {
                     point_index,
                     _pad: [0; 3],

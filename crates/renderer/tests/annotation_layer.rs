@@ -708,7 +708,7 @@ fn categorical_spans_sit_below_the_bars() {
         categories: vec![Category::new("a", "A"), Category::new("b", "B")],
         series: vec![BarSeries::new("s", "S", vec![Some(80.), Some(80.)], bar)],
         style: CategoryBarStyle {
-            material: CategoryBarMaterial::Flat,
+            material: Material::Flat,
             ..Default::default()
         },
         legend: false,

@@ -61,10 +61,16 @@ pub use select::{
 pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use text::{MeasureText, TextAlign, TextExtents};
 
+pub mod material;
+pub use material::Material;
+
 pub use radial::{
-    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,
-    RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,
+    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialOutline,
+    RadialSlice, RadialSplit, RadialStyle, RadialTarget,
 };
+// The deprecated name stays importable from the crate root.
+#[allow(deprecated)]
+pub use radial::RadialMaterial;
 
 pub use categorical::*;
 

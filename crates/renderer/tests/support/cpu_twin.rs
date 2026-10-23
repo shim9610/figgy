@@ -364,7 +364,7 @@ fn maybe_replace_best(
     }
 }
 
-/// An arrow placed on its anchor (`glyph_arrow.wgsl::ArrowPlacement`).
+/// An arrow placed on its anchor (`common/arrow.wgsl::ArrowPlacement`).
 #[derive(Clone, Copy, Debug)]
 struct ArrowPlacement {
     tail: [f32; 2],
@@ -373,7 +373,7 @@ struct ArrowPlacement {
     head_width_px: f32,
 }
 
-/// Twin of `glyph_arrow.wgsl::arrow_place`: the pivot shift and the head
+/// Twin of `common/arrow.wgsl::arrow_place`: the pivot shift and the head
 /// sized to the arrow; `None` for an arrow that is not drawn.
 fn arrow_place(
     tail: [f32; 2],
@@ -403,7 +403,7 @@ fn arrow_place(
     })
 }
 
-/// Twin of `glyph_arrow.wgsl::arrow_sd_segment`.
+/// Twin of `common/arrow.wgsl::arrow_sd_segment`.
 fn arrow_sd_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     let pa = [p[0] - a[0], p[1] - a[1]];
     let ba = [b[0] - a[0], b[1] - a[1]];
@@ -412,7 +412,7 @@ fn arrow_sd_segment(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
     (pa[0] - ba[0] * h).hypot(pa[1] - ba[1] * h)
 }
 
-/// Twin of `glyph_arrow.wgsl::arrow_sd_triangle` (negative inside).
+/// Twin of `common/arrow.wgsl::arrow_sd_triangle` (negative inside).
 fn arrow_sd_triangle(p: [f32; 2], p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> f32 {
     let sub = |a: [f32; 2], b: [f32; 2]| [a[0] - b[0], a[1] - b[1]];
     let dot = |a: [f32; 2], b: [f32; 2]| a[0] * b[0] + a[1] * b[1];
@@ -431,7 +431,7 @@ fn arrow_sd_triangle(p: [f32; 2], p0: [f32; 2], p1: [f32; 2], p2: [f32; 2]) -> f
     -d.0.sqrt() * wgsl_sign(d.1)
 }
 
-/// Twin of `glyph_arrow.wgsl::arrow_distance`: signed distance from `p` to
+/// Twin of `common/arrow.wgsl::arrow_distance`: signed distance from `p` to
 /// the shaft and head of the placed arrow.
 fn arrow_distance(p: [f32; 2], placed: ArrowPlacement, width_px: f32) -> f32 {
     let delta = [

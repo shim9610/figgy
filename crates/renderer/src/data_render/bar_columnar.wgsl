@@ -24,113 +24,6 @@
 // past the bottom of the data area and is clipped by the scissor — which is
 // what a bar with no lower bound looks like. Nothing produces NaN.
 
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
-struct Style {
-    color_premul: vec4<f32>,
-    line_width_px: f32,
-    point_radius_px: f32,
-    cap_half_px: f32,
-    cap_width_px: f32,
-    shape_id: u32,
-    dash_len: u32,
-    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
-    // share a star/wobble pattern; precise entries never read it.
-    series_salt: u32,
-    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X. Line entries read bits 2-3 as the step interpolation mode
-    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
-    // also reads bit 4 (fill to a series instead of a baseline); every
-    // other primitive ignores this field.
-    primitive_flags: u32,
-    dash: array<vec4<f32>, 2>,
-};
-
-@group(1) @binding(0) var<uniform> style: Style;
-
-fn maybe_log(v: f32, is_log: f32) -> f32 {
-    let lv = log(max(v, 1e-30)) / log(10.0);
-    if is_log > 0.5 {
-        return lv;
-    }
-    return mix(v, lv, is_log);
-}
-
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
-    let raw = v.x + v.y;
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    if is_log > 0.5 {
-        return fma(log_num / range, panel_scale, panel_offset);
-    }
-    let data_t = mix(linear_num / range, log_num / range, is_log);
-    return fma(data_t, panel_scale, panel_offset);
-}
-
-// Polar (Config.polar): the angle column in radians around the centre of the
-// data area, the radius axis fraction between the inner ring and the outer
-// radius. A radius below the axis start sits on the inner ring (data samples
-// there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::ndc` on the CPU.
-fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    let angle = p.y + p.z * (xv.x + xv.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let r = mix(p.w, 1.0, max(rt, 0.0));
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
-}
-
-fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    if (transform.polar_angle.x > 0.5) {
-        return polar_ndc(ty, xv);
-    }
-    return vec2<f32>(tx, ty) * 2.0 - 1.0;
-}
-// ───── END common block ─────
-
 // ───── Style reinterpretation (bars only) ─────
 //
 // The `Style` uniform is byte-identical across every data shader; a bar reads
@@ -666,32 +559,6 @@ fn fs_bar_envelope(in: EnvelopeVertex) -> @location(0) vec4<f32> {
 const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1u;
 const DATA_PICK_WORKGROUP_SIZE: u32 = 64u;
 
-struct DataPickQuery {
-    // xy = cursor NDC, zw = cursor axis-t.
-    cursor_ndc_t: vec4<f32>,
-    // x = max distance px, y = scaled bar gap px, z = bar width ratio,
-    // w = contour width px.
-    limits: vec4<f32>,
-    // x = flags, y = source paint order, z = item count, w = orientation.
-    data: vec4<u32>,
-    // x = edge-column f32 lane base, y = value-column lane base, z = global bin offset.
-    bases: vec4<u32>,
-    // xy = histogram baseline (hi, lo).
-    baseline: vec4<f32>,
-};
-
-// Thirty-two bytes, byte-for-byte with Rust's `DataPickCandidateGpu`.
-struct DataPickCandidate {
-    valid: u32,
-    paint_order: u32,
-    kind: u32,
-    index0: u32,
-    index1: u32,
-    index2: u32,
-    distance_px: f32,
-    primitive_order: u32,
-};
-
 @group(1) @binding(1) var<uniform> data_pick_query: DataPickQuery;
 @group(1) @binding(2) var<storage, read> data_pick_pool: array<f32>;
 @group(1) @binding(3) var<storage, read_write> data_pick_output: DataPickCandidate;
@@ -868,14 +735,6 @@ fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
 }
 
 // ───── Typed selection overlay (render entry) ───────────────────────────────
-
-struct DataSelection {
-    color_premul: vec4<f32>,
-    // x = cell/bar outline width, y = selected contour extra width.
-    metrics: vec4<f32>,
-    // x = kind, y/z/w = kind-specific indices.
-    indices: vec4<u32>,
-};
 
 @group(2) @binding(4) var<uniform> data_selection: DataSelection;
 

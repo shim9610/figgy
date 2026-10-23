@@ -292,7 +292,7 @@ fn bounded_pixel_tile_axis_t_matches_resident_field_samples() {
     let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
-        include_str!("../src/data_render/field_columnar.wgsl"),
+        renderer::shader_assembly::module("field"),
         PROBE_ENTRIES
     );
     let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {

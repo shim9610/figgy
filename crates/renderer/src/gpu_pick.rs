@@ -30,7 +30,7 @@ use crate::pick::PickedPoint;
 mod engine;
 mod registry;
 mod shader;
-mod types;
+pub(crate) mod types;
 
 pub(crate) use engine::GpuPickEngine;
 pub use engine::GpuPickTicket;
