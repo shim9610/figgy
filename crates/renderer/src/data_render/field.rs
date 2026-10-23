@@ -7,6 +7,7 @@ use super::*;
 pub(crate) const FIELD_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/field_header.wgsl",
     "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
     "data_render/field_columnar.wgsl"
 );
 

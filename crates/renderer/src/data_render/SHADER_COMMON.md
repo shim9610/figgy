@@ -92,31 +92,7 @@ are separate and do not consume this field.
 
 `Style`은 알파를 미리 곱한 색과 도형별 옵션을 전달한다. 크기는 80바이트, 정렬 단위는 16바이트다. 이 구조체를 쓰는 셰이더는 각자 필요한 필드만 읽는다.
 
-<!-- shader-common: applies-to=scatter,line,errorbar,bar,field,vector -->
-```wgsl
-struct Style {
-    color_premul: vec4<f32>,
-    line_width_px: f32,
-    point_radius_px: f32,
-    cap_half_px: f32,
-    cap_width_px: f32,
-    shape_id: u32,
-    dash_len: u32,
-    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
-    // share a star/wobble pattern; precise entries never read it.
-    series_salt: u32,
-    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X. Line entries read bits 2-3 as the step interpolation mode
-    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
-    // also reads bit 4 (fill to a series instead of a baseline); every
-    // other primitive ignores this field.
-    primitive_flags: u32,
-    dash: array<vec4<f32>, 2>,
-};
-
-@group(1) @binding(0) var<uniform> style: Style;
-```
+The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), spliced into each module that needs it by `wgsl_module!` (`shader_assembly.rs`).
 
 | 필드 | 의미 |
 |------|------|

@@ -50,6 +50,7 @@ impl VectorInput {
 pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/vector/project_cartesian2d_header.wgsl",
     "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
     "data_render/vector/project_cartesian2d.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_points.wgsl",
@@ -61,6 +62,7 @@ pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
 pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/vector/project_cartesian2d_header.wgsl",
     "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
     "data_render/vector/project_cartesian2d.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_grid.wgsl",
@@ -435,6 +437,7 @@ mod tests {
             VectorInput::Points => &[
                 "data_render/vector/project_cartesian2d_header.wgsl",
                 "data_render/common/transform.wgsl",
+                "data_render/common/style.wgsl",
                 "data_render/vector/project_cartesian2d.wgsl",
                 "data_render/vector/vector_input_common.wgsl",
                 "data_render/vector/vector_input_points.wgsl",
@@ -444,6 +447,7 @@ mod tests {
             VectorInput::Grid => &[
                 "data_render/vector/project_cartesian2d_header.wgsl",
                 "data_render/common/transform.wgsl",
+                "data_render/common/style.wgsl",
                 "data_render/vector/project_cartesian2d.wgsl",
                 "data_render/vector/vector_input_common.wgsl",
                 "data_render/vector/vector_input_grid.wgsl",
