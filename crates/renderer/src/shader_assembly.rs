@@ -70,3 +70,32 @@ pub fn module(name: &str) -> &'static str {
         None => panic!("no assembled WGSL module named `{name}`"),
     }
 }
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
+
+    /// Every assembled module parses and validates as WGSL, with no GPU: a
+    /// fragment that breaks a module fails here, not on the first draw.
+    #[test]
+    fn every_assembled_module_parses_and_validates() {
+        for (name, source) in super::MODULES {
+            let module = wgpu::naga::front::wgsl::parse_str(source)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)));
+            Validator::new(ValidationFlags::all(), Capabilities::all())
+                .validate(&module)
+                .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)));
+        }
+    }
+
+    /// Every name in [`super::MODULES`] is listed once.
+    #[test]
+    fn assembled_module_names_are_unique() {
+        for (i, (name, _)) in super::MODULES.iter().enumerate() {
+            assert!(
+                super::MODULES[..i].iter().all(|(other, _)| other != name),
+                "{name} is listed twice"
+            );
+        }
+    }
+}
