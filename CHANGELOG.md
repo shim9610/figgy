@@ -225,6 +225,18 @@ Collected on `integration/0.19`; the release entry replaces this section.
   the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
   their defaults); model 0.12.1 and older reject it. Migration: a Rust
   `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
+- **Histogram selection outline.** A selected bin's outline resolves the
+  bin's gap and width ratio with the bar draw's own resolver on the GPU
+  (`resolve_bar_style` in `bar_columnar.wgsl`) instead of a CPU copy of it
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 2). The selection
+  writes the series' bar `Style` with the highlight colour, the outline width
+  and the bin's global index in lanes a bar never reads, and a series drawn
+  through its bar style map is outlined by the new `vs_bar_selection_mapped`
+  entry over the same map. The outline covers the same pixels as before; one
+  bind group per selected bin is gone. Migration:
+  `data_render::ColumnBarSelectionLayer` drops `selection_bg` and
+  `selection_charge` and gains `style_map_bg: Option<&wgpu::BindGroup>`, the
+  series' bar style map exactly when the bar draw binds it.
 
 <a id="release-0181"></a>
 
