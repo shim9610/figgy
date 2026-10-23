@@ -992,7 +992,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         &[
             "data_render/bar_columnar.wgsl",
             "data_render/line_arc.wgsl",
-            "gpu_errorbar.wgsl",
+            "gpu_errorbar_a.wgsl",
             "gpu_pick/core.wgsl",
         ],
         &["figgy_zero_workgroup"],
@@ -1002,18 +1002,6 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
 /// Pasted copies that item 11 of #58 replaces with assembler fragments.
 /// Shrinks with every merge; never grows.
 const PENDING_COPIES: &[(&[&str], &[&str])] = &[
-    (
-        &["data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl"],
-        &[
-            "add_grid_pairs",
-            "grid_rounded_add",
-            "grid_rounded_subtract",
-            "midpoint_grid_pair",
-            "normalize_grid_pair",
-            "scale_grid_pair",
-            "subtract_grid_pairs",
-        ],
-    ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
         &["hash", "noise"],
