@@ -6,9 +6,10 @@
 //! These tests compare it with the renderer's own output instead: each case
 //! exports the chart through the public `export_panel_rgba` at 1x and 2x,
 //! exports it again without the series under test, and asks the GPU picker
-//! (`pick_chart` at the same display scale) about every pixel of a window
-//! around the primitive. A pixel counts as painted when it differs from the
-//! series-free export.
+//! (`pick_chart` at the same display scale) about the pixels of a window
+//! around the primitive that [`edge_band`] selects: every pixel near a
+//! painted edge and a sparse grid elsewhere. A pixel counts as painted when
+//! it differs from the series-free export.
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -301,11 +302,12 @@ impl Probe {
 }
 
 /// Exports `series` and the chart without the series named `subject` at
-/// `scale`, then checks every pixel of `window` (export pixels, inclusive
-/// start, exclusive end; `None` takes the painted pixels' bounding box grown
-/// by four pixels): a painted pixel must pick `subject` within the fringe, a
-/// pixel picked at distance zero must be at least half covered. Returns the
-/// number of painted pixels, so a case cannot pass by drawing nothing.
+/// `scale`, then checks the [`edge_band`] pixels of `window` (export pixels,
+/// inclusive start, exclusive end; `None` takes the painted pixels' bounding
+/// box grown by four pixels): a painted pixel must pick `subject` within the
+/// fringe, a pixel picked at distance zero must be at least half covered.
+/// Returns the number of painted pixels in the window, so a case cannot pass
+/// by drawing nothing.
 pub fn assert_pick_matches_paint(
     renderer: &mut Renderer,
     chart: &Chart,
@@ -342,33 +344,30 @@ pub fn assert_pick_matches_paint_with(
         .export_panel_rgba(chart, &without_series, scale)
         .unwrap();
     let (x0, y0, x1, y1) = window.unwrap_or_else(|| ink_window(&with, &without, 4));
+    let window = (x0, y0, x1.min(with.width), y1.min(with.height));
+    let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
+    let painted = count_painted(window, is_painted);
     let probe = Probe::register(renderer, chart, series, scale);
-    let mut painted = 0usize;
     let mut failures = Vec::new();
-    for y in y0..y1.min(with.height) {
-        for x in x0..x1.min(with.width) {
-            let ink = difference(&with, &without, x, y);
-            let hit = probe
-                .pick(renderer, x, y, tolerance.fringe)
-                .filter(|hit| hit.series_id == subject);
-            let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
-                (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
-            });
-            if ink >= tolerance.painted {
-                painted += 1;
-                if hit.is_none() && !skipped {
-                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                }
-            }
-            if let Some(hit) = hit
-                && hit.distance_px == 0.0
-                && ink < tolerance.zero_ink
-            {
-                failures.push(format!(
-                    "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                    hit.point_index
-                ));
-            }
+    for (x, y) in edge_band(window, is_painted) {
+        let ink = difference(&with, &without, x, y);
+        let hit = probe
+            .pick(renderer, x, y, tolerance.fringe)
+            .filter(|hit| hit.series_id == subject);
+        let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
+            (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
+        });
+        if ink >= tolerance.painted && hit.is_none() && !skipped {
+            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+        }
+        if let Some(hit) = hit
+            && hit.distance_px == 0.0
+            && ink < tolerance.zero_ink
+        {
+            failures.push(format!(
+                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
+                hit.point_index
+            ));
         }
     }
     renderer.remove_chart(probe.id).unwrap();
@@ -402,6 +401,74 @@ pub fn ink_window(with: &RasterImage, without: &RasterImage, pad: u32) -> (u32, 
         (x1 + pad).min(with.width),
         (y1 + pad).min(with.height),
     )
+}
+
+/// Half width, in export pixels, of the band around a painted edge in which
+/// [`edge_band`] probes every pixel.
+pub const EDGE_BAND_PX: u32 = 2;
+/// Away from the edges, [`edge_band`] probes every `SPARSE_STEP`-th pixel of
+/// every `SPARSE_STEP`-th row (image coordinates).
+pub const SPARSE_STEP: u32 = 4;
+
+/// The pixels of `window` (export pixels, inclusive start, exclusive end)
+/// that a pick-against-paint scan probes, in row-major order.
+///
+/// An edge pixel is one whose `painted` state differs from one of its four
+/// neighbours inside the window. Every pixel within [`EDGE_BAND_PX`] of an
+/// edge pixel along both axes is probed: picking and painting can only
+/// disagree where coverage changes, and an anti-aliasing fringe, a cap, a
+/// corner or a gap is at most a pixel or two from that change. Elsewhere,
+/// inside the paint and outside it, a sparse grid of every
+/// [`SPARSE_STEP`]-th pixel is probed, which still catches an interior that
+/// does not pick or a surrounding that does.
+pub fn edge_band(
+    (x0, y0, x1, y1): (u32, u32, u32, u32),
+    painted: impl Fn(u32, u32) -> bool,
+) -> Vec<(u32, u32)> {
+    let w = x1.saturating_sub(x0) as usize;
+    let h = y1.saturating_sub(y0) as usize;
+    let at = |i: usize| (x0 + (i % w) as u32, y0 + (i / w) as u32);
+    let state: Vec<bool> = (0..w * h)
+        .map(|i| {
+            let (x, y) = at(i);
+            painted(x, y)
+        })
+        .collect();
+    let band = EDGE_BAND_PX as usize;
+    let mut near_edge = vec![false; w * h];
+    for y in 0..h {
+        for x in 0..w {
+            let here = state[y * w + x];
+            let edge = (x > 0 && state[y * w + x - 1] != here)
+                || (x + 1 < w && state[y * w + x + 1] != here)
+                || (y > 0 && state[(y - 1) * w + x] != here)
+                || (y + 1 < h && state[(y + 1) * w + x] != here);
+            if edge {
+                let (bx0, bx1) = (x.saturating_sub(band), (x + band + 1).min(w));
+                for by in y.saturating_sub(band)..(y + band + 1).min(h) {
+                    near_edge[by * w + bx0..by * w + bx1].fill(true);
+                }
+            }
+        }
+    }
+    (0..w * h)
+        .filter(|&i| {
+            let (x, y) = at(i);
+            near_edge[i] || (x % SPARSE_STEP == 0 && y % SPARSE_STEP == 0)
+        })
+        .map(at)
+        .collect()
+}
+
+/// The number of pixels of `window` for which `painted` holds.
+pub fn count_painted(
+    (x0, y0, x1, y1): (u32, u32, u32, u32),
+    painted: impl Fn(u32, u32) -> bool,
+) -> usize {
+    (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| painted(x, y))
+        .count()
 }
 
 /// A window of `half` export pixels around data point `(x, y)`.
@@ -1250,30 +1317,26 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             let what = format!("{scale_mode:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 3);
+            let window = ink_window(&with, &without, 3);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= STRICT.painted;
+            let painted = count_painted(window, is_painted);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let ink = difference(&with, &without, x, y);
-                    let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-                    let distance = match &hit {
-                        Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
-                            Some(*distance_px)
-                        }
-                        None => None,
-                        Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
-                    };
-                    if ink >= STRICT.painted {
-                        painted += 1;
-                        if distance.is_none() {
-                            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                        }
+            for (x, y) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, x, y);
+                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                let distance = match &hit {
+                    Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
+                        Some(*distance_px)
                     }
-                    if distance == Some(0.0) && ink < STRICT.zero_ink {
-                        failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
-                    }
+                    None => None,
+                    Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
+                };
+                if ink >= STRICT.painted && distance.is_none() {
+                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                }
+                if distance == Some(0.0) && ink < STRICT.zero_ink {
+                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
                 }
             }
             assert!(
@@ -1570,34 +1633,28 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             let what = format!("{orientation:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for py in y0..y1 {
-                for px in x0..x1 {
-                    let ink = difference(&with, &without, px, py);
-                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                    let bin = match &hit {
-                        Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
-                            Some(*bin_index)
-                        }
-                        None => None,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    // A bar is axis-aligned, so painted and picked agree
-                    // pixel for pixel: more than half the samples covered
-                    // picks, fewer does not. An edge through the pixel's
-                    // centre covers exactly half and may go either way.
-                    if ink > 128 && bin.is_none() {
-                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                    }
-                    if ink < 128 && bin.is_some() {
-                        failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
-                    }
-                    if ink >= PAINTED {
-                        painted += 1;
-                    }
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                let bin = match &hit {
+                    Some(renderer::PickedData::HistogramBin { bin_index, .. }) => Some(*bin_index),
+                    None => None,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                // A bar is axis-aligned, so painted and picked agree pixel
+                // for pixel: more than half the samples covered picks, fewer
+                // does not. An edge through the pixel's centre covers
+                // exactly half and may go either way.
+                if ink > 128 && bin.is_none() {
+                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                }
+                if ink < 128 && bin.is_some() {
+                    failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
                 }
             }
             assert!(
@@ -1715,34 +1772,29 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
             let what = format!("{shading:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let (x0, y0, x1, y1) = window;
+            let clear_inside = ((x1 - x0) * (y1 - y0)) as usize - painted;
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
-            let mut clear_inside = 0usize;
             let mut failures = Vec::new();
-            for py in (y0..y1).step_by(2) {
-                for px in (x0..x1).step_by(2) {
-                    let ink = difference(&with, &without, px, py);
-                    // Off the pixel centre, inside the pixel: the pick must
-                    // still answer the cell painted at the centre.
-                    let request = (px as f32 + 0.9, py as f32 + 0.1);
-                    let hit = probe.pick_data_at(&mut renderer, request, 0.0);
-                    let cell = match &hit {
-                        Some(renderer::PickedData::MatrixCell { .. }) => true,
-                        None => false,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    if ink >= PAINTED {
-                        painted += 1;
-                    } else {
-                        clear_inside += 1;
-                    }
-                    // A painted pixel picks; a pixel left exactly as it was
-                    // does not. (A ramp near its transparent end paints a
-                    // few levels of ink, and those pick too.)
-                    if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
-                        failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
-                    }
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                // Off the pixel centre, inside the pixel: the pick must
+                // still answer the cell painted at the centre.
+                let request = (px as f32 + 0.9, py as f32 + 0.1);
+                let hit = probe.pick_data_at(&mut renderer, request, 0.0);
+                let cell = match &hit {
+                    Some(renderer::PickedData::MatrixCell { .. }) => true,
+                    None => false,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                // A painted pixel picks; a pixel left exactly as it was
+                // does not. (A ramp near its transparent end paints a few
+                // levels of ink, and those pick too.)
+                if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
+                    failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
                 }
             }
             assert!(
@@ -1751,8 +1803,10 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 failures.len(),
                 &failures[..failures.len().min(12)]
             );
+            // Counted over every pixel of the window (the scan once probed
+            // every second pixel of every second row: a quarter of these).
             assert!(
-                painted > 200 && clear_inside > 50,
+                painted > 800 && clear_inside > 200,
                 "{what}: {painted} / {clear_inside}"
             );
             renderer.remove_chart(probe.id).unwrap();
@@ -2017,29 +2071,24 @@ fn contour_strokes_pick_where_they_paint() {
         let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
         let (x0, y0) = (x0.max(border), y0.max(border));
         let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
+        let window = (x0, y0, x1, y1);
+        let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+        let painted = count_painted(window, is_painted);
         let probe = Probe::register(&mut renderer, &chart, &series, scale);
-        let mut painted = 0usize;
         let mut failures = Vec::new();
-        for y in (y0..y1).step_by(2) {
-            for x in (x0..x1).step_by(2) {
-                let ink = difference(&with, &without, x, y);
-                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-                let distance = match &hit {
-                    Some(renderer::PickedData::ContourLevel { distance_px, .. }) => {
-                        Some(*distance_px)
-                    }
-                    None => None,
-                    Some(other) => panic!("({x}, {y}) picked {other:?}"),
-                };
-                if ink >= PAINTED {
-                    painted += 1;
-                    if distance.is_none() {
-                        failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                    }
-                }
-                if distance == Some(0.0) && ink < STRICT.zero_ink {
-                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
-                }
+        for (x, y) in edge_band(window, is_painted) {
+            let ink = difference(&with, &without, x, y);
+            let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+            let distance = match &hit {
+                Some(renderer::PickedData::ContourLevel { distance_px, .. }) => Some(*distance_px),
+                None => None,
+                Some(other) => panic!("({x}, {y}) picked {other:?}"),
+            };
+            if ink >= PAINTED && distance.is_none() {
+                failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+            }
+            if distance == Some(0.0) && ink < STRICT.zero_ink {
+                failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
             }
         }
         renderer.remove_chart(probe.id).unwrap();
@@ -2049,7 +2098,9 @@ fn contour_strokes_pick_where_they_paint() {
             failures.len(),
             &failures[..failures.len().min(12)]
         );
-        assert!(painted > 50, "at {scale}x: {painted}");
+        // Counted over every pixel of the window (the scan once probed
+        // every second pixel of every second row: a quarter of these).
+        assert!(painted > 200, "at {scale}x: {painted}");
     }
 }
 
