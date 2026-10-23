@@ -21,7 +21,9 @@ pub struct PrimitiveStyle {
     pub cap_width_px: f32, // offset 28
     /// Stable GPU marker-shape code — see [`shape_id`].
     pub shape_id: u32, // offset 32
-    /// Number of valid scalars in `dash`; 0 = solid.
+    /// Number of valid scalars in `dash`; 0 = solid. Bars draw no dashes: a
+    /// histogram selection outline's `Style` holds the selected bin's global
+    /// index here instead (see `from_bar`).
     pub dash_len: u32, // offset 36
     /// Per-series decorrelation salt (FNV-1a of `series_id`, written by
     /// `Renderer::create_style_for_series*`). Sketch/constellation shader
@@ -86,6 +88,12 @@ impl PrimitiveStyle {
     ///
     /// `scale` multiplies the pixel dimensions for high-DPI export, exactly as
     /// the other `create_style_for_series_scaled` paths do.
+    ///
+    /// A selected bin's outline starts from this style and then reinterprets
+    /// three lanes (`selection_prepare.rs`, `vs_bar_selection*`):
+    /// `color_premul` holds the highlight colour, `line_width_px` the outline
+    /// width (unscaled) and `dash_len` the bin's global index, the key the
+    /// mapped entry resolves the bin's overrides by.
     pub fn from_bar(bar: &crate::data_config::DataBarStyleConfig, scale: f32) -> Self {
         let crate::data_config::DataBarStyleConfig {
             fill_color,
@@ -95,8 +103,8 @@ impl PrimitiveStyle {
             gap_px,
             width_ratio,
             orientation,
-            // Per-bin overrides are resolved into `bar` before this call
-            // (`resolved_bar_primitive_style`) or go to the bar style map.
+            // Per-bin overrides go to the bar style map, which the mapped
+            // draw and selection entries resolve on the GPU.
             bar_style_overrides: _,
         } = bar;
         let premul = |c: Color| {

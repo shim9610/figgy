@@ -197,6 +197,10 @@ pub(super) struct TargetPipelines {
     pub(super) bar_envelope: Option<data_render::bar_envelope::Pipelines>,
     pub(super) bar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar_selection: Option<wgpu::RenderPipeline>,
+    /// The selected bin's outline over the `bar_mapped` layout: group 2 is
+    /// the series' bar style map, so the outline resolves the bin's overrides
+    /// as the mapped draw does (`vs_bar_selection_mapped`).
+    pub(super) bar_selection_mapped: Option<wgpu::RenderPipeline>,
     pub(super) field: Option<wgpu::RenderPipeline>,
     pub(super) field_selection: Option<wgpu::RenderPipeline>,
     /// The selected contour level's highlight for a labelled contour, with
@@ -280,6 +284,7 @@ impl TargetPipelines {
         let mut need_bar = false;
         let mut need_bar_mapped = false;
         let mut need_bar_selection = false;
+        let mut need_bar_selection_mapped = false;
         let mut need_field_selection = false;
         let mut need_scatter_mapped = false;
         let mut need_errorbar_mapped = false;
@@ -297,12 +302,15 @@ impl TargetPipelines {
                     .iter()
                     .any(|picked| matches!(picked, PickedDataRef::Point { .. }))
             });
-            if let Some(config) = typed_picks {
-                need_pick_ring |= typed_point;
-                need_bar_selection |= config
+            let typed_bin = typed_picks.is_some_and(|config| {
+                config
                     .refs
                     .iter()
-                    .any(|picked| matches!(picked, PickedDataRef::HistogramBin { .. }));
+                    .any(|picked| matches!(picked, PickedDataRef::HistogramBin { .. }))
+            });
+            if let Some(config) = typed_picks {
+                need_pick_ring |= typed_point;
+                need_bar_selection |= typed_bin;
                 need_field_selection |= config.refs.iter().any(|picked| {
                     matches!(
                         picked,
@@ -357,6 +365,9 @@ impl TargetPipelines {
                             .any(|picked| matches!(picked, PickedDataRef::MatrixCell { .. }))
                     });
                 need_bar_mapped |= primitives.bar && series.style.bar_map.is_some();
+                // The outline takes the mapped entry exactly when the draw does.
+                need_bar_selection_mapped |=
+                    primitives.bar && series.style.bar_map.is_some() && typed_bin;
                 need_errorbar |= has_errorbar(&series.config.render_type);
                 // `has_index` only means a style-index column is bound.
                 // Sparse `*_style_overrides` still need the mapped shader.
@@ -498,7 +509,19 @@ impl TargetPipelines {
                     &self.shaders.bar,
                     transform_bgl,
                     style_bgl,
-                    data_selection_bgl,
+                    surface_format,
+                    self.sample_count,
+                ),
+            );
+        }
+        if need_bar_selection_mapped && self.bar_selection_mapped.is_none() {
+            self.bar_selection_mapped = Some(
+                data_render::create_bar_selection_mapped_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
                     surface_format,
                     self.sample_count,
                 ),
@@ -821,7 +844,19 @@ impl TargetPipelines {
                 &self.shaders.bar,
                 transform_bgl,
                 style_bgl,
-                data_selection_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            bar_selection_mapped,
+            "mapped selected histogram bin",
+            data_render::create_bar_selection_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.bar,
+                transform_bgl,
+                style_bgl,
+                per_point_style_map_bgl,
                 surface_format,
                 self.sample_count,
             )
@@ -1036,6 +1071,7 @@ pub(super) fn create_target_pipelines_observed(
         bar_envelope: None,
         bar_mapped: None,
         bar_selection: None,
+        bar_selection_mapped: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1109,6 +1145,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_envelope: None,
         bar_mapped: None,
         bar_selection: None,
+        bar_selection_mapped: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,

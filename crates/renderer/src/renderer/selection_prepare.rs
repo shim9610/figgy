@@ -321,50 +321,46 @@ impl PrepareContext<'_> {
                         else {
                             continue;
                         };
-                        let mut selection = data_render::DataSelectionGpu::from_color(
-                            selection_cfg.highlight_color,
-                        );
-                        selection.metrics[0] = selection_cfg.outline_width_px;
-                        selection.indices = [
-                            data_render::DATA_SELECTION_KIND_HISTOGRAM_BIN,
-                            instance,
-                            0,
-                            0,
-                        ];
-                        let (selection_bg, selection_charge) =
-                            data_render::create_data_selection_bind_group(
-                                &self.gpu_ledger,
-                                &self.device,
-                                &self.data_selection_bgl,
-                                &selection,
-                            );
-                        // The selection outline must follow the selected
-                        // bin's overridden gap/width exactly. Resolve only
-                        // style metadata on the CPU; edge/value geometry
-                        // remains in the shared GPU columns.
+                        // The bin's global index keys its overrides, so a
+                        // rebased (streamed) instance zero still resolves them.
+                        let Ok(global_bin) = u32::try_from(*bin_index) else {
+                            continue;
+                        };
+                        // The draw's own unresolved bar `Style` with the
+                        // selection in lanes a bar never reads as fill or
+                        // border (`bar_columnar.wgsl`): the outline resolves
+                        // the bin's gap and width on the GPU exactly when the
+                        // draw binds the style map.
                         let bar_cfg =
                             extract_bar(rt).expect("histogram selection has a bar config");
-                        let resolved_style = resolved_bar_primitive_style(
-                            bar_cfg,
-                            *bin_index,
-                            series.style.display_scale,
-                        );
-                        let resolved_style_buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &resolved_style);
-                        let resolved_style_bg = data_render::create_style_bind_group(
+                        let mut outline_style =
+                            PrimitiveStyle::from_bar(bar_cfg, series.style.display_scale);
+                        outline_style.color_premul =
+                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
+                        outline_style.line_width_px = selection_cfg.outline_width_px;
+                        outline_style.dash_len = global_bin;
+                        let outline_buffer =
+                            data_render::create_style_uniform_buffer(&self.device, &outline_style);
+                        let style_bg = data_render::create_style_bind_group(
                             &self.device,
                             &self.style_bgl,
-                            &resolved_style_buffer,
+                            &outline_buffer,
                         );
+                        let style_map = series.style.bar_map.as_ref();
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_selection
-                                .as_ref()
-                                .expect("prepare ensured histogram selection pipeline"),
+                            pipeline: match style_map {
+                                Some(_) => pipelines
+                                    .bar_selection_mapped
+                                    .as_ref()
+                                    .expect("prepare ensured mapped histogram selection pipeline"),
+                                None => pipelines
+                                    .bar_selection
+                                    .as_ref()
+                                    .expect("prepare ensured histogram selection pipeline"),
+                            },
                             transform_bg: &view.transform_bg,
-                            style_bg: resolved_style_bg,
-                            selection_bg,
-                            selection_charge,
+                            style_bg,
+                            style_map_bg: style_map.map(|map| &map.bind_group),
                             pool_buffer: column_buffer,
                             edges,
                             values,

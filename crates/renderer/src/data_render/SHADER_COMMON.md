@@ -147,6 +147,19 @@ The code is the fragment [`data_render/common/style.wgsl`](common/style.wgsl), s
 
 `DataBarStyleConfig.bar_style_overrides`를 지정하면 개별 막대 스타일용 파이프라인이 group 2의 덮어쓰기 표를 읽는다. 채움색·테두리색·두께·간격·너비 비율만 바꾸며 기준선과 방향은 시리즈 공통값을 유지한다. 그리기·데이터 피킹·선택 테두리는 같은 해석 규칙을 적용한다.
 
+**Selection outline.** A selected bin's outline (`vs_bar_selection`,
+`vs_bar_selection_mapped`) reads a per-selection `Style` written as
+`PrimitiveStyle::from_bar` for the series (the draw's unresolved base), with
+three lanes reinterpreted: `color_premul` is the premultiplied highlight
+colour, `line_width_px` the outline width in pixels (unscaled), and
+`dash_len` the selected bin's global index. Gap, width ratio, orientation and
+baseline stay the draw's, so the outline takes the draw's resolver: the
+mapped entry, used exactly when the draw binds the bar style map, runs
+`resolve_bar_style(base_bar_style(), style.dash_len)` over the same group 2.
+The global index keeps a streamed selection, whose instance is local zero,
+on the bin's own overrides without a stream map binding. The highlight
+colour and outline width are never taken from the resolved fill or border.
+
 ### 2.2 `line_columnar.wgsl`의 면 채움 엔트리 `vs_area` / `fs_area`
 
 선 아래(또는 두 선 사이) 면 채움은 선 셰이더의 별도 엔트리와 별도 파이프라인("figgy line area pipeline")으로 그린다. 공통 `Style` 구조체를 그대로 쓰되 일부 필드를 막대처럼 다른 용도로 쓴다. CPU 쪽 작성자는 `renderer.rs::create_style_for_series_scaled_inner`(`area` 스타일)이며 아래 표와 일치해야 한다.
