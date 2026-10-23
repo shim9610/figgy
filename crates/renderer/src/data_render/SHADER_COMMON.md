@@ -1,35 +1,57 @@
-# Shader common definitions (SSoT)
+# Shader common definitions
 
-> **This file is NOT compiled.** WGSL has no `import`/`include`, so common
-> struct/function definitions are duplicated into each shader file. The
-> **single source of truth** for those duplicates lives here.
->
-공통 정의를 수정할 때는 다음 순서를 따른다.
+> The shared WGSL code lives in [`data_render/common/`](common/), one
+> fragment per block. `wgsl_module!` (`shader_assembly.rs`) splices the
+> fragments a module needs into it at compile time, so each block exists
+> once. **This document is not compiled**: it describes the contracts the
+> fragments implement (layouts, bindings, invariants) and names the file
+> that holds each block.
 
-1. 이 문서의 해당 코드 블록을 먼저 수정한다.
-2. 아래 동기화 대상 셰이더에서 같은 블록을 모두 수정한다.
-3. 대응하는 CPU 구조체인 `mod.rs::ScatterTransform` / `PrimitiveStyle`의 크기와 필드 순서도 확인한다. `Transform`을 바꿨다면 공통 블록 밖의 사본인 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 고친다(1절).
-4. `cargo test -p figgy-renderer --test shader_consistency`로 공통 블록과 함수 쌍둥이를 검사한 뒤 `cargo check && cargo test`로 전체 빌드와 테스트를 실행한다.
+To change shared shader code:
 
-한 파일만 바꾸면 컴파일은 성공해도 GPU가 메모리를 잘못 해석할 수 있다. 일부 시리즈의 색·위치·축만 어긋나는 오류를 피하려면 공통 정의를 함께 갱신해야 한다.
+1. Edit the fragment under `data_render/common/`.
+2. If a uniform or storage layout changed, change the Rust struct that
+   mirrors it (`mod.rs::ScatterTransform` / `PrimitiveStyle` and the others
+   §1–§5 name) the same way.
+3. A CPU twin (`pick.rs`, `polar_projection.rs` and the model functions
+   named below) is test support: it follows the shader where the behaviour
+   tests (`pick_draw_agreement`, `gpu_pick` tests) require it.
+4. Run `cargo test -p figgy-renderer --test shader_consistency` and the
+   renderer's shader unit tests (`every_assembled_module_parses_and_validates`
+   parses every module; the compile coverage test in
+   `src/shader_compile_tests.rs` needs a GPU adapter).
 
 ---
 
-## 동기화 대상 셰이더
+## Fragments and the modules that splice them
 
-아래 셰이더는 이 문서의 공통 블록 가운데 자신에게 해당하는 블록만 복사해 둔다.
+| Fragment | Modules |
+|---|---|
+| `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
+| `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
+| `projection.wgsl` (§3, §4) | the transform's modules |
+| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector |
+| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`) and the grid vector |
+| `ramp.wgsl` (§5.4) | field, scatter, vector |
+| `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, the pick marker modules |
+| `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar and the pick marker modules |
+| `line_step.wgsl` | line, line_arc |
+| `arrow.wgsl` (§5.8) | vector, the pick vector module |
+| `data_pick.wgsl` | bar, field, grid vector |
+| `bounded_shading.wgsl` | boxplot, categorical |
 
-- `scatter_columnar.wgsl`, `line_columnar.wgsl`: `Transform`, `Style`, `maybe_log`, `axis_pair_to_t` / `data_to_ndc`, 좌표 표본 유효성의 다섯 블록.
-- `errorbar_columnar.wgsl`, `bar_columnar.wgsl`: 좌표 표본 유효성을 뺀 네 블록.
-- `field_columnar.wgsl`: 같은 네 블록과 격자 샘플링 블록(5절).
-- `line_arc.wgsl`: 경로 길이 계산용. `Transform`, `maybe_log`, `axis_pair_to_t` / `data_to_ndc`, 좌표 표본 유효성 블록을 공유하고 `Style`은 사용하지 않는다. 공통 블록 밖의 계단 보간 헬퍼(`step_piece_count` / `step_piece` / `step_piece_len_px`)는 `line_columnar.wgsl`과 바이트 단위로 같아야 하며 `shader_consistency`가 검사한다.
-- `contour_anchor.wgsl`: 라벨 앵커 계산용. 화면 좌표에서 위치를 선택하므로 `Transform`, `maybe_log`, `axis_pair_to_t` / `data_to_ndc` 세 블록과 격자 샘플링 블록(5절)을 사용한다. 좌표 표본 유효성 블록과 `Style`은 사용하지 않는다.
-- `contour_label.wgsl`: 라벨 렌더링용. 앵커를 NDC에 배치하며 `Transform`, `maybe_log`, `axis_pair_to_t` / `data_to_ndc` 세 블록만 공유한다. 색과 배경은 아틀라스에 포함돼 있어 `Style`은 사용하지 않는다.
-- `vector/project_cartesian2d.wgsl`: the Cartesian 2D projection fragment of
-  the assembled vector shader (`vector.rs`). It carries the same five blocks
-  as `scatter_columnar.wgsl` (`Transform`, `Style`, `maybe_log`,
-  `axis_pair_to_t` / `data_to_ndc` and the sample validity rule); the other
-  vector fragments contain no common block. See §5.3.
+The module lists are the `wgsl_module!` invocations next to each pipeline
+(`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
+`gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
+`shader_assembly::MODULES` names every one. Four functions stay copied where
+a module cannot splice their fragment, held to the fragment's text by
+`shader_consistency`: the pick modules' `ramp_finite` and
+`polar_fragment_visible` (they bind no draw `transform` and have no
+`maybe_log`, which the rest of those fragments read) and the radar `output`
+and radial `hash` / `noise` (they declare no `Bar`, which the rest of
+`bounded_shading.wgsl` takes).
+
+### Module notes
 
 `field_columnar.wgsl::fs_contour`가 격자에서 등고선을 직접 그리고, `contour_anchor.wgsl`이 뉴턴 투영으로 앵커를 구한다. 따라서 두 셰이더가 격자 샘플링 블록을 공유한다.
 라벨 투영은 `anchor_seed` → `anchor_step` 4회 → `anchor_project`의 최종 샘플·검증 →
@@ -40,16 +62,6 @@
 단계 전까지 외부에서 읽지 않으므로 중간 좌표를 위한 별도 버퍼나 바인딩이 없다.
 
 `fullscreen_textured.wgsl`은 텍스처·샘플러용 별도 바인드 레이아웃을 사용하므로 이 문서의 공통 정의를 사용하지 않는다.
-
-각 셰이더 안의 공통 블록은 다음 주석으로 감싸 두었다:
-
-```wgsl
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-//        ...
-// ───── END common block ─────
-```
-
-BEGIN과 END 주석 사이에는 이 문서에서 그 셰이더를 `applies-to`에 나열한 블록만, 문서에 나온 순서대로 빈 줄 하나를 사이에 두고 넣는다. 각 블록은 이 문서와 바이트 단위로 같아야 하며, 영역 안에 셰이더 고유의 코드나 주석이 있으면 `shader_consistency`가 실패한다. 대상 셰이더는 블록 바로 앞의 `<!-- shader-common: applies-to=... -->` 주석이 정한다. 이 주석은 렌더링된 문서에는 보이지 않으며, 주석과 코드 펜스 사이에는 빈 줄만 둘 수 있다. 주석의 짧은 이름(`scatter`, `arc`, `anchor`, `label`, `vector` 등)은 `tests/shader_consistency.rs`의 `shader_path_for`가 파일 경로로 바꾸므로, 새 셰이더를 대상에 추가하려면 같은 파일의 `TARGETS`와 `shader_path_for`도 고친다.
 
 ---
 
@@ -226,7 +238,7 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 대응하는 CPU 정의는 `mod.rs::GridColumnGpu`(8바이트), `mod.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
 
-`gpu_errorbar.wgsl`의 행렬 범위 계산은 전체 샘플링 블록 대신 쌍 연산 함수 일곱 개(`grid_rounded_add`, `grid_rounded_subtract`, `normalize_grid_pair`, `add_grid_pairs`, `subtract_grid_pairs`, `scale_grid_pair`, `midpoint_grid_pair`)만 공유한다. `shader_consistency`가 함수 본문을 이 문서와 바이트 단위로 비교하므로 GPU 범위 계산과 실제 그리기가 같은 반올림 규칙을 사용한다.
+The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
 
@@ -321,23 +333,20 @@ series' group): it walks every instance through `vector_sample`,
 cell of the nearest drawn arrow, a later instance winning an exact tie. A
 point vector is a point pick (§5.8).
 
-### 5.4 Colour ramp and size-map radius — function twins
+### 5.4 Colour ramp and size-map radius
 
 The colourbar ramp is evaluated in three shaders (`field_columnar.wgsl` for
 cells, `scatter_columnar.wgsl` for `point_color_map`, the vector shader for
 `VectorStyle::color_map`) and the size-map radius in two
 (`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`). The maths is one function set,
 parameterised on the caller's bounds, so the stop storage binding (which WGSL
-cannot pass as an argument) stays the only per-shader line. The functions
-below are copied byte-for-byte into each shader and `shader_consistency`
-compares every body with this document (`ramp_t` / `ramp_segment` /
-`ramp_blend` in field, scatter and vector; `size_map_radius` in scatter and
-pick; `ramp_finite` everywhere). CPU twins: `ColorBarOptions::normalized_z`,
-`model::colormap::sample` and `PointSizeMap::radius_px`.
+cannot pass as an argument) stays the only per-shader line. CPU twins:
+`ColorBarOptions::normalized_z`, `model::colormap::sample` and
+`PointSizeMap::radius_px`.
 
 The colour ramp is the fragment [`data_render/common/ramp.wgsl`](common/ramp.wgsl) and the size-map radius is part of [`data_render/common/marker.wgsl`](common/marker.wgsl), spliced into each module that needs them by `wgsl_module!` (`shader_assembly.rs`). The pick modules carry their own `ramp_finite`: the ramp fragment calls `maybe_log`, which they do not have.
 
-### 5.5 Marker shape — function twins
+### 5.5 Marker shape
 
 A marker is drawn by the scatter shader (`fs_main`, `fs_mapped`,
 `fs_sketch`) and picked by `gpu_pick/*.wgsl`, and both must answer the same
@@ -359,10 +368,7 @@ Nothing a marker draws lies farther than `visual_shape_radius +
 QUAD_MARGIN_PX` from its centre on either axis (the quad `vs_main` emits),
 which is the reach the picker's axis gates allow around each centre.
 
-The functions and constants below are copied byte-for-byte into
-`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
-every body and constant with this document. CPU twin: the `marker_*`
-functions of `pick.rs` (`styled_marker_distance`).
+CPU twin: the `marker_*` functions of `pick.rs` (`styled_marker_distance`).
 
 The functions and constants are the fragment [`data_render/common/marker.wgsl`](common/marker.wgsl), spliced into the scatter and pick marker modules by `wgsl_module!` (`shader_assembly.rs`).
 
@@ -377,7 +383,7 @@ the sketch wobble added, a Milkyway planet's ring band or rim glow, a
 Constellation star's sprite disc. These are scatter-shader functions only;
 `pick_draw_agreement` measures the ring against the exported marker.
 
-### 5.6 Line stroke — function twins
+### 5.6 Line stroke
 
 A line is drawn by `line_columnar.wgsl` (`vs_main` / `vs_sketch` with
 `fs_main` or `fs_constellation_line`) and picked by `gpu_pick/*.wgsl`, and both
@@ -406,15 +412,12 @@ ribbon is never dashed; its strip and the star field scattered along it pick
 as one rectangle of the larger half extent (`gpu_pick.rs::
 milkyway_line_half_extent`), since the star positions are hashed per slot.
 
-The functions and constants below are copied byte-for-byte into
-`line_columnar.wgsl` and `gpu_pick/*.wgsl` (the sketch noise also into
-`scatter_columnar.wgsl` and `errorbar_columnar.wgsl`); `shader_consistency`
-compares every body and constant with this document. CPU twin:
-`pick.rs::line_segment_pick` (precise strokes and dashes) with its arc sum.
+CPU twin: `pick.rs::line_segment_pick` (precise strokes and dashes) with
+its arc sum.
 
 The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
 
-### 5.7 Styled markers — function twins
+### 5.7 Styled markers
 
 The stylized draw styles replace the precise marker with their own entry, and
 the picker follows the entry the chart's style draws with
@@ -438,14 +441,11 @@ the picker follows the entry the chart's style draws with
   (`mod.rs::bake_psf_rgba`), so that disc is what picks. A zero star or line
   opacity draws nothing and picks nothing.
 
-The functions and constants below are copied byte-for-byte into
-`scatter_columnar.wgsl` and `gpu_pick/*.wgsl`; `shader_consistency` compares
-every body and constant with this document. CPU twin:
-`pick.rs::styled_marker_distance`.
+CPU twin: `pick.rs::styled_marker_distance`.
 
 The functions and constants are the end of the fragment [`data_render/common/marker.wgsl`](common/marker.wgsl), after the marker shape and the size-map radius.
 
-### 5.8 Arrow glyph — function twins
+### 5.8 Arrow glyph
 
 A point vector series (`DataRenderType::Vector` with `VectorComponents::Points`)
 is picked on the arrow the assembled vector shader draws, not at its anchor.
@@ -464,56 +464,21 @@ growing a round dot at the tail: the fragment stage recomputes the length from
 the pivot-shifted tail and tip, and that rounding used to leave a shaft of a
 few ulps whose round end the draw painted and the pick did not.
 
-The items below are copied byte-for-byte into `common/arrow.wgsl` (the
-constants, structs and `arrow_*` functions), `vector/project_cartesian2d.wgsl`
-(`pair_add`, `axis_px_per_unit_at`) and `gpu_pick/*.wgsl`; `shader_consistency`
-compares every body, struct and constant with this document. CPU twin:
-`pick.rs::vector_arrow_distance` with `arrow_place` / `arrow_distance`.
+CPU twin: `pick.rs::vector_arrow_distance` with `arrow_place` /
+`arrow_distance`.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
 
 ---
-## 변경 체크리스트
+## Checklist
 
-공통 정의를 변경했다면 다음 항목을 모두 확인한다.
+When shared shader code changes:
 
-- [ ] 본 문서의 해당 블록을 먼저 수정했다.
-- [ ] `scatter_columnar.wgsl`의 공통 블록을 수정했다.
-- [ ] `line_columnar.wgsl`의 공통 블록을 수정했다.
-- [ ] `errorbar_columnar.wgsl`의 공통 블록을 수정했다.
-- [ ] `bar_columnar.wgsl`의 공통 블록을 수정했다.
-- [ ] `field_columnar.wgsl`의 공통 블록을 수정했다.
-- [ ] `line_arc.wgsl`의 공통 블록을 수정했다 (`Transform`, `maybe_log`,
-      `axis_pair_to_t` / `data_to_ndc`, 좌표 표본 유효성 블록 해당 시).
-- [ ] `contour_anchor.wgsl`의 공통 블록을 수정했다 (Transform 3블록 + 격자 샘플링 블록).
-- [ ] `contour_label.wgsl`의 공통 블록을 수정했다 (같은 3블록).
-- [ ] `vector/project_cartesian2d.wgsl`의 공통 블록을 수정했다 (scatter와 같은 5블록).
-- [ ] `mod.rs::ScatterTransform` / `PrimitiveStyle`의 필드와 바이트 크기를
-      확인했다 (struct 크기가 바뀌었다면 `mod.rs`의
-      `size_of::<ScatterTransform>() == 144` / `size_of::<PrimitiveStyle>() == 80`
-      컴파일 타임 단언도 갱신).
-- [ ] `Transform`을 바꿨다면 `gpu_pick/core.wgsl`의 `PickQueryTransform`도 같은
-      배치로 고쳤다 (크기가 바뀌었다면 `gpu_pick.rs`의
-      `size_of::<PickQueryParamsGpu>() == 320` 단언도 갱신).
-- [ ] 격자 샘플링 블록을 바꿨다면 `mod.rs::FieldParamsGpu` / `GridColumnGpu`를
-      확인했다. 쌍 연산 함수를 바꿨다면 `gpu_errorbar.wgsl`의 같은 함수와
-      `vector/vector_input_grid.wgsl`의 `vector_*` 사본도 고쳤다.
-- [ ] 5.4절 함수를 바꿨다면 `field_columnar.wgsl`, `scatter_columnar.wgsl`,
-      `vector/vector_input_common.wgsl`, `gpu_pick/*.wgsl`의 사본을 고쳤다.
-- [ ] 5.5절 마커 모양 함수를 바꿨다면 `scatter_columnar.wgsl`과
-      `gpu_pick/*.wgsl`의 사본, `pick.rs`의 `marker_*` CPU 쌍둥이를 고쳤다.
-- [ ] 5.6절 선 획 함수를 바꿨다면 `line_columnar.wgsl`과 `gpu_pick/*.wgsl`의
-      사본, `pick.rs::line_segment_pick` CPU 쌍둥이를 고쳤다.
-- [ ] 5.7절 양식 마커 함수를 바꿨다면 `scatter_columnar.wgsl`과
-      `gpu_pick/*.wgsl`의 사본, `pick.rs::styled_marker_distance` CPU 쌍둥이를
-      고쳤다.
-- [ ] 5.8절 화살표 글리프 함수를 바꿨다면 `common/arrow.wgsl`,
-      `vector/project_cartesian2d.wgsl`, `gpu_pick/*.wgsl`의 사본,
-      `pick.rs::vector_arrow_distance` CPU 쌍둥이를 고쳤다.
-- [ ] 계단 보간 헬퍼를 바꿨다면 `line_columnar.wgsl`과 `line_arc.wgsl`을 함께
-      고쳤고, `gpu_pick/*.wgsl`의 `pick_step_piece_count` / `pick_step_piece`가
-      같은 규칙을 따르는지 확인했다.
-- [ ] `cargo test -p figgy-renderer --test shader_consistency` 통과.
-- [ ] `cargo check` 통과.
-- [ ] `cargo test -p figgy-renderer` 통과 (셰이더 컴파일 테스트
-      `src/shader_compile_tests.rs`는 GPU 어댑터가 필요하다).
+- [ ] The fragment under `data_render/common/` is edited, not a module file.
+- [ ] A changed layout is changed the same way in its Rust struct.
+- [ ] A changed flag or constant that Rust also defines has the same value
+      on both sides.
+- [ ] The CPU twins the behaviour tests compare follow the change.
+- [ ] `cargo test -p figgy-renderer --test shader_consistency` passes.
+- [ ] `cargo test -p figgy-renderer` passes (the shader compile test in
+      `src/shader_compile_tests.rs` needs a GPU adapter).
