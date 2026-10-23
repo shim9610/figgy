@@ -100,6 +100,14 @@ fn edits() -> Vec<Edit> {
         streams: true,
     });
     edit!(bottom_x.label_style.significant_digits, 5, Prefix);
+    edit!(
+        bottom_x.label_style.format,
+        crate::format::LabelFormat::Plain(crate::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: true,
+        }),
+        Prefix
+    );
     macro_rules! grid {
         ($show:ident, $color:ident, $width:ident, $style:ident) => {
             edit!(grid.$show, false, Prefix);

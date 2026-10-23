@@ -1201,6 +1201,39 @@ fn logarithmic_labels_respect_precision_without_losing_tiny_values() {
     assert_eq!(tiny.parse::<f64>().unwrap(), 3.2e-30);
 }
 
+/// `LabelFormat::Plain` reads the value alone: the same text on a linear and
+/// a logarithmic axis, whatever the spacing, range and significant digits.
+#[test]
+fn plain_labels_ignore_scale_spacing_and_digits() {
+    for plain in [
+        crate::format::PlainNumberFormat::AUTO,
+        crate::format::PlainNumberFormat {
+            decimals: Some(2),
+            trim_zeros: false,
+        },
+        crate::format::PlainNumberFormat {
+            decimals: Some(2),
+            trim_zeros: true,
+        },
+    ] {
+        let format = LabelFormat::Plain(plain);
+        for value in [0.0, 2.5, 1000.0, 1.5e7, 3e-4, -12.25] {
+            let expected = plain.format(value);
+            for (scale, spacing, min, max, digits) in [
+                (AxisScale::Linear, 0.5, 0.0, 10.0, 3),
+                (AxisScale::Linear, 1e-9, -1e9, 1e9, 15),
+                (AxisScale::Logarithmic, 1.0, 1e-30, 1e30, 1),
+            ] {
+                assert_eq!(
+                    format_tick_value(value, &format, digits, &scale, spacing, min, max),
+                    expected,
+                    "{plain:?} {value:?} on {scale:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
     let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK

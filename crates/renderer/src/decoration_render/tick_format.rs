@@ -42,6 +42,10 @@ pub(crate) fn format_tick_value(
     range_min: f64,
     range_max: f64,
 ) -> String {
+    // The plain form depends on the value alone, on either scale.
+    if let LabelFormat::Plain(plain) = format {
+        return plain.format(value);
+    }
     let sig = sig_digits.clamp(1, 15) as usize;
     if matches!(scale, AxisScale::Logarithmic) {
         if value == 0.0 {
@@ -62,6 +66,8 @@ pub(crate) fn format_tick_value(
             LabelFormat::Timestamp(_) => format!("{}", value),
             LabelFormat::Degrees => format!("{}°", value),
             LabelFormat::Radians => format_radians(value, sig),
+            // Returned above; the arm keeps the match exhaustive.
+            LabelFormat::Plain(plain) => plain.format(value),
         };
     }
 
@@ -95,6 +101,8 @@ pub(crate) fn format_tick_value(
             }
         }
         LabelFormat::Radians => format_radians(value, sig),
+        // Returned above; the arm keeps the match exhaustive.
+        LabelFormat::Plain(plain) => plain.format(value),
     }
 }
 
