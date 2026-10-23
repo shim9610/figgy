@@ -69,9 +69,10 @@ follow-up.
   issues and PRs. Keep existing Korean documentation.
 - Follow `CONTRIBUTING.md`: `cargo fmt --all`, `python3 ci/verify.py static`,
   and the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- Shared shader blocks follow `crates/renderer/src/data_render/SHADER_COMMON.md`.
-  Edit the document first, then every synced shader and its CPU twin, then run
-  `tests/shader_consistency.rs`.
+- Shared shader code lives in `crates/renderer/src/data_render/common/`, one
+  fragment per block, spliced into each module by `wgsl_module!`
+  (`shader_assembly.rs`); `SHADER_COMMON.md` documents the contracts. A CPU
+  twin of a shader function is test support, never product code.
 - New serialized fields are additive: `Option` or defaulted, with
   `skip_serializing_if`, so older documents parse and re-serialize
   byte-identically. Breaking Rust literals get a CHANGELOG migration note.
