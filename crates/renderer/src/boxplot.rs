@@ -12,6 +12,7 @@ use wgpu::util::DeviceExt;
 
 /// The assembled boxplot module.
 pub(crate) const BOXPLOT_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
     "boxplot.wgsl",
 );
@@ -46,12 +47,14 @@ struct Bar {
     rect: [f32; 4],  // left, top, right, bottom in physical pixels
     radii: [f32; 4], // TL, TR, BR, BL
     color: [f32; 4],
-    material: [f32; 4], // material, strength, frequency, gloss
-    outline: [f32; 4],  // enabled, physical width, direction, seed
+    material: crate::data_render::MaterialGpu,
+    outline: [f32; 4], // enabled, physical width, direction, reserved (0)
     outline_color: [f32; 4],
-    effects: [f32; 4], // emphasis, output scale, shape (rect/notch/diamond), reserved
-    notch: [f32; 4],   // low CI pixel, median pixel, high CI pixel, depth
-    body: [f32; 4],    // box coordinates in canonical cross/along space
+    // reserved (0, emphasis moved to `material`), output scale, shape
+    // (rect/notch/diamond), reserved (0)
+    effects: [f32; 4],
+    notch: [f32; 4], // low CI pixel, median pixel, high CI pixel, depth
+    body: [f32; 4],  // box coordinates in canonical cross/along space
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -64,14 +67,14 @@ const EMPTY_BAR: Bar = Bar {
     rect: [0.0; 4],
     radii: [0.0; 4],
     color: [0.0; 4],
-    material: [0.0; 4],
+    material: crate::data_render::MaterialGpu::EMPTY,
     outline: [0.0; 4],
     outline_color: [0.0; 4],
     effects: [0.0; 4],
     notch: [0.0; 4],
     body: [0.0; 4],
 };
-const _: () = assert!(std::mem::size_of::<Bar>() == 144 && std::mem::size_of::<Globals>() == 48);
+const _: () = assert!(std::mem::size_of::<Bar>() == 160 && std::mem::size_of::<Globals>() == 48);
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BoxPlotPart {
     Box,
@@ -319,7 +322,9 @@ impl BoxPlotRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(144),
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Bar>() as u64
+                            ),
                         },
                         count: None,
                     },
@@ -533,7 +538,7 @@ impl BoxPlotRenderer {
             } else {
                 u64::from(width) * u64::from(height) * 8
             } + 48
-                + count as u64 * 144,
+                + count as u64 * std::mem::size_of::<Bar>() as u64,
         )?;
         let l = layout::layout(chart, size, scale, reused.is_none())?;
         let globals = Globals {

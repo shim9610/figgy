@@ -1,7 +1,7 @@
 // Independent bounded categorical rectangles. No Cartesian shared blocks.
 struct Globals { size:vec4<f32>, background:vec4<f32> };
 struct Bar {
-    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:vec4<f32>,
+    rect:vec4<f32>, radii:vec4<f32>, color:vec4<f32>, material:Material,
     outline:vec4<f32>, outline_color:vec4<f32>, effects:vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> globals:Globals;

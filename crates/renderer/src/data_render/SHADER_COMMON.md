@@ -42,6 +42,7 @@ To change shared shader code:
 | `line_step.wgsl` | line, line_arc |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
+| `material.wgsl` (§5.9) | boxplot, categorical, radial |
 | `bounded_shading.wgsl` | boxplot, categorical |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
@@ -472,6 +473,28 @@ CPU twin: `pick.rs::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
+
+### 5.9 Material surface
+
+Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
+into one per-instance value, `struct Material { params: vec4<f32>, finish:
+vec4<f32> }`, embedded as the `material` member of the categorical and
+boxplot `Bar` and the radial `Sector`:
+
+| Lane | Meaning |
+|---|---|
+| `params.x` | kind: `MATERIAL_FLAT` (0) … `MATERIAL_PEARL` (10), the `model::Material` variant order |
+| `params.y` | roughness (sectors: `RadialStyle::roughness`) |
+| `params.z` | texture strength |
+| `params.w` | texture scale |
+| `finish.x` | gloss |
+| `finish.y` | grain seed (stable per bar, box or slice identity) |
+| `finish.z` | texture angle in radians |
+| `finish.w` | emphasis brightness, added after shading |
+
+Rust twin: `data_render::MaterialGpu` (`data_render/style.rs`), packed by
+`MaterialGpu::pack`, with the `MATERIAL_*` constants. The struct and the
+constants are the fragment [`data_render/common/material.wgsl`](common/material.wgsl).
 
 ---
 ## Checklist

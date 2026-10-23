@@ -1,4 +1,5 @@
 use super::*;
+use crate::data_render::{FLAT_BODY_ROUGHNESS, MaterialGpu};
 use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
@@ -272,23 +273,27 @@ pub(super) fn layout(
                 .fold(2166136261u32, |a, b| {
                     (a ^ u32::from(b)).wrapping_mul(16777619)
                 });
+            let emphasis = if emphasized {
+                st.emphasis_brightness
+            } else {
+                0.0
+            };
+            let seed = (seed % 4096) as f32;
+            // Whiskers, caps, the median, the mean and outliers are Flat; only
+            // the box takes the style's material.
             let base = Bar {
-                effects: [
-                    if emphasized {
-                        st.emphasis_brightness
-                    } else {
-                        0.0
-                    },
-                    scale,
+                material: MaterialGpu::pack(
+                    crate::Material::Flat,
+                    FLAT_BODY_ROUGHNESS,
                     0.0,
                     0.0,
-                ],
-                outline: [
                     0.0,
+                    seed,
                     0.0,
-                    if horizontal { 1.0 } else { 0.0 },
-                    (seed % 4096) as f32,
-                ],
+                    emphasis,
+                ),
+                effects: [0.0, scale, 0.0, 0.0],
+                outline: [0.0, 0.0, if horizontal { 1.0 } else { 0.0 }, 0.0],
                 ..EMPTY_BAR
             };
             let xy = |cross: f32, along: f32| {
@@ -376,24 +381,21 @@ pub(super) fn layout(
                         .min(thickness * 0.5)
                         .min((q1 - q3).abs() * 0.5); 4],
                     color: [color.r, color.g, color.b, color.a],
-                    material: [
-                        match st.material {
-                            BoxPlotMaterial::Flat => 0.0,
-                            BoxPlotMaterial::Matte => 1.0,
-                            BoxPlotMaterial::SatinMetal => 2.0,
-                            // The other looks reach boxes with the shared
-                            // material shader; until then they draw as Flat.
-                            _ => 0.0,
-                        },
+                    material: MaterialGpu::pack(
+                        st.material,
+                        FLAT_BODY_ROUGHNESS,
                         st.texture_strength,
                         st.texture_scale,
                         st.gloss,
-                    ],
+                        seed,
+                        0.0,
+                        emphasis,
+                    ),
                     outline: [
                         if st.outline { 1.0 } else { 0.0 },
                         st.outline_width,
                         base.outline[2],
-                        base.outline[3],
+                        0.0,
                     ],
                     outline_color: [
                         st.outline_color.r,
