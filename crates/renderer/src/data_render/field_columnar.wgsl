@@ -537,23 +537,15 @@ fn contour_label_gap_contains(axis_t_value: vec2<f32>) -> bool {
         if (!f32_is_finite(w) || !f32_is_finite(h) || w <= 0.0 || h <= 0.0) {
             continue;
         }
-        let centre = data_to_ndc(anchor.x, anchor.y);
-        let along = data_to_ndc(
-            anchor.x + vec2<f32>(anchor.dir.x, 0.0),
-            anchor.y + vec2<f32>(anchor.dir.y, 0.0),
-        );
-        let tangent_px = (along - centre) / transform.pixel_to_ndc;
-        var right = vec2<f32>(1.0, 0.0);
-        if (dot(tangent_px, tangent_px) > 0.0) {
-            right = normalize(tangent_px);
-        }
-        let up = vec2<f32>(-right.y, right.x);
-        let delta_px = (fragment_ndc - centre) / transform.pixel_to_ndc;
-        let local = vec2<f32>(dot(delta_px, right), dot(delta_px, up));
-        // Half a pixel covers the antialiased edge of both the stroke and the
-        // atlas quad. `bg_padding_px` is already included in w/h, even when the
-        // label background itself is transparent.
-        if (abs(local.x) <= w * 0.5 + 0.5 && abs(local.y) <= h * 0.5 + 0.5) {
+        // The label quad's own frame. The gap reaches `LABEL_GAP_EDGE_PX`
+        // past the content where the quad reaches `LABEL_EDGE_PX`, so it lies
+        // inside the quad. `bg_padding_px` is already included in w/h, even
+        // when the label background itself is transparent.
+        let frame = contour_label_frame(transform, anchor.x, anchor.y, anchor.dir);
+        let content = vec2<f32>(w, h);
+        if (contour_label_covers(
+            frame, transform.pixel_to_ndc, fragment_ndc, content, LABEL_GAP_EDGE_PX,
+        )) {
             return true;
         }
     }

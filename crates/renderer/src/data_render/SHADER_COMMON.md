@@ -539,6 +539,51 @@ model (`Material::supported_on_flat_body`).
 constants and `material_surface` are the fragment
 [`data_render/common/material.wgsl`](common/material.wgsl).
 
+### 5.10 Contour label box
+
+A contour label is drawn by `contour_label.wgsl` (`vs_main`, one quad per
+anchor) and blanks the contour stroke under it in `field_columnar.wgsl`
+(`contour_label_gap_contains`, read by `fs_contour_labelled` and the field
+pick). Both place the same box, so its frame is one function:
+
+```wgsl
+struct ContourLabelFrame { centre: vec2<f32>, right: vec2<f32>, up: vec2<f32> };
+fn contour_label_frame(t: Transform, x: vec2<f32>, y: vec2<f32>,
+    dir: vec2<f32>) -> ContourLabelFrame
+fn contour_label_covers(frame: ContourLabelFrame, pixel_to_ndc: vec2<f32>,
+    ndc: vec2<f32>, content_px: vec2<f32>, edge_px: f32) -> bool
+```
+
+- `centre` is the anchor `(x, y)` (hi/lo pairs, §4) through `data_to_ndc`.
+- `right` is the unit reading direction in pixels, y up: the data-space
+  tangent `dir` added to the pairs' high lanes, projected as one finite
+  difference through the same transform and divided by `t.pixel_to_ndc`, so
+  the panel's aspect does not skew it. A zero tangent reads along +x. The
+  frame is upright: a `right` pointing left (`x < 0`, or `x == 0` and
+  `y < 0` for an exactly vertical tangent, which reads bottom to top) is
+  turned by 180°.
+- `up` is `right` turned by +90°: `(-right.y, right.x)`.
+
+`contour_label_covers` says whether the point `ndc` lies in the box of
+`content_px` (the measured label size, background padding included) grown
+by `edge_px` on every side, in that frame. Two edges are named, in pixels at
+the render scale:
+
+| Constant | Value | Use |
+|---|---|---|
+| `LABEL_EDGE_PX` | 2.0 | the quad's reach past its content: a baked background fades over the gutter texel instead of ending on a stair-stepped rasterized edge |
+| `LABEL_GAP_EDGE_PX` | 0.5 | the stroke gap's reach past the content: half a pixel covers the antialiased edge of the stroke and of the atlas quad |
+
+So the gap lies inside the quad. The box is symmetric, so the gap does not
+depend on the upright turn; the quad needs it for its texture coordinates.
+Neither constant has a Rust twin: the CPU bakes the atlas cell (`gutter`,
+`bg_padding_px`) and never places the quad.
+
+The struct, the constants and the two functions are the fragment
+[`data_render/common/contour_label_box.wgsl`](common/contour_label_box.wgsl),
+spliced after `projection.wgsl` into the contour label and field modules by
+`wgsl_module!` (`shader_assembly.rs`).
+
 ---
 ## Checklist
 

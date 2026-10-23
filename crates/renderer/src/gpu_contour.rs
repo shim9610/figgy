@@ -37,6 +37,7 @@ pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_modu
 pub(crate) const CONTOUR_LABEL_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/contour_label_box.wgsl",
     "contour_label.wgsl",
 );
 
