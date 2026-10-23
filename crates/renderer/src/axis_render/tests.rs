@@ -1068,7 +1068,7 @@ fn has_selection_blue(rgba: &[u8]) -> bool {
 
 #[test]
 fn selection_overlay_rasters_blue_box() {
-    use crate::select::{DataAreaElement, Selectable};
+    use crate::select::{DataAreaElement, SelectionGeometry};
     use crate::text_render::CpuTextMeasure;
 
     let config = default_config();
@@ -1094,7 +1094,7 @@ fn selection_overlay_rasters_blue_box() {
 /// The grid layer sits below the data — selection must never draw there.
 #[test]
 fn selection_overlay_skips_grid_layer() {
-    use crate::select::{DataAreaElement, Selectable};
+    use crate::select::{DataAreaElement, SelectionGeometry};
     use crate::text_render::CpuTextMeasure;
 
     let config = default_config();
@@ -1161,41 +1161,45 @@ fn sketch_seed_changes_raster() {
     }
 }
 
-/// The selection overlay never wobbles. The box is placed mid data
-/// area, over pixels that are fully transparent in both modes (deco ink
-/// hugs the data-area border, the legend sits top-right), so its rendered
-/// pixels — footprint AND values — must be byte-identical whether sketch
-/// mode is on or off.
+/// The selection overlay never wobbles. The box is the data area's real
+/// selection box, 2 px outside the data-area border. The axis chrome along
+/// that border (lines, ticks, labels, grid) is switched off, so the box sits
+/// over pixels that are fully transparent in both modes (the sketched legend
+/// sits inside the top-right corner), and its rendered pixels — footprint
+/// AND values — must be byte-identical whether sketch mode is on or off.
 #[test]
 fn selection_overlay_stays_precise_in_sketch_mode() {
-    use crate::layout::RectF;
+    use crate::select::{DataAreaElement, SelectionGeometry};
+    use crate::text_render::CpuTextMeasure;
 
-    let sketched = sketch_test_config(0);
+    let mut sketched = sketch_test_config(0);
+    for axis in [
+        &mut sketched.top_x,
+        &mut sketched.bottom_x,
+        &mut sketched.left_y,
+        &mut sketched.right_y,
+    ] {
+        axis.line_visible = false;
+        axis.tick = TickVisibility::None;
+        axis.label_style.visible = false;
+    }
+    sketched.grid.show_major_x = false;
+    sketched.grid.show_major_y = false;
+    sketched.grid.show_minor_x = false;
+    sketched.grid.show_minor_y = false;
     let mut precise = sketched.clone();
     precise.draw_style = DrawStyle::Precise;
 
-    let sel = SelectionBox {
-        rect: RectF {
-            x: 300.0,
-            y: 350.0,
-            width: 120.0,
-            height: 80.0,
-        },
-        color: Color {
-            r: 0.0,
-            g: 0.4,
-            b: 1.0,
-            a: 1.0,
-        },
-        stroke_width: 2.0,
-        handles: vec![RectF {
-            x: 296.0,
-            y: 346.0,
-            width: 8.0,
-            height: 8.0,
-        }],
-        outline: SelectionOutline::Rect,
-    };
+    let sel = DataAreaElement
+        .selection_box(&precise, &CpuTextMeasure::for_style(&precise.draw_style))
+        .expect("the data area is selectable");
+    assert_eq!(
+        Some(sel.rect()),
+        DataAreaElement
+            .selection_box(&sketched, &CpuTextMeasure::for_style(&sketched.draw_style))
+            .map(|b| b.rect()),
+        "the data area box does not depend on the draw style"
+    );
 
     let layer = AxisLayerKind::Decoration;
     let base_p = try_raster_chart_layer_to_rgba(&precise, layer).unwrap();
@@ -1716,7 +1720,7 @@ fn colorbar_ticks_honor_direction_and_configured_line_style() {
 
 #[test]
 fn detached_colorbar_axis_paint_stays_inside_its_selection_bounds() {
-    use crate::select::{ColorBarAxisElement, Selectable};
+    use crate::select::{ColorBarAxisElement, SelectionGeometry};
     use crate::text_render::CpuTextMeasure;
 
     let mut cfg = colorbar_config(Side::Right);
@@ -1792,7 +1796,7 @@ fn a_degenerate_colorbar_is_skipped() {
 /// and the handles on the bar the user sees.
 #[test]
 fn a_colorbar_offset_moves_the_painted_strip() {
-    use crate::select::{ColorBarElement, Selectable};
+    use crate::select::{ColorBarElement, SelectionGeometry};
     use crate::text_render::CpuTextMeasure;
 
     let mut cfg = colorbar_config(Side::Right);
@@ -1833,7 +1837,11 @@ fn a_colorbar_offset_moves_the_painted_strip() {
 /// leaves the ring alone, instead of one box around the whole chart.
 #[test]
 fn a_polar_tick_label_selection_boxes_each_label() {
-    use crate::layout::RectF;
+    use crate::layout::{DrawnPart, Element};
+    use crate::select::{AxisLabelElement, SELECTION_PADDING, SelectionGeometry, SelectionOutline};
+    use crate::sink::Parts;
+    use crate::text::MeasureText;
+    use crate::text_render::CpuTextMeasure;
 
     let mut cfg = default_config();
     cfg.polar = Some(crate::polar::PolarOptions::default());
@@ -1841,40 +1849,35 @@ fn a_polar_tick_label_selection_boxes_each_label() {
     chart.set_x_range(0.0, 360.0);
     chart.set_y_range(0.0, 3.0);
     let cfg = chart.config().clone();
-    let fp = FontPolicy::for_style(&cfg.draw_style);
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     let width = cfg.chart_area.0.width as usize;
 
+    // Polar angle labels are the bottom labels, radius labels the left ones.
     for side in [Side::Bottom, Side::Left] {
         let mut labels = Vec::new();
-        polar::polar_tick_label_rects(&cfg, side.clone(), fp, |r| labels.push(r));
+        assert!(measure.emit(
+            &cfg,
+            &Element::AxisLabel(side.clone()),
+            &mut Parts(&mut |part| if let DrawnPart::Text(r) = part {
+                labels.push(r)
+            }),
+        ));
         assert!(labels.len() >= 4, "{side:?}: {} labels", labels.len());
 
-        // The whole-ring box a plain outline would draw.
-        let (x0, y0, x1, y1) = labels.iter().fold(
-            (f32::MAX, f32::MAX, f32::MIN, f32::MIN),
-            |(x0, y0, x1, y1), r| {
-                (
-                    x0.min(r.x),
-                    y0.min(r.y),
-                    x1.max(r.x + r.width),
-                    y1.max(r.y + r.height),
-                )
-            },
-        );
-        let ring = RectF {
-            x: x0,
-            y: y0,
-            width: x1 - x0,
-            height: y1 - y0,
+        // The real selection box: its rect is the whole-ring box a plain
+        // outline would draw, its outline the labels themselves.
+        let sel = AxisLabelElement { side: side.clone() }
+            .selection_box(&cfg, &measure)
+            .expect("polar tick labels are selectable");
+        let ring = sel.rect();
+        match sel.outline() {
+            SelectionOutline::Parts(parts) => assert_eq!(
+                parts.len(),
+                labels.len(),
+                "{side:?}: the outline holds every drawn label"
+            ),
+            other => panic!("{side:?}: polar tick labels outline their parts, got {other:?}"),
         }
-        .expanded(SELECTION_PADDING);
-        let sel = SelectionBox {
-            rect: ring,
-            color: Color::BLACK,
-            stroke_width: 2.0,
-            handles: Vec::new(),
-            outline: SelectionOutline::TickLabels(side.clone()),
-        };
         let layer = AxisLayerKind::Decoration;
         let base = try_raster_chart_layer_to_rgba(&cfg, layer).unwrap();
         let with = try_raster_chart_layer_to_rgba_with_selection(&cfg, layer, &[sel]).unwrap();

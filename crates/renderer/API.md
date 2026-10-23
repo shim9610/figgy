@@ -487,7 +487,7 @@ Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer
 
 ## Pointer position in drags
 
-Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
+Every drag takes a `&dyn MeasureText` (the renderer's `CpuTextMeasure::for_style(&config.draw_style)`): a move is contained on the element's drawn parts, so it is rejected when none of them would keep its centre inside the chart area, or when the measure cannot place the element. Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, measure, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, measure, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
 
 ## Annotation layer
 

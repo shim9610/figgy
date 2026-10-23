@@ -54,9 +54,9 @@ fn assert_selection_pixels(
         (before.width, before.height),
         (selected.width, selected.height)
     );
-    let r = selection.rect;
+    let r = selection.rect();
     // Half the stroke plus one physical pixel for raster antialiasing.
-    let halo = selection.stroke_width * 0.5 + 1.0 / scale;
+    let halo = selection.stroke_width() * 0.5 + 1.0 / scale;
     let bands = [
         RectF {
             x: r.x - halo,
@@ -97,7 +97,7 @@ fn assert_selection_pixels(
         let y = (i as u32 / selected.width) as f32 / scale + 0.5 / scale;
         let on_border = bands.map(|b| b.contains(x, y));
         let on_handle = selection
-            .handles
+            .handles()
             .iter()
             .any(|h| h.expanded(halo).contains(x, y));
         assert!(

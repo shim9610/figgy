@@ -104,8 +104,9 @@ let next_frame = renderer.prepare(chart, (800, 520), 2.0)?;
 # fn drag(map: &renderer::decoration::DecorationMap, hit: renderer::HitId,
 #         chart: &mut renderer::RadialChart) {
 let element = map.hit_map().get(hit).unwrap();
+// 경계가 있는 차트의 요소는 측정된 경계를 이미 갖고 있으므로 measure는 읽지 않는다.
 let result = element.as_draggable().unwrap()
-    .drag_by(&mut chart.decorations, 8.0, -4.0);
+    .drag_by(&mut chart.decorations, &renderer::CpuTextMeasure::default(), 8.0, -4.0);
 # let _ = result;
 # }
 ```
@@ -205,7 +206,7 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·
 데이터 경계라 히트 영역이 없고, 반직선(`Axis(Left)`)은 드래그하면 중심을 축으로 돌아
 `radial_label_angle_degrees`가 바뀐다. 각도 눈금 라벨은 포인터가 있는 스포크를 따라 안팎으로,
 반지름 눈금 라벨은 반직선 프레임에서 움직인다. 이 규칙에는 포인터 위치가 필요하므로
-`Draggable::drag_from(cfg, at, dx, dy)`와 `Config::nudge_from(element, Some(at), dx, dy)`에
+`Draggable::drag_from(cfg, measure, at, dx, dy)`와 `Config::nudge_from(element, measure, Some(at), dx, dy)`에
 이동량을 잰 기준 포인터 위치 `at`(차트 내부 논리 픽셀)을 함께 넘긴다. `drag_from`의 기본 구현은
 `at`을 무시하고 `drag_by`를 호출하므로, 극좌표 축과 눈금 라벨이 아닌 요소는 `drag_by`와 똑같이
 움직인다. 웹 래퍼의 `on_move`는 누른 지점에 이동량을 누적한 포인터 위치를 넘긴다. 상단·우측 축은

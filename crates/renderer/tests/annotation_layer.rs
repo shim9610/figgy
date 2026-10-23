@@ -69,23 +69,25 @@ fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
         .count()
 }
 
-/// A point on the first shape the raster paints for an item: a stroke's
+/// A point on the first part the raster places for an item: a stroke's
 /// midpoint, a head's centroid, a box's centre. The centre of the item's
 /// bounds can be empty, for example beside a label.
 fn on_item(map: &AnnotationMap, layer: &AnnotationLayer, id: HitId) -> [f32; 2] {
-    use ::renderer::annotation::AnnotationShape;
-    let shape = map.element(id).unwrap().shapes(layer)[0]
-        .or(map.element(id).unwrap().shapes(layer)[1])
-        .expect("the item paints a shape");
-    match shape {
-        AnnotationShape::Stroke { a, b, .. } => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
-        AnnotationShape::Triangle(t) => [
+    use ::renderer::sink::{DrawnPart, Parts};
+    let mut first = None;
+    map.element(id).unwrap().emit(
+        layer,
+        &mut Parts(&mut |part| {
+            first.get_or_insert(part);
+        }),
+    );
+    match first.expect("the item places a part") {
+        DrawnPart::Segment { a, b, .. } => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+        DrawnPart::Triangle(t) => [
             (t[0][0] + t[1][0] + t[2][0]) / 3.0,
             (t[0][1] + t[1][1] + t[2][1]) / 3.0,
         ],
-        AnnotationShape::Rect(r) | AnnotationShape::Label(r) => {
-            [r.x + r.width * 0.5, r.y + r.height * 0.5]
-        }
+        DrawnPart::Rect(r) | DrawnPart::Text(r) => [r.x + r.width * 0.5, r.y + r.height * 0.5],
     }
 }
 
@@ -561,11 +563,11 @@ macro_rules! family_routing {
                 // handle drags through the map and keeps the anchor kinds.
                 let (index, id) = annotations
                     .entries()
-                    .find(|(id, _)| !annotations.selection_box(*id).unwrap().handles.is_empty())
+                    .find(|(id, _)| !annotations.selection_box(*id).unwrap().handles().is_empty())
                     .map(|(id, e)| (e.index, id))
                     .expect("an item with handles");
                 c.decorations.selected = Some(DecorationId::Annotation(index));
-                let handle_square = annotations.selection_box(id).unwrap().handles[0];
+                let handle_square = annotations.selection_box(id).unwrap().handles()[0];
                 let handle = annotations
                     .hit_resize_handle(id, centre(handle_square))
                     .expect("live handle");
@@ -846,7 +848,7 @@ fn annotation_hit_regions_follow_the_drawn_items() {
                     .max()
                     .unwrap()
             };
-            let selection = map.selection_box(id).unwrap().rect.expanded(1.0);
+            let selection = map.selection_box(id).unwrap().rect().expanded(1.0);
             let mut strong = 0;
             for y in 0..h {
                 for x in 0..w {

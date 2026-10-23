@@ -6,9 +6,10 @@
 use renderer::axis_render::try_raster_chart_to_rgba;
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, NudgeResult, Rect, RectF, Side};
+use renderer::sink::Parts;
 use renderer::{
     AxisLabelElement, ColorBarLabelElement, Config, CpuTextMeasure, Draggable, HitMap, MeasureText,
-    Selectable,
+    Selectable, SelectionGeometry,
 };
 
 const WIDTH: u32 = 640;
@@ -74,9 +75,12 @@ impl Labels {
     }
 
     fn drag(&self, cfg: &mut Config, dx: f32, dy: f32) {
+        let measure = CpuTextMeasure::for_style(&cfg.draw_style);
         let result = match self {
-            Labels::Axis(side) => AxisLabelElement { side: side.clone() }.drag_by(cfg, dx, dy),
-            Labels::ColorBar => ColorBarLabelElement.drag_by(cfg, dx, dy),
+            Labels::Axis(side) => {
+                AxisLabelElement { side: side.clone() }.drag_by(cfg, &measure, dx, dy)
+            }
+            Labels::ColorBar => ColorBarLabelElement.drag_by(cfg, &measure, dx, dy),
         };
         assert_eq!(result, NudgeResult::Moved, "{self:?} by ({dx}, {dy})");
     }
@@ -205,7 +209,7 @@ fn a_dragged_label_set_keeps_its_bounds_on_the_drawn_labels() {
                     .element()
                     .selection_box(cfg, &CpuTextMeasure::for_style(&cfg.draw_style))
                     .unwrap()
-                    .rect
+                    .rect()
             };
             let padding = bounds_before.x - selection(&base).x;
             assert_eq!(selection(&cfg), moved.expanded(padding), "{case}");
@@ -334,7 +338,11 @@ fn the_hit_region_is_the_selection_box() {
     for (labels, colorbar) in cases() {
         let cfg = bare_config(colorbar);
         let measure = CpuTextMeasure::for_style(&cfg.draw_style);
-        let selection = labels.element().selection_box(&cfg, &measure).unwrap().rect;
+        let selection = labels
+            .element()
+            .selection_box(&cfg, &measure)
+            .unwrap()
+            .rect();
         let (cx, cy) = (
             selection.x + selection.width * 0.5,
             selection.y + selection.height * 0.5,
@@ -380,7 +388,11 @@ fn polar_tick_labels_hit_each_drawn_label() {
     for side in [Side::Bottom, Side::Left] {
         let element = renderer::layout::Element::AxisLabel(side.clone());
         let mut rects = Vec::new();
-        assert!(measure.drawn_parts(&cfg, &element, &mut |p| rects.push(text_rect(p))));
+        assert!(measure.emit(
+            &cfg,
+            &element,
+            &mut Parts(&mut |p| rects.push(text_rect(p)))
+        ));
         assert!(rects.len() >= 4, "{side:?}: {} labels", rects.len());
         let name = AxisLabelElement { side: side.clone() }.element_id();
         for r in &rects {
@@ -392,7 +404,11 @@ fn polar_tick_labels_hit_each_drawn_label() {
     // it, and every point outside all padded label boxes misses the labels.
     let element = renderer::layout::Element::AxisLabel(Side::Bottom);
     let mut rects = Vec::new();
-    measure.drawn_parts(&cfg, &element, &mut |p| rects.push(text_rect(p)));
+    measure.emit(
+        &cfg,
+        &element,
+        &mut Parts(&mut |p| rects.push(text_rect(p))),
+    );
     let geometry = cfg.polar_geometry().unwrap();
     let (cx, cy) = (geometry.center[0], geometry.center[1]);
     let radius = rects

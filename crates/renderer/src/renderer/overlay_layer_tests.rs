@@ -4,7 +4,6 @@
 //! given the final state, never the implementation's own invalidation rule.
 use super::*;
 use crate::layout::{ChartArea, Rect};
-use crate::select::SelectionBox;
 use crate::text::RichText;
 use crate::{HitMap, LayerRef, OverlayLayer, WarningAxis};
 
@@ -109,9 +108,11 @@ fn fresh_frame(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     frame_with_view(&mut r, id, &view)
 }
 
-fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
+/// Refresh every panel of `id` with the element `selected` names selected
+/// (`None` clears the selection).
+fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selected: Option<&str>) {
     let config = r.chart_config(id).unwrap().clone();
-    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selection)
+    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected)
         .unwrap();
 }
 
@@ -149,7 +150,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
         "first frame differs from a fresh render".into(),
     );
     // A refresh with nothing changed uploads nothing.
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     check(
         view.layer_raster_generations() == vec![1, 1, 1],
         format!(
@@ -205,7 +206,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
             after.needs_raster_since(Some(&before)),
             format!("{name}: a layer edit must refresh the raster"),
         );
-        refresh(&mut r, id, &mut view, &[]);
+        refresh(&mut r, id, &mut view, None);
         check(
             view.layer_raster_generations() == expected,
             format!(
@@ -227,19 +228,14 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
 
     // Selection chrome lives in the topmost panel: a selection box refresh
     // re-rasters that panel only, and clearing it restores the frame.
-    let boxes = [SelectionBox {
-        rect: crate::layout::RectF {
-            x: 40.0,
-            y: 40.0,
-            width: 50.0,
-            height: 30.0,
-        },
-        color: crate::select::SELECTION_COLOR,
-        stroke_width: crate::select::SELECTION_STROKE_WIDTH,
-        handles: Vec::new(),
-        outline: crate::select::SelectionOutline::Rect,
-    }];
-    refresh(&mut r, id, &mut view, &boxes);
+    // The data area is shared by every layer; its box is routed to the
+    // topmost panel.
+    let config = r.chart_config(id).unwrap().clone();
+    check(
+        r.selection_box(&Chart::new(config), "data_area").is_some(),
+        "the data area has no selection box".into(),
+    );
+    refresh(&mut r, id, &mut view, Some("data_area"));
     check(
         view.layer_raster_generations() == vec![3, 4, 4],
         format!(
@@ -249,7 +245,7 @@ fn a_layer_edit_refreshes_only_that_layers_raster_and_matches_a_fresh_render() {
     );
     let selected = frame_with_view(&mut r, id, &view);
     check(selected != previous, "selection box drew nothing".into());
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     check(
         frame_with_view(&mut r, id, &view) == previous,
         "clearing the selection did not restore the frame".into(),
@@ -289,7 +285,7 @@ fn a_linked_range_edit_moves_every_layer_in_one_registry_call() {
     let edited = r.chart_config(id).unwrap().clone();
     let state_after = r.chart_view_state(id).unwrap();
 
-    refresh(&mut r, id, &mut view, &[]);
+    refresh(&mut r, id, &mut view, None);
     let after = frame_with_view(&mut r, id, &view);
     let fresh = fresh_frame(&edited, three_series());
 

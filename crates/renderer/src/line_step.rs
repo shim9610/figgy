@@ -229,7 +229,13 @@ mod tests {
             LineInterpolation::StepMid,
         ] {
             let (pieces, count) = step_pieces(a, b, mode);
-            assert_eq!(count as u32, mode.piece_count());
+            // Axis-aligned pieces one segment is drawn as.
+            let expected = match mode {
+                LineInterpolation::Linear => 1,
+                LineInterpolation::StepPre | LineInterpolation::StepPost => 2,
+                LineInterpolation::StepMid => 3,
+            };
+            assert_eq!(count, expected, "{mode:?}");
             assert_eq!(pieces[0].a, a);
             assert_eq!(pieces[count - 1].b, b);
             for pair in pieces[..count].windows(2) {

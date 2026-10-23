@@ -17,7 +17,7 @@ use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineIn
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
+use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
@@ -1036,17 +1036,17 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     // above the ray, at the ink's height, and the hit map answers there.
     let geometry = chart.config().polar_geometry().unwrap();
     let mut outer: Option<renderer::layout::RectF> = None;
-    assert!(renderer::MeasureText::drawn_parts(
+    assert!(renderer::MeasureText::emit(
         &measure,
         chart.config(),
         &renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
-        &mut |part| {
+        &mut renderer::sink::Parts(&mut |part| {
             if let renderer::layout::DrawnPart::Text(r) = part
                 && outer.is_none_or(|o| r.x > o.x)
             {
                 outer = Some(r);
             }
-        },
+        }),
     ));
     let label = outer.expect("the ray draws labels");
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
@@ -1089,13 +1089,15 @@ fn radius_labels_survive_rotating_the_ray() {
         let config = chart.config().clone();
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut boxes: Vec<RectF> = Vec::new();
-        assert!(
-            measure.drawn_parts(&config, &Element::AxisLabel(Side::Left), &mut |part| {
+        assert!(measure.emit(
+            &config,
+            &Element::AxisLabel(Side::Left),
+            &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(rect) = part {
                     boxes.push(rect);
                 }
             })
-        );
+        ));
         boxes
     };
     let angles = [0.0, 5.0, 15.0, 30.0, 90.0, 180.0, 270.0, 330.0, 355.0];
