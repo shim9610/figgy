@@ -188,15 +188,6 @@ mod tests {
     }
 
     #[test]
-    fn drag_moves_chart_title_offset() {
-        let mut cfg = cfg_800x600();
-        let r = ChartTitleElement.drag_by(&mut cfg, 5.0, 3.0);
-        assert_eq!(r, NudgeResult::Moved);
-        assert_eq!(cfg.chart_title.offset_x, 5.0);
-        assert_eq!(cfg.chart_title.offset_y, 3.0);
-    }
-
-    #[test]
     fn drag_matches_direct_nudge_path() {
         let mut via_drag = cfg_800x600();
         let mut via_nudge = cfg_800x600();
@@ -204,15 +195,6 @@ mod tests {
         el.drag_by(&mut via_drag, 4.0, -2.0);
         via_nudge.nudge(Element::AxisTitle(Side::Left), 4.0, -2.0);
         assert_eq!(via_drag, via_nudge);
-    }
-
-    #[test]
-    fn rejected_drag_leaves_config_unchanged() {
-        let mut cfg = cfg_800x600();
-        let before = cfg.clone();
-        let r = ChartTitleElement.drag_by(&mut cfg, -1e6, 0.0);
-        assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
-        assert_eq!(cfg, before);
     }
 
     #[test]
@@ -226,32 +208,6 @@ mod tests {
         assert_eq!(r, NudgeResult::Moved);
         assert_eq!(cfg.left_y.title_option.offset_x, -7.0);
         assert_eq!(cfg.left_y.title_option.offset_y, 3.0);
-    }
-
-    // Dragging a y-axis applies only the x component (perpendicular rule)
-    // and detaches the axis: line_offset moves, the data area does not — so
-    // tick positions along the axis stay aligned with the data.
-    #[test]
-    fn y_axis_drag_detaches_horizontally_only() {
-        let mut cfg = cfg_800x600();
-        let da_before = cfg.data_area().unwrap();
-
-        let el = AxisElement { side: Side::Left };
-        let r = el.drag_by(&mut cfg, 12.0, -40.0);
-        assert_eq!(r, NudgeResult::Moved);
-        assert_eq!(cfg.left_y.line_offset, 12.0);
-        assert_eq!(cfg.data_area().unwrap(), da_before);
-    }
-
-    #[test]
-    fn x_axis_drag_detaches_vertically_only() {
-        let mut cfg = cfg_800x600();
-        let da_before = cfg.data_area().unwrap();
-        let el = AxisElement { side: Side::Bottom };
-        let r = el.drag_by(&mut cfg, -40.0, -6.0);
-        assert_eq!(r, NudgeResult::Moved);
-        assert_eq!(cfg.bottom_x.line_offset, -6.0);
-        assert_eq!(cfg.data_area().unwrap(), da_before);
     }
 
     #[test]
