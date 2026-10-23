@@ -34,6 +34,8 @@ pub(crate) mod types;
 
 pub(crate) use engine::GpuPickEngine;
 pub use engine::GpuPickTicket;
+#[cfg(test)]
+pub(crate) use engine::PLANET_QUAD_EXTENT;
 #[cfg(feature = "cpu-twin")]
 pub(crate) use engine::milkyway_line_half_extent;
 use engine::query_params;

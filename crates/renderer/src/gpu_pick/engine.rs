@@ -20,7 +20,7 @@ pub(super) const MARKER_QUAD_MARGIN_PX: f32 = crate::data_render::MARKER_QUAD_MA
 /// of `constellation_star_radius` (`0.86 + 0.30`).
 pub(super) const CONSTELLATION_STAR_MAX_SCALE: f32 = 1.16;
 /// `PLANET_QUAD_EXTENT`: a planet's quad half-extent per unit radius.
-pub(super) const PLANET_QUAD_EXTENT: f32 = 2.5;
+pub(crate) const PLANET_QUAD_EXTENT: f32 = 2.5;
 
 /// The pick shader's per-query uniform for one registered series. `data` is
 /// `(point count, x lane base, y lane base, style-index lane base)` and
