@@ -61,7 +61,7 @@ fn assembled_module_for(path_rel: &str) -> Option<&'static str> {
         "src/gpu_errorbar.wgsl" => "errorbar_fit",
         "src/data_render/vector/project_cartesian2d.wgsl"
         | "src/data_render/vector/vector_input_common.wgsl"
-        | "src/data_render/vector/glyph_arrow.wgsl" => "vector_grid",
+        | "src/data_render/common/arrow.wgsl" => "vector_grid",
         _ => return None,
     })
 }
@@ -497,10 +497,10 @@ fn wgsl_struct(source: &str, name: &str) -> String {
 fn arrow_glyph_twins_match_the_ssot() {
     let ssot = read(SSOT_PATH);
     let pick = read(PICK_FRAGMENTS);
-    let glyph = read("src/data_render/vector/glyph_arrow.wgsl");
+    let glyph = read("src/data_render/common/arrow.wgsl");
     let projection = read("src/data_render/vector/project_cartesian2d.wgsl");
     let copies = [
-        ("src/data_render/vector/glyph_arrow.wgsl", &glyph, true),
+        ("src/data_render/common/arrow.wgsl", &glyph, true),
         (
             "src/data_render/vector/project_cartesian2d.wgsl",
             &projection,
@@ -543,7 +543,7 @@ fn arrow_glyph_twins_match_the_ssot() {
                 );
             }
         }
-        if path != "src/data_render/vector/glyph_arrow.wgsl" {
+        if path != "src/data_render/common/arrow.wgsl" {
             for function in ["pair_add", "axis_px_per_unit_at"] {
                 assert_eq!(
                     wgsl_function(shader, function),
@@ -1028,10 +1028,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &[
-            "data_render/vector/glyph_arrow.wgsl",
-            "gpu_pick/vector.wgsl",
-        ],
+        &["data_render/common/arrow.wgsl", "gpu_pick/vector.wgsl"],
         &[
             "arrow_distance",
             "arrow_finite",

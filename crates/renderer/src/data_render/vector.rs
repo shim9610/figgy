@@ -12,7 +12,7 @@
 //! - `vector_input_points.wgsl` / `vector_input_grid.wgsl`: `vector_sample`,
 //!   one `VectorSample` per instance index from index-aligned columns or from
 //!   a grid declaration.
-//! - `glyph_arrow.wgsl`: the arrow geometry and its analytic coverage.
+//! - `../common/arrow.wgsl`: the arrow geometry and its analytic coverage.
 //! - `vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
 //! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
@@ -58,7 +58,7 @@ pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/ramp.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_points.wgsl",
-    "data_render/vector/glyph_arrow.wgsl",
+    "data_render/common/arrow.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
 
@@ -74,7 +74,7 @@ pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/ramp.wgsl",
     "data_render/vector/vector_input_common.wgsl",
     "data_render/vector/vector_input_grid.wgsl",
-    "data_render/vector/glyph_arrow.wgsl",
+    "data_render/common/arrow.wgsl",
     "data_render/vector/vector_entry.wgsl",
 );
 
@@ -98,7 +98,7 @@ pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::
     )
 }
 
-/// Vertices per arrow: one oriented quad (`glyph_arrow.wgsl::ARROW_VERTICES`).
+/// Vertices per arrow: one oriented quad (`common/arrow.wgsl::ARROW_VERTICES`).
 pub const ARROW_VERTICES: u32 = 6;
 
 /// `VectorParamsGpu::flags`: the components are grids, not point columns.
@@ -453,7 +453,7 @@ mod tests {
                 "data_render/common/ramp.wgsl",
                 "data_render/vector/vector_input_common.wgsl",
                 "data_render/vector/vector_input_points.wgsl",
-                "data_render/vector/glyph_arrow.wgsl",
+                "data_render/common/arrow.wgsl",
                 "data_render/vector/vector_entry.wgsl",
             ],
             VectorInput::Grid => &[
@@ -467,7 +467,7 @@ mod tests {
                 "data_render/common/ramp.wgsl",
                 "data_render/vector/vector_input_common.wgsl",
                 "data_render/vector/vector_input_grid.wgsl",
-                "data_render/vector/glyph_arrow.wgsl",
+                "data_render/common/arrow.wgsl",
                 "data_render/vector/vector_entry.wgsl",
             ],
         }
