@@ -199,9 +199,12 @@ Collected on `integration/0.19`; the release entry replaces this section.
   - `nice_levels` returns the level-limit error for ranges whose level
     indices passed `i64` (the walk saturated and returned no levels), and
     no levels for a step that moves neither range end at `f64` precision
-    (the walk repeated the few representable values).
-  The box plot, radar and categorical value ticks, the Cartesian log
-  decades (`powf` instead of `powi`) and the grid lines move to the shared
+    (the walk repeated the few representable values);
+  - the log decades of Cartesian axes, grid lines and the colourbar are
+    computed with `powf` instead of `powi`, as contour levels already were:
+    a decade value can move by up to 7 ulp at large exponents, and an axis
+    reaching subnormal decades gains the ticks `powi` lost.
+  The box plot, radar and categorical value ticks move to the shared
   walkers in a follow-up.
 - **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
   decimals, trim_zeros })` writes a value alone, ignoring scale, spacing

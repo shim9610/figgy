@@ -9,7 +9,9 @@ use crate::layout::LABEL_GAP;
 use crate::layout::{TitleBand, axis_title_placement, colorbar_rect, label_origin};
 use crate::render_warning::SpacingRejection;
 use crate::text::{RichSegment, RichText};
-use crate::tick::{MAX_LOG_DECADE_STEP, MAX_MINOR_SUBDIVISIONS};
+use crate::tick::{
+    MAX_LOG_DECADE_STEP, MAX_LOG_DECADES, MAX_MAJOR_INTERVALS, MAX_MINOR_SUBDIVISIONS,
+};
 
 fn contour_label_fixture() -> (Config, ContourLabelConfig) {
     let config = default_config();
@@ -332,11 +334,10 @@ fn log_tick_walkers_bound_every_finite_extreme_range() {
 // Parity with the replaced code; removed with the old walkers in the follow-up PR.
 //
 // The tick plan moved to `crate::tick` (#58 item 14). These tests compare the
-// renderer's remaining Vec walkers (on `grid::linear_grid_values` until
-// `grid.rs` moves too) and the bounded families' inline walks with the
-// model's over wide grids of inputs, and pin the differences the plan
-// accepted. The comparison of the Cartesian spacing rule went with
-// `chart::nice_spacing`; `tick.rs` keeps its golden tables.
+// bounded families' inline walks and `plain_number` with the model's over
+// wide grids of inputs, and pin the differences the plan accepted. The
+// comparisons of the Cartesian spacing rule and the Vec walkers went with
+// the replaced code; `tick.rs` keeps its golden tables.
 mod tick_plan_parity {
     use super::*;
     use crate::tick as model_tick;
@@ -368,117 +369,6 @@ mod tick_plan_parity {
         fn unit(&mut self) -> f64 {
             (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
         }
-    }
-
-    fn walker_axes() -> Vec<AxisOptions> {
-        let below_max = f64::from_bits(f64::MAX.to_bits() - 1);
-        let ranges: [(f64, f64); 18] = [
-            (0.0, 10.0),
-            (0.137, 9.42),
-            (-3.7, 12.9),
-            (1e-9, 3e-9),
-            (1e9, 1e9 + 1000.0),
-            (-1e300, 1e300),
-            (-f64::MAX, f64::MAX),
-            (0.0, f64::from_bits(1)),
-            (below_max, f64::MAX),
-            (10.0, 1.0),
-            (f64::NAN, 1.0),
-            (1.0, f64::INFINITY),
-            (1e16, 1e16 + 4.0),
-            (0.003, 250.0),
-            (1e-300, 1e300),
-            (f64::from_bits(1), f64::MAX),
-            (0.0, 1000.0),
-            (1e-320, 1e-300),
-        ];
-        let mut axes = Vec::new();
-        for scale in [AxisScale::Linear, AxisScale::Logarithmic] {
-            for (min, max) in ranges {
-                let valid = model_tick::axis_major_spacing(&scale, min, max);
-                for spacing in [
-                    valid,
-                    1.0,
-                    2.7,
-                    0.0,
-                    -1.0,
-                    f64::NAN,
-                    f64::INFINITY,
-                    1e-300,
-                    1e300,
-                    f64::MAX,
-                ] {
-                    for minor_count in [0, 1, 4, 9, 99, 100, 1000] {
-                        let mut axis = default_config().bottom_x.clone();
-                        axis.scale = scale.clone();
-                        axis.min = min;
-                        axis.max = max;
-                        axis.major_spacing = spacing;
-                        axis.minor_count = minor_count;
-                        axes.push(axis);
-                    }
-                }
-            }
-        }
-        axes
-    }
-
-    /// The model's walkers draw the renderer's ticks. Linear walks are
-    /// bit-identical. Log decades use `powf` instead of `powi`
-    /// (difference 5): values move by a few ulp, and only ranges that reach
-    /// subnormal decades gain ticks.
-    #[test]
-    fn model_walkers_match_the_renderer_walkers() {
-        let axes = walker_axes();
-        let mut log_value_differences = 0usize;
-        let mut subnormal_gains = 0usize;
-        let mut worst_log = 0u64;
-        for axis in &axes {
-            let label = format!(
-                "{:?} {:?}..{:?} spacing {:?} minors {}",
-                axis.scale, axis.min, axis.max, axis.major_spacing, axis.minor_count
-            );
-            assert_eq!(
-                walkable_range(axis),
-                model_tick::walkable_range(axis),
-                "{label}"
-            );
-
-            let old_majors = major_tick_values(axis);
-            let new_majors: Vec<f64> = model_tick::major_ticks(axis).collect();
-            let old_minors = minor_tick_values(axis);
-            let new_minors: Vec<f64> = model_tick::minor_ticks(axis).collect();
-            match axis.scale {
-                AxisScale::Linear => {
-                    assert_eq!(old_majors, new_majors, "{label}");
-                    assert_eq!(old_minors, new_minors, "{label}");
-                }
-                AxisScale::Logarithmic => {
-                    for (old, new) in [(&old_majors, &new_majors), (&old_minors, &new_minors)] {
-                        if old.len() != new.len() {
-                            // `powi` loses the subnormal decades `powf` keeps.
-                            assert!(new.len() > old.len(), "{label}");
-                            assert!(new[0] < f64::MIN_POSITIVE, "{label}: {new:?}");
-                            subnormal_gains += 1;
-                            continue;
-                        }
-                        for (a, b) in old.iter().zip(new) {
-                            let distance = ulps(*a, *b);
-                            assert!(distance <= 16, "{label}: {a:?} vs {b:?}");
-                            if distance > 0 {
-                                log_value_differences += 1;
-                                worst_log = worst_log.max(distance);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        eprintln!(
-            "walker parity: {} axes, linear walks equal; {log_value_differences} log values differ by 1..={worst_log} ulp; \
-             {subnormal_gains} log walks gain subnormal decades",
-            axes.len()
-        );
     }
 
     /// Values for the `Plain` parity tests: both signs, every decade from 1e-12

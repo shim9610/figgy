@@ -1,4 +1,4 @@
-//! Grid lines and the linear grid walk the tick walkers share.
+//! Grid lines, drawn at the tick walkers' values.
 
 use super::*;
 
@@ -109,52 +109,4 @@ pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &m
             );
         }
     }
-}
-
-pub(super) const GRID_EPSILON: f64 = 1.0e-9;
-
-/// Range a tick walker may iterate: finite ends, positive span. NaN/±inf
-/// ends otherwise slip past plain `max <= min` comparisons and saturate the
-/// integer step bounds (`inf as i64` = i64::MAX — an unbounded walk).
-pub(super) fn walkable_range(axis: &AxisOptions) -> bool {
-    axis.min.is_finite() && axis.max.is_finite() && axis.max > axis.min
-}
-
-pub(super) fn linear_grid_values(
-    axis: &AxisOptions,
-    spacing: f64,
-    max_intervals: usize,
-) -> Vec<(f64, f64)> {
-    let mut out = Vec::new();
-    if !walkable_range(axis)
-        || !spacing.is_finite()
-        || spacing <= 0.0
-        || !spacing_advances_range(axis, spacing)
-    {
-        return out;
-    }
-    let first = ((axis.min / spacing) - GRID_EPSILON).ceil();
-    let last = ((axis.max / spacing) + GRID_EPSILON).floor();
-    if !first.is_finite() || !last.is_finite() || last < first {
-        return out;
-    }
-
-    for offset in 0..=max_intervals {
-        let index = first + offset as f64;
-        if !index.is_finite() || index > last {
-            break;
-        }
-        let value = index * spacing;
-        if !value.is_finite() {
-            continue;
-        }
-        if out
-            .last()
-            .is_some_and(|(_, previous): &(f64, f64)| *previous == value)
-        {
-            continue;
-        }
-        out.push((index, value));
-    }
-    out
 }
