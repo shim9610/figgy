@@ -93,6 +93,13 @@ pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::
 }
 
 /// Vertices per arrow: one oriented quad (`glyph_arrow.wgsl::ARROW_VERTICES`).
+/// The pick radius of a vector series' anchor, in logical pixels: half the
+/// head width, or half the shaft width when the shaft is wider. The GPU
+/// picker and the selection ring use the same number.
+pub(crate) fn vector_anchor_radius_px(style: &crate::data_config::VectorStyle) -> f32 {
+    (style.head_width_px.max(style.width_px) * 0.5).max(0.0)
+}
+
 pub const ARROW_VERTICES: u32 = 6;
 
 /// `VectorParamsGpu::flags`: the components are grids, not point columns.

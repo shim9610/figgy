@@ -174,19 +174,6 @@ impl FitExtent {
         };
     }
 
-    /// Widen to also cover the single bound `v`.
-    fn include(&mut self, v: f64) {
-        if v < self.min {
-            self.min = v;
-        }
-        if v > self.max {
-            self.max = v;
-        }
-        if v > 0.0 && self.min_positive.is_none_or(|p| v < p) {
-            self.min_positive = Some(v);
-        }
-    }
-
     /// A fit is only meaningful over a finite, non-degenerate span — the
     /// same gate the column-union fitters have always applied.
     fn is_fittable(&self) -> bool {
@@ -357,40 +344,6 @@ pub(crate) fn apply_auto_fit_all(
         apply_axis_range(&mut config.left_y, min, max, log);
         apply_axis_range(&mut config.right_y, min, max, log);
     }
-}
-
-/// Pairwise fit extent of a value column with errorbar offsets, matching the
-/// GPU arithmetic exactly (`errorbar_columnar.wgsl`: `lo = v - err_lo`,
-/// `hi = v + err_hi`). This cannot be derived from per-column min/max — the
-/// widest bound is not necessarily at a value extreme — so it needs one pass
-/// over the actual pairs. Non-finite values are skipped (NaN-gap
-/// convention); a non-finite error entry contributes the bare value (the
-/// shader draws no bar there but the marker still shows). Offsets past the
-/// error columns' length default to 0, mirroring "no bar". Returns `None`
-/// when no finite value exists.
-pub fn errorbar_extent(vals: &[f32], err_lo: &[f32], err_hi: &[f32]) -> Option<FitExtent> {
-    let mut ext = FitExtent::EMPTY;
-    let mut any = false;
-    for (i, &v) in vals.iter().enumerate() {
-        let v = v as f64;
-        if !v.is_finite() {
-            continue;
-        }
-        let lo_off = err_lo
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        let hi_off = err_hi
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        ext.include(v - lo_off);
-        ext.include(v + hi_off);
-        any = true;
-    }
-    any.then_some(ext)
 }
 
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
@@ -1106,40 +1059,9 @@ mod tests {
 
     /// The widest bound is not at a value extreme — per-column min/max
     /// composition would get this wrong (0−5 = −5), the pairwise pass right.
-    #[test]
-    fn errorbar_extent_is_pairwise_not_minmax_composed() {
-        let ext = errorbar_extent(&[0.0, 10.0], &[1.0, 5.0], &[1.0, 5.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.max, 15.0);
-    }
-
     /// NaN values are gaps (skipped); NaN errors draw no bar, so they
     /// contribute the bare value. Offsets past the error column's end
     /// default to zero.
-    #[test]
-    fn errorbar_extent_nan_and_length_conventions() {
-        let nan = f32::NAN;
-        let ext = errorbar_extent(&[nan, 2.0, 4.0], &[100.0, nan], &[100.0, nan]).unwrap();
-        assert_eq!(ext.min, 2.0);
-        assert_eq!(ext.max, 4.0);
-
-        assert!(errorbar_extent(&[nan, nan], &[1.0, 1.0], &[1.0, 1.0]).is_none());
-    }
-
-    #[test]
-    fn errorbar_extent_asymmetric_and_min_positive() {
-        let ext = errorbar_extent(&[10.0], &[2.0], &[7.0]).unwrap();
-        assert_eq!(ext.min, 8.0);
-        assert_eq!(ext.max, 17.0);
-        assert_eq!(ext.min_positive, Some(8.0));
-
-        // Bound dips below zero: min_positive keeps the smallest positive
-        // bound for the log-axis safe floor.
-        let ext = errorbar_extent(&[1.0, 3.0], &[2.0, 1.0], &[0.0, 0.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.min_positive, Some(1.0));
-    }
-
     #[test]
     fn auto_fit_y_extent_linear_pads_both_sides() {
         let mut c = Chart::new(dummy_config());

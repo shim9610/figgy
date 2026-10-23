@@ -957,7 +957,7 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
 
 struct F32Columns(Vec<(String, Vec<f32>)>);
 
-impl renderer::PointColumnLookup for F32Columns {
+impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
             .iter()
@@ -1029,13 +1029,13 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
             for y in (y0 as u32..y1 as u32).step_by(3) {
                 for x in (x0 as u32..x1 as u32).step_by(3) {
                     let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                    let cpu = renderer::pick_nearest_point(
+                    let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                         chart.config(),
                         &series,
                         &columns,
                         x as f32 + 0.5,
                         y as f32 + 0.5,
-                        renderer::PointPickOptions {
+                        renderer::pick::cpu_twin::PointPickOptions {
                             max_distance_px: 3.0,
                         },
                     );
@@ -1173,13 +1173,13 @@ fn point_vectors_pick_the_arrow_they_draw() {
         for y in (y0 as u32..y1 as u32).step_by(3) {
             for x in (x0 as u32..x1 as u32).step_by(3) {
                 let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     chart.config(),
                     &series,
                     &columns,
                     x as f32 + 0.5,
                     y as f32 + 0.5,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 );
@@ -2189,13 +2189,13 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 )
                 .unwrap()
                 .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
                     &series,
                     &columns,
                     at.0,
                     at.1,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 )

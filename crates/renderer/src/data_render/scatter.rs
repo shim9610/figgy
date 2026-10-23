@@ -2,6 +2,45 @@
 
 use super::*;
 
+/// Pixels the marker quad extends past the drawn shape, for anti-aliasing
+/// and the outline.
+pub(crate) const MARKER_QUAD_MARGIN_PX: f32 = 2.0;
+/// `STROKE_HALF_PX`: half-width of the outline stroke.
+pub(crate) const MARKER_STROKE_HALF_PX: f32 = 0.75;
+/// Twin of `base_shape_id`.
+pub(crate) fn marker_base_shape_id(shape_id: u32) -> u32 {
+    match shape_id {
+        5 => 0,
+        6 => 1,
+        7 => 2,
+        8 => 3,
+        9 | 17 => 5,
+        10 | 18 => 6,
+        11 | 19 => 7,
+        12 | 20 => 8,
+        13 | 22 => 9,
+        14 | 23 => 10,
+        15 | 24 => 11,
+        16 | 25 => 12,
+        21 => 4,
+        other => other,
+    }
+}
+
+/// The factor `visual_shape_radius` applies to the reference radius.
+pub(crate) fn marker_visual_scale(base: u32) -> f32 {
+    match base {
+        1 => 0.886_226_95,
+        2 | 5 | 6 | 7 => 1.555_120_3,
+        3 => 1.253_314_1,
+        9 => 1.149_139_9,
+        10 => 1.099_636_1,
+        11 => 1.053_907_4,
+        12 => 1.462_850_3,
+        _ => 1.0,
+    }
+}
+
 /// Columnar SDF scatter pipeline.
 /// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
 pub fn create_scatter_columnar_pipeline(
