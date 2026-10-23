@@ -69,13 +69,6 @@ fn prim_sdf(p: vec2<f32>, prim: Prim) -> f32 {
     }
     return length(d) - prim.points.z;
 }
-fn output(c:vec4<f32>)->vec4<f32> {
-    if globals.size.w>0.5 && c.a>0.0 {
-        let rgb=c.rgb/c.a;let linear=select(pow((rgb+0.055)/1.055,vec3(2.4)),rgb/12.92,rgb<=vec3(0.04045));
-        return vec4(linear*c.a,c.a);
-    }
-    return c;
-}
 @fragment fn fs(v: Vertex) -> @location(0) vec4<f32> {
     let p = v.position.xy;
     if v.layer == 0u {

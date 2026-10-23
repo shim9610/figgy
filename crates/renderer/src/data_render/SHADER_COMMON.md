@@ -45,14 +45,14 @@ To change shared shader code:
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
 | `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
+| `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, categorical, radar |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
 `gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. One function stays copied where
-a module cannot splice its fragment, held to the fragment's text by
-`shader_consistency`: the radar `output` (it declares no `Bar`, which the
-rest of `bounded_shading.wgsl` takes).
+`shader_assembly::MODULES` names every one. No module carries a copy of a
+fragment's function: `shader_consistency`'s duplicate guard lists only the
+per-variant interface functions the assembler chooses between.
 
 The fragments that read the transform (`projection.wgsl`,
 `sample_validity.wgsl`, `line_step.wgsl`) take it as their first parameter

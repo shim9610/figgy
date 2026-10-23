@@ -14,6 +14,7 @@ use wgpu::util::DeviceExt;
 pub(crate) const CATEGORICAL_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
+    "data_render/common/srgb_output.wgsl",
     "categorical.wgsl",
 );
 

@@ -8,7 +8,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radar module.
-pub(crate) const RADAR_SHADER: &str = crate::shader_assembly::wgsl_module!("radar.wgsl",);
+pub(crate) const RADAR_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/common/srgb_output.wgsl", "radar.wgsl",);
 
 #[path = "radar_layout.rs"]
 mod layout;
