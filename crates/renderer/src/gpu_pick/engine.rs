@@ -484,6 +484,11 @@ impl GpuPickEngine {
         Ok(id)
     }
 
+    /// Build one resident series' slot from `descriptor` and `pool` alone:
+    /// no other series state reaches the build. So the descriptor the
+    /// renderer's pick plan keeps (`renderer::picking::PickSeriesResource`
+    /// with the series id) is this build's complete key, and reusing a slot
+    /// whose descriptor is equal is exact by construction (#66, tier 1).
     pub(super) fn prepare_series(
         &self,
         pool: &ColumnPool,
