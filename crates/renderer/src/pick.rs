@@ -4,23 +4,17 @@
 //! [`PickedPoint`] and [`PickedData`] are what `Renderer::pick_chart` and
 //! `pick_chart_data` resolve to. The CPU picker (`pick_nearest_point` and the
 //! twins of the shader functions it mirrors) is test support only: it
-//! compiles under the `cpu-twin` feature, which the crate's own tests enable,
-//! as `pick::cpu_twin`, from `tests/support/cpu_twin.rs`.
+//! compiles under the `cpu-twin` feature, which the crate's own tests enable
+//! through a dev-dependency on the crate itself, as `pick::cpu_twin`, from
+//! `tests/support/cpu_twin.rs`. A packaged crate builds its tests without
+//! the feature, so every test that needs the twins is gated on it.
 
-// The style lookups product code shares with the picker live with the kind
-// that draws them; `gpu_pick/` still names them here.
-// TODO(#38): point `gpu_pick/` at `data_render` and drop these re-exports.
-pub(crate) use crate::data_render::vector::vector_anchor_radius_px;
-pub(crate) use crate::data_render::{
-    MARKER_QUAD_MARGIN_PX, MARKER_STROKE_HALF_PX, marker_base_shape_id, marker_visual_scale,
-};
-
+/// The CPU picker and the shader twins, test support compiled only under
+/// the `cpu-twin` feature: public so the crate's integration tests reach it.
 #[cfg(feature = "cpu-twin")]
 #[doc(hidden)]
 #[path = "../tests/support/cpu_twin.rs"]
 pub mod cpu_twin;
-#[cfg(all(test, feature = "cpu-twin"))]
-pub(crate) use cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PickedPoint {

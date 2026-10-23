@@ -950,23 +950,6 @@ fn styled_marker_distance(
     }
 }
 
-/// Twin of `gpu_pick::engine::milkyway_line_half_extent`, which is
-/// `pub(super)` there.
-// TODO(#38): call the engine's function once `gpu_pick/` exposes it to
-// the crate.
-fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
-    let ribbon = params[0][1].max(1.0);
-    let star_scale = params[1][0].max(0.0);
-    let spread = params[1][1].max(0.0);
-    let structure = params[2][0].max(1e-3);
-    let stars = if params[0][0] > 0.0 {
-        spread * 1.7 + 4.0 * structure + star_scale * (0.9 + 3.4) * 4.0
-    } else {
-        0.0
-    };
-    ribbon.max(stars)
-}
-
 /// How a line series' stroke is drawn, for the CPU twin of the line
 /// shader's extrusion: the drawn half-width (`max(width, 1) / 2`), the dash
 /// pattern in pixels (empty for a solid line), the draw style and the
@@ -1044,7 +1027,7 @@ fn stroke_piece_distance(
     let params = stroke.style.params;
     match stroke.style.kind {
         DrawnKind::Milkyway => {
-            let half = milkyway_line_half_extent(&params);
+            let half = crate::gpu_pick::milkyway_line_half_extent(&params);
             return Some(line_stroke_distance(along, side, len, half).max(0.0));
         }
         DrawnKind::Constellation if !(params[0][1] > 0.0) => return None,
@@ -1182,8 +1165,7 @@ fn line_segment_pick(
 }
 
 /// A sample outside a polar sector keeps its projection: the fragment clip
-/// cuts what it draws there, which `polar_projection::clip_distance` applies
-/// at the cursor.
+/// cuts what it draws there, which [`clip_distance`] applies at the cursor.
 fn project_data_to_canvas_px(
     config: &Config,
     transform: &data_render::ScatterTransform,

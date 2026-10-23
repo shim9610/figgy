@@ -161,7 +161,7 @@ pub(crate) fn line_pieces(
 }
 
 /// Test helper: the pieces of a rectangular chart's step mode.
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu-twin"))]
 pub(crate) fn step_pieces(
     a: [f32; 2],
     b: [f32; 2],
@@ -172,7 +172,7 @@ pub(crate) fn step_pieces(
     (out, count)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "cpu-twin"))]
 mod tests {
     use super::*;
 

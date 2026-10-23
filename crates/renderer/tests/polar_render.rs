@@ -17,6 +17,7 @@ use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineIn
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
+#[cfg(feature = "cpu-twin")]
 use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
@@ -524,6 +525,7 @@ fn inner_radius_log_radius_and_below_range_samples() {
     assert!((2 * 120..2 * 260).contains(&ink), "{ink} red pixels");
 }
 
+#[cfg(feature = "cpu-twin")]
 fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     let (_, panel, scale) = display_config_for_surface(chart.config(), (WIDTH, HEIGHT));
     assert_eq!(scale, 1.0);
@@ -535,8 +537,10 @@ fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 struct Columns(Vec<(String, Vec<f32>)>);
 
+#[cfg(feature = "cpu-twin")]
 impl PointColumnLookup for Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
@@ -546,6 +550,7 @@ impl PointColumnLookup for Columns {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let mut renderer = renderer();

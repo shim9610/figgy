@@ -381,7 +381,7 @@ impl PickChartPlan {
             {
                 // The marker slot carries the anchor's highlight radius; the
                 // pick itself walks the drawn arrow (`GpuPickVector`).
-                let base_radius_px = crate::pick::vector_anchor_radius_px(style);
+                let base_radius_px = crate::data_render::vector::vector_anchor_radius_px(style);
                 let base_shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
                 (
                     Some(OwnedGpuPickScatter {

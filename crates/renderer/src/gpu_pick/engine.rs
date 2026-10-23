@@ -14,7 +14,7 @@ pub(super) const GPU_PICK_DIRECT_SCAN_POINTS: u32 =
 /// `QUAD_MARGIN_PX` of the shared marker shape (SHADER_COMMON.md §5.5): a
 /// marker draws nothing farther than its visual radius plus this margin from
 /// its centre on either axis.
-pub(super) const MARKER_QUAD_MARGIN_PX: f32 = crate::pick::MARKER_QUAD_MARGIN_PX;
+pub(super) const MARKER_QUAD_MARGIN_PX: f32 = crate::data_render::MARKER_QUAD_MARGIN_PX;
 
 /// `CONSTELLATION_POINT_STAR_GAIN` times the largest per-point size jitter
 /// of `constellation_star_radius` (`0.86 + 0.30`).
@@ -61,9 +61,11 @@ pub(super) fn query_params(
     let half_width = (2.0 * series.line_half_width_px * display_scale).max(1.0) * 0.5;
     let ribbon = milkyway_line_half_extent(&params);
     let line_extent = match style.line {
-        PICK_LINE_SKETCH => half_width + crate::pick::MARKER_STROKE_HALF_PX + params[0][0].max(0.0),
+        PICK_LINE_SKETCH => {
+            half_width + crate::data_render::MARKER_STROKE_HALF_PX + params[0][0].max(0.0)
+        }
         PICK_LINE_RIBBON => ribbon,
-        _ => half_width + crate::pick::MARKER_STROKE_HALF_PX,
+        _ => half_width + crate::data_render::MARKER_STROKE_HALF_PX,
     };
     let mut line_dash = [[0.0f32; 4]; 2];
     for (index, length) in series.line_dash.iter().enumerate() {
@@ -169,7 +171,7 @@ pub(super) fn query_params(
 /// structure_scale`) and its quad (`4 * star_scale * 4.3` at full
 /// brightness) of the path. The star positions are hashed per slot, so this
 /// envelope, not each star, is what picks.
-pub(super) fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
+pub(crate) fn milkyway_line_half_extent(params: &[[f32; 4]; 3]) -> f32 {
     let ribbon = params[0][1].max(1.0);
     let star_scale = params[1][0].max(0.0);
     let spread = params[1][1].max(0.0);
