@@ -22,18 +22,6 @@ fn pick_apply_style(radius_in: f32, shape_in: u32, slot: PickScatterStyleSlot) -
     return vec2<f32>(radius, f32(shape));
 }
 
-// `ramp_finite` of common/ramp.wgsl, which the size-map radius in
-// common/marker.wgsl calls. The pick modules cannot splice the ramp fragment
-// (its `ramp_t` calls `maybe_log`, which they lack), so this is a copy; the
-// WGSL guard in `shader_consistency` holds it to the fragment's text.
-
-/// A finite f32 by its exponent bits. Every ramp input is checked
-/// explicitly: NaN and infinity propagation through arithmetic is not
-/// portable in WGSL.
-fn ramp_finite(v: f32) -> bool {
-    return (bitcast<u32>(v) & 0x7f800000u) != 0x7f800000u;
-}
-
 // The marker radius a size value maps to, or a negative number when the value
 // is not finite and the point is hidden.
 fn pick_size_map_radius(point_index: u32) -> f32 {
@@ -200,9 +188,11 @@ fn pick_scatter_candidate(
     y: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    // The vertex stage's `sample_valid`; the sector and the rings are the
+    // The vertex stage's `sample_valid`: a polar radius below the axis start
+    // is not drawn, so it is not picked. The sector and the rings are the
     // fragment clip's, applied at the cursor below.
-    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u) || !pick_polar_valid(x, y) {
+    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u)
+        || !polar_sample_valid(pick_query_params.transform, x, y) {
         return pick_invalid_candidate(series_order);
     }
     let marker = pick_resolve_scatter_marker(point_index);

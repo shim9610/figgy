@@ -132,8 +132,8 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             bases.len() as u64 * STREAM_POINT_TRANSFORM_BYTES
         );
         for source in [
-            crate::data_render::SCATTER_SHADER,
-            crate::data_render::ERRORBAR_SHADER,
+            crate::data_render::SCATTER_SHADER.source,
+            crate::data_render::ERRORBAR_SHADER.source,
         ] {
             let shader = crate::gpu_compile::shader_module(
                 &device,

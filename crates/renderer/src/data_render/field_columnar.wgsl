@@ -69,7 +69,7 @@ struct LabelGapParams {
 @group(3) @binding(3) var<uniform> label_gap_params: LabelGapParams;
 
 /// One block's portable lookup bounds. CPU twin:
-/// `mod.rs::ContourLookupMetadataGpu` (`#[repr(C)]`, 8 B).
+/// `data_render/contour.rs::ContourLookupMetadataGpu` (`#[repr(C)]`, 8 B).
 struct ContourLookupMetadata {
     finite_count: u32,
     negative_infinity_count: u32,

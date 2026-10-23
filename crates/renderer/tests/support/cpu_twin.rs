@@ -1237,7 +1237,7 @@ fn radius_fraction(transform: &ScatterTransform, panel_ty: f32) -> f32 {
     (panel_ty - transform.data_to_panel_offset[1]) / transform.data_to_panel_scale[1]
 }
 
-/// Twin of `polar_sample_valid` and the pick shader's `pick_polar_valid`: a
+/// Twin of `polar_sample_valid`, which the draw and pick shaders share: a
 /// radius below the axis start is not drawn, so it is neither picked nor
 /// connected. A sample outside the sector keeps its projection; the
 /// fragment clip cuts what is drawn there ([`clip_distance`]).

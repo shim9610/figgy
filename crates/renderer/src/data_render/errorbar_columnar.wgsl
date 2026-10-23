@@ -33,7 +33,7 @@ fn pair_sub(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
 }
 
 fn point_ndc(p: DataPoint) -> vec2<f32> {
-    return data_to_ndc(p.x, p.y);
+    return data_to_ndc(transform, p.x, p.y);
 }
 
 fn select_point(b: DataPoint, a: DataPoint, pick_a: bool) -> DataPoint {
@@ -62,7 +62,7 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
     let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(in.x, in.y);
+        let anchor = data_to_ndc(transform, in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
@@ -266,7 +266,7 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(in.x, in.y);
+        let anchor = data_to_ndc(transform, in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }
@@ -365,7 +365,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(in.x, in.y);
+        let anchor = data_to_ndc(transform, in.x, in.y);
         return vec4<f32>(anchor, 0.0, 1.0);
     }
 
@@ -477,7 +477,7 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     let has_x = (style.primitive_flags & ERRORBAR_HAS_X) != 0u;
     let dir_enabled = select(has_x, has_y, seg < 3u);
     if (!dir_enabled) {
-        let anchor = data_to_ndc(in.x, in.y);
+        let anchor = data_to_ndc(transform, in.x, in.y);
         out.pos = vec4<f32>(anchor, 0.0, 1.0);
         return out;
     }

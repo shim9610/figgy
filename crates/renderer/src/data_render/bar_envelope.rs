@@ -850,7 +850,7 @@ mod stream_tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream histogram test shader"),
-                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(super::BAR_SHADER.source.into()),
             },
         );
         let transform_bgl = create_scatter_transform_bind_group_layout(device);

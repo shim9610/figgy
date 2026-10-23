@@ -7,8 +7,9 @@ production backend.
 
 ## Scope and assertions
 
-The generator extracts the current `PickQueryTransform`, `PickQueryParams` and
-coordinate projection helpers directly from the production `gpu_pick/core.wgsl`.
+The generator extracts the current `Transform`, `PickQueryParams` and
+coordinate projection helpers directly from the production `gpu_pick/core.wgsl`
+and the projection fragment it splices (`data_render/common/projection.wgsl`).
 It validates a small compute harness with Naga, then emits MSL 2.3 with an explicit
 resource map. There is no hand-maintained second copy of the coordinate formula.
 

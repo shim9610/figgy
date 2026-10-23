@@ -3,10 +3,10 @@
 //! take, the per-instance strip vertex count, and the data-space pieces the
 //! CPU picker walks.
 //!
-//! The GPU twins are `step_piece` / `strip_slot` in
-//! `data_render/line_columnar.wgsl` (shared byte-for-byte with
-//! `line_arc.wgsl`) and `pick_step_piece` in `gpu_pick/line.wgsl`. All of them
-//! split a segment `a → b` into the same pieces: the axis-aligned step
+//! The GPU twin is `step_piece` in `data_render/common/line_step.wgsl`, the
+//! one fragment the line, arc-scan and pick line modules splice, with
+//! `strip_slot` in `data_render/line_columnar.wgsl`. Every module splits a
+//! segment `a → b` into the same pieces: the axis-aligned step
 //! pieces, with the step-mid riser at the **data-space** midpoint of the two
 //! x values, or a polar chart's equal subdivisions in data space (an arc
 //! once projected), so the drawn line, its dash phase, its arc length and

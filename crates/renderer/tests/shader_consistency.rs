@@ -780,11 +780,8 @@ fn flag_choices_never_blend_by_arithmetic() {
 ///
 /// `ASSEMBLED_ALTERNATIVES` are interface functions with one body per
 /// variant, of which the Rust assembler splices exactly one into a module.
-/// They are the layered design of rule 9 and stay. `PENDING_COPIES` are the
-/// copies of a fragment's function in modules that cannot splice that
-/// fragment, each held to the fragment's text by
-/// `pending_copies_equal_their_fragment`. Each entry is (files that define
-/// them, names).
+/// They are the layered design of rule 9 and stay. Each entry is (files that
+/// define them, names).
 #[test]
 fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
     let src = workspace_root().join("src");
@@ -829,7 +826,7 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
         .collect();
 
     let mut expected: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    for (files, names) in ASSEMBLED_ALTERNATIVES.iter().chain(PENDING_COPIES) {
+    for (files, names) in ASSEMBLED_ALTERNATIVES {
         let mut files: Vec<&str> = files.to_vec();
         files.sort_unstable();
         for name in *names {
@@ -909,61 +906,6 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         &["figgy_zero_workgroup"],
     ),
 ];
-
-/// Copies of a fragment's function that a module carries because it cannot
-/// splice the fragment (see each copy's comment): the pick modules bind no
-/// draw `transform` and have no `maybe_log`, the radar shader no `Bar`. `pending_copies_equal_their_fragment` holds each copy to the
-/// fragment's text. Only shrinks; never grows.
-const PENDING_COPIES: &[(&[&str], &[&str])] = &[
-    (
-        &["data_render/common/bounded_shading.wgsl", "radar.wgsl"],
-        &["output"],
-    ),
-    (
-        &[
-            "data_render/common/sample_validity.wgsl",
-            "gpu_pick/core.wgsl",
-        ],
-        &["polar_fragment_visible"],
-    ),
-    (
-        &["data_render/common/ramp.wgsl", "gpu_pick/marker.wgsl"],
-        &["ramp_finite"],
-    ),
-];
-
-/// Each copy in [`PENDING_COPIES`] is byte-identical to the function of the
-/// fragment it copies, so the copy and the fragment cannot drift apart.
-#[test]
-fn pending_copies_equal_their_fragment() {
-    let src = workspace_root().join("src");
-    let mut checked = 0;
-    for (files, names) in PENDING_COPIES {
-        let fragment = files
-            .iter()
-            .find(|file| file.starts_with("data_render/common/"))
-            .unwrap_or_else(|| panic!("{names:?}: no fragment among {files:?}"));
-        let owner = fs::read_to_string(src.join(fragment)).unwrap();
-        for file in files.iter().filter(|file| *file != fragment) {
-            let copy = fs::read_to_string(src.join(file)).unwrap();
-            for name in *names {
-                assert_eq!(
-                    wgsl_function(&copy, name),
-                    wgsl_function(&owner, name),
-                    "{file} must carry `{name}` byte-for-byte as {fragment} defines it"
-                );
-                checked += 1;
-            }
-        }
-    }
-    assert_eq!(
-        checked,
-        PENDING_COPIES
-            .iter()
-            .map(|(files, names)| (files.len() - 1) * names.len())
-            .sum::<usize>()
-    );
-}
 
 /// Rule from #46 (the hand-off convention): code that builds one struct from
 /// another reads the source through a pattern that names every field, with

@@ -3,13 +3,15 @@
 //! WGSL has no `import`. A block of WGSL that several shaders need lives in
 //! one fragment file under `src/data_render/common/` (or, for the layered
 //! vector and pick shaders, next to them), and every module that needs it is
-//! declared with `wgsl_module!`: the fragments' text spliced in order, one
+//! declared with `assembled!`: the fragments' text spliced in order, one
 //! newline between two fragments, as a `&'static str` built by `concat!` at
-//! compile time. There is no runtime templating and no allocation; the
-//! fragment list is the module's identity.
+//! compile time, next to the list of fragment names it was built from. There
+//! is no runtime templating and no allocation; the fragment list is the
+//! module's identity.
 //!
-//! `MODULES` names every assembled module, so a test can parse and
-//! validate each one without a GPU and the integration tests can read the
+//! `MODULES` names every assembled module with its source and fragments, so
+//! a test can parse and validate each one without a GPU, compare the
+//! fragments two modules splice, and the integration tests can read the
 //! source a pipeline compiles.
 
 /// One WGSL module assembled from fragment files at compile time.
@@ -26,8 +28,32 @@ macro_rules! wgsl_module {
 }
 pub(crate) use wgsl_module;
 
-/// Every assembled module, by name: the source each pipeline compiles.
-pub const MODULES: &[(&str, &str)] = &[
+/// One assembled module: the WGSL source a pipeline compiles and the fragment
+/// files it is spliced from, in order, relative to the renderer's `src/`.
+#[derive(Clone, Copy, Debug)]
+pub struct Assembled {
+    /// The fragments' contents joined with one newline.
+    pub source: &'static str,
+    /// The fragment files, in assembly order.
+    pub fragments: &'static [&'static str],
+}
+
+/// An [`Assembled`] module from one literal list of fragment files: the
+/// source is `wgsl_module!` over the list, so the source and the names it is
+/// built from cannot disagree.
+macro_rules! assembled {
+    ($($fragment:literal),+ $(,)?) => {
+        $crate::shader_assembly::Assembled {
+            source: $crate::shader_assembly::wgsl_module!($($fragment),+),
+            fragments: &[$($fragment),+],
+        }
+    };
+}
+pub(crate) use assembled;
+
+/// Every assembled module, by name: the source each pipeline compiles and
+/// its fragments.
+pub const MODULES: &[(&str, Assembled)] = &[
     ("scatter", crate::data_render::SCATTER_SHADER),
     ("line", crate::data_render::LINE_SHADER),
     ("errorbar", crate::data_render::ERRORBAR_SHADER),
@@ -49,24 +75,30 @@ pub const MODULES: &[(&str, &str)] = &[
         "vector_grid",
         crate::data_render::vector::VECTOR_GRID_SHADER,
     ),
-    ("pick_gate", crate::gpu_pick::PickShader::Gate.source()),
-    ("pick_marker", crate::gpu_pick::PickShader::Marker.source()),
+    ("pick_gate", crate::gpu_pick::PickShader::Gate.assembled()),
+    (
+        "pick_marker",
+        crate::gpu_pick::PickShader::Marker.assembled(),
+    ),
     (
         "pick_marker_line",
-        crate::gpu_pick::PickShader::MarkerLine.source(),
+        crate::gpu_pick::PickShader::MarkerLine.assembled(),
     ),
-    ("pick_line", crate::gpu_pick::PickShader::Line.source()),
-    ("pick_vector", crate::gpu_pick::PickShader::Vector.source()),
+    ("pick_line", crate::gpu_pick::PickShader::Line.assembled()),
+    (
+        "pick_vector",
+        crate::gpu_pick::PickShader::Vector.assembled(),
+    ),
 ];
 
-/// The assembled module called `name` in [`MODULES`].
+/// The source of the assembled module called `name` in [`MODULES`].
 ///
 /// # Panics
 ///
 /// When no module has that name.
 pub fn module(name: &str) -> &'static str {
     match MODULES.iter().find(|(n, _)| *n == name) {
-        Some((_, source)) => source,
+        Some((_, assembled)) => assembled.source,
         None => panic!("no assembled WGSL module named `{name}`"),
     }
 }
@@ -79,7 +111,8 @@ mod tests {
     /// fragment that breaks a module fails here, not on the first draw.
     #[test]
     fn every_assembled_module_parses_and_validates() {
-        for (name, source) in super::MODULES {
+        for (name, assembled) in super::MODULES {
+            let source = assembled.source;
             let module = wgpu::naga::front::wgsl::parse_str(source)
                 .unwrap_or_else(|error| panic!("{name}: {}", error.emit_to_string(source)));
             Validator::new(ValidationFlags::all(), Capabilities::all())
@@ -168,16 +201,11 @@ mod tests {
             ("ERRORBAR_HAS_X", dr::ERRORBAR_HAS_X),
             ("LINE_STEP_SHIFT", LINE_STEP_SHIFT),
             ("LINE_ARC_SHIFT", LINE_ARC_SHIFT),
-            ("PICK_ARC_SHIFT", LINE_ARC_SHIFT),
             ("AREA_FILL_TO_SERIES", AREA_FILL_TO_SERIES),
             ("LINE_STEP_LINEAR", line_step::step_mode(Step::Linear)),
             ("LINE_STEP_PRE", line_step::step_mode(Step::StepPre)),
             ("LINE_STEP_POST", line_step::step_mode(Step::StepPost)),
             ("LINE_STEP_MID", line_step::step_mode(Step::StepMid)),
-            ("PICK_STEP_LINEAR", line_step::step_mode(Step::Linear)),
-            ("PICK_STEP_PRE", line_step::step_mode(Step::StepPre)),
-            ("PICK_STEP_POST", line_step::step_mode(Step::StepPost)),
-            ("PICK_STEP_MID", line_step::step_mode(Step::StepMid)),
             ("DATA_PICK_FLAG_FILL", data_pick::DATA_PICK_FLAG_FILL),
             ("DATA_PICK_FLAG_CONTOUR", data_pick::DATA_PICK_FLAG_CONTOUR),
             ("DATA_PICK_FLAG_PAINTED", data_pick::DATA_PICK_FLAG_PAINTED),
@@ -208,8 +236,8 @@ mod tests {
         ];
         let mut declared: Vec<(&str, String, u32)> = Vec::new();
         let mut declared_f32: Vec<(&str, String, f32)> = Vec::new();
-        for (module_name, source) in super::MODULES {
-            let module = parse(module_name, source);
+        for (module_name, assembled) in super::MODULES {
+            let module = parse(module_name, assembled.source);
             for (_, constant) in module.constants.iter() {
                 let Some(name) = &constant.name else {
                     continue;
@@ -334,7 +362,7 @@ mod tests {
         };
         let mirrors = [
             transform("scatter", "Transform"),
-            transform("pick_marker_line", "PickQueryTransform"),
+            transform("pick_marker_line", "Transform"),
             mirror!(
                 "scatter",
                 "Style",
@@ -607,6 +635,21 @@ mod tests {
                 size: self.size,
                 members: self.members,
             }
+        }
+    }
+
+    /// Every module's source is its fragment files concatenated in the
+    /// listed order, one newline between two, each file verbatim.
+    #[test]
+    fn every_module_is_its_fragments_concatenated() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for (name, assembled) in super::MODULES {
+            let parts: Vec<String> = assembled
+                .fragments
+                .iter()
+                .map(|fragment| std::fs::read_to_string(src.join(fragment)).unwrap())
+                .collect();
+            assert_eq!(assembled.source, parts.join("\n"), "{name}");
         }
     }
 

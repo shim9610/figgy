@@ -752,7 +752,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.bar.async",
-                crate::data_render::BAR_SHADER,
+                crate::data_render::BAR_SHADER.source,
                 &[("pick_histogram_bin", "pick_histogram_bin")],
                 observer,
             )
@@ -773,7 +773,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.field.async",
-                crate::data_render::FIELD_SHADER,
+                crate::data_render::FIELD_SHADER.source,
                 &[("pick_field_data", "pick_field_data")],
                 observer,
             )
@@ -1410,14 +1410,14 @@ mod stream_tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::BAR_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::BAR_SHADER.source.into()),
             },
         );
         let field = crate::gpu_compile::shader_module(
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
             },
         );
         let vector_grid =

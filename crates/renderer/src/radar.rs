@@ -8,7 +8,8 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radar module.
-pub(crate) const RADAR_SHADER: &str = crate::shader_assembly::wgsl_module!("radar.wgsl",);
+pub(crate) const RADAR_SHADER: crate::shader_assembly::Assembled =
+    crate::shader_assembly::assembled!("data_render/common/srgb_output.wgsl", "radar.wgsl",);
 
 #[path = "radar_layout.rs"]
 mod layout;
@@ -273,7 +274,7 @@ impl RadarRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            RADAR_SHADER,
+            RADAR_SHADER.source,
             &[("radar surfaces", "radar surfaces")],
             format,
             1,
@@ -350,7 +351,7 @@ impl RadarRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("radar surfaces"),
-                source: wgpu::ShaderSource::Wgsl(RADAR_SHADER.into()),
+                source: wgpu::ShaderSource::Wgsl(RADAR_SHADER.source.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(

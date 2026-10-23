@@ -27,10 +27,3 @@ fn bar_surface(p:vec2<f32>,b:Bar)->vec3<f32> {
     return material_surface(b.material,b.color.rgb,vec3(o,0.0),up,up,normalize(BAR_LIGHT),tangent,
         vec2(across,along*2.0),BAR_UNIT_PX*b.effects.y);
 }
-fn output(c:vec4<f32>)->vec4<f32> {
-    if globals.size.w>0.5 && c.a>0.0 {
-        let rgb=c.rgb/c.a;let linear=select(pow((rgb+0.055)/1.055,vec3(2.4)),rgb/12.92,rgb<=vec3(0.04045));
-        return vec4(linear*c.a,c.a);
-    }
-    return c;
-}

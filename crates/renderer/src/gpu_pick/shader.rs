@@ -2,6 +2,7 @@
 //! variants and the compiled pipeline bundle.
 
 use super::*;
+use crate::shader_assembly::{Assembled, assembled};
 
 pub(super) const INIT_SCOPE: &str = "renderer.gpu_pick";
 
@@ -21,22 +22,95 @@ pub(crate) mod exact_variant {
 
 /// The assembled point-picker shaders (rule 9's pattern, as in
 /// `data_render::vector`): the gate module and one exact module per
-/// primitive class, each the concatenation of its fragments under
-/// `src/gpu_pick/` in the order [`PickShader::fragments`] lists. A pick
-/// compiles only the exact module (and variant) its series need.
+/// primitive class, each the concatenation of its fragments, in the order
+/// [`PICK_MODULES`] lists them. A pick compiles only the exact module (and
+/// variant) its series need.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PickShader {
     /// The gate and reduction entries.
-    Gate,
+    Gate = 0,
     /// Exact: a marker series.
-    Marker,
+    Marker = 1,
     /// Exact: a series with markers and a line.
-    MarkerLine,
+    MarkerLine = 2,
     /// Exact: a line series.
-    Line,
+    Line = 3,
     /// Exact: a point vector series.
-    Vector,
+    Vector = 4,
 }
+
+/// The pick modules, indexed by [`PickShader`]: the shader module label and
+/// the assembly. The exact modules follow the gate in [`PickShader::EXACT`]
+/// order, so an exact module's slot in [`PickExactPipelines`] is its index
+/// here minus one.
+const PICK_MODULES: [(&str, Assembled); 5] = [
+    (
+        "figgy GPU pick gate shader",
+        assembled!(
+            "gpu_pick/core.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "gpu_pick/gate_entries.wgsl",
+        ),
+    ),
+    (
+        "figgy GPU pick exact marker shader",
+        assembled!(
+            "gpu_pick/core.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "data_render/common/ramp.wgsl",
+            "data_render/common/sketch_noise.wgsl",
+            "data_render/common/marker.wgsl",
+            "gpu_pick/marker.wgsl",
+            "gpu_pick/no_line.wgsl",
+            "gpu_pick/exact_entry.wgsl",
+        ),
+    ),
+    (
+        "figgy GPU pick exact marker-line shader",
+        assembled!(
+            "gpu_pick/core.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "data_render/common/ramp.wgsl",
+            "data_render/common/sketch_noise.wgsl",
+            "data_render/common/line_stroke.wgsl",
+            "data_render/common/line_step.wgsl",
+            "data_render/common/marker.wgsl",
+            "gpu_pick/marker.wgsl",
+            "gpu_pick/line.wgsl",
+            "gpu_pick/exact_entry.wgsl",
+        ),
+    ),
+    (
+        "figgy GPU pick exact line shader",
+        assembled!(
+            "gpu_pick/core.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "data_render/common/sketch_noise.wgsl",
+            "data_render/common/line_stroke.wgsl",
+            "data_render/common/line_step.wgsl",
+            "gpu_pick/no_scatter.wgsl",
+            "gpu_pick/line.wgsl",
+            "gpu_pick/exact_entry.wgsl",
+        ),
+    ),
+    (
+        "figgy GPU pick exact vector shader",
+        assembled!(
+            "gpu_pick/core.wgsl",
+            "data_render/common/projection.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "data_render/common/ramp.wgsl",
+            "data_render/common/arrow.wgsl",
+            "gpu_pick/vector.wgsl",
+            "gpu_pick/no_line.wgsl",
+            "gpu_pick/exact_entry.wgsl",
+        ),
+    ),
+];
 
 impl PickShader {
     #[cfg(test)]
@@ -47,105 +121,30 @@ impl PickShader {
         PickShader::Vector,
     ];
 
-    /// The fragment files, in assembly order, relative to `src/`.
-    #[cfg(test)]
-    pub(crate) fn fragments(self) -> &'static [&'static str] {
-        match self {
-            PickShader::Gate => &["gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl"],
-            PickShader::Marker => &[
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/marker.wgsl",
-                "gpu_pick/marker.wgsl",
-                "gpu_pick/no_line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ],
-            PickShader::MarkerLine => &[
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/line_stroke.wgsl",
-                "data_render/common/marker.wgsl",
-                "gpu_pick/marker.wgsl",
-                "gpu_pick/line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ],
-            PickShader::Line => &[
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/line_stroke.wgsl",
-                "gpu_pick/no_scatter.wgsl",
-                "gpu_pick/line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ],
-            PickShader::Vector => &[
-                "gpu_pick/core.wgsl",
-                "data_render/common/arrow.wgsl",
-                "gpu_pick/vector.wgsl",
-                "gpu_pick/no_line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ],
-        }
+    /// The assembly: source and fragments (`shader_assembly::MODULES`).
+    pub(crate) const fn assembled(self) -> Assembled {
+        PICK_MODULES[self as usize].1
     }
 
-    /// The assembled source: [`Self::fragments`] joined with one newline
-    /// ([`wgsl_module!`](crate::shader_assembly::wgsl_module)).
+    /// The fragment files, in assembly order, relative to `src/`.
+    #[cfg(test)]
+    pub(crate) const fn fragments(self) -> &'static [&'static str] {
+        self.assembled().fragments
+    }
+
+    /// The assembled source: [`Self::fragments`] joined with one newline.
     pub(crate) const fn source(self) -> &'static str {
-        use crate::shader_assembly::wgsl_module;
-        match self {
-            PickShader::Gate => wgsl_module!("gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl",),
-            PickShader::Marker => wgsl_module!(
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/marker.wgsl",
-                "gpu_pick/marker.wgsl",
-                "gpu_pick/no_line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ),
-            PickShader::MarkerLine => wgsl_module!(
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/line_stroke.wgsl",
-                "data_render/common/marker.wgsl",
-                "gpu_pick/marker.wgsl",
-                "gpu_pick/line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ),
-            PickShader::Line => wgsl_module!(
-                "gpu_pick/core.wgsl",
-                "data_render/common/sketch_noise.wgsl",
-                "data_render/common/line_stroke.wgsl",
-                "gpu_pick/no_scatter.wgsl",
-                "gpu_pick/line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ),
-            PickShader::Vector => wgsl_module!(
-                "gpu_pick/core.wgsl",
-                "data_render/common/arrow.wgsl",
-                "gpu_pick/vector.wgsl",
-                "gpu_pick/no_line.wgsl",
-                "gpu_pick/exact_entry.wgsl",
-            ),
-        }
+        self.assembled().source
     }
 
     pub(super) fn label(self) -> &'static str {
-        match self {
-            PickShader::Gate => "figgy GPU pick gate shader",
-            PickShader::Marker => "figgy GPU pick exact marker shader",
-            PickShader::MarkerLine => "figgy GPU pick exact marker-line shader",
-            PickShader::Line => "figgy GPU pick exact line shader",
-            PickShader::Vector => "figgy GPU pick exact vector shader",
-        }
+        PICK_MODULES[self as usize].0
     }
 
     pub(super) fn exact_index(self) -> usize {
-        match self {
-            PickShader::Gate => unreachable!("the gate module has no exact entry"),
-            PickShader::Marker => 0,
-            PickShader::MarkerLine => 1,
-            PickShader::Line => 2,
-            PickShader::Vector => 3,
-        }
+        (self as usize)
+            .checked_sub(1)
+            .expect("the gate module has no exact entry")
     }
 }
 

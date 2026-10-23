@@ -41,7 +41,7 @@ pub(crate) fn marker_visual_scale(base: u32) -> f32 {
     }
 }
 /// The assembled scatter module.
-pub(crate) const SCATTER_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",

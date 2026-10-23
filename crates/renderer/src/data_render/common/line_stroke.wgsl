@@ -3,7 +3,7 @@
 const LINE_AA_EXTENT_PX: f32 = 0.5;
 // Subdivision count S per segment instance: the sketch pipeline draws
 // 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
-// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
+// data_render/line.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
 const SKETCH_SUBDIV: u32 = 8u;
 
 /// Signed pixel distance from a stroke fragment to the edge of its piece's

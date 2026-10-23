@@ -3,7 +3,7 @@
 use super::*;
 
 /// The assembled line module.
-pub(crate) const LINE_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",

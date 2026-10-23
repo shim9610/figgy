@@ -26,7 +26,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 /// The assembled contour label anchor module.
-pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const CONTOUR_ANCHOR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/grid_pair.wgsl",
@@ -34,7 +34,7 @@ pub(crate) const CONTOUR_ANCHOR_SHADER: &str = crate::shader_assembly::wgsl_modu
     "contour_anchor.wgsl",
 );
 /// The assembled contour label draw module.
-pub(crate) const CONTOUR_LABEL_SHADER: &str = crate::shader_assembly::wgsl_module!(
+pub(crate) const CONTOUR_LABEL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/contour_label_box.wgsl",
@@ -326,7 +326,7 @@ impl ContourLabelPipelines {
     /// `locate`/`grid_value` the fragment shader does (one SSoT block), so a label
     /// cannot land on a grid the lines were not drawn from.
     pub fn new(device: &wgpu::Device, field_bgl: &wgpu::BindGroupLayout) -> Self {
-        Self::with_anchor_source(device, field_bgl, CONTOUR_ANCHOR_SHADER, true)
+        Self::with_anchor_source(device, field_bgl, CONTOUR_ANCHOR_SHADER.source, true)
     }
 
     fn with_anchor_source(
@@ -451,7 +451,7 @@ impl ContourLabelPipelines {
                 &device,
                 wgpu::ShaderModuleDescriptor {
                     label: Some("figgy contour label shader"),
-                    source: wgpu::ShaderSource::Wgsl(CONTOUR_LABEL_SHADER.into()),
+                    source: wgpu::ShaderSource::Wgsl(CONTOUR_LABEL_SHADER.source.into()),
                 },
             ),
             label_bgl,
@@ -468,7 +468,7 @@ impl ContourLabelPipelines {
         // coordinate ABI/math as production. Otherwise the oracle itself loses
         // hi/lo residuals on Metal and cannot test dispatch equivalence there.
         let legacy = include_str!("../tests/fixtures/contour_anchor_v013.wgsl");
-        let current = CONTOUR_ANCHOR_SHADER;
+        let current = CONTOUR_ANCHOR_SHADER.source;
         // The shared fragments `CONTOUR_ANCHOR_SHADER` splices, in its order:
         // what the fixture's common block was copied from.
         let common = crate::shader_assembly::wgsl_module!(
@@ -481,6 +481,11 @@ impl ContourLabelPipelines {
         let end = legacy.find("// ───── END common block").unwrap();
         let mut source = legacy.to_owned();
         source.replace_range(start..end, common);
+        // The shared projection takes the transform as a parameter now; the
+        // fixture's one call after the common block follows that ABI.
+        let old_call = "data_to_ndc(a.x, a.y)";
+        assert_eq!(source.matches(old_call).count(), 1);
+        source = source.replace(old_call, "data_to_ndc(transform, a.x, a.y)");
         // Selection is still one invocation in both versions. Keep its scratch
         // address space aligned, without changing the frozen projection loop.
         // Otherwise the oracle incurs WARP's slow workgroup initialization.
@@ -1227,7 +1232,7 @@ mod tests {
             assert_eq!(attribute.shader_location, location);
         }
 
-        let shader = CONTOUR_LABEL_SHADER;
+        let shader = CONTOUR_LABEL_SHADER.source;
         for input in [
             "@location(0) a_x: vec2<f32>",
             "@location(1) a_y: vec2<f32>",
@@ -1258,7 +1263,7 @@ mod tests {
 
     #[test]
     fn label_shader_maps_levels_to_grid_cells_and_clamps_texel_centres() {
-        let shader = CONTOUR_LABEL_SHADER;
+        let shader = CONTOUR_LABEL_SHADER.source;
         for contract in [
             "let column = a_level % lp.columns;",
             "let row = a_level / lp.columns;",

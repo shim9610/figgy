@@ -122,8 +122,21 @@ Collected on `integration/0.19`; the release entry replaces this section.
   ([#46](https://github.com/shim9610/figgy/issues/46)). No shader changes
   what it computes. Migration: `data_render::vector::assemble` returns
   `&'static str` (the module is a constant now, also exported as
-  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`); call `.to_string()` where
+  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`, each a
+  `shader_assembly::Assembled` whose `source` is the WGSL and whose
+  `fragments` are the files it is spliced from); call `.to_string()` where
   a `String` was used.
+- **The picker runs the draw's projection.** The shared projection, sample
+  validity and step fragments take the transform as a parameter, so the GPU
+  picker splices the same `projection.wgsl`, `sample_validity.wgsl`,
+  `ramp.wgsl` and `line_step.wgsl` the draw shaders run instead of carrying
+  renamed copies; the bounded charts' sRGB `output` is one fragment too
+  (`srgb_output.wgsl`), and no shader carries a copy of a shared function
+  any more ([#46](https://github.com/shim9610/figgy/issues/46)). Each
+  module's source and fragment list come from one literal list
+  (`shader_assembly::Assembled`), and a test pins every pick module to the
+  shared fragments of the draw module it measures. Picks, pixels and the
+  pipeline layouts are unchanged.
 - **Character sets.** `RichSegment.greek: bool` becomes
   `char_set: CharSet` (`Text`, `Greek`, `Math`), so a segment cannot be
   Greek and math at once

@@ -37,8 +37,8 @@ fn contour_label_frame(
     y: vec2<f32>,
     dir: vec2<f32>,
 ) -> ContourLabelFrame {
-    let centre = data_to_ndc(x, y);
-    let along = data_to_ndc(x + vec2<f32>(dir.x, 0.0), y + vec2<f32>(dir.y, 0.0));
+    let centre = data_to_ndc(t, x, y);
+    let along = data_to_ndc(t, x + vec2<f32>(dir.x, 0.0), y + vec2<f32>(dir.y, 0.0));
     // Work in pixels with y up, so the rotation is not skewed by the panel's
     // aspect: `pixel_to_ndc` converts px to NDC, so its reciprocal goes back.
     let d_px = (along - centre) / t.pixel_to_ndc;
