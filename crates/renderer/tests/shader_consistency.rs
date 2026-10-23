@@ -1075,28 +1075,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
     ),
     (
-        &[
-            "data_render/scatter_columnar_a.wgsl",
-            "gpu_pick/marker.wgsl",
-        ],
-        &[
-            "base_shape_id",
-            "marker_edge",
-            "regular_vertex",
-            "rotate2",
-            "sd_box",
-            "sd_plus_filled",
-            "sd_regular_polygon",
-            "sd_segment",
-            "sd_star",
-            "sd_triangle",
-            "shape_distance",
-            "shape_is_filled",
-            "star_vertex",
-            "visual_shape_radius",
-        ],
-    ),
-    (
         &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
         &[
             "cons_ring_angle",
