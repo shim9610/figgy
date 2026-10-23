@@ -9,24 +9,24 @@ fn sample_finite(v: f32) -> bool {
 // fold onto the inner ring), so the sample is not drawn and a line breaks
 // there. Angles outside the sector and radii past the outer ring keep their
 // projection and are cut by the fragment clip below.
-fn polar_sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
-    if (transform.polar_angle.x < 0.5) {
+fn polar_sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
+    if (t.polar_angle.x < 0.5) {
         return true;
     }
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
+    let ty = axis_pair_to_t(yv, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y);
+    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
     return rt >= 0.0;
 }
 
-fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
+fn sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
     let x = xv.x + xv.y;
     let y = yv.x + yv.y;
     return sample_finite(xv.x) && sample_finite(xv.y)
         && sample_finite(yv.x) && sample_finite(yv.y)
         && sample_finite(x) && sample_finite(y)
-        && (transform.scale_log.x == 0.0 || x > 0.0)
-        && (transform.scale_log.y == 0.0 || y > 0.0)
-        && polar_sample_valid(xv, yv);
+        && (t.scale_log.x == 0.0 || x > 0.0)
+        && (t.scale_log.y == 0.0 || y > 0.0)
+        && polar_sample_valid(t, xv, yv);
 }
 
 // Polar clip. The transform is vertex-visible only, so the vertex stage hands
@@ -35,23 +35,23 @@ fn sample_valid(xv: vec2<f32>, yv: vec2<f32>) -> bool {
 // fragment discards outside the outer ring, inside the hole and outside the
 // sector, cutting a primitive at the edge the way the data-area scissor cuts
 // a rectangular chart. A rectangular chart passes a zero flag.
-fn polar_clip_offset(ndc: vec2<f32>) -> vec2<f32> {
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return (ndc - center) / transform.pixel_to_ndc;
+fn polar_clip_offset(t: Transform, ndc: vec2<f32>) -> vec2<f32> {
+    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
+    return (ndc - center) / t.pixel_to_ndc;
 }
 
 // (flag, outer radius px, inner radius px, sector flag)
-fn polar_clip_limits() -> vec4<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
+fn polar_clip_limits(t: Transform) -> vec4<f32> {
+    let p = t.polar_angle;
+    let e = t.polar_extent;
     return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
 }
 
 // (zero angle rad, radians per angle unit signed by the direction, sector
 // start, sector end in angle units)
-fn polar_clip_sector() -> vec4<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
+fn polar_clip_sector(t: Transform) -> vec4<f32> {
+    let p = t.polar_angle;
+    let e = t.polar_extent;
     return vec4<f32>(p.y, p.z, e.x, e.y);
 }
 

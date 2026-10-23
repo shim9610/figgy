@@ -71,7 +71,7 @@ fn figgy_zero_workgroup(local_index: u32) {
 fn point_valid(i: u32) -> bool {
     let xi = params.x_base + i * 2u;
     let yi = params.y_base + i * 2u;
-    return sample_valid(vec2<f32>(pool[xi], pool[xi + 1u]), vec2<f32>(pool[yi], pool[yi + 1u]));
+    return sample_valid(transform, vec2<f32>(pool[xi], pool[xi + 1u]), vec2<f32>(pool[yi], pool[yi + 1u]));
 }
 
 fn point_pair(base: u32, i: u32) -> vec2<f32> {
@@ -90,7 +90,7 @@ fn segment_px(i: u32, j: u32) -> f32 {
     var total = 0.0;
     let pieces = step_piece_count(params.mode);
     for (var k = 0u; k < pieces; k = k + 1u) {
-        total = total + step_piece_len_px(step_piece(xa, ya, xb, yb, params.mode, k));
+        total = total + step_piece_len_px(transform, step_piece(xa, ya, xb, yb, params.mode, k));
     }
     return total;
 }

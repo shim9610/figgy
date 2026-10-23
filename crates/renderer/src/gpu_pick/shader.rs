@@ -51,9 +51,17 @@ impl PickShader {
     #[cfg(test)]
     pub(crate) fn fragments(self) -> &'static [&'static str] {
         match self {
-            PickShader::Gate => &["gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl"],
+            PickShader::Gate => &[
+                "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "gpu_pick/gate_entries.wgsl",
+            ],
             PickShader::Marker => &[
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/marker.wgsl",
                 "gpu_pick/marker.wgsl",
@@ -62,8 +70,12 @@ impl PickShader {
             ],
             PickShader::MarkerLine => &[
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/line_stroke.wgsl",
+                "data_render/common/line_step.wgsl",
                 "data_render/common/marker.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/line.wgsl",
@@ -71,14 +83,20 @@ impl PickShader {
             ],
             PickShader::Line => &[
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/line_stroke.wgsl",
+                "data_render/common/line_step.wgsl",
                 "gpu_pick/no_scatter.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::Vector => &[
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/arrow.wgsl",
                 "gpu_pick/vector.wgsl",
                 "gpu_pick/no_line.wgsl",
@@ -92,9 +110,17 @@ impl PickShader {
     pub(crate) const fn source(self) -> &'static str {
         use crate::shader_assembly::wgsl_module;
         match self {
-            PickShader::Gate => wgsl_module!("gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl",),
+            PickShader::Gate => wgsl_module!(
+                "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "gpu_pick/gate_entries.wgsl",
+            ),
             PickShader::Marker => wgsl_module!(
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/marker.wgsl",
                 "gpu_pick/marker.wgsl",
@@ -103,8 +129,12 @@ impl PickShader {
             ),
             PickShader::MarkerLine => wgsl_module!(
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/line_stroke.wgsl",
+                "data_render/common/line_step.wgsl",
                 "data_render/common/marker.wgsl",
                 "gpu_pick/marker.wgsl",
                 "gpu_pick/line.wgsl",
@@ -112,14 +142,20 @@ impl PickShader {
             ),
             PickShader::Line => wgsl_module!(
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
                 "data_render/common/sketch_noise.wgsl",
                 "data_render/common/line_stroke.wgsl",
+                "data_render/common/line_step.wgsl",
                 "gpu_pick/no_scatter.wgsl",
                 "gpu_pick/line.wgsl",
                 "gpu_pick/exact_entry.wgsl",
             ),
             PickShader::Vector => wgsl_module!(
                 "gpu_pick/core.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
                 "data_render/common/arrow.wgsl",
                 "gpu_pick/vector.wgsl",
                 "gpu_pick/no_line.wgsl",

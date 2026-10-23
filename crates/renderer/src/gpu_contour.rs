@@ -480,6 +480,11 @@ impl ContourLabelPipelines {
         let end = legacy.find("// ───── END common block").unwrap();
         let mut source = legacy.to_owned();
         source.replace_range(start..end, common);
+        // The shared projection takes the transform as a parameter now; the
+        // fixture's one call after the common block follows that ABI.
+        let old_call = "data_to_ndc(a.x, a.y)";
+        assert_eq!(source.matches(old_call).count(), 1);
+        source = source.replace(old_call, "data_to_ndc(transform, a.x, a.y)");
         // Selection is still one invocation in both versions. Keep its scratch
         // address space aligned, without changing the frozen projection loop.
         // Otherwise the oracle incurs WARP's slow workgroup initialization.

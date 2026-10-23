@@ -104,12 +104,12 @@ fn vs_main(
         return out;
     }
 
-    let centre = data_to_ndc(a_x, a_y);
+    let centre = data_to_ndc(transform, a_x, a_y);
     // The tangent is data-space, so it is projected the same way the point is:
     // one finite difference through the live transform. `a_dir` is added to the
     // pair's high lane only — it is a delta, and the split exists to keep the
     // *base* precise.
-    let along = data_to_ndc(a_x + vec2<f32>(a_dir.x, 0.0), a_y + vec2<f32>(a_dir.y, 0.0));
+    let along = data_to_ndc(transform, a_x + vec2<f32>(a_dir.x, 0.0), a_y + vec2<f32>(a_dir.y, 0.0));
     // Work in pixels with y up, so the rotation is not skewed by the panel's
     // aspect: `pixel_to_ndc` converts px to NDC, so its reciprocal goes back.
     let d_px = (along - centre) / transform.pixel_to_ndc;

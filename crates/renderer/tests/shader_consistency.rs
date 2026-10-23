@@ -488,26 +488,13 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
 ];
 
 /// Copies of a fragment's function that a module carries because it cannot
-/// splice the fragment (see each copy's comment): the pick modules bind no
-/// draw `transform` and have no `maybe_log`, the radar shader no `Bar`. `pending_copies_equal_their_fragment` holds each copy to the
+/// splice the fragment (see each copy's comment): the radar shader declares
+/// no `Bar`. `pending_copies_equal_their_fragment` holds each copy to the
 /// fragment's text. Only shrinks; never grows.
-const PENDING_COPIES: &[(&[&str], &[&str])] = &[
-    (
-        &["data_render/common/bounded_shading.wgsl", "radar.wgsl"],
-        &["output"],
-    ),
-    (
-        &[
-            "data_render/common/sample_validity.wgsl",
-            "gpu_pick/core.wgsl",
-        ],
-        &["polar_fragment_visible"],
-    ),
-    (
-        &["data_render/common/ramp.wgsl", "gpu_pick/marker.wgsl"],
-        &["ramp_finite"],
-    ),
-];
+const PENDING_COPIES: &[(&[&str], &[&str])] = &[(
+    &["data_render/common/bounded_shading.wgsl", "radar.wgsl"],
+    &["output"],
+)];
 
 /// Each copy in [`PENDING_COPIES`] is byte-identical to the function of the
 /// fragment it copies, so the copy and the fragment cannot drift apart.

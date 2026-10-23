@@ -34,13 +34,13 @@ To change shared shader code:
 |---|---|
 | `transform.wgsl` (§1) | scatter, line, errorbar, bar, field, line_arc, contour anchor and label, vector |
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
-| `projection.wgsl` (§3, §4) | the transform's modules |
-| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector |
+| `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
+| `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`) and the grid vector |
-| `ramp.wgsl` (§5.4) | field, scatter, vector |
+| `ramp.wgsl` (§5.4) | field, scatter, vector, the pick marker and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar and the pick marker modules |
-| `line_step.wgsl` | line, line_arc |
+| `line_step.wgsl` | line, line_arc, the pick line modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
@@ -49,12 +49,17 @@ To change shared shader code:
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
 `gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. Three functions stay copied where
-a module cannot splice their fragment, held to the fragment's text by
-`shader_consistency`: the pick modules' `ramp_finite` and
-`polar_fragment_visible` (they bind no draw `transform` and have no
-`maybe_log`, which the rest of those fragments read) and the radar `output`
-(it declares no `Bar`, which the rest of `bounded_shading.wgsl` takes).
+`shader_assembly::MODULES` names every one. One function stays copied where
+a module cannot splice its fragment, held to the fragment's text by
+`shader_consistency`: the radar `output` (it declares no `Bar`, which the
+rest of `bounded_shading.wgsl` takes).
+
+The fragments that read the transform (`projection.wgsl`,
+`sample_validity.wgsl`, `line_step.wgsl`) take it as their first parameter
+`t: Transform` instead of reading the uniform: a draw module passes its
+`transform` uniform, a pick module `pick_query_params.transform`. So the
+pick modules, which bind no `transform` uniform, splice the same projection
+the draw runs.
 
 ### Module notes
 
@@ -90,7 +95,7 @@ The code is the fragment [`data_render/common/transform.wgsl`](common/transform.
 **대응하는 CPU 구조체:** `src/data_render/mod.rs::ScatterTransform`
 (`#[repr(C)]`, `bytemuck::Pod`). 필드 순서와 크기가 정확히 일치해야 한다.
 
-`gpu_pick/core.wgsl` declares the same layout as `PickQueryTransform`: the pick modules bind no `transform` uniform and take the transform as the first member of their parameter uniform `PickQueryParams` (CPU `gpu_pick::types::PickQueryParamsGpu`, which holds a `ScatterTransform`). `mirrored_struct_layouts_match_their_rust_twins` (`shader_assembly.rs`) compares `Transform`, `PickQueryTransform` and `PickQueryParams` with their Rust structs member by member, offsets and sizes included.
+`gpu_pick/core.wgsl` declares the same `Transform` struct without the uniform: the pick modules bind no `transform` uniform (their group 0 binding 0 is the pool) and take the transform as the first member of their parameter uniform `PickQueryParams` (CPU `gpu_pick::types::PickQueryParamsGpu`, which holds a `ScatterTransform`), which they pass to the shared projection functions. `mirrored_struct_layouts_match_their_rust_twins` (`shader_assembly.rs`) compares the draw's and the pick's `Transform` and `PickQueryParams` with their Rust structs member by member, offsets and sizes included.
 
 `style_params[2].z` is reserved independently of the active style: it carries
 the exact **u32 bit pattern** of a streamed point/errorbar chunk's global base,
@@ -349,7 +354,7 @@ cannot pass as an argument) stays the only per-shader line. CPU twins:
 `ColorBarOptions::normalized_z`, `model::colormap::sample` and
 `PointSizeMap::radius_px`.
 
-The colour ramp is the fragment [`data_render/common/ramp.wgsl`](common/ramp.wgsl) and the size-map radius is part of [`data_render/common/marker.wgsl`](common/marker.wgsl), spliced into each module that needs them by `wgsl_module!` (`shader_assembly.rs`). The pick modules carry their own `ramp_finite`: the ramp fragment calls `maybe_log`, which they do not have.
+The colour ramp is the fragment [`data_render/common/ramp.wgsl`](common/ramp.wgsl) and the size-map radius is part of [`data_render/common/marker.wgsl`](common/marker.wgsl), spliced into each module that needs them by `wgsl_module!` (`shader_assembly.rs`), the pick marker modules included.
 
 ### 5.5 Marker shape
 

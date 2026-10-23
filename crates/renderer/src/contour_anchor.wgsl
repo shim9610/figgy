@@ -323,7 +323,7 @@ fn label_radius(i: u32) -> f32 {
 }
 
 fn anchor_px(a: LabelAnchor) -> vec2<f32> {
-    return t_to_px((data_to_ndc(a.x, a.y) + vec2<f32>(1.0, 1.0)) * 0.5);
+    return t_to_px((data_to_ndc(transform, a.x, a.y) + vec2<f32>(1.0, 1.0)) * 0.5);
 }
 
 @compute @workgroup_size(1)

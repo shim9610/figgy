@@ -168,16 +168,11 @@ mod tests {
             ("ERRORBAR_HAS_X", dr::ERRORBAR_HAS_X),
             ("LINE_STEP_SHIFT", LINE_STEP_SHIFT),
             ("LINE_ARC_SHIFT", LINE_ARC_SHIFT),
-            ("PICK_ARC_SHIFT", LINE_ARC_SHIFT),
             ("AREA_FILL_TO_SERIES", AREA_FILL_TO_SERIES),
             ("LINE_STEP_LINEAR", line_step::step_mode(Step::Linear)),
             ("LINE_STEP_PRE", line_step::step_mode(Step::StepPre)),
             ("LINE_STEP_POST", line_step::step_mode(Step::StepPost)),
             ("LINE_STEP_MID", line_step::step_mode(Step::StepMid)),
-            ("PICK_STEP_LINEAR", line_step::step_mode(Step::Linear)),
-            ("PICK_STEP_PRE", line_step::step_mode(Step::StepPre)),
-            ("PICK_STEP_POST", line_step::step_mode(Step::StepPost)),
-            ("PICK_STEP_MID", line_step::step_mode(Step::StepMid)),
             ("DATA_PICK_FLAG_FILL", data_pick::DATA_PICK_FLAG_FILL),
             ("DATA_PICK_FLAG_CONTOUR", data_pick::DATA_PICK_FLAG_CONTOUR),
             ("DATA_PICK_FLAG_PAINTED", data_pick::DATA_PICK_FLAG_PAINTED),
@@ -334,7 +329,7 @@ mod tests {
         };
         let mirrors = [
             transform("scatter", "Transform"),
-            transform("pick_marker_line", "PickQueryTransform"),
+            transform("pick_marker_line", "Transform"),
             mirror!(
                 "scatter",
                 "Style",

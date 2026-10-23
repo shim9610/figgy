@@ -3,8 +3,8 @@
 // Piece corners live in DATA space so every consumer projects the same
 // points: the line, area, sketch, ribbon and star entries here, the
 // arc-length scan (line_arc.wgsl, `params.mode`) and the GPU picker
-// (gpu_pick/line.wgsl, in its own pick_* ABI). The line and arc modules splice
-// this one fragment, so both split a segment into the same pieces; the CPU
+// (gpu_pick/line.wgsl). The line, arc and pick line modules splice this one
+// fragment, so all of them split a segment into the same pieces; the CPU
 // twin is `line_step::step_pieces` in the renderer crate.
 const LINE_STEP_SHIFT: u32 = 2u;
 const LINE_STEP_MASK: u32 = 3u;
@@ -85,9 +85,9 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
 }
 
 // Pixel length of one piece, with the arc scan's projection.
-fn step_piece_len_px(p: StepPiece) -> f32 {
-    let a_px = data_to_ndc(p.x0, p.y0) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(p.x1, p.y1) / transform.pixel_to_ndc;
+fn step_piece_len_px(t: Transform, p: StepPiece) -> f32 {
+    let a_px = data_to_ndc(t, p.x0, p.y0) / t.pixel_to_ndc;
+    let b_px = data_to_ndc(t, p.x1, p.y1) / t.pixel_to_ndc;
     return distance(a_px, b_px);
 }
 // ─────────────────────── end step interpolation ───────────────────────

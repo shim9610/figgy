@@ -537,8 +537,8 @@ fn contour_label_gap_contains(axis_t_value: vec2<f32>) -> bool {
         if (!f32_is_finite(w) || !f32_is_finite(h) || w <= 0.0 || h <= 0.0) {
             continue;
         }
-        let centre = data_to_ndc(anchor.x, anchor.y);
-        let along = data_to_ndc(
+        let centre = data_to_ndc(transform, anchor.x, anchor.y);
+        let along = data_to_ndc(transform, 
             anchor.x + vec2<f32>(anchor.dir.x, 0.0),
             anchor.y + vec2<f32>(anchor.dir.y, 0.0),
         );
