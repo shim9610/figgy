@@ -3,7 +3,7 @@
 `RadialChart`는 소수의 범주와 구성 비율을 보여 주는 파이·도넛 차트다. `RadialRenderer`는
 기존 렌더러와 같은 wgpu 장치·큐를 사용할 수 있다. 축, 컬럼 풀, 자동 fit, 스트리밍 작업은
 사용하지 않는다. 범주 값과 스타일을 모두 담은 모델을 넘기면 불변 프레임을 만든다.
-브라우저에서는 `crates/web` 예제 래퍼의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
+브라우저에서는 브라우저용 제품인 `crates/web`의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
 히트맵·선택·드래그·PNG 출력을 노출한다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
 원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다. `RadialRenderer::new_async`는

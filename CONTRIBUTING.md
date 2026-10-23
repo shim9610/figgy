@@ -14,7 +14,7 @@ backend, plus the first error or a before/after image. State whether the issue o
 streaming, selection, resizing or PNG export. A screenshot is helpful but does not
 replace a reproducer.
 
-The WASM wrapper is an integration example. For browser reports, include the
+The WASM wrapper in `crates/web` is figgy's browser product. For browser reports, include the
 browser version, wrapper revision and host call sequence. The independently
 developed figgyplot.com Studio is a separate application; identify which code
 reproduces the problem without assuming that either the host or renderer is at fault.

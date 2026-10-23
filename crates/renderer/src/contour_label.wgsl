@@ -25,7 +25,8 @@
 //
 // The screen angle is the anchor's data-space tangent projected as a finite
 // difference — exact on a linear axis, the local direction on a logarithmic one
-// — flipped by 180° when it would leave the text reading right-to-left.
+// — flipped by 180° when it would leave the text reading right-to-left. The
+// frame and `LABEL_EDGE_PX` are the fragment `common/contour_label_box.wgsl`.
 
 /// CPU twin: `gpu_contour::LabelParamsGpu` (32 B, 16 B uniform alignment).
 struct LabelParams {
@@ -46,11 +47,6 @@ struct LabelParams {
 
 @group(1) @binding(0) var<uniform> lp: LabelParams;
 
-/// How far the label quad extends past its measured content, in pixels. The
-/// content-to-texel map has slope `(w - 1) / w`, so reaching the gutter's texel
-/// centre takes a little over one pixel for short labels; two leaves margin.
-/// Everything past that centre is clamped to it and is transparent.
-const LABEL_EDGE_PX: f32 = 2.0;
 @group(1) @binding(2) var atlas: texture_2d<f32>;
 @group(1) @binding(3) var atlas_samp: sampler;
 
@@ -104,32 +100,9 @@ fn vs_main(
         return out;
     }
 
-    let centre = data_to_ndc(transform, a_x, a_y);
-    // The tangent is data-space, so it is projected the same way the point is:
-    // one finite difference through the live transform. `a_dir` is added to the
-    // pair's high lane only — it is a delta, and the split exists to keep the
-    // *base* precise.
-    let along = data_to_ndc(transform, a_x + vec2<f32>(a_dir.x, 0.0), a_y + vec2<f32>(a_dir.y, 0.0));
-    // Work in pixels with y up, so the rotation is not skewed by the panel's
-    // aspect: `pixel_to_ndc` converts px to NDC, so its reciprocal goes back.
-    let d_px = (along - centre) / transform.pixel_to_ndc;
-    var right = vec2<f32>(1.0, 0.0);
-    if (dot(d_px, d_px) > 0.0) {
-        right = normalize(d_px);
-    }
-    // Keep the text upright. A tangent pointing left would draw the number
-    // mirrored end-to-end; 180° is the same line and reads correctly.
-    //
-    // The `y` clause is the vertical-tangent tie-break. An exactly vertical
-    // tangent has `right.x == 0`, so the sign test alone would leave the label
-    // facing either way after projection. Bottom-to-top is the deterministic
-    // choice for that tie.
-    // It is also the answer matplotlib
-    // gives a vertical `clabel`.
-    if (right.x < 0.0 || (right.x == 0.0 && right.y < 0.0)) {
-        right = -right;
-    }
-    let up = vec2<f32>(-right.y, right.x);
+    // The frame (centre, reading direction, upright turn) is the label box's
+    // (`common/contour_label_box.wgsl`), which the contour gap tests too.
+    let frame = contour_label_frame(transform, a_x, a_y, a_dir);
 
     // The quad reaches `LABEL_EDGE_PX` past the measured content on every
     // side. A baked background box fills its content to the edge, so a quad
@@ -139,8 +112,8 @@ fn vs_main(
     // box edge over one texel, exactly as it does for the glyphs inside it.
     let content = vec2<f32>(w, cell_h);
     let local = corner * (content + vec2<f32>(2.0 * LABEL_EDGE_PX));
-    let offset_px = right * local.x + up * local.y;
-    out.pos = vec4<f32>(centre + offset_px * transform.pixel_to_ndc, 0.0, 1.0);
+    let offset_px = frame.right * local.x + frame.up * local.y;
+    out.pos = vec4<f32>(frame.centre + offset_px * transform.pixel_to_ndc, 0.0, 1.0);
 
     // `f` is the position in [0, 1] over the measured content, and runs past
     // that interval on the extended edge. Content maps to texel centres as it

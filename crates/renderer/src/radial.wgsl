@@ -17,7 +17,11 @@ struct Sector {
     rounding: vec4<f32>, // inner corner, outer corner, vertical lift, reserved (0)
     outline: vec4<f32>, // rim, separators, emphasis amount, physical width
     outline_color: vec4<f32>,
-    effects: vec4<f32>, // reserved (0), reserved (0), inside-label flag, reserved (0)
+    // reserved (0), reserved (0), inside-label flag, inside-label lift: how far
+    // the lifted top face moves up the screen in physical pixels, computed once
+    // on the CPU where the sector is built (radial_layout.rs); the moving
+    // inside glyphs are sampled that far below the pixel
+    effects: vec4<f32>,
     light: vec4<f32>, // direction.xyz, shadow enabled
 };
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -175,7 +179,7 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
     if closest<9999.0 {
         let s=sectors[winner];
         if s.effects.z>0.0 && s.rounding.z>0.0 {
-            let offset=vec2(0.0,s.rounding.z*sin(s.arc.z)*s.geometry.z);
+            let offset=vec2(0.0,s.effects.w);
             let location=pixel+offset;
             let lo=vec2<i32>(floor(location-0.5));let f=fract(location-0.5);
             // Subpixel translation only, no rescaling or repeated texture feedback.

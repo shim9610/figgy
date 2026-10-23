@@ -285,64 +285,487 @@ fn no_bare_texture_sample_in_any_shader() {
     );
 }
 
-// A log flag returns the logarithmic value before any `mix`: drivers that
-// evaluate `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`,
-// which put log-axis values past 2^24 at the wrong height. The linear
-// arithmetic stays the original `mix`, which DX12 needs bit for bit at large
-// offsets (SHADER_COMMON §3). llvmpipe evaluates `mix` exactly, so no pixel
-// test here would see the difference.
-#[test]
-fn log_flags_return_the_logarithm_before_mixing() {
-    let mut shaders = Vec::new();
-    wgsl_files(&workspace_root().join("src"), &mut shaders);
-    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
-    let mut offending = Vec::new();
-    let mut guarded = 0;
-    for path in shaders {
-        let source = fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = source.lines().collect();
-        for (number, line) in lines.iter().enumerate() {
-            let code = line.split("//").next().unwrap();
-            let Some(flag) = ["is_log", "scale_log"]
-                .into_iter()
-                .find(|f| code.contains(f))
-            else {
-                continue;
-            };
-            let chosen = (code.contains("mix(") || code.contains("select("))
-                && !code.contains("select(0.0, 1.0,");
-            if !chosen {
-                continue;
+/// The 0/1 flags a shader chooses between two values by (SHADER_COMMON §3.1):
+/// a name, and the component it must carry when only one lane of a vector
+/// is the flag. A name without a component may carry any `[i]` index or
+/// `.x` swizzle. Locals bound as `select(0.0, 1.0, …)` or
+/// `select(1.0, 0.0, …)` join the table per function.
+const BLEND_FLAGS: [(&str, Option<&str>); 3] = [
+    ("scale_log", None),
+    ("polar_angle", Some(".x")),
+    ("is_log", None),
+];
+
+/// The flags that choose between a linear and a logarithmic value.
+const LOG_FLAGS: [&str; 2] = ["scale_log", "is_log"];
+
+fn is_ident(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// `source` with its `//` and `/* */` comments blanked to spaces, so offsets
+/// and line numbers still match the file.
+fn strip_wgsl_comments(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < bytes.len() {
+        if depth == 0 && bytes[i..].starts_with(b"//") {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                out[i] = b' ';
+                i += 1;
             }
-            // The same function returns the logarithm before the `mix`, or
-            // overrides the `mix` with it right after.
-            let guard = |l: &&str| l.contains("if ") && l.contains(flag) && l.contains("> 0.5");
-            let early = lines[..number]
-                .iter()
-                .rev()
-                .take_while(|l| !l.trim_start().starts_with("fn "))
-                .any(guard);
-            let overridden = lines[number + 1..].iter().take(2).any(guard);
-            if code.contains("select(") || !(early || overridden) {
-                offending.push(format!(
-                    "{}:{}: {}",
-                    path.display(),
-                    number + 1,
-                    line.trim()
-                ));
+        } else if bytes[i..].starts_with(b"/*") || (depth > 0 && bytes[i..].starts_with(b"*/")) {
+            if bytes[i] == b'/' {
+                depth += 1;
+            } else {
+                depth -= 1;
             }
-            guarded += 1;
+            out[i] = b' ';
+            out[i + 1] = b' ';
+            i += 2;
+        } else {
+            if depth > 0 && bytes[i] != b'\n' {
+                out[i] = b' ';
+            }
+            i += 1;
         }
     }
+    String::from_utf8(out).unwrap()
+}
+
+/// The offset of the bracket that closes the `(`, `[` or `{` at `open`.
+fn closing_bracket(code: &[u8], open: usize) -> usize {
+    let mut depth = 0usize;
+    for (i, &byte) in code.iter().enumerate().skip(open) {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced bracket at byte {open}")
+}
+
+/// The offset of the bracket that opens the `)` or `]` at `close`.
+fn opening_bracket(code: &[u8], close: usize) -> usize {
+    let mut depth = 0usize;
+    for i in (0..=close).rev() {
+        match code[i] {
+            b')' | b']' => depth += 1,
+            b'(' | b'[' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("unbalanced bracket at byte {close}")
+}
+
+/// `span` without its surrounding whitespace.
+fn trimmed_span(code: &str, (start, end): (usize, usize)) -> (usize, usize) {
+    let text = &code[start..end];
+    let start = start + (text.len() - text.trim_start().len());
+    (start, start + text.trim().len())
+}
+
+/// The arguments of the call whose `(` is at `open`, split at its top-level
+/// commas, each without surrounding whitespace, and the offset of its `)`.
+fn call_arguments(code: &str, open: usize) -> (Vec<(usize, usize)>, usize) {
+    let bytes = code.as_bytes();
+    let close = closing_bracket(bytes, open);
+    let mut arguments = Vec::new();
+    let mut depth = 0usize;
+    let mut start = open + 1;
+    for i in open + 1..close {
+        match bytes[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b',' if depth == 0 => {
+                arguments.push(trimmed_span(code, (start, i)));
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = trimmed_span(code, (start, close));
+    if last.0 < last.1 {
+        arguments.push(last);
+    }
+    (arguments, close)
+}
+
+/// The `(` of each call to `name` in `code[from..to]`.
+fn call_openings(code: &str, from: usize, to: usize, name: &str) -> Vec<usize> {
+    let bytes = code.as_bytes();
+    code[from..to]
+        .match_indices(name)
+        .filter_map(|(offset, _)| {
+            let at = from + offset;
+            if at > 0 && is_ident(bytes[at - 1]) {
+                return None;
+            }
+            let rest = &code[at + name.len()..to];
+            let open = at + name.len() + (rest.len() - rest.trim_start().len());
+            (bytes.get(open) == Some(&b'(')).then_some(open)
+        })
+        .collect()
+}
+
+/// Whether the argument spans `a` and `b` are the literals `x` and `y`.
+fn literals_are(code: &str, a: (usize, usize), b: (usize, usize), x: f32, y: f32) -> bool {
+    let value = |(s, e): (usize, usize)| code[s..e].trim_end_matches('f').parse::<f32>().ok();
+    value(a) == Some(x) && value(b) == Some(y)
+}
+
+/// Each operand in `code[from..to]` that is `flag`: the span from the start
+/// of the `a.b[i].` path the flag is a field of to the end of its `[i]`
+/// index or `.x` swizzle.
+fn flag_operands(
+    code: &str,
+    from: usize,
+    to: usize,
+    (name, component): (&str, Option<&str>),
+) -> Vec<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let mut operands = Vec::new();
+    for (offset, _) in code[from..to].match_indices(name) {
+        let at = from + offset;
+        let mut end = at + name.len();
+        if (at > 0 && is_ident(bytes[at - 1])) || bytes.get(end).is_some_and(|b| is_ident(*b)) {
+            continue;
+        }
+        match component {
+            Some(component) => {
+                let past = end + component.len();
+                if !code[end..].starts_with(component)
+                    || bytes.get(past).is_some_and(|b| is_ident(*b))
+                {
+                    continue;
+                }
+                end = past;
+            }
+            None if bytes.get(end) == Some(&b'[') => end = closing_bracket(bytes, end) + 1,
+            None if bytes.get(end) == Some(&b'.') => {
+                let lanes = bytes[end + 1..]
+                    .iter()
+                    .take_while(|b| is_ident(**b))
+                    .count();
+                if (1..=4).contains(&lanes)
+                    && bytes[end + 1..end + 1 + lanes]
+                        .iter()
+                        .all(|b| b"xyzwrgba".contains(b))
+                {
+                    end += 1 + lanes;
+                }
+            }
+            None => {}
+        }
+        let mut start = at;
+        while start > 0 && bytes[start - 1] == b'.' {
+            let mut p = start - 1;
+            if p > 0 && bytes[p - 1] == b']' {
+                p = opening_bracket(bytes, p - 1);
+            }
+            while p > 0 && is_ident(bytes[p - 1]) {
+                p -= 1;
+            }
+            start = p;
+        }
+        operands.push((start, end));
+    }
+    operands
+}
+
+/// The last non-whitespace byte before `at` (not before `floor`), with its offset.
+fn byte_before(code: &[u8], at: usize, floor: usize) -> Option<(usize, u8)> {
+    (floor..at)
+        .rev()
+        .find(|&i| !code[i].is_ascii_whitespace())
+        .map(|i| (i, code[i]))
+}
+
+/// The first non-whitespace byte at or after `at`.
+fn byte_after(code: &[u8], at: usize) -> Option<u8> {
+    code[at..]
+        .iter()
+        .copied()
+        .find(|b| !b.is_ascii_whitespace())
+}
+
+/// Whether the operand at `span` is a factor of a product, directly
+/// (`f * y`, `y * f`, `y *= f`) or as a term of a parenthesized sum that is
+/// one (`(1.0 - f) * y`). `floor` is the start of the function body.
+fn is_product_factor(code: &str, (mut start, mut end): (usize, usize), floor: usize) -> bool {
+    let bytes = code.as_bytes();
+    loop {
+        let before = byte_before(bytes, start, floor);
+        let after = byte_after(bytes, end);
+        if before.map(|(_, b)| b) == Some(b'*') || after == Some(b'*') {
+            return true;
+        }
+        if let Some((i, b'=')) = before
+            && i > 0
+            && bytes[i - 1] == b'*'
+        {
+            return true;
+        }
+        let term = matches!(before, Some((_, b'(' | b'+' | b'-')))
+            && matches!(after, Some(b')' | b'+' | b'-'));
+        if !term {
+            return false;
+        }
+        // The parenthesis the sum sits in, unless the sum is a call argument.
+        let mut depth = 0usize;
+        let mut open = None;
+        for i in (floor..start).rev() {
+            match bytes[i] {
+                b')' | b']' => depth += 1,
+                b'(' if depth == 0 => {
+                    open = Some(i);
+                    break;
+                }
+                b'(' | b'[' if depth > 0 => depth -= 1,
+                b'[' | b';' | b'{' | b'}' if depth == 0 => break,
+                _ => {}
+            }
+        }
+        let Some(open) = open else {
+            return false;
+        };
+        if let Some((i, byte)) = byte_before(bytes, open, floor) {
+            let word_start = (floor..=i).rev().take_while(|&j| is_ident(bytes[j])).last();
+            let word = word_start.map_or("", |j| &code[j..=i]);
+            let keyword = ["return", "if", "while", "switch", "case"].contains(&word);
+            if byte == b'>' || (!word.is_empty() && !keyword) {
+                return false;
+            }
+        }
+        start = open;
+        end = closing_bracket(bytes, open) + 1;
+    }
+}
+
+/// Whether an `if` starting in `code[from..to]` tests `operand > 0.5`, and,
+/// when `returns`, returns from its block.
+fn has_flag_guard(code: &str, from: usize, to: usize, operand: &str, returns: bool) -> bool {
+    let bytes = code.as_bytes();
+    code[from..to].match_indices("if").any(|(offset, _)| {
+        let at = from + offset;
+        if (at > 0 && is_ident(bytes[at - 1])) || bytes.get(at + 2).is_some_and(|b| is_ident(*b)) {
+            return false;
+        }
+        let Some(open) = code[at..].find('{').map(|o| at + o) else {
+            return false;
+        };
+        let tests = flag_operands(code, at + 2, open, (operand, None))
+            .into_iter()
+            .any(|(s, e)| {
+                &code[s..e] == operand && code[e..open].trim_start().starts_with("> 0.5")
+            });
+        let block = &code[open..=closing_bracket(bytes, open)];
+        tests && (!returns || block.contains("return"))
+    })
+}
+
+/// The bodies (`{` to `}`) of the functions in `code`.
+fn function_bodies(code: &str) -> Vec<(usize, usize)> {
+    let bytes = code.as_bytes();
+    let mut bodies = Vec::new();
+    let mut from = 0;
+    while let Some(offset) = code[from..].find("fn ") {
+        let at = from + offset;
+        if at > 0 && is_ident(bytes[at - 1]) {
+            from = at + 3;
+            continue;
+        }
+        let Some(open) = code[at..].find('{').map(|o| at + o) else {
+            break;
+        };
+        let close = closing_bracket(bytes, open);
+        bodies.push((open, close));
+        from = close;
+    }
+    bodies
+}
+
+/// The locals of `code[from..to]` bound as `let|var NAME = select(0.0, 1.0,
+/// …)` or `select(1.0, 0.0, …)`.
+fn select_bound_flags(code: &str, from: usize, to: usize) -> Vec<&str> {
+    let bytes = code.as_bytes();
+    let mut names = Vec::new();
+    for keyword in ["let", "var"] {
+        for (offset, _) in code[from..to].match_indices(keyword) {
+            let at = from + offset;
+            let mut p = at + keyword.len();
+            if (at > 0 && is_ident(bytes[at - 1])) || is_ident(bytes[p]) {
+                continue;
+            }
+            if bytes[p] == b'<' {
+                p += code[p..].find('>').unwrap() + 1;
+            }
+            let name_start = p + (code[p..].len() - code[p..].trim_start().len());
+            let name_end = name_start
+                + bytes[name_start..]
+                    .iter()
+                    .take_while(|b| is_ident(**b))
+                    .count();
+            let Some(eq) = code[name_end..to].find(['=', ';']).map(|o| name_end + o) else {
+                continue;
+            };
+            if name_start == name_end || bytes[eq] != b'=' {
+                continue;
+            }
+            let Some(&open) = call_openings(code, eq + 1, to, "select").first() else {
+                continue;
+            };
+            if code[eq + 1..open].trim() != "select" {
+                continue;
+            }
+            let (arguments, _) = call_arguments(code, open);
+            if arguments.len() == 3
+                && (literals_are(code, arguments[0], arguments[1], 0.0, 1.0)
+                    || literals_are(code, arguments[0], arguments[1], 1.0, 0.0))
+            {
+                names.push(&code[name_start..name_end]);
+            }
+        }
+    }
+    names
+}
+
+// A flag chooses between two values only through a guarded `mix`. Drivers
+// that evaluate `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`,
+// which put log-axis values past 2^24 at the wrong height, so the chosen
+// value is returned (or assigned) by an `if flag > 0.5` before the `mix`
+// sees a 1. The linear arithmetic stays the original `mix`, which DX12 needs
+// bit for bit at large offsets (SHADER_COMMON §3). A hand-written blend
+// (`x + f * (y - x)`, `f * y + (1.0 - f) * x`) has the same failure and no
+// guard can make it exact, so a flag is never a factor of a product, and a
+// log flag never picks through `select`. llvmpipe evaluates `mix` exactly,
+// so no pixel test here would see the difference. The flag table is
+// `BLEND_FLAGS` plus each function's `select(0.0, 1.0, …)` locals.
+#[test]
+fn flag_choices_never_blend_by_arithmetic() {
+    let mut shaders = Vec::new();
+    wgsl_files(&workspace_root().join("src"), &mut shaders);
+    shaders.sort();
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
+    let mut offending = Vec::new();
+    let mut found = [0usize; BLEND_FLAGS.len()];
+    let mut select_locals = 0;
+    let mut guarded = 0;
+    for path in shaders {
+        let source = fs::read_to_string(&path).unwrap().replace("\r\n", "\n");
+        let code = strip_wgsl_comments(&source);
+        let mut offend = |at: usize, why: &str| {
+            let line = code[..at].matches('\n').count();
+            let text = source.lines().nth(line).unwrap().trim();
+            offending.push(format!("{}:{}: {why}: {text}", path.display(), line + 1));
+        };
+        for (count, flag) in found.iter_mut().zip(BLEND_FLAGS) {
+            *count += flag_operands(&code, 0, code.len(), flag).len();
+        }
+        for (lo, hi) in function_bodies(&code) {
+            let locals = select_bound_flags(&code, lo, hi);
+            select_locals += locals.len();
+            let flags: Vec<(&str, Option<&str>)> = BLEND_FLAGS
+                .into_iter()
+                .chain(locals.into_iter().map(|name| (name, None)))
+                .collect();
+
+            // (a) `mix(a, b, flag)` behind a guard; no other weight from a flag.
+            for open in call_openings(&code, lo, hi, "mix") {
+                let (arguments, close) = call_arguments(&code, open);
+                let Some(&(mut s, mut e)) = arguments.get(2) else {
+                    continue;
+                };
+                while code.as_bytes()[s] == b'(' && closing_bracket(code.as_bytes(), s) == e - 1 {
+                    (s, e) = trimmed_span(&code, (s + 1, e - 1));
+                }
+                let Some(operands) = flags
+                    .iter()
+                    .map(|&flag| flag_operands(&code, s, e, flag))
+                    .find(|operands| !operands.is_empty())
+                else {
+                    continue;
+                };
+                if operands != [(s, e)] {
+                    offend(open, "`mix` weight computed from a flag");
+                    continue;
+                }
+                let operand = &code[s..e];
+                // The override sits within the two lines after the `mix`.
+                let line_end = |at: usize| code[at..].find('\n').map_or(code.len(), |o| at + o);
+                let mut next_two = line_end(close);
+                for _ in 0..2 {
+                    if next_two < code.len() {
+                        next_two = line_end(next_two + 1);
+                    }
+                }
+                if has_flag_guard(&code, lo, open, operand, true)
+                    || has_flag_guard(&code, close, next_two, operand, false)
+                {
+                    guarded += 1;
+                } else {
+                    offend(open, "`mix` by a flag without an `if flag > 0.5` guard");
+                }
+            }
+
+            // (b) A flag is never a factor: that is a hand-written blend.
+            for &flag in &flags {
+                for operand in flag_operands(&code, lo + 1, hi, flag) {
+                    if is_product_factor(&code, operand, lo + 1) {
+                        offend(operand.0, "flag used as a `*` factor");
+                    }
+                }
+            }
+
+            // (c) A log flag never picks through `select`.
+            for open in call_openings(&code, lo, hi, "select") {
+                let (arguments, close) = call_arguments(&code, open);
+                if arguments.len() == 3 && literals_are(&code, arguments[0], arguments[1], 0.0, 1.0)
+                {
+                    continue;
+                }
+                if LOG_FLAGS
+                    .iter()
+                    .any(|&name| !flag_operands(&code, open, close, (name, None)).is_empty())
+                {
+                    offend(open, "`select` by a log flag");
+                }
+            }
+        }
+    }
+    for (count, (name, component)) in found.iter().zip(BLEND_FLAGS) {
+        assert!(
+            *count > 0,
+            "flag `{name}{}` of BLEND_FLAGS is in no shader: update the table and SHADER_COMMON §3.1",
+            component.unwrap_or("")
+        );
+    }
+    assert!(
+        select_locals > 0,
+        "no local bound as `select(0.0, 1.0, …)` is left: update the table and SHADER_COMMON §3.1"
+    );
     assert!(
         offending.is_empty(),
-        "log flags chosen unsafely:\n{}",
+        "flags blended by arithmetic:\n{}",
         offending.join("\n")
     );
-    // Each shared fragment is scanned once, so the floor counts the
+    // Each shared fragment is scanned once, so the floor counts the guarded
     // choices of `maybe_log`, `axis_pair_to_t`, `ramp_t` and
     // `axis_px_per_unit_at`: the scan must keep finding them.
-    assert!(guarded >= 4, "{guarded} guarded log choices found");
+    assert!(guarded >= 4, "{guarded} guarded flag choices found");
 }
 
 /// Rule from #46: one behaviour has one implementation. Every WGSL function

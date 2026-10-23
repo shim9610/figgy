@@ -149,7 +149,7 @@ WASM 생성에는 `CategoricalRenderer::new_async(gpu, format).await`를 사용�
 브라우저 파이프라인 컴파일을 기다린다. 출력에는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
 straight-alpha RGBA8이며 PNG는 기존 `encode_png`로 인코딩한다. 내보내기에는 현재 강조 상태가
 포함된다. 강조 없는 결과가 필요하면 내보낼 복사본의 `hovered`와 `selected`를 비운다.
-브라우저에서는 `crates/web` 예제 래퍼의 `FiggyBoundedChart`로 범주형 막대 문서를 표시·편집·내보낼 수
+브라우저에서는 브라우저용 제품인 `crates/web`의 `FiggyBoundedChart`로 범주형 막대 문서를 표시·편집·내보낼 수
 있다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
 ## 캐시와 소유권

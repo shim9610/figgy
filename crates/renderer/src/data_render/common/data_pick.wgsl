@@ -31,7 +31,7 @@ struct DataPickCandidate {
 // The highlight of a selected datum (`selection.rs::DataSelectionGpu`).
 struct DataSelection {
     color_premul: vec4<f32>,
-    // x = cell/bar outline width, y = selected contour extra width.
+    // x = cell outline width, y = selected contour extra width.
     metrics: vec4<f32>,
     // x = kind, y/z/w = kind-specific indices.
     indices: vec4<u32>,

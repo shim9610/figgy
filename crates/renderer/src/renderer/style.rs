@@ -369,63 +369,6 @@ pub(super) fn bar_style_slot_gpu(
     }
 }
 
-pub(super) fn apply_bar_bin_style(bar: &mut DataBarStyleConfig, slot: &DataBarBinStyleConfig) {
-    let DataBarBinStyleConfig {
-        fill_color: slot_fill_color,
-        border_color: slot_border_color,
-        border_width: slot_border_width,
-        gap_px: slot_gap_px,
-        width_ratio: slot_width_ratio,
-    } = slot;
-    let DataBarStyleConfig {
-        fill_color,
-        border_color,
-        border_width,
-        // A bin override restyles the bar; it does not move its base, turn
-        // it or carry overrides of its own.
-        baseline: _,
-        gap_px,
-        width_ratio,
-        orientation: _,
-        bar_style_overrides: _,
-    } = bar;
-    if let Some(color) = *slot_fill_color {
-        *fill_color = color;
-    }
-    if let Some(color) = *slot_border_color {
-        *border_color = color;
-    }
-    if let Some(width) = *slot_border_width {
-        *border_width = width;
-    }
-    if let Some(gap) = *slot_gap_px {
-        *gap_px = gap;
-    }
-    if let Some(ratio) = *slot_width_ratio {
-        *width_ratio = ratio;
-    }
-}
-
-// TODO(#38): the selection outline of a histogram bin resolves the bin
-// override here, a second placement of `bar_columnar.wgsl`'s
-// `resolve_bar_style`; it goes when the selection pass reads the style map
-// on the GPU (a shader change).
-pub(super) fn resolved_bar_primitive_style(
-    bar: &DataBarStyleConfig,
-    bin_index: usize,
-    scale: f32,
-) -> PrimitiveStyle {
-    let mut resolved = bar.clone();
-    if let Some(overrides) = &bar.bar_style_overrides {
-        for style_override in overrides {
-            if style_override.index == bin_index {
-                apply_bar_bin_style(&mut resolved, &style_override.style);
-            }
-        }
-    }
-    PrimitiveStyle::from_bar(&resolved, scale)
-}
-
 /// Bundle of style bind groups for line, scatter, and errorbar primitives.
 /// Built via `Renderer::create_style_for_series*`. Multiple series in one
 /// chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).

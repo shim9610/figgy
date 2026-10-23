@@ -38,7 +38,18 @@
 //   dash[0]        border colour, premultiplied
 //   dash[1].xy     baseline as the pool's (hi, lo) f32 pair
 //
-// `point_radius_px`, `dash_len`, `dash[1].zw` are unused.
+// `point_radius_px`, `dash_len`, `dash[1].zw` are unused by the bar draw.
+//
+// The selection outline (`vs_bar_selection`, `vs_bar_selection_mapped`)
+// reads the same `Style`, written by `PrimitiveStyle::from_bar` for the
+// series and then given three lanes a bar never reads as fill or border:
+//
+//   color_premul   highlight colour, premultiplied (not the fill)
+//   line_width_px  outline width, px, unscaled (not the border)
+//   dash_len       the selected bin's global index, the key of its overrides
+//
+// Gap, width ratio, orientation and baseline stay the draw's own, so the
+// outline resolves the bin's overrides with the draw's `resolve_bar_style`.
 
 const BAR_ORIENT_HORIZONTAL: u32 = 1u;
 /// Quads per instance: fill + four border edges.
@@ -736,37 +747,29 @@ fn pick_histogram_bin(@builtin(local_invocation_index) local_index: u32) {
 
 // ───── Typed selection overlay (render entry) ───────────────────────────────
 
-@group(2) @binding(4) var<uniform> data_selection: DataSelection;
-
-/// Four outline quads around the exact rendered bar outer rectangle. The
-/// caller draws only the selected bin instance, so no coordinate or rectangle
-/// is stored in selection state.
-@vertex
-fn vs_bar_selection(in: VsIn) -> VsOut {
+/// Four outline quads around the exact rendered bar outer rectangle of the
+/// selected bin, whose gap and width ratio come from `resolved` like the
+/// draw's. The highlight colour and the outline width are the selection's
+/// own `Style` lanes, never the resolved fill or border. The caller draws
+/// only the selected bin instance, so no coordinate or rectangle is stored
+/// in selection state.
+fn bar_selection_vertex(in: VsIn, resolved: ResolvedBarStyle) -> VsOut {
     let horizontal = style.shape_id == BAR_ORIENT_HORIZONTAL;
-    var outer = bar_outer_ndc_values(
-        in.edge_lo,
-        in.edge_hi,
-        in.value,
-        style.dash[1].xy,
-        horizontal,
-        style.cap_half_px,
-        style.cap_width_px,
-    );
+    var outer = bar_outer_ndc(in, horizontal, resolved.gap_px, resolved.width_ratio);
     // A subpixel bin is painted by the envelope pass: outline what it paints.
     let columns = bar_envelope_columns(
-        in.edge_lo, in.edge_hi, in.value, horizontal, style.cap_width_px, bar_panel_columns(horizontal),
+        in.edge_lo, in.edge_hi, in.value, horizontal, resolved.width_ratio, bar_panel_columns(horizontal),
     );
     if (columns.y > columns.x) {
-        outer = bar_envelope_rect(columns, in.value, style.dash[1].xy, horizontal);
+        outer = bar_envelope_rect(columns, in.value, bar_baseline(), horizontal);
     }
     var out: VsOut;
-    out.color_premul = data_selection.color_premul;
+    out.color_premul = style.color_premul;
     if (!(outer.z > outer.x) || !(outer.w > outer.y)) {
         out.pos = vec4<f32>(outer.xy, 0.0, 1.0);
         return out;
     }
-    let border = max(data_selection.metrics.x, 0.0) * transform.pixel_to_ndc;
+    let border = max(style.line_width_px, 0.0) * transform.pixel_to_ndc;
     let inset = min(border, (outer.zw - outer.xy) * 0.5);
     let inner = vec4<f32>(outer.xy + inset, outer.zw - inset);
     let segment = in.vi / 6u + 1u;
@@ -777,4 +780,18 @@ fn vs_bar_selection(in: VsIn) -> VsOut {
     let y = select(rect.y, rect.w, corner >= 2u);
     out.pos = vec4<f32>(x, y, 0.0, 1.0);
     return out;
+}
+
+/// The outline of a bin of a series drawn without a style map (`vs_main`).
+@vertex
+fn vs_bar_selection(in: VsIn) -> VsOut {
+    return bar_selection_vertex(in, base_bar_style());
+}
+
+/// The outline of a bin of a series drawn through its style map: the bin's
+/// overrides, keyed by its global index in `style.dash_len`, so a streamed
+/// selection's local instance zero still finds them.
+@vertex
+fn vs_bar_selection_mapped(in: VsIn) -> VsOut {
+    return bar_selection_vertex(in, resolve_bar_style(base_bar_style(), style.dash_len));
 }

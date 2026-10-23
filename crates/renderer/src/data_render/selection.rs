@@ -2,16 +2,16 @@
 
 use super::*;
 
-pub(crate) const DATA_SELECTION_KIND_HISTOGRAM_BIN: u32 = 1;
-
 pub(crate) const DATA_SELECTION_KIND_MATRIX_CELL: u32 = 2;
 
 pub(crate) const DATA_SELECTION_KIND_CONTOUR_LEVEL: u32 = 3;
 
-/// Small typed-selection uniform shared by the bar and field overlay entries.
+/// Small typed-selection uniform of the field overlay entries (a selected
+/// cell or contour level). A selected histogram bin uses its bar `Style`
+/// instead (`bar_columnar.wgsl`).
 ///
 /// GPU twin: `common/data_pick.wgsl::DataSelection` (the bar and field
-/// modules splice it), 48 bytes. It contains provenance
+/// modules splice it; only the field module binds it), 48 bytes. It contains provenance
 /// indices plus visual scalars, never reconstructed data coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]

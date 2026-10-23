@@ -148,9 +148,10 @@ cargo run --locked -p figgy-renderer --features egui_demo --example constellatio
 
 [Interaction contracts](../INTERACTION.md) explain logical coordinates, hit
 priority, incremental deltas, rejected edits and export state.
-The [browser integration example](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)
-is a separate WASM consumer. It demonstrates a host bridge and does not expose
-every native chart API.
+The [browser product](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)
+(`crates/web`) is a separate WASM consumer. Its wrapper and `<figgy-chart>`
+element bridge a browser host to the renderer and do not expose every native
+chart API.
 
 ## Review and measurement tools
 
