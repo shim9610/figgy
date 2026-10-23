@@ -102,3 +102,4 @@ fn pick_exact_candidates(
         pick_workgroup_candidates[group_index] = pick_shared_candidates[0];
     }
 }
+

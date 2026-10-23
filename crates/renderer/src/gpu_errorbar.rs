@@ -21,14 +21,18 @@ use crate::gpu_memory::{
 };
 use crate::init::{InitEvent, finished, observe_value, started};
 
+/// The assembled fit-bounds reduction module.
+pub(crate) const ERRORBAR_FIT_SHADER: &str =
+    crate::shader_assembly::wgsl_module!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
+
 const INIT_SCOPE: &str = "renderer.errorbar_extent";
 
 const WORKGROUP_SIZE: u32 = 64;
 const LEGACY_AXIS_MODE: u32 = 5;
-const FIELD_EDGES_CELLS_MODE: u32 = 6;
-const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
-const FIELD_CENTERS_CELLS_MODE: u32 = 8;
-const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
+pub(crate) const FIELD_EDGES_CELLS_MODE: u32 = 6;
+pub(crate) const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
+pub(crate) const FIELD_CENTERS_CELLS_MODE: u32 = 8;
+pub(crate) const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
 const EMPTY_MINIMUM_BOUND: [f32; 2] = [f32::MAX, f32::MAX];
 const EMPTY_MAXIMUM_BOUND: [f32; 2] = [-f32::MAX, -f32::MAX];
 
@@ -423,7 +427,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorb
     crate::init::prewarm_compute_entries_js(
         device,
         "gpu.extent.async",
-        include_str!("gpu_errorbar.wgsl"),
+        ERRORBAR_FIT_SHADER,
         &[
             ("reduce_values", "reduce_values"),
             ("reduce_states", "reduce_states"),
@@ -479,7 +483,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.into()),
             },
         );
 
@@ -583,7 +587,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.into()),
             },
         );
 
@@ -1357,7 +1361,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<AxisStateGpu>(), 3 * 8);
         assert_eq!(std::mem::size_of::<SeriesStateGpu>(), 6 * 8);
 
-        let shader = include_str!("gpu_errorbar.wgsl");
+        let shader = ERRORBAR_FIT_SHADER;
         for forbidden in [
             "struct Endpoint",
             "source_index",

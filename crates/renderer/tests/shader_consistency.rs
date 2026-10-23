@@ -1,213 +1,67 @@
-//! Mechanical SSoT check for WGSL shader common blocks.
+//! Source checks for the WGSL shaders.
 //!
-//! WGSL has no `import`/`include`. The `Transform` / `Style` / `maybe_log` /
-//! `data_to_ndc` definitions are therefore duplicated across
-//! `scatter_columnar.wgsl`, `line_columnar.wgsl`, `errorbar_columnar.wgsl`,
-//! `bar_columnar.wgsl`, `field_columnar.wgsl`, the `line_arc.wgsl` and
-//! `contour_anchor.wgsl` compute shaders, the `contour_label.wgsl`
-//! render shader and the vector shader's projection fragment
-//! `vector/project_cartesian2d.wgsl`. `src/data_render/SHADER_COMMON.md` is
-//! the single source of truth for those duplicates.
+//! WGSL has no `import`. Code that several shaders need lives once, as a
+//! fragment under `src/data_render/common/` (or a layer of the vector and pick
+//! shaders), and `wgsl_module!` (`src/shader_assembly.rs`) splices it into
+//! every module that needs it at compile time; `SHADER_COMMON.md` documents
+//! the contracts. There is nothing left to keep in sync by hand, so the
+//! checks here are the guards of #46 (one definition per WGSL function, each
+//! remaining copy byte-identical to its fragment, no `..` rest pattern on a
+//! model type) and the content checks of individual modules, which read the
+//! assembled source a pipeline compiles. That every module parses and
+//! validates is `shader_assembly::tests::every_assembled_module_parses_and_validates`.
 //!
-//! This test parses SHADER_COMMON.md for fenced WGSL blocks that are marked
-//! with a metadata comment of the form
-//!
-//!     <!-- shader-common: applies-to=scatter,line,errorbar -->
-//!
-//! immediately before the fence. For each such block it verifies that every
-//! listed shader file's `BEGIN common block` / `END common block` region
-//! exactly equals the SSoT blocks that apply to that shader, concatenated in
-//! SSoT order. Extra local structs, comments, or stale definitions inside the
-//! region fail the test with a clear diff-style report.
-//!
-//! Run manually with:
+//! Run with:
 //!     cargo test --test shader_consistency
-//!
-//! CI and local development can run this gate whenever a `.wgsl` file or
-//! `SHADER_COMMON.md` changes.
-//!
-//! The file also holds the #46 source guards, each with an allowlist that
-//! only shrinks: one definition per WGSL function, and no `..` rest pattern
-//! on a model type in the Rust product code of the model, renderer and web
-//! crates.
 
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-
-const SSOT_PATH: &str = "src/data_render/SHADER_COMMON.md";
-const BEGIN_MARKER: &str = "// ───── BEGIN common block";
-const END_MARKER: &str = "// ───── END common block";
-const TARGETS: &[&str] = &[
-    "scatter", "line", "errorbar", "bar", "field", "arc", "anchor", "label", "vector",
-];
 
 fn workspace_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
 
-/// The point picker's fragments (`src/gpu_pick/*.wgsl`), concatenated in
-/// file-name order: every twin a pick module carries lives in one of them.
-const PICK_FRAGMENTS: &str = "src/gpu_pick/*.wgsl";
+/// The assembled module a shader file is the entry of: the content checks
+/// below read what the GPU compiles, fragments included.
+fn assembled_module_for(path_rel: &str) -> Option<&'static str> {
+    Some(match path_rel {
+        "src/data_render/scatter_columnar.wgsl" => "scatter",
+        "src/data_render/line_columnar.wgsl" => "line",
+        "src/data_render/errorbar_columnar.wgsl" => "errorbar",
+        "src/data_render/bar_columnar.wgsl" => "bar",
+        "src/data_render/field_columnar.wgsl" => "field",
+        "src/data_render/line_arc.wgsl" => "line_arc",
+        "src/contour_anchor.wgsl" => "contour_anchor",
+        "src/contour_label.wgsl" => "contour_label",
+        "src/gpu_errorbar.wgsl" => "errorbar_fit",
+        _ => return None,
+    })
+}
 
+/// A source file, except that a shader is read as the assembled module it is
+/// part of (see [`assembled_module_for`]).
 fn read(path_rel: &str) -> String {
-    if let Some(dir) = path_rel.strip_suffix("/*.wgsl") {
-        let mut names: Vec<_> = fs::read_dir(workspace_root().join(dir))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|e| e == "wgsl"))
-            .collect();
-        names.sort();
-        return names
-            .iter()
-            .map(|path| {
-                read(
-                    path.strip_prefix(workspace_root())
-                        .unwrap()
-                        .to_str()
-                        .unwrap(),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(
-                "
-",
-            );
+    if let Some(name) = assembled_module_for(path_rel) {
+        return renderer::shader_assembly::module(name).to_string();
     }
     let p = workspace_root().join(path_rel);
     let raw = fs::read_to_string(&p).unwrap_or_else(|e| panic!("Failed to read {:?}: {}", p, e));
     // Normalize line endings so CRLF (Windows) vs LF doesn't trip substring
-    // matching when comparing SSoT text against shader source.
+    // matching.
     raw.replace("\r\n", "\n")
 }
 
-fn shader_path_for(short: &str) -> &'static str {
-    match short {
-        "scatter" => "src/data_render/scatter_columnar.wgsl",
-        "line" => "src/data_render/line_columnar.wgsl",
-        "errorbar" => "src/data_render/errorbar_columnar.wgsl",
-        "bar" => "src/data_render/bar_columnar.wgsl",
-        "field" => "src/data_render/field_columnar.wgsl",
-        "arc" => "src/data_render/line_arc.wgsl",
-        "anchor" => "src/contour_anchor.wgsl",
-        "label" => "src/contour_label.wgsl",
-        "vector" => "src/data_render/vector/project_cartesian2d.wgsl",
-        other => panic!(
-            "Unknown shader short-name `{}` in SHADER_COMMON.md metadata. \
-             Valid names: scatter | line | errorbar | bar | field | arc | \
-             anchor | label | vector.",
-            other
-        ),
-    }
-}
-
-#[derive(Debug)]
-struct CommonBlock {
-    applies_to: Vec<String>,
-    body: String,
-}
-
-/// Parse all `<!-- shader-common: applies-to=... -->` markers followed by a
-/// fenced ```wgsl ... ``` block in SHADER_COMMON.md.
-fn parse_ssot_blocks(md: &str) -> Vec<CommonBlock> {
-    let lines: Vec<&str> = md.lines().collect();
-    let mut blocks = Vec::new();
-    let mut i = 0;
-    while i < lines.len() {
-        if let Some(applies) = parse_applies_marker(lines[i]) {
-            let marker_line = i + 1;
-            // Find the next ```wgsl fence (allow blank lines in between).
-            let mut j = i + 1;
-            while j < lines.len() && !is_wgsl_fence_open(lines[j]) {
-                // Allow only blank lines between marker and fence.
-                if !lines[j].trim().is_empty() {
-                    panic!(
-                        "SHADER_COMMON.md line {}: shader-common marker must be \
-                         followed by a ```wgsl fence (only blank lines may \
-                         appear in between). Found: {:?}",
-                        marker_line, lines[j]
-                    );
-                }
-                j += 1;
-            }
-            if j >= lines.len() {
-                panic!(
-                    "SHADER_COMMON.md line {}: shader-common marker has no \
-                     ```wgsl fence after it.",
-                    marker_line
-                );
-            }
-            let body_start = j + 1;
-            let mut k = body_start;
-            while k < lines.len() && !is_fence_close(lines[k]) {
-                k += 1;
-            }
-            if k >= lines.len() {
-                panic!(
-                    "SHADER_COMMON.md line {}: ```wgsl fence is never closed.",
-                    j + 1
-                );
-            }
-            let body = lines[body_start..k].join("\n");
-            blocks.push(CommonBlock {
-                applies_to: applies,
-                body,
-            });
-            i = k + 1;
-        } else {
-            i += 1;
+/// Every `.wgsl` file under `dir`, fragments included.
+fn wgsl_files(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            wgsl_files(&path, out);
+        } else if path.extension().is_some_and(|e| e == "wgsl") {
+            out.push(path);
         }
     }
-    blocks
-}
-
-fn parse_applies_marker(line: &str) -> Option<Vec<String>> {
-    let trimmed = line.trim();
-    let prefix = "<!-- shader-common: applies-to=";
-    let suffix = "-->";
-    let inner = trimmed.strip_prefix(prefix)?.strip_suffix(suffix)?.trim();
-    let names: Vec<String> = inner.split(',').map(|s| s.trim().to_string()).collect();
-    if names.iter().any(|n| n.is_empty()) {
-        panic!("shader-common marker has empty target name: {:?}", trimmed);
-    }
-    Some(names)
-}
-
-fn is_wgsl_fence_open(line: &str) -> bool {
-    let t = line.trim_start();
-    t == "```wgsl" || t.starts_with("```wgsl ")
-}
-
-fn is_fence_close(line: &str) -> bool {
-    line.trim_start() == "```"
-}
-
-/// Extract the substring of `shader` strictly between the BEGIN and END common
-/// block markers (exclusive of the marker lines themselves).
-fn shader_common_region(shader: &str, path: &str) -> String {
-    let begin = shader.find(BEGIN_MARKER).unwrap_or_else(|| {
-        panic!(
-            "{}: missing `{}` marker. Every duplicated shader must wrap its \
-             common section with BEGIN/END markers.",
-            path, BEGIN_MARKER
-        )
-    });
-    // Advance past the marker's full line so the body starts cleanly.
-    let after_begin = shader[begin..]
-        .find('\n')
-        .map(|n| begin + n + 1)
-        .expect("BEGIN marker line must end with a newline");
-    let end = shader[after_begin..]
-        .find(END_MARKER)
-        .map(|n| after_begin + n)
-        .unwrap_or_else(|| {
-            panic!(
-                "{}: missing `{}` marker (or it appears before BEGIN).",
-                path, END_MARKER
-            )
-        });
-    shader[after_begin..end].to_string()
 }
 
 fn wgsl_function(source: &str, name: &str) -> String {
@@ -235,80 +89,9 @@ fn wgsl_function(source: &str, name: &str) -> String {
     panic!("WGSL function `{name}` has an unclosed body")
 }
 
-fn expected_region_for(blocks: &[CommonBlock], short: &str) -> String {
-    let chunks: Vec<&str> = blocks
-        .iter()
-        .filter(|block| block.applies_to.iter().any(|target| target == short))
-        .map(|block| block.body.as_str())
-        .collect();
-    assert!(
-        !chunks.is_empty(),
-        "{} contains no SSoT block for shader target `{}`",
-        SSOT_PATH,
-        short
-    );
-    chunks.join("\n\n")
-}
-
-fn trim_outer_blank_lines(s: &str) -> &str {
-    s.trim_matches('\n')
-}
-
-#[test]
-fn shader_common_blocks_match_ssot() {
-    let md = read(SSOT_PATH);
-    let blocks = parse_ssot_blocks(&md);
-    assert!(
-        !blocks.is_empty(),
-        "{} produced 0 SSoT blocks. Did the metadata-marker syntax change?",
-        SSOT_PATH
-    );
-
-    let mut shader_cache: HashMap<&str, String> = HashMap::new();
-    let mut failures: Vec<String> = Vec::new();
-
-    for short in TARGETS {
-        let path = shader_path_for(short);
-        let region = shader_cache.entry(path).or_insert_with(|| {
-            let raw = read(path);
-            shader_common_region(&raw, path)
-        });
-        let expected = expected_region_for(&blocks, short);
-        let actual = trim_outer_blank_lines(region);
-
-        if actual != expected {
-            failures.push(format!(
-                "----------------------------------------------------------------\n\
-                 SHADER_COMMON.md → {}\n\
-                 Common region does NOT exactly equal the SSoT blocks for `{}`.\n\
-                 Extra local WGSL inside the common block is not allowed.\n\
-                 \n\
-                 --- Expected common region (SSoT order) ---\n\
-                 {}\n\
-                 --- Actual common region of {} ---\n\
-                 {}\n",
-                path, short, expected, path, actual
-            ));
-        }
-    }
-
-    if !failures.is_empty() {
-        panic!(
-            "\nSHADER_COMMON.md SSoT check failed for {} shader(s).\n\
-             Fix order:\n  \
-             1. Open src/data_render/SHADER_COMMON.md and confirm the canonical text.\n  \
-             2. Copy only the SSoT blocks for that shader into its BEGIN/END common region.\n  \
-             3. Move shader-local structs/comments outside the common region.\n  \
-             4. Re-run `cargo test --test shader_consistency`.\n\n{}",
-            failures.len(),
-            failures.join("\n")
-        );
-    }
-}
-
 #[test]
 fn field_fit_uses_the_ssot_grid_pair_normalization() {
-    let ssot = read(SSOT_PATH);
+    let ssot = read("src/data_render/common/grid_pair.wgsl");
     let fit = read("src/gpu_errorbar.wgsl");
     for function in [
         "grid_rounded_add",
@@ -330,273 +113,6 @@ fn field_fit_uses_the_ssot_grid_pair_normalization() {
     assert!(
         !fit.contains("0x7fc00000u"),
         "field fit must carry invalidity explicitly instead of relying on a NaN sentinel"
-    );
-}
-
-/// The colour ramp and the size-map radius are function twins (SHADER_COMMON.md
-/// §5.4): one parameterised function set copied into every shader that maps a
-/// value through the colourbar or a size domain, so a fix in one cannot leave
-/// the others behind.
-#[test]
-fn colour_ramp_and_size_map_radius_twins_match_the_ssot() {
-    let ssot = read(SSOT_PATH);
-    let ramp = ["ramp_finite", "ramp_t", "ramp_segment", "ramp_blend"];
-    let radius = ["ramp_finite", "size_map_radius"];
-    for (path, functions) in [
-        ("src/data_render/field_columnar.wgsl", ramp.as_slice()),
-        ("src/data_render/scatter_columnar.wgsl", ramp.as_slice()),
-        ("src/data_render/scatter_columnar.wgsl", radius.as_slice()),
-        (
-            "src/data_render/vector/vector_input_common.wgsl",
-            ramp.as_slice(),
-        ),
-        (PICK_FRAGMENTS, radius.as_slice()),
-    ] {
-        let shader = read(path);
-        for function in functions {
-            assert_eq!(
-                wgsl_function(&shader, function),
-                wgsl_function(&ssot, function),
-                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.4 defines it"
-            );
-        }
-    }
-}
-
-/// One `const NAME: TYPE = VALUE;` line of a WGSL source.
-fn wgsl_const(source: &str, name: &str) -> String {
-    let needle = format!("const {name}:");
-    let start = source
-        .find(&needle)
-        .unwrap_or_else(|| panic!("missing WGSL constant `{name}`"));
-    let end = source[start..]
-        .find(';')
-        .map(|offset| start + offset)
-        .unwrap_or_else(|| panic!("WGSL constant `{name}` has no terminator"));
-    source[start..=end].to_string()
-}
-
-/// The marker shape is a function twin (SHADER_COMMON.md §5.5): the scatter
-/// shader draws with it and the pick shader picks with it, so a marker picks
-/// exactly where it is drawn.
-#[test]
-fn marker_shape_twins_match_the_ssot() {
-    let ssot = read(SSOT_PATH);
-    let functions = [
-        "shape_is_filled",
-        "base_shape_id",
-        "visual_shape_radius",
-        "rotate2",
-        "sd_segment",
-        "sd_box",
-        "regular_vertex",
-        "star_vertex",
-        "sd_regular_polygon",
-        "sd_star",
-        "sd_plus_filled",
-        "sd_triangle",
-        "shape_distance",
-        "marker_edge",
-    ];
-    let constants = [
-        "QUAD_MARGIN_PX",
-        "STROKE_HALF_PX",
-        "MARKER_PI",
-        "MARKER_HALF_PI",
-        "STAR_INNER_RATIO",
-    ];
-    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
-        let shader = read(path);
-        for function in functions {
-            assert_eq!(
-                wgsl_function(&shader, function),
-                wgsl_function(&ssot, function),
-                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.5 defines it"
-            );
-        }
-        for constant in constants {
-            assert_eq!(
-                wgsl_const(&shader, constant),
-                wgsl_const(&ssot, constant),
-                "{path} must carry `{constant}` as SHADER_COMMON.md §5.5 defines it"
-            );
-        }
-    }
-}
-
-/// The line stroke is a function twin (SHADER_COMMON.md §5.6): the line
-/// shader extrudes with it and the pick shader inverts the same extrusion,
-/// so a stroke, its caps and its dashes pick exactly where they are drawn.
-#[test]
-fn line_stroke_twins_match_the_ssot() {
-    let ssot = read(SSOT_PATH);
-    let all = [
-        "line_stroke_distance",
-        "dash_pattern_on",
-        "sketch_hash01",
-        "sketch_noise",
-        "sketch_line_offset",
-    ];
-    let noise = ["sketch_hash01", "sketch_noise"];
-    for (path, functions) in [
-        ("src/data_render/line_columnar.wgsl", all.as_slice()),
-        (PICK_FRAGMENTS, all.as_slice()),
-        ("src/data_render/scatter_columnar.wgsl", noise.as_slice()),
-        ("src/data_render/errorbar_columnar.wgsl", noise.as_slice()),
-    ] {
-        let shader = read(path);
-        for function in functions {
-            assert_eq!(
-                wgsl_function(&shader, function),
-                wgsl_function(&ssot, function),
-                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.6 defines it"
-            );
-        }
-    }
-    for path in ["src/data_render/line_columnar.wgsl", PICK_FRAGMENTS] {
-        let shader = read(path);
-        for constant in ["LINE_AA_EXTENT_PX", "SKETCH_SUBDIV"] {
-            assert_eq!(
-                wgsl_const(&shader, constant),
-                wgsl_const(&ssot, constant),
-                "{path} must carry `{constant}` as SHADER_COMMON.md §5.6 defines it"
-            );
-        }
-    }
-}
-
-/// The styled markers are function twins (SHADER_COMMON.md §5.7): the
-/// sketch wobble, the planet's ring and rim and the constellation star's
-/// radius are evaluated by the pick shader with the scatter shader's own
-/// functions.
-#[test]
-fn styled_marker_twins_match_the_ssot() {
-    let ssot = read(SSOT_PATH);
-    for path in ["src/data_render/scatter_columnar.wgsl", PICK_FRAGMENTS] {
-        let shader = read(path);
-        for function in [
-            "sketch_marker_wobble_px",
-            "sketch_marker_distance",
-            "constellation_star_radius",
-            "cons_ring_angle",
-            "planet_ring_phi",
-            "planet_ring_frame",
-            "planet_ring_rho",
-            "planet_rim_glow",
-        ] {
-            assert_eq!(
-                wgsl_function(&shader, function),
-                wgsl_function(&ssot, function),
-                "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.7 defines it"
-            );
-        }
-        for constant in [
-            "SKETCH_TAU",
-            "SKETCH_CONTOUR_WOBBLES",
-            "CONSTELLATION_POINT_STAR_GAIN",
-            "RING_INNER",
-            "RING_OUTER",
-            "RING_INCL",
-            "PLANET_QUAD_EXTENT",
-            "PLANET_ALPHA_FLOOR",
-        ] {
-            assert_eq!(
-                wgsl_const(&shader, constant),
-                wgsl_const(&ssot, constant),
-                "{path} must carry `{constant}` as SHADER_COMMON.md §5.7 defines it"
-            );
-        }
-    }
-}
-
-/// One `struct NAME { ... };` declaration of a WGSL source.
-fn wgsl_struct(source: &str, name: &str) -> String {
-    let needle = format!("struct {name} {{");
-    let start = source
-        .find(&needle)
-        .unwrap_or_else(|| panic!("missing WGSL struct `{name}`"));
-    let end = source[start..]
-        .find("};")
-        .map(|offset| start + offset)
-        .unwrap_or_else(|| panic!("WGSL struct `{name}` has no terminator"));
-    source[start..end + 2].to_string()
-}
-
-/// The arrow glyph is a function twin (SHADER_COMMON.md §5.8): the vector
-/// shader draws a point vector's arrow with it and the pick shader picks
-/// that arrow with it.
-#[test]
-fn arrow_glyph_twins_match_the_ssot() {
-    let ssot = read(SSOT_PATH);
-    let pick = read(PICK_FRAGMENTS);
-    let glyph = read("src/data_render/vector/glyph_arrow.wgsl");
-    let projection = read("src/data_render/vector/project_cartesian2d.wgsl");
-    let copies = [
-        ("src/data_render/vector/glyph_arrow.wgsl", &glyph, true),
-        (
-            "src/data_render/vector/project_cartesian2d.wgsl",
-            &projection,
-            false,
-        ),
-        (PICK_FRAGMENTS, &pick, true),
-    ];
-    for (path, shader, has_glyph) in copies {
-        if has_glyph {
-            for function in [
-                "arrow_finite",
-                "arrow_place",
-                "arrow_sd_segment",
-                "arrow_sd_triangle",
-                "arrow_distance",
-            ] {
-                assert_eq!(
-                    wgsl_function(shader, function),
-                    wgsl_function(&ssot, function),
-                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
-                );
-            }
-            for structure in ["ArrowStyle", "ArrowPlacement"] {
-                assert_eq!(
-                    wgsl_struct(shader, structure),
-                    wgsl_struct(&ssot, structure),
-                    "{path} must declare `{structure}` as SHADER_COMMON.md §5.8 defines it"
-                );
-            }
-            for constant in [
-                "ARROW_PIVOT_TAIL",
-                "ARROW_PIVOT_MIDDLE",
-                "ARROW_PIVOT_TIP",
-                "ARROW_SHAFT_MIN_PX",
-            ] {
-                assert_eq!(
-                    wgsl_const(shader, constant),
-                    wgsl_const(&ssot, constant),
-                    "{path} must carry `{constant}` as SHADER_COMMON.md §5.8 defines it"
-                );
-            }
-        }
-        if path != "src/data_render/vector/glyph_arrow.wgsl" {
-            for function in ["pair_add", "axis_px_per_unit_at"] {
-                assert_eq!(
-                    wgsl_function(shader, function),
-                    wgsl_function(&ssot, function),
-                    "{path} must carry `{function}` byte-for-byte as SHADER_COMMON.md §5.8 defines it"
-                );
-            }
-        }
-    }
-}
-
-/// The pick shader applies the draw shaders' polar fragment clip at the
-/// cursor with the common block's own `polar_fragment_visible`.
-#[test]
-fn pick_polar_clip_is_the_draw_fragment_clip() {
-    let ssot = read(SSOT_PATH);
-    let pick = read(PICK_FRAGMENTS);
-    assert_eq!(
-        wgsl_function(&pick, "polar_fragment_visible"),
-        wgsl_function(&ssot, "polar_fragment_visible"),
-        "the pick fragments must carry the common block's `polar_fragment_visible` byte-for-byte"
     );
 }
 
@@ -746,13 +262,11 @@ fn field_derived_nonfinite_arithmetic_fails_closed() {
 /// pixel-identical and there is no legitimate use of the implicit form.
 #[test]
 fn no_bare_texture_sample_in_any_shader() {
-    let dir = workspace_root().join("src/data_render");
+    let mut shaders = Vec::new();
+    wgsl_files(&workspace_root().join("src"), &mut shaders);
+    assert!(shaders.len() > 10, "found {} shaders", shaders.len());
     let mut offenders = Vec::new();
-    for entry in fs::read_dir(&dir).expect("read data_render dir") {
-        let path = entry.expect("dir entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("wgsl") {
-            continue;
-        }
+    for path in shaders {
         let src = fs::read_to_string(&path).expect("read shader");
         for (i, line) in src.lines().enumerate() {
             // `textureSampleLevel` must not match; the lint targets the
@@ -771,61 +285,6 @@ fn no_bare_texture_sample_in_any_shader() {
     );
 }
 
-// The step-interpolation helpers are deliberately outside the common block
-// (`line_arc.wgsl` has no `Style`), but the line entries and the arc scan must
-// split a segment into exactly the same pieces or the dash phase drifts from
-// the drawn corners. The GPU picker carries its own `pick_` copy of the same
-// rules; its agreement with the CPU picker is a GPU parity test instead.
-#[test]
-fn step_interpolation_helpers_match_between_the_line_and_arc_shaders() {
-    let line = read(shader_path_for("line"));
-    let arc = read(shader_path_for("arc"));
-    for name in ["step_piece_count", "step_piece", "step_piece_len_px"] {
-        assert_eq!(
-            wgsl_function(&line, name),
-            wgsl_function(&arc, name),
-            "`{name}` differs between line_columnar.wgsl and line_arc.wgsl"
-        );
-    }
-    for constant in [
-        "const LINE_STEP_SHIFT: u32 = 2u;",
-        "const LINE_STEP_MASK: u32 = 3u;",
-        "const LINE_STEP_LINEAR: u32 = 0u;",
-        "const LINE_STEP_PRE: u32 = 1u;",
-        "const LINE_STEP_POST: u32 = 2u;",
-        "const LINE_STEP_MID: u32 = 3u;",
-    ] {
-        assert!(line.contains(constant), "line_columnar.wgsl: {constant}");
-        assert!(arc.contains(constant), "line_arc.wgsl: {constant}");
-    }
-    // The picker's copy keeps the data-space midpoint rule under its own
-    // names; the rest of its agreement is the CPU/GPU pick parity test.
-    let pick = read(PICK_FRAGMENTS);
-    assert!(pick.contains("fn pick_step_piece("));
-    assert!(pick.contains("let xm = (ax + bx) * 0.5;"));
-    assert!(line.contains("let xm = (xa + xb) * 0.5;"));
-}
-
-#[test]
-fn every_targeted_shader_has_begin_end_markers() {
-    for short in TARGETS {
-        let path = shader_path_for(short);
-        let raw = read(path);
-        assert!(
-            raw.contains(BEGIN_MARKER),
-            "{}: missing `{}` marker.",
-            path,
-            BEGIN_MARKER
-        );
-        assert!(
-            raw.contains(END_MARKER),
-            "{}: missing `{}` marker.",
-            path,
-            END_MARKER
-        );
-    }
-}
-
 // A log flag returns the logarithmic value before any `mix`: drivers that
 // evaluate `mix(x, y, 1)` as `x + (y - x)` lose `y` under a large `x`,
 // which put log-axis values past 2^24 at the wrong height. The linear
@@ -834,18 +293,8 @@ fn every_targeted_shader_has_begin_end_markers() {
 // test here would see the difference.
 #[test]
 fn log_flags_return_the_logarithm_before_mixing() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "wgsl") {
-                out.push(path);
-            }
-        }
-    }
     let mut shaders = Vec::new();
-    walk(&workspace_root().join("src"), &mut shaders);
+    wgsl_files(&workspace_root().join("src"), &mut shaders);
     assert!(shaders.len() > 10, "found {} shaders", shaders.len());
     let mut offending = Vec::new();
     let mut guarded = 0;
@@ -890,7 +339,10 @@ fn log_flags_return_the_logarithm_before_mixing() {
         "log flags chosen unsafely:\n{}",
         offending.join("\n")
     );
-    assert!(guarded >= 20, "{guarded} guarded log choices found");
+    // Each shared fragment is scanned once, so the floor counts the
+    // choices of `maybe_log`, `axis_pair_to_t`, `ramp_t` and
+    // `axis_px_per_unit_at`: the scan must keep finding them.
+    assert!(guarded >= 4, "{guarded} guarded log choices found");
 }
 
 /// Rule from #46: one behaviour has one implementation. Every WGSL function
@@ -898,30 +350,23 @@ fn log_flags_return_the_logarithm_before_mixing() {
 /// the test fails on any change to that picture: a new copy (a name defined
 /// in two files that is not listed, or listed with a different file set) or
 /// a stale entry (a listed copy that no longer exists). The list therefore
-/// only shrinks: each merge of item 11 in #58 removes its entries, until only
-/// `ASSEMBLED_ALTERNATIVES` is left. Entry points (`@vertex`, `@fragment`,
-/// `@compute`) are exempt: their names are per pipeline, not shared code.
+/// only shrinks. Entry points (`@vertex`, `@fragment`, `@compute`) are
+/// exempt: their names are per pipeline, not shared code. A function that
+/// several modules need is a fragment under `src/data_render/common/`,
+/// spliced by `wgsl_module!`, and so defined once.
 ///
 /// `ASSEMBLED_ALTERNATIVES` are interface functions with one body per
 /// variant, of which the Rust assembler splices exactly one into a module.
 /// They are the layered design of rule 9 and stay. `PENDING_COPIES` are the
-/// pasted copies, kept in sync by the tests above until the assembler
-/// fragments replace them. Each entry is (files that define them, names).
+/// copies of a fragment's function in modules that cannot splice that
+/// fragment, each held to the fragment's text by
+/// `pending_copies_equal_their_fragment`. Each entry is (files that define
+/// them, names).
 #[test]
 fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
-    fn walk(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
-        for entry in fs::read_dir(dir).unwrap() {
-            let path = entry.unwrap().path();
-            if path.is_dir() {
-                walk(&path, out);
-            } else if path.extension().is_some_and(|e| e == "wgsl") {
-                out.push(path);
-            }
-        }
-    }
     let src = workspace_root().join("src");
     let mut shaders = Vec::new();
-    walk(&src, &mut shaders);
+    wgsl_files(&src, &mut shaders);
     shaders.sort();
     assert!(shaders.len() > 10, "found {} shaders", shaders.len());
 
@@ -999,7 +444,8 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
 }
 
 /// Interface functions with one body per variant; the assembler splices one.
-/// Part of the layered design (rule 9); these stay.
+/// Part of the layered design (rule 9); these stay. Also the per-module
+/// bodies of one contract, where each module needs its own.
 const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
     (
         &[
@@ -1027,41 +473,9 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         ],
         &["preview_texel"],
     ),
-];
-
-/// Pasted copies that item 11 of #58 replaces with assembler fragments.
-/// Shrinks with every merge; never grows.
-const PENDING_COPIES: &[(&[&str], &[&str])] = &[
-    (
-        &[
-            "contour_anchor.wgsl",
-            "contour_label.wgsl",
-            "data_render/bar_columnar.wgsl",
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/field_columnar.wgsl",
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-        ],
-        &[
-            "axis_pair_to_t",
-            "data_to_ndc",
-            "maybe_log",
-            "polar_ndc",
-            "styled_point_index",
-        ],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/core.wgsl",
-        ],
-        &["polar_fragment_visible"],
-    ),
+    // Not a paste: each workgroup entry zeroes its own `var<workgroup>` array
+    // before computing, so the four bodies differ by design (the contract is
+    // in `workgroup_init.rs`, the per-shader zeroing in each module).
     (
         &[
             "data_render/bar_columnar.wgsl",
@@ -1071,168 +485,67 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
         &["figgy_zero_workgroup"],
     ),
+];
+
+/// Copies of a fragment's function that a module carries because it cannot
+/// splice the fragment (see each copy's comment): the pick modules bind no
+/// draw `transform` and have no `maybe_log`, the radar and radial shaders no
+/// `Bar`. `pending_copies_equal_their_fragment` holds each copy to the
+/// fragment's text. Only shrinks; never grows.
+const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
-        &[
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "gpu_pick/noise.wgsl",
-        ],
-        &["sketch_hash01", "sketch_noise"],
-    ),
-    (
-        &[
-            "data_render/field_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
-            "gpu_pick/marker.wgsl",
-        ],
-        &["ramp_finite"],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-        ],
-        &[
-            "polar_clip_limits",
-            "polar_clip_offset",
-            "polar_clip_sector",
-            "polar_sample_valid",
-            "sample_finite",
-            "sample_valid",
-        ],
-    ),
-    (
-        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
-        &["output", "sdf"],
-    ),
-    (
-        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
+        &["data_render/common/bounded_shading.wgsl", "radial.wgsl"],
         &["hash", "noise"],
     ),
     (
-        &[
-            "contour_anchor.wgsl",
-            "data_render/field_columnar.wgsl",
-            "gpu_errorbar.wgsl",
-        ],
-        &[
-            "add_grid_pairs",
-            "grid_rounded_add",
-            "grid_rounded_subtract",
-            "midpoint_grid_pair",
-            "normalize_grid_pair",
-            "scale_grid_pair",
-            "subtract_grid_pairs",
-        ],
+        &["data_render/common/bounded_shading.wgsl", "radar.wgsl"],
+        &["output"],
     ),
     (
         &[
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/vector.wgsl",
+            "data_render/common/sample_validity.wgsl",
+            "gpu_pick/core.wgsl",
         ],
-        &["pair_add"],
+        &["polar_fragment_visible"],
     ),
     (
-        &[
-            "data_render/field_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
-            "data_render/vector/vector_input_common.wgsl",
-        ],
-        &["ramp_blend", "ramp_segment", "ramp_t"],
-    ),
-    (&["boxplot.wgsl", "categorical.wgsl"], &["shade"]),
-    (
-        &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
-        &[
-            "axis_t",
-            "boundary_t",
-            "cell_edge_pair",
-            "contour_sample",
-            "f32_is_finite",
-            "field_flag",
-            "grad_px",
-            "grid_value",
-            "lattice_is_samples",
-            "locate",
-            "pool_pair",
-            "quad_count",
-            "sample_point_pair",
-            "vec2_f32_is_finite",
-        ],
-    ),
-    (
-        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
-        &["pair_value"],
-    ),
-    (
-        &[
-            "data_render/line_arc.wgsl",
-            "data_render/line_columnar.wgsl",
-        ],
-        &["step_piece", "step_piece_count", "step_piece_len_px"],
-    ),
-    (
-        &["data_render/line_columnar.wgsl", "gpu_pick/line.wgsl"],
-        &[
-            "dash_pattern_on",
-            "line_stroke_distance",
-            "sketch_line_offset",
-        ],
-    ),
-    (
-        &["data_render/scatter_columnar.wgsl", "gpu_pick/marker.wgsl"],
-        &[
-            "base_shape_id",
-            "cons_ring_angle",
-            "constellation_star_radius",
-            "marker_edge",
-            "planet_rim_glow",
-            "planet_ring_frame",
-            "planet_ring_phi",
-            "planet_ring_rho",
-            "regular_vertex",
-            "rotate2",
-            "sd_box",
-            "sd_plus_filled",
-            "sd_regular_polygon",
-            "sd_segment",
-            "sd_star",
-            "sd_triangle",
-            "shape_distance",
-            "shape_is_filled",
-            "size_map_radius",
-            "sketch_marker_distance",
-            "sketch_marker_wobble_px",
-            "star_vertex",
-            "visual_shape_radius",
-        ],
-    ),
-    (
-        &[
-            "data_render/vector/glyph_arrow.wgsl",
-            "gpu_pick/vector.wgsl",
-        ],
-        &[
-            "arrow_distance",
-            "arrow_finite",
-            "arrow_place",
-            "arrow_sd_segment",
-            "arrow_sd_triangle",
-        ],
-    ),
-    (
-        &[
-            "data_render/vector/project_cartesian2d.wgsl",
-            "gpu_pick/vector.wgsl",
-        ],
-        &["axis_px_per_unit_at"],
+        &["data_render/common/ramp.wgsl", "gpu_pick/marker.wgsl"],
+        &["ramp_finite"],
     ),
 ];
+
+/// Each copy in [`PENDING_COPIES`] is byte-identical to the function of the
+/// fragment it copies, so the copy and the fragment cannot drift apart.
+#[test]
+fn pending_copies_equal_their_fragment() {
+    let src = workspace_root().join("src");
+    let mut checked = 0;
+    for (files, names) in PENDING_COPIES {
+        let fragment = files
+            .iter()
+            .find(|file| file.starts_with("data_render/common/"))
+            .unwrap_or_else(|| panic!("{names:?}: no fragment among {files:?}"));
+        let owner = fs::read_to_string(src.join(fragment)).unwrap();
+        for file in files.iter().filter(|file| *file != fragment) {
+            let copy = fs::read_to_string(src.join(file)).unwrap();
+            for name in *names {
+                assert_eq!(
+                    wgsl_function(&copy, name),
+                    wgsl_function(&owner, name),
+                    "{file} must carry `{name}` byte-for-byte as {fragment} defines it"
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(
+        checked,
+        PENDING_COPIES
+            .iter()
+            .map(|(files, names)| (files.len() - 1) * names.len())
+            .sum::<usize>()
+    );
+}
 
 /// Rule from #46 (the hand-off convention): code that builds one struct from
 /// another reads the source through a pattern that names every field, with

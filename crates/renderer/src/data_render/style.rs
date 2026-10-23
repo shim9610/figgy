@@ -215,6 +215,16 @@ pub fn update_style(queue: &wgpu::Queue, buffer: &wgpu::Buffer, style: &Primitiv
     queue.write_buffer(buffer, 0, bytemuck::bytes_of(style));
 }
 
+/// `ScatterStyleSlotGpu::meta[2]` / `ScatterStyleOverrideGpu::meta[2]` bit:
+/// the slot sets the colour. The scatter shader's `STYLE_MASK_COLOR`.
+pub(crate) const STYLE_MASK_COLOR: u32 = 1;
+/// The slot sets the radius (`STYLE_MASK_RADIUS`; the picker's
+/// `PICK_STYLE_MASK_RADIUS`).
+pub(crate) const STYLE_MASK_RADIUS: u32 = 2;
+/// The slot sets the shape (`STYLE_MASK_SHAPE`; the picker's
+/// `PICK_STYLE_MASK_SHAPE`).
+pub(crate) const STYLE_MASK_SHAPE: u32 = 4;
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ScatterStyleSlotGpu {

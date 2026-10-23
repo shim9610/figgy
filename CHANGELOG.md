@@ -36,6 +36,14 @@ Collected on `integration/0.19`; the release entry replaces this section.
   registration (annotation text is drawn with the fonts). The frame was
   already right in all three cases because the raster revision moved; only
   the annotation revision stayed behind.
+- **Shader assembly.** Every WGSL module is spliced from its fragment files
+  at compile time by one macro, `wgsl_module!` (`shader_assembly.rs`), so a
+  block several shaders share lives in one file
+  ([#46](https://github.com/shim9610/figgy/issues/46)). No shader changes
+  what it computes. Migration: `data_render::vector::assemble` returns
+  `&'static str` (the module is a constant now, also exported as
+  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`); call `.to_string()` where
+  a `String` was used.
 
 <a id="release-0181"></a>
 

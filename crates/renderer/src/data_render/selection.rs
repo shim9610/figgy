@@ -10,8 +10,8 @@ pub(crate) const DATA_SELECTION_KIND_CONTOUR_LEVEL: u32 = 3;
 
 /// Small typed-selection uniform shared by the bar and field overlay entries.
 ///
-/// GPU twins: `bar_columnar.wgsl::DataSelection` and
-/// `field_columnar.wgsl::DataSelection`, both 48 bytes. It contains provenance
+/// GPU twin: `common/data_pick.wgsl::DataSelection` (the bar and field
+/// modules splice it), 48 bytes. It contains provenance
 /// indices plus visual scalars, never reconstructed data coordinates.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]

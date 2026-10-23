@@ -16,113 +16,6 @@
 // `scale_log.{x,y}` = 1.0 applies log10 to both the input coords and the
 // computed err endpoints.
 
-// ───── BEGIN common block (SHADER_COMMON.md) ─────
-struct Transform {
-    data_min: vec2<f32>,
-    data_max: vec2<f32>,
-    data_min_lo: vec2<f32>,
-    data_max_lo: vec2<f32>,
-    scale_log: vec2<f32>,
-    pixel_to_ndc: vec2<f32>,
-    data_to_panel_scale: vec2<f32>,
-    data_to_panel_offset: vec2<f32>,
-    // Generic per-panel style parameter slots. Interpretation belongs to the
-    // ACTIVE style's shader entries; the precise entries never read them.
-    // sketch:        [0] = (amplitude_px, wavelength_px, seed(f32), 0)
-    // milkyway:      [0] = (star_density, ribbon_width_px, ribbon_intensity,
-    //                seed(f32)), [1] = (star_scale, spread_px, faint_bias, planet_rim),
-    //                [2] = (structure_scale, star_brightness, 0, 0) — multiplier on the
-    //                style's px-denominated structure constants (clump
-    //                wavelength, binary separation); keeps the star texture
-    //                resolution-invariant under DPI/export scaling.
-    // constellation: [0] = (star_opacity, line_opacity, 0, 0)
-    // All styles reserve [2].z for the global point-base u32 BIT PATTERN.
-    // Resident draws write zero; streamed point/errorbar draws bitcast it.
-    style_params: array<vec4<f32>, 3>,
-    // Polar coordinates (Config.polar); all zero in a rectangular chart.
-    // polar_angle:  (flag, zero angle in radians, radians per angle unit
-    //               signed by the direction, inner radius fraction)
-    // polar_extent: (sector start, sector end in angle units, end <= start
-    //               for the full circle; arc pieces per segment, 0 for
-    //               chords; outer radius in pixels)
-    polar_angle: vec4<f32>,
-    polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
-
-@group(0) @binding(0) var<uniform> transform: Transform;
-
-fn styled_point_index(local_index: u32) -> u32 {
-    return bitcast<u32>(transform.style_params[2].z) + local_index;
-}
-
-struct Style {
-    color_premul: vec4<f32>,
-    line_width_px: f32,
-    point_radius_px: f32,
-    cap_half_px: f32,
-    cap_width_px: f32,
-    shape_id: u32,
-    dash_len: u32,
-    // Per-series decorrelation salt (FNV-1a of series_id). Styled entries
-    // (sketch/milkyway/constellation) XOR it into their hash seeds so two series never
-    // share a star/wobble pattern; precise entries never read it.
-    series_salt: u32,
-    // Primitive-specific feature bits. Errorbar uses bit 0 for Y and bit 1
-    // for X. Line entries read bits 2-3 as the step interpolation mode
-    // (0 linear, 1 step-pre, 2 step-post, 3 step-mid) and the area entry
-    // also reads bit 4 (fill to a series instead of a baseline); every
-    // other primitive ignores this field.
-    primitive_flags: u32,
-    dash: array<vec4<f32>, 2>,
-};
-
-@group(1) @binding(0) var<uniform> style: Style;
-
-fn maybe_log(v: f32, is_log: f32) -> f32 {
-    let lv = log(max(v, 1e-30)) / log(10.0);
-    if is_log > 0.5 {
-        return lv;
-    }
-    return mix(v, lv, is_log);
-}
-
-fn axis_pair_to_t(v: vec2<f32>, min_hi: f32, max_hi: f32, min_lo: f32, max_lo: f32, is_log: f32, panel_scale: f32, panel_offset: f32) -> f32 {
-    let raw = v.x + v.y;
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (maybe_log(raw, is_log) - min_hi) - min_lo;
-    if is_log > 0.5 {
-        return fma(log_num / range, panel_scale, panel_offset);
-    }
-    let data_t = mix(linear_num / range, log_num / range, is_log);
-    return fma(data_t, panel_scale, panel_offset);
-}
-
-// Polar (Config.polar): the angle column in radians around the centre of the
-// data area, the radius axis fraction between the inner ring and the outer
-// radius. A radius below the axis start sits on the inner ring (data samples
-// there are masked by `sample_valid`; a fill baseline is not). Twin of
-// `polar_projection::ndc` on the CPU.
-fn polar_ndc(ty: f32, xv: vec2<f32>) -> vec2<f32> {
-    let p = transform.polar_angle;
-    let e = transform.polar_extent;
-    let angle = p.y + p.z * (xv.x + xv.y);
-    let rt = (ty - transform.data_to_panel_offset.y) / transform.data_to_panel_scale.y;
-    let r = mix(p.w, 1.0, max(rt, 0.0));
-    let center = (transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return center + vec2<f32>(cos(angle), sin(angle)) * r * e.w * transform.pixel_to_ndc;
-}
-
-fn data_to_ndc(xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
-    let tx = axis_pair_to_t(xv, transform.data_min.x, transform.data_max.x, transform.data_min_lo.x, transform.data_max_lo.x, transform.scale_log.x, transform.data_to_panel_scale.x, transform.data_to_panel_offset.x);
-    let ty = axis_pair_to_t(yv, transform.data_min.y, transform.data_max.y, transform.data_min_lo.y, transform.data_max_lo.y, transform.scale_log.y, transform.data_to_panel_scale.y, transform.data_to_panel_offset.y);
-    if (transform.polar_angle.x > 0.5) {
-        return polar_ndc(ty, xv);
-    }
-    return vec2<f32>(tx, ty) * 2.0 - 1.0;
-}
-// ───── END common block ─────
-
 const ERRORBAR_HAS_Y: u32 = 1u;
 const ERRORBAR_HAS_X: u32 = 2u;
 
@@ -131,11 +24,7 @@ struct DataPoint {
     y: vec2<f32>,
 };
 
-fn pair_value(v: vec2<f32>) -> f32 {
-    return v.x + v.y;
-}
-
-fn pair_add(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+fn pair_sum(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x + b.x, a.y + b.y);
 }
 
@@ -178,9 +67,9 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     // Each segment is a quad between endpoints A and B: a data-space
     // position plus a pixel-space offset (caps run ±cap_half_px from a
@@ -258,7 +147,7 @@ fn fs_main() -> @location(0) vec4<f32> {
     return style.color_premul;
 }
 
-// Per-point errorbar style mapping (NOT part of the common block). The mapped
+// Per-point errorbar style mapping. The mapped
 // precise path adds a seventh per-instance f32 slot for
 // error_bar_style_index_column and group 2 bindings 5..7 for style rows.
 struct VsMappedIn {
@@ -383,9 +272,9 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;
@@ -452,29 +341,9 @@ fn fs_mapped(in: MappedOut) -> @location(0) vec4<f32> {
     return in.color_premul;
 }
 
-// ──────────────── sketch mode (NOT part of the common block) ────────────────
+// ──────────────── sketch mode ────────────────
 // Hand-drawn entry point selected as a separate pipeline variant. The precise
 // entries above never read the sketch Transform fields.
-
-// Deliberately duplicated per data shader (scatter/line/errorbar) and NOT in
-// the SHADER_COMMON.md common block: line_arc.wgsl shares that block but has
-// no use for noise. Keep these helpers byte-identical in all three shaders.
-fn sketch_hash01(i: u32, seed: u32) -> f32 {
-    var h = (i * 0x9E3779B9u) ^ (seed * 0x85EBCA6Bu);
-    h = (h ^ (h >> 16u)) * 0x45D9F3Bu;
-    h = h ^ (h >> 16u);
-    return f32(h) / 4294967296.0;
-}
-
-// [-1, 1], C1-continuous. Negative t is fine: the lattice index wraps in u32
-// (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
-// integer boundaries is preserved.
-fn sketch_noise(t: f32, seed: u32) -> f32 {
-    let i = u32(i32(floor(t)));
-    let f = fract(t);
-    let u = f * f * (3.0 - 2.0 * f);
-    return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
-}
 
 // The sketch errorbar uses the same six-quad construction as vs_main, but each
 // quad end (A/B along the bar-length parameter) is displaced perpendicular to
@@ -501,9 +370,9 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;
@@ -569,7 +438,7 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     return vec4<f32>(ndc, 0.0, 1.0);
 }
 
-// ────────────── constellation mode (NOT part of the common block) ───────────
+// ────────────── constellation mode ───────────
 // Bipolar-jet errorbars render the error range as a glowing astrophysical jet:
 // stem quads become tapered beams brightest at the data point, and the cap
 // quads become terminal shock KNOTS — diffuse radial glows that mark the
@@ -614,9 +483,9 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;

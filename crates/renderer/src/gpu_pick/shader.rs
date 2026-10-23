@@ -38,18 +38,6 @@ pub(crate) enum PickShader {
     Vector,
 }
 
-macro_rules! pick_fragment {
-    ($name:literal) => {
-        include_str!($name)
-    };
-}
-
-macro_rules! pick_module {
-    ($($name:literal),+ $(,)?) => {
-        concat!($(pick_fragment!($name), "\n"),+)
-    };
-}
-
 impl PickShader {
     #[cfg(test)]
     pub(crate) const EXACT: [PickShader; 4] = [
@@ -59,72 +47,83 @@ impl PickShader {
         PickShader::Vector,
     ];
 
-    /// The fragment files, in assembly order.
+    /// The fragment files, in assembly order, relative to `src/`.
     #[cfg(test)]
     pub(crate) fn fragments(self) -> &'static [&'static str] {
         match self {
-            PickShader::Gate => &["core.wgsl", "gate_entries.wgsl"],
+            PickShader::Gate => &["gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl"],
             PickShader::Marker => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/marker.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::MarkerLine => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/line_stroke.wgsl",
+                "data_render/common/marker.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::Line => &[
-                "core.wgsl",
-                "noise.wgsl",
-                "no_scatter.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/line_stroke.wgsl",
+                "gpu_pick/no_scatter.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
             PickShader::Vector => &[
-                "core.wgsl",
-                "vector.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+                "gpu_pick/core.wgsl",
+                "data_render/common/arrow.wgsl",
+                "gpu_pick/vector.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ],
         }
     }
 
-    /// The assembled source: [`Self::fragments`] concatenated, each followed
-    /// by one newline.
+    /// The assembled source: [`Self::fragments`] joined with one newline
+    /// ([`wgsl_module!`](crate::shader_assembly::wgsl_module)).
     pub(crate) const fn source(self) -> &'static str {
+        use crate::shader_assembly::wgsl_module;
         match self {
-            PickShader::Gate => pick_module!("core.wgsl", "gate_entries.wgsl"),
-            PickShader::Marker => pick_module!(
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+            PickShader::Gate => wgsl_module!("gpu_pick/core.wgsl", "gpu_pick/gate_entries.wgsl",),
+            PickShader::Marker => wgsl_module!(
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/marker.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ),
-            PickShader::MarkerLine => pick_module!(
-                "core.wgsl",
-                "noise.wgsl",
-                "marker.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+            PickShader::MarkerLine => wgsl_module!(
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/line_stroke.wgsl",
+                "data_render/common/marker.wgsl",
+                "gpu_pick/marker.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ),
-            PickShader::Line => pick_module!(
-                "core.wgsl",
-                "noise.wgsl",
-                "no_scatter.wgsl",
-                "line.wgsl",
-                "exact_entry.wgsl",
+            PickShader::Line => wgsl_module!(
+                "gpu_pick/core.wgsl",
+                "data_render/common/sketch_noise.wgsl",
+                "data_render/common/line_stroke.wgsl",
+                "gpu_pick/no_scatter.wgsl",
+                "gpu_pick/line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ),
-            PickShader::Vector => pick_module!(
-                "core.wgsl",
-                "vector.wgsl",
-                "no_line.wgsl",
-                "exact_entry.wgsl",
+            PickShader::Vector => wgsl_module!(
+                "gpu_pick/core.wgsl",
+                "data_render/common/arrow.wgsl",
+                "gpu_pick/vector.wgsl",
+                "gpu_pick/no_line.wgsl",
+                "gpu_pick/exact_entry.wgsl",
             ),
         }
     }

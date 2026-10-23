@@ -3,6 +3,18 @@
 
 use super::*;
 
+/// The assembled field (heatmap and contour) module.
+pub(crate) const FIELD_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/field_grid.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/data_pick.wgsl",
+    "data_render/field_columnar.wgsl",
+);
+
 /// Vertices per field draw. The field is **one** quad for the whole grid, not
 /// one per cell — `field_columnar.wgsl`'s header has the two reasons (25M
 /// instances at matrix scale, and MSAA seams between adjacent quads).
@@ -10,7 +22,7 @@ pub const FIELD_VERTICES: u32 = 6;
 
 /// Where one constituent grid column lives in the pool.
 ///
-/// GPU twin: `field_columnar.wgsl::GridColumn`. `base` is an **f32 lane** index,
+/// GPU twin: `common/field_grid.wgsl::GridColumn`. `base` is an **f32 lane** index,
 /// matching the pool's `array<f32>` view — the same convention the arc scan and
 /// the star pass use.
 #[repr(C)]
@@ -36,7 +48,7 @@ pub const FIELD_FLAG_LOG_Z: u32 = 16;
 
 /// Everything the field shader needs beyond `Transform` and `Style`.
 ///
-/// GPU twin: `field_columnar.wgsl::FieldParams`, 64 B. `z_min` / `z_max` are the
+/// GPU twin: `common/field_grid.wgsl::FieldParams`, 64 B. `z_min` / `z_max` are the
 /// colourbar's bounds as the pool's `(hi, lo)` f32 pair, **already
 /// log-transformed** when [`FIELD_FLAG_LOG_Z`] is set: the bounds are f64 on the
 /// host, so taking the logarithm here keeps precision the shader would lose.

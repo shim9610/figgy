@@ -526,7 +526,7 @@ fn bounded_gpu_heatmap_z_tickets_match_resident_colour_samples_and_tile_seam() {
     let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
-        include_str!("../src/data_render/field_columnar.wgsl"),
+        renderer::shader_assembly::module("field"),
         ENTRIES
     );
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

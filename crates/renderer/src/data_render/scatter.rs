@@ -2,6 +2,18 @@
 
 use super::*;
 
+/// The assembled scatter module.
+pub(crate) const SCATTER_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/sketch_noise.wgsl",
+    "data_render/common/marker.wgsl",
+    "data_render/scatter_columnar.wgsl",
+);
+
 /// Columnar SDF scatter pipeline.
 /// slot 0 (per-vertex): unit quad, slot 1 (per-instance): X, slot 2: Y.
 pub fn create_scatter_columnar_pipeline(

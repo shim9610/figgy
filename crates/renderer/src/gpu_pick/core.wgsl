@@ -1,9 +1,9 @@
 
 // Exact GPU point/segment picking over ColumnPool split-f32 values.
 //
-// This module deliberately uses pick_* names and its own layouts. It is not
-// part of the render-shader common block: the picker consumes the same public
-// data representation but owns a compute-only ABI.
+// This module deliberately uses pick_* names and its own layouts. It does not
+// splice the draw shaders' transform and projection fragments: the picker
+// consumes the same public data representation but owns a compute-only ABI.
 //
 // Small queries scan directly. Larger queries use two streaming gates instead
 // of a traversal index. The X pass reads one axis and writes one scatter/line
@@ -277,11 +277,14 @@ fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
     return rt >= 0.0;
 }
 
-// The polar fragment clip of the draw shaders (SHADER_COMMON.md, coordinate
-// sample validity). `polar_fragment_visible` is copied byte-for-byte; the
-// three inputs it takes are computed from this shader's transform exactly
-// as `polar_clip_offset` / `polar_clip_limits` / `polar_clip_sector` compute
-// them from the draw transform.
+// The polar fragment clip of the draw shaders (common/sample_validity.wgsl).
+// `polar_fragment_visible` is a copy of the fragment's: the fragment's other
+// functions read the draw `transform` uniform, which the pick modules do not
+// bind, so it cannot be spliced here; the WGSL guard in `shader_consistency`
+// holds the copy to the fragment's text. The three inputs it takes are
+// computed from this shader's transform exactly as `polar_clip_offset` /
+// `polar_clip_limits` / `polar_clip_sector` compute them from the draw
+// transform.
 fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
     if (limits.x < 0.5) {
         return true;

@@ -3,23 +3,26 @@
 //! The arrow drawing is split into WGSL fragments with fixed interfaces, so
 //! the glyph does not depend on the projection:
 //!
-//! - `project_cartesian2d.wgsl`: the common `Transform` / `Style` blocks and
-//!   `project_arrow`, which maps a `VectorSample` to a tail and a tip in
-//!   chart-area pixels under either scale mode.
-//! - `vector_input_common.wgsl`: the group-2 bindings (the column pool as
-//!   storage, the grid table, the colourmap stops, `VectorParams`) and the
-//!   colour ramp.
-//! - `vector_input_points.wgsl` / `vector_input_grid.wgsl`: `vector_sample`,
-//!   one `VectorSample` per instance index from index-aligned columns or from
-//!   a grid declaration.
-//! - `glyph_arrow.wgsl`: the arrow geometry and its analytic coverage.
-//! - `vector_entry.wgsl`: `vs_main` / `fs_main`.
+//! - the shared fragments under `data_render/common/`: `transform`, `style`,
+//!   `projection` and `sample_validity` (as in every Cartesian data shader),
+//!   `ramp` (the colourbar ramp), `arrow` (the arrow geometry and its
+//!   analytic coverage) and, for the grid form, `grid_pair` and `data_pick`;
+//! - `vector/project_cartesian2d.wgsl`: `project_arrow`, which maps a
+//!   `VectorSample` to a tail and a tip in chart-area pixels under either
+//!   scale mode;
+//! - `vector/vector_input_common.wgsl`: the group-2 bindings (the column pool
+//!   as storage, the grid table, the colourmap stops, `VectorParams`);
+//! - `vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`:
+//!   `vector_sample`, one `VectorSample` per instance index from
+//!   index-aligned columns or from a grid declaration;
+//! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
-//! [`assemble`] concatenates the fragments in that order; the list is the
-//! module's identity and there is no runtime templating. Every assembled
-//! combination is listed in [`VectorInput::ALL`], compiled by the shader
-//! compilation test, recorded in the pipeline contract and warmed in the
-//! browser like any other shader.
+//! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
+//! in that order at compile time (`wgsl_module!`); the list is the module's
+//! identity and there is no runtime templating. Every assembled combination
+//! is listed in [`VectorInput::ALL`], compiled by the shader compilation
+//! test, recorded in the pipeline contract and warmed in the browser like
+//! any other shader.
 
 use super::{GridColumnGpu, multisample_state};
 
@@ -45,41 +48,44 @@ impl VectorInput {
     }
 }
 
-const PROJECT_CARTESIAN2D: &str = include_str!("vector/project_cartesian2d.wgsl");
-const INPUT_COMMON: &str = include_str!("vector/vector_input_common.wgsl");
-const INPUT_POINTS: &str = include_str!("vector/vector_input_points.wgsl");
-const INPUT_GRID: &str = include_str!("vector/vector_input_grid.wgsl");
-const GLYPH_ARROW: &str = include_str!("vector/glyph_arrow.wgsl");
-const ENTRY: &str = include_str!("vector/vector_entry.wgsl");
+/// The assembled vector module for [`VectorInput::Points`].
+pub const VECTOR_POINTS_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/arrow.wgsl",
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_points.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+);
 
-/// The fragments of one assembled module, in assembly order, with their file
-/// names.
-pub fn fragments(input: VectorInput) -> [(&'static str, &'static str); 5] {
-    let input_fragment = match input {
-        VectorInput::Points => ("vector_input_points.wgsl", INPUT_POINTS),
-        VectorInput::Grid => ("vector_input_grid.wgsl", INPUT_GRID),
-    };
-    [
-        ("project_cartesian2d.wgsl", PROJECT_CARTESIAN2D),
-        ("vector_input_common.wgsl", INPUT_COMMON),
-        input_fragment,
-        ("glyph_arrow.wgsl", GLYPH_ARROW),
-        ("vector_entry.wgsl", ENTRY),
-    ]
-}
+/// The assembled vector module for [`VectorInput::Grid`].
+pub const VECTOR_GRID_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/grid_pair.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/arrow.wgsl",
+    "data_render/common/data_pick.wgsl",
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_grid.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+);
 
-/// The assembled WGSL source: the fragments concatenated in declared order,
-/// each followed by one newline. Deterministic; the test
-/// `assembled_vector_shaders_are_their_fragments_concatenated` holds it to
-/// exactly this.
-pub fn assemble(input: VectorInput) -> String {
-    let parts = fragments(input);
-    let mut source = String::with_capacity(parts.iter().map(|(_, s)| s.len() + 1).sum());
-    for (_, fragment) in parts {
-        source.push_str(fragment);
-        source.push('\n');
+/// The assembled WGSL source of one input form, spliced at compile time. The
+/// test `assembled_vector_shaders_are_their_fragments_concatenated` holds it
+/// to its fragment list.
+pub const fn assemble(input: VectorInput) -> &'static str {
+    match input {
+        VectorInput::Points => VECTOR_POINTS_SHADER,
+        VectorInput::Grid => VECTOR_GRID_SHADER,
     }
-    source
 }
 
 pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::ShaderModule {
@@ -92,7 +98,7 @@ pub(crate) fn shader_module(device: &wgpu::Device, input: VectorInput) -> wgpu::
     )
 }
 
-/// Vertices per arrow: one oriented quad (`glyph_arrow.wgsl::ARROW_VERTICES`).
+/// Vertices per arrow: one oriented quad (`common/arrow.wgsl::ARROW_VERTICES`).
 pub const ARROW_VERTICES: u32 = 6;
 
 /// `VectorParamsGpu::flags`: the components are grids, not point columns.
@@ -432,29 +438,54 @@ pub struct ColumnVectorLayer<'a> {
 mod tests {
     use super::*;
 
+    /// The parts of one assembled module, in assembly order, relative to
+    /// `src/`: the list each `wgsl_module!` above splices.
+    fn fragments(input: VectorInput) -> &'static [&'static str] {
+        match input {
+            VectorInput::Points => &[
+                "data_render/common/transform.wgsl",
+                "data_render/common/style.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/ramp.wgsl",
+                "data_render/common/arrow.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
+                "data_render/vector/vector_input_common.wgsl",
+                "data_render/vector/vector_input_points.wgsl",
+                "data_render/vector/vector_entry.wgsl",
+            ],
+            VectorInput::Grid => &[
+                "data_render/common/transform.wgsl",
+                "data_render/common/style.wgsl",
+                "data_render/common/projection.wgsl",
+                "data_render/common/sample_validity.wgsl",
+                "data_render/common/grid_pair.wgsl",
+                "data_render/common/ramp.wgsl",
+                "data_render/common/arrow.wgsl",
+                "data_render/common/data_pick.wgsl",
+                "data_render/vector/project_cartesian2d.wgsl",
+                "data_render/vector/vector_input_common.wgsl",
+                "data_render/vector/vector_input_grid.wgsl",
+                "data_render/vector/vector_entry.wgsl",
+            ],
+        }
+    }
+
     #[test]
     fn assembled_vector_shaders_are_their_fragments_concatenated() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for input in VectorInput::ALL {
-            let assembled = assemble(input);
-            let mut expected = String::new();
-            for (_, fragment) in fragments(input) {
-                expected.push_str(fragment);
-                expected.push('\n');
-            }
-            assert_eq!(assembled, expected, "{input:?}");
-            // Each fragment is present verbatim, so every shipped fragment file
-            // is covered by the compilation test's source check.
-            for (name, fragment) in fragments(input) {
-                assert!(
-                    assembled.contains(fragment),
-                    "{name} missing from {input:?}"
-                );
-            }
-            // The entry is last and the projection first: the interfaces the
-            // other layers depend on are declared before the entry calls them.
-            let names: Vec<&str> = fragments(input).iter().map(|(name, _)| *name).collect();
-            assert_eq!(names[0], "project_cartesian2d.wgsl");
-            assert_eq!(names[names.len() - 1], "vector_entry.wgsl");
+            let parts: Vec<String> = fragments(input)
+                .iter()
+                .map(|name| std::fs::read_to_string(src.join(name)).unwrap())
+                .collect();
+            assert_eq!(assemble(input), parts.join("\n"), "{input:?}");
+            // The entry is last: the interfaces the other layers declare are
+            // in place before the entry calls them.
+            assert_eq!(
+                fragments(input).last(),
+                Some(&"data_render/vector/vector_entry.wgsl")
+            );
         }
         assert_ne!(assemble(VectorInput::Points), assemble(VectorInput::Grid));
     }
@@ -463,8 +494,8 @@ mod tests {
     fn assembled_vector_shaders_parse() {
         for input in VectorInput::ALL {
             let source = assemble(input);
-            if let Err(error) = wgpu::naga::front::wgsl::parse_str(&source) {
-                panic!("{input:?}: {}", error.emit_to_string(&source));
+            if let Err(error) = wgpu::naga::front::wgsl::parse_str(source) {
+                panic!("{input:?}: {}", error.emit_to_string(source));
             }
         }
     }

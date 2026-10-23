@@ -154,3 +154,4 @@ fn pick_reduce_candidates(@builtin(local_invocation_index) local_index: u32) {
         pick_reduce_output = pick_shared_candidates[0];
     }
 }
+

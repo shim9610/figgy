@@ -9,6 +9,10 @@ use crate::{RasterImage, RendererDevice};
 pub use model::radial::*;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// The assembled radial module.
+pub(crate) const RADIAL_SHADER: &str = crate::shader_assembly::wgsl_module!("radial.wgsl",);
+
 #[path = "radial_geometry.rs"]
 mod geometry;
 #[path = "radial_layout.rs"]
@@ -173,7 +177,7 @@ impl RadialRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            include_str!("radial.wgsl"),
+            RADIAL_SHADER,
             &[("radial surfaces", "radial surfaces")],
             format,
             1,
@@ -248,7 +252,7 @@ impl RadialRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("radial surfaces"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("radial.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(RADIAL_SHADER.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(
