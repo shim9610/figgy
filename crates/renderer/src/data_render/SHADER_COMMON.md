@@ -43,7 +43,7 @@ To change shared shader code:
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
-| `bounded_shading.wgsl` | boxplot, categorical |
+| `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
@@ -516,6 +516,23 @@ fn material_surface(m: Material, color: vec3<f32>, p: vec3<f32>, n: vec3<f32>,
   across the brush and at `brush.y` along it. A sector's brush is
   circumferential: (radius, twice the turned angle).
 - `Flat` returns the color plus the emphasis, ignoring every parameter.
+
+A bar or a box is a flat body, shaded like a flat (zero depth, zero tilt)
+pie top by `bar_surface` in `bounded_shading.wgsl`: normal and view
+`(0, 0, 1)`, the normalized default `RadialStyle::light` (`BAR_LIGHT`),
+the radial default roughness (packed by the layouts) and texture angle 0.
+Its object point is the logical-pixel offset from the bar's top-left corner
+divided by `BAR_UNIT_PX` (150), which plays the sector radius, and its
+brush runs along the bar: (across, twice along). With a constant normal the
+lighting and the specular lobes are uniform over a bar: at that light
+`n·h` is 0.945, so `Enamel`'s lobe is below one 8-bit step and `gloss` has
+no visible effect on an `Enamel` bar, and on a `Ceramic` bar it lifts the
+whole bar by at most 2.5/255. `SatinMetal` and `BrushedMetal` keep a
+visible uniform sheen; their brush runs at `min(450 · scale, 0.4 · pixels)`
+cycles per unit, so at 1x (150 px per unit) a `texture_scale` above 0.13
+leaves a metal bar unchanged, as it does a sector of that radius. `Toon`
+and `Pearl`, which only respond to a turning normal, are rejected by the
+model (`Material::supported_on_flat_body`).
 
 `hash`, `noise`, `material_noise`, `material_band`, the struct, the
 constants and `material_surface` are the fragment

@@ -266,12 +266,17 @@ fn materials_geometry_and_interaction_share_annotations_without_unbounded_growth
     let original = r.prepare(&c, (640, 440), 1.).unwrap();
     let rect = original.bar_rect(&CategoryBarTarget::new("a", "one"));
     for i in 0..30 {
-        c.style.material = match i % 5 {
+        // Every look a bar supports (all but Toon and Pearl).
+        c.style.material = match i % 9 {
             0 => CategoryBarMaterial::Flat,
             1 => CategoryBarMaterial::Matte,
             2 => CategoryBarMaterial::SatinMetal,
             3 => CategoryBarMaterial::Enamel,
-            _ => CategoryBarMaterial::Paper,
+            4 => CategoryBarMaterial::Paper,
+            5 => CategoryBarMaterial::Ceramic,
+            6 => CategoryBarMaterial::BrushedMetal,
+            7 => CategoryBarMaterial::Wood,
+            _ => CategoryBarMaterial::Hatch,
         };
         c.style.outline = i % 2 == 0;
         c.style.corner_radius = (i % 20) as f32;
@@ -310,6 +315,15 @@ fn invalid_input_layout_and_budget_keep_last_valid_frame() {
     bad.title = "X".repeat(160);
     assert!(r.prepare(&bad, (640, 440), 1.).is_err());
     assert_eq!(r.gpu_memory_usage(), usage);
+    for material in [CategoryBarMaterial::Toon, CategoryBarMaterial::Pearl] {
+        bad = c.clone();
+        bad.style.material = material;
+        assert!(matches!(
+            r.prepare(&bad, (640, 440), 1.),
+            Err(CategoricalError::Invalid("material not supported by bars"))
+        ));
+        assert_eq!(r.gpu_memory_usage(), usage);
+    }
     r.set_memory_budget(usage.total_bytes());
     bad = c.clone();
     bad.style.outline = true;
@@ -447,20 +461,43 @@ fn each_material_parameter_changes_pixels_but_reuses_annotations() {
             CategoryBarMaterial::SatinMetal,
             Box::new(|s| s.texture_strength = 0.0),
         ),
+        // The metal brush runs at min(450 * scale, 0.4 * pixels per unit)
+        // cycles per unit, as on a sector (SHADER_COMMON.md §5.9): at 1x a
+        // bar unit is 150 px, so only a scale below 0.13 moves it off the
+        // pixel limit. A larger scale leaves a Satin bar unchanged.
         (
             "satin frequency",
             CategoryBarMaterial::SatinMetal,
-            Box::new(|s| s.texture_scale = 3.0),
+            Box::new(|s| s.texture_scale = 0.1),
         ),
         (
             "satin gloss",
             CategoryBarMaterial::SatinMetal,
             Box::new(|s| s.gloss = 0.0),
         ),
+        // No "enamel gloss" case: a bar is a flat body lit like a flat pie
+        // top, and at that constant normal Enamel's specular lobe is below
+        // one 8-bit step, so gloss has no visible effect on an Enamel bar
+        // (SHADER_COMMON.md §5.9). The metals keep a visible sheen.
         (
-            "enamel gloss",
-            CategoryBarMaterial::Enamel,
+            "brushed gloss",
+            CategoryBarMaterial::BrushedMetal,
             Box::new(|s| s.gloss = 0.0),
+        ),
+        (
+            "ceramic strength",
+            CategoryBarMaterial::Ceramic,
+            Box::new(|s| s.texture_strength = 0.0),
+        ),
+        (
+            "wood strength",
+            CategoryBarMaterial::Wood,
+            Box::new(|s| s.texture_strength = 0.0),
+        ),
+        (
+            "hatch strength",
+            CategoryBarMaterial::Hatch,
+            Box::new(|s| s.texture_strength = 0.0),
         ),
         (
             "paper strength",

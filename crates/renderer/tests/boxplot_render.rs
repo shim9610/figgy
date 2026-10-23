@@ -230,9 +230,21 @@ fn every_style_switch_changes_pixels_and_reuses_only_valid_annotations() {
     let before = r.export_rgba(&c, (640, 440), 1.).unwrap();
     let edits: Vec<(&str, fn(&mut BoxPlotChart))> = vec![
         ("material", |c| c.style.material = BoxPlotMaterial::Matte),
+        // Every other look a box supports (all but Toon and Pearl).
+        ("flat", |c| c.style.material = BoxPlotMaterial::Flat),
+        ("ceramic", |c| c.style.material = BoxPlotMaterial::Ceramic),
+        ("brushed", |c| {
+            c.style.material = BoxPlotMaterial::BrushedMetal
+        }),
+        ("paper", |c| c.style.material = BoxPlotMaterial::Paper),
+        ("wood", |c| c.style.material = BoxPlotMaterial::Wood),
+        ("enamel", |c| c.style.material = BoxPlotMaterial::Enamel),
+        ("hatch", |c| c.style.material = BoxPlotMaterial::Hatch),
         ("gloss", |c| c.style.gloss = 0.95),
         ("strength", |c| c.style.texture_strength = 1.),
-        ("frequency", |c| c.style.texture_scale = 5.),
+        // Satin's brush is at the pixel limit for any scale above 0.13 at
+        // 1x (SHADER_COMMON.md §5.9), so the switch goes below it.
+        ("frequency", |c| c.style.texture_scale = 0.1),
         ("corners", |c| c.style.corner_radius = 3.),
         ("outline", |c| c.style.outline = false),
         ("outline width", |c| c.style.outline_width = 4.),
@@ -372,6 +384,15 @@ fn invalid_and_budget_failures_are_atomic_and_external_frames_keep_resources_ali
     assert!(r.prepare(&bad, (640, 440), 1.).is_err());
     assert_eq!(r.gpu_memory_usage(), before);
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, (640, 440), 1.).unwrap()));
+    for material in [BoxPlotMaterial::Toon, BoxPlotMaterial::Pearl] {
+        let mut bad = c.clone();
+        bad.style.material = material;
+        assert!(matches!(
+            r.prepare(&bad, (640, 440), 1.),
+            Err(BoxPlotError::Invalid("material not supported by boxes"))
+        ));
+        assert_eq!(r.gpu_memory_usage(), before);
+    }
     r.set_memory_budget(1);
     let mut changed = c.clone();
     changed.style.gloss = 1.;
