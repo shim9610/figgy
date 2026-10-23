@@ -48,13 +48,12 @@ To change shared shader code:
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
 `gpu_pick/shader.rs`, `vector.rs`, the bounded charts), and
-`shader_assembly::MODULES` names every one. Four functions stay copied where
+`shader_assembly::MODULES` names every one. Three functions stay copied where
 a module cannot splice their fragment, held to the fragment's text by
 `shader_consistency`: the pick modules' `ramp_finite` and
 `polar_fragment_visible` (they bind no draw `transform` and have no
 `maybe_log`, which the rest of those fragments read) and the radar `output`
-and radial `hash` / `noise` (they declare no `Bar`, which the rest of
-`bounded_shading.wgsl` takes).
+(it declares no `Bar`, which the rest of `bounded_shading.wgsl` takes).
 
 ### Module notes
 
@@ -493,8 +492,34 @@ boxplot `Bar` and the radial `Sector`:
 | `finish.w` | emphasis brightness, added after shading |
 
 Rust twin: `data_render::MaterialGpu` (`data_render/style.rs`), packed by
-`MaterialGpu::pack`, with the `MATERIAL_*` constants. The struct and the
-constants are the fragment [`data_render/common/material.wgsl`](common/material.wgsl).
+`MaterialGpu::pack`, with the `MATERIAL_*` constants.
+
+One function shades every family:
+
+```wgsl
+fn material_surface(m: Material, color: vec3<f32>, p: vec3<f32>, n: vec3<f32>,
+    view: vec3<f32>, light: vec3<f32>, tangent: vec3<f32>, brush: vec2<f32>,
+    pixels: f32) -> vec3<f32>
+```
+
+- `p` is the object-space surface point. One object unit is `pixels`
+  output pixels: the sector radius. The function turns `p` by the texture
+  angle and scales it by the texture scale, so grain, paper, wood and hatch
+  stay fixed to the object and fade (`material_band`) where the output
+  cannot resolve them.
+- `n`, `view` and `light` are unit vectors: the surface normal, the
+  direction to the viewer and the direction to the light. A sector passes
+  its raymarched normal, the camera direction and `RadialStyle::light`.
+- `tangent` and `brush` describe the brush of `BrushedMetal` and
+  `SatinMetal`: the unit brush direction on the surface, and the (across,
+  along) brush coordinates; the noise runs at a pixel-limited frequency
+  across the brush and at `brush.y` along it. A sector's brush is
+  circumferential: (radius, twice the turned angle).
+- `Flat` returns the color plus the emphasis, ignoring every parameter.
+
+`hash`, `noise`, `material_noise`, `material_band`, the struct, the
+constants and `material_surface` are the fragment
+[`data_render/common/material.wgsl`](common/material.wgsl).
 
 ---
 ## Checklist

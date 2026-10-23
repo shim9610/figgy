@@ -5,8 +5,6 @@ fn sdf(p:vec2<f32>,b:Bar)->f32 {
     let d=abs(q)-(b.rect.zw-b.rect.xy)*0.5+r;
     return length(max(d,vec2(0.0)))+min(max(d.x,d.y),0.0)-r;
 }
-fn hash(p:vec2<f32>)->f32 { return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
-fn noise(p:vec2<f32>)->f32 { let i=floor(p);let f=fract(p);let u=f*f*(3.0-2.0*f);return mix(mix(hash(i),hash(i+vec2(1.0,0.0)),u.x),mix(hash(i+vec2(0.0,1.0)),hash(i+1.0),u.x),u.y); }
 fn shade(p:vec2<f32>,b:Bar)->vec3<f32> {
     let m=b.material;var c=b.color.rgb;let kind=u32(m.params.x);
     let uv=(p-b.rect.xy)/max(b.rect.zw-b.rect.xy,vec2(0.001));
