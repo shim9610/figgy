@@ -1003,11 +1003,11 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
 /// Shrinks with every merge; never grows.
 const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (
-        &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
+        &["data_render/common/bounded_shading.wgsl", "radial.wgsl"],
         &["hash", "noise"],
     ),
     (
-        &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
+        &["data_render/common/bounded_shading.wgsl", "radar.wgsl"],
         &["output"],
     ),
     (
@@ -1021,7 +1021,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["data_render/common/ramp.wgsl", "gpu_pick/marker.wgsl"],
         &["ramp_finite"],
     ),
-    (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
 ];
 
 /// Rule from #46 (the hand-off convention): code that builds one struct from

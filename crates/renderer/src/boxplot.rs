@@ -11,7 +11,11 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled boxplot module.
-pub(crate) const BOXPLOT_SHADER: &str = crate::shader_assembly::wgsl_module!("boxplot.wgsl");
+pub(crate) const BOXPLOT_SHADER: &str = crate::shader_assembly::wgsl_module!(
+    "boxplot_header.wgsl",
+    "data_render/common/bounded_shading.wgsl",
+    "boxplot.wgsl",
+);
 
 #[path = "boxplot_layout.rs"]
 mod layout;
