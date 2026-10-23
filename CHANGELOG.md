@@ -203,9 +203,16 @@ Collected on `integration/0.19`; the release entry replaces this section.
   - the log decades of Cartesian axes, grid lines and the colourbar are
     computed with `powf` instead of `powi`, as contour levels already were:
     a decade value can move by up to 7 ulp at large exponents, and an axis
-    reaching subnormal decades gains the ticks `powi` lost.
-  The box plot, radar and categorical value ticks move to the shared
-  walkers in a follow-up.
+    reaching subnormal decades gains the ticks `powi` lost;
+  - radar rings and box plot value ticks walk the shared grid, whose 1e-9
+    step slack keeps a ring or tick that rounding put just past a range
+    end (`value_range [0, 0.3]` with `ring_spacing 0.1` draws the 0.3
+    ring). Fitted ranges gain it most: in a seeded sample, 0.7 % of fitted
+    radar axes gain the outer ring and 7 % of fitted box plot axes gain an
+    end tick; fixed ranges rarely change;
+  - categorical value ticks are `k · step` instead of `min + i · step`:
+    about one value in ten moves by an ulp, and a label changes only on a
+    rounding tie of the exponent form (28 of 525,313 in the sample).
 - **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
   decimals, trim_zeros })` writes a value alone, ignoring scale, spacing
   and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is

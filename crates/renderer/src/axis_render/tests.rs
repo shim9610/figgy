@@ -333,43 +333,12 @@ fn log_tick_walkers_bound_every_finite_extreme_range() {
 
 // Parity with the replaced code; removed with the old walkers in the follow-up PR.
 //
-// The tick plan moved to `crate::tick` (#58 item 14). These tests compare the
-// bounded families' inline walks and `plain_number` with the model's over
-// wide grids of inputs, and pin the differences the plan accepted. The
-// comparisons of the Cartesian spacing rule and the Vec walkers went with
-// the replaced code; `tick.rs` keeps its golden tables.
+// The tick plan moved to `crate::tick` (#58 item 14). This test compares
+// `plain_number` with the model's `PlainNumberFormat::AUTO`. The comparisons
+// of the spacing rule and the walkers went with the replaced code;
+// `tick.rs` keeps its golden tables.
 mod tick_plan_parity {
     use super::*;
-    use crate::tick as model_tick;
-
-    fn ulps(a: f64, b: f64) -> u64 {
-        if a == b {
-            return 0;
-        }
-        if !(a.is_finite() && b.is_finite()) || a.is_sign_negative() != b.is_sign_negative() {
-            return u64::MAX;
-        }
-        a.to_bits().abs_diff(b.to_bits())
-    }
-
-    /// Seeded xorshift64: the same inputs on every run.
-    struct XorShift(u64);
-
-    impl XorShift {
-        fn next_u64(&mut self) -> u64 {
-            let mut x = self.0;
-            x ^= x << 13;
-            x ^= x >> 7;
-            x ^= x << 17;
-            self.0 = x;
-            x
-        }
-
-        /// Uniform in [0, 1).
-        fn unit(&mut self) -> f64 {
-            (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
-        }
-    }
 
     /// Values for the `Plain` parity tests: both signs, every decade from 1e-12
     /// to 1e12, the exponent switch at 0.001 and 1e6 with their neighbours,
@@ -441,112 +410,6 @@ mod tick_plan_parity {
             );
         }
         eprintln!("plain number parity: {} values, all equal", values.len());
-    }
-
-    /// The bounded families' current inline walks (radar rings, box plot and
-    /// categorical value ticks) against the `LinearGrid` walks that will
-    /// replace them. Differences 3 (the grid's 1e-9 slack keeps end ticks)
-    /// and 4 (categorical values become `k · step`) are counted, with the
-    /// categorical labels that change.
-    #[test]
-    fn bounded_walks_match_linear_grid() {
-        let mut rng = XorShift(0x2545_F491_4F6C_DD1D);
-        // [user range, widened plan]
-        let mut radar_gains = [0usize; 2];
-        let mut boxplot_gains = [0usize; 2];
-        let mut categorical_ticks = 0usize;
-        let mut categorical_value_differences = 0usize;
-        let mut categorical_label_differences = 0usize;
-        let cases = 100_000;
-        for case in 0..cases {
-            let magnitude = 10f64.powf(-6.0 + rng.unit() * 12.0);
-            let a = (rng.unit() - 0.5) * 2.0 * magnitude;
-            let b = a + rng.unit() * magnitude + f64::EPSILON * a.abs().max(1.0);
-            let Ok(plan) = AxisOptions::compute_nice_ticks(AxisScale::Linear, a, b, 5) else {
-                continue;
-            };
-            let step = plan.major_spacing;
-
-            // Radar rings over a user range with a user or planned spacing.
-            let user_range = case % 2 == 0;
-            let (min, max) = if user_range {
-                (a, b)
-            } else {
-                (plan.min, plan.max)
-            };
-            let span = max - min;
-            if span / step <= 100.0 {
-                let first = (min / step).ceil() as i64;
-                let last = (max / step).floor() as i64;
-                let old: Vec<f64> = (first..=last)
-                    .map(|k| k as f64 * step)
-                    .filter(|v| *v > min + span * 1e-9)
-                    .collect();
-                let new: Vec<f64> = model_tick::LinearGrid::new(min, max, step, 100)
-                    .into_iter()
-                    .flat_map(|grid| grid.iter())
-                    .map(|(_, v)| v)
-                    .filter(|v| *v > min + span * 1e-9)
-                    .collect();
-                if old.len() != new.len() {
-                    assert_eq!(new.len(), old.len() + 1, "{old:?} vs {new:?}");
-                    radar_gains[usize::from(!user_range)] += 1;
-                }
-            }
-
-            // Box plot ticks over a fixed range.
-            let start = (min / step).ceil() * step;
-            let count = ((max - start) / step).floor().max(0.0) as usize;
-            if count <= 100 {
-                let old: Vec<f64> = (0..=count).map(|i| start + i as f64 * step).collect();
-                let new: Vec<f64> = model_tick::LinearGrid::new(min, max, step, 100)
-                    .into_iter()
-                    .flat_map(|grid| grid.iter())
-                    .map(|(_, v)| v)
-                    .collect();
-                if old.len() != new.len() {
-                    // The slack can keep a tick at either end.
-                    assert!(
-                        new.len() > old.len() && new.len() <= old.len() + 2,
-                        "{min:?}..{max:?} by {step:?}: {old:?} vs {new:?}"
-                    );
-                    boxplot_gains[usize::from(!user_range)] += 1;
-                }
-            }
-
-            // Categorical ticks over the widened plan.
-            let tick_count = ((plan.max - plan.min) / step).round() as usize;
-            let old: Vec<f64> = (0..=tick_count)
-                .map(|i| plan.min + i as f64 * step)
-                .collect();
-            let new: Vec<f64> = model_tick::LinearGrid::new(plan.min, plan.max, step, 100)
-                .unwrap()
-                .iter()
-                .map(|(_, v)| v)
-                .collect();
-            assert_eq!(old.len(), new.len(), "{plan:?}");
-            categorical_ticks += old.len();
-            for (x, y) in old.iter().zip(&new) {
-                if x != y {
-                    categorical_value_differences += 1;
-                    assert!(
-                        ulps(*x, *y) <= 1 || (x - y).abs() <= step * 1e-12,
-                        "{x:?} vs {y:?}"
-                    );
-                }
-                if plain_number(*x) != plain_number(*y) {
-                    // A value on a rounding tie of the exponent form
-                    // (`7.005e-5` as `7.00e-5` or `7.01e-5`).
-                    categorical_label_differences += 1;
-                }
-            }
-        }
-        eprintln!(
-            "bounded parity: {cases} ranges, half user ranges and half widened plans; \
-             radar gains an outer ring in {radar_gains:?}, box plot gains end ticks in \
-             {boxplot_gains:?}; {categorical_value_differences} of {categorical_ticks} \
-             categorical tick values move, {categorical_label_differences} of their labels change"
-        );
     }
 }
 
