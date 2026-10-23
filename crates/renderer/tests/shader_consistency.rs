@@ -1040,7 +1040,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
             "planet_ring_frame",
             "planet_ring_phi",
             "planet_ring_rho",
-            "size_map_radius",
             "sketch_marker_distance",
             "sketch_marker_wobble_px",
         ],
@@ -1054,7 +1053,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["output"],
     ),
     (
-        &["data_render/errorbar_columnar.wgsl", "gpu_errorbar.wgsl"],
+        &["data_render/errorbar_columnar_a.wgsl", "gpu_errorbar.wgsl"],
         &["pair_value"],
     ),
     (
@@ -1071,11 +1070,10 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
     (
         &[
-            "data_render/common/sketch_noise.wgsl",
-            "data_render/errorbar_columnar.wgsl",
-            "data_render/scatter_columnar.wgsl",
+            "data_render/scatter_columnar_c.wgsl",
+            "gpu_pick/marker.wgsl",
         ],
-        &["sketch_hash01", "sketch_noise"],
+        &["size_map_radius"],
     ),
     (
         &["data_render/line_columnar_b.wgsl", "gpu_pick/line.wgsl"],

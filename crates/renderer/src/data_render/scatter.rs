@@ -13,6 +13,8 @@ pub(crate) const SCATTER_SHADER: &str = crate::shader_assembly::wgsl_module!(
     "data_render/common/marker.wgsl",
     "data_render/scatter_columnar_a.wgsl",
     "data_render/common/ramp.wgsl",
+    "data_render/scatter_columnar_c.wgsl",
+    "data_render/common/sketch_noise.wgsl",
     "data_render/scatter_columnar.wgsl"
 );
 
