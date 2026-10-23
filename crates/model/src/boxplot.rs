@@ -1,5 +1,5 @@
 //! Small, precomputed box plots. Statistical policy belongs to the host.
-use crate::{Color, categorical::Category};
+use crate::{Color, Material, categorical::Category};
 use std::collections::HashSet;
 
 pub const MAX_BOX_CATEGORIES: usize = 64;
@@ -89,9 +89,11 @@ pub enum BoxPlotDirection {
     Vertical,
     Horizontal,
 }
-/// The box material: the shared [`Material`](crate::Material). Boxes reject
-/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
-/// excludes. The box style's default stays `Matte` (`BoxPlotStyle::default`).
+/// The former box material enum, now the shared [`Material`]. Boxes reject
+/// the materials [`Material::supported_on_flat_body`] excludes. The box
+/// style's default stays `Matte` (`BoxPlotStyle::default`); the enum's own
+/// default is `Flat`.
+#[deprecated(since = "0.13.0", note = "use Material")]
 pub type BoxPlotMaterial = crate::Material;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -115,7 +117,7 @@ pub enum BoxOutlierShape {
     serde(default)
 )]
 pub struct BoxPlotStyle {
-    pub material: BoxPlotMaterial,
+    pub material: Material,
     /// Logical pixels, capped at 3 and at half the actual box extent.
     pub corner_radius: f32,
     pub outline: bool,
@@ -146,7 +148,7 @@ impl Default for BoxPlotStyle {
     fn default() -> Self {
         let ink = Color::from_rgb8(32, 46, 60);
         Self {
-            material: BoxPlotMaterial::Matte,
+            material: Material::Matte,
             corner_radius: 0.0,
             outline: true,
             outline_width: 1.2,
@@ -559,7 +561,6 @@ mod tests {
     }
     #[test]
     fn boxes_reject_toon_and_pearl_at_every_style_level() {
-        use crate::Material;
         for material in [Material::Toon, Material::Pearl] {
             let mut c = chart();
             c.style.material = material;

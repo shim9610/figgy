@@ -1,19 +1,20 @@
 //! Native SSOT editor. Click a slice, change its color/style/label, or edit the chart.
 //! cargo run -p figgy-renderer --example radial_editor --features egui_demo
 use eframe::egui_wgpu::RenderState;
-use renderer::{Color, RendererDevice, radial::*};
+use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::Arc;
-const MATERIALS: &[RadialMaterial] = &[
-    RadialMaterial::Flat,
-    RadialMaterial::Matte,
-    RadialMaterial::Ceramic,
-    RadialMaterial::SatinMetal,
-    RadialMaterial::Toon,
-    RadialMaterial::Enamel,
-    RadialMaterial::BrushedMetal,
-    RadialMaterial::Paper,
-    RadialMaterial::Hatch,
-    RadialMaterial::Pearl,
+const MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Toon,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
+    Material::Pearl,
 ];
 const FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::Name,

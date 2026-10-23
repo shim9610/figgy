@@ -2,7 +2,7 @@
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
-use renderer::{Category, Color, RendererDevice, boxplot::*};
+use renderer::{Category, Color, Material, RendererDevice, boxplot::*};
 use std::sync::{Arc, OnceLock};
 // A test may register fonts or poll the shared GPU and execute another test's
 // completion callbacks. Serialize these shared resources, not production work.
@@ -37,7 +37,7 @@ fn chart() -> BoxPlotChart {
         legend: false,
         ..Default::default()
     };
-    c.style.material = BoxPlotMaterial::Flat;
+    c.style.material = Material::Flat;
     c
 }
 fn drain(r: &BoxPlotRenderer) {
@@ -225,21 +225,19 @@ fn every_style_switch_changes_pixels_and_reuses_only_valid_annotations() {
     let mut r = renderer();
     let mut c = chart();
     let t = BoxPlotTarget::new("a", "s");
-    c.style.material = BoxPlotMaterial::SatinMetal;
+    c.style.material = Material::SatinMetal;
     let first = r.prepare(&c, (640, 440), 1.).unwrap();
     let before = r.export_rgba(&c, (640, 440), 1.).unwrap();
     let edits: Vec<(&str, fn(&mut BoxPlotChart))> = vec![
-        ("material", |c| c.style.material = BoxPlotMaterial::Matte),
+        ("material", |c| c.style.material = Material::Matte),
         // Every other look a box supports (all but Toon and Pearl).
-        ("flat", |c| c.style.material = BoxPlotMaterial::Flat),
-        ("ceramic", |c| c.style.material = BoxPlotMaterial::Ceramic),
-        ("brushed", |c| {
-            c.style.material = BoxPlotMaterial::BrushedMetal
-        }),
-        ("paper", |c| c.style.material = BoxPlotMaterial::Paper),
-        ("wood", |c| c.style.material = BoxPlotMaterial::Wood),
-        ("enamel", |c| c.style.material = BoxPlotMaterial::Enamel),
-        ("hatch", |c| c.style.material = BoxPlotMaterial::Hatch),
+        ("flat", |c| c.style.material = Material::Flat),
+        ("ceramic", |c| c.style.material = Material::Ceramic),
+        ("brushed", |c| c.style.material = Material::BrushedMetal),
+        ("paper", |c| c.style.material = Material::Paper),
+        ("wood", |c| c.style.material = Material::Wood),
+        ("enamel", |c| c.style.material = Material::Enamel),
+        ("hatch", |c| c.style.material = Material::Hatch),
         ("gloss", |c| c.style.gloss = 0.95),
         ("strength", |c| c.style.texture_strength = 1.),
         // Satin's brush is at the pixel limit for any scale above 0.13 at
@@ -312,7 +310,7 @@ fn inherited_styles_and_individual_color_reset_without_touching_other_boxes() {
     let mut edit = BoxPlotOverride::new(t.clone());
     edit.color = Some(Color::from_rgb8(20, 190, 70));
     edit.style = Some(BoxPlotStyle {
-        material: BoxPlotMaterial::SatinMetal,
+        material: Material::SatinMetal,
         ..Default::default()
     });
     c.overrides.push(edit);
@@ -324,7 +322,7 @@ fn inherited_styles_and_individual_color_reset_without_touching_other_boxes() {
     let mut q = center(f.box_rect(&other).unwrap());
     q[1] = p[1];
     assert_ne!(pixel(&first, p), pixel(&first, q));
-    c.style.material = BoxPlotMaterial::Matte;
+    c.style.material = Material::Matte;
     let second = r.export_rgba(&c, (640, 440), 1.).unwrap();
     assert_eq!(pixel(&first, p), pixel(&second, p));
     assert_ne!(pixel(&first, q), pixel(&second, q));
@@ -384,7 +382,7 @@ fn invalid_and_budget_failures_are_atomic_and_external_frames_keep_resources_ali
     assert!(r.prepare(&bad, (640, 440), 1.).is_err());
     assert_eq!(r.gpu_memory_usage(), before);
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, (640, 440), 1.).unwrap()));
-    for material in [BoxPlotMaterial::Toon, BoxPlotMaterial::Pearl] {
+    for material in [Material::Toon, Material::Pearl] {
         let mut bad = c.clone();
         bad.style.material = material;
         assert!(matches!(
@@ -527,24 +525,18 @@ fn active_notch_mean_emphasis_and_series_inheritance_controls_are_live() {
         drain(&r);
     }
     c.series[0].style = Some(BoxPlotStyle {
-        material: BoxPlotMaterial::SatinMetal,
+        material: Material::SatinMetal,
         ..c.style.clone()
     });
     let mut o = BoxPlotOverride::new(t.clone());
     o.style = Some(BoxPlotStyle {
-        material: BoxPlotMaterial::Matte,
+        material: Material::Matte,
         ..c.style.clone()
     });
     c.overrides.push(o);
-    assert_eq!(
-        c.resolved_style(&t).unwrap().material,
-        BoxPlotMaterial::Matte
-    );
+    assert_eq!(c.resolved_style(&t).unwrap().material, Material::Matte);
     c.overrides[0].style = None;
-    assert_eq!(
-        c.resolved_style(&t).unwrap().material,
-        BoxPlotMaterial::SatinMetal
-    );
+    assert_eq!(c.resolved_style(&t).unwrap().material, Material::SatinMetal);
     let inherited = r.export_rgba(&c, (640, 440), 1.).unwrap();
     c.overrides.clear();
     assert_eq!(
@@ -552,10 +544,7 @@ fn active_notch_mean_emphasis_and_series_inheritance_controls_are_live() {
         r.export_rgba(&c, (640, 440), 1.).unwrap().rgba
     );
     c.series[0].style = None;
-    assert_eq!(
-        c.resolved_style(&t).unwrap().material,
-        BoxPlotMaterial::Flat
-    );
+    assert_eq!(c.resolved_style(&t).unwrap().material, Material::Flat);
 }
 #[test]
 fn label_decimals_suffix_font_registration_and_fixed_negative_ranges_are_not_stale() {

@@ -17,8 +17,8 @@ use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Category, Color,
-    DecorationId, DecorationLayout, FrameBackground, LayerHit, LayerRef, RendererDevice,
-    ResizeHandle,
+    DecorationId, DecorationLayout, FrameBackground, LayerHit, LayerRef, Material,
+    RendererDevice, ResizeHandle,
 };
 
 use crate::HostCtx;
@@ -510,17 +510,30 @@ impl<F: Family> BoundedScene for Host<F> {
 
 pub struct RadialFamily;
 
-const RADIAL_MATERIALS: &[RadialMaterial] = &[
-    RadialMaterial::Flat,
-    RadialMaterial::Matte,
-    RadialMaterial::Ceramic,
-    RadialMaterial::SatinMetal,
-    RadialMaterial::Toon,
-    RadialMaterial::Enamel,
-    RadialMaterial::BrushedMetal,
-    RadialMaterial::Paper,
-    RadialMaterial::Hatch,
-    RadialMaterial::Pearl,
+const RADIAL_MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Toon,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
+    Material::Pearl,
+];
+// Every material but Toon and Pearl, which bars and boxes reject.
+const FLAT_BODY_MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
 ];
 const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::Name,
@@ -727,7 +740,7 @@ fn categorical_chart() -> CategoricalChart {
         value_title: "Revenue (M$)".into(),
         ..Default::default()
     };
-    chart.style.material = CategoryBarMaterial::Matte;
+    chart.style.material = Material::Matte;
     chart
 }
 
@@ -860,18 +873,7 @@ impl Family for CategoricalFamily {
         });
         slider(ui, "group width", &mut c.group_width, 0.1..=0.95);
         slider(ui, "bar gap", &mut c.bar_gap, 0.0..=24.0);
-        choice(
-            ui,
-            "material",
-            &mut c.style.material,
-            &[
-                CategoryBarMaterial::Flat,
-                CategoryBarMaterial::Matte,
-                CategoryBarMaterial::SatinMetal,
-                CategoryBarMaterial::Enamel,
-                CategoryBarMaterial::Paper,
-            ],
-        );
+        choice(ui, "material", &mut c.style.material, FLAT_BODY_MATERIALS);
         slider(ui, "corners", &mut c.style.corner_radius, 0.0..=32.0);
         slider(ui, "gloss", &mut c.style.gloss, 0.0..=1.0);
         ui.separator();
@@ -1043,16 +1045,7 @@ impl Family for BoxFamily {
             ui.checkbox(&mut c.legend, "legend");
         });
         let s = &mut c.style;
-        choice(
-            ui,
-            "material",
-            &mut s.material,
-            &[
-                BoxPlotMaterial::Flat,
-                BoxPlotMaterial::Matte,
-                BoxPlotMaterial::SatinMetal,
-            ],
-        );
+        choice(ui, "material", &mut s.material, FLAT_BODY_MATERIALS);
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.notched, "notched");
             ui.checkbox(&mut s.show_mean, "mean");

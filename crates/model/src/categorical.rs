@@ -1,6 +1,6 @@
 //! Bounded categorical bars. Values are model-owned, not ColumnSource payloads.
 //! Stable category/series IDs identify edits and selection; values follow category order.
-use crate::Color;
+use crate::{Color, Material};
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -77,9 +77,9 @@ pub enum CategoryBarDirection {
     Vertical,
     Horizontal,
 }
-/// The bar material: the shared [`Material`](crate::Material). Bars reject
-/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
-/// excludes.
+/// The former bar material enum, now the shared [`Material`]. Bars reject
+/// the materials [`Material::supported_on_flat_body`] excludes.
+#[deprecated(since = "0.13.0", note = "use Material")]
 pub type CategoryBarMaterial = crate::Material;
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -106,7 +106,7 @@ pub enum CategoryBarLabelFormat {
     serde(default)
 )]
 pub struct CategoryBarStyle {
-    pub material: CategoryBarMaterial,
+    pub material: Material,
     /// Logical pixels. Only the exposed end of a stack is rounded.
     pub corner_radius: f32,
     pub outline: bool,
@@ -121,7 +121,7 @@ pub struct CategoryBarStyle {
 impl Default for CategoryBarStyle {
     fn default() -> Self {
         Self {
-            material: CategoryBarMaterial::Flat,
+            material: Material::Flat,
             corner_radius: 5.0,
             outline: false,
             outline_width: 1.0,
@@ -625,7 +625,6 @@ mod tests {
     }
     #[test]
     fn bars_reject_toon_and_pearl_at_every_style_level() {
-        use crate::Material;
         for material in [Material::Toon, Material::Pearl] {
             let mut c = chart();
             c.style.material = material;
@@ -665,7 +664,7 @@ mod tests {
     #[test]
     fn serde_preserves_full_edit_state() {
         let mut c = chart();
-        c.style.material = CategoryBarMaterial::Paper;
+        c.style.material = Material::Paper;
         c.selected = Some(CategoryBarTarget::new("a", "s"));
         let mut o = CategoryBarOverride::new(CategoryBarTarget::new("a", "t"));
         o.label_format = Some(CategoryBarLabelFormat::ValuePercent);

@@ -1,12 +1,19 @@
 //! Native SSOT editor. Click a box, change its color/style/label, or edit the chart.
 //! cargo run -p figgy-renderer --example boxplot_editor --features egui_demo
 use eframe::egui_wgpu::RenderState;
-use renderer::{Category, Color, RendererDevice, boxplot::*};
+use renderer::{Category, Color, Material, RendererDevice, boxplot::*};
 use std::sync::Arc;
-const MATERIALS: &[BoxPlotMaterial] = &[
-    BoxPlotMaterial::Flat,
-    BoxPlotMaterial::Matte,
-    BoxPlotMaterial::SatinMetal,
+// Every material but Toon and Pearl, which boxes reject.
+const MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
 ];
 const LABELS: &[BoxPlotLabels] = &[
     BoxPlotLabels::None,
@@ -150,7 +157,7 @@ impl Editor {
             value_range: Some([0., 130.]),
             ..Default::default()
         };
-        chart.style.material = BoxPlotMaterial::Matte;
+        chart.style.material = Material::Matte;
         Ok(Self {
             state,
             renderer,

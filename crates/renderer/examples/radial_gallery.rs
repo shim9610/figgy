@@ -1,7 +1,7 @@
 //! Actual native shader renders: materials, rounded corners, outlines, selection.
 //! cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 use renderer::{
-    Color, RendererDevice,
+    Color, Material, RendererDevice,
     data_render::{create_instance, request_adapter, request_device},
     encode_png,
     radial::*,
@@ -23,7 +23,7 @@ fn base() -> RadialChart {
         ..Default::default()
     };
     chart.style = RadialStyle {
-        material: RadialMaterial::Matte,
+        material: Material::Matte,
         // Match the approved oblique mockup; 0 degrees is straight overhead.
         tilt_degrees: 55.0,
         depth: 0.16,
@@ -52,34 +52,31 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut renderer = RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
     let mut cases = Vec::new();
     for (name, material) in [
-        ("matte", RadialMaterial::Matte),
-        ("ceramic", RadialMaterial::Ceramic),
-        ("satin-metal", RadialMaterial::SatinMetal),
-        ("toon", RadialMaterial::Toon),
-        ("enamel", RadialMaterial::Enamel),
-        ("brushed-metal", RadialMaterial::BrushedMetal),
-        ("paper", RadialMaterial::Paper),
-        ("plywood", RadialMaterial::Wood),
-        ("hatch", RadialMaterial::Hatch),
-        ("pearl", RadialMaterial::Pearl),
+        ("matte", Material::Matte),
+        ("ceramic", Material::Ceramic),
+        ("satin-metal", Material::SatinMetal),
+        ("toon", Material::Toon),
+        ("enamel", Material::Enamel),
+        ("brushed-metal", Material::BrushedMetal),
+        ("paper", Material::Paper),
+        ("plywood", Material::Wood),
+        ("hatch", Material::Hatch),
+        ("pearl", Material::Pearl),
     ] {
         let mut c = base();
         c.title = name.to_uppercase();
         c.style.material = material;
-        if material == RadialMaterial::Toon {
+        if material == Material::Toon {
             c.style.outline.rim = true;
             c.style.outline.separators = true;
         }
         if matches!(
             material,
-            RadialMaterial::Hatch
-                | RadialMaterial::Pearl
-                | RadialMaterial::Paper
-                | RadialMaterial::Wood
+            Material::Hatch | Material::Pearl | Material::Paper | Material::Wood
         ) {
             c.style.texture_strength = 0.7;
         }
-        if material == RadialMaterial::Wood {
+        if material == Material::Wood {
             c.style.roughness = 0.9;
             c.style.gloss = 0.1;
         }
@@ -88,7 +85,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut outlined = base();
     outlined.title = "Raised pie / visible rim and separators".into();
     outlined.kind = RadialKind::Pie;
-    outlined.style.material = RadialMaterial::Flat;
+    outlined.style.material = Material::Flat;
     outlined.style.depth = 0.3;
     outlined.style.bevel = 0.0;
     outlined.style.gap_degrees = 0.0;
@@ -117,7 +114,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     edited.title = "Selected slice / individual edits".into();
     edited.interaction.selected = Some(RadialTarget::main(0));
     let style = RadialStyle {
-        material: RadialMaterial::Ceramic,
+        material: Material::Ceramic,
         outline: RadialOutline {
             emphasis: true,
             width: 1.5,
@@ -147,7 +144,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Deterministic time samples: host calls the same model transition on pointer events.
     let mut hover = base();
     hover.title = "Hover lift / Search".into();
-    hover.style.material = RadialMaterial::Ceramic;
+    hover.style.material = Material::Ceramic;
     for frame in 0..20 {
         hover.interaction.animate_hover(
             if frame < 10 {

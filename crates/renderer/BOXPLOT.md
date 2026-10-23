@@ -14,7 +14,7 @@ await `BoxPlotRenderer::new_async(gpu, format)` before preparing frames.
 ## Input and first render
 
 ```rust,no_run
-use renderer::{Category, Color, RendererDevice, boxplot::*};
+use renderer::{Category, Color, Material, RendererDevice, boxplot::*};
 # fn example(gpu: RendererDevice) -> Result<(), Box<dyn std::error::Error>> {
 let mut control = BoxSummary::new(12., 30., 42., 55., 78.);
 control.outliers = vec![90.];
@@ -30,7 +30,7 @@ let mut chart = BoxPlotChart {
     value_title: "Response".into(),
     ..Default::default()
 };
-chart.style.material = BoxPlotMaterial::SatinMetal;
+chart.style.material = Material::SatinMetal;
 let mut renderer = BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
 let frame = renderer.prepare(&chart, (960, 640), 1.0)?;
 // frame.draw(&mut render_pass); // same-format, same-size, single-sample target
@@ -64,13 +64,13 @@ rejected before replacing the previous cached frame.
 calls `prepare` again; model edits need no manual cache invalidation.
 
 ```rust,no_run
-# use renderer::{Color, boxplot::*};
+# use renderer::{Color, Material, boxplot::*};
 # fn edit(chart: &mut BoxPlotChart) {
 let target = BoxPlotTarget::new("control", "response");
 let mut individual = BoxPlotOverride::new(target.clone());
 individual.color = Some(Color::from_rgb8(42, 168, 162));
 individual.style = Some(BoxPlotStyle {
-    material: BoxPlotMaterial::Matte,
+    material: Material::Matte,
     outline: false,
     ..chart.style.clone()
 });
@@ -104,7 +104,7 @@ A notched box rectangle includes extended CI; a degenerate body returns `None`.
 | Option | Default / accepted values |
 |---|---|
 | `direction` | Vertical / Horizontal |
-| `material` | Matte; also Flat, SatinMetal |
+| `material` | Matte; any [`Material`](RADIAL.md#materials) except Toon and Pearl |
 | `corner_radius` | 0 logical px, 0–3; capped by body size; notched silhouettes use the CI polygon |
 | `outline`, `outline_width`, `outline_color` | true, 1.2 px (0–8), dark ink |
 | `median_width`, `median_color` | 1.2 px (0–8), dark ink; zero hides median |
@@ -125,7 +125,9 @@ A notched box rectangle includes extended CI; a degenerate body returns `None`.
 
 All colors accept RGBA channels in 0–1. Disabling the box outline does not disable
 median, whiskers or outliers. Fill alpha does not alter the independent mark colors.
-Materials affect only the box surface. Small corner radii stay within its bounds.
+Materials affect only the box surface; whiskers, caps, the median, the mean and
+outliers are Flat. A box is shaded like a flat pie top, see the
+[shared material table](RADIAL.md#materials). Small corner radii stay within its bounds.
 There is no perspective displacement of quartiles or whiskers.
 
 Auto range includes **all supplied statistics**, even hidden means/outliers/CI,
