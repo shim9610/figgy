@@ -142,138 +142,6 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
     }
 }
 #[test]
-fn boxplot_all_chrome_uses_shared_select_drag_and_preserves_data() {
-    let _guard = LOCK.lock().unwrap();
-    let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let mut c = BoxPlotChart {
-        title: "Editable box plot".into(),
-        value_title: "Value".into(),
-        category_title: "Group".into(),
-        categories: vec![
-            Category::new("a", "Control"),
-            Category::new("b", "Treatment"),
-        ],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "Distribution",
-            vec![
-                Some(BoxSummary::new(10., 25., 38., 52., 70.)),
-                Some(BoxSummary::new(18., 32., 47., 61., 80.)),
-            ],
-            Color::from_rgb8(144, 69, 154),
-        )],
-        ..Default::default()
-    };
-    for direction in [BoxPlotDirection::Vertical, BoxPlotDirection::Horizontal] {
-        c.direction = direction;
-        for key in [
-            DecorationId::ChartTitle,
-            DecorationId::Legend,
-            DecorationId::AxisLabel(Side::Left),
-            DecorationId::AxisLabel(Side::Bottom),
-            DecorationId::AxisTitle(Side::Left),
-            DecorationId::AxisTitle(Side::Bottom),
-            DecorationId::Axis(Side::Left),
-            DecorationId::Axis(Side::Bottom),
-        ] {
-            c.decorations = Default::default();
-            let f = r.prepare(&c, (800, 560), 2.).unwrap();
-            let before = r.export_rgba(&c, (800, 560), 2.).unwrap();
-            let (dx, dy) = match key {
-                DecorationId::Axis(Side::Left) => (8., 0.),
-                DecorationId::Axis(Side::Bottom) => (0., -8.),
-                DecorationId::AxisLabel(Side::Bottom) | DecorationId::Legend => (7., -5.),
-                _ => (7., 5.),
-            };
-            let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
-            c.decorations.selected = Some(key.clone());
-            let g = r.prepare(&c, (800, 560), 2.).unwrap();
-            assert_eq!(
-                g.decorations().bounds(id(g.decorations(), &key)).unwrap(),
-                old.translated(dx, dy)
-            );
-            assert_eq!(g.plot_rect(), f.plot_rect());
-            assert_eq!(
-                g.box_rect(&BoxPlotTarget::new("a", "s")),
-                f.box_rect(&BoxPlotTarget::new("a", "s"))
-            );
-            let after = r.export_rgba(&c, (800, 560), 2.).unwrap();
-            assert_ne!(before.rgba, after.rgba, "{key:?} didn't redraw");
-            assert!(!f.shares_annotations_with(&g));
-            assert!(Arc::ptr_eq(&g, &r.prepare(&c, (800, 560), 2.).unwrap()));
-            if key == DecorationId::Legend {
-                save("boxplot-legend-selected", &after);
-            }
-            r.end_frame();
-        }
-    }
-}
-#[test]
-fn radar_all_chrome_uses_shared_select_drag_and_preserves_data() {
-    let _guard = LOCK.lock().unwrap();
-    let mut r = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let mut c = RadarChart {
-        title: "Editable radar".into(),
-        categories: vec![
-            Category::new("a", "Speed"),
-            Category::new("b", "Safety"),
-            Category::new("c", "Size"),
-        ],
-        series: vec![RadarSeries::new(
-            "s",
-            "Release",
-            vec![6., 8., 4.],
-            Color::from_rgb8(144, 69, 154),
-        )],
-        labels: RadarLabels::Values,
-        ..Default::default()
-    };
-    for shape in [RadarGridShape::Polygon, RadarGridShape::Circle] {
-        c.style.grid_shape = shape;
-        for key in [
-            DecorationId::ChartTitle,
-            DecorationId::Legend,
-            DecorationId::AxisLabel(Side::Left),
-            DecorationId::SpokeLabel {
-                category_id: "b".into(),
-            },
-            DecorationId::DataLabel {
-                category_id: "c".into(),
-                series_id: "s".into(),
-            },
-        ] {
-            c.decorations = Default::default();
-            let f = r.prepare(&c, (800, 560), 2.).unwrap();
-            let before = r.export_rgba(&c, (800, 560), 2.).unwrap();
-            let (dx, dy) = match key {
-                DecorationId::Legend => (7., -5.),
-                _ => (7., 5.),
-            };
-            let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
-            c.decorations.selected = Some(key.clone());
-            let g = r.prepare(&c, (800, 560), 2.).unwrap();
-            assert_eq!(
-                g.decorations().bounds(id(g.decorations(), &key)).unwrap(),
-                old.translated(dx, dy)
-            );
-            assert_eq!(g.plot_rect(), f.plot_rect());
-            assert_eq!(g.plot_circle(), f.plot_circle());
-            assert_eq!(
-                g.vertex_position(&RadarTarget::vertex("s", "a")),
-                f.vertex_position(&RadarTarget::vertex("s", "a"))
-            );
-            let after = r.export_rgba(&c, (800, 560), 2.).unwrap();
-            assert_ne!(before.rgba, after.rgba, "{key:?} didn't redraw");
-            assert!(!f.shares_annotations_with(&g));
-            assert!(Arc::ptr_eq(&g, &r.prepare(&c, (800, 560), 2.).unwrap()));
-            if key == DecorationId::Legend {
-                save("radar-legend-selected", &after);
-            }
-            r.end_frame();
-        }
-    }
-}
-#[test]
 fn categorical_chrome_survives_hover_cache_reorder_and_resize() {
     let _guard = LOCK.lock().unwrap();
     let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
@@ -462,132 +330,145 @@ fn bounded_area_select_resize_move_pick_and_export() {
 #[test]
 fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     let _guard = LOCK.lock().unwrap();
+    // `$charts` are the variants of one family (a box plot's direction, a
+    // radar's grid shape): the first runs at 1x and 2x, the others at 2x.
+    // `$geometry` compares the data geometry of the frame before and after
+    // a decoration edit, which must not move.
     macro_rules! check {
-        ($renderer:ident, $chart:expr, $keys:expr) => {{
+        ($renderer:ident, $charts:expr, $keys:expr) => {
+            check!($renderer, $charts, $keys, |_: &_, _: &_| {})
+        };
+        ($renderer:ident, $charts:expr, $keys:expr, $geometry:expr) => {{
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-            let mut c = $chart;
-            for scale in [1.0, 2.0] {
-                for key in $keys {
-                    c.decorations = Default::default();
-                    let f = r.prepare(&c, (800, 600), scale).unwrap();
-                    let area = f
-                        .decorations()
-                        .bounds(id(f.decorations(), &DecorationId::DataArea));
-                    let before = r.export_rgba(&c, (800, 600), scale).unwrap();
-                    // Selection is the only mutation here: movement must not mask
-                    // a missing selection border or stale annotation cache.
-                    let unselected_model = c.clone();
-                    let selection = f
-                        .decorations()
-                        .selection_box(id(f.decorations(), &key))
-                        .unwrap();
-                    c.decorations.selected = Some(key.clone());
-                    let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
-                    assert!(!f.shares_annotations_with(&selected_frame));
-                    assert!(Arc::ptr_eq(
-                        &selected_frame,
-                        &r.prepare(&c, (800, 600), scale).unwrap()
-                    ));
-                    for (_, element) in f.decorations().entries() {
-                        assert_eq!(
-                            f.decorations().bounds(id(f.decorations(), &element.id)),
-                            selected_frame
-                                .decorations()
-                                .bounds(id(selected_frame.decorations(), &element.id)),
-                            "selection changed {:?} geometry",
-                            element.id
-                        );
-                    }
-                    let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
-                    bounded_area::assert_selection_only(
-                        &before,
-                        &selected,
-                        &selection,
-                        scale,
-                        &format!("{} {key:?} at {scale}x", stringify!($renderer)),
-                    );
-                    let artifact_key: String = format!("{key:?}")
-                        .chars()
-                        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
-                        .collect();
-                    save(
-                        &format!(
-                            "{}-{artifact_key}-selection-only-{scale}x",
-                            stringify!($renderer)
-                        ),
-                        &selected,
-                    );
-                    c.decorations.selected = None;
-                    assert_eq!(c, unselected_model);
-                    assert_eq!(
-                        r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
-                        before.rgba,
-                        "selection removal did not restore {key:?} pixels"
-                    );
-                    let (dx, dy) = match key {
-                        DecorationId::Axis(Side::Left) => (8.0, 0.0),
-                        DecorationId::Axis(Side::Bottom) => (0.0, -8.0),
-                        DecorationId::Legend | DecorationId::AxisLabel(Side::Bottom) => (7.0, -5.0),
-                        _ => (7.0, 5.0),
-                    };
-                    let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
-                    c.decorations.selected = Some(key.clone());
-                    let edited = r.prepare(&c, (800, 600), scale).unwrap();
-                    assert_eq!(
-                        edited.decorations().bounds(id(edited.decorations(), &key)),
-                        Some(old.translated(dx, dy)),
-                        "{} {key:?} at {scale}x",
-                        stringify!($renderer)
-                    );
-                    assert_eq!(f.decorations().bounds(id(f.decorations(), &key)), Some(old));
-                    assert_eq!(
-                        edited
+            let geometry = $geometry;
+            for (variant, mut c) in $charts.into_iter().enumerate() {
+                let scales: &[f32] = if variant == 0 { &[1.0, 2.0] } else { &[2.0] };
+                for &scale in scales {
+                    for key in $keys {
+                        c.decorations = Default::default();
+                        let f = r.prepare(&c, (800, 600), scale).unwrap();
+                        let area = f
                             .decorations()
-                            .bounds(id(edited.decorations(), &DecorationId::DataArea)),
-                        area,
-                        "moving a decoration changed the data area"
-                    );
-                    assert!(!f.shares_annotations_with(&edited));
-                    assert!(Arc::ptr_eq(
-                        &edited,
-                        &r.prepare(&c, (800, 600), scale).unwrap()
-                    ));
-                    let after = r.export_rgba(&c, (800, 600), scale).unwrap();
-                    assert_ne!(before.rgba, after.rgba, "{key:?} edit was invisible");
-                    #[cfg(feature = "serde")]
-                    {
-                        let restored =
-                            serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
-                        assert_eq!(c, restored);
-                        assert_eq!(
-                            r.export_rgba(&restored, (800, 600), scale).unwrap().rgba,
-                            after.rgba
+                            .bounds(id(f.decorations(), &DecorationId::DataArea));
+                        let before = r.export_rgba(&c, (800, 600), scale).unwrap();
+                        // Selection is the only mutation here: movement must not mask
+                        // a missing selection border or stale annotation cache.
+                        let unselected_model = c.clone();
+                        let selection = f
+                            .decorations()
+                            .selection_box(id(f.decorations(), &key))
+                            .unwrap();
+                        c.decorations.selected = Some(key.clone());
+                        let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
+                        assert!(!f.shares_annotations_with(&selected_frame));
+                        assert!(Arc::ptr_eq(
+                            &selected_frame,
+                            &r.prepare(&c, (800, 600), scale).unwrap()
+                        ));
+                        for (_, element) in f.decorations().entries() {
+                            assert_eq!(
+                                f.decorations().bounds(id(f.decorations(), &element.id)),
+                                selected_frame
+                                    .decorations()
+                                    .bounds(id(selected_frame.decorations(), &element.id)),
+                                "selection changed {:?} geometry",
+                                element.id
+                            );
+                        }
+                        let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
+                        bounded_area::assert_selection_only(
+                            &before,
+                            &selected,
+                            &selection,
+                            scale,
+                            &format!("{} {key:?} at {scale}x", stringify!($renderer)),
                         );
+                        let artifact_key: String = format!("{key:?}")
+                            .chars()
+                            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+                            .collect();
+                        save(
+                            &format!(
+                                "{}-{artifact_key}-selection-only-{scale}x",
+                                stringify!($renderer)
+                            ),
+                            &selected,
+                        );
+                        c.decorations.selected = None;
+                        assert_eq!(c, unselected_model);
+                        assert_eq!(
+                            r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                            before.rgba,
+                            "selection removal did not restore {key:?} pixels"
+                        );
+                        let (dx, dy) = match key {
+                            DecorationId::Axis(Side::Left) => (8.0, 0.0),
+                            DecorationId::Axis(Side::Bottom) => (0.0, -8.0),
+                            DecorationId::Legend | DecorationId::AxisLabel(Side::Bottom) => {
+                                (7.0, -5.0)
+                            }
+                            _ => (7.0, 5.0),
+                        };
+                        let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
+                        c.decorations.selected = Some(key.clone());
+                        let edited = r.prepare(&c, (800, 600), scale).unwrap();
+                        assert_eq!(
+                            edited.decorations().bounds(id(edited.decorations(), &key)),
+                            Some(old.translated(dx, dy)),
+                            "{} {key:?} at {scale}x",
+                            stringify!($renderer)
+                        );
+                        assert_eq!(f.decorations().bounds(id(f.decorations(), &key)), Some(old));
+                        assert_eq!(
+                            edited
+                                .decorations()
+                                .bounds(id(edited.decorations(), &DecorationId::DataArea)),
+                            area,
+                            "moving a decoration changed the data area"
+                        );
+                        geometry(&*f, &*edited);
+                        assert!(!f.shares_annotations_with(&edited));
+                        assert!(Arc::ptr_eq(
+                            &edited,
+                            &r.prepare(&c, (800, 600), scale).unwrap()
+                        ));
+                        let after = r.export_rgba(&c, (800, 600), scale).unwrap();
+                        assert_ne!(before.rgba, after.rgba, "{key:?} edit was invisible");
+                        #[cfg(feature = "serde")]
+                        {
+                            let restored =
+                                serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+                            assert_eq!(c, restored);
+                            assert_eq!(
+                                r.export_rgba(&restored, (800, 600), scale).unwrap().rgba,
+                                after.rgba
+                            );
+                        }
+                        c.decorations.reset(&key);
+                        c.decorations.selected = None;
+                        assert_eq!(
+                            r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
+                            before.rgba
+                        );
+                        r.end_frame();
                     }
-                    c.decorations.reset(&key);
-                    c.decorations.selected = None;
-                    assert_eq!(
-                        r.export_rgba(&c, (800, 600), scale).unwrap().rgba,
-                        before.rgba
-                    );
-                    r.end_frame();
                 }
+                c.title.clear();
+                let hidden = r.prepare(&c, (800, 600), 1.0).unwrap();
+                assert!(
+                    !hidden
+                        .decorations()
+                        .entries()
+                        .any(|(_, e)| e.id == DecorationId::ChartTitle)
+                );
+                r.end_frame();
             }
-            c.title.clear();
-            let hidden = r.prepare(&c, (800, 600), 1.0).unwrap();
-            assert!(
-                !hidden
-                    .decorations()
-                    .entries()
-                    .any(|(_, e)| e.id == DecorationId::ChartTitle)
-            );
-            r.end_frame();
         }};
     }
     let color = Color::from_rgb8(70, 130, 180);
     check!(
         RadialRenderer,
-        RadialChart {
+        [RadialChart {
             title: "Editable donut title".into(),
             kind: RadialKind::Donut { inner_radius: 0.5 },
             slices: vec![
@@ -595,7 +476,7 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                 RadialSlice::new("B", 65.0, Color::BLACK)
             ],
             ..Default::default()
-        },
+        }],
         [
             DecorationId::ChartTitle,
             DecorationId::RadialLabel(RadialTarget::main(0))
@@ -617,47 +498,62 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     ];
     check!(
         CategoricalRenderer,
-        CategoricalChart {
+        [CategoricalChart {
             title: "Editable bar title".into(),
             category_title: "Group".into(),
             value_title: "Value".into(),
             categories: vec![Category::new("a", "Control")],
             series: vec![BarSeries::new("s", "Response", vec![Some(35.0)], color)],
             ..Default::default()
-        },
+        }],
         keys.clone()
     );
+    let boxes = BoxPlotChart {
+        title: "Editable box title".into(),
+        category_title: "Group".into(),
+        value_title: "Value".into(),
+        categories: vec![Category::new("a", "Control")],
+        series: vec![BoxPlotSeries::new(
+            "s",
+            "Distribution",
+            vec![Some(BoxSummary::new(10.0, 25.0, 38.0, 52.0, 70.0))],
+            color,
+        )],
+        labels: BoxPlotLabels::Median,
+        ..Default::default()
+    };
     check!(
         BoxPlotRenderer,
-        BoxPlotChart {
-            title: "Editable box title".into(),
-            category_title: "Group".into(),
-            value_title: "Value".into(),
-            categories: vec![Category::new("a", "Control")],
-            series: vec![BoxPlotSeries::new(
-                "s",
-                "Distribution",
-                vec![Some(BoxSummary::new(10.0, 25.0, 38.0, 52.0, 70.0))],
-                color
-            )],
-            labels: BoxPlotLabels::Median,
-            ..Default::default()
-        },
-        keys.clone()
+        [BoxPlotDirection::Vertical, BoxPlotDirection::Horizontal].map(|direction| BoxPlotChart {
+            direction,
+            ..boxes.clone()
+        }),
+        keys.clone(),
+        |f: &BoxPlotFrame, g: &BoxPlotFrame| {
+            assert_eq!(g.plot_rect(), f.plot_rect());
+            let target = BoxPlotTarget::new("a", "s");
+            assert!(f.box_rect(&target).is_some());
+            assert_eq!(g.box_rect(&target), f.box_rect(&target));
+        }
     );
+    let radar = RadarChart {
+        title: "Editable radar title".into(),
+        categories: vec![
+            Category::new("a", "Speed"),
+            Category::new("b", "Safety"),
+            Category::new("c", "Size"),
+        ],
+        series: vec![RadarSeries::new("s", "Release", vec![6., 8., 4.], color)],
+        labels: RadarLabels::Values,
+        ..Default::default()
+    };
     check!(
         RadarRenderer,
-        RadarChart {
-            title: "Editable radar title".into(),
-            categories: vec![
-                Category::new("a", "Speed"),
-                Category::new("b", "Safety"),
-                Category::new("c", "Size")
-            ],
-            series: vec![RadarSeries::new("s", "Release", vec![6., 8., 4.], color)],
-            labels: RadarLabels::Values,
-            ..Default::default()
-        },
+        [RadarGridShape::Polygon, RadarGridShape::Circle].map(|grid_shape| {
+            let mut c = radar.clone();
+            c.style.grid_shape = grid_shape;
+            c
+        }),
         [
             DecorationId::ChartTitle,
             DecorationId::Legend,
@@ -669,7 +565,14 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                 category_id: "a".into(),
                 series_id: "s".into(),
             },
-        ]
+        ],
+        |f: &RadarFrame, g: &RadarFrame| {
+            assert_eq!(g.plot_rect(), f.plot_rect());
+            assert_eq!(g.plot_circle(), f.plot_circle());
+            let target = RadarTarget::vertex("s", "a");
+            assert!(f.vertex_position(&target).is_some());
+            assert_eq!(g.vertex_position(&target), f.vertex_position(&target));
+        }
     );
 }
 
