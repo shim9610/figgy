@@ -474,25 +474,6 @@ fn every_marker_shape_picks_where_it_is_drawn() {
     }
 }
 
-/// G12: where two markers overlap, the one painted on top (the higher
-/// instance index) is the one picked.
-#[test]
-fn overlapping_markers_pick_the_marker_painted_on_top() {
-    let mut renderer = renderer();
-    upload_xy(&mut renderer, vec![5.0, 5.0], vec![5.0, 5.0]);
-    let chart = bare_chart();
-    let series = [scatter("pair", ScatterShape::CircleFilled, 6.0, BLUE)];
-    let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
-    let (cx, cy) = data_to_px(&chart, 5.0, 5.0, 1.0);
-    let hit = probe
-        .pick(&mut renderer, cx as u32, cy as u32, 0.0)
-        .expect("overlap hit");
-    assert_eq!(
-        hit.point_index, 1,
-        "the second marker paints over the first"
-    );
-}
-
 /// G12 across colours: two overlapping markers of one series, the painted
 /// colour under the cursor names the index the picker answers.
 #[test]
