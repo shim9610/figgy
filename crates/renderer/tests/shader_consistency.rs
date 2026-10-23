@@ -1011,10 +1011,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         &["output"],
     ),
     (
-        &["data_render/errorbar_columnar_a.wgsl", "gpu_errorbar.wgsl"],
-        &["pair_value"],
-    ),
-    (
         &[
             "data_render/common/sample_validity.wgsl",
             "gpu_pick/core.wgsl",

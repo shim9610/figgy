@@ -37,3 +37,7 @@ fn midpoint_grid_pair(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     // finite midpoint.
     return add_grid_pairs(scale_grid_pair(a, 0.5), scale_grid_pair(b, 0.5));
 }
+
+fn pair_value(v: vec2<f32>) -> f32 {
+    return v.x + v.y;
+}

@@ -54,10 +54,6 @@ fn field_axis_bound(offset: u32, len: u32, cells: u32, high: bool) -> FieldBound
     ));
 }
 
-fn pair_value(v: vec2<f32>) -> f32 {
-    return v.x + v.y;
-}
-
 // Error-free addition for finite, non-overflowing f32 inputs. The returned
 // pair carries the rounded sum in x and its residual in y.
 fn rounded_add(a: f32, b: f32) -> f32 {

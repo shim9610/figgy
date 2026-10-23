@@ -1,15 +1,3 @@
-const ERRORBAR_HAS_Y: u32 = 1u;
-const ERRORBAR_HAS_X: u32 = 2u;
-
-struct DataPoint {
-    x: vec2<f32>,
-    y: vec2<f32>,
-};
-
-fn pair_value(v: vec2<f32>) -> f32 {
-    return v.x + v.y;
-}
-
 fn pair_sum(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x + b.x, a.y + b.y);
 }

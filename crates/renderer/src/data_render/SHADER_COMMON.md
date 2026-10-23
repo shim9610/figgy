@@ -228,7 +228,7 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `gpu_errorbar.wgsl`의 행렬 범위 계산은 전체 샘플링 블록 대신 쌍 연산 함수 일곱 개(`grid_rounded_add`, `grid_rounded_subtract`, `normalize_grid_pair`, `add_grid_pairs`, `subtract_grid_pairs`, `scale_grid_pair`, `midpoint_grid_pair`)만 공유한다. `shader_consistency`가 함수 본문을 이 문서와 바이트 단위로 비교하므로 GPU 범위 계산과 실제 그리기가 같은 반올림 규칙을 사용한다.
 
-The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
+The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
 
 <a id="51-field-only-contour-lookup-metadata--group-2-binding-6"></a>
 
