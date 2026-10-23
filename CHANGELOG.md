@@ -67,6 +67,47 @@ Collected on `integration/0.19`; the release entry replaces this section.
   exponents of `LabelFormat::Power` tick labels, are sized and shifted by
   one renderer function that the math `Scripts` node of #45 will share.
   No pixel, metric or public API changes.
+- **One tick plan.** The Cartesian spacing rule (`Chart::set_x_range`,
+  `set_y_range` and the fits), `AxisOptions::compute_nice_ticks`, the
+  renderer's tick walkers and guards and the contour levels of
+  `ContourConfig::nice_levels` now share `model::tick` (`renderer::tick`)
+  ([#58](https://github.com/shim9610/figgy/issues/58) item 14). New public
+  items: `AXIS_LINEAR_TARGET` (10), `AXIS_LOG_TARGET` (7), `LooseRange`,
+  `nice_linear_step`, `nice_log_step`, `axis_major_spacing`, the walkers
+  `LinearGrid`, `LogDecades`, `LogMinors`, `major_ticks`, `minor_ticks` and
+  their iterator types, the guards `walkable_range`,
+  `range_in_spacing_units`, `spacing_advances_range`,
+  `automatic_linear_spacing`, `effective_major_spacing`,
+  `major_spacing_rejection`, `drawn_minor_count` and
+  `effective_log_decade_step`, and the walk limits. `SpacingRejection`
+  moves to `model::tick` and stays exported as
+  `renderer::SpacingRejection`. Output changes:
+  - a linear spacing that `set_x_range` / `set_y_range` or a fit writes can
+    differ in its last bits (at most 2 ulp; `2·10^(k-1)` where it was
+    `0.2·10^k`), and a step below `f64::MIN_POSITIVE` can be rounded
+    differently. Tick labels are unchanged except Decimal labels of
+    values past 2^53, which print every integer digit, and of steps below
+    1e-15, where the 15-decimal cap already merges neighbouring labels;
+  - a span above about 1e308 keeps its 1·2·5 step class instead of falling
+    back after the loose range overflowed (`compute_nice_ticks` of
+    `0..1.05e308` at target 5 steps `5e307`, not `2e307`; `set_x_range`
+    steps `2e307`, as below the overflow);
+  - `nice_levels` returns the level-limit error for ranges whose level
+    indices passed `i64` (the walk saturated and returned no levels), and
+    no levels for a step that moves neither range end at `f64` precision
+    (the walk repeated the few representable values).
+  The box plot, radar and categorical value ticks, the Cartesian log
+  decades (`powf` instead of `powi`) and the grid lines move to the shared
+  walkers in a follow-up.
+- **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
+  decimals, trim_zeros })` writes a value alone, ignoring scale, spacing
+  and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is
+  the bounded value axes' tick form (`2.5`, `1000`, `1.23e6`), `Some(d)`
+  exactly `d` decimals, trailing zeros trimmed with `trim_zeros`. The
+  categorical, radial, box plot and radar data labels use it, with the
+  same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
+  their defaults); model 0.12.1 and older reject it. Migration: a Rust
+  `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
 
 <a id="release-0181"></a>
 
