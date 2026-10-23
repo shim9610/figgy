@@ -97,6 +97,26 @@ pub(super) struct PickSeriesResource {
     pub(super) line_interpolation: LineInterpolation,
     pub(super) line_style: LineStylePreset,
     pub(super) vector: Option<crate::gpu_pick::GpuPickVector>,
+    /// The error bars drawn with the markers; their style rows follow the
+    /// marker rows in `scatter`'s.
+    pub(super) errorbar: Option<OwnedGpuPickErrorBar>,
+    /// The line's area fill.
+    pub(super) area: Option<crate::gpu_pick::GpuPickArea>,
+}
+
+/// A series' error bars in the plan (`GpuPickErrorBar` without its rows,
+/// which live in the series' `OwnedGpuPickScatter` after the marker rows).
+#[cfg_attr(test, derive(Clone, Debug))]
+pub(super) struct OwnedGpuPickErrorBar {
+    pub(super) y: Option<[ColumnId; 2]>,
+    pub(super) x: Option<[ColumnId; 2]>,
+    pub(super) stem_width_px: f32,
+    pub(super) cap_half_px: f32,
+    pub(super) cap_width_px: f32,
+    pub(super) paints: bool,
+    /// Precise with an error-bar style map: its index column. The map's rows
+    /// are the scatter's rows past the marker rows.
+    pub(super) style_map: Option<Option<ColumnId>>,
 }
 
 impl PartialEq for PickSeriesResource {
@@ -109,6 +129,8 @@ impl PartialEq for PickSeriesResource {
             line_interpolation,
             line_style,
             vector,
+            errorbar,
+            area,
         } = self;
         let Self {
             x_column: other_x_column,
@@ -118,6 +140,8 @@ impl PartialEq for PickSeriesResource {
             line_interpolation: other_line_interpolation,
             line_style: other_line_style,
             vector: other_vector,
+            errorbar: other_errorbar,
+            area: other_area,
         } = other;
         x_column == other_x_column
             && y_column == other_y_column
@@ -127,6 +151,16 @@ impl PartialEq for PickSeriesResource {
             && line_style == other_line_style
             && match (vector, other_vector) {
                 (Some(vector), Some(other)) => same_pick_vector(vector, other),
+                (None, None) => true,
+                _ => false,
+            }
+            && match (errorbar, other_errorbar) {
+                (Some(errorbar), Some(other)) => same_pick_errorbar(errorbar, other),
+                (None, None) => true,
+                _ => false,
+            }
+            && match (area, other_area) {
+                (Some(area), Some(other)) => same_pick_area(area, other),
                 (None, None) => true,
                 _ => false,
             }
@@ -143,6 +177,8 @@ impl PickSeriesResource {
             line_interpolation: _,
             line_style: _,
             vector,
+            errorbar,
+            area,
         } = self;
         x_column == id
             || y_column == id
@@ -158,6 +194,21 @@ impl PickSeriesResource {
                     || vector.v_column == id
                     || vector.color_column.as_deref() == Some(id)
             })
+            || errorbar.as_ref().is_some_and(|errorbar| {
+                errorbar
+                    .y
+                    .iter()
+                    .chain(errorbar.x.iter())
+                    .flatten()
+                    .any(|column| column == id)
+                    || errorbar
+                        .style_map
+                        .as_ref()
+                        .is_some_and(|index| index.as_deref() == Some(id))
+            })
+            || area
+                .as_ref()
+                .is_some_and(|area| area.to_series.as_deref() == Some(id))
     }
 
     pub(super) fn references_any_column(&self, ids: &[&str]) -> bool {
@@ -206,6 +257,55 @@ fn same_pick_vector(
         && min_length_px.to_bits() == other_min_length_px.to_bits()
 }
 
+/// A series' error bars, compared field by field with floats by bits.
+fn same_pick_errorbar(errorbar: &OwnedGpuPickErrorBar, other: &OwnedGpuPickErrorBar) -> bool {
+    let OwnedGpuPickErrorBar {
+        y,
+        x,
+        stem_width_px,
+        cap_half_px,
+        cap_width_px,
+        paints,
+        style_map,
+    } = errorbar;
+    let OwnedGpuPickErrorBar {
+        y: other_y,
+        x: other_x,
+        stem_width_px: other_stem_width_px,
+        cap_half_px: other_cap_half_px,
+        cap_width_px: other_cap_width_px,
+        paints: other_paints,
+        style_map: other_style_map,
+    } = other;
+    y == other_y
+        && x == other_x
+        && stem_width_px.to_bits() == other_stem_width_px.to_bits()
+        && cap_half_px.to_bits() == other_cap_half_px.to_bits()
+        && cap_width_px.to_bits() == other_cap_width_px.to_bits()
+        && paints == other_paints
+        && style_map == other_style_map
+}
+
+/// A line's fill, compared field by field with the baseline by bits.
+fn same_pick_area(
+    area: &crate::gpu_pick::GpuPickArea,
+    other: &crate::gpu_pick::GpuPickArea,
+) -> bool {
+    let crate::gpu_pick::GpuPickArea {
+        to_series,
+        baseline,
+        paints,
+    } = area;
+    let crate::gpu_pick::GpuPickArea {
+        to_series: other_to_series,
+        baseline: other_baseline,
+        paints: other_paints,
+    } = other;
+    to_series == other_to_series
+        && baseline.to_bits() == other_baseline.to_bits()
+        && paints == other_paints
+}
+
 /// A `point_size_map`, compared field by field with floats by bits.
 fn same_pick_size_map(
     size_map: &crate::gpu_pick::GpuPickSizeMap,
@@ -240,7 +340,11 @@ pub(super) struct OwnedGpuPickScatter {
     pub(super) base_radius_px: f32,
     pub(super) base_shape_id: u32,
     pub(super) style_index_column: Option<ColumnId>,
+    /// The marker rows (`style_meta.style_count` of them), then the error
+    /// bars' slot rows.
     pub(super) style_slots: Vec<data_render::ScatterStyleSlotGpu>,
+    /// The marker overrides (`style_meta.override_count`), then the error
+    /// bars' override rows.
     pub(super) style_overrides: Vec<data_render::ScatterStyleOverrideGpu>,
     pub(super) style_meta: Option<data_render::ScatterStyleMapMeta>,
     pub(super) size_map: Option<crate::gpu_pick::GpuPickSizeMap>,
@@ -284,6 +388,14 @@ impl PartialEq for OwnedGpuPickScatter {
 }
 
 impl OwnedGpuPickScatter {
+    /// How many of `style_slots` and `style_overrides` are the markers'; the
+    /// rest are the error bars'.
+    fn marker_rows(&self) -> (usize, usize) {
+        self.style_meta.map_or((0, 0), |meta| {
+            (meta.style_count as usize, meta.override_count as usize)
+        })
+    }
+
     pub(super) fn descriptor(&self) -> crate::gpu_pick::GpuPickScatter<'_> {
         let Self {
             base_radius_px,
@@ -294,13 +406,14 @@ impl OwnedGpuPickScatter {
             style_meta,
             size_map,
         } = self;
+        let (marker_slots, marker_overrides) = self.marker_rows();
         crate::gpu_pick::GpuPickScatter {
             base_radius_px: *base_radius_px,
             base_shape_id: *base_shape_id,
             style_map: style_meta.map(|style_meta| crate::gpu_pick::GpuPickScatterStyle {
                 style_index_column: style_index_column.clone(),
-                style_slots,
-                style_overrides,
+                style_slots: &style_slots[..marker_slots],
+                style_overrides: &style_overrides[..marker_overrides],
                 style_meta,
             }),
             size_map: size_map.clone(),
@@ -323,6 +436,8 @@ impl OwnedGpuPickSeriesDescriptor {
             line_interpolation,
             line_style,
             vector,
+            errorbar,
+            area,
         } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
             source_id: source_id.clone(),
@@ -334,6 +449,42 @@ impl OwnedGpuPickSeriesDescriptor {
             line_interpolation: *line_interpolation,
             line_style: *line_style,
             vector: vector.clone(),
+            errorbar: errorbar.as_ref().map(|errorbar| {
+                let OwnedGpuPickErrorBar {
+                    y,
+                    x,
+                    stem_width_px,
+                    cap_half_px,
+                    cap_width_px,
+                    paints,
+                    style_map,
+                } = errorbar;
+                crate::gpu_pick::GpuPickErrorBar {
+                    y: y.clone(),
+                    x: x.clone(),
+                    stem_width_px: *stem_width_px,
+                    cap_half_px: *cap_half_px,
+                    cap_width_px: *cap_width_px,
+                    paints: *paints,
+                    style_map: style_map.as_ref().map(|style_index_column| {
+                        // The rows past the markers' in the scatter's rows.
+                        let (slots, overrides) =
+                            scatter.as_ref().map_or((&[][..], &[][..]), |scatter| {
+                                let (marker_slots, marker_overrides) = scatter.marker_rows();
+                                (
+                                    &scatter.style_slots[marker_slots..],
+                                    &scatter.style_overrides[marker_overrides..],
+                                )
+                            });
+                        crate::gpu_pick::GpuPickErrorBarStyle {
+                            style_index_column: style_index_column.clone(),
+                            style_slots: slots,
+                            style_overrides: overrides,
+                        }
+                    }),
+                }
+            }),
+            area: area.clone(),
         }
     }
 }
@@ -398,6 +549,7 @@ impl PickChartPlan {
             }
         })?;
 
+        let all_series = series;
         for series in series {
             let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
             // A point vector is picked on the arrows it draws, through the
@@ -434,9 +586,18 @@ impl PickChartPlan {
                 if config.draw_style.is_precise() {
                     let style_table = scatter.point_style_table.as_deref().unwrap_or(&[]);
                     let overrides = scatter.point_style_overrides.as_deref().unwrap_or(&[]);
+                    // The error bars' rows follow the markers' in the same
+                    // vectors (`errorbar_style_rows` below).
+                    let (bar_table, bar_overrides) = extract_errorbar_style(&series.render_type)
+                        .map_or((&[][..], &[][..]), |style| {
+                            (
+                                style.error_bar_style_table.as_deref().unwrap_or(&[]),
+                                style.error_bar_style_overrides.as_deref().unwrap_or(&[]),
+                            )
+                        });
                     let mut style_slots = Vec::new();
                     style_slots
-                        .try_reserve_exact(style_table.len())
+                        .try_reserve_exact(style_table.len() + bar_table.len())
                         .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
                             resource: "renderer pick style slots",
                         })?;
@@ -444,7 +605,7 @@ impl PickChartPlan {
 
                     let mut style_overrides = Vec::new();
                     style_overrides
-                        .try_reserve_exact(overrides.len())
+                        .try_reserve_exact(overrides.len() + bar_overrides.len())
                         .map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
                             resource: "renderer pick style overrides",
                         })?;
@@ -471,6 +632,11 @@ impl PickChartPlan {
                                 has_index: u32::from(has_index),
                                 _pad: 0,
                             });
+                    errorbar_style_rows(
+                        &series.render_type,
+                        &mut style_slots,
+                        &mut style_overrides,
+                    );
                     let size_map = scatter.point_size_map.as_ref().map(|map| {
                         crate::gpu_pick::GpuPickSizeMap {
                             column: map.column.clone(),
@@ -513,6 +679,11 @@ impl PickChartPlan {
             let line_interpolation =
                 line.map_or(LineInterpolation::Linear, |line| line.interpolation);
             let line_style = line.map_or(LineStylePreset::Solid, |line| line.line_style);
+            let errorbar = scatter
+                .as_ref()
+                .filter(|_| !vector_points)
+                .and_then(|_| pick_errorbar(config, &series.render_type));
+            let area = line.and_then(|line| pick_area(line, series, all_series));
             descriptors.push(OwnedGpuPickSeriesDescriptor {
                 series_id: series.series_id.clone(),
                 source_id: series.source_id.clone(),
@@ -524,6 +695,8 @@ impl PickChartPlan {
                     line_interpolation,
                     line_style,
                     vector,
+                    errorbar,
+                    area,
                 },
             });
         }
@@ -919,6 +1092,142 @@ impl RendererPicker {
             next_chart_id: chart_id,
             next_descriptors: plan.descriptors,
         }))
+    }
+}
+
+/// The error bars a series draws with its markers under `config`'s draw
+/// style (`prepare/layers.rs`): every style that draws the markers but
+/// Constellation, which drops error-bar series. The sizes are the logical
+/// style's; whether the colour paints is the precise and sketch rule (alpha
+/// above zero), while a Milkyway jet's white core paints at any alpha.
+fn pick_errorbar(config: &Config, render_type: &DataRenderType) -> Option<OwnedGpuPickErrorBar> {
+    let style = extract_errorbar_style(render_type)?;
+    if matches!(config.draw_style, DrawStyle::Constellation(_)) {
+        return None;
+    }
+    let columns = |error: &ErrorRef| match error {
+        ErrorRef::Symmetric { column } => [column.clone(), column.clone()],
+        ErrorRef::Asymmetric { lower, upper } => [lower.clone(), upper.clone()],
+    };
+    let y = extract_err_y(render_type).map(columns);
+    let x = extract_err_x(render_type).map(columns);
+    if y.is_none() && x.is_none() {
+        return None;
+    }
+    let DataErrorBarStyleConfig {
+        error_bar_color,
+        error_bar_width,
+        error_bar_cap_size,
+        cap_width,
+        error_bar_style_table,
+        error_bar_style_index_column,
+        error_bar_style_overrides,
+    } = style;
+    // The precise draw maps per-point styles exactly when the renderer builds
+    // an error-bar style map (`create_errorbar_style_map_for`).
+    let mapped = config.draw_style.is_precise()
+        && (error_bar_style_index_column.is_some()
+            || error_bar_style_table
+                .as_ref()
+                .is_some_and(|table| !table.is_empty())
+            || error_bar_style_overrides
+                .as_ref()
+                .is_some_and(|overrides| !overrides.is_empty()));
+    Some(OwnedGpuPickErrorBar {
+        y,
+        x,
+        stem_width_px: *error_bar_width,
+        cap_half_px: *error_bar_cap_size,
+        cap_width_px: *cap_width,
+        paints: matches!(config.draw_style, DrawStyle::Milkyway(_)) || error_bar_color.a > 0.0,
+        style_map: mapped.then(|| error_bar_style_index_column.clone()),
+    })
+}
+
+/// Appends a series' error-bar style rows after the marker rows, in logical
+/// pixels. The pick reads no colour, only whether a row's colour paints:
+/// `color_premul.w` is 1 where the row sets a colour with alpha above zero.
+fn errorbar_style_rows(
+    render_type: &DataRenderType,
+    slots: &mut Vec<data_render::ScatterStyleSlotGpu>,
+    overrides: &mut Vec<data_render::ScatterStyleOverrideGpu>,
+) {
+    let Some(style) = extract_errorbar_style(render_type) else {
+        return;
+    };
+    let row = |slot: &DataErrorBarPointStyleConfig| {
+        // The draw's mask bits (`create_errorbar_style_map_for`).
+        const MASK_COLOR: u32 = 1;
+        const MASK_STEM_WIDTH: u32 = 2;
+        const MASK_CAP_HALF: u32 = 4;
+        const MASK_CAP_WIDTH: u32 = 8;
+        let row = errorbar_style_slot_gpu(
+            slot,
+            1.0,
+            MASK_COLOR,
+            MASK_STEM_WIDTH,
+            MASK_CAP_HALF,
+            MASK_CAP_WIDTH,
+        );
+        data_render::ScatterStyleSlotGpu {
+            color_premul: [
+                0.0,
+                0.0,
+                0.0,
+                if row.color_premul[3] > 0.0 { 1.0 } else { 0.0 },
+            ],
+            meta: row.meta,
+        }
+    };
+    slots.extend(
+        style
+            .error_bar_style_table
+            .as_deref()
+            .unwrap_or(&[])
+            .iter()
+            .map(row),
+    );
+    for override_ in style.error_bar_style_overrides.as_deref().unwrap_or(&[]) {
+        let Ok(point_index) = u32::try_from(override_.index) else {
+            continue;
+        };
+        let slot = row(&override_.style);
+        overrides.push(data_render::ScatterStyleOverrideGpu {
+            point_index,
+            _pad: [0; 3],
+            color_premul: slot.color_premul,
+            meta: slot.meta,
+        });
+    }
+}
+
+/// A line's fill as `prepare/layers.rs` draws it: to a baseline, or to the
+/// y column of the series it names in the same series list with the same x
+/// column (otherwise the draw rejects the chart and nothing is picked).
+/// `paints` is whether the fill colour's alpha is above zero.
+fn pick_area(
+    line: &DataLineStyleConfig,
+    series: &SeriesConfig,
+    all_series: &[SeriesConfig],
+) -> Option<crate::gpu_pick::GpuPickArea> {
+    let paints = line.effective_fill_color().a > 0.0;
+    match line.fill.as_ref()? {
+        LineFill::ToBaseline(baseline) => Some(crate::gpu_pick::GpuPickArea {
+            to_series: None,
+            baseline: *baseline,
+            paints,
+        }),
+        LineFill::ToSeries(target) => {
+            let target = all_series
+                .iter()
+                .find(|other| other.series_id == *target)
+                .filter(|other| other.x_column == series.x_column)?;
+            Some(crate::gpu_pick::GpuPickArea {
+                to_series: Some(target.y_column.clone()),
+                baseline: 0.0,
+                paints,
+            })
+        }
     }
 }
 

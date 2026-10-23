@@ -159,6 +159,12 @@ pub(super) fn query_params(
             0.0,
             0.0,
         ],
+        errorbar: series.errorbar.as_ref().map_or([0; 4], |bars| bars.params),
+        errorbar_lanes: series.errorbar.as_ref().map_or([0; 4], |bars| bars.lanes),
+        errorbar_rows: series.errorbar.as_ref().map_or([0; 4], |bars| bars.rows),
+        errorbar_px: series.errorbar.as_ref().map_or([0.0; 4], |bars| bars.px),
+        area: series.area.as_ref().map_or([0; 4], |fill| fill.params),
+        area_baseline: series.area.as_ref().map_or([0.0; 4], |fill| fill.baseline),
     }
 }
 
@@ -219,29 +225,6 @@ pub(super) fn create_buffer_checked(
     .map_err(|_| GpuPickError::AllocationFailed { resource })
 }
 
-pub(super) fn create_buffer_init_checked(
-    tally: &ChargeTally,
-    device: &wgpu::Device,
-    label: &'static str,
-    contents: &[u8],
-    usage: wgpu::BufferUsages,
-    resource: &'static str,
-) -> Result<wgpu::Buffer, GpuPickError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        // gpu-alloc: PickScratch
-        charged_buffer_init(
-            tally,
-            device,
-            &wgpu::util::BufferInitDescriptor {
-                label: Some(label),
-                contents,
-                usage,
-            },
-        )
-    }))
-    .map_err(|_| GpuPickError::AllocationFailed { resource })
-}
-
 pub(super) fn create_bind_group_checked(
     device: &wgpu::Device,
     desc: &wgpu::BindGroupDescriptor<'_>,
@@ -295,6 +278,16 @@ pub(super) fn gate_dispatch_layout(
 
 pub(super) fn same_storage(a: ColumnHandle, b: ColumnHandle) -> bool {
     a.offset == b.offset && a.byte_size == b.byte_size && a.len_values == b.len_values
+}
+
+/// [`same_storage`] for an optional column: both absent, or both present at
+/// the same storage.
+pub(super) fn same_optional_storage(a: Option<ColumnHandle>, b: Option<ColumnHandle>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => same_storage(a, b),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 impl GpuPickEngine {
@@ -551,7 +544,7 @@ impl GpuPickEngine {
     pub(super) fn prepare_series_buffer(
         &self,
         buffer: &wgpu::Buffer,
-        descriptor: GpuPickSeriesDescriptor<'_>,
+        mut descriptor: GpuPickSeriesDescriptor<'_>,
         columns: GpuStreamPickColumns,
         resident: Option<&ColumnPool>,
     ) -> Result<PickSeriesSlot, GpuPickError> {
@@ -613,18 +606,10 @@ impl GpuPickEngine {
         let mut size_domain = [0.0f32; 4];
         let mut size_px = [0.0f32; 2];
 
-        let dummy_slot = [ScatterStyleSlotGpu {
-            color_premul: [0.0; 4],
-            meta: [0.0; 4],
-        }];
-        let dummy_override = [ScatterStyleOverrideGpu {
-            point_index: 0,
-            _pad: [0; 3],
-            color_premul: [0.0; 4],
-            meta: [0.0; 4],
-        }];
-        let mut slot_bytes: &[u8] = bytemuck::cast_slice(&dummy_slot);
-        let mut override_bytes: &[u8] = bytemuck::cast_slice(&dummy_override);
+        // The marker rows; the error-bar rows follow them in the same
+        // buffers.
+        let mut marker_slots: &[ScatterStyleSlotGpu] = &[];
+        let mut marker_overrides: &[ScatterStyleOverrideGpu] = &[];
 
         if let Some(scatter) = descriptor.scatter.as_ref() {
             flags |= FLAG_SCATTER;
@@ -635,12 +620,8 @@ impl GpuPickEngine {
                 flags |= FLAG_STYLE_MAP;
                 style_count = map.style_meta.style_count;
                 override_count = map.style_meta.override_count;
-                if !map.style_slots.is_empty() {
-                    slot_bytes = bytemuck::cast_slice(map.style_slots);
-                }
-                if !map.style_overrides.is_empty() {
-                    override_bytes = bytemuck::cast_slice(map.style_overrides);
-                }
+                marker_slots = map.style_slots;
+                marker_overrides = map.style_overrides;
                 if let Some(column_id) = map.style_index_column.as_ref() {
                     flags |= FLAG_STYLE_INDEX;
                     let handle = columns
@@ -716,6 +697,144 @@ impl GpuPickEngine {
             vector_count = u32::try_from(count).unwrap_or(u32::MAX);
         }
 
+        // The error bars and the line's fill read pool columns: resident
+        // series only. A streamed chunk does not carry them (streaming is not
+        // extended, rule 8; `encode_chunk_impl` drops them).
+        let errorbar_input = descriptor.errorbar.take();
+        let area_input = descriptor.area.take();
+        let resolve = |id: &ColumnId| -> Result<(ColumnHandle, u64), GpuPickError> {
+            let pool = resident.ok_or_else(|| GpuPickError::ColumnNotResident(id.clone()))?;
+            let handle = pool
+                .handle_for(id)
+                .ok_or_else(|| GpuPickError::MissingColumn(id.clone()))?;
+            validate_stream_handle(buffer, handle)?;
+            Ok((handle, pool.allocation_epoch(id).unwrap_or(0)))
+        };
+        let mut bar_slots: &[ScatterStyleSlotGpu] = &[];
+        let mut bar_overrides: &[ScatterStyleOverrideGpu] = &[];
+        let mut errorbar = None;
+        if let Some(bars) = errorbar_input.filter(|_| resident.is_some()) {
+            if descriptor.scatter.is_none() {
+                return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
+            }
+            let GpuPickErrorBar {
+                y,
+                x,
+                stem_width_px,
+                cap_half_px,
+                cap_width_px,
+                paints,
+                style_map,
+            } = bars;
+            let directions = if y.is_some() {
+                crate::data_render::ERRORBAR_HAS_Y
+            } else {
+                0
+            } | if x.is_some() {
+                crate::data_render::ERRORBAR_HAS_X
+            } else {
+                0
+            };
+            let [y_lo, y_hi] = y.map_or([None, None], |[lo, hi]| [Some(lo), Some(hi)]);
+            let [x_lo, x_hi] = x.map_or([None, None], |[lo, hi]| [Some(lo), Some(hi)]);
+            let mut index_column = None;
+            if let Some(map) = style_map {
+                let GpuPickErrorBarStyle {
+                    style_index_column,
+                    style_slots,
+                    style_overrides,
+                } = map;
+                index_column = style_index_column;
+                bar_slots = style_slots;
+                bar_overrides = style_overrides;
+            }
+            let columns = [y_lo, y_hi, x_lo, x_hi, index_column];
+            let mut handles = [None; ERRORBAR_COLUMNS];
+            let mut epochs = [None; ERRORBAR_COLUMNS];
+            // The bar count is the shortest column the error-bar draw binds:
+            // the anchor's and those of the directions it draws.
+            let mut count = paired_len;
+            for (index, id) in columns.iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let (handle, epoch) = resolve(id)?;
+                if index < 4 {
+                    count = count.min(handle.len_values);
+                }
+                handles[index] = Some(handle);
+                epochs[index] = Some(epoch);
+            }
+            let rows = |len: usize| u32::try_from(len).unwrap_or(u32::MAX);
+            let mut bars = PickErrorBarGpu {
+                columns,
+                handles,
+                epochs,
+                params: [
+                    u32::try_from(count).unwrap_or(u32::MAX),
+                    directions,
+                    0,
+                    handles[4].map_or(0, |handle| rows(handle.len_values)),
+                ],
+                lanes: [0; 4],
+                rows: [
+                    rows(marker_slots.len()),
+                    rows(bar_slots.len()),
+                    rows(marker_overrides.len()),
+                    rows(bar_overrides.len()),
+                ],
+                // As declared: the draw takes the style's sizes unclamped
+                // (a quad's sign does not change its area).
+                px: [
+                    stem_width_px,
+                    cap_half_px,
+                    cap_width_px,
+                    if paints { 1.0 } else { 0.0 },
+                ],
+            };
+            bars.rebase(handles, &descriptor.series_id)?;
+            errorbar = Some(bars);
+        }
+        let mut area = None;
+        if let Some(fill) = area_input.filter(|fill| fill.paints && resident.is_some()) {
+            if descriptor.line_width_px.is_none() {
+                return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
+            }
+            let GpuPickArea {
+                to_series,
+                baseline,
+                paints: _,
+            } = fill;
+            // The fill's instance count is the shortest of the x, y and
+            // second y columns it binds; one trapezoid strip per segment.
+            let mut count = paired_len;
+            let (handle, epoch, lane) = match to_series.as_ref() {
+                Some(id) => {
+                    let (handle, epoch) = resolve(id)?;
+                    count = count.min(handle.len_values);
+                    (
+                        Some(handle),
+                        Some(epoch),
+                        lane_base(handle, &descriptor.series_id)?,
+                    )
+                }
+                None => (None, None, 0),
+            };
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(baseline);
+            area = Some(PickAreaGpu {
+                params: [
+                    lane,
+                    u32::try_from(count.saturating_sub(1)).unwrap_or(u32::MAX),
+                    u32::from(to_series.is_some()),
+                    0,
+                ],
+                column: to_series,
+                handle,
+                epoch,
+                baseline: [hi, lo, 0.0, 0.0],
+            });
+        }
+
         let line_half_width_px = descriptor
             .line_width_px
             .map(|width| nonnegative(width) * 0.5)
@@ -739,9 +858,13 @@ impl GpuPickEngine {
         let _ = lane_base(y_handle, &descriptor.series_id)?;
         let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
             gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
-        // An arrow reaches as far from its anchor as its component says, so
-        // no per-axis gate bounds it: a vector series scans every point.
-        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS || flags & FLAG_VECTOR != 0;
+        // An arrow reaches as far from its anchor as its component says, an
+        // error bar as far as its error and a fill to its base, so no
+        // per-axis gate bounds them: such a series scans every point.
+        let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
+            || flags & FLAG_VECTOR != 0
+            || errorbar.is_some()
+            || area.is_some();
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
             .checked_mul(GATE_MASK_BYTES)
@@ -811,20 +934,26 @@ impl GpuPickEngine {
             },
             "query uniform",
         )?;
-        let style_slots = create_buffer_init_checked(
+        let style_slots = create_rows_buffer_checked(
             &series_tally,
             &self.bundle.device,
             "figgy GPU pick style slots",
-            slot_bytes,
-            wgpu::BufferUsages::STORAGE,
+            [
+                bytemuck::cast_slice(marker_slots),
+                bytemuck::cast_slice(bar_slots),
+            ],
+            std::mem::size_of::<ScatterStyleSlotGpu>() as u64,
             "style slot buffer",
         )?;
-        let style_overrides = create_buffer_init_checked(
+        let style_overrides = create_rows_buffer_checked(
             &series_tally,
             &self.bundle.device,
             "figgy GPU pick style overrides",
-            override_bytes,
-            wgpu::BufferUsages::STORAGE,
+            [
+                bytemuck::cast_slice(marker_overrides),
+                bytemuck::cast_slice(bar_overrides),
+            ],
+            std::mem::size_of::<ScatterStyleOverrideGpu>() as u64,
             "style override buffer",
         )?;
         let result = create_buffer_checked(
@@ -969,7 +1098,15 @@ impl GpuPickEngine {
                 override_count,
                 style_index_base,
                 style_index_len,
-                exact_key: series_exact_key(flags, line_dash_len, base_shape_id),
+                exact_key: series_exact_key(
+                    flags,
+                    line_dash_len,
+                    base_shape_id,
+                    errorbar.is_some(),
+                    area.is_some(),
+                ),
+                errorbar,
+                area,
             },
         })
     }
@@ -1108,6 +1245,26 @@ impl GpuPickEngine {
             }
         }
 
+        let mut errorbar_handles = [None; ERRORBAR_COLUMNS];
+        if let Some(bars) = series.errorbar.as_ref() {
+            for (index, id) in bars.columns.iter().enumerate() {
+                let Some(id) = id else {
+                    continue;
+                };
+                let expected = bars.handles[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                let expected_epoch = bars.epochs[index].ok_or(GpuPickError::InvalidGpuResult)?;
+                errorbar_handles[index] = Some(relocated(id, expected, expected_epoch)?);
+            }
+        }
+        let mut area_handle = None;
+        if let Some(fill) = series.area.as_ref()
+            && let Some(id) = fill.column.as_ref()
+        {
+            let expected = fill.handle.ok_or(GpuPickError::InvalidGpuResult)?;
+            let expected_epoch = fill.epoch.ok_or(GpuPickError::InvalidGpuResult)?;
+            area_handle = Some(relocated(id, expected, expected_epoch)?);
+        }
+
         let storage_unchanged = pool.layout_generation() == series.pool_layout_generation
             && same_storage(x_handle, series.x_handle)
             && same_storage(y_handle, series.y_handle)
@@ -1122,11 +1279,17 @@ impl GpuPickEngine {
             && vector_handles
                 .iter()
                 .zip(&series.vector_handles)
-                .all(|(current, expected)| match (current, expected) {
-                    (Some(current), Some(expected)) => same_storage(*current, *expected),
-                    (None, None) => true,
-                    _ => false,
-                });
+                .all(|(current, expected)| same_optional_storage(*current, *expected))
+            && series.errorbar.as_ref().is_none_or(|bars| {
+                errorbar_handles
+                    .iter()
+                    .zip(&bars.handles)
+                    .all(|(current, expected)| same_optional_storage(*current, *expected))
+            })
+            && series
+                .area
+                .as_ref()
+                .is_none_or(|fill| same_optional_storage(area_handle, fill.handle));
         if storage_unchanged {
             return Ok(series.clone());
         }
@@ -1167,6 +1330,15 @@ impl GpuPickEngine {
         rebound.size_len = size_len;
         rebound.vector_handles = vector_handles;
         rebound.vector_base = vector_base;
+        if let Some(bars) = rebound.errorbar.as_mut() {
+            bars.rebase(errorbar_handles, next_series_id)?;
+        }
+        if let Some(fill) = rebound.area.as_mut()
+            && let Some(handle) = area_handle
+        {
+            fill.params[0] = lane_base(handle, next_series_id)?;
+            fill.handle = Some(handle);
+        }
         rebound.query_data_bg = query_data_bg;
         Ok(rebound)
     }
@@ -1480,6 +1652,21 @@ impl GpuPickEngine {
             ),
         ]
         .into_iter()
+        .chain(series.errorbar.iter().flat_map(|bars| {
+            (0..ERRORBAR_COLUMNS).map(move |index| {
+                (
+                    bars.columns[index].as_ref(),
+                    bars.handles[index],
+                    bars.epochs[index],
+                )
+            })
+        }))
+        .chain(
+            series
+                .area
+                .iter()
+                .map(|fill| (fill.column.as_ref(), fill.handle, fill.epoch)),
+        )
         .filter_map(|(id, expected, epoch)| Some((id?, expected?, epoch?)))
         {
             let Some(current) = pool.handle_for(id) else {

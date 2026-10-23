@@ -181,6 +181,21 @@ mod tests {
             ("PICK_LINE_PRECISE", pick::PICK_LINE_PRECISE),
             ("PICK_LINE_SKETCH", pick::PICK_LINE_SKETCH),
             ("PICK_LINE_RIBBON", pick::PICK_LINE_RIBBON),
+            (
+                "PICK_VARIANT_STYLED_MARKER",
+                crate::gpu_pick::exact_variant::STYLED_MARKER,
+            ),
+            (
+                "PICK_VARIANT_ERRORBAR",
+                crate::gpu_pick::exact_variant::ERRORBAR,
+            ),
+            ("PICK_VARIANT_AREA", crate::gpu_pick::exact_variant::AREA),
+            ("PICK_VARIANT_DASH", crate::gpu_pick::exact_variant::DASH),
+            (
+                "PICK_VARIANT_STYLED_LINE",
+                crate::gpu_pick::exact_variant::STYLED_LINE,
+            ),
+            ("PICK_VARIANT_POLAR", crate::gpu_pick::exact_variant::POLAR),
             ("STYLE_MASK_COLOR", dr::STYLE_MASK_COLOR),
             ("STYLE_MASK_RADIUS", dr::STYLE_MASK_RADIUS),
             ("STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),
@@ -467,6 +482,9 @@ mod tests {
             meta("errorbar", "ErrorBarStyleMapMeta"),
             slot("pick_marker", "PickScatterStyleSlot"),
             over("pick_marker", "PickScatterStyleOverride"),
+            // The error-bar rows share the marker rows' buffers and bytes.
+            slot("pick_marker", "ErrorBarStyleSlot"),
+            slot("pick_marker_line", "ErrorBarStyleSlot"),
             mirror!(
                 "bar",
                 "BarStyleSlot",
@@ -545,6 +563,12 @@ mod tests {
                     vector,
                     vector_px,
                     vector_min,
+                    errorbar,
+                    errorbar_lanes,
+                    errorbar_rows,
+                    errorbar_px,
+                    area,
+                    area_baseline,
                 }
             ),
             mirror!(

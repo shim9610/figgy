@@ -207,6 +207,57 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// A point vector series: its markers are the arrows drawn from each
     /// anchor (`scatter` must be set too, for the scatter primitive slot).
     pub(crate) vector: Option<GpuPickVector>,
+    /// The error bars drawn with the markers (`scatter` must be set too: they
+    /// are part of the scatter primitive). Resident series only.
+    pub(crate) errorbar: Option<GpuPickErrorBar<'a>>,
+    /// The line's area fill (`line_width_px` must be set too: it is part of
+    /// the line primitive). Resident series only.
+    pub(crate) area: Option<GpuPickArea>,
+}
+
+/// The error bars of a marker series as the error-bar shader draws them
+/// (`errorbar_columnar.wgsl`, SHADER_COMMON.md §5.11): the error columns of
+/// each direction the series draws, the base sizes in logical pixels and the
+/// per-point style rows the precise draw maps.
+pub(crate) struct GpuPickErrorBar<'a> {
+    /// The (lower, upper) error columns of the Y bar, when the series draws
+    /// one. A symmetric error names its column twice.
+    pub(crate) y: Option<[ColumnId; 2]>,
+    /// The (lower, upper) error columns of the X bar, when the series draws
+    /// one.
+    pub(crate) x: Option<[ColumnId; 2]>,
+    pub(crate) stem_width_px: f32,
+    pub(crate) cap_half_px: f32,
+    pub(crate) cap_width_px: f32,
+    /// Whether the base colour paints: a zero-alpha bar draws nothing under
+    /// Precise and Sketch (a Milkyway jet's white core always paints).
+    pub(crate) paints: bool,
+    /// `Some` only in precise mode with an error-bar style map.
+    pub(crate) style_map: Option<GpuPickErrorBarStyle<'a>>,
+}
+
+/// An error-bar style map as the pick reads it: the index column and the
+/// slot and override rows, laid out like the marker rows
+/// (`ErrorBarStyleSlotGpu` and `ScatterStyleSlotGpu` share their bytes)
+/// with the colour reduced to whether it paints (`color_premul.w` 1 or 0).
+/// They are uploaded after the marker rows.
+pub(crate) struct GpuPickErrorBarStyle<'a> {
+    pub(crate) style_index_column: Option<ColumnId>,
+    pub(crate) style_slots: &'a [ScatterStyleSlotGpu],
+    pub(crate) style_overrides: &'a [ScatterStyleOverrideGpu],
+}
+
+/// A line's area fill as the line shader's `vs_area` draws it
+/// (SHADER_COMMON.md §2.2): to a second series' y column, or to a baseline.
+#[derive(Clone, Debug)]
+pub(crate) struct GpuPickArea {
+    /// `LineFill::ToSeries`: the y column of the series the fill reaches.
+    pub(crate) to_series: Option<ColumnId>,
+    /// `LineFill::ToBaseline`: the baseline (unused with `to_series`).
+    pub(crate) baseline: f64,
+    /// Whether the fill colour paints: a zero-alpha fill draws nothing and
+    /// does not pick.
+    pub(crate) paints: bool,
 }
 
 /// The arrows of a point vector series, as the vector shader draws them
@@ -685,6 +736,19 @@ pub(crate) struct PickQueryParamsGpu {
     pub(crate) vector_px: [f32; 4],
     /// `(minimum length, 0, 0, 0)`, canvas pixels.
     pub(crate) vector_min: [f32; 4],
+    /// `(bar count, directions, style-index lane base, style-index length)`.
+    pub(crate) errorbar: [u32; 4],
+    /// `(y lower, y upper, x lower, x upper)` lane bases.
+    pub(crate) errorbar_lanes: [u32; 4],
+    /// `(first slot row, slot count, first override row, override count)`.
+    pub(crate) errorbar_rows: [u32; 4],
+    /// `(stem width, cap half length, cap width, base paints 0/1)`, logical
+    /// pixels.
+    pub(crate) errorbar_px: [f32; 4],
+    /// `(second y lane base, filled segment count, to-series 0/1, 0)`.
+    pub(crate) area: [u32; 4],
+    /// `(baseline hi, baseline lo, 0, 0)`.
+    pub(crate) area_baseline: [f32; 4],
 }
 
 #[repr(C)]
@@ -700,7 +764,7 @@ pub(crate) struct PickCandidateGpu {
     pub(crate) _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 432);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 528);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -759,9 +823,106 @@ pub(super) struct PickSeriesGpu {
     pub(super) override_count: u32,
     pub(super) style_index_base: u32,
     pub(super) style_index_len: u32,
+    /// The error bars drawn with the markers, resident series only.
+    pub(super) errorbar: Option<PickErrorBarGpu>,
+    /// The line's area fill, resident series only.
+    pub(super) area: Option<PickAreaGpu>,
     /// The per-series part of the exact variant, fixed at build
     /// (`series_exact_key`).
     pub(super) exact_key: PickExactKey,
+}
+
+/// A slot's error bars: the columns it reads in `ERRORBAR_COLUMNS` order
+/// with their handles and allocation epochs, and the parameter rows the
+/// query writes (`PickQueryParams.errorbar*`).
+#[derive(Clone)]
+pub(super) struct PickErrorBarGpu {
+    pub(super) columns: [Option<ColumnId>; ERRORBAR_COLUMNS],
+    pub(super) handles: [Option<ColumnHandle>; ERRORBAR_COLUMNS],
+    pub(super) epochs: [Option<u64>; ERRORBAR_COLUMNS],
+    /// `(bar count, directions, style-index lane base, style-index length)`.
+    pub(super) params: [u32; 4],
+    /// The error columns' lane bases (zero for a direction not drawn).
+    pub(super) lanes: [u32; 4],
+    pub(super) rows: [u32; 4],
+    pub(super) px: [f32; 4],
+}
+
+/// The error-bar columns a slot reads: y lower, y upper, x lower, x upper and
+/// the style index.
+pub(super) const ERRORBAR_COLUMNS: usize = 5;
+
+/// A slot's area fill: the second series' y column with its handle and
+/// allocation epoch, and `PickQueryParams.area` / `area_baseline`.
+#[derive(Clone)]
+pub(super) struct PickAreaGpu {
+    pub(super) column: Option<ColumnId>,
+    pub(super) handle: Option<ColumnHandle>,
+    pub(super) epoch: Option<u64>,
+    pub(super) params: [u32; 4],
+    pub(super) baseline: [f32; 4],
+}
+
+impl PickErrorBarGpu {
+    /// The lane bases and the style-index base of `handles`, in their
+    /// parameter positions.
+    pub(super) fn rebase(
+        &mut self,
+        handles: [Option<ColumnHandle>; ERRORBAR_COLUMNS],
+        series_id: &str,
+    ) -> Result<(), GpuPickError> {
+        for (index, handle) in handles.iter().enumerate() {
+            let base = handle
+                .map(|handle| lane_base(handle, series_id))
+                .transpose()?;
+            match index {
+                4 => self.params[2] = base.unwrap_or(0),
+                lane => self.lanes[lane] = base.unwrap_or(0),
+            }
+        }
+        self.handles = handles;
+        Ok(())
+    }
+}
+
+/// A storage buffer holding `parts` back to back, written straight into its
+/// mapping at creation; one zeroed `row` when every part is empty, as WebGPU
+/// has no zero-size binding. The pick's style rows: the marker rows, then
+/// the error-bar rows.
+pub(super) fn create_rows_buffer_checked(
+    tally: &ChargeTally,
+    device: &wgpu::Device,
+    label: &'static str,
+    parts: [&[u8]; 2],
+    row: u64,
+    resource: &'static str,
+) -> Result<wgpu::Buffer, GpuPickError> {
+    let [first, second] = parts;
+    let size = ((first.len() + second.len()) as u64).max(row);
+    let buffer = create_buffer_checked(
+        tally,
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some(label),
+            size,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+        resource,
+    )?;
+    {
+        let mut view = buffer
+            .slice(..)
+            .get_mapped_range_mut()
+            .map_err(|_| GpuPickError::AllocationFailed { resource })?;
+        let mut bytes = view.slice(..);
+        bytes.slice(..first.len()).copy_from_slice(first);
+        bytes
+            .slice(first.len()..first.len() + second.len())
+            .copy_from_slice(second);
+    }
+    buffer.unmap();
+    Ok(buffer)
 }
 
 pub(super) const fn storage_entry(binding: u32, read_only: bool) -> wgpu::BindGroupLayoutEntry {

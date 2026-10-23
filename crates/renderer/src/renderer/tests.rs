@@ -12973,3 +12973,152 @@ fn out_of_pool_bytes_ride_into_the_pool_and_a_budget_refuses_growth() {
 #[cfg(feature = "serde")]
 #[path = "arc_mutation_tests.rs"]
 mod arc_mutation;
+
+/// Error bars and fills join a series' pick key by what they paint (#37
+/// G10): a colour edit that keeps the alpha above zero reuses the slot; a
+/// zero alpha, a stem width or a fill baseline edit rebuilds it with the new
+/// geometry; and the slot references the error and second-series columns,
+/// so removing one rebuilds the registry without the series.
+#[test]
+fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
+    use crate::data_config::{LineFill, LineInterpolation};
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+    renderer
+        .add_column("y_err", &col_f64(vec![0.1, 0.2]))
+        .unwrap();
+    renderer.add_column("y2", &col_f64(vec![0.5, 0.2])).unwrap();
+    let bars = |color: Color, width: f32| {
+        let mut err_style = test_errorbar_style();
+        err_style.error_bar_color = color;
+        err_style.error_bar_width = width;
+        SeriesConfig {
+            series_id: "bars".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: test_scatter_style(),
+                err_y: ErrorRef::Symmetric {
+                    column: "y_err".into(),
+                },
+                err_style,
+            },
+        }
+    };
+    let filled = |fill: LineFill, color: Color| SeriesConfig {
+        series_id: "filled".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Line {
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                line_width: 1.0,
+                fill: Some(fill),
+                fill_color: Some(color),
+                interpolation: LineInterpolation::Linear,
+            },
+        },
+    };
+    let lower = SeriesConfig {
+        series_id: "lower".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y2".into(),
+        render_type: DataRenderType::Line {
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: LineInterpolation::Linear,
+            },
+        },
+    };
+    let red = Color::new(1.0, 0.0, 0.0, 1.0);
+    let blue = Color::new(0.0, 0.0, 1.0, 0.5);
+    let clear = Color::new(0.0, 0.0, 1.0, 0.0);
+    let to_lower = || LineFill::ToSeries("lower".into());
+    let chart = renderer
+        .register_chart(
+            crate::default::default_config(),
+            vec![bars(red, 1.0), filled(to_lower(), red), lower.clone()],
+        )
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    renderer.prepare_gpu_picking_for_chart(chart).unwrap();
+    {
+        let resource = &active_picker(&renderer).descriptors[0].resource;
+        let errorbar = resource.errorbar.as_ref().expect("the bars are picked");
+        assert!(errorbar.paints);
+        assert!(resource.references_column("y_err"));
+        let resource = &active_picker(&renderer).descriptors[1].resource;
+        let area = resource.area.as_ref().expect("the fill is picked");
+        assert_eq!(area.to_series.as_deref(), Some("y2"));
+        assert!(resource.references_column("y2"));
+    }
+    let generation = active_picker(&renderer).engine.registry_generation();
+    renderer
+        .set_chart_series(
+            chart,
+            vec![bars(blue, 1.0), filled(to_lower(), blue), lower.clone()],
+        )
+        .unwrap();
+    assert_eq!(
+        active_picker(&renderer).engine.registry_generation(),
+        generation,
+        "a colour edit that still paints reuses the slots"
+    );
+
+    for (what, series) in [
+        (
+            "a transparent bar",
+            vec![bars(clear, 1.0), filled(to_lower(), blue), lower.clone()],
+        ),
+        (
+            "a stem width",
+            vec![bars(blue, 3.0), filled(to_lower(), blue), lower.clone()],
+        ),
+        (
+            "a transparent fill",
+            vec![bars(blue, 3.0), filled(to_lower(), clear), lower.clone()],
+        ),
+        (
+            "a fill to a baseline",
+            vec![
+                bars(blue, 3.0),
+                filled(LineFill::ToBaseline(0.25), blue),
+                lower.clone(),
+            ],
+        ),
+    ] {
+        let before = active_picker(&renderer).engine.registry_generation();
+        renderer.set_chart_series(chart, series).unwrap();
+        assert!(
+            active_picker(&renderer).engine.registry_generation() > before,
+            "{what} rebuilds the pick slot"
+        );
+    }
+    let resource = &active_picker(&renderer).descriptors[1].resource;
+    let area = resource.area.as_ref().unwrap();
+    assert_eq!(
+        (area.to_series.as_deref(), area.baseline, area.paints),
+        (None, 0.25, true)
+    );
+
+    assert!(renderer.remove_column("y_err").unwrap());
+    assert!(
+        !active_picker(&renderer)
+            .descriptors
+            .iter()
+            .any(|descriptor| descriptor.series_id == "bars")
+    );
+}

@@ -1,5 +1,6 @@
 // Exact fragment: markers (SHADER_COMMON.md §5.5 shapes, §5.4 size map,
-// §5.7 styled markers) and the scatter candidate that measures them.
+// §5.7 styled markers) and the scatter candidate that measures them with
+// the error bars drawn under them (`gpu_pick/errorbar.wgsl`).
 
 fn pick_nonnegative(v: f32) -> f32 {
     return select(0.0, v, v == v && v > 0.0);
@@ -181,8 +182,7 @@ fn pick_marker_distance(marker_in: PickMarker, center_px: vec2<f32>, point_index
     return max(marker_edge(d, filled), 0.0);
 }
 
-
-fn pick_scatter_candidate(
+fn pick_marker_candidate(
     point_index: u32,
     x: vec2<f32>,
     y: vec2<f32>,
@@ -213,10 +213,31 @@ fn pick_scatter_candidate(
         1u,
         series_order,
         pick_source_row(point_index),
-        0u,
+        PICK_KIND_MARKER,
         pick_source_row(point_index),
         distance_sq,
         hit_distance,
         0u,
     );
+}
+
+// A marker series' scatter primitive: the marker and, when the series draws
+// error bars (`PICK_VARIANT_ERRORBAR`, a non-zero bar count), its error bar,
+// whichever is nearer (the marker on a tie: it is painted over the bar).
+// The bar does not depend on the marker being drawn: a log axis hides a
+// nonpositive marker but still draws its bar.
+fn pick_scatter_candidate(
+    point_index: u32,
+    x: vec2<f32>,
+    y: vec2<f32>,
+) -> PickCandidate {
+    let marker = pick_marker_candidate(point_index, x, y);
+    if !pick_variant(PICK_VARIANT_ERRORBAR) || pick_query_params.errorbar.x == 0u {
+        return marker;
+    }
+    let bar = pick_errorbar_candidate(point_index, x, y);
+    if pick_candidate_is_better(bar, marker) {
+        return bar;
+    }
+    return marker;
 }

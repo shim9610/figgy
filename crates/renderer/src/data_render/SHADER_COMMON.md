@@ -36,13 +36,13 @@ To change shared shader code:
 | `style.wgsl` (§2) | scatter, line, errorbar, bar, field, vector |
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
-| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`) and the grid vector |
+| `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
 | `ramp.wgsl` (§5.4) | field, scatter, vector, the pick marker and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
-| `errorbar_segment.wgsl` (§5.11) | errorbar |
+| `errorbar_segment.wgsl` (§5.11) | errorbar, the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
@@ -58,7 +58,8 @@ names, and `shader_assembly::MODULES` carries both for every module. A test
 holds each source to its list, and another holds each exact pick module to
 the `common/` fragments of the draw module it measures (marker to scatter,
 line to line, marker-line to both, vector to the point vector), apart from
-`transform.wgsl` and `style.wgsl`. No module carries a copy of a
+`transform.wgsl` and `style.wgsl`; the marker modules measure the error bars
+too, so they also hold the errorbar module's fragments. No module carries a copy of a
 fragment's function: `shader_consistency`'s duplicate guard lists only the
 per-variant interface functions the assembler chooses between.
 
@@ -221,6 +222,24 @@ fn area_corner_ndc(t: Transform, piece: AreaPiece, at_b: bool, on_base: bool,
 
 CPU twin: `line_step::step_pieces` for the pieces; the baseline pair is the
 CPU's `split_f64_to_f32_pair`.
+
+**Picking.** The fill picks as part of its line: `gpu_pick/area.wgsl`'s
+`pick_area_candidate`, called inside `pick_line_candidate` under
+`PICK_VARIANT_AREA` (8), walks the same pieces through `area_segment_drawn`,
+`area_piece` and `area_corner_ndc`, maps the four corners from NDC to
+canvas pixels and tests the cursor against the two triangles the strip
+draws, edges included. A fill hit has distance zero and nothing else picks;
+the polar fragment clip applies as to every primitive. It is candidate kind
+3 (`PICK_KIND_FILL`) and loses every exact tie in
+`pick_candidate_is_better`, since fills are drawn before every series body;
+among fills the later series wins. The hit names the filled segment's nearer
+endpoint: the cursor's projection onto the line's own piece, as a position
+along the stepped path (`pick_segment_endpoint`, the stroke's rule).
+`PickQueryParams.area` is (second y column's lane base, filled segment
+count, to-series flag, 0) and `area_baseline` the baseline pair; the
+segment count is the shortest of the three columns minus one, zero without a
+fill or for a fill whose colour has zero alpha (the descriptor's `paints`).
+A streamed series has no fill (streaming is not extended).
 
 ### 2.3 `field_columnar.wgsl`의 `Style` 사용
 
@@ -735,10 +754,45 @@ The per-point style rows of the precise mapped entry (`ErrorBarStyleSlot`,
 slot the index column names, then every sparse override) are part of the
 fragment too. CPU twin of the rows: `renderer::style::errorbar_style_slot_gpu`.
 
+**Picking.** The bars pick as part of their series' scatter primitive:
+`gpu_pick/errorbar.wgsl`'s `pick_errorbar_candidate`, called inside the
+marker module's `pick_scatter_candidate` under `PICK_VARIANT_ERRORBAR` (4),
+builds the same six quads with `errorbar_segment` from the columns read
+through `pick_pool_words` by lane base, and measures the cursor in the
+draw's y-up pixel frame:
+
+- Precise (and the precise style map): the rectangle between the quad's
+  ends, no extension past them, `|half_stroke|` either side.
+- Sketch: the same rectangle sheared by `errorbar_sketch_offset` at both ends,
+  the parallelogram the two triangles cover.
+- Milkyway: the jet envelope, the beam's whole stem quad and the disc a
+  knot's square quad inscribes, since the glow inside is hashed and fades.
+- Constellation draws no error bars and picks none.
+
+The sizes are the style's logical pixels times the display scale. Per-point
+styles resolve as `resolve_errorbar_mapped_style` does
+(`apply_errorbar_style_slot` over the slot the error-bar index column names,
+then every sparse override); the error-bar rows follow the marker rows in
+`pick_style_slots` / `pick_style_overrides` (the byte layouts are the
+same), with the colour reduced to whether it paints: `color_premul.w` is 1
+for a colour with alpha above zero and 0 otherwise. A bar whose resolved
+colour does not paint picks nothing (a Milkyway jet's white core always
+paints). Like the draw the pick masks no sample, so a marker hidden by a log
+axis keeps its bar. An error-bar hit is candidate kind 2
+(`PICK_KIND_ERRORBAR`) naming the bar's point; a tie goes to the marker
+over it, then the line, then the bar (the order `issue_series_data`
+paints them). `PickQueryParams.errorbar` is (bar count, directions,
+style-index lane base, style-index length), `errorbar_lanes` the four error
+lanes, `errorbar_rows` (first slot row, slot count, first override row,
+override count) and `errorbar_px` (stem width, cap half length, cap width,
+base paints). A series with error bars or a fill is scanned directly, like a
+vector series: no per-axis gate bounds what they reach. A streamed series
+has no error bars.
+
 The struct, the constants and the functions are the fragment
 [`data_render/common/errorbar_segment.wgsl`](common/errorbar_segment.wgsl),
-spliced after `sketch_noise.wgsl` into the errorbar module by `wgsl_module!`
-(`shader_assembly.rs`).
+spliced after `sketch_noise.wgsl` into the errorbar module and the pick
+marker modules by `wgsl_module!` (`shader_assembly.rs`).
 
 ---
 ## Checklist
