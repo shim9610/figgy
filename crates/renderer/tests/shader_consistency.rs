@@ -1014,7 +1014,8 @@ fn every_wgsl_function_is_defined_once_outside_the_allowlist() {
 }
 
 /// Interface functions with one body per variant; the assembler splices one.
-/// Part of the layered design (rule 9); these stay.
+/// Part of the layered design (rule 9); these stay. Also the per-module
+/// bodies of one contract, where each module needs its own.
 const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
     (
         &[
@@ -1041,6 +1042,18 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
             "stream_sample_transfer_msaa.wgsl",
         ],
         &["preview_texel"],
+    ),
+    // Not a paste: each workgroup entry zeroes its own `var<workgroup>` array
+    // before computing, so the four bodies differ by design (the contract is
+    // in `workgroup_init.rs`, the per-shader zeroing in each module).
+    (
+        &[
+            "data_render/bar_columnar.wgsl",
+            "data_render/line_arc.wgsl",
+            "gpu_errorbar.wgsl",
+            "gpu_pick/core.wgsl",
+        ],
+        &["figgy_zero_workgroup"],
     ),
 ];
 
@@ -1079,15 +1092,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "data_render/bar_columnar.wgsl",
-            "data_render/line_arc.wgsl",
-            "gpu_errorbar.wgsl",
-            "gpu_pick/core.wgsl",
-        ],
-        &["figgy_zero_workgroup"],
-    ),
-    (
-        &[
             "data_render/errorbar_columnar.wgsl",
             "data_render/line_columnar.wgsl",
             "data_render/scatter_columnar.wgsl",
@@ -1122,7 +1126,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radar.wgsl"],
-        &["output", "sdf"],
+        &["output"],
     ),
     (
         &["boxplot.wgsl", "categorical.wgsl", "radial.wgsl"],
@@ -1146,7 +1150,6 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
     ),
     (
         &[
-            "data_render/errorbar_columnar.wgsl",
             "data_render/vector/project_cartesian2d.wgsl",
             "gpu_pick/vector.wgsl",
         ],
@@ -1160,7 +1163,7 @@ const PENDING_COPIES: &[(&[&str], &[&str])] = &[
         ],
         &["ramp_blend", "ramp_segment", "ramp_t"],
     ),
-    (&["boxplot.wgsl", "categorical.wgsl"], &["shade"]),
+    (&["boxplot.wgsl", "categorical.wgsl"], &["sdf", "shade"]),
     (
         &["contour_anchor.wgsl", "data_render/field_columnar.wgsl"],
         &[

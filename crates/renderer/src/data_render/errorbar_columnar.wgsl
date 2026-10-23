@@ -135,7 +135,7 @@ fn pair_value(v: vec2<f32>) -> f32 {
     return v.x + v.y;
 }
 
-fn pair_add(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
+fn pair_sum(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(a.x + b.x, a.y + b.y);
 }
 
@@ -178,9 +178,9 @@ fn vs_main(in: VsIn) -> @builtin(position) vec4<f32> {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     // Each segment is a quad between endpoints A and B: a data-space
     // position plus a pixel-space offset (caps run ±cap_half_px from a
@@ -383,9 +383,9 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> MappedOut {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;
@@ -501,9 +501,9 @@ fn vs_sketch(in: VsIn, @builtin(instance_index) inst: u32) -> @builtin(position)
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;
@@ -614,9 +614,9 @@ fn vs_jet(in: VsIn, @builtin(instance_index) inst: u32) -> JetOut {
     }
 
     let y_lo = pair_sub(in.y, in.err_y_lo);
-    let y_hi = pair_add(in.y, in.err_y_hi);
+    let y_hi = pair_sum(in.y, in.err_y_hi);
     let x_lo = pair_sub(in.x, in.err_x_lo);
-    let x_hi = pair_add(in.x, in.err_x_hi);
+    let x_hi = pair_sum(in.x, in.err_x_hi);
 
     var a_data: DataPoint;
     var b_data: DataPoint;
