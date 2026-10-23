@@ -45,6 +45,7 @@ To change shared shader code:
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | boxplot, categorical, radial |
 | `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
+| `contour_label_box.wgsl` (§5.10) | contour label, field |
 
 The module lists are the `wgsl_module!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
