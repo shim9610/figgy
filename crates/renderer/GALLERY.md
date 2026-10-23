@@ -253,4 +253,4 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 
 가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.
 
-일반 Rust 사용법은 [빠른 시작](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저 통합 예제의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.
+일반 Rust 사용법은 [빠른 시작](https://github.com/shim9610/figgy/blob/master/README.ko.md#빠른-시작)과 [상세 사용법](USAGE.md), 브라우저용 제품의 초기화·수명 관리·입출력은 [WASM.md](WASM.md), JSON 형식은 [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md)를 참고한다.

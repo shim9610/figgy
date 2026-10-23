@@ -254,18 +254,22 @@ cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 기존 프로그램과 GPU 장치를 공유할 때는 **wgpu 30**을 사용합니다.
 기본 기능에는 특정 GUI 프레임워크가 필요하지 않습니다.
 
-## WebAssembly 예제
+## WebAssembly와 브라우저
 
 Rust 렌더러는 `wasm32-unknown-unknown`으로도 컴파일되며 브라우저에서는 WebGPU를 사용합니다.
-[`crates/web`](crates/web/README.md)은 wasm-bindgen으로 렌더러를 감싸고 캔버스·이벤트·비동기
-호출을 연결하는 브라우저 통합 예제이며, Rust 라이브러리의 API와는 별개입니다.
+[`crates/web`](crates/web/README.md)은 figgy의 **브라우저용 제품**입니다. wasm-bindgen 래퍼와
+`<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결합니다. 렌더러와 함께 관리하므로
+렌더러에 기능이 추가되면 래퍼 메서드도 함께 추가됩니다. JavaScript API는 래퍼가 따로 정의하며
+Rust 라이브러리의 API와는 별개입니다.
 직교 차트(극좌표·오버레이·서브플롯 포함)는 `FiggyChart`로, 파이·도넛·범주형 막대·박스플롯·레이더는
 `FiggyBoundedChart`로 그립니다. `<figgy-chart>` 요소는 `FiggyChart`만 감싸므로 `FiggyBoundedChart`를
 쓰는 호스트는 캔버스 이벤트와 프레임 예약을 직접 맡습니다.
+래퍼는 Cargo 패키지 `figgy`이며 이 저장소에서 빌드합니다(`publish = false`). crates.io의 `figgy`
+크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없습니다.
 
-[브라우저 예제 빌드·실행 방법](crates/web/README.md).
+[브라우저용 figgy 빌드·실행 방법](crates/web/README.md).
 [figgyplot.com Studio](https://figgyplot.com/)는 렌더러를 사용하는 별도 웹 애플리케이션이며
-`figgy-renderer` 크레이트나 브라우저 예제에 포함되지 않습니다.
+`figgy-renderer` 크레이트나 브라우저용 제품에 포함되지 않습니다.
 
 ## 문서
 

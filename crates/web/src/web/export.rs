@@ -15,7 +15,7 @@ impl FiggyChart {
     /// same object, including frame(), getters, edits, resize, picking and free().
     /// Overlapping access can throw "recursive use of an object". Release the
     /// host's per-instance operation gate in finally on success or rejection.
-    /// The example `<figgy-chart>` facade supplies that gate and rejects competing
+    /// The `<figgy-chart>` facade supplies that gate and rejects competing
     /// application calls; raw FiggyChart callers must manage it themselves.
     /// Automatic contour placement validates `spacing_px * scale` after the
     /// export scale is clamped. Explicit placement does not multiply spacing.

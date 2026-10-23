@@ -339,19 +339,23 @@ animations and interactive examples.
 The Rust renderer can share a device with a **wgpu 30** host. No GUI framework is
 required by default.
 
-## WebAssembly example
+## WebAssembly and the browser
 
 The Rust renderer also compiles to `wasm32-unknown-unknown` and renders through
-WebGPU. [`crates/web`](crates/web/README.md) demonstrates how an application can
-wrap it with wasm-bindgen and connect a canvas, events and async calls. This is a
-**browser integration example**, separate from the Rust library's API. Its
-`FiggyChart` export and `<figgy-chart>` element cover Cartesian and polar charts;
-`FiggyBoundedChart` covers pies, donuts, categorical bars, box plots and radar
-charts, and the host handles their canvas events.
+WebGPU. [`crates/web`](crates/web/README.md) is figgy's **browser product**: the
+wasm-bindgen wrapper and the `<figgy-chart>` custom element, which connect a
+canvas, events and async calls. It is maintained with the renderer, and every
+renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
+own, separate from the Rust library's API. The `FiggyChart` export and
+`<figgy-chart>` element cover Cartesian and polar charts; `FiggyBoundedChart`
+covers pies, donuts, categorical bars, box plots and radar charts, and the host
+handles their canvas events. The wrapper is the Cargo package `figgy`, built from
+this repository (`publish = false`); the `figgy` crate on crates.io and the
+`figgy` package on npm are unrelated projects.
 
-[Build and run the browser example](crates/web/README.md).
+[Build and run figgy in the browser](crates/web/README.md).
 [figgyplot.com Studio](https://figgyplot.com/) is a separate web application, not
-part of the `figgy-renderer` crate or the browser example.
+part of the `figgy-renderer` crate or the browser product.
 
 ## Documentation
 

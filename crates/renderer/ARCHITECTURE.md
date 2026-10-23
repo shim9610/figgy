@@ -15,10 +15,10 @@ For runnable examples, start with the [README](https://github.com/shim9610/figgy
 |---|---|
 | `figgy-model` | Chart settings, data contracts and interaction policies; optional serde |
 | `figgy-renderer` | GPU data drawing, CPU text/axes, picking, caching, resource ownership and export |
-| `crates/web` | Example application adapter: wasm-bindgen, canvas events and frame scheduling |
+| `crates/web` | Browser product (`figgy`): wasm-bindgen wrapper and `<figgy-chart>` element, canvas events and frame scheduling |
 
-The browser lifecycle descriptions below describe that example adapter, not a
-JavaScript API for every renderer. [Browser example scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
+The browser lifecycle descriptions below describe that browser wrapper, not a
+JavaScript API for every renderer. [Browser product scope](https://github.com/shim9610/figgy/blob/master/crates/web/README.md).
 
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
 - **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
@@ -33,8 +33,8 @@ JavaScript API for every renderer. [Browser example scope](https://github.com/sh
 - **Milkyway mode (opt-in)**: `draw_style: { mode: "milkyway", ... }` renders the chart as an astrophotograph — lines become star chains over a series-colored nebula ribbon; scatter markers become ringed planets; errorbars become bipolar jets over a deep-space backdrop. Like sketch mode, it skips histogram, heatmap, contour and vector series without an error.
 - **Constellation mode (opt-in)**: `draw_style: { mode: "constellation", ... }` supports `ScatterLine` series only: PSF-rendered stars sit at scatter data positions and a translucent line connects them. Parameter ranges ship as machine-readable metadata (`draw_style_param_specs`).
 - **Single wgpu major (30)**: the renderer and active egui integration use wgpu 30. The retained iced integration source is not a build target because iced 0.14 still exposes wgpu 27 types.
-- **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`text_render::register_font_bytes` in Rust, `register_font` on the browser example's `FiggyChart`) for CJK and custom families.
-- **Example browser startup**: in a wasm browser, `create` / `create_with_progress` compile every render WGSL entry and await the first empty-chart frame; optional render, style and compute caches stay lazy until first use or `prewarm_all` / `prewarm_all_with_progress`. The web cold-start contract under [Memory accounting and release](#memory-accounting-and-release) gives the details.
+- **WebAssembly-ready**: pure-Rust raster stack (tiny-skia + fontdb + swash), async init/export, runtime font registration (`text_render::register_font_bytes` in Rust, `register_font` on the browser wrapper's `FiggyChart`) for CJK and custom families.
+- **Browser startup**: in a wasm browser, `create` / `create_with_progress` compile every render WGSL entry and await the first empty-chart frame; optional render, style and compute caches stay lazy until first use or `prewarm_all` / `prewarm_all_with_progress`. The web cold-start contract under [Memory accounting and release](#memory-accounting-and-release) gives the details.
 
 ## Internal memory data flow
 
@@ -262,7 +262,7 @@ rejects creation/readiness; it cannot publish a successful first-frame event.
 | Async serialization | One generation+kernel operation token covers connect/create, `prewarm_all_with_progress` / `prewarm_all` and picker prewarm, export, `first_frame_ready` / `warm_up`, extent preparation, resident async fit, and pick. The facade's two full-prewarm methods pass through this generation-aware operation gate. While `busy`, rAF drawing and pointer/proxy kernel access do not enter wasm; only the latest resize and a pending pointer release are retained and applied after settlement. Streaming `auto_fit_all()` instead requests renderer-owned fitting and awaits its stream job without holding this token: the fit itself does not set `busy`, so the scheduler can keep calling the kernel and reconcile the latest chart state. An independent operation may still set `busy`. |
 | Disconnect/reconnect | Disconnect invalidates the generation and cancels its rAF/observer. A kernel borrowed by an active operation is freed only after that operation settles. Its stale settlement cannot clear, resize, release, or free the new generation's kernel. |
 
-The example facade enforces that gate; wasm-bindgen itself checks borrows and
+The `<figgy-chart>` facade enforces that gate; wasm-bindgen itself checks borrows and
 does not serialize or queue calls. Competing application calls to the facade
 are rejected while busy, rather than queued. Raw kernel users must prevent
 same-object access until an async mutable borrow settles, including on failure;
@@ -458,7 +458,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 원형·범주형 막대·박스플롯·레이더 차트는 별도 렌더러(`RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`, `RadarRenderer`)가 그린다. 각 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md), [CATEGORICAL.md](CATEGORICAL.md), [BOXPLOT.md](BOXPLOT.md), [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
-아래의 브라우저 수명 주기 설명은 `crates/web` 예제 어댑터의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저 예제 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
+아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 
 주요 기능은 다음과 같다. 선택 기능은 해당 API나 옵션을 사용할 때만 동작한다.
 
@@ -475,8 +475,8 @@ area, while `export_panel_*` keeps the parent's area.
 - **은하수 모드**: `draw_style: { mode: "milkyway", ... }`로 선·산점도·오차 막대 시리즈에 천체사진 같은 효과를 낸다. 선은 시리즈 색의 성운 띠와 별 무리로, 산점도 기호는 고리가 있는 행성으로, 오차 막대는 양방향으로 뻗는 제트로 표현한다. 스케치 모드와 마찬가지로 히스토그램·히트맵·등고선·벡터 시리즈는 오류 없이 생략한다.
 - **별자리 모드**: `draw_style: { mode: "constellation", ... }`는 `ScatterLine` 시리즈만 지원한다. 데이터 점 위치에 점광원 분포 함수(PSF)로 별을 그리고 반투명 선으로 잇는다. 프로그램에서 옵션 범위를 조회할 수 있도록 `draw_style_param_specs` 메타데이터를 제공한다.
 - **wgpu 30 통합**: 렌더러와 egui 통합이 같은 wgpu 주 버전을 사용한다. iced 0.14는 wgpu 27을 사용하므로 보관 중인 iced 통합 예제는 빌드 대상에서 제외한다.
-- **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. Rust의 `text_render::register_font_bytes`나 브라우저 예제 `FiggyChart`의 `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
-- **웹 예제의 초기화**: 브라우저의 wasm에서 `create` / `create_with_progress`는 모든 렌더링용 WGSL 진입점을 미리 컴파일하고 빈 차트의 첫 프레임을 기다린다. 선택적인 렌더링·스타일·컴퓨트 캐시는 처음 사용하거나 `prewarm_all` / `prewarm_all_with_progress`를 호출할 때 만든다. 자세한 규칙은 [메모리 계상과 회수](#메모리-계상과-회수)의 웹 초기화 표를 참고한다.
+- **WebAssembly**: 순수 Rust로 구현된 tiny-skia·fontdb·swash와 비동기 초기화·출력 API를 사용한다. Rust의 `text_render::register_font_bytes`나 브라우저 래퍼 `FiggyChart`의 `register_font`로 실행 중에 폰트를 등록하면 한중일 문자와 사용자 지정 글꼴을 사용할 수 있다.
+- **브라우저 래퍼의 초기화**: 브라우저의 wasm에서 `create` / `create_with_progress`는 모든 렌더링용 WGSL 진입점을 미리 컴파일하고 빈 차트의 첫 프레임을 기다린다. 선택적인 렌더링·스타일·컴퓨트 캐시는 처음 사용하거나 `prewarm_all` / `prewarm_all_with_progress`를 호출할 때 만든다. 자세한 규칙은 [메모리 계상과 회수](#메모리-계상과-회수)의 웹 초기화 표를 참고한다.
 
 <a id="3-내부-메모리-데이터-흐름"></a>
 
@@ -571,7 +571,7 @@ GPU 피킹은 차트 ID를 받는 API로 제공한다. `enable_gpu_picking()`을
 | 비동기 호출 직렬화 | 연결 세대와 커널을 확인하는 작업 토큰으로 생성, 전체 사전 준비, 피킹 준비, 출력, 첫 프레임 대기, 범위 엔진 준비, 상주 자동 범위 맞춤과 피킹을 직렬화한다. 작업 중에는 rAF·포인터·대리 호출이 WASM에 접근하지 않으며 마지막 크기 변경과 포인터 해제만 보관했다가 종료 후 적용한다. 스트리밍 `auto_fit_all()`은 이 토큰 없이 렌더러에 범위 계산을 요청하고 스트림 완료를 기다린다. 스트리밍 실행기가 커널 호출을 계속하고 최신 차트 상태 요청을 반영한다. 범위 계산 자체는 busy를 켜지 않지만 별도 작업이 실행 중이면 busy일 수 있다. |
 | 연결 해제·재연결 | 연결 해제 시 이전 세대를 무효화하고 rAF와 관찰자를 정리한다. 작업 중인 커널은 작업 종료 후 해제한다. 이전 세대의 완료 처리는 새 토큰·커널에 영향을 주거나 새 세대의 크기 변경·포인터 해제·객체 해제를 수행하지 않는다. |
 
-이 직렬화는 예제 래퍼가 수행한다. wasm-bindgen은 대여 상태만 검사하며 호출을 직렬화하거나 대기열에 넣지 않는다. 래퍼가 작업 중일 때 애플리케이션의 경쟁 호출은 대기하지 않고 거부된다. 저수준 커널을 직접 쓰는 호스트는 비동기 가변 대여가 끝날 때까지(실패한 경우 포함) 같은 객체에 접근하지 않아야 한다. 자세한 내용은 [저수준 커널 호출 소유권](WASM.md#raw-kernel-call-ownership)을 참고한다.
+이 직렬화는 `<figgy-chart>` 래퍼가 수행한다. wasm-bindgen은 대여 상태만 검사하며 호출을 직렬화하거나 대기열에 넣지 않는다. 래퍼가 작업 중일 때 애플리케이션의 경쟁 호출은 대기하지 않고 거부된다. 저수준 커널을 직접 쓰는 호스트는 비동기 가변 대여가 끝날 때까지(실패한 경우 포함) 같은 객체에 접근하지 않아야 한다. 자세한 내용은 [저수준 커널 호출 소유권](WASM.md#raw-kernel-call-ownership)을 참고한다.
 
 웹 상태 변경 API는 다음과 같다.
 

@@ -266,7 +266,7 @@ fn chart_title_band_padding() -> f32 {
 /// taller band would leave no valid data area in a chart that had one.
 ///
 /// This is the title helpers' half of the helper contract: `Chart::with_title`
-/// and the web example's `set_title` derive the band from the text they set.
+/// and the browser wrapper's `set_title` derive the band from the text they set.
 /// A `top_margin` injected directly through the SSoT is kept as given.
 /// Returns whether the band changed.
 pub fn fit_chart_title_margin(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
