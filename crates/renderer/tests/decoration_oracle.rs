@@ -155,13 +155,15 @@ struct Row {
 }
 
 /// A known divergence that is not fixed here: rows of `inv` for `element`
-/// of `layer` in `scene` pass, for the `reason` and the tracking `issue`
-/// given. A `*` in a pattern stands for any run of characters.
+/// of `layer` in `scene` whose detail matches `detail` pass, for the
+/// `reason` and the tracking `issue` given. A `*` in a pattern stands for
+/// any run of characters.
 struct Exclusion {
     scene: &'static str,
     layer: &'static str,
     element: &'static str,
     inv: Inv,
+    detail: &'static str,
     reason: &'static str,
     issue: &'static str,
 }
@@ -172,6 +174,7 @@ impl Exclusion {
             && glob(self.scene, row.scene)
             && glob(self.layer, &row.layer)
             && glob(self.element, &row.element)
+            && glob(self.detail, &row.detail)
     }
 }
 
@@ -201,8 +204,210 @@ fn glob(pattern: &str, text: &str) -> bool {
     }
 }
 
-/// The known divergences.
-const EXCLUSIONS: &[Exclusion] = &[];
+/// The known divergences: what the first run of the oracle found that is
+/// not a small fix (#47). Each needs a policy or type change the
+/// maintainer decides on; the hit-region ones are #38's.
+const EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "*",
+        layer: "*",
+        element: "*axis_top",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*axis_*",
+        reason: "axis corners: the perpendicular Y axis's box (its line plus the inward tick \
+                 band) covers the first tick length of the X axis line, and the later \
+                 registration takes those pixels",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "*",
+        layer: "*",
+        element: "*axis_bottom",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there*axis_*",
+        reason: "axis corners, as for the top axis",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "*",
+        layer: "*",
+        element: "*axis_*",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of *axis_*: *hit another element that has no ink there*axis_*",
+        reason: "axis corners after the axis moved, as in I2",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "*",
+        layer: "*",
+        element: "colorbar",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there ({\"colorbar_axis\": *",
+        reason: "the colourbar axis's box (line plus inward ticks) covers a band of the strip \
+                 between its ticks and wins over the strip there",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "*",
+        layer: "*",
+        element: "colorbar",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of colorbar: *hit another element*colorbar_axis*",
+        reason: "the colourbar axis band over the strip, as in I2",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "TwinAxes",
+        layer: "overlay_0",
+        element: "legend",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there ({\"overlay_0:axis_right\": *",
+        reason: "on an overlay layer the overlay axis registers after the merged legend, so \
+                 its tick band takes the legend's pixels near the right edge",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "TwinAxes",
+        layer: "overlay_0",
+        element: "legend",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of legend: *overlay_0:axis_right*",
+        reason: "the overlay axis band over the legend, as in I2",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "TwinAxes",
+        layer: "overlay_0",
+        element: "overlay_0:tick_labels_right",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of overlay_0:tick_labels_right: *overlay_0:axis_title_right*",
+        reason: "the (+7, +5) drag moves the labels under the title's padded box; they stay \
+                 grabbable elsewhere",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "Subplots",
+        layer: "subplot_2/overlay_0",
+        element: "subplot_2:overlay_0:tick_labels_right",
+        inv: Inv::I2,
+        detail: "*subplot_2:overlay_0:axis_title_right*",
+        reason: "at 2x the overlay title's padded box reaches over the label column (10 px)",
+        issue: "#38",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_1",
+        inv: Inv::I2,
+        detail: "*stroke outlines are farther than the grab reach from ink*",
+        reason: "a dashed reference line is grabbed along its whole length, its gaps included",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_1",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_1: *stroke outlines are farther*",
+        reason: "the dashed reference line's gaps, as in I2",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
+        inv: Inv::I2,
+        detail: "4 points of stroke outlines are farther than the grab reach from ink*",
+        reason: "the arrow shaft's grab band runs the selection padding past the head's tip",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_3",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_3: 4 points of stroke outlines*",
+        reason: "the arrow shaft past the tip, as in I2",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I2,
+        detail: "4 of * strong ink pixels hit another element that has no ink there ({\"annotation_3\": 4})*",
+        reason: "the span's pixels under the arrow shaft's band past the tip",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Annotations",
+        layer: "annotations",
+        element: "annotation_0",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of annotation_0: 4 of * ({\"annotation_3\": 4})*",
+        reason: "the span under the arrow shaft past the tip, as in I2",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Radial",
+        layer: "base",
+        element: "radial_label_0_2",
+        inv: Inv::I2,
+        detail: "dragging it by * changes * pixels outside its and its followers' hit regions*",
+        reason: "a radial label's leader line follows the label but lies in no hit region",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Polar",
+        layer: "*",
+        element: "*",
+        inv: Inv::I5,
+        detail: "*",
+        reason: "`Config::polar_geometry` (model `polar.rs`) adds a fixed 6 px to the ring's \
+                 label band, which `Config::scaled` cannot scale: at 2x the ring and its \
+                 labels are 2.5 to 4 px (1x) off the 1x layout scaled",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Polar",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "the polar ray turns around the centre: every drag is a valid turn",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "TwinAxes",
+        layer: "document",
+        element: "<export>",
+        inv: Inv::I7,
+        detail: "*opaque decoration pixels differ from the export*",
+        reason: "an overlay panel's data is drawn over the base panel's decoration (the \
+                 pressure markers over the left axis); a single-layer chart draws its \
+                 decoration over its data",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Subplots",
+        layer: "document",
+        element: "<export>",
+        inv: Inv::I7,
+        detail: "*opaque decoration pixels differ from the export*",
+        reason: "a subplot overlay's data is drawn over the subplot's decoration, as for twin \
+                 axes",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Polar",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring is the data boundary and belongs to no element",
+        issue: "#47",
+    },
+];
 
 /// What the sweep found: the divergences, and the counts and timings the
 /// report prints.
@@ -369,9 +574,10 @@ impl Report {
         }
         let _ = writeln!(out, "exclusions: {}", EXCLUSIONS.len());
         for e in EXCLUSIONS {
+            let rows = self.rows.iter().filter(|r| e.matches(r)).count();
             let _ = writeln!(
                 out,
-                "  {:?} {} / {} / {}: {} ({})",
+                "  {:?} {} / {} / {} ({rows} rows): {} ({})",
                 e.inv, e.scene, e.layer, e.element, e.reason, e.issue
             );
         }
@@ -3315,14 +3521,15 @@ fn annotation_view(r: &Renderer, cfg: &Config) -> Result<renderer::ChartView, St
 }
 
 /// The ink of every item as a one-panel [`SceneInk`]: item `k` owns the
-/// pixels the export changes when it is hidden.
-fn items_ink(cfg: &Config, all: &RasterImage, without: &[&RasterImage]) -> SceneInk {
-    let (w, h) = (all.width as usize, all.height as usize);
+/// pixels its pair of exports (every item, and every item but `k`)
+/// differ in.
+fn items_ink(cfg: &Config, pairs: &[(&RasterImage, &RasterImage)]) -> SceneInk {
+    let (w, h) = (pairs[0].0.width as usize, pairs[0].0.height as usize);
     let mut owner = vec![0u16; w * h];
     let mut owner2 = vec![0u16; w * h];
     let mut rgba = vec![0u8; w * h * 4];
     for i in 0..w * h {
-        for (k, image) in without.iter().enumerate() {
+        for (k, (all, image)) in pairs.iter().enumerate() {
             let d = pixel_diff(all, image, i);
             if d <= CHANGED_DIFF {
                 continue;
@@ -3335,8 +3542,8 @@ fn items_ink(cfg: &Config, all: &RasterImage, without: &[&RasterImage]) -> Scene
             }
         }
     }
-    let mut by_code = vec![Vec::new(); without.len()];
-    let mut exact = vec![Vec::new(); without.len()];
+    let mut by_code = vec![Vec::new(); pairs.len()];
+    let mut exact = vec![Vec::new(); pairs.len()];
     for i in 0..w * h {
         if owner[i] != 0 {
             by_code[usize::from(owner[i]) - 1].push(i as u32);
@@ -3351,7 +3558,7 @@ fn items_ink(cfg: &Config, all: &RasterImage, without: &[&RasterImage]) -> Scene
         origin: [area.x as f32, area.y as f32],
         w,
         h,
-        codes: (0..without.len())
+        codes: (0..pairs.len())
             .map(|k| ([0, 0, 0], annotation_name(k), 0))
             .collect(),
         panels: vec![PanelInk {
@@ -3475,8 +3682,8 @@ fn check_annotations(
     };
     report.count(at, "annotation exports", exports.len());
     let (all, none) = (&exports[0], &exports[1]);
-    let without: Vec<&RasterImage> = exports[2..].iter().collect();
-    let ink = items_ink(cfg, all, &without);
+    let pairs: Vec<(&RasterImage, &RasterImage)> = exports[2..].iter().map(|w| (all, w)).collect();
+    let ink = items_ink(cfg, &pairs);
     let masks: Vec<Mask> = measured.iter().map(|m| Mask::of(m, &ink)).collect();
     check_i2(
         report,
@@ -3560,7 +3767,7 @@ fn check_annotations(
         annotation_highlights(report, at, r, cfg, &measured);
         report.time("annotation highlights (I3)", phase);
         let phase = Instant::now();
-        annotation_drags(report, at, r, config, series, cfg, map, &measured);
+        annotation_drags(report, at, r, config, series, cfg, map, &measured, &exports);
         report.time("annotation drags (I6)", phase);
     }
     measured
@@ -3771,6 +3978,7 @@ fn annotation_drags(
     cfg: &Config,
     map: &renderer::AnnotationMap,
     measured: &[Measured],
+    before: &[RasterImage],
 ) {
     for m in measured {
         let Some(bounds) = m.bounds else {
@@ -3846,11 +4054,18 @@ fn annotation_drags(
             continue;
         };
         report.count(at, "annotation exports", 2);
-        // Only the dragged item's ink is measured.
-        let others: Vec<&RasterImage> = (0..moved_1x.annotations.items.len())
-            .map(|j| if j == index { &without } else { &all })
+        // The dragged item's ink from the moved exports, every other
+        // item's from the exports before the drag: they did not move.
+        let pairs: Vec<(&RasterImage, &RasterImage)> = (0..moved_1x.annotations.items.len())
+            .map(|j| {
+                if j == index {
+                    (&all, &without)
+                } else {
+                    (&before[0], &before[j + 2])
+                }
+            })
             .collect();
-        let ink2 = items_ink(&moved, &all, &others);
+        let ink2 = items_ink(&moved, &pairs);
         let masks2: Vec<Mask> = measured2.iter().map(|n| Mask::of(n, &ink2)).collect();
         report.redirect = Some((Inv::I6, m.name.clone()));
         check_i2(
