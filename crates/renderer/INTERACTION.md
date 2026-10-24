@@ -82,13 +82,13 @@ use renderer::{RadialChart, RadialRenderer, DecorationId};
 # fn edit(renderer: &mut RadialRenderer, chart: &mut RadialChart) -> Result<(), renderer::RadialError> {
 // 실제 모델/크기/DPR에 맞춰 준비한 프레임으로만 선택한다.
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
-let map = frame.decorations();
-if let Some(hit) = map.hit_test([120.0, 180.0]) {
-    let target: DecorationId = map.element(hit).unwrap().id.clone();
+// 원형 차트의 장식 요소는 차트에서 위치를 다시 계산하므로 프레임을 준비한 차트를 넘긴다.
+if let Some(hit) = frame.decoration_at(chart, [120.0, 180.0]) {
+    let target: DecorationId = frame.decoration_id(chart, hit).unwrap();
     chart.decorations.selected = Some(target);
 
     // 프레임별 포인터 이동량. 누적 drag_delta를 매번 더하지 않는다.
-    let result = map.drag_by(&mut chart.decorations, hit, 8.0, -4.0);
+    let result = frame.drag_decoration(chart, hit, 8.0, -4.0);
     // result: Some(Moved), Some(Rejected(OutOfBounds)), 또는 없는 hit면 None.
     // 거절 시 상태는 바뀌지 않는다.
     let _ = result;
@@ -101,12 +101,12 @@ let next_frame = renderer.prepare(chart, (800, 520), 2.0)?;
 기존 트레잇을 직접 사용하는 경로도 같다.
 
 ```rust,no_run
-# fn drag(map: &renderer::decoration::DecorationMap, hit: renderer::HitId,
+# fn drag(frame: &renderer::RadialFrame, hit: renderer::HitId,
 #         chart: &mut renderer::RadialChart) {
-let element = map.hit_map().get(hit).unwrap();
-// 경계가 있는 차트의 요소는 측정된 경계를 이미 갖고 있으므로 measure는 읽지 않는다.
+let element = frame.decorations().get(hit).unwrap();
+// 원형 차트의 요소는 차트에서 부품을 배치하고 글자를 직접 측정하므로 measure는 읽지 않는다.
 let result = element.as_draggable().unwrap()
-    .drag_by(&mut chart.decorations, &renderer::CpuTextMeasure::default(), 8.0, -4.0);
+    .drag_by(chart, &renderer::CpuTextMeasure::default(), 8.0, -4.0);
 # let _ = result;
 # }
 ```
@@ -127,11 +127,10 @@ let result = element.as_draggable().unwrap()
 # -> Result<(), renderer::RadialError> {
 use renderer::{DecorationId, layout::NudgeResult, resize::ResizeHandle};
 let displayed = renderer.prepare(chart, (800, 520), 2.0)?;
-let map = displayed.decorations();
-let (id, _) = map.entries().find(|(_, e)| e.id == DecorationId::DataArea).unwrap();
+let id = displayed.decoration(&DecorationId::DataArea).unwrap();
 let mut trial = chart.clone();
 trial.decorations.selected = Some(DecorationId::DataArea);
-if map.resize_by(&mut trial.decorations, id, ResizeHandle::SE, -80., -60.)
+if displayed.resize_decoration(&mut trial, id, ResizeHandle::SE, -80., -60.)
     == Some(NudgeResult::Moved)
 {
     // 글자가 들어갈 공간까지 검사한 뒤 편집 결과를 확정한다.

@@ -74,7 +74,7 @@ const _: () =
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
 pub struct RadialFrame {
-    decorations: crate::decoration::DecorationMap,
+    decorations: crate::HitMap<RadialChart>,
     _gpu: RendererDevice,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
@@ -89,9 +89,150 @@ pub struct RadialFrame {
     background: crate::annotation::FrameBackground,
 }
 impl RadialFrame {
-    /// Renderer-measured decorations using the common HitMap/Draggable contract.
-    pub fn decorations(&self) -> &crate::decoration::DecorationMap {
+    /// The frame's decorations, the plot area, the title and every slice
+    /// label with its leader line, on the common `HitMap` / `Selectable` /
+    /// `Draggable` / `Resizable` contract with the chart as the state. Each
+    /// element places its parts from the chart it is asked about, with the
+    /// one placement the label raster draws with, so pass the chart this
+    /// frame was prepared from; a drag edits that chart's `decorations`.
+    /// The elements measure text themselves: any `MeasureText` may be
+    /// passed. Hit-test through [`Self::decoration_at`], which names nothing
+    /// outside the canvas.
+    pub fn decorations(&self) -> &crate::HitMap<RadialChart> {
         &self.decorations
+    }
+    /// The topmost decoration at `position` (chart-local logical pixels) of
+    /// `chart`, the chart this frame was prepared from; nothing outside the
+    /// canvas.
+    pub fn decoration_at(&self, chart: &RadialChart, position: [f32; 2]) -> Option<crate::HitId> {
+        let canvas = self.space.panel;
+        if position.iter().any(|v| !v.is_finite()) || !canvas.contains(position[0], position[1]) {
+            return None;
+        }
+        self.decorations.hit_test(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            position[0],
+            position[1],
+        )
+    }
+    /// The hit-map entry of decoration `id`, when the frame draws it.
+    pub fn decoration(&self, id: &model::DecorationId) -> Option<crate::HitId> {
+        self.decorations.find(&id.element_id())
+    }
+    /// Every decoration this frame draws, with its hit-map entry: the plot
+    /// area, the title, then the slice labels in slice order, main circle
+    /// first.
+    pub fn decoration_ids<'a>(
+        &'a self,
+        chart: &'a RadialChart,
+    ) -> impl Iterator<Item = (crate::HitId, model::DecorationId)> + 'a {
+        let labels = chart
+            .slices
+            .iter()
+            .enumerate()
+            .map(|(index, _)| RadialTarget::main(index))
+            .chain(
+                chart
+                    .split
+                    .iter()
+                    .flat_map(|s| s.children.iter().enumerate())
+                    .map(|(index, _)| RadialTarget::detail(index)),
+            )
+            .map(model::DecorationId::RadialLabel);
+        [
+            model::DecorationId::DataArea,
+            model::DecorationId::ChartTitle,
+        ]
+        .into_iter()
+        .chain(labels)
+        .filter_map(|id| Some((self.decoration(&id)?, id)))
+    }
+    /// The id of decoration `hit` of `chart`.
+    pub fn decoration_id(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<model::DecorationId> {
+        self.decoration_ids(chart)
+            .find(|(h, _)| *h == hit)
+            .map(|(_, id)| id)
+    }
+    /// The drawn bounds of decoration `hit` of `chart`, its leader line
+    /// included.
+    pub fn decoration_bounds(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<crate::layout::RectF> {
+        use model::select::SelectionGeometry;
+        self.decorations
+            .get(hit)?
+            .bounds(chart, &crate::CpuTextMeasure::default())
+    }
+    /// Move decoration `hit` of `chart` by a pointer delta through the
+    /// common `Draggable` policy, writing `chart.decorations`; `None` for an
+    /// unknown hit. A rejected move leaves the chart unchanged. Prepare a
+    /// new frame before drawing or hit-testing again.
+    pub fn drag_decoration(
+        &self,
+        chart: &mut RadialChart,
+        hit: crate::HitId,
+        dx: f32,
+        dy: f32,
+    ) -> Option<crate::layout::NudgeResult> {
+        Some(self.decorations.get(hit)?.as_draggable()?.drag_by(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            dx,
+            dy,
+        ))
+    }
+    /// The resize handle of decoration `hit` (the plot area) at `position`.
+    pub fn decoration_resize_handle(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+        position: [f32; 2],
+    ) -> Option<crate::resize::ResizeHandle> {
+        self.decorations
+            .get(hit)?
+            .as_resizable()?
+            .hit_resize_handle(
+                chart,
+                &crate::CpuTextMeasure::default(),
+                position[0],
+                position[1],
+            )
+    }
+    /// Resize decoration `hit` (the plot area) of `chart` by dragging
+    /// `handle`; both edges move or neither does.
+    pub fn resize_decoration(
+        &self,
+        chart: &mut RadialChart,
+        hit: crate::HitId,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> Option<crate::layout::NudgeResult> {
+        Some(self.decorations.get(hit)?.as_resizable()?.resize_by(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            handle,
+            dx,
+            dy,
+        ))
+    }
+    /// The selection box of decoration `hit` of `chart`, inside the canvas:
+    /// a title wider than the canvas is selected as what the canvas shows.
+    pub fn decoration_selection_box(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<crate::SelectionBox> {
+        self.decorations
+            .selection_box(hit, chart, &crate::CpuTextMeasure::default())
+            .map(|b| b.clipped_to(self.space.panel))
     }
     /// True when annotation GPU storage is shared (e.g. hover/material-only edits).
     pub fn shares_annotations_with(&self, other: &Self) -> bool {

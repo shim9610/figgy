@@ -415,12 +415,23 @@ impl DocumentRenderer {
     }
 }
 impl DocumentFrame {
-    pub fn decorations(&self) -> &renderer::decoration::DecorationMap {
+    /// The decoration map of a categorical, box plot or radar frame; the
+    /// radial frame answers through its `HitMap<RadialChart>` with the
+    /// chart instead.
+    pub fn decoration_map(&self) -> Option<&renderer::decoration::DecorationMap> {
         match self {
-            Self::Radial(f) => f.decorations(),
-            Self::Categorical(f) => f.decorations(),
-            Self::BoxPlot(f) => f.decorations(),
-            Self::Radar(f) => f.decorations(),
+            Self::Radial(_) => None,
+            Self::Categorical(f) => Some(f.decorations()),
+            Self::BoxPlot(f) => Some(f.decorations()),
+            Self::Radar(f) => Some(f.decorations()),
+        }
+    }
+    /// The hit-map entry of the decoration named `name` (its stable
+    /// element id).
+    fn decoration_named(&self, name: &str) -> Option<renderer::HitId> {
+        match self {
+            Self::Radial(f) => f.decorations().find(name),
+            _ => self.decoration_map()?.hit_map().find(name),
         }
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -633,8 +644,24 @@ impl FiggyBoundedChart {
     }
     /// Renderer-measured logical pixel bounds and resize handles.
     pub fn decorations(&self) -> Result<String, JsValue> {
-        let map = self.frame.decorations();
-        let values=map.entries().filter_map(|(id,e)|map.selection_box(id).map(|b|{let r=b.rect();json!({"id":e.id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})})).collect::<Vec<_>>();
+        let entry = |id: &DecorationId, b: renderer::SelectionBox| {
+            let r = b.rect();
+            json!({"id":id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})
+        };
+        let values = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
+                .decoration_ids(c)
+                .filter_map(|(hit, id)| Some(entry(&id, f.decoration_selection_box(c, hit)?)))
+                .collect::<Vec<_>>(),
+            (frame, _) => {
+                let map = frame
+                    .decoration_map()
+                    .ok_or_else(|| js_err("chart and frame families differ"))?;
+                map.entries()
+                    .filter_map(|(id, e)| Some(entry(&e.id, map.selection_box(id)?)))
+                    .collect::<Vec<_>>()
+            }
+        };
         serde_json::to_string(&values).map_err(js_err)
     }
     /// The topmost decoration under a point, as its stable id. While the
@@ -642,26 +669,34 @@ impl FiggyBoundedChart {
     /// every decoration and answer as `"annotation_<n>"`; on the base layer
     /// they are not registered and clicks pass through them.
     pub fn hit_decoration(&self, x: f32, y: f32, edit_area: bool) -> Option<String> {
-        let map = self.frame.decorations();
-        let id =
-            match self
+        let layer = self.chart.active_layer();
+        let hit = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => self
                 .annotations
-                .hit_test_active_layer(self.chart.active_layer(), map, [x, y])?
-            {
-                LayerHit::Annotation { index, .. } => {
-                    return Some(DecorationId::Annotation(index).element_id());
-                }
-                LayerHit::Element(id) => id,
-            };
-        let e = map.element(id)?;
-        if e.id == renderer::DecorationId::DataArea
+                .route_active_layer(layer, [x, y], || f.decoration_at(c, [x, y])),
+            (frame, _) => {
+                self.annotations
+                    .hit_test_active_layer(layer, frame.decoration_map()?, [x, y])
+            }
+        };
+        let id = match hit? {
+            LayerHit::Annotation { index, .. } => {
+                return Some(DecorationId::Annotation(index).element_id());
+            }
+            LayerHit::Element(id) => id,
+        };
+        let key = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f.decoration_id(c, id)?,
+            (frame, _) => frame.decoration_map()?.element(id)?.id.clone(),
+        };
+        if key == renderer::DecorationId::DataArea
             && !edit_area
-            && self.chart.decorations().selected != Some(e.id.clone())
+            && self.chart.decorations().selected != Some(key.clone())
             && self.frame.has_data([x, y])
         {
             return None;
         }
-        Some(e.id.element_id())
+        Some(key.element_id())
     }
     /// Select a decoration by the id `hit_decoration` reported, or none.
     /// An `"annotation_<n>"` id selects that drawn annotation
@@ -671,12 +706,16 @@ impl FiggyBoundedChart {
             Some(name) => Some(
                 self.drawn_annotation(&name)
                     .map(DecorationId::Annotation)
-                    .or_else(|| {
-                        self.frame
-                            .decorations()
+                    .or_else(|| match (&self.frame, &self.chart) {
+                        (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
+                            .decoration_ids(c)
+                            .find(|(_, id)| id.element_id() == name)
+                            .map(|(_, id)| id),
+                        (frame, _) => frame
+                            .decoration_map()?
                             .entries()
                             .find(|(_, e)| e.id.element_id() == name)
-                            .map(|(_, e)| e.id.clone())
+                            .map(|(_, e)| e.id.clone()),
                     })
                     .ok_or_else(|| js_err("unknown decoration"))?,
             ),
@@ -698,9 +737,14 @@ impl FiggyBoundedChart {
         if let Some(index) = self.drawn_annotation(target) {
             return self.annotation_handle(index as u32, x, y);
         }
-        let map = self.frame.decorations();
-        let (id, _) = map.entries().find(|(_, e)| e.id.element_id() == target)?;
-        map.hit_resize_handle(id, [x, y]).map(|h| format!("{h:?}"))
+        let id = self.frame.decoration_named(target)?;
+        match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => {
+                f.decoration_resize_handle(c, id, [x, y])
+            }
+            (frame, _) => frame.decoration_map()?.hit_resize_handle(id, [x, y]),
+        }
+        .map(|h| format!("{h:?}"))
     }
     pub fn drag(
         &mut self,
@@ -716,20 +760,34 @@ impl FiggyBoundedChart {
             return self.drag_annotation(index as u32, dx, dy, handle);
         }
         use renderer::resize::ResizeHandle::*;
-        let map = self.frame.decorations();
-        let (id, _) = map
-            .entries()
-            .find(|(_, e)| e.id.element_id() == target)
+        let id = self
+            .frame
+            .decoration_named(target)
             .ok_or_else(|| js_err("unknown decoration"))?;
+        let handle = handle
+            .map(|name| {
+                [N, S, W, E, NW, NE, SW, SE]
+                    .into_iter()
+                    .find(|h| format!("{h:?}") == name)
+                    .ok_or_else(|| js_err("unknown resize handle"))
+            })
+            .transpose()?;
         let mut next = self.chart.clone();
-        let result = if let Some(name) = handle {
-            let h = [N, S, W, E, NW, NE, SW, SE]
-                .into_iter()
-                .find(|h| format!("{h:?}") == name)
-                .ok_or_else(|| js_err("unknown resize handle"))?;
-            map.resize_by(next.decorations_mut(), id, h, dx, dy)
-        } else {
-            map.drag_by(next.decorations_mut(), id, dx, dy)
+        let result = match (&self.frame, &mut next) {
+            // The radial decorations edit the chart they are placed from.
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => match handle {
+                Some(h) => f.resize_decoration(c, id, h, dx, dy),
+                None => f.drag_decoration(c, id, dx, dy),
+            },
+            (frame, next) => {
+                let map = frame
+                    .decoration_map()
+                    .ok_or_else(|| js_err("chart and frame families differ"))?;
+                match handle {
+                    Some(h) => map.resize_by(next.decorations_mut(), id, h, dx, dy),
+                    None => map.drag_by(next.decorations_mut(), id, dx, dy),
+                }
+            }
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);

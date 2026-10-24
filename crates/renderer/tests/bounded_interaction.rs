@@ -17,21 +17,39 @@ fn gpu() -> RendererDevice {
     })
     .clone()
 }
+#[path = "support/bounded_decorations.rs"]
+mod bounded_decorations;
+use bounded_decorations::Decorations;
 fn id(map: &decoration::DecorationMap, element: &DecorationId) -> HitId {
     map.entries()
         .find(|(_, e)| &e.id == element)
         .unwrap_or_else(|| panic!("missing {element:?}"))
         .0
 }
-fn moved(
-    map: &decoration::DecorationMap,
-    state: &mut DecorationLayout,
+/// Equal up to the rounding of placing a moved element again: a radial
+/// decoration is placed from its offset, not translated as a box.
+fn near(a: Option<RectF>, b: Option<RectF>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => [a.x - b.x, a.y - b.y, a.width - b.width, a.height - b.height]
+            .iter()
+            .all(|d| d.abs() < 1e-3),
+        (a, b) => a.is_none() && b.is_none(),
+    }
+}
+/// Press `key` on frame `f` of `chart` where it picks, drag it by
+/// `(dx, dy)` through its `Draggable`, and return what it moved: its text
+/// bounds before the drag (a radial label's leader line keeps its start on
+/// the slice).
+fn moved<F: Decorations>(
+    f: &F,
+    chart: &mut F::Chart,
     key: &DecorationId,
     dx: f32,
     dy: f32,
 ) -> RectF {
-    let id = id(map, key);
-    let old = map.bounds(id).unwrap();
+    let shown = chart.clone();
+    let id = f.id_of(&shown, key);
+    let old = f.text_bounds(&shown, id).unwrap();
     // Elements hit inside their padded selection box, so a later element
     // drawn next to this one (a radar value label on the rim beside its
     // spoke label) can cover the centre of its bounds. Press the first point
@@ -45,22 +63,11 @@ fn moved(
                 old.y + old.height * j as f32 / 8.0,
             ]
         })
-        .filter_map(|p| map.hit_test(p))
-        .find(|hit| &map.element(*hit).unwrap().id == key)
+        .filter_map(|p| f.hit(&shown, p))
+        .find(|hit| f.key_of(&shown, *hit).as_ref() == Some(key))
         .unwrap_or_else(|| panic!("visible decoration {key:?} must pick"));
-    assert_eq!(&map.element(hit).unwrap().id, key);
     // The same trait-object workflow as existing Cartesian charts.
-    let element = map.hit_map().get(hit).unwrap();
-    assert_eq!(element.element_id(), key.element_id());
-    assert_eq!(
-        element.as_draggable().unwrap().drag_by(
-            state,
-            &CpuTextMeasure::for_style(&Default::default()),
-            dx,
-            dy
-        ),
-        NudgeResult::Moved
-    );
+    assert_eq!(f.drag(chart, hit, dx, dy), Some(NudgeResult::Moved));
     old
 }
 fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
@@ -99,20 +106,32 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         let f = r.prepare(&c, (800, 520), scale).unwrap();
         let before = r.export_rgba(&c, (800, 520), scale).unwrap();
         let key = DecorationId::RadialLabel(RadialTarget::main(0));
-        let old = moved(f.decorations(), &mut c.decorations, &key, 0., 45.);
+        let shown = c.clone();
+        let old = moved(&*f, &mut c, &key, 0., 45.);
         let g = r.prepare(&c, (800, 520), scale).unwrap();
         assert!(
             !f.shares_annotations_with(&g),
             "label movement must invalidate raster"
         );
+        assert!(near(
+            g.text_bounds(&c, g.id_of(&c, &key)),
+            Some(old.translated(0., 45.))
+        ));
         assert_eq!(
-            g.decorations().bounds(id(g.decorations(), &key)).unwrap(),
-            old.translated(0., 45.)
-        );
-        assert_eq!(
-            f.decorations().bounds(id(f.decorations(), &key)).unwrap(),
-            old,
+            f.text_bounds(&shown, f.id_of(&shown, &key)),
+            Some(old),
             "old frame mutated"
+        );
+        // The leader line is a part of the label: it keeps its start on the
+        // slice and ends at the moved text.
+        let (before_all, after_all) = (
+            f.bounds(&shown, f.id_of(&shown, &key)).unwrap(),
+            g.bounds(&c, g.id_of(&c, &key)).unwrap(),
+        );
+        assert!(before_all.width > old.width && before_all.x < old.x);
+        assert!(
+            after_all.height > before_all.height,
+            "the leader did not follow"
         );
         let mut hovering = c.clone();
         hovering.interaction.hovered = Some(RadialTarget::main(0));
@@ -145,9 +164,9 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         assert_ne!(after.rgba, selected.rgba, "selection box missing");
         save("radial-label-selected", &selected);
         let current = c.decorations.clone();
+        let hit = g.id_of(&c, &key);
         assert!(matches!(
-            g.decorations()
-                .drag_by(&mut c.decorations, id(g.decorations(), &key), 1e6, 0.),
+            g.drag(&mut c, hit, 1e6, 0.),
             Some(NudgeResult::Rejected(_))
         ));
         assert_eq!(c.decorations, current);
@@ -183,7 +202,7 @@ fn categorical_chrome_survives_hover_cache_reorder_and_resize() {
         category_id: "a".into(),
         series_id: "s".into(),
     };
-    moved(f.decorations(), &mut c.decorations, &key, 30., 0.);
+    moved(&*f, &mut c, &key, 30., 0.);
     let edited = r.prepare(&c, (800, 560), 1.).unwrap();
     c.hovered = Some(CategoryBarTarget::new("a", "s"));
     let hover = r.prepare(&c, (800, 560), 1.).unwrap();
@@ -237,21 +256,14 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
             c.interaction.hovered = hovered.then_some(RadialTarget::main(0));
             c.interaction.hover_progress = if hovered { 1. } else { 0. };
             let frame = r.prepare(&c, (600, 420), scale).unwrap();
-            let selection = frame
-                .decorations()
-                .selection_box(id(frame.decorations(), &key))
-                .unwrap();
+            let shown = c.clone();
+            let selection = frame.selection(&shown, frame.id_of(&shown, &key)).unwrap();
             let unselected = r.export_rgba(&c, (600, 420), scale).unwrap();
             c.decorations.selected = Some(key.clone());
             let selected_frame = r.prepare(&c, (600, 420), scale).unwrap();
-            let label = frame
-                .decorations()
-                .bounds(id(frame.decorations(), &key))
-                .unwrap();
+            let label = frame.bounds(&shown, frame.id_of(&shown, &key)).unwrap();
             assert_eq!(
-                selected_frame
-                    .decorations()
-                    .bounds(id(selected_frame.decorations(), &key)),
+                selected_frame.bounds(&c, selected_frame.id_of(&c, &key)),
                 Some(label)
             );
             let selected = r.export_rgba(&c, (600, 420), scale).unwrap();
@@ -296,10 +308,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
     }
     c.interaction = Default::default();
     let rest = r.prepare(&c, (600, 420), 2.).unwrap();
-    let base = rest
-        .decorations()
-        .bounds(id(rest.decorations(), &key))
-        .unwrap();
+    let base = rest.bounds(&c, rest.id_of(&c, &key)).unwrap();
     c.interaction.hovered = Some(RadialTarget::main(0));
     c.interaction.hover_progress = 1.;
     let lifted = r.prepare(&c, (600, 420), 2.).unwrap();
@@ -307,21 +316,15 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
         rest.shares_annotations_with(&lifted),
         "ordinary hover must keep raster cache"
     );
-    let before = lifted
-        .decorations()
-        .bounds(id(lifted.decorations(), &key))
-        .unwrap();
+    let before = lifted.bounds(&c, lifted.id_of(&c, &key)).unwrap();
     assert!(before.y < base.y);
-    moved(lifted.decorations(), &mut c.decorations, &key, 20., 5.);
+    moved(&*lifted, &mut c, &key, 20., 5.);
     c.decorations.selected = Some(key.clone());
     let moved = r.prepare(&c, (600, 420), 2.).unwrap();
-    assert_eq!(
-        moved
-            .decorations()
-            .bounds(id(moved.decorations(), &key))
-            .unwrap(),
-        before.translated(20., 5.)
-    );
+    assert!(near(
+        moved.bounds(&c, moved.id_of(&c, &key)),
+        Some(before.translated(20., 5.))
+    ));
     let image = r.export_rgba(&c, (600, 420), 2.).unwrap();
     // White glyphs must be present in their measured edited bounds.
     let b = before.translated(20., 5.);
@@ -370,18 +373,14 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                     for key in $keys {
                         c.decorations = Default::default();
                         let f = r.prepare(&c, (800, 600), scale).unwrap();
-                        let area = f
-                            .decorations()
-                            .bounds(id(f.decorations(), &DecorationId::DataArea));
+                        let shown = c.clone();
+                        let area = f.bounds(&shown, f.id_of(&shown, &DecorationId::DataArea));
                         let before = r.export_rgba(&c, (800, 600), scale).unwrap();
                         if full {
                             // Selection is the only mutation here: movement must not mask
                             // a missing selection border or stale annotation cache.
                             let unselected_model = c.clone();
-                            let selection = f
-                                .decorations()
-                                .selection_box(id(f.decorations(), &key))
-                                .unwrap();
+                            let selection = f.selection(&shown, f.id_of(&shown, &key)).unwrap();
                             c.decorations.selected = Some(key.clone());
                             let selected_frame = r.prepare(&c, (800, 600), scale).unwrap();
                             assert!(!f.shares_annotations_with(&selected_frame));
@@ -389,14 +388,11 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                                 &selected_frame,
                                 &r.prepare(&c, (800, 600), scale).unwrap()
                             ));
-                            for (_, element) in f.decorations().entries() {
+                            for (hit, element) in f.entries(&shown) {
                                 assert_eq!(
-                                    f.decorations().bounds(id(f.decorations(), &element.id)),
-                                    selected_frame
-                                        .decorations()
-                                        .bounds(id(selected_frame.decorations(), &element.id)),
-                                    "selection changed {:?} geometry",
-                                    element.id
+                                    f.bounds(&shown, hit),
+                                    selected_frame.bounds(&c, selected_frame.id_of(&c, &element)),
+                                    "selection changed {element:?} geometry",
                                 );
                             }
                             let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
@@ -434,20 +430,20 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                             }
                             _ => (7.0, 5.0),
                         };
-                        let old = moved(f.decorations(), &mut c.decorations, &key, dx, dy);
+                        let old = moved(&*f, &mut c, &key, dx, dy);
                         c.decorations.selected = Some(key.clone());
                         let edited = r.prepare(&c, (800, 600), scale).unwrap();
-                        assert_eq!(
-                            edited.decorations().bounds(id(edited.decorations(), &key)),
-                            Some(old.translated(dx, dy)),
+                        assert!(
+                            near(
+                                edited.text_bounds(&c, edited.id_of(&c, &key)),
+                                Some(old.translated(dx, dy))
+                            ),
                             "{} {key:?} at {scale}x",
                             stringify!($renderer)
                         );
-                        assert_eq!(f.decorations().bounds(id(f.decorations(), &key)), Some(old));
+                        assert_eq!(f.text_bounds(&shown, f.id_of(&shown, &key)), Some(old));
                         assert_eq!(
-                            edited
-                                .decorations()
-                                .bounds(id(edited.decorations(), &DecorationId::DataArea)),
+                            edited.bounds(&c, edited.id_of(&c, &DecorationId::DataArea)),
                             area,
                             "moving a decoration changed the data area"
                         );
@@ -484,9 +480,9 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                 let hidden = r.prepare(&c, (800, 600), 1.0).unwrap();
                 assert!(
                     !hidden
-                        .decorations()
-                        .entries()
-                        .any(|(_, e)| e.id == DecorationId::ChartTitle)
+                        .entries(&c)
+                        .iter()
+                        .any(|(_, e)| *e == DecorationId::ChartTitle)
                 );
                 r.end_frame();
             }
@@ -646,13 +642,10 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                     after.rgba
                 );
                 let key = DecorationId::ChartTitle;
-                let old = moved(edited.decorations(), &mut c.decorations, &key, 9., 7.);
+                let old = moved(&*edited, &mut c, &key, 9., 7.);
                 let dragged = r.prepare(&c, (800, 520), scale).unwrap();
-                let bounds = dragged
-                    .decorations()
-                    .bounds(id(dragged.decorations(), &key))
-                    .unwrap();
-                assert_eq!(bounds, old.translated(9., 7.));
+                let bounds = dragged.text_bounds(&c, dragged.id_of(&c, &key)).unwrap();
+                assert!(near(Some(bounds), Some(old.translated(9., 7.))));
                 let image = r.export_rgba(&c, (800, 520), scale).unwrap();
                 assert!(ink(&image, bounds, scale) > 20);
                 let encoded = encode_png(&image).unwrap();
@@ -668,7 +661,7 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
                 }
                 c.chart_title.as_mut().unwrap().visible = false;
                 let hidden = r.prepare(&c, (800, 520), scale).unwrap();
-                assert!(!hidden.decorations().entries().any(|(_, e)| e.id == key));
+                assert!(!hidden.entries(&c).iter().any(|(_, e)| *e == key));
                 assert_ne!(
                     r.export_rgba(&c, (800, 520), scale).unwrap().rgba,
                     image.rgba

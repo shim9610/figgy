@@ -678,6 +678,24 @@ impl RadialChart {
     }
 }
 
+/// A radial chart is the state its decorations' hit map edits
+/// (`HitMap<RadialChart>`): a decoration moves in [`RadialChart::decorations`]
+/// as on any bounded chart, by the same containment rule. The element the
+/// renderer hands in carries the decoration's drawn bounds before its offset,
+/// measured on the chart it moves, so `measure` is not read.
+impl crate::drag::DragConfig for RadialChart {
+    type Element = crate::DecorationElement;
+    fn nudge(
+        &mut self,
+        element: crate::DecorationElement,
+        measure: &dyn crate::text::MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> crate::layout::NudgeResult {
+        self.decorations.nudge(element, measure, dx, dy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

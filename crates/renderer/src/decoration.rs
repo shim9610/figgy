@@ -233,30 +233,8 @@ impl<'a> DecorationPainter<'a> {
             entries: vec![],
         }
     }
-    pub fn shift_hit(&mut self, id: &DecorationId, dx: f32, dy: f32) {
-        if let Some(e) = self.entries.iter_mut().find(|e| &e.id == id) {
-            e.base_bounds = e.base_bounds.translated(dx, dy);
-        }
-    }
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.state.effective_offset(id)
-    }
-    /// Keep the recorded bounds of `id` inside `to`: an element the canvas
-    /// clips (a radial title wider than the canvas) is hit, selected and
-    /// dragged as what the canvas shows.
-    pub fn clip_hit(&mut self, id: &DecorationId, to: RectF) {
-        if let Some(e) = self.entries.iter_mut().find(|e| &e.id == id) {
-            let q = e.base_bounds;
-            let (x0, y0) = (q.x.max(to.x), q.y.max(to.y));
-            let x1 = (q.x + q.width).min(to.x + to.width);
-            let y1 = (q.y + q.height).min(to.y + to.height);
-            e.base_bounds = RectF {
-                x: x0,
-                y: y0,
-                width: (x1 - x0).max(0.),
-                height: (y1 - y0).max(0.),
-            };
-        }
     }
     pub fn place_text(
         &self,

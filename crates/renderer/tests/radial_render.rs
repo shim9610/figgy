@@ -623,17 +623,20 @@ fn radial_title_wider_than_the_canvas_is_clipped() {
     let frame = r
         .prepare(&c, (320, 320), 1.0)
         .expect("a wide title is clipped");
-    let map = frame.decorations();
-    let (id, _) = map
-        .entries()
-        .find(|(_, e)| e.id == renderer::DecorationId::ChartTitle)
+    let id = frame
+        .decoration(&renderer::DecorationId::ChartTitle)
         .expect("the title is in the hit map");
-    let bounds = map.bounds(id).unwrap();
+    let bounds = frame
+        .decoration_selection_box(&c, id)
+        .unwrap()
+        .rect()
+        .expanded(-renderer::select::SELECTION_PADDING);
     assert!(
         bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0 && bounds.width > 300.0,
         "{bounds:?}"
     );
-    assert_eq!(map.hit_test([2.0, bounds.y + 4.0]), Some(id));
+    assert_eq!(frame.decoration_at(&c, [2.0, bounds.y + 4.0]), Some(id));
+    assert_eq!(frame.decoration_at(&c, [-1.0, bounds.y + 4.0]), None);
     let image = r.export_rgba(&c, (320, 320), 1.0).unwrap();
     let ink = |columns: std::ops::Range<usize>| {
         (0..60).any(|y| {
@@ -647,8 +650,15 @@ fn radial_title_wider_than_the_canvas_is_clipped() {
     assert!(ink(0..8) && ink(312..320), "the title runs off both edges");
     let mut moved = c.clone();
     assert_eq!(
-        map.drag_by(&mut moved.decorations, id, 0.0, 6.0),
+        frame.drag_decoration(&mut moved, id, 0.0, 6.0),
         Some(renderer::layout::NudgeResult::Moved)
+    );
+    assert_eq!(
+        frame.drag_decoration(&mut moved, id, 6.0, 0.0),
+        Some(renderer::layout::NudgeResult::Rejected(
+            renderer::layout::NudgeReject::OutOfBounds
+        )),
+        "the clipped title already fills the canvas width"
     );
     assert!(r.prepare(&moved, (320, 320), 1.0).is_ok());
 }

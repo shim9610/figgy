@@ -99,6 +99,23 @@ impl SelectionBox {
     pub fn outline(&self) -> &SelectionOutline {
         &self.outline
     }
+
+    /// This box inside `area`: its rectangle intersected with it, for an
+    /// element its canvas clips. The handles and the part outlines are
+    /// kept.
+    pub fn clipped_to(mut self, area: RectF) -> Self {
+        let r = self.rect;
+        let (x0, y0) = (r.x.max(area.x), r.y.max(area.y));
+        let x1 = (r.x + r.width).min(area.x + area.width);
+        let y1 = (r.y + r.height).min(area.y + area.height);
+        self.rect = RectF {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0.0),
+            height: (y1 - y0).max(0.0),
+        };
+        self
+    }
 }
 
 /// An object the user can select on the chart.

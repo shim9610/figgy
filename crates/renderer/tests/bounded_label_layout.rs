@@ -1,8 +1,11 @@
 //! A crowded first frame must remain renderable and editable through the shared API.
 #![cfg(not(target_arch = "wasm32"))]
+#[path = "support/bounded_decorations.rs"]
+mod bounded_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{decoration::DecorationMap, layout::NudgeResult, *};
+use bounded_decorations::Decorations;
 use std::sync::Arc;
 
 fn gpu() -> RendererDevice {
@@ -19,6 +22,15 @@ fn labels(map: &DecorationMap) -> Vec<(HitId, DecorationId, layout::RectF)> {
             )
         })
         .map(|(hit, e)| (hit, e.id.clone(), map.bounds(hit).unwrap()))
+        .collect()
+}
+
+/// The slice labels of a radial frame.
+fn radial_labels(frame: &RadialFrame, chart: &RadialChart) -> Vec<(HitId, DecorationId)> {
+    frame
+        .entries(chart)
+        .into_iter()
+        .filter(|(_, k)| matches!(k, DecorationId::RadialLabel(_)))
         .collect()
 }
 
@@ -289,13 +301,35 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             let frame = renderer
                 .prepare(&chart, (420, 280), scale)
                 .expect("label spacing cannot reject the first frame");
-            assert_eq!(labels(frame.decorations()).len(), 16);
+            assert_eq!(radial_labels(&*frame, &chart).len(), 16);
             let image = renderer.export_rgba(&chart, (420, 280), scale).unwrap();
             assert_pixels(&image);
             save(&format!("radial-{mode:?}-{scale}"), &image);
-            let key = editable(frame.decorations(), &mut chart.decorations);
+            let shown = chart.clone();
+            let (hit, key) = radial_labels(&*frame, &chart).pop().unwrap();
+            let text = frame.text_bounds(&shown, hit).unwrap();
+            assert_eq!(
+                frame.hit(
+                    &shown,
+                    [text.x + text.width * 0.5, text.y + text.height * 0.5]
+                ),
+                Some(hit)
+            );
+            assert_eq!(
+                frame.drag(&mut chart, hit, 0.5, 3.25),
+                Some(NudgeResult::Moved)
+            );
             let moved = renderer.prepare(&chart, (420, 280), scale).unwrap();
-            assert_moved(frame.decorations(), moved.decorations(), &key);
+            let after = moved
+                .text_bounds(&chart, moved.id_of(&chart, &key))
+                .unwrap();
+            let want = text.translated(0.5, 3.25);
+            assert!(
+                [after.x - want.x, after.y - want.y, after.width - want.width]
+                    .iter()
+                    .all(|d| d.abs() < 1e-3),
+                "{after:?} {want:?}"
+            );
             assert_ne!(
                 image.rgba,
                 renderer
@@ -317,7 +351,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     chart.font_size = 64.;
     chart.decorations = Default::default();
     let small = renderer.prepare(&chart, (240, 200), 1.).unwrap();
-    assert_eq!(labels(small.decorations()).len(), 16);
+    assert_eq!(radial_labels(&*small, &chart).len(), 16);
     assert_pixels(&renderer.export_rgba(&chart, (240, 200), 1.).unwrap());
     renderer.end_frame();
 }

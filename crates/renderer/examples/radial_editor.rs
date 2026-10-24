@@ -330,9 +330,9 @@ impl eframe::App for Editor {
             }
             let decoration = response.interact_pointer_pos().and_then(|p| {
                 let frame = self.frame.as_ref()?;
-                let map = frame.decorations();
-                let hit = map.hit_test([p.x - rect.left(), p.y - rect.top()])?;
-                let key = map.element(hit)?.id.clone();
+                let hit =
+                    frame.decoration_at(&self.chart, [p.x - rect.left(), p.y - rect.top()])?;
+                let key = frame.decoration_id(&self.chart, hit)?;
                 // Foreground labels win; otherwise data wins over the area
                 // until the user explicitly selects the area for editing.
                 if key == renderer::DecorationId::DataArea
@@ -347,10 +347,13 @@ impl eframe::App for Editor {
             });
             if response.drag_started() {
                 self.resize_handle = ctx.input(|i| i.pointer.press_origin()).and_then(|p| {
-                    let map = self.frame.as_ref()?.decorations();
-                    let selected = self.chart.decorations.selected.as_ref()?;
-                    let (id, _) = map.entries().find(|(_, e)| &e.id == selected)?;
-                    map.hit_resize_handle(id, [p.x - rect.left(), p.y - rect.top()])
+                    let frame = self.frame.as_ref()?;
+                    let id = frame.decoration(self.chart.decorations.selected.as_ref()?)?;
+                    frame.decoration_resize_handle(
+                        &self.chart,
+                        id,
+                        [p.x - rect.left(), p.y - rect.top()],
+                    )
                 });
             }
             if (response.clicked() || response.drag_started()) && self.resize_handle.is_none() {
@@ -360,20 +363,13 @@ impl eframe::App for Editor {
                 if let (Some(frame), Some(selected)) =
                     (&self.frame, &self.chart.decorations.selected.clone())
                 {
-                    let map = frame.decorations();
-                    if let Some((id, _)) = map.entries().find(|(_, e)| &e.id == selected) {
+                    if let Some(id) = frame.decoration(selected) {
                         let delta = ctx.input(|i| i.pointer.delta());
                         let previous = self.chart.decorations.clone();
                         if let Some(handle) = self.resize_handle {
-                            map.resize_by(
-                                &mut self.chart.decorations,
-                                id,
-                                handle,
-                                delta.x,
-                                delta.y,
-                            );
+                            frame.resize_decoration(&mut self.chart, id, handle, delta.x, delta.y);
                         } else {
-                            map.drag_by(&mut self.chart.decorations, id, delta.x, delta.y);
+                            frame.drag_decoration(&mut self.chart, id, delta.x, delta.y);
                         }
                         // Keep the last feasible model when text no longer fits.
                         if self

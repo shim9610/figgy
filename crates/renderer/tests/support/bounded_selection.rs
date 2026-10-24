@@ -1,5 +1,7 @@
 //! Selection-only pixel assertions shared by native and browser area tests.
-use ::renderer::{RasterImage, SelectionBox, layout::RectF};
+use ::renderer::{
+    DrawnPart, RasterImage, SelectionBox, SelectionOutline, layout::RectF, select::part_outline,
+};
 
 pub fn assert_selection_only(
     before: &RasterImage,
@@ -50,6 +52,18 @@ fn assert_selection_pixels(
     rerasterized_label: Option<RectF>,
     context: &str,
 ) {
+    if let SelectionOutline::Parts(parts) = selection.outline() {
+        assert_part_outlines(
+            before,
+            selected,
+            selection,
+            parts,
+            scale,
+            rerasterized_label,
+            context,
+        );
+        return;
+    }
     assert_eq!(
         (before.width, before.height),
         (selected.width, selected.height)
@@ -127,6 +141,89 @@ fn assert_selection_pixels(
         assert!(
             count >= 4,
             "{context}: missing {edge} selection border ({count} changed blue pixels)"
+        );
+    }
+}
+
+/// The distance from `p` to the segment `a`..`b`.
+fn segment_distance(p: [f32; 2], a: [f32; 2], b: [f32; 2]) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len = d[0] * d[0] + d[1] * d[1];
+    let t = if len > 0.0 {
+        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / len).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+}
+
+/// The selection-only check of a selection that outlines each part (an
+/// outside radial label: its text and its leader line): every changed
+/// pixel lies on one part's outline, a handle or a re-rasterized label, and
+/// every part's outline is drawn.
+fn assert_part_outlines(
+    before: &RasterImage,
+    selected: &RasterImage,
+    selection: &SelectionBox,
+    parts: &[DrawnPart],
+    scale: f32,
+    rerasterized_label: Option<RectF>,
+    context: &str,
+) {
+    assert_eq!(
+        (before.width, before.height),
+        (selected.width, selected.height)
+    );
+    let halo = selection.stroke_width() * 0.5 + 1.0 / scale;
+    let outlines: Vec<Vec<([f32; 2], [f32; 2])>> = parts
+        .iter()
+        .map(|part| {
+            let outline = part_outline(part);
+            let c = outline.corners();
+            (0..c.len()).map(|i| (c[i], c[(i + 1) % c.len()])).collect()
+        })
+        .collect();
+    let mut changed_blue = vec![0usize; parts.len()];
+    for (i, (old, new)) in before
+        .rgba
+        .chunks_exact(4)
+        .zip(selected.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if old == new {
+            continue;
+        }
+        let x = (i as u32 % selected.width) as f32 / scale + 0.5 / scale;
+        let y = (i as u32 / selected.width) as f32 / scale + 0.5 / scale;
+        let on: Vec<bool> = outlines
+            .iter()
+            .map(|edges| {
+                edges
+                    .iter()
+                    .any(|(a, b)| segment_distance([x, y], *a, *b) <= halo)
+            })
+            .collect();
+        let on_handle = selection
+            .handles()
+            .iter()
+            .any(|h| h.expanded(halo).contains(x, y));
+        assert!(
+            on.iter().any(|v| *v)
+                || on_handle
+                || rerasterized_label
+                    .is_some_and(|label| label.expanded(1.0 / scale).contains(x, y)),
+            "{context}: selection changed unrelated pixel at ({x}, {y})"
+        );
+        if new[2] > 140 && i32::from(new[2]) - i32::from(new[0]) > 30 {
+            for (count, on) in changed_blue.iter_mut().zip(&on) {
+                *count += usize::from(*on && !on_handle);
+            }
+        }
+    }
+    for (part, count) in parts.iter().zip(changed_blue) {
+        assert!(
+            count >= 4,
+            "{context}: the outline of {part:?} is not drawn ({count} changed blue pixels)"
         );
     }
 }

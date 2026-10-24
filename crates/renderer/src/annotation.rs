@@ -701,10 +701,23 @@ impl BoundedAnnotationFrame {
         decorations: &crate::decoration::DecorationMap,
         position: [f32; 2],
     ) -> Option<LayerHit> {
+        self.route_active_layer(active, position, || decorations.hit_test(position))
+    }
+
+    /// [`Self::hit_test_active_layer`] for a chart whose decorations answer
+    /// through their own hit test: `decorations` names the decoration at
+    /// `position` when the items do not take it. The radial chart passes
+    /// its frame's `decoration_at`.
+    pub fn route_active_layer(
+        &self,
+        active: LayerRef,
+        position: [f32; 2],
+        decorations: impl FnOnce() -> Option<HitId>,
+    ) -> Option<LayerHit> {
         self.rasters.map.route_when(
             active.bounded() == LayerRef::Annotations && self.visible,
             position,
-            || decorations.hit_test(position),
+            decorations,
         )
     }
 

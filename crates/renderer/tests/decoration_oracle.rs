@@ -41,8 +41,11 @@
 //! on screen.
 //!
 //! The four bounded families (radial, categorical, box plot, radar) run the
-//! same invariants on their renderer-measured `DecorationMap`, with each
-//! element's ink measured by drag differential and the highlight through
+//! same invariants on their hit maps (the renderer-measured `DecorationMap`
+//! of the categorical, box plot and radar frames; the radial frame's
+//! `HitMap<RadialChart>`, whose elements place their parts from the chart,
+//! an outside label's leader line among them), with each element's ink
+//! measured by drag differential and the highlight through
 //! `bounded_selection::assert_selection_only`.
 //!
 //! The Cartesian decoration ink needs no GPU: the CPU raster of each
@@ -53,9 +56,12 @@
 //! families and the annotation layer.
 #![cfg(not(target_arch = "wasm32"))]
 
+#[path = "support/bounded_decorations.rs"]
+mod bounded_decorations;
 #[allow(dead_code)]
 #[path = "support/bounded_selection.rs"]
 mod bounded_selection;
+use bounded_decorations::Decorations;
 #[path = "support/edge_band.rs"]
 mod edge_band;
 #[path = "support/playground_scenes.rs"]
@@ -71,7 +77,6 @@ use std::time::Instant;
 use renderer::axis_render::{
     AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
 };
-use renderer::decoration::DecorationMap;
 use renderer::drag::DragConfig;
 use renderer::layout::{Element, NudgeResult, RectF, Side};
 use renderer::legend::Legend;
@@ -346,15 +351,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         inv: Inv::I6,
         detail: "after the drag, I2 of annotation_0: 4 of * ({\"annotation_3\": 4})*",
         reason: "the span under the arrow shaft past the tip, as in I2",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Radial",
-        layer: "base",
-        element: "radial_label_0_2",
-        inv: Inv::I2,
-        detail: "dragging it by * changes * pixels outside its and its followers' hit regions*",
-        reason: "a radial label's leader line follows the label but lies in no hit region",
         issue: "#47",
     },
     Exclusion {
@@ -2790,11 +2786,15 @@ fn check_i6(
 // ---------------------------------------------------------------------------
 //
 // A bounded chart (radial, categorical, box plot, radar) draws its
-// decorations into its own GPU frame and registers each as one renderer-
-// measured box in its `DecorationMap`. Its ink is measured by drag
-// differential: an element dragged beyond its own extent leaves its old
-// place and shows at its new one, and every pixel that changes must lie in
-// the hit regions of the element and of its followers, old or new.
+// decorations into its own GPU frame. The categorical, box plot and radar
+// frames register each as one renderer-measured box in their
+// `DecorationMap`; the radial frame registers each in its
+// `HitMap<RadialChart>`, placed from the chart by the one emit its raster
+// draws with, so an outside label is its text and its leader line, outlined
+// and hit part by part. Ink is measured by drag differential: an element
+// dragged beyond its own extent leaves its old place and shows at its new
+// one, and every pixel that changes must lie in what the element's and its
+// followers' selections outline, old or new.
 
 /// The logical canvas of every bounded scene.
 const BOUNDED_SIZE: (u32, u32) = (800, 600);
@@ -2806,14 +2806,15 @@ const STRONG_DIFF: u8 = 128;
 /// [`SCALE_DIFF`] at this share of its pixels (`scale_consistency`).
 const BOUNDED_SCALE_SHARE: f64 = 0.004;
 
-/// One bounded family's renderer, behind one face for the sweep.
+/// One bounded family's renderer, behind one face for the sweep. Its frame
+/// answers the decoration queries of `bounded_decorations::Decorations`:
+/// the categorical, box plot and radar frames through their
+/// `DecorationMap`, the radial frame through its `HitMap<RadialChart>`.
 trait Bounded {
     type Chart: Clone + PartialEq;
-    type Frame;
+    type Frame: Decorations<Chart = Self::Chart>;
     fn prepare(&mut self, c: &Self::Chart, scale: f32) -> Result<Arc<Self::Frame>, String>;
-    fn map(f: &Self::Frame) -> &DecorationMap;
     fn export(&mut self, c: &Self::Chart, scale: f32) -> Result<RasterImage, String>;
-    fn layout(c: &mut Self::Chart) -> &mut DecorationLayout;
 }
 
 macro_rules! bounded_family {
@@ -2827,9 +2828,6 @@ macro_rules! bounded_family {
                     .prepare(c, BOUNDED_SIZE, scale)
                     .map_err(|e| e.to_string())
             }
-            fn map(f: &$frame) -> &DecorationMap {
-                f.decorations()
-            }
             fn export(&mut self, c: &$chart, scale: f32) -> Result<RasterImage, String> {
                 let image = self
                     .0
@@ -2837,9 +2835,6 @@ macro_rules! bounded_family {
                     .map_err(|e| e.to_string());
                 self.0.end_frame();
                 image
-            }
-            fn layout(c: &mut $chart) -> &mut DecorationLayout {
-                &mut c.decorations
             }
         }
     };
@@ -2854,6 +2849,10 @@ bounded_family!(
 );
 bounded_family!(BoxFamily, BoxPlotRenderer, BoxPlotChart, BoxPlotFrame);
 bounded_family!(RadarFamily, RadarRenderer, RadarChart, RadarFrame);
+
+fn layout_of<B: Bounded>(c: &mut B::Chart) -> &mut DecorationLayout {
+    <B::Frame as Decorations>::layout(c)
+}
 
 fn bounded_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
     let format = wgpu::TextureFormat::Rgba8Unorm;
@@ -2908,25 +2907,63 @@ struct BoundedEntry {
     key: DecorationId,
     name: String,
     bounds: Option<RectF>,
+    /// What a drag moves: the element's text for a radial label, whose
+    /// leader line keeps its start on the slice; its bounds otherwise.
+    text: Option<RectF>,
     selection: Option<SelectionBox>,
     followers: Vec<DecorationId>,
 }
 
-fn bounded_entries(map: &DecorationMap) -> Vec<BoundedEntry> {
-    map.entries()
-        .map(|(id, e)| BoundedEntry {
+fn bounded_entries<F: Decorations>(f: &F, c: &F::Chart) -> Vec<BoundedEntry> {
+    f.entries(c)
+        .into_iter()
+        .map(|(id, key)| BoundedEntry {
             id,
-            key: e.id.clone(),
-            name: e.id.element_id(),
-            bounds: map.bounds(id),
-            selection: map.selection_box(id),
-            followers: e.followers.iter().map(|(f, _)| f.clone()).collect(),
+            name: key.element_id(),
+            bounds: f.bounds(c, id),
+            text: f.text_bounds(c, id),
+            selection: f.selection(c, id),
+            followers: f.followers(c, id),
+            key,
         })
         .collect()
 }
 
 fn entry_of<'a>(entries: &'a [BoundedEntry], key: &DecorationId) -> Option<&'a BoundedEntry> {
     entries.iter().find(|e| e.key == *key)
+}
+
+/// Whether `(x, y)` is in the region `sb` outlines: its padded box, or the
+/// outline of one of its parts.
+fn outlined(sb: &SelectionBox, x: f32, y: f32) -> bool {
+    match sb.outline() {
+        SelectionOutline::Rect => sb.rect().contains(x, y),
+        SelectionOutline::Parts(parts) => parts.iter().any(|p| part_outline(p).contains(x, y)),
+    }
+}
+
+/// [`outlined`] grown by `pad` px: where weak antialiasing ink may lie.
+fn outlined_near(sb: &SelectionBox, x: f32, y: f32, pad: f32) -> bool {
+    match sb.outline() {
+        SelectionOutline::Rect => sb.rect().expanded(pad).contains(x, y),
+        SelectionOutline::Parts(_) => {
+            outlined(sb, x, y)
+                || outline_edges(sb)
+                    .iter()
+                    .any(|(a, b)| segment_distance((x, y), *a, *b) <= pad)
+        }
+    }
+}
+
+/// Equal up to float noise: a radial decoration is placed again from its
+/// offset rather than translated as a box.
+fn near_rect(a: Option<RectF>, b: Option<RectF>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => [a.x - b.x, a.y - b.y, a.width - b.width, a.height - b.height]
+            .into_iter()
+            .all(|d| d.abs() <= EPS),
+        (a, b) => a.is_none() && b.is_none(),
+    }
 }
 
 /// The largest channel difference of pixel `i` between two images.
@@ -2947,7 +2984,7 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
         };
         let phase = Instant::now();
         let mut c = chart.clone();
-        *B::layout(&mut c) = DecorationLayout::default();
+        *layout_of::<B>(&mut c) = DecorationLayout::default();
         let (frame, base) = match (r.prepare(&c, scale), r.export(&c, scale)) {
             (Ok(f), Ok(b)) => (f, b),
             (Err(e), _) | (_, Err(e)) => {
@@ -2955,25 +2992,18 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
                 continue;
             }
         };
-        let map = B::map(&frame);
-        let entries = bounded_entries(map);
+        let entries = bounded_entries(&*frame, &c);
         report.count(&at, "bounded elements", entries.len());
         // I7: the hit map holds exactly the frame's entries.
-        report.check(
-            &at,
-            "<map>",
-            Inv::I7,
-            map.hit_map().len() == entries.len(),
-            || {
-                format!(
-                    "hit map holds {} entries, the frame {}",
-                    map.hit_map().len(),
-                    entries.len()
-                )
-            },
-        );
+        report.check(&at, "<map>", Inv::I7, frame.len() == entries.len(), || {
+            format!(
+                "hit map holds {} entries, the frame {}",
+                frame.len(),
+                entries.len()
+            )
+        });
         for e in &entries {
-            let found = map.hit_map().find(&e.name);
+            let found = frame.find(&e.name);
             report.check(&at, &e.name, Inv::I7, found == Some(e.id), || {
                 format!("find({:?}) is {found:?}, the entry {:?}", e.name, e.id)
             });
@@ -2992,7 +3022,7 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
         }
         check_bounded_i4(report, &at, &entries);
         if scale == 1.0 {
-            bounded_ink(report, &at, &mut r, &c, map, &entries, &base);
+            bounded_ink(report, &at, &mut r, &c, &*frame, &entries, &base);
             report.time("bounded ink and drags (I2, I6, I7)", phase);
             let phase = Instant::now();
             bounded_selection(report, &at, &mut r, &c, &entries, &base);
@@ -3117,12 +3147,11 @@ fn bounded_ink<B: Bounded>(
     at: &At<'_>,
     r: &mut B,
     c: &B::Chart,
-    map: &DecorationMap,
+    frame: &B::Frame,
     entries: &[BoundedEntry],
     base: &RasterImage,
 ) {
     let (w, h) = (base.width as usize, base.height as usize);
-    let measure = CpuTextMeasure::for_style(&Default::default());
     let point = |i: usize| ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5);
     // Each element's ink at its old place, for the topmost check.
     let mut inked: Vec<Vec<bool>> = vec![Vec::new(); entries.len()];
@@ -3131,8 +3160,8 @@ fn bounded_ink<B: Bounded>(
         let (Some(b), Some(sb)) = (e.bounds, e.selection.as_ref()) else {
             continue;
         };
-        // `contains` against the padded box, on its edge band.
-        let element = map.hit_map().get(e.id).expect("entry id");
+        // `contains` against the region the selection outlines, on its
+        // edge band.
         let rect = sb.rect();
         let win = (
             (rect.x - 3.0).floor().max(0.0) as u32,
@@ -3140,34 +3169,41 @@ fn bounded_ink<B: Bounded>(
             ((rect.x + rect.width + 3.0).ceil() as u32).min(w as u32),
             ((rect.y + rect.height + 3.0).ceil() as u32).min(h as u32),
         );
-        let band = edge_band::edge_band(win, |x, y| rect.contains(x as f32 + 0.5, y as f32 + 0.5));
+        let band = edge_band::edge_band(win, |x, y| outlined(sb, x as f32 + 0.5, y as f32 + 0.5));
         let stride = band.len().div_ceil(CONTAINS_SAMPLES).max(1);
         let disagree = band
             .iter()
             .step_by(stride)
             .filter(|&&(x, y)| {
                 let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-                element.contains(map.layout(), &measure, px, py) != rect.contains(px, py)
+                frame.contains(c, e.id, [px, py]) != outlined(sb, px, py)
             })
             .count();
         report.count(at, "contains samples", band.len().div_ceil(stride));
         report.check(at, &e.name, Inv::I2, disagree == 0, || {
-            format!("contains disagrees with the padded box at {disagree} samples")
+            format!("contains disagrees with the outlined region at {disagree} samples")
         });
         if e.key == DecorationId::DataArea {
             // Paints nothing of its own; moving it moves the data.
             continue;
         }
-        // Drag it beyond its own extent, inside the canvas.
-        let (ox, oy) = (b.width + 6.0, b.height + 6.0);
+        // Drag what moves beyond its own extent, inside the canvas.
+        let t = e.text.unwrap_or(b);
+        let (ox, oy) = (t.width + 6.0, t.height + 6.0);
+        // A part that keeps its start where it is (an outside radial label's
+        // leader line, from the slice to the text) must swing across its
+        // old place, not slide along it: such an element is dragged
+        // vertically first.
+        let parts = matches!(sb.outline(), SelectionOutline::Parts(_));
         let candidates: Vec<(f32, f32)> = match e.key {
             DecorationId::Axis(Side::Top | Side::Bottom) => vec![(0.0, oy), (0.0, -oy)],
             DecorationId::Axis(_) => vec![(ox, 0.0), (-ox, 0.0)],
+            _ if parts => vec![(0.0, oy), (0.0, -oy), (ox, 0.0), (-ox, 0.0)],
             _ => vec![(ox, 0.0), (-ox, 0.0), (0.0, oy), (0.0, -oy)],
         };
         let Some((moved, (dx, dy))) = candidates.into_iter().find_map(|(dx, dy)| {
             let mut trial = c.clone();
-            (map.drag_by(B::layout(&mut trial), e.id, dx, dy) == Some(NudgeResult::Moved))
+            (frame.drag(&mut trial, e.id, dx, dy) == Some(NudgeResult::Moved))
                 .then_some((trial, (dx, dy)))
         }) else {
             report.check(at, &e.name, Inv::I2, false, || {
@@ -3183,17 +3219,15 @@ fn bounded_ink<B: Bounded>(
             }
         };
         report.count(at, "differential exports", 1);
-        let after = bounded_entries(B::map(&frame2));
-        // Where the element and its followers may change pixels: their
-        // padded boxes before and after.
-        let mut allowed: Vec<RectF> = vec![sb.rect()];
-        let new_box = entry_of(&after, &e.key).and_then(|n| n.selection.as_ref().map(|s| s.rect()));
+        let after = bounded_entries(&*frame2, &moved);
+        // Where the element and its followers may change pixels: what their
+        // selections outline before and after.
+        let mut allowed: Vec<&SelectionBox> = vec![sb];
+        let new_box = entry_of(&after, &e.key).and_then(|n| n.selection.as_ref());
         allowed.extend(new_box);
         for f in &e.followers {
-            allowed
-                .extend(entry_of(entries, f).and_then(|o| o.selection.as_ref().map(|s| s.rect())));
-            allowed
-                .extend(entry_of(&after, f).and_then(|o| o.selection.as_ref().map(|s| s.rect())));
+            allowed.extend(entry_of(entries, f).and_then(|o| o.selection.as_ref()));
+            allowed.extend(entry_of(&after, f).and_then(|o| o.selection.as_ref()));
         }
         let mut stray = Vec::new();
         let mut old_ink = Vec::new();
@@ -3208,21 +3242,21 @@ fn bounded_ink<B: Bounded>(
             let strong = d >= STRONG_DIFF;
             let ok = allowed.iter().any(|a| {
                 if strong {
-                    a.contains(px, py)
+                    outlined(a, px, py)
                 } else {
-                    a.expanded(1.0).contains(px, py)
+                    outlined_near(a, px, py, 1.0)
                 }
             });
             if !ok {
                 stray.push((px, py));
             }
-            if sb.rect().contains(px, py) {
+            if outlined(sb, px, py) {
                 old_ink.push(i);
                 mask[i] = true;
                 if strong {
                     strong_old[index].push(i);
                 }
-            } else if new_box.is_some_and(|n| n.contains(px, py)) {
+            } else if new_box.is_some_and(|n| outlined(n, px, py)) {
                 new_ink += 1;
             }
         }
@@ -3239,26 +3273,66 @@ fn bounded_ink<B: Bounded>(
         report.check(at, &e.name, Inv::I6, new_ink > 0, || {
             format!("dragged by ({dx:.0}, {dy:.0}) it is not drawn at its new place")
         });
-        if let Some(ext) = old_ink
-            .iter()
-            .map(|&i| {
-                let (x, y) = (i % w, i / w);
-                RectF {
-                    x: x as f32,
-                    y: y as f32,
-                    width: 1.0,
-                    height: 1.0,
+        let ink_extent = |pixels: &mut dyn Iterator<Item = usize>| {
+            pixels
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    RectF {
+                        x: x as f32,
+                        y: y as f32,
+                        width: 1.0,
+                        height: 1.0,
+                    }
+                })
+                .reduce(renderer::sink::union)
+        };
+        match sb.outline() {
+            SelectionOutline::Rect => {
+                if let Some(ext) = ink_extent(&mut old_ink.iter().copied()) {
+                    let misfit = box_misfit(sb.rect(), ext);
+                    report.check(at, &e.name, Inv::I2, misfit <= BOX_FIT, || {
+                        format!(
+                            "box {:?} is {misfit:.1} px past the padding from the ink extent {ext:?}",
+                            sb.rect()
+                        )
+                    });
                 }
-            })
-            .reduce(renderer::sink::union)
-        {
-            let misfit = box_misfit(sb.rect(), ext);
-            report.check(at, &e.name, Inv::I2, misfit <= BOX_FIT, || {
-                format!(
-                    "box {:?} is {misfit:.1} px past the padding from the ink extent {ext:?}",
-                    sb.rect()
-                )
-            });
+            }
+            SelectionOutline::Parts(parts) => {
+                // A text part's box fits the ink inside it; a stroke part
+                // has ink inside its outline.
+                for part in parts {
+                    let outline = part_outline(part);
+                    let mut inside = old_ink.iter().copied().filter(|&i| {
+                        let (px, py) = point(i);
+                        outline.contains(px, py)
+                    });
+                    match *part {
+                        DrawnPart::Text(t) => {
+                            let o = t.expanded(SELECTION_PADDING);
+                            match ink_extent(&mut inside) {
+                                Some(ext) => {
+                                    let misfit = box_misfit(o, ext);
+                                    report.check(at, &e.name, Inv::I2, misfit <= BOX_FIT, || {
+                                        format!(
+                                            "text part {o:?} is {misfit:.1} px past the padding from its ink extent {ext:?}"
+                                        )
+                                    });
+                                }
+                                None => report.check(at, &e.name, Inv::I2, false, || {
+                                    format!("text part {t:?} has no ink")
+                                }),
+                            }
+                        }
+                        _ => {
+                            let inked_part = inside.next().is_some();
+                            report.check(at, &e.name, Inv::I2, inked_part, || {
+                                format!("part {part:?} has no ink inside its outline")
+                            });
+                        }
+                    }
+                }
+            }
         }
         report.count(at, "ink pixels", old_ink.len());
         inked[index] = mask;
@@ -3269,7 +3343,7 @@ fn bounded_ink<B: Bounded>(
         let mut first = None;
         for &i in &strong_old[index] {
             let (px, py) = point(i);
-            let Some(hit) = map.hit_test([px, py]) else {
+            let Some(hit) = frame.hit(c, [px, py]) else {
                 *covered.entry("<nothing>".into()).or_default() += 1;
                 first.get_or_insert((px, py));
                 continue;
@@ -3314,7 +3388,7 @@ fn bounded_ink<B: Bounded>(
         };
         report.count(at, "drags", 1);
         let mut far = c.clone();
-        let result = map.drag_by(B::layout(&mut far), e.id, FAR_DRAG.0, FAR_DRAG.1);
+        let result = frame.drag(&mut far, e.id, FAR_DRAG.0, FAR_DRAG.1);
         report.check(
             at,
             &e.name,
@@ -3324,9 +3398,9 @@ fn bounded_ink<B: Bounded>(
         );
         // The data area fills its automatic region; it moves once shrunk.
         let mut moved = c.clone();
-        let mut start = b;
+        let mut start = e.text.unwrap_or(b);
         if e.key == DecorationId::DataArea {
-            let shrunk = map.resize_by(B::layout(&mut moved), e.id, ResizeHandle::SE, -40.0, -30.0);
+            let shrunk = frame.resize(&mut moved, e.id, ResizeHandle::SE, -40.0, -30.0);
             report.check(
                 at,
                 &e.name,
@@ -3337,12 +3411,14 @@ fn bounded_ink<B: Bounded>(
             let Ok(frame) = r.prepare(&moved, 1.0) else {
                 continue;
             };
-            let m = B::map(&frame);
-            let Some(entry) = bounded_entries(m).into_iter().find(|n| n.key == e.key) else {
+            let Some(entry) = bounded_entries(&*frame, &moved)
+                .into_iter()
+                .find(|n| n.key == e.key)
+            else {
                 continue;
             };
             start = entry.bounds.unwrap_or(b);
-            let result = m.drag_by(B::layout(&mut moved), entry.id, DRAG.0, DRAG.1);
+            let result = frame.drag(&mut moved, entry.id, DRAG.0, DRAG.1);
             report.check(
                 at,
                 &e.name,
@@ -3351,7 +3427,7 @@ fn bounded_ink<B: Bounded>(
                 || format!("a drag by {DRAG:?} gave {result:?}"),
             );
         } else {
-            let result = map.drag_by(B::layout(&mut moved), e.id, DRAG.0, DRAG.1);
+            let result = frame.drag(&mut moved, e.id, DRAG.0, DRAG.1);
             report.check(
                 at,
                 &e.name,
@@ -3375,15 +3451,14 @@ fn bounded_ink<B: Bounded>(
                 continue;
             }
         };
-        let m2 = B::map(&frame);
-        let after = bounded_entries(m2);
+        let after = bounded_entries(&*frame, &moved);
         let Some(n) = entry_of(&after, &e.key) else {
             report.check(at, &e.name, Inv::I6, false, || "gone after the drag".into());
             continue;
         };
         let want = start.translated(dx, dy);
-        report.check(at, &e.name, Inv::I6, n.bounds == Some(want), || {
-            format!("bounds {:?} after the drag, {want:?} expected", n.bounds)
+        report.check(at, &e.name, Inv::I6, near_rect(n.text, Some(want)), || {
+            format!("{:?} after the drag, {want:?} expected", n.text)
         });
         for f in &e.followers {
             let (before, after) = (
@@ -3394,7 +3469,7 @@ fn bounded_ink<B: Bounded>(
                 at,
                 &e.name,
                 Inv::I6,
-                after == before.map(|r| r.translated(dx, dy)),
+                near_rect(after, before.map(|r| r.translated(dx, dy))),
                 || {
                     format!(
                         "follower {f:?} at {after:?}, {before:?} moved by ({dx}, {dy}) expected"
@@ -3402,8 +3477,8 @@ fn bounded_ink<B: Bounded>(
                 },
             );
         }
-        // The moved element picks somewhere on its new box.
-        let picks = n.bounds.is_some_and(|nb| {
+        // The moved element picks somewhere on what moved.
+        let picks = n.text.is_some_and(|nb| {
             std::iter::once((4, 4))
                 .chain((0..=8).flat_map(|j| (0..=8).map(move |i| (i, j))))
                 .any(|(i, j)| {
@@ -3411,7 +3486,7 @@ fn bounded_ink<B: Bounded>(
                         nb.x + nb.width * i as f32 / 8.0,
                         nb.y + nb.height * j as f32 / 8.0,
                     ];
-                    m2.hit_test(p) == Some(n.id)
+                    frame.hit(&moved, p) == Some(n.id)
                 })
         });
         report.check(at, &e.name, Inv::I6, picks, || {
@@ -3421,7 +3496,8 @@ fn bounded_ink<B: Bounded>(
 }
 
 /// I3 of a bounded frame at 1x: selecting each element changes only its
-/// box outline and handles (`bounded_selection::assert_selection_only`).
+/// outline and handles (`bounded_selection::assert_selection_only`, which
+/// takes a box or the outlines of its parts).
 fn bounded_selection<B: Bounded>(
     report: &mut Report,
     at: &At<'_>,
@@ -3435,7 +3511,7 @@ fn bounded_selection<B: Bounded>(
             continue;
         };
         let mut selected = c.clone();
-        B::layout(&mut selected).selected = Some(e.key.clone());
+        layout_of::<B>(&mut selected).selected = Some(e.key.clone());
         let image = match r.export(&selected, 1.0) {
             Ok(i) => i,
             Err(e2) => {
