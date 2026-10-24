@@ -73,6 +73,12 @@ recomputes hit regions or label positions.
 독립적으로 이동하는 계약은 아니다. 영역 조정은 데이터 값이나 축 범위를 바꾸지 않는다.
 드래그로 데이터 값을 바꾸는 기능은 없다.
 
+A categorical Cartesian axis (`AxisOptions::categories`) draws its category
+labels as the same `AxisLabel(Side)` group as numeric tick labels: they are hit,
+selected, highlighted and dragged (along and across the axis, through
+`label_offset_x` / `label_offset_y`) together, and the axis line drag moves
+them with the line. This holds on overlay Y axes and in subplots.
+
 ## Manual label placement
 
 Use the displayed frame's decoration hit map to select and drag labels. Each

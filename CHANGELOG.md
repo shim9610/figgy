@@ -249,6 +249,30 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   `RadialChart::step_selection(backwards)` is the radial step of the bounded
   web wrapper's `step_selection`, moved into the model since it edits only
   the SSOT; the wrapper calls it and its behaviour is unchanged.
+- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13c). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
+  categorical axis with `n` categories maps the data range
+  `[-0.5, n - 0.5]` with category `i` at `i`, a major tick at every
+  category, no minors and `categories[i].label` as tick text, thinned by the
+  numeric labels' stride rule when they crowd. `min`, `max`,
+  `major_spacing`, `minor_count` and the label format are ignored on it.
+  New items: `AxisOptions::category_count`, `data_range` (what the tick
+  walks, `axis_fraction`, the annotation space and the overlay and subplot
+  expansion read) and `validate_categories` (1 to 64 categories, unique
+  non-empty single-line ids, single-line labels of at most 80 characters,
+  `MAX_CATEGORY_TEXT_CHARS`, a linear scale, no inversion);
+  `PolarOptions::validate` rejects a categorical angle axis (it arrives
+  with the radar series kind) and radius axis. A linked subplot axis
+  follows its target's categories. `Category` moves to `model::config`
+  beside the axis; `categorical::Category` (and the crate-root path)
+  re-export it. The JSON key is additive (omitted when `None`); model 0.12.1
+  and older ignore it. Migration: an `AxisOptions { .. }` literal adds
+  `categories: None`, and an exhaustive destructuring adds `categories`.
+- **Axis anchors take the plot rectangle.** `layout::axis_anchor(side,
+  plot: &RectF)` replaces `axis_anchor(side, &DataArea)`, so a plot that is
+  not integer-aligned is anchored by the same code; an integer data area
+  gives the same endpoints bit for bit. Migration: pass
+  `&RectF::from_rect(&data_area)`.
 
 <a id="unreleased-renderer"></a>
 
@@ -463,6 +487,23 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
   `label_format`, `label_decimals` or `value_suffix` without writing the
   labels again reuses the frame, since nothing it draws changed.
+- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13c). The four Cartesian axes and the overlay Y axes may be
+  categorical (`AxisOptions::categories`). The category labels are the
+  side's `AxisLabel` element, placed by the numeric labels' placement in the
+  axis' label style, so hover, hit, selection, both drag offsets, the picked
+  highlight and the PNG export are the existing ones; the data transform,
+  the annotation space and the view state map the category range. The
+  renderer gate applies `validate_categories` and rejects a categorical
+  colourbar axis with `InvalidConfig`; a streamed series on a chart with a
+  categorical axis is rejected with `InvalidSeriesConfig`. The range
+  helpers (`set_*_range`, `auto_fit_*`, view states) leave a categorical
+  axis unchanged. With labels "0", "1", … a categorical axis draws pixel
+  for pixel what the numeric axis over the same range with a tick at every
+  integer draws.
+- **Axis walks on the plot rectangle.** The Cartesian axis, tick, tick
+  label and grid walks take the plot `RectF` instead of the integer data
+  area. Every existing document draws the same pixels.
 
 <a id="unreleased-web"></a>
 
