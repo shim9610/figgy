@@ -191,6 +191,20 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
     the same. `BoxPlotMaterial::default()` is now `Flat` (the enum default);
     `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
     `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
+- **The polar label band scales with the chart**
+  ([#47](https://github.com/shim9610/figgy/issues/47)). `Config::polar_geometry`
+  reserved a fixed 6 px beside the tick length and the label line (2 px
+  beside the tick length with the angle labels hidden), which
+  `Config::scaled` could not scale: a 2x
+  display or PNG export of a polar chart put the ring, its ticks and both
+  label sets 2.5 to 4 px (1x) off the 1x layout doubled. The clearance is now
+  a third of the angle-label font size (a ninth with the labels hidden), so
+  2x is the 1x layout doubled. **Behaviour change:** at the default 18 px
+  label font the layout is unchanged to the bit; a polar chart with another
+  `bottom_x.label_style.font_size` changes its ring radius at 1x by
+  `(18 - font_size) / 3` px (`(18 - font_size) / 9` px with the labels
+  hidden), for example 2 px larger at 12 px and 1 px smaller at 21 px. No API
+  or serialized field changes.
 
 <a id="unreleased-renderer"></a>
 

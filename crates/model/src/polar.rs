@@ -258,12 +258,18 @@ impl Config {
         let axis = &self.bottom_x;
         let labels = &axis.label_style;
         // One band of angular tick labels fits inside the data area on every
-        // side; the tick marks point outward from the ring.
+        // side; the tick marks point outward from the ring. Every term of the
+        // band is a multiple of a size `Config::scaled` scales (the tick
+        // length and the label font size), so a 2x export is the 1x layout
+        // doubled. With labels the band holds a line of 1.4 font sizes plus a
+        // third of one as clearance (6 px at the default 18 px); without them,
+        // a ninth of the font size (2 px at 18 px).
+        let font_size = labels.font_size.max(0.0);
         let band = axis.major_tick_length.max(0.0)
             + if labels.visible && labels.label_visible {
-                labels.font_size.max(0.0) * 1.4 + 6.0
+                font_size * 1.4 + font_size / 3.0
             } else {
-                2.0
+                font_size / 9.0
             };
         let radius = (half - band).max(0.0);
         Some(PolarGeometry {
@@ -375,6 +381,63 @@ mod tests {
         let mut plain = config;
         plain.polar = None;
         assert_eq!(plain.polar_geometry(), None);
+    }
+
+    #[test]
+    fn geometry_at_2x_is_the_1x_geometry_doubled() {
+        // `Config::scaled` scales the tick length and the label font size,
+        // which are every term of the label band, so the band doubles
+        // exactly; the centre and radius also follow the data area, whose
+        // edges are floored at each scale.
+        for font_size in [18.0, 9.0, 12.0, 16.0] {
+            for labels_visible in [true, false] {
+                let mut config = polar_config();
+                config.bottom_x.label_style.font_size = font_size;
+                config.bottom_x.label_style.visible = labels_visible;
+                let one = config.polar_geometry().unwrap();
+                let scaled = config.scaled(2.0);
+                let two = scaled.polar_geometry().unwrap();
+                let half = |c: &Config| {
+                    let area = c.data_area().unwrap().0;
+                    area.width.min(area.height) as f32 * 0.5
+                };
+                let band_one = half(&config) - one.radius;
+                let band_two = half(&scaled) - two.radius;
+                assert!(
+                    (band_two - 2.0 * band_one).abs() < 1e-4,
+                    "font {font_size}, labels {labels_visible}: band {band_two} at 2x, \
+                     {band_one} at 1x"
+                );
+                for (a, b) in [
+                    (two.center[0], one.center[0]),
+                    (two.center[1], one.center[1]),
+                    (two.radius, one.radius),
+                ] {
+                    assert!(
+                        (a - 2.0 * b).abs() <= 1.0,
+                        "font {font_size}, labels {labels_visible}: {a} at 2x, {b} at 1x"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_default_label_band_is_unchanged() {
+        // At the default 18 px label font the band's clearance is the 6 px
+        // (2 px without labels) of earlier releases, to the bit.
+        let config = polar_config();
+        assert_eq!(config.bottom_x.label_style.font_size, 18.0);
+        let area = config.data_area().unwrap().0;
+        let half = area.width.min(area.height) as f32 * 0.5;
+        let tick = config.bottom_x.major_tick_length.max(0.0);
+        assert_eq!(
+            config.polar_geometry().unwrap().radius,
+            half - (tick + (18.0f32 * 1.4 + 6.0))
+        );
+        let mut hidden = config.clone();
+        hidden.bottom_x.label_style.visible = false;
+        assert_eq!(hidden.polar_geometry().unwrap().radius, half - (tick + 2.0));
     }
 
     #[cfg(feature = "serde")]
