@@ -622,6 +622,35 @@ the `CategoryBars` series kind) are additive.
   at 2x. None is pixel identical; every difference is the chrome above.
 
 
+- **Record and ragged column sources in the pool**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13e). Two
+  `ColumnSource` extensions for the box plot, with no drawing consumer yet:
+  a record (`RecordSource { schema, fields }`, a fixed set of named scalar
+  fields per row checked by name against a static `RecordSchema` such as
+  `BOX_PLOT_RECORD`, at most `MAX_RECORD_FIELDS` = 12) and a ragged column
+  (`RaggedSource { values, offsets }`, group `g` being
+  `values[offsets[g]..offsets[g + 1]]`, at most `MAX_RAGGED_VALUES` = 2^24
+  values). `ColumnPool::upsert_record` / `upsert_ragged` upload the members
+  as one batch transaction (one region, one staging buffer) and measure
+  `RecordStats` (per field: presence, finite range, finite and NaN counts)
+  and `RaggedStats` (the values' range and counts, the offsets'
+  `non_decreasing` flag, the longest group) in the write observer; a
+  replacement takes a new epoch and frees the old members, and
+  `remove_record` / `remove_ragged` delete them. `record(id)` / `ragged(id)`
+  return `RecordRef` / `RaggedRef` (member handles), `record_stats` /
+  `ragged_stats` the statistics. A schema mismatch, unequal field lengths,
+  a non-monotone offsets column and the other rejections are
+  `FiggyError::InvalidSeriesConfig` naming the id, with nothing published.
+  `Renderer::upsert_record`, `upsert_ragged`, `remove_record` and
+  `remove_ragged` (forwarded by `WindowedRenderer`) wrap them with the picker
+  and invalidation preparation of `add_columns`. Records and ragged columns are resident only: upserting onto
+  a streamed id, or registering a stream onto a record or ragged id, is an
+  `InvalidSeriesConfig` that names the limitation. Columns, records and
+  ragged columns share one id space; a member column (internal id) cannot be
+  inserted, replaced or removed as a column (`ReservedColumnId`) and a series
+  cannot reference it. No serialized field and no shader change; the
+  additions are API only.
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -655,6 +684,14 @@ the `CategoryBars` series kind) are additive.
   `FiggyBoundedChart.create(canvas, "categorical", json, w, h)` with a
   `FiggyChart` and `set_categorical_document(json)`; bars are picked with
   `pick_data` and selected through `picked_data`.
+
+- **Record and ragged registration**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13e).
+  `FiggyChart.register_record(id, fields)` registers or replaces a box plot
+  record from an object of `Float32Array`/`Float64Array` fields keyed by
+  field name, and `FiggyChart.register_ragged(id, values, offsets)` a ragged
+  column from two `Float64Array`s. Both are additive; nothing draws them
+  yet (the box plot series of item 13f will).
 
 ### Tests and guards
 

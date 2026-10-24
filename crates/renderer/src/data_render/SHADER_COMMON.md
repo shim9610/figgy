@@ -954,6 +954,23 @@ Nothing per bar is stored anywhere: the CPU keeps the pool lane bases, the
 group layout and, for the value axis fit only, the stacked extent of a
 batch-uploaded group (`ColumnPool::stack_extent`).
 
+### 5.14 Records and ragged columns in the pool
+
+A record (`ColumnPool::upsert_record`) and a ragged column
+(`ColumnPool::upsert_ragged`) are ordinary pool columns, so a shader reads
+them as every column: through the pool bound as `array<f32>` storage, at a
+lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
+lanes `base + 2i` and `base + 2i + 1`.
+
+| Source | Lane bases | Convention |
+|---|---|---|
+| Record | one per present schema field (`RecordRef::field_at(k)`), at most `MAX_RECORD_FIELDS` (12, three `vec4<u32>`) | row `r` of field `k` is value `r` of that field's column; an absent optional field has no column and reads as NaN; how a consumer marks it in its uniform is that consumer's contract |
+| Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `u32(offsets[g])..u32(offsets[g + 1])`, an offset read as `u32(hi + lo)`: offsets are integers up to 2^24, exact in the high lane, with `offsets[0] = 0` and `offsets[groups] = total` checked at upload |
+
+No module reads them yet (the box plot of #40 item 13f will); the
+convention is held by the pool test
+`a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset`.
+
 ---
 ## Checklist
 
