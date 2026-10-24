@@ -634,8 +634,8 @@ tool.
 
 ```rust,no_run
 use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, DecorationId};
-# fn edit(renderer: &mut renderer::CategoricalRenderer, chart: &mut renderer::CategoricalChart)
-# -> Result<(), renderer::CategoricalError> {
+# fn edit(renderer: &mut renderer::BoxPlotRenderer, chart: &mut renderer::BoxPlotChart)
+# -> Result<(), renderer::BoxPlotError> {
 chart.annotations.items.push(Annotation::new(AnnotationKind::Span {
     axis: AnnotationAxis::X, from: -0.5, to: 0.5, fill: renderer::Color::new(1., 0., 0., 0.3),
 }));

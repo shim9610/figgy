@@ -12,7 +12,6 @@
 use crate::Color;
 #[cfg(test)]
 use crate::Material;
-use crate::format::PlainNumberFormat;
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -148,18 +147,6 @@ impl Default for CategoricalChart {
             background: Color::WHITE,
         }
     }
-}
-/// Resolved data segment in axis units. Percent stacks use 0..100; originals stay unchanged.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CategoryBarSegment {
-    pub target: CategoryBarTarget,
-    pub category_index: usize,
-    pub series_index: usize,
-    pub value: f64,
-    pub start: f64,
-    pub end: f64,
-    pub percent: Option<f64>,
-    pub exposed_end: bool,
 }
 fn text(s: &str, max: usize) -> bool {
     s.chars().count() <= max && !s.chars().any(char::is_control)
@@ -352,116 +339,6 @@ impl CategoricalChart {
             }
         }
         Ok(())
-    }
-    /// Validates the model, then computes positive/negative stacks independently.
-    /// Percentages are undefined (None) for a zero or signed category total.
-    pub fn segments(&self) -> Result<Vec<CategoryBarSegment>, &'static str> {
-        self.validate()?;
-        self.resolve_segments()
-    }
-    fn resolve_segments(&self) -> Result<Vec<CategoryBarSegment>, &'static str> {
-        let mut out = Vec::new();
-        for (ci, c) in self.categories.iter().enumerate() {
-            let max = self
-                .series
-                .iter()
-                .filter_map(|s| s.values.get(ci).copied().flatten())
-                .fold(0.0, f64::max);
-            let has_negative = self
-                .series
-                .iter()
-                .any(|s| s.values.get(ci).copied().flatten().is_some_and(|v| v < 0.0));
-            // Normalize before summing: percent stacks remain valid even if the raw total overflows.
-            let denominator = if max > 0.0 {
-                self.series
-                    .iter()
-                    .filter_map(|s| s.values.get(ci).copied().flatten())
-                    .map(|v| v / max)
-                    .sum::<f64>()
-            } else {
-                0.0
-            };
-            let mut positive = 0.0;
-            let mut negative = 0.0;
-            let mut last_positive = None;
-            let mut last_negative = None;
-            for (si, s) in self.series.iter().enumerate() {
-                let Some(value) = s.values.get(ci).copied().flatten() else {
-                    continue;
-                };
-                let percent = if !has_negative && denominator > 0.0 {
-                    Some(value / max / denominator * 100.0)
-                } else {
-                    None
-                };
-                let amount = if self.mode == CategoryBarMode::PercentStacked {
-                    percent.unwrap_or(0.0)
-                } else {
-                    value
-                };
-                let start = if self.mode == CategoryBarMode::Grouped {
-                    0.0
-                } else if amount < 0.0 {
-                    negative
-                } else {
-                    positive
-                };
-                let end = start + amount;
-                if !end.is_finite() {
-                    return Err("stack total overflow");
-                }
-                if amount < 0.0 {
-                    negative = end;
-                    last_negative = Some(out.len());
-                } else if amount > 0.0 {
-                    positive = end;
-                    last_positive = Some(out.len());
-                }
-                out.push(CategoryBarSegment {
-                    target: CategoryBarTarget::new(&c.id, &s.id),
-                    category_index: ci,
-                    series_index: si,
-                    value,
-                    start,
-                    end,
-                    percent,
-                    exposed_end: self.mode == CategoryBarMode::Grouped,
-                });
-            }
-            if self.mode != CategoryBarMode::Grouped {
-                for i in [last_positive, last_negative].into_iter().flatten() {
-                    out[i].exposed_end = true;
-                }
-            }
-            // Sum rounding must not leave the final percent stack short of 100.
-            if self.mode == CategoryBarMode::PercentStacked {
-                if let Some(i) = last_positive {
-                    out[i].end = 100.0;
-                }
-            }
-        }
-        Ok(out)
-    }
-    pub fn label_text(&self, segment: &CategoryBarSegment) -> String {
-        let plain = PlainNumberFormat::fixed(self.label_decimals, true);
-        let number = |v: f64| plain.format(v);
-        let value = format!("{}{}", number(segment.value), self.value_suffix);
-        let pct = segment
-            .percent
-            .map(|v| format!("{}%", number(v)))
-            .unwrap_or_else(|| "—".into());
-        match self
-            .bar_override(&segment.target)
-            .and_then(|o| o.label_format)
-            .unwrap_or(self.label_format)
-        {
-            CategoryBarLabelFormat::Value => value,
-            CategoryBarLabelFormat::Percent => pct,
-            CategoryBarLabelFormat::ValuePercent => format!("{value} ({pct})"),
-            CategoryBarLabelFormat::CategoryValue => {
-                format!("{}: {value}", self.categories[segment.category_index].label)
-            }
-        }
     }
 }
 

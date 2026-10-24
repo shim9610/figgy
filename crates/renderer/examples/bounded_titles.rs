@@ -1,9 +1,9 @@
-//! Independent rich titles on pie, bar, box and radar charts.
+//! Independent rich titles on pie, box and radar charts.
 //! cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles
 use renderer::{
-    BarSeries, BoundedTitleOptions, BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary,
-    CategoricalChart, CategoricalRenderer, Category, Color, RadarChart, RadarRenderer, RadarSeries,
-    RadialChart, RadialRenderer, RadialSlice, RendererDevice, TextAlign,
+    BoundedTitleOptions, BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary, Category, Color,
+    RadarChart, RadarRenderer, RadarSeries, RadialChart, RadialRenderer, RadialSlice,
+    RendererDevice, TextAlign,
     data_render::{create_instance, request_adapter, request_device},
     encode_png,
 };
@@ -48,18 +48,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     pie.format_labels();
-    let bar = CategoricalChart {
-        chart_title: Some(title.clone()),
-        font_size: 12.,
-        categories: vec![Category::new("a", "A"), Category::new("b", "B")],
-        series: vec![BarSeries::new(
-            "s",
-            "Values",
-            vec![Some(3.), Some(7.)],
-            color,
-        )],
-        ..Default::default()
-    };
     let boxes = BoxPlotChart {
         chart_title: Some(title.clone()),
         font_size: 12.,
@@ -85,12 +73,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut radial = RadialRenderer::new(gpu.clone(), format)?;
-    let mut categorical = CategoricalRenderer::new(gpu.clone(), format)?;
     let mut boxplot = BoxPlotRenderer::new(gpu.clone(), format)?;
     let mut radar_renderer = RadarRenderer::new(gpu, format)?;
     for (name, image) in [
         ("pie", radial.export_rgba(&pie, (800, 520), 2.)?),
-        ("bar", categorical.export_rgba(&bar, (800, 520), 2.)?),
         ("box", boxplot.export_rgba(&boxes, (800, 520), 2.)?),
         ("radar", radar_renderer.export_rgba(&radar, (800, 520), 2.)?),
     ] {

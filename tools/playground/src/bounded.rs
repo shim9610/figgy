@@ -1,9 +1,9 @@
-//! Bounded scenes: radial, categorical bars, box plots and radar charts.
+//! Bounded scenes: radial, box plots and radar charts.
 //!
 //! Each family has its own small renderer that prepares a frame of an exact
 //! physical size. The host renders that frame (annotation underlay → chart →
 //! annotation overlay) into an offscreen texture and egui shows it as an image.
-//! One generic host covers all four; `Family` adapts the per-family names.
+//! One generic host covers all three; `Family` adapts the per-family names.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -13,7 +13,6 @@ use std::task::{Context, Poll, Waker};
 use renderer::HitId;
 use renderer::annotation::BoundedAnnotationFrame;
 use renderer::boxplot::*;
-use renderer::categorical::*;
 use renderer::decoration::DecorationMap;
 use renderer::layout::NudgeResult;
 use renderer::radar::*;
@@ -26,7 +25,7 @@ use renderer::{
 
 use crate::HostCtx;
 use crate::scenes::SceneKind;
-use crate::scenes::bounded::{box_chart, categorical_chart, radar_chart, radial_chart};
+use crate::scenes::bounded::{box_chart, radar_chart, radial_chart};
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -44,7 +43,7 @@ pub trait BoundedScene {
     fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer);
 }
 
-/// Per-family adapter: the four renderers share a shape but not a trait.
+/// Per-family adapter: the three renderers share a shape but not a trait.
 pub trait Family: 'static {
     type Chart: Clone;
     type Renderer;
@@ -207,9 +206,6 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
     }
     match kind {
         SceneKind::Radial => make::<RadialFamily>("radial", gpu, radial_chart()),
-        SceneKind::Categorical => {
-            make::<CategoricalFamily>("categorical", gpu, categorical_chart())
-        }
         SceneKind::BoxPlot => make::<BoxFamily>("boxplot", gpu, box_chart()),
         SceneKind::Radar => make::<RadarFamily>("radar", gpu, radar_chart()),
         _ => Err("not a bounded scene".into()),
@@ -831,151 +827,6 @@ impl Family for RadialFamily {
         }
         // The drawn label strings are written at edit time.
         c.format_labels();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Categorical bars
-// ---------------------------------------------------------------------------
-
-pub struct CategoricalFamily;
-
-impl Family for CategoricalFamily {
-    type Chart = CategoricalChart;
-    type Renderer = CategoricalRenderer;
-    type Frame = CategoricalFrame;
-    type Target = CategoryBarTarget;
-    type Error = CategoricalError;
-
-    fn renderer(gpu: RendererDevice) -> Result<CategoricalRenderer, CategoricalError> {
-        CategoricalRenderer::new(gpu, FORMAT)
-    }
-    fn set_background(r: &mut CategoricalRenderer, b: FrameBackground) {
-        r.set_background(b);
-    }
-    fn prepare(
-        r: &mut CategoricalRenderer,
-        c: &CategoricalChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<CategoricalFrame>, CategoricalError> {
-        r.prepare(c, size, scale)
-    }
-    fn annotations(
-        r: &mut CategoricalRenderer,
-        c: &CategoricalChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoundedAnnotationFrame>, CategoricalError> {
-        r.prepare_annotations(c, size, scale)
-    }
-    fn end_frame(r: &CategoricalRenderer) {
-        r.end_frame();
-    }
-    fn export(
-        r: &mut CategoricalRenderer,
-        c: &CategoricalChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, CategoricalError> {
-        r.export_rgba(c, size, scale)
-    }
-    fn frame_size(f: &CategoricalFrame) -> (u32, u32) {
-        f.size()
-    }
-    fn draw(f: &CategoricalFrame, pass: &mut wgpu::RenderPass<'_>) {
-        f.draw(pass);
-    }
-    fn pick(f: &Arc<CategoricalFrame>, p: [f32; 2]) -> Pick<CategoryBarTarget> {
-        Pick::Ready(f.hit_test(p))
-    }
-    fn decoration_map(f: &CategoricalFrame) -> Option<&DecorationMap> {
-        Some(f.decorations())
-    }
-    fn background(c: &CategoricalChart) -> Color {
-        c.background
-    }
-    fn layout(c: &mut CategoricalChart) -> &mut DecorationLayout {
-        &mut c.decorations
-    }
-    fn annotation_layer(c: &mut CategoricalChart) -> &mut AnnotationLayer {
-        &mut c.annotations
-    }
-    fn active_layer(c: &CategoricalChart) -> LayerRef {
-        c.active_layer()
-    }
-    fn set_active_layer(c: &mut CategoricalChart, l: LayerRef) {
-        c.set_active_layer(l);
-    }
-    fn selected(c: &CategoricalChart) -> Option<CategoryBarTarget> {
-        c.selected.clone()
-    }
-    fn set_selected(c: &mut CategoricalChart, t: Option<CategoryBarTarget>) {
-        c.selected = t;
-    }
-    fn hover(c: &mut CategoricalChart, t: Option<CategoryBarTarget>, _dt: f32) -> bool {
-        c.hovered = t;
-        false
-    }
-    fn inspector(ui: &mut egui::Ui, c: &mut CategoricalChart) {
-        ui.horizontal(|ui| {
-            ui.label("Title");
-            ui.text_edit_singleline(&mut c.title);
-        });
-        choice(
-            ui,
-            "mode",
-            &mut c.mode,
-            &[
-                CategoryBarMode::Grouped,
-                CategoryBarMode::Stacked,
-                CategoryBarMode::PercentStacked,
-            ],
-        );
-        choice(
-            ui,
-            "direction",
-            &mut c.direction,
-            &[
-                CategoryBarDirection::Vertical,
-                CategoryBarDirection::Horizontal,
-            ],
-        );
-        choice(
-            ui,
-            "labels",
-            &mut c.labels,
-            &[
-                CategoryBarLabels::Auto,
-                CategoryBarLabels::None,
-                CategoryBarLabels::Inside,
-                CategoryBarLabels::Outside,
-            ],
-        );
-        choice(
-            ui,
-            "label format",
-            &mut c.label_format,
-            &[
-                CategoryBarLabelFormat::Value,
-                CategoryBarLabelFormat::Percent,
-                CategoryBarLabelFormat::ValuePercent,
-                CategoryBarLabelFormat::CategoryValue,
-            ],
-        );
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut c.grid, "grid");
-            ui.checkbox(&mut c.legend, "legend");
-        });
-        slider(ui, "group width", &mut c.group_width, 0.1..=0.95);
-        slider(ui, "bar gap", &mut c.bar_gap, 0.0..=24.0);
-        choice(ui, "material", &mut c.style.material, FLAT_BODY_MATERIALS);
-        slider(ui, "corners", &mut c.style.corner_radius, 0.0..=32.0);
-        slider(ui, "gloss", &mut c.style.gloss, 0.0..=1.0);
-        ui.separator();
-        for (i, s) in c.series.iter_mut().enumerate() {
-            ui.push_id(i, |ui| color(ui, &s.label.clone(), &mut s.color));
-        }
     }
 }
 

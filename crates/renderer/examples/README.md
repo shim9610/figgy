@@ -104,10 +104,10 @@ in [gallery_concepts.rs](gallery_concepts.rs) holds its data and styling.
 | [subplots.rs](subplots.rs) | `gallery-subplots.png`, and `mixed-axes.png` from `mixed_axes`: one linked axis, a different X column, and a twin Y axis inside a subplot | `cargo run --locked -p figgy-renderer --example subplots -- target/subplots` |
 | [gallery_concepts.rs](gallery_concepts.rs) | The six `concept-*.png` images | `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts` |
 | [radial_gallery.rs](radial_gallery.rs) | One PNG per material (`matte`, `ceramic`, `satin-metal`, `toon`, `enamel`, `brushed-metal`, `paper`, `plywood`, `hatch`, `pearl`), plus `outlined-raised-pie`, `corners-sharp`, `corners-rounded`, `individual-edit`, `pie-of-pie` and the hover frames `hover-00` to `hover-19` | `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery` |
-| [categorical_gallery.rs](categorical_gallery.rs) | `grouped-matte`, `horizontal-satin`, `stacked-enamel`, `percent-outline`, `signed-stacked` | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
+| [categorical_gallery.rs](categorical_gallery.rs) | `grouped-matte`, `horizontal-satin`, `stacked-enamel`, `percent-outline`, `signed-stacked`: categorical documents opened as Cartesian category bars | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
 | [boxplot_gallery.rs](boxplot_gallery.rs) | `01-classic-matte`, `02-satin`, `03-horizontal`, `04-grouped-notch`, `05-mean-selection` | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
 | [radar_gallery.rs](radar_gallery.rs) | `01-spider-web`, `02-circle-values`, `03-fixed-axis`, `04-four-series`, `05-selection` | `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery` |
-| [bounded_titles.rs](bounded_titles.rs) | `pie.png`, `bar.png`, `box.png`, `radar.png`: rich titles on the bounded charts | `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles` |
+| [bounded_titles.rs](bounded_titles.rs) | `pie.png`, `box.png`, `radar.png`: rich titles on the bounded charts | `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles` |
 | [precise_sketch_preview.rs](precise_sketch_preview.rs) | `style-growth-response-precise.png`, `style-growth-response-sketch.png` | `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch` |
 | [milkyway_line_preview.rs](milkyway_line_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png` |
 | [constellation_preview.rs](constellation_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png` |
@@ -125,7 +125,6 @@ These open native windows and show host event handling as well as drawing.
 cargo run --locked -p figgy-renderer --example winit_simple
 cargo run --locked -p figgy-renderer --features egui_demo --example egui_embed
 cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor
-cargo run --locked -p figgy-renderer --features egui_demo --example categorical_editor
 cargo run --locked -p figgy-renderer --features egui_demo --example boxplot_editor
 cargo run --locked -p figgy-renderer --features egui_demo --example radar_editor
 cargo run --locked --release -p figgy-renderer --features egui_demo --example ssot_lab

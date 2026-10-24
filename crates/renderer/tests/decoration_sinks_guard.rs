@@ -59,11 +59,6 @@ const PLACED_FILES: &[(&str, &str, &[&str])] = &[
         &["draw_line"],
     ),
     (
-        "categorical_layout.rs",
-        include_str!("../src/categorical_layout.rs"),
-        &[],
-    ),
-    (
         "boxplot_layout.rs",
         include_str!("../src/boxplot_layout.rs"),
         &[],

@@ -282,43 +282,6 @@ macro_rules! family_contract {
     };
 }
 
-fn annotated_categorical() -> CategoricalChart {
-    CategoricalChart {
-        title: "Annotated bars".into(),
-        categories: vec![
-            Category::new("a", "Control"),
-            Category::new("b", "Treatment"),
-            Category::new("c", "Placebo"),
-        ],
-        series: vec![BarSeries::new(
-            "s",
-            "Trial",
-            vec![Some(30.), Some(60.), Some(45.)],
-            Color::from_rgb8(60, 130, 210),
-        )],
-        annotations: AnnotationLayer {
-            visible: true,
-            items: vec![
-                span(AnnotationAxis::X, 0.5, 1.5),
-                Annotation::new(AnnotationKind::ReferenceLine {
-                    axis: AnnotationAxis::Y,
-                    value: 50.,
-                    style: Default::default(),
-                    label: Some(text("target")),
-                }),
-                boxed_text(Anchor::Ratio { x: 0.6, y: 0.1 }),
-                Annotation::new(AnnotationKind::Arrow {
-                    from: Anchor::Ratio { x: 0.5, y: 0.5 },
-                    to: Anchor::Data { x: 2., y: 45. },
-                    style: Default::default(),
-                    text: Some(text("placebo")),
-                }),
-            ],
-        },
-        ..Default::default()
-    }
-}
-
 fn annotated_boxplot() -> BoxPlotChart {
     BoxPlotChart {
         title: "Annotated boxes".into(),
@@ -417,14 +380,6 @@ fn annotated_radial() -> RadialChart {
     chart.format_labels();
     chart
 }
-
-family_contract!(
-    categorical_annotation_layer_contract,
-    CategoricalRenderer,
-    CategoricalChart,
-    annotated_categorical(),
-    |c| c.annotations.items[0] = span(AnnotationAxis::X, 1.5, 2.5)
-);
 
 family_contract!(
     boxplot_annotation_layer_contract,
@@ -659,15 +614,6 @@ macro_rules! family_routing {
 }
 
 family_routing!(
-    categorical_active_layer_routing,
-    CategoricalRenderer,
-    CategoricalChart,
-    annotated_categorical(),
-    |c| c.selected = Some(CategoryBarTarget::new("a", "s")),
-    |c| c.selected.is_some()
-);
-
-family_routing!(
     boxplot_active_layer_routing,
     BoxPlotRenderer,
     BoxPlotChart,
@@ -694,21 +640,29 @@ family_routing!(
     |c| c.interaction.selected.is_some()
 );
 
-// A span is composited below the bars: the bar keeps its colour inside the
+// A span is composited below the boxes: the box keeps its colour inside the
 // span, the gap beside it shows the span's tint over the chart background,
 // and the opaque frame of a chart without a span draws exactly as before.
 #[test]
-fn categorical_spans_sit_below_the_bars() {
+fn bounded_spans_sit_below_the_boxes() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let bar = Color::from_rgb8(60, 130, 210);
-    let mut c = CategoricalChart {
+    let summary = || Some(BoxSummary::new(0., 20., 60., 80., 100.));
+    let mut c = BoxPlotChart {
         categories: vec![Category::new("a", "A"), Category::new("b", "B")],
-        series: vec![BarSeries::new("s", "S", vec![Some(80.), Some(80.)], bar)],
-        style: CategoryBarStyle {
+        series: vec![BoxPlotSeries::new(
+            "s",
+            "S",
+            vec![summary(), summary()],
+            bar,
+        )],
+        style: BoxPlotStyle {
             material: Material::Flat,
+            outline: false,
+            show_mean: false,
             ..Default::default()
         },
         legend: false,
@@ -832,7 +786,7 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let thick = AnnotationLineStyle {
         width: 12.,
         ..Default::default()
@@ -870,12 +824,15 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     // plus the label padding (2 px), plus a pixel of rounding.
     const SLACK: f32 = 6.0;
     for (name, item) in items {
-        let mut c = CategoricalChart {
+        let mut c = BoxPlotChart {
             categories: vec![Category::new("a", "A"), Category::new("b", "B")],
-            series: vec![BarSeries::new(
+            series: vec![BoxPlotSeries::new(
                 "s",
                 "S",
-                vec![Some(20.), Some(30.)],
+                vec![
+                    Some(BoxSummary::new(0., 5., 10., 15., 20.)),
+                    Some(BoxSummary::new(5., 10., 20., 25., 30.)),
+                ],
                 Color::from_rgb8(60, 130, 210),
             )],
             legend: false,

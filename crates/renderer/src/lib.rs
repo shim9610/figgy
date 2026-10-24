@@ -8,7 +8,6 @@ pub mod annotation;
 pub mod axis_render;
 #[cfg(target_arch = "wasm32")]
 mod browser_compile;
-pub mod categorical;
 pub mod chart;
 pub mod data;
 pub mod data_render;
@@ -49,8 +48,8 @@ mod time_axis;
 // `ColumnSource` upload adapter are render-side machinery.)
 pub use ::model::{SeriesUpload, UploadValues};
 pub use ::model::{
-    bounded_sources, color, colormap, config, data_config, default, drag, expand, format, layout,
-    legend, line, preset, resize, select, sink, text, tick,
+    bounded_sources, categorical, color, colormap, config, data_config, default, drag, expand,
+    format, layout, legend, line, preset, resize, select, sink, text, tick,
 };
 
 // Public API re-exports.
@@ -135,7 +134,6 @@ pub use radial::{
 #[allow(deprecated)]
 pub use radial::RadialMaterial;
 
-pub use categorical::{CategoricalError, CategoricalFrame, CategoricalRenderer};
 pub use model::categorical::*;
 
 pub mod boxplot;

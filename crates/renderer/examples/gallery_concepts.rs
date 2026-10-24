@@ -125,8 +125,9 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
-// 3. A product analytics card: horizontal stacks, restrained labels, rounded ends.
-fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
+// 3. A product analytics card: horizontal stacks and rounded ends, a
+// categorical document opened as a Cartesian chart of category bars.
+fn revenue(r: &mut Renderer, out: &Path) -> Result {
     let bg = rgb(247, 248, 253);
     let chart = CategoricalChart {
         title: "Revenue mix / by region".into(),
@@ -173,11 +174,27 @@ fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
         },
         ..Default::default()
     };
-    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
-    let image = r.export_rgba(&chart, SIZE, 1.)?;
-    save(&image, bg, &out.join("concept-revenue.png"))?;
-    r.end_frame();
-    Ok(())
+    let (mut config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
+    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 0,
+        y: 0,
+        width: SIZE.0,
+        height: SIZE.1,
+    });
+    // The positions, then the value columns as one batch so the pool
+    // measures the stack the value axis is fitted to.
+    let (positions, values) = uploads.split_first().expect("the positions column");
+    r.add_column(positions.column.clone(), &positions.values)?;
+    let columns: Vec<(&str, &dyn renderer::ColumnSource)> = values
+        .iter()
+        .map(|u| (u.column.as_str(), &u.values as &dyn renderer::ColumnSource))
+        .collect();
+    r.add_columns(&columns)?;
+    let mut cartesian = renderer::Chart::new(config);
+    cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
+    let image =
+        pollster::block_on(r.export_panel_rgba_with_clear_async(&cartesian, &specs, 1., bg))?;
+    save(&image, bg, &out.join("concept-revenue.png"))
 }
 
 // 4–5. The same named-value contract, with two very different material choices.
@@ -346,7 +363,7 @@ fn main() -> Result {
     )?;
     observability(&mut r, &out)?;
     editorial(&mut r, &out)?;
-    revenue(&gpu, &out)?;
+    revenue(&mut r, &out)?;
     radial_concepts(&gpu, &out)?;
     terrain(&mut r, &out)?;
     r.wait_idle();

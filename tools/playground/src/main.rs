@@ -8,7 +8,7 @@
 //!   heatmap + contours, log axes, twin Y axes, subplots, annotations, up to
 //!   100 million resident points) are registered charts of one `Renderer`. The renderer paints
 //!   them straight into the surface pass; egui draws on top.
-//! - Bounded scenes (radial, categorical bars, box plots) render into an
+//! - Bounded scenes (radial, box plots, radar) render into an
 //!   offscreen texture that egui shows as an image.
 //!
 //! Pointer, on the chart:

@@ -108,6 +108,11 @@ fn polygon(b: &Bar) -> [[f32; 2]; 10] {
         [l, low],
     ]
 }
+/// The four subpixel sample offsets of the box plot shader:
+/// `p + ((x, y) + 0.5) * 0.5 - 0.5` for `x, y` in `0..2`.
+const SUBPIXEL_SAMPLES: [[f32; 2]; 4] =
+    [[-0.25, -0.25], [0.25, -0.25], [-0.25, 0.25], [0.25, 0.25]];
+
 fn distance(bar: &Bar, p: [f32; 2]) -> f32 {
     if bar.effects[2] == 1.0 {
         let p = if bar.outline[2] > 0.5 {
@@ -205,7 +210,7 @@ impl BoxPlotFrame {
             .find(|(b, _)| {
                 // Any of the shader's four subpixel samples, as `boxplot.wgsl`
                 // covers a fragment.
-                crate::categorical::SUBPIXEL_SAMPLES.iter().any(|o| {
+                SUBPIXEL_SAMPLES.iter().any(|o| {
                     let d = distance(b, [p[0] + o[0], p[1] + o[1]]);
                     d <= 0.0
                         && (b.color[3] > 0.0

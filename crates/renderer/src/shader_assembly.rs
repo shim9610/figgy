@@ -64,7 +64,6 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("contour_label", crate::gpu_contour::CONTOUR_LABEL_SHADER),
     ("errorbar_fit", crate::gpu_errorbar::ERRORBAR_FIT_SHADER),
     ("boxplot", crate::boxplot::BOXPLOT_SHADER),
-    ("categorical", crate::categorical::CATEGORICAL_SHADER),
     ("radar", crate::radar::RADAR_SHADER),
     ("radial", crate::radial::RADIAL_SHADER),
     ("radial_pick", crate::radial::RADIAL_PICK_SHADER),
@@ -500,7 +499,7 @@ mod tests {
                 }
             ),
             material("boxplot"),
-            material("categorical"),
+            material("bar"),
             material("radial"),
             material("radial_pick"),
             sector("radial"),

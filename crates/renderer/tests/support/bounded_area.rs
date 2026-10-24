@@ -287,15 +287,6 @@ pub async fn check(gpu: RendererDevice) {
         chart
     });
     check_chart!(
-        CategoricalRenderer,
-        CategoricalChart {
-            title: "Resize data area".into(),
-            categories: vec![Category::new("a", "Control")],
-            series: vec![BarSeries::new("s", "Response", vec![Some(35.)], red)],
-            ..Default::default()
-        }
-    );
-    check_chart!(
         BoxPlotRenderer,
         BoxPlotChart {
             title: "Resize data area".into(),

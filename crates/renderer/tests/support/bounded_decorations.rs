@@ -1,13 +1,13 @@
 //! The decoration queries the bounded chart tests share over the bounded
-//! charts' two hit-map APIs: the `DecorationMap` of the categorical, box
-//! plot and radar frames, which answers alone, and the radial frame's
+//! charts' two hit-map APIs: the `DecorationMap` of the box plot and radar
+//! frames, which answers alone, and the radial frame's
 //! `HitMap<RadialChart>`, whose elements place their parts from the chart
 //! they are asked about.
 #![allow(dead_code)]
 use ::renderer::{
-    BoundedAnnotationFrame, BoxPlotChart, BoxPlotFrame, CategoricalChart, CategoricalFrame,
-    CpuTextMeasure, DecorationId, DecorationLayout, HitId, LayerHit, LayerRef, RadarChart,
-    RadarFrame, RadialChart, RadialFrame, SelectionBox,
+    BoundedAnnotationFrame, BoxPlotChart, BoxPlotFrame, CpuTextMeasure, DecorationId,
+    DecorationLayout, HitId, LayerHit, LayerRef, RadarChart, RadarFrame, RadialChart, RadialFrame,
+    SelectionBox,
     layout::{NudgeResult, RectF},
     resize::ResizeHandle,
     select::SelectionGeometry,
@@ -16,8 +16,8 @@ use ::renderer::{
 
 pub trait Decorations {
     type Chart: Clone + PartialEq;
-    /// Whether the frame draws data under `p`: the categorical, box plot
-    /// and radar frames' CPU hit tests, the radial frame's GPU pick.
+    /// Whether the frame draws data under `p`: the box plot and radar
+    /// frames' CPU hit tests, the radial frame's GPU pick.
     async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool;
     /// The chart's decoration state.
     fn layout(chart: &mut Self::Chart) -> &mut DecorationLayout;
@@ -161,7 +161,6 @@ macro_rules! decoration_map_frame {
         }
     };
 }
-decoration_map_frame!(CategoricalFrame, CategoricalChart);
 decoration_map_frame!(BoxPlotFrame, BoxPlotChart);
 decoration_map_frame!(RadarFrame, RadarChart);
 
