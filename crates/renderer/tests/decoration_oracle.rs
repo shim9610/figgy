@@ -23,6 +23,9 @@
 //! - **I4** no two decorations that must stay apart overlap: the pair
 //!   table of [`overlap_pairs`] on drawn part extents, with 1 px of
 //!   tolerance.
+//! - **I5** 2x is 1x scaled: every element's bounds at 2x halved within
+//!   1 px of its 1x bounds, the same tick labels drawn, and each element's
+//!   2x ink box-filtered to 1x matching its 1x ink up to hinting.
 //! - **I7** the hit map of every layer holds exactly the elements the
 //!   layer's documented registration set names, in that order; no ink
 //!   without an element, no element without ink; and the CPU decoration
@@ -406,6 +409,11 @@ fn i4_no_two_decorations_overlap() {
 }
 
 #[test]
+fn i5_2x_is_1x_scaled() {
+    report().assert_clean(Inv::I5);
+}
+
+#[test]
 fn i7_hit_map_entries_are_the_emitted_elements() {
     report().assert_clean(Inv::I7);
 }
@@ -670,6 +678,8 @@ fn cartesian_scene(
 ) -> usize {
     let layers = layer_cases(config);
     let (palette_config, codes) = palette(config);
+    // What I5 compares across the scales.
+    let mut runs: Vec<ScaleRun> = Vec::with_capacity(SCALES.len());
     for scale in SCALES {
         let doc = if scale == 1.0 {
             palette_config.clone()
@@ -695,6 +705,7 @@ fn cartesian_scene(
         report.time("Cartesian exports", phase);
         // Each element's bounds in the layer cases that register it.
         let mut registered: BTreeMap<String, Option<RectF>> = BTreeMap::new();
+        let mut geometry: BTreeMap<(String, String), (Option<RectF>, usize)> = BTreeMap::new();
         // Each element's drawn parts, for the overlap pairs of I4.
         let mut drawn: BTreeMap<String, Vec<DrawnPart>> = BTreeMap::new();
         for &layer in &layers {
@@ -715,6 +726,12 @@ fn cartesian_scene(
             for m in &measured {
                 registered.insert(m.name.clone(), m.bounds);
                 drawn.insert(m.name.clone(), m.parts.clone());
+                let texts = m
+                    .parts
+                    .iter()
+                    .filter(|p| matches!(p, DrawnPart::Text(_)))
+                    .count();
+                geometry.insert((name.clone(), m.name.clone()), (m.bounds, texts));
             }
             report.time("Cartesian geometry", phase);
             let phase = Instant::now();
@@ -729,6 +746,12 @@ fn cartesian_scene(
         }
         check_owners(report, &document, &ink, &registered);
         check_i4(report, &document, &doc, &drawn);
+        runs.push(ScaleRun { ink, geometry });
+    }
+    if let [one, two] = &runs[..] {
+        let phase = Instant::now();
+        check_i5(report, scene, one, two);
+        report.time("Cartesian scale (I5)", phase);
     }
     layers.len()
 }
@@ -1162,6 +1185,11 @@ impl SceneInk {
         let c = code as u16 + 1;
         self.local(code, x, y)
             .is_some_and(|(p, i)| p.owner[i] == c || p.owner2[i] == c)
+    }
+
+    /// The alpha at document pixel `(x, y)` of `code`'s panel.
+    fn alpha_at(&self, code: usize, x: i64, y: i64) -> u8 {
+        self.local(code, x, y).map_or(0, |(p, i)| p.rgba[i * 4 + 3])
     }
 
     /// Whether `code` has ink within `reach` pixels (a square) of `(x, y)`.
@@ -2158,5 +2186,132 @@ fn check_i4(
                 )
             });
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I5: 2x is 1x scaled
+// ---------------------------------------------------------------------------
+
+/// One scale of one scene: its ink, and per layer case and element the
+/// bounds and the number of text parts drawn.
+struct ScaleRun {
+    ink: SceneInk,
+    geometry: BTreeMap<(String, String), (Option<RectF>, usize)>,
+}
+
+/// A pixel whose box-filtered 2x ink differs from its 1x ink by more than
+/// this has moved (`scale_consistency`'s threshold).
+const SCALE_DIFF: i32 = 96;
+/// The ink extent at 2x, halved, may differ from the 1x extent by this
+/// much per edge: a pixel of anti-aliasing at 1x plus one at 2x.
+const SCALE_EXTENT: f32 = 1.5;
+/// The share of an element's 1x ink pixels that may differ by more than
+/// [`SCALE_DIFF`] after box-filtering its 2x ink: hinting and
+/// anti-aliasing at glyph and stroke edges, 14 to 22 % for tick labels and
+/// up to 48 % for a two-glyph title. A moved element differs at nearly all
+/// of them, and the extent check catches a shift of more than a pixel.
+const SCALE_SHARE: f64 = 0.5;
+
+/// I5 for one scene: bounds and label sets per layer case, and the ink of
+/// every element.
+fn check_i5(report: &mut Report, scene: &'static str, one: &ScaleRun, two: &ScaleRun) {
+    for ((layer, name), (b1, t1)) in &one.geometry {
+        let at = At {
+            scene,
+            layer,
+            scale: 2.0,
+        };
+        let Some((b2, t2)) = two.geometry.get(&(layer.clone(), name.clone())) else {
+            report.check(&at, name, Inv::I5, false, || "registered at 1x only".into());
+            continue;
+        };
+        match (b1, b2) {
+            (Some(b1), Some(b2)) => {
+                let worst = [
+                    b2.x / 2.0 - b1.x,
+                    b2.y / 2.0 - b1.y,
+                    (b2.x + b2.width) / 2.0 - (b1.x + b1.width),
+                    (b2.y + b2.height) / 2.0 - (b1.y + b1.height),
+                ]
+                .into_iter()
+                .map(f32::abs)
+                .fold(0.0, f32::max);
+                report.check(&at, name, Inv::I5, worst <= 1.0, || {
+                    format!("bounds {b2:?} at 2x are {worst:.2} px off {b1:?} at 1x")
+                });
+            }
+            (None, None) => {}
+            _ => report.check(&at, name, Inv::I5, false, || {
+                format!("bounds {b1:?} at 1x but {b2:?} at 2x")
+            }),
+        }
+        if name.contains("tick_labels") {
+            report.check(&at, name, Inv::I5, t1 == t2, || {
+                format!("{t1} labels drawn at 1x, {t2} at 2x")
+            });
+        }
+    }
+    let at = At {
+        scene,
+        layer: "document",
+        scale: 2.0,
+    };
+    let (i1, i2) = (&one.ink, &two.ink);
+    for (code, (_, name, _)) in i1.codes.iter().enumerate() {
+        let n1 = i1.by_code[code].len();
+        let n2 = i2.by_code[code].len();
+        if n1 == 0 && n2 == 0 {
+            continue;
+        }
+        // The window: both inks' extents in 1x pixels, grown by 2 px.
+        let e1 = extent(i1, i1.by_code[code].iter().copied());
+        let e2 = extent(i2, i2.by_code[code].iter().copied()).map(|e| e.scaled(0.5));
+        let Some(win) = [e1, e2].into_iter().flatten().reduce(renderer::sink::union) else {
+            continue;
+        };
+        let (x0, y0, x1, y1) = window(i1, win.expanded(2.0));
+        let mut differ = 0usize;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let a1 = if i1.inked(code, x, y) {
+                    i32::from(i1.alpha_at(code, x, y))
+                } else {
+                    0
+                };
+                let mut sum = 0;
+                for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                    let (sx, sy) = (x * 2 + dx, y * 2 + dy);
+                    if i2.inked(code, sx, sy) {
+                        sum += i32::from(i2.alpha_at(code, sx, sy));
+                    }
+                }
+                if (sum / 4 - a1).abs() > SCALE_DIFF {
+                    differ += 1;
+                }
+            }
+        }
+        if let (Some(e1), Some(e2)) = (e1, e2) {
+            let worst = [
+                e2.x - e1.x,
+                e2.y - e1.y,
+                e2.x + e2.width - (e1.x + e1.width),
+                e2.y + e2.height - (e1.y + e1.height),
+            ]
+            .into_iter()
+            .map(f32::abs)
+            .fold(0.0, f32::max);
+            report.check(&at, name, Inv::I5, worst <= SCALE_EXTENT, || {
+                format!("ink extent {e2:?} at 2x (halved) is {worst:.1} px off {e1:?} at 1x")
+            });
+        }
+        let share = differ as f64 / n1.max(1) as f64;
+        report.count(&at, "I5 compared ink pixels", n1);
+        report.check(&at, name, Inv::I5, share <= SCALE_SHARE, || {
+            format!(
+                "{differ} of its {n1} ink pixels ({:.0} %) differ by more than {SCALE_DIFF} from its 2x ink box-filtered ({n2} px)",
+                share * 100.0
+            )
+        });
     }
 }
