@@ -20,7 +20,7 @@ use renderer::{
     ArrowStyle, AxisPreset, CellRef, Chart, ChartDrawItem, ChartId, ChartStyle, ChartView, Color,
     ColorCycle, ColorMap, CpuTextMeasure, DataSelectionsConfig, GpuPickRequest, HitId, HitMap,
     LayerHit, LayerRef, OverlayLayer, PickedData, PreparedFrame, RenderWarning, Renderer,
-    ResizeHandle, ScatterShape, SelectionBox, Series, Subplot, fit_display_panel, place_document,
+    ResizeHandle, ScatterShape, Series, Subplot, fit_display_panel, place_document,
 };
 
 use crate::HostCtx;
@@ -313,13 +313,13 @@ impl CartesianHost {
         let mut view = view;
         if self.raster_dirty || view.panel_rect() != d.panel {
             let hitmap = HitMap::for_active_layer(&d.config);
-            let measure = CpuTextMeasure::for_style(&d.config.draw_style);
-            let boxes: Vec<SelectionBox> = self
+            let selected = self
                 .selected
-                .and_then(|id| hitmap.selection_box(id, &d.config, &measure))
-                .into_iter()
-                .collect();
-            if let Err(e) = r.refresh_axis_with_selection(&mut view, &chart, d.panel, &boxes) {
+                .and_then(|id| hitmap.get(id))
+                .map(|el| el.element_id());
+            if let Err(e) =
+                r.refresh_axis_with_selection(&mut view, &chart, d.panel, selected.as_deref())
+            {
                 self.error = Some(format!("refresh: {e}"));
             }
             self.warnings = view.render_warnings().to_vec();
@@ -529,16 +529,17 @@ impl CartesianHost {
                 };
                 let (dx, dy) = (dx / d.scale, dy / d.scale);
                 let hitmap = HitMap::for_active_layer(&d.config);
+                let measure = CpuTextMeasure::for_style(&d.config.draw_style);
                 let Some(el) = hitmap.get(id) else {
                     return false;
                 };
                 match self.drag {
                     Drag::Resize(h) => el.as_resizable().is_some_and(|rz| {
-                        rz.resize_by(&mut config, h, dx, dy) == NudgeResult::Moved
+                        rz.resize_by(&mut config, &measure, h, dx, dy) == NudgeResult::Moved
                     }),
-                    _ => el
-                        .as_draggable()
-                        .is_some_and(|dr| dr.drag_by(&mut config, dx, dy) == NudgeResult::Moved),
+                    _ => el.as_draggable().is_some_and(|dr| {
+                        dr.drag_by(&mut config, &measure, dx, dy) == NudgeResult::Moved
+                    }),
                 }
             }
         };
