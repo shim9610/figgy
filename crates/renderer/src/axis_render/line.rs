@@ -7,15 +7,17 @@ use super::*;
 /// One axis: its line and ticks, then its tick labels, every part moved by
 /// the detached-axis offset (`axis.line_offset`, perpendicular to the
 /// axis). The data area and grid stay put; tick positions along the axis are
-/// unaffected.
+/// unaffected. `cross` is where the line crosses the perpendicular axis
+/// ([`crate::layout::axis_cross`]); only the line moves there.
 pub(super) fn emit_axis(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
+    cross: Option<f32>,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
-    emit_axis_strokes(axis, side.clone(), plot, fp, sink);
+    emit_axis_strokes(axis, side.clone(), plot, cross, fp, sink);
     emit_axis_tick_labels(axis, side, plot, fp, sink);
 }
 
@@ -28,29 +30,38 @@ pub(crate) fn emit_axis_strokes(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
+    cross: Option<f32>,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
     let majors = major_tick_values_for_axis(axis, side.clone(), plot, fp);
     let dash = axis.line_style.pattern();
-    each_axis_stroke(axis, side.clone(), plot, fp, &majors, |stroke, a, b| {
-        let tag = match stroke {
-            AxisStroke::Line => format!("axis_{}", side_tag(&side)),
-            AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
-        };
-        sink.stroke(
-            Slot::Above,
-            [a.0 + off_x, a.1 + off_y],
-            [b.0 + off_x, b.1 + off_y],
-            &StrokeStyle {
-                width: axis.line_width,
-                color: axis.line_color,
-                dash,
-                tag: &tag,
-            },
-        );
-    });
+    each_axis_stroke(
+        axis,
+        side.clone(),
+        plot,
+        cross,
+        fp,
+        &majors,
+        |stroke, a, b| {
+            let tag = match stroke {
+                AxisStroke::Line => format!("axis_{}", side_tag(&side)),
+                AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
+            };
+            sink.stroke(
+                Slot::Above,
+                [a.0 + off_x, a.1 + off_y],
+                [b.0 + off_x, b.1 + off_y],
+                &StrokeStyle {
+                    width: axis.line_width,
+                    color: axis.line_color,
+                    dash,
+                    tag: &tag,
+                },
+            );
+        },
+    );
 }
 
 /// The tick labels of `axis` on `side` (`Element::AxisLabel`): every label
@@ -130,17 +141,19 @@ pub(crate) enum AxisStroke {
 }
 
 /// Every segment [`emit_axis_strokes`] places for `axis` on `side`, before
-/// the detached-axis translation: the line, then the major and minor ticks.
+/// the detached-axis translation: the line (crossing the perpendicular axis
+/// at `cross`), then the major and minor ticks at the edge.
 pub(super) fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
     plot: &RectF,
+    cross: Option<f32>,
     fp: FontPolicy,
     majors: &[f64],
     mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
     if axis.line_visible {
-        let (p0, p1) = axis_anchor(side.clone(), plot);
+        let (p0, p1) = axis_anchor(side.clone(), plot, cross);
         each(AxisStroke::Line, p0, p1);
     }
     if axis.tick == TickVisibility::None {

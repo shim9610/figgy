@@ -52,7 +52,7 @@ mod stream_point_style_tests;
 pub mod vector;
 pub use column_pool::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy, FreeRegion,
-    GpuAllocCtx, GpuBudget, GrowthPolicy,
+    GpuAllocCtx, GpuBudget, GrowthPolicy, StackExtent,
 };
 
 // Instance, adapter, surface, and device setup.

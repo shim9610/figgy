@@ -213,6 +213,11 @@ mod tests {
             ("MATERIAL_ENAMEL", dr::MATERIAL_ENAMEL),
             ("MATERIAL_HATCH", dr::MATERIAL_HATCH),
             ("MATERIAL_PEARL", dr::MATERIAL_PEARL),
+            ("BAR_STYLE_MASK_MATERIAL", dr::BAR_STYLE_MASK_MATERIAL),
+            ("CATEGORY_BAR_MODE_GROUPED", dr::CATEGORY_BAR_MODE_GROUPED),
+            ("CATEGORY_BAR_MODE_STACKED", dr::CATEGORY_BAR_MODE_STACKED),
+            ("CATEGORY_BAR_MODE_PERCENT", dr::CATEGORY_BAR_MODE_PERCENT),
+            ("CATEGORY_BAR_VERTICES", dr::CATEGORY_BAR_VERTICES),
             ("ERRORBAR_HAS_Y", dr::ERRORBAR_HAS_Y),
             ("ERRORBAR_HAS_X", dr::ERRORBAR_HAS_X),
             ("LINE_STEP_SHIFT", LINE_STEP_SHIFT),
@@ -249,6 +254,7 @@ mod tests {
             ("QUAD_MARGIN_PX", dr::MARKER_QUAD_MARGIN_PX),
             ("STROKE_HALF_PX", dr::MARKER_STROKE_HALF_PX),
             ("PLANET_QUAD_EXTENT", crate::gpu_pick::PLANET_QUAD_EXTENT),
+            ("CATEGORY_BAR_ROUGHNESS", dr::FLAT_BODY_ROUGHNESS),
         ];
         let mut declared: Vec<(&str, String, u32)> = Vec::new();
         let mut declared_f32: Vec<(&str, String, f32)> = Vec::new();
@@ -323,7 +329,7 @@ mod tests {
     #[test]
     fn mirrored_struct_layouts_match_their_rust_twins() {
         use crate::data_render::vector::VectorParamsGpu;
-        use crate::data_render::{BarStyleOverrideGpu, BarStyleSlotGpu};
+        use crate::data_render::{BarStyleOverrideGpu, BarStyleSlotGpu, CategoryBarParamsGpu};
         use crate::data_render::{
             ContourLookupMetadataGpu, DataSelectionGpu, FieldParamsGpu, GridColumnGpu, MaterialGpu,
             PointValueMapParamsGpu, PrimitiveStyle, ScatterStyleMapMeta, ScatterStyleOverrideGpu,
@@ -532,12 +538,34 @@ mod tests {
                     fill_color_premul,
                     border_color_premul,
                     params,
+                    material,
+                    finish,
                 }
             ),
             mirror!("bar", "BarStyleOverride", BarStyleOverrideGpu {
-                bin_index, fill_color_premul, border_color_premul, params,
+                bin_index, fill_color_premul, border_color_premul, params, material, finish,
             }; "_pad0" = _pad + 0, "_pad1" = _pad + 4, "_pad2" = _pad + 8),
             meta("bar", "BarStyleMapMeta"),
+            mirror!(
+                "bar",
+                "CategoryBarParams",
+                CategoryBarParamsGpu {
+                    values,
+                    positions,
+                    count,
+                    member,
+                    members,
+                    mode,
+                    horizontal,
+                    gap_px,
+                    group_width,
+                    corner_radius_px,
+                    emphasis,
+                    scale,
+                    seed,
+                }
+            ),
+            transform("bar", "Transform"),
             mirror!(
                 "bar",
                 "DataSelection",

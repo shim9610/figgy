@@ -166,6 +166,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::LineScatterErrorbarY { .. }
             | DataRenderType::LineScatterErrorbarXY { .. }
             | DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
             | DataRenderType::Contour { .. } => false,
         })
             || match (&left.colorbar, &right.colorbar) {

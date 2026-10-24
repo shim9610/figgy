@@ -129,7 +129,8 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
             push_ref(&mut ids, err_x);
             push_ref(&mut ids, err_y);
         }
-        DataRenderType::Histogram { .. } => {}
+        // A category bar reads its positions and values only.
+        DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {}
         // The grid's constituent columns are referenced columns: a matrix
         // series' derived identity has to change when any of them does, or a
         // replaced grid column would keep serving a stale cache entry.

@@ -55,6 +55,7 @@ pub(super) fn annotation_raster_for_chart(
         subplots: _,
         active_layer: _,
         annotations,
+        bar_groups: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {
@@ -261,6 +262,7 @@ pub(super) struct PreparedBarSelectionLayer {
     pub(super) edges: ColumnHandle,
     pub(super) values: ColumnHandle,
     pub(super) instance: u32,
+    pub(super) category: Option<data_render::CategoryBarData>,
 }
 
 pub(super) struct PreparedFieldSelectionLayer {
@@ -336,6 +338,15 @@ pub(super) struct PreparedBarLayer {
     pub(super) values: ColumnHandle,
 }
 
+/// Owned category bar layer: its data group and the charge of its params.
+pub(super) struct PreparedCategoryBarLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) data: data_render::CategoryBarData,
+    pub(super) count: u32,
+}
+
 pub(super) struct PreparedErrorBarLayer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) transform_bg: wgpu::BindGroup,
@@ -362,6 +373,7 @@ pub(super) struct PreparedSeries {
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
     pub(super) bar: Option<PreparedBarLayer>,
+    pub(super) category_bars: Option<PreparedCategoryBarLayer>,
     pub(super) contour: Option<PreparedContourLayer>,
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
@@ -524,6 +536,13 @@ pub(super) struct ResidentDisplayKey {
     pub(super) draw_style: crate::config::DrawStyle,
     pub(super) polar: Option<crate::polar::PolarOptions>,
     pub(super) colorbar: Option<crate::config::ColorBarOptions>,
+    /// How category bars share a slot (`Config::bar_groups`): group width,
+    /// gap and stacking are drawn into the bodies.
+    pub(super) bar_groups: Option<crate::data_config::BarGroups>,
+    /// The panel's category axes (`bottom_x`, `left_y`) when it draws a
+    /// category bar series, `None` otherwise: a bar override names its
+    /// category by id, resolved to a row against these.
+    pub(super) categories: Option<[Option<Vec<crate::config::Category>>; 2]>,
     /// The tick-label face: contour labels baked into the bodies take it
     /// (`ContourLabelAtlasInput::from_config`).
     pub(super) label_font: String,
@@ -564,6 +583,15 @@ impl ResidentDisplayKey {
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
             && self.colorbar == probe.chart_config.colorbar
+            && self.bar_groups == probe.chart_config.bar_groups
+            && match &self.categories {
+                Some([bottom, left]) => {
+                    has_category_bars(probe.series)
+                        && *bottom == probe.chart_config.bottom_x.categories
+                        && *left == probe.chart_config.left_y.categories
+                }
+                None => !has_category_bars(probe.series),
+            }
             && self.label_font == probe.chart_config.bottom_x.label_style.label_font
             && self.series.len() == probe.series.len()
             && self
@@ -583,6 +611,13 @@ impl ResidentDisplayKey {
             draw_style: probe.chart_config.draw_style,
             polar: probe.chart_config.polar.clone(),
             colorbar: probe.chart_config.colorbar.clone(),
+            bar_groups: probe.chart_config.bar_groups.clone(),
+            categories: has_category_bars(probe.series).then(|| {
+                [
+                    probe.chart_config.bottom_x.categories.clone(),
+                    probe.chart_config.left_y.categories.clone(),
+                ]
+            }),
             label_font: probe.chart_config.bottom_x.label_style.label_font.clone(),
             series: probe
                 .series
@@ -595,6 +630,13 @@ impl ResidentDisplayKey {
             target_pipeline_generation: probe.target_pipeline_generation,
         }
     }
+}
+
+/// Whether any of the panel's series is a category bar series.
+fn has_category_bars(series: &[Series<'_>]) -> bool {
+    series
+        .iter()
+        .any(|series| series.config.render_type.category_bars().is_some())
 }
 
 /// A token's hold on one [`ResidentDisplay`]: the bind group to blit and the
@@ -691,6 +733,13 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
+            category_bars: layers.category_bars.map(|layer| PreparedCategoryBarLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                style_bg: layer.style_bg.clone(),
+                data: layer.data,
+                count: layer.count,
+            }),
             vector: layers.vector.map(|layer| PreparedVectorLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -771,6 +820,7 @@ impl PreparedSeries {
                     edges: layer.edges,
                     values: layer.values,
                     instance: layer.instance,
+                    category: layer.category,
                 })
                 .collect(),
             selected_fields: layers
@@ -843,6 +893,15 @@ impl PreparedSeries {
                 pool_buffer: &layer.pool_buffer,
                 edges: layer.edges,
                 values: layer.values,
+            }),
+            category_bars: self.category_bars.as_ref().map(|layer| {
+                data_render::ColumnCategoryBarLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    style_bg: &layer.style_bg,
+                    data: layer.data.clone(),
+                    count: layer.count,
+                }
             }),
             vector: self
                 .vector
@@ -936,6 +995,7 @@ impl PreparedSeries {
                     edges: layer.edges,
                     values: layer.values,
                     instance: layer.instance,
+                    category: layer.category.clone(),
                 })
                 .collect(),
             selected_fields: self
@@ -2019,6 +2079,7 @@ impl Renderer {
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
                 vector_bgl: &self.vector_bgl,
+                category_bar_data_bgl: &self.category_bar_data_bgl,
                 field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,

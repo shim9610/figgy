@@ -131,6 +131,38 @@ impl PrimitiveStyle {
         }
     }
 
+    /// A category bar series' style — the category bar lanes of the `Style`
+    /// reinterpretation (SHADER_COMMON.md §5.13): the fill colour, the
+    /// outline width (0 without an outline) and colour, and the material.
+    /// The group layout, the corner radius and the emphasis are the series'
+    /// `CategoryBarParamsGpu`, which the pick reads too.
+    ///
+    /// The selected bar's highlight starts from this style and then holds
+    /// the highlight colour in `color_premul` and the outline width
+    /// (unscaled) in `line_width_px`, like a histogram bin's.
+    pub fn from_category_bars(
+        color: Color,
+        style: &crate::data_config::CategoryBarStyle,
+        scale: f32,
+    ) -> Self {
+        let premul = |c: Color| {
+            let a = c.a.clamp(0.0, 1.0);
+            [c.r * a, c.g * a, c.b * a, a]
+        };
+        let mut s = Self::from_color(color);
+        s.line_width_px = if style.outline {
+            style.outline_width.max(0.0) * scale
+        } else {
+            0.0
+        };
+        s.point_radius_px = 0.0;
+        s.cap_half_px = 0.0;
+        s.cap_width_px = 0.0;
+        s.shape_id = 0;
+        s.dash = [premul(style.outline_color), category_bar_material(style)];
+        s
+    }
+
     pub(crate) fn pack_dash_pattern(&mut self, pattern: &[f32], scale: f32) {
         let capacity: usize = self.dash.iter().map(|lane| lane.len()).sum();
         self.dash.iter_mut().flatten().for_each(|slot| *slot = 0.0);
@@ -246,6 +278,18 @@ pub(crate) const MATERIAL_TOON: u32 = 7;
 pub(crate) const MATERIAL_ENAMEL: u32 = 8;
 pub(crate) const MATERIAL_HATCH: u32 = 9;
 pub(crate) const MATERIAL_PEARL: u32 = 10;
+
+/// A category bar's material lanes: `(kind, texture strength, texture
+/// scale, gloss)`, the `material` of `BarStyleSlotGpu` and `Style.dash[1]`.
+pub(crate) fn category_bar_material(style: &crate::data_config::CategoryBarStyle) -> [f32; 4] {
+    let kind = MaterialGpu::pack(style.material, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0).params[0];
+    [
+        kind,
+        style.texture_strength,
+        style.texture_scale,
+        style.gloss,
+    ]
+}
 
 /// The roughness a bar or a box is shaded with: `RadialStyle`'s default.
 /// Bar and box styles have no roughness of their own.
@@ -410,9 +454,19 @@ pub struct BarStyleSlotGpu {
     pub border_color_premul: [f32; 4],
     /// `(border_width_px, gap_px, width_ratio, mask_bits as f32)`.
     pub params: [f32; 4],
+    /// Category bars only, under `BAR_STYLE_MASK_MATERIAL`: `(material
+    /// kind, texture strength, texture scale, gloss)`.
+    pub material: [f32; 4],
+    /// Category bars only: `(corner_radius_px, emphasis brightness, 0, 0)`.
+    pub finish: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<BarStyleSlotGpu>() == 48);
+const _: () = assert!(std::mem::size_of::<BarStyleSlotGpu>() == 80);
+
+/// `BarStyleSlotGpu::params[3]` bit: the record sets the material and the
+/// finish of a category bar (`bar_columnar.wgsl`'s
+/// `BAR_STYLE_MASK_MATERIAL`).
+pub(crate) const BAR_STYLE_MASK_MATERIAL: u32 = 32;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -423,9 +477,13 @@ pub struct BarStyleOverrideGpu {
     pub border_color_premul: [f32; 4],
     /// `(border_width_px, gap_px, width_ratio, mask_bits as f32)`.
     pub params: [f32; 4],
+    /// See [`BarStyleSlotGpu::material`].
+    pub material: [f32; 4],
+    /// See [`BarStyleSlotGpu::finish`].
+    pub finish: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<BarStyleOverrideGpu>() == 64);
+const _: () = assert!(std::mem::size_of::<BarStyleOverrideGpu>() == 96);
 
 pub type BarStyleMapMeta = ScatterStyleMapMeta;
 
@@ -562,18 +620,8 @@ pub fn create_bar_style_map(
     layout: &wgpu::BindGroupLayout,
     overrides: &[BarStyleOverrideGpu],
 ) -> BarStyleMap {
-    let dummy_style = [BarStyleSlotGpu {
-        fill_color_premul: [0.0; 4],
-        border_color_premul: [0.0; 4],
-        params: [0.0; 4],
-    }];
-    let dummy_override = [BarStyleOverrideGpu {
-        bin_index: 0,
-        _pad: [0; 3],
-        fill_color_premul: [0.0; 4],
-        border_color_premul: [0.0; 4],
-        params: [0.0; 4],
-    }];
+    let dummy_style = [<BarStyleSlotGpu as bytemuck::Zeroable>::zeroed()];
+    let dummy_override = [<BarStyleOverrideGpu as bytemuck::Zeroable>::zeroed()];
     let override_rows = if overrides.is_empty() {
         &dummy_override[..]
     } else {

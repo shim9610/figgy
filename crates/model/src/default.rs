@@ -116,6 +116,7 @@ pub fn default_axis_options_x() -> AxisOptions {
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
         categories: None,
+        cross_at: None,
     }
 }
 
@@ -141,6 +142,7 @@ pub fn default_axis_options_y() -> AxisOptions {
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
         categories: None,
+        cross_at: None,
     }
 }
 
@@ -176,6 +178,7 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
         categories: None,
+        cross_at: None,
     }
 }
 
@@ -316,5 +319,7 @@ pub fn default_config() -> Config {
         subplots: Vec::new(),
         active_layer: LayerRef::Base,
         annotations: AnnotationLayer::default(),
+        // Grouped vertical bars until a chart sets its own.
+        bar_groups: None,
     }
 }

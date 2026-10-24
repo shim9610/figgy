@@ -72,6 +72,29 @@ released_documents! {
     model_0_10_0_boxplot_edited: BoxPlotChart = "model-0.10.0-boxplot-edited.json";
 }
 
+/// Every released categorical document opens as a Cartesian chart: the
+/// reader's config and series validate as category bars, survive a serde
+/// round trip, and its uploads cover every series.
+#[test]
+fn released_categorical_documents_convert_to_category_bars() {
+    for file in FIXTURES.iter().filter(|f| f.contains("categorical")) {
+        let fixture = std::fs::read_to_string(format!("{FIXTURE_DIR}/{file}")).unwrap();
+        let doc: CategoricalChart = serde_json::from_str(&fixture).unwrap();
+        let (config, series, uploads) = Config::from_categorical(&doc);
+        assert_eq!(series.len(), doc.series.len(), "{file}");
+        assert_eq!(uploads.len(), doc.series.len() + 1, "{file}");
+        if !doc.categories.is_empty() && !doc.series.is_empty() {
+            assert_eq!(config.validate_category_bars(&series), Ok(()), "{file}");
+        }
+        let config_json = serde_json::to_string(&config).unwrap();
+        let again: Config = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(again, config, "{file}: the config round trips");
+        let series_json = serde_json::to_string(&series).unwrap();
+        let again: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(again, series, "{file}: the series round trip");
+    }
+}
+
 /// A fixture added to the directory without a test above would be silently
 /// unchecked.
 #[test]

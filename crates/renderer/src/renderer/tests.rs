@@ -6371,6 +6371,33 @@ fn streamed_series_reject_vectors() {
     ));
 }
 
+/// Streaming is not extended to category bars: a streamed category bar
+/// series is rejected with an explicit reason, on a chart without a
+/// categorical axis (whose own rejection would otherwise come first) too.
+#[test]
+fn streamed_series_reject_category_bars() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::CategoryBars {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+            label_format: Default::default(),
+            overrides: None,
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("category bar") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to polar charts: a streamed series on one
 /// is rejected with an explicit reason.
 #[test]

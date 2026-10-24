@@ -1,7 +1,18 @@
-//! Bounded categorical bars. Values are model-owned, not ColumnSource payloads.
-//! Stable category/series IDs identify edits and selection; values follow category order.
+//! The legacy categorical bar chart document, kept as a reader.
+//!
+//! A categorical bar chart is a Cartesian chart now: a `Config` with a
+//! categorical axis ([`crate::config::AxisOptions::categories`]),
+//! `Config::bar_groups` and one
+//! [`DataRenderType::CategoryBars`](crate::data_config::DataRenderType::CategoryBars)
+//! series per bar series, whose values are pool columns. A
+//! [`CategoricalChart`] document still parses and validates here, and
+//! `Config::from_categorical` turns it into that chart and the uploads of its
+//! values. Stable category and series ids identify edits and selections;
+//! values follow category order.
+use crate::Color;
+#[cfg(test)]
+use crate::Material;
 use crate::format::PlainNumberFormat;
-use crate::{Color, Material};
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -11,20 +22,13 @@ pub const MAX_CATEGORY_BARS: usize = 512;
 /// The category type lives with the axis options now
 /// ([`crate::config::AxisOptions::categories`]); this path keeps working.
 pub use crate::config::Category;
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CategoryBarTarget {
-    pub category_id: String,
-    pub series_id: String,
-}
-impl CategoryBarTarget {
-    pub fn new(category: impl Into<String>, series: impl Into<String>) -> Self {
-        Self {
-            category_id: category.into(),
-            series_id: series.into(),
-        }
-    }
-}
+/// The bar types live with the series kinds now
+/// ([`crate::data_config::DataRenderType::CategoryBars`]); these paths keep
+/// working.
+pub use crate::data_config::{
+    CategoryBarDirection, CategoryBarLabelFormat, CategoryBarLabels, CategoryBarMode,
+    CategoryBarOverride, CategoryBarStyle, CategoryBarTarget,
+};
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarSeries {
@@ -52,97 +56,10 @@ impl BarSeries {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarMode {
-    #[default]
-    Grouped,
-    Stacked,
-    PercentStacked,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarDirection {
-    #[default]
-    Vertical,
-    Horizontal,
-}
-/// The former bar material enum, now the shared [`Material`]. Bars reject
-/// the materials [`Material::supported_on_flat_body`] excludes.
+/// The former bar material enum, now the shared [`Material`](crate::Material). Bars reject
+/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body) excludes.
 #[deprecated(since = "0.13.0", note = "use Material")]
 pub type CategoryBarMaterial = crate::Material;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarLabels {
-    None,
-    Inside,
-    Outside,
-    #[default]
-    Auto,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarLabelFormat {
-    #[default]
-    Value,
-    Percent,
-    ValuePercent,
-    CategoryValue,
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(default)
-)]
-pub struct CategoryBarStyle {
-    pub material: Material,
-    /// Logical pixels. Only the exposed end of a stack is rounded.
-    pub corner_radius: f32,
-    pub outline: bool,
-    pub outline_width: f32,
-    pub outline_color: Color,
-    pub texture_strength: f32,
-    pub texture_scale: f32,
-    pub gloss: f32,
-    /// Highlight preserves the data endpoint; it never grows/lifts a bar.
-    pub emphasis_brightness: f32,
-}
-impl Default for CategoryBarStyle {
-    fn default() -> Self {
-        Self {
-            material: Material::Flat,
-            corner_radius: 5.0,
-            outline: false,
-            outline_width: 1.0,
-            outline_color: Color::from_rgb8(40, 55, 75),
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            gloss: 0.45,
-            emphasis_brightness: 0.08,
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CategoryBarOverride {
-    pub target: CategoryBarTarget,
-    pub color: Option<Color>,
-    pub style: Option<CategoryBarStyle>,
-    pub labels: Option<CategoryBarLabels>,
-    pub label_format: Option<CategoryBarLabelFormat>,
-}
-impl CategoryBarOverride {
-    pub fn new(target: CategoryBarTarget) -> Self {
-        Self {
-            target,
-            color: None,
-            style: None,
-            labels: None,
-            label_format: None,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -417,7 +334,23 @@ impl CategoricalChart {
                 return Err("interaction target is missing or unknown");
             }
         }
-        self.resolve_segments()?;
+        if self.mode == CategoryBarMode::Stacked {
+            // Each stack's running total must stay finite; percent stacks
+            // normalize per category and cannot overflow.
+            for i in 0..n {
+                let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                for v in self.series.iter().filter_map(|s| s.values[i]) {
+                    if v < 0.0 {
+                        negative += v;
+                    } else {
+                        positive += v;
+                    }
+                }
+                if !positive.is_finite() || !negative.is_finite() {
+                    return Err("stack total overflow");
+                }
+            }
+        }
         Ok(())
     }
     /// Validates the model, then computes positive/negative stacks independently.
@@ -546,37 +479,18 @@ mod tests {
         }
     }
     #[test]
-    fn missing_zero_and_stacks_are_distinct() {
-        let mut c = chart();
-        c.mode = CategoryBarMode::Stacked;
-        let s = c.segments().unwrap();
-        assert_eq!(s.len(), 3);
-        assert_eq!((s[1].start, s[1].end), (2.0, 5.0));
-        assert!(!s[0].exposed_end);
-        assert!(s[1].exposed_end);
-        assert_eq!(s[2].percent, None);
-        c.mode = CategoryBarMode::PercentStacked;
-        let s = c.segments().unwrap();
-        assert_eq!(s[0].end, 40.0);
-        assert_eq!(s[1].end, 100.0);
-        assert_eq!(s[2].end, 0.0);
-    }
-    #[test]
     fn signed_stacks_and_overflow_have_explicit_rules() {
         let mut c = chart();
         c.mode = CategoryBarMode::Stacked;
         c.series[1].values[0] = Some(-3.0);
-        let s = c.segments().unwrap();
-        assert_eq!((s[1].start, s[1].end), (0.0, -3.0));
-        assert!(s[0].exposed_end && s[1].exposed_end);
-        assert_eq!(s[0].percent, None);
+        assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::PercentStacked;
         assert!(c.validate().is_err());
         c.series[0].values[0] = Some(f64::MAX);
         c.series[1].values[0] = Some(f64::MAX);
-        assert_eq!(c.segments().unwrap()[1].end, 100.0);
+        assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::Stacked;
-        assert!(c.validate().is_err());
+        assert_eq!(c.validate(), Err("stack total overflow"));
     }
     #[test]
     fn identity_survives_reordering_and_rename() {

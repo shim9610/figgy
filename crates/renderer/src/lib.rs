@@ -47,9 +47,10 @@ mod time_axis;
 // its single-crate spelling: `renderer::config::…`, `renderer::layout::…`, etc.
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
+pub use ::model::{SeriesUpload, UploadValues};
 pub use ::model::{
-    color, colormap, config, data_config, default, drag, expand, format, layout, legend, line,
-    preset, resize, select, sink, text, tick,
+    bounded_sources, color, colormap, config, data_config, default, drag, expand, format, layout,
+    legend, line, preset, resize, select, sink, text, tick,
 };
 
 // Public API re-exports.
@@ -73,7 +74,7 @@ pub use data_config::{
 };
 pub use data_render::{
     AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
-    GrowthPolicy,
+    GrowthPolicy, StackExtent,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};

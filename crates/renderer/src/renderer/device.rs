@@ -201,6 +201,10 @@ pub(super) struct TargetPipelines {
     /// the series' bar style map, so the outline resolves the bin's overrides
     /// as the mapped draw does (`vs_bar_selection_mapped`).
     pub(super) bar_selection_mapped: Option<wgpu::RenderPipeline>,
+    /// The category bar draw (`vs_category_bars` / `fs_category_bars`).
+    pub(super) bar_category: Option<wgpu::RenderPipeline>,
+    /// The picked category bar's highlight over the same layout.
+    pub(super) bar_category_selection: Option<wgpu::RenderPipeline>,
     pub(super) field: Option<wgpu::RenderPipeline>,
     pub(super) field_selection: Option<wgpu::RenderPipeline>,
     /// The selected contour level's highlight for a labelled contour, with
@@ -268,6 +272,7 @@ impl TargetPipelines {
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bar_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
@@ -285,6 +290,8 @@ impl TargetPipelines {
         let mut need_bar_mapped = false;
         let mut need_bar_selection = false;
         let mut need_bar_selection_mapped = false;
+        let mut need_category_bars = false;
+        let mut need_category_bar_selection = false;
         let mut need_field_selection = false;
         let mut need_scatter_mapped = false;
         let mut need_errorbar_mapped = false;
@@ -347,6 +354,8 @@ impl TargetPipelines {
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 need_scatter |= primitives.scatter;
                 need_bar |= primitives.bar;
+                need_category_bars |= primitives.category_bars;
+                need_category_bar_selection |= primitives.category_bars && typed_bin;
                 if primitives.vector
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
@@ -527,6 +536,29 @@ impl TargetPipelines {
                 ),
             );
         }
+        for (need, selection) in [
+            (need_category_bars, false),
+            (need_category_bar_selection, true),
+        ] {
+            let slot = if selection {
+                &mut self.bar_category_selection
+            } else {
+                &mut self.bar_category
+            };
+            if need && slot.is_none() {
+                *slot = Some(data_render::create_category_bar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    category_bar_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                    selection,
+                ));
+            }
+        }
         for (need, input) in [
             (need_vector_points, data_render::vector::VectorInput::Points),
             (need_vector_grid, data_render::vector::VectorInput::Grid),
@@ -670,6 +702,7 @@ impl TargetPipelines {
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bar_data_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         feature: Option<PreparationFeature>,
@@ -861,6 +894,40 @@ impl TargetPipelines {
                 self.sample_count,
             )
         );
+        for selection in [false, true] {
+            let slot = if selection {
+                &mut self.bar_category_selection
+            } else {
+                &mut self.bar_category
+            };
+            if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_category")) {
+                *slot = Some(
+                    observe_value_async(
+                        observer,
+                        "renderer.prewarm",
+                        if selection {
+                            "selected category bar"
+                        } else {
+                            "category bars"
+                        },
+                        || {
+                            data_render::create_category_bar_pipeline_with_sample_count(
+                                device,
+                                &self.shaders.bar,
+                                transform_bgl,
+                                style_bgl,
+                                per_point_style_map_bgl,
+                                category_bar_data_bgl,
+                                surface_format,
+                                self.sample_count,
+                                selection,
+                            )
+                        },
+                    )
+                    .await,
+                );
+            }
+        }
         ensure!(
             field,
             "heatmap field",
@@ -1072,6 +1139,8 @@ pub(super) fn create_target_pipelines_observed(
         bar_mapped: None,
         bar_selection: None,
         bar_selection_mapped: None,
+        bar_category: None,
+        bar_category_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1146,6 +1215,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_mapped: None,
         bar_selection: None,
         bar_selection_mapped: None,
+        bar_category: None,
+        bar_category_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1628,6 +1699,8 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let category_bar_data_bgl =
+            data_render::create_category_bar_data_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -1685,6 +1758,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             vector_bgl,
+            category_bar_data_bgl,
             field_cell_tables,
             pipelines,
             sampler,
@@ -1769,6 +1843,8 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let category_bar_data_bgl =
+            data_render::create_category_bar_data_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -1826,6 +1902,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             vector_bgl,
+            category_bar_data_bgl,
             field_cell_tables,
             pipelines,
             sampler,
@@ -2285,6 +2362,7 @@ impl Renderer {
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.category_bar_data_bgl,
                 &self.star_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 None,

@@ -45,9 +45,10 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `material.wgsl` (§5.9) | boxplot, categorical, radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars), boxplot, categorical, radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
-| `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
+| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars), boxplot, categorical |
+| `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, categorical, radar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field |
 
@@ -249,6 +250,32 @@ A streamed series has no fill (streaming is not extended).
 나머지 행렬 옵션은 별도 유니폼인 `FieldParams`(group 2, binding 4)에 저장한다. 좌표 컬럼의 시작 위치, 격자 크기·방향, Z축 범위, 레벨·색상 기준점 개수는 `Style`의 빈 필드에 모두 담을 수 없기 때문이다.
 
 group 2의 격자 스토리지와 유니폼은 행렬 렌더링과 등고선 앵커 계산이 공유하므로 동기화 대상이다. 대응하는 CPU 구조체는 `field.rs::FieldParamsGpu` / `GridColumnGpu`다. 검색용 메타데이터인 binding 6은 `field_columnar.wgsl`에만 선언하며, 아래 5.1절의 규칙을 따른다.
+
+### 2.4 The category bar entries' `Style`
+
+A `DataRenderType::CategoryBars` series (§5.13) keeps the `Style` size and
+layout and reads these lanes. The CPU writer is
+`style.rs::PrimitiveStyle::from_category_bars`; the two must agree.
+
+| Field | Meaning for a category bar |
+|------|------------------|
+| `color_premul` | premultiplied fill colour |
+| `line_width_px` | outline width in render pixels; 0 without an outline (`CategoryBarStyle::outline`) |
+| `dash[0]` | premultiplied outline colour |
+| `dash[1]` | the material: (kind, texture strength, texture scale, gloss), the `MATERIAL_*` kind of §5.9 |
+| `series_salt` | as for every series; the grain seed comes from `CategoryBarParams::seed` |
+| `point_radius_px` · `cap_half_px` · `cap_width_px` · `shape_id` · `dash_len` · `primitive_flags` | unused (0) |
+
+The group layout (gap, group width, mode, direction), the corner radius and
+the emphasis brightness are not `Style` lanes: they are
+`CategoryBarParams` (§5.13), which the pick reads too, since the pick binds
+no `Style`.
+
+The selected bar's highlight (`vs_category_bar_selection`) reads a
+per-selection `Style` built from the same function, with
+`color_premul` the premultiplied highlight colour and `line_width_px` the
+outline width (unscaled), as for a histogram bin (§2.1). The bar itself is
+the drawn instance, so its overrides resolve by its row like the draw.
 
 ---
 
@@ -591,8 +618,8 @@ The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arro
 
 Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
 into one per-instance value, `struct Material { params: vec4<f32>, finish:
-vec4<f32> }`, embedded as the `material` member of the categorical and
-boxplot `Bar` and the radial `Sector`:
+vec4<f32> }`, embedded as the `material` member of the categorical,
+category bar and boxplot `Bar` and the radial `Sector`:
 
 | Lane | Meaning |
 |---|---|
@@ -849,6 +876,81 @@ The struct, the constant, `Hit` and the six functions are the fragment
 spliced after `material.wgsl` into the radial draw module and the radial
 pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
 block was taken from with a one-line comment.
+
+### 5.13 Category bars (group 3, bindings 8 and 9)
+
+The bars of a `DataRenderType::CategoryBars` series: one instance per
+category (a row of the series' columns), six vertices each
+(`CATEGORY_BAR_VERTICES`). The entries are the input fragment
+[`common/category_bars.wgsl`](common/category_bars.wgsl), spliced into the
+bar module (`bar.rs::BAR_SHADER`) before `bar_columnar.wgsl` and after
+`material.wgsl` and `bounded_shading.wgsl`, so one module holds the
+histogram and the category bar entries and a category bar resolves its
+overrides through the histogram's `resolve_bar_style` over the same group 2
+bar style table (bindings 5–7), with the row as the bin index. A histogram
+pipeline never reads group 3 bindings 8 and 9.
+
+```wgsl
+struct CategoryBarParams { values: array<vec4<u32>, 4>, positions, count,
+    member, members, mode, horizontal: u32, gap_px, group_width,
+    corner_radius_px, emphasis, scale: f32, seed: u32 };   // 112 bytes
+@group(3) @binding(8) var<storage, read> category_pool: array<f32>;
+@group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
+```
+
+| Member | Meaning |
+|---|---|
+| `values` | the f32 lane bases of the group's value columns in group order; member `k` is `values[k / 4][k % 4]`, at most 16 (`MAX_BAR_SERIES`) |
+| `positions` | the lane base of the series' category position column (0..n-1) |
+| `count` | bars of the series: the category count |
+| `member`, `members` | the series' place in its group, the group's size |
+| `mode` | `CATEGORY_BAR_MODE_GROUPED` (0), `_STACKED` (1), `_PERCENT` (2) |
+| `horizontal` | 1 when categories run along y |
+| `gap_px`, `group_width` | `Config::bar_groups`' gap in render pixels and the share of a slot the group covers |
+| `corner_radius_px`, `emphasis` | the series' corner radius in render pixels and the picked bar's emphasis brightness |
+| `scale` | render pixels per logical pixel: the material's object unit (`Bar.effects.y`) |
+| `seed` | the series salt; the grain seed of a bar is `(seed ^ row · 2654435761) % 4096` |
+
+Rust twin: `data_render::CategoryBarParamsGpu` (`bar.rs`), written by
+`renderer/series.rs::category_bar_params`;
+`mirrored_struct_layouts_match_their_rust_twins` holds the bar module's
+`CategoryBarParams`, `BarStyleSlot` and `BarStyleOverride` (with the
+category bar lanes `material` and `finish`, read under
+`BAR_STYLE_MASK_MATERIAL`) and `Transform` to their twins. The pool is bound whole as storage, as the
+vector shader binds it, and the values are `(hi, lo)` pairs.
+
+`category_bar(row, resolved)` builds the bar on every draw, and the draw,
+the selection and the pick all call it:
+
+- Grouped: the bar runs from 0 to the value; the group's bars sit side by
+  side in series order, `gap_px` apart, inside the centred `group_width`
+  share of the category slot (position ± 0.5).
+- Stacked: positive and negative values stack away from zero separately,
+  each from the sum of the earlier members' values of the same sign at the
+  same row, read by their lanes in a fixed loop over `members`.
+- Percent: every value is divided by the row's total of positive values,
+  normalized by the largest value first so the total stays finite; the
+  top of a stack is exactly 100. A row without a positive total, or a
+  negative value, draws nothing.
+- A missing (non-finite) or zero value, or a slot too narrow for the group,
+  draws no bar. Only the exposed end of a bar is rounded, on its own side
+  of zero; an edge a stacked bar shares with its neighbour has one pixel
+  owner (`CATEGORY_EDGE_*`), so no background shows through the seam.
+
+The fill is `bar_surface` (§5.9 bars) over a `Bar` built in registers from
+the flat vertex outputs, sampled at 2×2 subpixels against `sdf`; the outline
+is the inside band of `line_width_px` in the outline colour. The selection
+entries (`vs/fs_category_bar_selection`) draw the picked bar's inside ring
+in the highlight colour and add its emphasis brightness to what is drawn
+under it, additively. The compute entry `pick_category_bar` answers the
+nearest bar within the pick distance by the rounded rect's distance, as a
+`DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the row; it reads
+the geometry from `CategoryBarParams` and the overrides' gap and width
+(`category_geometry_style`), never a `Style`.
+
+Nothing per bar is stored anywhere: the CPU keeps the pool lane bases, the
+group layout and, for the value axis fit only, the stacked extent of a
+batch-uploaded group (`ColumnPool::stack_extent`).
 
 ---
 ## Checklist

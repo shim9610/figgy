@@ -314,6 +314,10 @@ impl ColorCycle {
             DataRenderType::Vector { style, .. } => {
                 style.color = c;
             }
+            // The bar fill joins the cycle; per-bar override colours stay.
+            DataRenderType::CategoryBars { color, .. } => {
+                *color = c;
+            }
         }
     }
 

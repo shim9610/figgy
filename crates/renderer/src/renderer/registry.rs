@@ -59,6 +59,8 @@ impl AxisViewState {
             minor_tick_length: _,
             // The range of a categorical axis (`data_range`).
             categories: _,
+            // Where the line is drawn, not how data maps.
+            cross_at: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),
@@ -107,6 +109,8 @@ impl ChartViewState {
             subplots,
             active_layer: _,
             annotations: _,
+            // How bars share a slot, not how data maps to the screen.
+            bar_groups: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -163,6 +167,7 @@ impl ChartViewState {
             subplots: config_subplots,
             active_layer: _,
             annotations: _,
+            bar_groups: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);
@@ -230,6 +235,8 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         subplots,
         active_layer: _,
         annotations: _,
+        // The bars' layout is drawn by the GPU pass, not rasterized.
+        bar_groups: _,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -1295,7 +1302,9 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::LineScatterErrorbarX { .. }
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
-        | DataRenderType::Histogram { .. } => {}
+        | DataRenderType::Histogram { .. }
+        // Category positions and values are its x and y columns.
+        | DataRenderType::CategoryBars { .. } => {}
         // A matrix' constituent columns are referenced columns like any other:
         // remove-column cascade, validation, and the derived-identity stamp all
         // reach them through here, so a grid column cannot be dropped from under
@@ -1343,6 +1352,17 @@ pub(super) fn validate_renderer_series(
     config: &Config,
     series: &[SeriesConfig],
 ) -> Result<()> {
+    // The category bar rules are the chart's: its bar groups, their axes and
+    // every bar series' style, labels and overrides.
+    if let Err(reason) = config.validate_category_bars(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.category_bars().is_some())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     for (index, item) in series.iter().enumerate() {
         if item.series_id.is_empty() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -1471,6 +1491,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::Vector { .. } => {
             return Err(invalid("vector series are not drawn on polar axes"));
+        }
+        DataRenderType::CategoryBars { .. } => {
+            return Err(invalid("category bars are not drawn on polar axes"));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

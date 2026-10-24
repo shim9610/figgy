@@ -237,6 +237,9 @@ pub struct Renderer {
     /// Vector data layout (pool + grid table + colourmap stops +
     /// `VectorParams`), group 2 of the assembled vector pipelines.
     vector_bgl: wgpu::BindGroupLayout,
+    /// Category bar data layout (pool + `CategoryBarParams`), group 3 of the
+    /// category bar pipelines and pick.
+    category_bar_data_bgl: wgpu::BindGroupLayout,
     /// The padding tables every grid vector's cell-geometry field group shares.
     field_cell_tables: data_render::FieldCellTables,
 

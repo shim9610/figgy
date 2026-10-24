@@ -739,6 +739,7 @@ impl ColumnPool {
                         min: staged.min,
                         max: staged.max,
                         min_positive: staged.min_positive,
+                        stack_extent: None,
                     },
                 );
             }
@@ -841,6 +842,7 @@ impl ColumnPool {
                     min: staged.min,
                     max: staged.max,
                     min_positive: staged.min_positive,
+                    stack_extent: None,
                 },
             );
         }
@@ -1033,6 +1035,15 @@ impl ColumnPool {
         }
 
         // ── Nothing below can fail. ───────────────────────────────────────
+        // A batch the size of a bar group measures its stacked extent while
+        // it writes (`StackExtent`): row totals in fixed accumulators, fed by
+        // the pair writer's observer, so no value is read back or kept.
+        let stacked = columns.len() <= model::categorical::MAX_BAR_SERIES
+            && columns
+                .iter()
+                .all(|(_, source)| source.len() <= model::categorical::MAX_CATEGORIES);
+        let mut positive = [0.0f64; model::categorical::MAX_CATEGORIES];
+        let mut negative = [0.0f64; model::categorical::MAX_CATEGORIES];
         let mut epoch = first_epoch;
         for (chunk, buffer) in chunks.iter().zip(&staging) {
             let mut view = buffer
@@ -1044,10 +1055,26 @@ impl ColumnPool {
                 let raw_bytes = column_raw_bytes(source.len());
                 let byte_size = column_region_bytes(source.len()).expect("sized in step 2");
                 let local = chunk.column_offsets[index - chunk.columns.start];
-                let stats = write_scalar_source_as_pairs(
-                    source,
-                    ColumnPairWriter::new(view.slice(local..local + raw_bytes as usize)),
-                );
+                let dst = view.slice(local..local + raw_bytes as usize);
+                let stats = if stacked {
+                    let mut observe = |row: usize, hi: f32, lo: f32| {
+                        let value = hi as f64 + lo as f64;
+                        if !value.is_finite() {
+                            return;
+                        }
+                        if value > 0.0 {
+                            positive[row] += value;
+                        } else if value < 0.0 {
+                            negative[row] += value;
+                        }
+                    };
+                    write_scalar_source_as_pairs(
+                        source,
+                        ColumnPairWriter::new_observed(dst, &mut observe),
+                    )
+                } else {
+                    write_scalar_source_as_pairs(source, ColumnPairWriter::new(dst))
+                };
                 epoch += 1;
                 self.allocation_epochs.insert(id.to_string(), epoch);
                 self.slots.insert(
@@ -1061,11 +1088,26 @@ impl ColumnPool {
                         min: source.min(),
                         max: source.max(),
                         min_positive: stats.min_positive,
+                        stack_extent: None,
                     },
                 );
             }
             drop(view);
             buffer.unmap();
+        }
+
+        if stacked {
+            let extent = StackExtent {
+                min: negative.iter().copied().fold(0.0, f64::min),
+                max: positive.iter().copied().fold(0.0, f64::max),
+                batch: first_epoch + 1,
+                members: columns.len(),
+            };
+            for (id, _) in columns {
+                if let Some(slot) = self.slots.get_mut(*id) {
+                    slot.stack_extent = Some(extent);
+                }
+            }
         }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1424,6 +1466,7 @@ impl ColumnPool {
                 min: column.min,
                 max: column.max,
                 min_positive: column.min_positive,
+                stack_extent: None,
             };
             handles.push(ColumnHandle {
                 generation: slot.generation,
@@ -1714,6 +1757,7 @@ impl ColumnPool {
             min,
             max,
             min_positive,
+            stack_extent: None,
         };
         let handle = ColumnHandle {
             generation: slot.generation,
@@ -1919,6 +1963,7 @@ impl ColumnPool {
             min,
             max,
             min_positive,
+            stack_extent: None,
         };
         let handle = ColumnHandle {
             generation: slot.generation,

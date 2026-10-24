@@ -1202,6 +1202,8 @@ mod stream_tests {
             fill_color_premul: color,
             border_color_premul: [0.0; 4],
             params: [0.0, 0.0, 0.0, 1.0],
+            material: [0.0; 4],
+            finish: [0.0; 4],
         };
         let overrides = [
             make_override(100, [0.0, 1.0, 0.0, 1.0]),

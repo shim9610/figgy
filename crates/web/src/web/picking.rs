@@ -16,6 +16,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
+        | DataRenderType::CategoryBars { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -221,6 +222,43 @@ impl FiggyChart {
                     }
                 }
             }
+            // A category bar reports its category and its value, read back
+            // from the GPU column the draw used.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.category_bars().is_some() =>
+            {
+                let config = self.chart_config();
+                let layer = config.layer_of_series(&series.series_id);
+                let groups = config.bar_groups_of(layer);
+                let panel = match layer {
+                    renderer::LayerRef::Subplot(index)
+                    | renderer::LayerRef::SubplotOverlay(index, _) => config
+                        .subplots
+                        .get(index)
+                        .map_or(config, |subplot| &subplot.config),
+                    renderer::LayerRef::Base
+                    | renderer::LayerRef::Overlay(_)
+                    | renderer::LayerRef::Annotations => config,
+                };
+                let categories = match groups.direction {
+                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
+                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                };
+                let category = categories
+                    .as_deref()
+                    .and_then(|categories| categories.get(*bin_index))
+                    .ok_or_else(|| js_err("selected category no longer exists"))?;
+                result["category_id"] = serde_json::json!(category.id);
+                result["category_label"] = serde_json::json!(category.label);
+                let (_, values) = series.category_bar_columns(groups.direction);
+                let values = self
+                    .read_selection_samples(&[(values.to_owned(), *bin_index)])
+                    .await?;
+                result["index"] = serde_json::json!(bin_index);
+                result["value"] = serde_json::json!(values[0]);
+                result["direction"] = serde_json::json!(groups.direction);
+                result["mode"] = serde_json::json!(groups.mode);
+            }
             PickedDataRef::HistogramBin { bin_index, .. } => {
                 let renderer::DataRenderType::Histogram { bar } = &series.render_type else {
                     return Err(js_err("selected series is not a histogram"));
@@ -382,44 +420,80 @@ impl FiggyChart {
                 source_id,
                 bin_index,
             } => {
-                let renderer::DataRenderType::Histogram { bar } =
-                    &self.chart_series()[position].render_type
-                else {
-                    return Ok(false);
-                };
-                let horizontal = matches!(
-                    bar.orientation,
-                    renderer::data_config::BarOrientation::Horizontal
-                );
-                let histograms = self
-                    .chart_series()
-                    .iter()
-                    .filter(|s| {
-                        matches!(&s.render_type,
+                // A category bar steps along its categories and across the
+                // series of its bar group, the category axis taking the
+                // pointer axis it runs along.
+                if self.chart_series()[position]
+                    .render_type
+                    .category_bars()
+                    .is_some()
+                {
+                    let config = self.chart_config();
+                    let layer = config.layer_of_series(series_id);
+                    let groups = config.bar_groups_of(layer);
+                    let horizontal = groups.direction == renderer::CategoryBarDirection::Horizontal;
+                    let members = || {
+                        self.chart_series().iter().filter(|s| {
+                            s.render_type.category_bars().is_some()
+                                && config.layer_of_series(&s.series_id) == layer
+                        })
+                    };
+                    let Some(index) = members().position(|s| s.series_id == *series_id) else {
+                        return Ok(false);
+                    };
+                    let (bar_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let Some(series) = members().nth(shift(index, series_delta, members().count()))
+                    else {
+                        return Ok(false);
+                    };
+                    let (positions, values) = series.category_bar_columns(groups.direction);
+                    let count = self.columns[positions].min(self.columns[values]);
+                    if count == 0 {
+                        return Ok(false);
+                    }
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *bin_index = shift(*bin_index, bar_delta, count);
+                } else {
+                    let renderer::DataRenderType::Histogram { bar } =
+                        &self.chart_series()[position].render_type
+                    else {
+                        return Ok(false);
+                    };
+                    let horizontal = matches!(
+                        bar.orientation,
+                        renderer::data_config::BarOrientation::Horizontal
+                    );
+                    let histograms = self
+                        .chart_series()
+                        .iter()
+                        .filter(|s| {
+                            matches!(&s.render_type,
                             renderer::DataRenderType::Histogram { bar: other }
                             if other.orientation == bar.orientation)
-                    })
-                    .collect::<Vec<_>>();
-                let index = histograms
-                    .iter()
-                    .position(|s| s.series_id == *series_id)
-                    .unwrap();
-                let (bin_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
-                let series = histograms[shift(index, series_delta, histograms.len())];
-                let (edges, values) = if horizontal {
-                    (&series.y_column, &series.x_column)
-                } else {
-                    (&series.x_column, &series.y_column)
-                };
-                let count = self.columns[edges]
-                    .saturating_sub(1)
-                    .min(self.columns[values]);
-                if count == 0 {
-                    return Ok(false);
+                        })
+                        .collect::<Vec<_>>();
+                    let index = histograms
+                        .iter()
+                        .position(|s| s.series_id == *series_id)
+                        .unwrap();
+                    let (bin_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let series = histograms[shift(index, series_delta, histograms.len())];
+                    let (edges, values) = if horizontal {
+                        (&series.y_column, &series.x_column)
+                    } else {
+                        (&series.x_column, &series.y_column)
+                    };
+                    let count = self.columns[edges]
+                        .saturating_sub(1)
+                        .min(self.columns[values]);
+                    if count == 0 {
+                        return Ok(false);
+                    }
+                    *series_id = series.series_id.clone();
+                    *source_id = series.source_id.clone();
+                    *bin_index = shift(*bin_index, bin_delta, count);
                 }
-                *series_id = series.series_id.clone();
-                *source_id = series.source_id.clone();
-                *bin_index = shift(*bin_index, bin_delta, count);
             }
             renderer::config::PickedDataRef::MatrixCell {
                 x_index, y_index, ..

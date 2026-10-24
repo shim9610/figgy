@@ -2779,3 +2779,148 @@ fn a_marker_over_a_fill_picks_the_marker() {
         renderer.remove_chart(probe.id).unwrap();
     }
 }
+
+/// Category bars pick the (category, series) bar they paint: grouped and
+/// stacked, vertical and horizontal, with rounded exposed corners, at 1x and
+/// 2x. The pick answers a histogram bin of the painted series whose index is
+/// the category row. Coverage is sampled at 2x2 per pixel and the pick tests
+/// the pixel centre, so a pixel an edge crosses may go either way within a
+/// quarter of its samples.
+#[test]
+fn category_bars_pick_the_bar_they_paint() {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarMode};
+    let mut renderer = renderer();
+    renderer
+        .add_column("pos", &col(vec![0.0, 1.0, 2.0]))
+        .expect("upload");
+    renderer
+        .add_columns(&[
+            (
+                "one",
+                &col(vec![3.0, 6.0, 2.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "two",
+                &col(vec![4.0, 2.0, 5.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let bars = |id: &str, color: Color| {
+        let mut style = renderer::data_config::CategoryBarStyle::default();
+        style.material = renderer::Material::Flat;
+        style.outline = false;
+        style.corner_radius = 4.0;
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "pos".into(),
+            y_column: id.into(),
+            render_type: DataRenderType::CategoryBars {
+                color,
+                style,
+                labels: Default::default(),
+                label_format: Default::default(),
+                overrides: None,
+            },
+        }
+    };
+    for mode in [CategoryBarMode::Grouped, CategoryBarMode::Stacked] {
+        for direction in [
+            CategoryBarDirection::Vertical,
+            CategoryBarDirection::Horizontal,
+        ] {
+            let mut chart = bare_chart();
+            let config = chart.config_mut();
+            // The axis lines draw above the data on the bars' zero edge.
+            for axis in [
+                &mut config.top_x,
+                &mut config.bottom_x,
+                &mut config.left_y,
+                &mut config.right_y,
+            ] {
+                axis.line_visible = false;
+            }
+            let categories = Some(vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ]);
+            let mut series = [bars("one", RED), bars("two", BLUE)];
+            match direction {
+                CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
+                CategoryBarDirection::Horizontal => {
+                    config.left_y.categories = categories;
+                    for s in &mut series {
+                        std::mem::swap(&mut s.x_column, &mut s.y_column);
+                    }
+                }
+            }
+            config.bar_groups = Some(BarGroups {
+                mode,
+                direction,
+                ..BarGroups::default()
+            });
+            for scale in [1.0, 2.0] {
+                let what = format!("{mode:?} {direction:?} at {scale}x");
+                let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+                let window = ink_window(&with, &without, 2);
+                let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+                let painted = count_painted(window, is_painted);
+                let probe = Probe::register(&mut renderer, &chart, &series, scale);
+                let mut failures = Vec::new();
+                let mut picked = 0usize;
+                for (px, py) in edge_band(window, is_painted) {
+                    let ink = difference(&with, &without, px, py);
+                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                    let bar = match &hit {
+                        Some(renderer::PickedData::HistogramBin {
+                            series_id,
+                            bin_index,
+                            ..
+                        }) => Some((series_id.clone(), *bin_index)),
+                        None => None,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    if ink > 160 && bar.is_none() {
+                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                    }
+                    if ink < 96 && bar.is_some() {
+                        failures.push(format!("({px}, {py}) picks {bar:?} but ink is only {ink}"));
+                    }
+                    // A fully painted pixel is one series' colour: the pick
+                    // names that series.
+                    let i = ((py * with.width + px) * 4) as usize;
+                    let rgba = &with.rgba[i..i + 4];
+                    if let Some((id, _)) = &bar
+                        && ink > 240
+                    {
+                        picked += 1;
+                        let painted_id = if rgba[0] > 200 && rgba[2] < 60 {
+                            "one"
+                        } else if rgba[2] > 200 && rgba[0] < 60 {
+                            "two"
+                        } else {
+                            continue;
+                        };
+                        if id != painted_id {
+                            failures
+                                .push(format!("({px}, {py}) painted {painted_id}, picked {id}"));
+                        }
+                    }
+                }
+                assert!(
+                    failures.is_empty(),
+                    "{what}: {} disagreements, first {:?}",
+                    failures.len(),
+                    &failures[..failures.len().min(12)]
+                );
+                assert!(painted > 400, "{what}: {painted}");
+                assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
+                renderer.remove_chart(probe.id).unwrap();
+            }
+        }
+    }
+}

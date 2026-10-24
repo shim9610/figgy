@@ -251,6 +251,51 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // Category bars: the group is this panel's category bar series;
+            // the params and the override table are resolved against the
+            // panel's categorical axis on every prepare, so a reordered axis
+            // or an edited override is drawn at once. No streamed form.
+            let category_bars = if primitives.category_bars && phase.is_none() {
+                let bars = rt
+                    .category_bars()
+                    .expect("the category bar primitive has a category bar config");
+                let params = category_bar_params(
+                    chart_config,
+                    series_specs
+                        .iter()
+                        .filter(|s| {
+                            effective_series_primitives(
+                                &chart_config.draw_style,
+                                &s.config.render_type,
+                            )
+                            .category_bars
+                        })
+                        .map(|s| s.config),
+                    cfg,
+                    series.style.display_scale,
+                    &mut lookup,
+                    |id| self.pool.slot(id).map(|slot| slot.min),
+                )?;
+                let style_map = crate::renderer::style::category_bar_style_map(
+                    &self.device,
+                    self.per_point_style_map_bgl,
+                    category_bar_categories(chart_config).unwrap_or(&[]),
+                    bars,
+                    series.style.display_scale,
+                );
+                let data = data_render::create_category_bar_data_bind_group(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.category_bar_data_bgl,
+                    column_buffer,
+                    &params,
+                    style_map,
+                );
+                Some((data, params.count))
+            } else {
+                None
+            };
+
             // Bars: the edge column and the value column are picked from the
             // bar's own orientation — never from the column lengths (design
             // §B.3). `Vertical` reads x as edges, `Horizontal` reads y.
@@ -621,6 +666,7 @@ impl PrepareContext<'_> {
                         x: x_h,
                         y: y_h,
                         bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
+                        category: category_bars.as_ref().map(|(data, _)| data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
                     },
@@ -633,10 +679,22 @@ impl PrepareContext<'_> {
                 )?
             };
 
+            let category_bars =
+                category_bars.map(|(data, count)| data_render::ColumnCategoryBarLayer {
+                    pipeline: pipelines
+                        .bar_category
+                        .as_ref()
+                        .expect("prepare ensured category bar pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.bar_bg,
+                    data,
+                    count,
+                });
             out.push(data_render::SeriesLayers {
                 area,
                 field,
                 bar,
+                category_bars,
                 contour,
                 vector,
                 errorbar,

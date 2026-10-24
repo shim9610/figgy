@@ -76,7 +76,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> 
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -100,7 +101,8 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleCo
         | DataRenderType::HeatmapContour { .. }
         // Arrows are not markers: they have their own pipeline, pick radius
         // and legend mark (`extract_vector`).
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -149,7 +151,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -181,7 +184,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -212,7 +216,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -240,7 +245,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
-        | DataRenderType::HeatmapContour { .. } => None,
+        | DataRenderType::HeatmapContour { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -353,6 +359,17 @@ pub(super) fn series_draw_info_from_pool(
                 truncated: extent.truncated,
             }
         }
+        // One bar per row of the position and value columns; both hold one
+        // value per category (checked when the bars are prepared).
+        DataRenderType::CategoryBars { .. } => {
+            let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         // Point vectors: one arrow per index-aligned row of x, y, u, v and the
         // colour column. Grid vectors: one arrow per cell of the smallest
         // common extent of the u, v and colour grids.
@@ -417,7 +434,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Histogram { .. }
         // A vector's grids are not "the matrix": they are components, not z.
         // `fit_matrix` reaches the `u` grid for the coordinate lattice.
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -445,7 +463,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -464,7 +483,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -483,7 +503,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => None,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => None,
     }
 }
 
@@ -513,4 +534,111 @@ pub(super) fn picked_data_ref_matches_series(
         Some(source_id) => series.source_id.as_deref() == Some(source_id),
         None => true,
     }
+}
+
+/// The categories a category bar series of `config` (one panel) draws
+/// against: the categorical axis of the panel's bar direction.
+pub(super) fn category_bar_categories(config: &Config) -> Option<&[crate::config::Category]> {
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    match groups.direction {
+        crate::data_config::CategoryBarDirection::Vertical => config.bottom_x.categories.as_deref(),
+        crate::data_config::CategoryBarDirection::Horizontal => config.left_y.categories.as_deref(),
+    }
+}
+
+/// The params `series`, a category bar series of the panel `config` whose
+/// bar group is `group` (the panel's category bar series in order), draws
+/// with: every member's value column lane, its own position column lane,
+/// the group layout of `config.bar_groups` (already in render pixels) and
+/// its corner radius and emphasis at `display_scale`.
+///
+/// The columns are data, so they are checked here against the pool's
+/// length statistic: every column holds one value per category, and a
+/// percent stack's value columns hold no negative value (`min_of`, the
+/// pool's minimum). `lookup` resolves a column to its handle.
+pub(super) fn category_bar_params<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+    min_of: impl Fn(&str) -> Option<f64>,
+) -> Result<data_render::CategoryBarParamsGpu> {
+    use crate::data_config::{CategoryBarDirection, CategoryBarMode};
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let bars = series
+        .render_type
+        .category_bars()
+        .ok_or_else(|| invalid("not a category bar series".into()))?;
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    let n = category_bar_categories(config)
+        .map(<[_]>::len)
+        .ok_or_else(|| {
+            invalid(
+                "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones"
+                    .into(),
+            )
+        })?;
+    let lane = |handle: &ColumnHandle, id: &str| -> Result<u32> {
+        if handle.len_values != n {
+            return Err(invalid(format!(
+                "category bar column {id:?} has {} values for {n} categories; it needs one per category",
+                handle.len_values
+            )));
+        }
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "category bar column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
+    let mut member = None;
+    let mut members = 0usize;
+    for item in group {
+        if item.render_type.category_bars().is_none() {
+            continue;
+        }
+        if members >= crate::categorical::MAX_BAR_SERIES {
+            return Err(invalid(
+                "a bar group holds at most 16 category bar series".into(),
+            ));
+        }
+        let (_, values) = item.category_bar_columns(groups.direction);
+        let handle = lookup(values)?;
+        params.values[members / 4][members % 4] = lane(&handle, values)?;
+        if groups.mode == CategoryBarMode::PercentStacked
+            && min_of(values).is_some_and(|min| min < 0.0)
+        {
+            return Err(invalid(format!(
+                "percent stacks need non-negative values; column {values:?} has a negative one"
+            )));
+        }
+        if item.series_id == series.series_id {
+            member = Some(members);
+        }
+        members += 1;
+    }
+    let member = member.ok_or_else(|| invalid("the series is not in its bar group".into()))?;
+    let (positions, _) = series.category_bar_columns(groups.direction);
+    params.positions = lane(&lookup(positions)?, positions)?;
+    params.count = n as u32;
+    params.member = member as u32;
+    params.members = members as u32;
+    params.mode = match groups.mode {
+        CategoryBarMode::Grouped => data_render::CATEGORY_BAR_MODE_GROUPED,
+        CategoryBarMode::Stacked => data_render::CATEGORY_BAR_MODE_STACKED,
+        CategoryBarMode::PercentStacked => data_render::CATEGORY_BAR_MODE_PERCENT,
+    };
+    params.horizontal = u32::from(groups.direction == CategoryBarDirection::Horizontal);
+    params.gap_px = groups.bar_gap.max(0.0);
+    params.group_width = groups.group_width.clamp(0.0, 1.0);
+    params.corner_radius_px = bars.style.corner_radius.max(0.0) * display_scale;
+    params.emphasis = bars.style.emphasis_brightness;
+    params.scale = display_scale;
+    params.seed = crate::sketch::fnv1a(&series.series_id);
+    Ok(params)
 }

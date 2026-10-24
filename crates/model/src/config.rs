@@ -167,6 +167,21 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub categories: Option<Vec<Category>>,
+
+    /// Where this axis' line crosses the perpendicular axis, as a value of
+    /// that axis: `Some(0.0)` on `bottom_x` draws the bottom axis line at
+    /// `left_y = 0`, the zero line of a bar chart with negative values, and
+    /// on `left_y` it draws the left line at `bottom_x = 0`. `None` (the
+    /// default) keeps the line on the plot edge. A value outside the
+    /// perpendicular axis' range puts the line on the nearer edge, and the
+    /// line keeps its half-pixel snap. Only the line moves: the ticks, tick
+    /// labels and axis title stay at the edge. A polar chart ignores it; the
+    /// renderer rejects a value that is not finite.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub cross_at: Option<f64>,
 }
 
 /// One category of a categorical axis ([`AxisOptions::categories`]): a stable
@@ -876,6 +891,20 @@ pub struct Config {
         serde(default, skip_serializing_if = "AnnotationLayer::is_default")
     )]
     pub annotations: AnnotationLayer,
+    /// How the category bar series of a layer share its categorical axis:
+    /// side by side, stacked or stacked to 100 %, the bar direction, the
+    /// group width and the gap
+    /// ([`BarGroups`](crate::data_config::BarGroups)). `None` (key absent in
+    /// JSON) reads as `BarGroups::default()`. It applies to the base layer
+    /// and to every overlay, whose category bar series form groups of their
+    /// own; a subplot has its own field. Charts without
+    /// [`DataRenderType::CategoryBars`](crate::data_config::DataRenderType::CategoryBars)
+    /// series ignore it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub bar_groups: Option<crate::data_config::BarGroups>,
 }
 
 impl Config {
@@ -910,6 +939,7 @@ impl Config {
             // Which layer receives the pointer: not a dimension.
             active_layer: _,
             annotations,
+            bar_groups,
         } = self;
 
         let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
@@ -1043,6 +1073,18 @@ impl Config {
         // values and anchors are data or plot fractions and stay put.
         annotations.scale_in_place(s);
 
+        // The gap between grouped bars is a pixel dim; the mode, the
+        // direction and the group width (a fraction of the slot) are not.
+        if let Some(crate::data_config::BarGroups {
+            mode: _,
+            direction: _,
+            group_width: _,
+            bar_gap,
+        }) = bar_groups.as_mut()
+        {
+            *bar_gap *= s;
+        }
+
         // The colourbar's axis goes through the same helper as the four chart
         // axes — a new pixel field on `AxisOptions` must not be scalable on the
         // chart axes and silently fixed on the colourbar's. `length_frac` is a
@@ -1145,6 +1187,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         minor_tick_length,
         // Configuration, not pixels.
         categories: _,
+        // A value of the perpendicular axis.
+        cross_at: _,
     } = axis;
     let LabelStyle {
         visible: _,
