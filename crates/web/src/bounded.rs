@@ -1,10 +1,11 @@
-//! Raw WASM host for radial, box and radar charts. The renderer owns all geometry.
+//! Raw WASM host for radial and radar charts. The renderer owns all geometry.
 //!
-//! A categorical bar chart is a Cartesian chart: its documents open through
-//! `FiggyChart::set_categorical_document`.
+//! A categorical bar chart and a box plot are Cartesian charts: their
+//! documents open through `FiggyChart::set_categorical_document` and
+//! `FiggyChart::set_boxplot_document`.
 use renderer::{
     AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
-    LayerHit, LayerRef, RendererDevice, boxplot::*, layout::Rect, radar::*, radial::*,
+    LayerHit, LayerRef, RendererDevice, layout::Rect, radar::*, radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -36,63 +37,54 @@ async fn radial_at(
 #[derive(Clone, PartialEq)]
 enum DocumentChart {
     Radial(RadialChart),
-    BoxPlot(BoxPlotChart),
     Radar(RadarChart),
 }
 impl DocumentChart {
     pub fn family(&self) -> &'static str {
         match self {
             Self::Radial(_) => "radial",
-            Self::BoxPlot(_) => "boxplot",
             Self::Radar(_) => "radar",
         }
     }
     pub fn decorations(&self) -> &DecorationLayout {
         match self {
             Self::Radial(c) => &c.decorations,
-            Self::BoxPlot(c) => &c.decorations,
             Self::Radar(c) => &c.decorations,
         }
     }
     pub fn decorations_mut(&mut self) -> &mut DecorationLayout {
         match self {
             Self::Radial(c) => &mut c.decorations,
-            Self::BoxPlot(c) => &mut c.decorations,
             Self::Radar(c) => &mut c.decorations,
         }
     }
     pub fn active_layer(&self) -> LayerRef {
         match self {
             Self::Radial(c) => c.active_layer(),
-            Self::BoxPlot(c) => c.active_layer(),
             Self::Radar(c) => c.active_layer(),
         }
     }
     pub fn set_active_layer(&mut self, layer: LayerRef) -> LayerRef {
         match self {
             Self::Radial(c) => c.set_active_layer(layer),
-            Self::BoxPlot(c) => c.set_active_layer(layer),
             Self::Radar(c) => c.set_active_layer(layer),
         }
     }
     pub fn annotations(&self) -> &AnnotationLayer {
         match self {
             Self::Radial(c) => &c.annotations,
-            Self::BoxPlot(c) => &c.annotations,
             Self::Radar(c) => &c.annotations,
         }
     }
     pub fn annotations_mut(&mut self) -> &mut AnnotationLayer {
         match self {
             Self::Radial(c) => &mut c.annotations,
-            Self::BoxPlot(c) => &mut c.annotations,
             Self::Radar(c) => &mut c.annotations,
         }
     }
     pub fn background(&self) -> renderer::Color {
         match self {
             Self::Radial(c) => c.background,
-            Self::BoxPlot(c) => c.background,
             Self::Radar(c) => c.background,
         }
     }
@@ -123,14 +115,12 @@ impl DocumentChart {
         }
         match self {
             Self::Radial(c) => c.validate().map_err(js_err),
-            Self::BoxPlot(c) => c.validate().map_err(js_err),
             Self::Radar(c) => c.validate().map_err(js_err),
         }
     }
     pub fn selected_json(&self) -> serde_json::Value {
         match self {
             Self::Radial(c) => json!(c.interaction.selected),
-            Self::BoxPlot(c) => json!(c.selected),
             Self::Radar(c) => json!(c.selected),
         }
     }
@@ -138,7 +128,6 @@ impl DocumentChart {
         self.decorations_mut().selected = None;
         match self {
             Self::Radial(c) => c.interaction.selected = None,
-            Self::BoxPlot(c) => c.selected = None,
             Self::Radar(c) => c.selected = None,
         }
     }
@@ -154,14 +143,6 @@ impl DocumentChart {
             (Self::Radial(c), DocumentFrame::Radial(f)) => {
                 let hit = radial_at(f, point, c.interaction.hovered).await?;
                 c.interaction.selected = if toggle && hit == c.interaction.selected {
-                    None
-                } else {
-                    hit
-                };
-            }
-            (Self::BoxPlot(c), DocumentFrame::BoxPlot(f)) => {
-                let hit = f.hit_test(point).map(|p| p.target);
-                c.selected = if toggle && hit == c.selected {
                     None
                 } else {
                     hit
@@ -195,12 +176,6 @@ impl DocumentChart {
                 };
                 c.interaction.animate_hover(hit, dt, 0.16)
             }
-            (Self::BoxPlot(c), DocumentFrame::BoxPlot(f)) => {
-                let hit = point.and_then(|p| f.hit_test(p)).map(|p| p.target);
-                let changed = hit != c.hovered;
-                c.hovered = hit;
-                changed
-            }
             (Self::Radar(c), DocumentFrame::Radar(f)) => {
                 let hit = point.and_then(|p| f.hit_test(p)).map(|p| p.target);
                 let changed = hit != c.hovered;
@@ -229,21 +204,6 @@ impl DocumentChart {
         }
         match self {
             Self::Radial(c) => c.step_selection(backwards),
-            Self::BoxPlot(c) => {
-                let items = c
-                    .categories
-                    .iter()
-                    .enumerate()
-                    .flat_map(|(i, cat)| {
-                        c.series.iter().filter_map(move |s| {
-                            s.values[i]
-                                .as_ref()
-                                .map(|_| BoxPlotTarget::new(&cat.id, &s.id))
-                        })
-                    })
-                    .collect();
-                next(items, &mut c.selected, backwards);
-            }
             Self::Radar(c) => {
                 // A selected vertex steps along its series' finite vertices;
                 // otherwise the series polygons are stepped in order.
@@ -273,12 +233,10 @@ impl DocumentChart {
 
 enum DocumentRenderer {
     Radial(RadialRenderer),
-    BoxPlot(BoxPlotRenderer),
     Radar(RadarRenderer),
 }
 enum DocumentFrame {
     Radial(Arc<RadialFrame>),
-    BoxPlot(Arc<BoxPlotFrame>),
     Radar(Arc<RadarFrame>),
 }
 impl DocumentRenderer {
@@ -290,11 +248,6 @@ impl DocumentRenderer {
         Ok(match chart {
             DocumentChart::Radial(_) => Self::Radial(
                 RadialRenderer::new_async(gpu, format)
-                    .await
-                    .map_err(js_err)?,
-            ),
-            DocumentChart::BoxPlot(_) => Self::BoxPlot(
-                BoxPlotRenderer::new_async(gpu, format)
                     .await
                     .map_err(js_err)?,
             ),
@@ -320,12 +273,6 @@ impl DocumentRenderer {
                 let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
                 Ok((DocumentFrame::Radial(frame), annotations))
             }
-            (Self::BoxPlot(r), DocumentChart::BoxPlot(c)) => {
-                r.set_background(background);
-                let frame = r.prepare(c, size, scale).map_err(js_err)?;
-                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
-                Ok((DocumentFrame::BoxPlot(frame), annotations))
-            }
             (Self::Radar(r), DocumentChart::Radar(c)) => {
                 r.set_background(background);
                 let frame = r.prepare(c, size, scale).map_err(js_err)?;
@@ -345,9 +292,6 @@ impl DocumentRenderer {
             (Self::Radial(r), DocumentChart::Radial(c)) => {
                 r.export_rgba_async(c, size, scale).await.map_err(js_err)
             }
-            (Self::BoxPlot(r), DocumentChart::BoxPlot(c)) => {
-                r.export_rgba_async(c, size, scale).await.map_err(js_err)
-            }
             (Self::Radar(r), DocumentChart::Radar(c)) => {
                 r.export_rgba_async(c, size, scale).await.map_err(js_err)
             }
@@ -358,14 +302,12 @@ impl DocumentRenderer {
     pub fn gpu_bytes(&self) -> u64 {
         match self {
             Self::Radial(r) => r.gpu_memory_usage().total_bytes(),
-            Self::BoxPlot(r) => r.gpu_memory_usage().total_bytes(),
             Self::Radar(r) => r.gpu_memory_usage().total_bytes(),
         }
     }
     pub fn end_frame(&self) {
         match self {
             Self::Radial(r) => r.end_frame(),
-            Self::BoxPlot(r) => r.end_frame(),
             Self::Radar(r) => r.end_frame(),
         }
     }
@@ -377,7 +319,6 @@ impl DocumentFrame {
     pub fn decoration_map(&self) -> Option<&renderer::decoration::DecorationMap> {
         match self {
             Self::Radial(_) => None,
-            Self::BoxPlot(f) => Some(f.decorations()),
             Self::Radar(f) => Some(f.decorations()),
         }
     }
@@ -392,7 +333,6 @@ impl DocumentFrame {
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         match self {
             Self::Radial(f) => f.draw(pass),
-            Self::BoxPlot(f) => f.draw(pass),
             Self::Radar(f) => f.draw(pass),
         }
     }
@@ -402,7 +342,6 @@ impl DocumentFrame {
             Self::Radial(f) => {
                 picked(f.pick(p)).await?.is_some() || picked(f.pick_at_rest(p)).await?.is_some()
             }
-            Self::BoxPlot(f) => f.hit_test(p).is_some(),
             Self::Radar(f) => f.hit_test(p).is_some(),
         })
     }
@@ -422,7 +361,11 @@ fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
                 "categorical bar charts are Cartesian charts: open the document with FiggyChart.set_categorical_document",
             ));
         }
-        "boxplot" => DocumentChart::BoxPlot(serde_json::from_str(value).map_err(js_err)?),
+        "boxplot" => {
+            return Err(js_err(
+                "box plots are Cartesian charts: open the document with FiggyChart.set_boxplot_document",
+            ));
+        }
         "radar" => DocumentChart::Radar(serde_json::from_str(value).map_err(js_err)?),
         _ => return Err(js_err("unknown bounded chart family")),
     })
@@ -496,7 +439,6 @@ impl FiggyBoundedChart {
     pub fn get_document(&self) -> Result<String, JsValue> {
         match &self.chart {
             DocumentChart::Radial(c) => serde_json::to_string(c).map_err(js_err),
-            DocumentChart::BoxPlot(c) => serde_json::to_string(c).map_err(js_err),
             DocumentChart::Radar(c) => serde_json::to_string(c).map_err(js_err),
         }
     }

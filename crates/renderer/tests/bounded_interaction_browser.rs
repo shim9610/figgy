@@ -1,10 +1,9 @@
 //! Real WebGPU round trips through the common renderer interaction API.
 #![cfg(target_arch = "wasm32")]
 use renderer::{
-    BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary, Category, Color, DecorationId,
-    DecorationLayout, RadarChart, RadarRenderer, RadarSeries, RadialChart, RadialFrame, RadialKind,
-    RadialRenderer, RadialSlice, RadialTarget, RendererDevice, decoration::DecorationMap,
-    layout::NudgeResult,
+    Category, Color, DecorationId, DecorationLayout, RadarChart, RadarRenderer, RadarSeries,
+    RadialChart, RadialFrame, RadialKind, RadialRenderer, RadialSlice, RadialTarget,
+    RendererDevice, decoration::DecorationMap, layout::NudgeResult,
 };
 use std::sync::Arc;
 use wasm_bindgen_test::*;
@@ -105,32 +104,6 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         renderer::encode_png(&after)
             .unwrap()
             .starts_with(b"\x89PNG\r\n\x1a\n")
-    );
-    r.end_frame();
-    let mut r = BoxPlotRenderer::new_async(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
-        .await
-        .unwrap();
-    let mut c = BoxPlotChart {
-        title: "Boxes".into(),
-        categories: vec![Category::new("a", "Control")],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "Distribution",
-            vec![Some(BoxSummary::new(10., 25., 38., 52., 70.))],
-            Color::from_rgb8(110, 90, 170),
-        )],
-        ..Default::default()
-    };
-    let frame = r.prepare(&c, (800, 520), 2.).unwrap();
-    let before = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
-    edit(
-        frame.decorations(),
-        &mut c.decorations,
-        DecorationId::ChartTitle,
-    );
-    assert_ne!(
-        before.rgba,
-        r.export_rgba_async(&c, (800, 520), 2.).await.unwrap().rgba
     );
     r.end_frame();
     let mut r = RadarRenderer::new_async(gpu, wgpu::TextureFormat::Rgba8Unorm)

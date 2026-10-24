@@ -2391,37 +2391,6 @@
           "binding": 1,
           "buffer": {
             "hasDynamicOffset": false,
-            "minBindingSize": 160,
-            "type": "read-only-storage"
-          },
-          "visibility": 3
-        },
-        {
-          "binding": 2,
-          "texture": {
-            "multisampled": false,
-            "sampleType": "unfilterable-float",
-            "viewDimension": "2d"
-          },
-          "visibility": 3
-        }
-      ]
-    ],
-    [
-      [
-        {
-          "binding": 0,
-          "buffer": {
-            "hasDynamicOffset": false,
-            "minBindingSize": 48,
-            "type": "uniform"
-          },
-          "visibility": 3
-        },
-        {
-          "binding": 1,
-          "buffer": {
-            "hasDynamicOffset": false,
             "minBindingSize": 80,
             "type": "read-only-storage"
           },
@@ -2910,7 +2879,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 37
+        "layout": 36
       },
       "kind": "compute",
       "source": "f95a2e6c23dd3d9e"
@@ -2922,7 +2891,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 40
+        "layout": 39
       },
       "kind": "compute",
       "source": "71ff5525f44eb84d"
@@ -3030,7 +2999,7 @@
           "entryPoint": "pick_reduce_candidates"
         },
         "label": "figgy GPU pick candidate reduction pipeline",
-        "layout": 43
+        "layout": 42
       },
       "kind": "compute",
       "source": "c12bfb96fd3336fb"
@@ -3167,54 +3136,8 @@
             }
           ]
         },
-        "label": "boxplot surfaces",
-        "layout": 32,
-        "multisample": {
-          "alphaToCoverageEnabled": false,
-          "count": 1,
-          "mask": 4294967295
-        },
-        "primitive": {
-          "cullMode": "none",
-          "frontFace": "ccw",
-          "topology": "triangle-list",
-          "unclippedDepth": false
-        },
-        "vertex": {
-          "buffers": [],
-          "constants": {},
-          "entryPoint": "vs"
-        }
-      },
-      "kind": "render",
-      "source": "3901d008d5e0cc7a"
-    },
-    {
-      "descriptor": {
-        "fragment": {
-          "constants": {},
-          "entryPoint": "fs",
-          "targets": [
-            {
-              "blend": {
-                "alpha": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                },
-                "color": {
-                  "dstFactor": "one-minus-src-alpha",
-                  "operation": "add",
-                  "srcFactor": "one"
-                }
-              },
-              "format": "rgba8unorm",
-              "writeMask": 15
-            }
-          ]
-        },
         "label": "radar surfaces",
-        "layout": 33,
+        "layout": 32,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6004,7 +5927,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 34,
+        "layout": 33,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6050,7 +5973,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 34,
+        "layout": 33,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9190,7 +9113,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 35,
+        "layout": 34,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9224,7 +9147,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 38,
+        "layout": 37,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9258,7 +9181,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 41,
+        "layout": 40,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9292,7 +9215,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 42,
+        "layout": 41,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9338,7 +9261,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 36,
+        "layout": 35,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9384,7 +9307,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 39,
+        "layout": 38,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9418,7 +9341,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 36,
+        "layout": 35,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9452,7 +9375,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 39,
+        "layout": 38,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,

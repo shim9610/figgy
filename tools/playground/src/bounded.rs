@@ -1,9 +1,9 @@
-//! Bounded scenes: radial, box plots and radar charts.
+//! Bounded scenes: radial and radar charts.
 //!
 //! Each family has its own small renderer that prepares a frame of an exact
 //! physical size. The host renders that frame (annotation underlay → chart →
 //! annotation overlay) into an offscreen texture and egui shows it as an image.
-//! One generic host covers all three; `Family` adapts the per-family names.
+//! One generic host covers both; `Family` adapts the per-family names.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -12,7 +12,6 @@ use std::task::{Context, Poll, Waker};
 
 use renderer::HitId;
 use renderer::annotation::BoundedAnnotationFrame;
-use renderer::boxplot::*;
 use renderer::decoration::DecorationMap;
 use renderer::layout::NudgeResult;
 use renderer::radar::*;
@@ -25,7 +24,7 @@ use renderer::{
 
 use crate::HostCtx;
 use crate::scenes::SceneKind;
-use crate::scenes::bounded::{box_chart, radar_chart, radial_chart};
+use crate::scenes::bounded::{radar_chart, radial_chart};
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -43,7 +42,7 @@ pub trait BoundedScene {
     fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer);
 }
 
-/// Per-family adapter: the three renderers share a shape but not a trait.
+/// Per-family adapter: the two renderers share a shape but not a trait.
 pub trait Family: 'static {
     type Chart: Clone;
     type Renderer;
@@ -206,7 +205,6 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
     }
     match kind {
         SceneKind::Radial => make::<RadialFamily>("radial", gpu, radial_chart()),
-        SceneKind::BoxPlot => make::<BoxFamily>("boxplot", gpu, box_chart()),
         SceneKind::Radar => make::<RadarFamily>("radar", gpu, radar_chart()),
         _ => Err("not a bounded scene".into()),
     }
@@ -631,18 +629,6 @@ const RADIAL_MATERIALS: &[Material] = &[
     Material::Hatch,
     Material::Pearl,
 ];
-// Every material but Toon and Pearl, which bars and boxes reject.
-const FLAT_BODY_MATERIALS: &[Material] = &[
-    Material::Flat,
-    Material::Matte,
-    Material::Ceramic,
-    Material::SatinMetal,
-    Material::Enamel,
-    Material::BrushedMetal,
-    Material::Paper,
-    Material::Wood,
-    Material::Hatch,
-];
 const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::Name,
     RadialLabelFormat::Value,
@@ -827,134 +813,6 @@ impl Family for RadialFamily {
         }
         // The drawn label strings are written at edit time.
         c.format_labels();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Box plot
-// ---------------------------------------------------------------------------
-
-pub struct BoxFamily;
-
-impl Family for BoxFamily {
-    type Chart = BoxPlotChart;
-    type Renderer = BoxPlotRenderer;
-    type Frame = BoxPlotFrame;
-    type Target = BoxPlotTarget;
-    type Error = BoxPlotError;
-
-    fn renderer(gpu: RendererDevice) -> Result<BoxPlotRenderer, BoxPlotError> {
-        BoxPlotRenderer::new(gpu, FORMAT)
-    }
-    fn set_background(r: &mut BoxPlotRenderer, b: FrameBackground) {
-        r.set_background(b);
-    }
-    fn prepare(
-        r: &mut BoxPlotRenderer,
-        c: &BoxPlotChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoxPlotFrame>, BoxPlotError> {
-        r.prepare(c, size, scale)
-    }
-    fn annotations(
-        r: &mut BoxPlotRenderer,
-        c: &BoxPlotChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoundedAnnotationFrame>, BoxPlotError> {
-        r.prepare_annotations(c, size, scale)
-    }
-    fn end_frame(r: &BoxPlotRenderer) {
-        r.end_frame();
-    }
-    fn export(
-        r: &mut BoxPlotRenderer,
-        c: &BoxPlotChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, BoxPlotError> {
-        r.export_rgba(c, size, scale)
-    }
-    fn frame_size(f: &BoxPlotFrame) -> (u32, u32) {
-        f.size()
-    }
-    fn draw(f: &BoxPlotFrame, pass: &mut wgpu::RenderPass<'_>) {
-        f.draw(pass);
-    }
-    fn pick(f: &Arc<BoxPlotFrame>, p: [f32; 2]) -> Pick<BoxPlotTarget> {
-        Pick::Ready(f.hit_test(p).map(|pick| pick.target))
-    }
-    fn decoration_map(f: &BoxPlotFrame) -> Option<&DecorationMap> {
-        Some(f.decorations())
-    }
-    fn background(c: &BoxPlotChart) -> Color {
-        c.background
-    }
-    fn layout(c: &mut BoxPlotChart) -> &mut DecorationLayout {
-        &mut c.decorations
-    }
-    fn annotation_layer(c: &mut BoxPlotChart) -> &mut AnnotationLayer {
-        &mut c.annotations
-    }
-    fn active_layer(c: &BoxPlotChart) -> LayerRef {
-        c.active_layer()
-    }
-    fn set_active_layer(c: &mut BoxPlotChart, l: LayerRef) {
-        c.set_active_layer(l);
-    }
-    fn selected(c: &BoxPlotChart) -> Option<BoxPlotTarget> {
-        c.selected.clone()
-    }
-    fn set_selected(c: &mut BoxPlotChart, t: Option<BoxPlotTarget>) {
-        c.selected = t;
-    }
-    fn hover(c: &mut BoxPlotChart, t: Option<BoxPlotTarget>, _dt: f32) -> bool {
-        c.hovered = t;
-        false
-    }
-    fn inspector(ui: &mut egui::Ui, c: &mut BoxPlotChart) {
-        ui.horizontal(|ui| {
-            ui.label("Title");
-            ui.text_edit_singleline(&mut c.title);
-        });
-        choice(
-            ui,
-            "direction",
-            &mut c.direction,
-            &[BoxPlotDirection::Vertical, BoxPlotDirection::Horizontal],
-        );
-        choice(
-            ui,
-            "labels",
-            &mut c.labels,
-            &[
-                BoxPlotLabels::None,
-                BoxPlotLabels::Median,
-                BoxPlotLabels::MedianAndCount,
-            ],
-        );
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut c.grid, "grid");
-            ui.checkbox(&mut c.legend, "legend");
-        });
-        let s = &mut c.style;
-        choice(ui, "material", &mut s.material, FLAT_BODY_MATERIALS);
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut s.notched, "notched");
-            ui.checkbox(&mut s.show_mean, "mean");
-            ui.checkbox(&mut s.show_outliers, "outliers");
-            ui.checkbox(&mut s.caps, "caps");
-        });
-        slider(ui, "corners", &mut s.corner_radius, 0.0..=20.0);
-        slider(ui, "median width", &mut s.median_width, 0.5..=6.0);
-        slider(ui, "whisker width", &mut s.whisker_width, 0.5..=6.0);
-        slider(ui, "outlier size", &mut s.outlier_size, 1.0..=16.0);
-        color(ui, "median colour", &mut s.median_color);
-        ui.separator();
-        for (i, series) in c.series.iter_mut().enumerate() {
-            ui.push_id(i, |ui| color(ui, &series.label.clone(), &mut series.color));
-        }
     }
 }
 

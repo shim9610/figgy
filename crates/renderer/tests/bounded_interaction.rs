@@ -446,48 +446,6 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
             DecorationId::RadialLabel(RadialTarget::main(0))
         ]
     );
-    let keys = [
-        DecorationId::ChartTitle,
-        DecorationId::Legend,
-        DecorationId::Axis(Side::Left),
-        DecorationId::Axis(Side::Bottom),
-        DecorationId::AxisLabel(Side::Left),
-        DecorationId::AxisLabel(Side::Bottom),
-        DecorationId::AxisTitle(Side::Left),
-        DecorationId::AxisTitle(Side::Bottom),
-        DecorationId::DataLabel {
-            category_id: "a".into(),
-            series_id: "s".into(),
-        },
-    ];
-    let boxes = BoxPlotChart {
-        title: "Editable box title".into(),
-        category_title: "Group".into(),
-        value_title: "Value".into(),
-        categories: vec![Category::new("a", "Control")],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "Distribution",
-            vec![Some(BoxSummary::new(10.0, 25.0, 38.0, 52.0, 70.0))],
-            color,
-        )],
-        labels: BoxPlotLabels::Median,
-        ..Default::default()
-    };
-    check!(
-        BoxPlotRenderer,
-        [BoxPlotDirection::Vertical, BoxPlotDirection::Horizontal].map(|direction| BoxPlotChart {
-            direction,
-            ..boxes.clone()
-        }),
-        keys.clone(),
-        |f: &BoxPlotFrame, g: &BoxPlotFrame| {
-            assert_eq!(g.plot_rect(), f.plot_rect());
-            let target = BoxPlotTarget::new("a", "s");
-            assert!(f.box_rect(&target).is_some());
-            assert_eq!(g.box_rect(&target), f.box_rect(&target));
-        }
-    );
     let radar = RadarChart {
         title: "Editable radar title".into(),
         categories: vec![
@@ -607,19 +565,6 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         chart.format_labels();
         chart
     });
-    check!(
-        BoxPlotRenderer,
-        BoxPlotChart {
-            categories: vec![Category::new("a", "A")],
-            series: vec![BoxPlotSeries::new(
-                "s",
-                "Summary",
-                vec![Some(BoxSummary::new(1., 2., 3., 4., 5.))],
-                Color::BLACK
-            )],
-            ..Default::default()
-        }
-    );
     check!(
         RadarRenderer,
         RadarChart {

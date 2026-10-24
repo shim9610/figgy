@@ -1390,6 +1390,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         | DataRenderType::LineScatterErrorbarXY { .. } => "line+scatter+errors",
         DataRenderType::Histogram { .. } => "histogram",
         DataRenderType::CategoryBars { .. } => "category bars",
+        DataRenderType::BoxPlot { .. } => "box plot",
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
@@ -1745,6 +1746,22 @@ fn series_controls(
             color(ui, "outline colour", &mut style.outline_color);
             slider(ui, "outline width", &mut style.outline_width, 0.0..=4.0);
         }
+        // The direction, group width and gap are the chart's
+        // (`Config::bar_groups`), shared by the panel's box plot series.
+        DataRenderType::BoxPlot {
+            color: fill, style, ..
+        } => {
+            color(ui, "fill", fill);
+            choice(ui, "material", &mut style.material, FLAT_BODY_MATERIALS);
+            ui.checkbox(&mut style.notched, "notched");
+            ui.checkbox(&mut style.caps, "caps");
+            ui.checkbox(&mut style.show_mean, "mean");
+            ui.checkbox(&mut style.show_outliers, "outliers");
+            ui.checkbox(&mut style.outlier_filled, "filled outliers");
+            ui.checkbox(&mut style.outline, "outline");
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=3.0);
+            slider(ui, "whisker width", &mut style.whisker_width, 0.0..=4.0);
+        }
         DataRenderType::Heatmap { fill, .. } => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
             choice(
@@ -1770,6 +1787,19 @@ fn series_controls(
         }
     }
 }
+
+// Every material but Toon and Pearl, which boxes reject.
+const FLAT_BODY_MATERIALS: &[renderer::Material] = &[
+    renderer::Material::Flat,
+    renderer::Material::Matte,
+    renderer::Material::Ceramic,
+    renderer::Material::SatinMetal,
+    renderer::Material::Enamel,
+    renderer::Material::BrushedMetal,
+    renderer::Material::Paper,
+    renderer::Material::Wood,
+    renderer::Material::Hatch,
+];
 
 fn vector_controls(
     ui: &mut egui::Ui,

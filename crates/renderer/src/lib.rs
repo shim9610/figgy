@@ -49,8 +49,8 @@ mod time_axis;
 pub use ::model::bounded_sources::{BoxColumn, BoxField};
 pub use ::model::{SeriesUpload, UploadValues};
 pub use ::model::{
-    bounded_sources, categorical, color, colormap, config, data_config, default, drag, expand,
-    format, layout, legend, line, preset, resize, select, sink, text, tick,
+    bounded_sources, boxplot, categorical, color, colormap, config, data_config, default, drag,
+    expand, format, layout, legend, line, preset, resize, select, sink, text, tick,
 };
 
 // Public API re-exports.
@@ -139,8 +139,6 @@ pub use radial::RadialMaterial;
 
 pub use model::categorical::*;
 
-pub mod boxplot;
-pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
 pub use model::boxplot::*;
 pub mod radar;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for

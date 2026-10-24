@@ -1,7 +1,15 @@
-//! Small, precomputed box plots. Statistical policy belongs to the host.
+//! The legacy box plot document, kept as a reader.
+//!
+//! A box plot is a Cartesian chart now: a `Config` with a categorical axis
+//! ([`crate::config::AxisOptions::categories`]), `Config::bar_groups` and one
+//! [`DataRenderType::BoxPlot`](crate::data_config::DataRenderType::BoxPlot)
+//! series per box series, whose statistics are a record and whose outliers
+//! are a ragged column of the renderer's column pool. A [`BoxPlotChart`]
+//! document still parses and validates here, and `Config::from_boxplot`
+//! turns it into that chart and the uploads of its summaries. Statistical
+//! policy belongs to the host: the summaries are precomputed.
 #[cfg(test)]
 use crate::Material;
-use crate::format::PlainNumberFormat;
 use crate::{Color, categorical::Category};
 
 /// The box types live with the series kinds now
@@ -263,31 +271,6 @@ impl BoxPlotChart {
                 .or(s.style.as_ref())
                 .unwrap_or(&self.style),
         )
-    }
-    pub fn label_text(&self, target: &BoxPlotTarget) -> Option<String> {
-        let summary = self.summary(target)?;
-        let mode = self
-            .box_override(target)
-            .and_then(|o| o.labels)
-            .unwrap_or(self.labels);
-        if mode == BoxPlotLabels::None {
-            return None;
-        }
-        let median = format!(
-            "{}{}",
-            PlainNumberFormat::fixed(self.label_decimals, false).format(summary.median),
-            self.value_suffix
-        );
-        Some(if mode == BoxPlotLabels::MedianAndCount {
-            format!(
-                "{median} (n={})",
-                summary
-                    .sample_count
-                    .map_or_else(|| "—".into(), |n| n.to_string())
-            )
-        } else {
-            median
-        })
     }
     pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
         self.validate()?;
@@ -611,22 +594,6 @@ mod tests {
         assert!(c.validate().is_err());
         c.value_range = Some([-1., 2.]);
         assert!(c.validate().is_ok());
-    }
-    #[test]
-    fn labels_use_supplied_median_and_sample_count_with_individual_override() {
-        let mut c = chart();
-        let t = BoxPlotTarget::new("a", "s");
-        assert_eq!(c.label_text(&t), None);
-        c.labels = BoxPlotLabels::MedianAndCount;
-        c.value_suffix = " ms".into();
-        assert_eq!(c.label_text(&t).unwrap(), "3.0 ms (n=—)");
-        c.series[0].values[0].as_mut().unwrap().sample_count = Some(42);
-        c.label_decimals = 2;
-        assert_eq!(c.label_text(&t).unwrap(), "3.00 ms (n=42)");
-        let mut o = BoxPlotOverride::new(t.clone());
-        o.labels = Some(BoxPlotLabels::Median);
-        c.overrides.push(o);
-        assert_eq!(c.label_text(&t).unwrap(), "3.00 ms");
     }
     #[cfg(feature = "serde")]
     #[test]

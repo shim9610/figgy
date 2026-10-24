@@ -40,9 +40,9 @@
 //! product's exports, and its highlight painted through the chart view as
 //! on screen.
 //!
-//! The three bounded families (radial, box plot, radar) run the
+//! The two bounded families (radial, radar) run the
 //! same invariants on their hit maps (the renderer-measured `DecorationMap`
-//! of the box plot and radar frames; the radial frame's
+//! of the radar frame; the radial frame's
 //! `HitMap<RadialChart>`, whose elements place their parts from the chart,
 //! an outside label's leader line among them), with each element's ink
 //! measured by drag differential and the highlight through
@@ -86,10 +86,10 @@ use renderer::select::{
 use renderer::sink::Parts;
 use renderer::text::{MeasureText, RichText};
 use renderer::{
-    BoxPlotChart, BoxPlotFrame, BoxPlotRenderer, Chart, Color, ColorMap, Config, CpuTextMeasure,
-    DecorationId, DecorationLayout, DrawnPart, HitId, HitMap, LayerRef, OverlayLayer, RadarChart,
-    RadarFrame, RadarRenderer, RadialChart, RadialFrame, RadialRenderer, RasterImage, Renderer,
-    RendererDevice, ResizeHandle, SelectionBox, SelectionGeometry, SelectionOutline, SeriesConfig,
+    Chart, Color, ColorMap, Config, CpuTextMeasure, DecorationId, DecorationLayout, DrawnPart,
+    HitId, HitMap, LayerRef, OverlayLayer, RadarChart, RadarFrame, RadarRenderer, RadialChart,
+    RadialFrame, RadialRenderer, RasterImage, Renderer, RendererDevice, ResizeHandle, SelectionBox,
+    SelectionGeometry, SelectionOutline, SeriesConfig,
 };
 
 use scenes::SceneKind;
@@ -212,6 +212,19 @@ fn glob(pattern: &str, text: &str) -> bool {
 /// not a small fix (#47). Each needs a policy or type change the
 /// maintainer decides on; the hit-region ones are #38's.
 const EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "BoxPlot",
+        layer: "document",
+        element: "axis_title_left",
+        inv: Inv::I5,
+        detail: "* ink pixels (* %) differ by more than 96 from its 2x ink box-filtered*",
+        reason: "the rotated axis title is placed up to half a logical pixel apart at 1x and \
+                 2x in every Cartesian scene (Categorical: -0.24 / +0.57 px, BoxPlot: -0.41 / \
+                 -0.12 px, ink centroids); this scene's glyph stems straddle pixel columns at \
+                 1x, so its box-filtered share (63 %) crosses the 50 % limit. The title is \
+                 chrome the box plot series does not touch; it became a Cartesian scene here",
+        issue: "#40",
+    },
     Exclusion {
         scene: "*",
         layer: "*",
@@ -433,7 +446,7 @@ impl Report {
 
     /// Add `n` to the total `what` of the scene family `at` belongs to.
     fn count(&mut self, at: &At<'_>, what: &str, n: usize) {
-        let family = if ["Radial", "BoxPlot", "Radar"].contains(&at.scene) {
+        let family = if ["Radial", "Radar"].contains(&at.scene) {
             "bounded"
         } else {
             "Cartesian"
@@ -2785,9 +2798,9 @@ fn check_i6(
 // Bounded families
 // ---------------------------------------------------------------------------
 //
-// A bounded chart (radial, box plot, radar) draws its
-// decorations into its own GPU frame. The box plot and radar
-// frames register each as one renderer-measured box in their
+// A bounded chart (radial, radar) draws its
+// decorations into its own GPU frame. The radar
+// frame registers each as one renderer-measured box in its
 // `DecorationMap`; the radial frame registers each in its
 // `HitMap<RadialChart>`, placed from the chart by the one emit its raster
 // draws with, so an outside label is its text and its leader line, outlined
@@ -2808,7 +2821,7 @@ const BOUNDED_SCALE_SHARE: f64 = 0.004;
 
 /// One bounded family's renderer, behind one face for the sweep. Its frame
 /// answers the decoration queries of `bounded_decorations::Decorations`:
-/// the box plot and radar frames through their
+/// the radar frame through its
 /// `DecorationMap`, the radial frame through its `HitMap<RadialChart>`.
 trait Bounded {
     type Chart: Clone + PartialEq;
@@ -2841,7 +2854,6 @@ macro_rules! bounded_family {
 }
 
 bounded_family!(RadialFamily, RadialRenderer, RadialChart, RadialFrame);
-bounded_family!(BoxFamily, BoxPlotRenderer, BoxPlotChart, BoxPlotFrame);
 bounded_family!(RadarFamily, RadarRenderer, RadarChart, RadarFrame);
 
 fn layout_of<B: Bounded>(c: &mut B::Chart) -> &mut DecorationLayout {
@@ -2867,10 +2879,6 @@ fn bounded_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
                 RadialFamily(r),
                 scenes::bounded::radial_chart(),
             ),
-            Err(e) => failed(report, e.to_string()),
-        },
-        SceneKind::BoxPlot => match BoxPlotRenderer::new(gpu.clone(), format) {
-            Ok(r) => sweep_bounded(report, scene, BoxFamily(r), scenes::bounded::box_chart()),
             Err(e) => failed(report, e.to_string()),
         },
         SceneKind::Radar => match RadarRenderer::new(gpu.clone(), format) {

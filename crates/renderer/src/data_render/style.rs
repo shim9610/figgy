@@ -345,7 +345,9 @@ pub(crate) fn flat_body_material(
 }
 
 /// The roughness a bar or a box is shaded with: `RadialStyle`'s default.
-/// Bar and box styles have no roughness of their own.
+/// Bar and box styles have no roughness of their own; the bar module's
+/// `CATEGORY_BAR_ROUGHNESS` is held to this twin.
+#[cfg(test)]
 pub(crate) const FLAT_BODY_ROUGHNESS: f32 = 0.35;
 
 /// Per-instance material of a bar, a box or a sector. 32 bytes; mirrors
@@ -362,11 +364,6 @@ pub(crate) struct MaterialGpu {
 const _: () = assert!(std::mem::size_of::<MaterialGpu>() == 32);
 
 impl MaterialGpu {
-    pub(crate) const EMPTY: MaterialGpu = MaterialGpu {
-        params: [0.0; 4],
-        finish: [0.0; 4],
-    };
-
     /// Pack a material and its parameters. `angle` is in radians;
     /// `emphasis` is the hover or selection brightness, added after shading.
     #[allow(clippy::too_many_arguments)]
