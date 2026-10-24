@@ -139,7 +139,7 @@ pub struct CartesianHost {
 
 impl CartesianHost {
     pub fn new(r: &mut Renderer, kind: SceneKind) -> Result<Self, renderer::FiggyError> {
-        let scene = scenes::build(r, kind)?;
+        let scene = scenes::build(r, kind, big_data::START_POINTS)?;
         let id = r.register_chart(scene.config.clone(), scene.series.clone())?;
         Ok(Self {
             kind,
@@ -2271,7 +2271,7 @@ fn layers_controls(
 /// committed through the registry and exported, so a rejected config fails loudly.
 pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     let e = |e: renderer::FiggyError| e.to_string();
-    let scene = scenes::build(r, SceneKind::Lines).map_err(e)?;
+    let scene = scenes::build(r, SceneKind::Lines, big_data::START_POINTS).map_err(e)?;
     let id = r
         .register_chart(scene.config.clone(), scene.series.clone())
         .map_err(e)?;
@@ -2334,7 +2334,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
 
     // The field scene with its label workarounds: no box, no level 0.
     {
-        let mut scene = scenes::build(r, SceneKind::Field).map_err(e)?;
+        let mut scene = scenes::build(r, SceneKind::Field, big_data::START_POINTS).map_err(e)?;
         if let DataRenderType::HeatmapContour { contour, .. } = &mut scene.series[0].render_type {
             contour.levels.retain(|l| *l != 0.0);
             if let Some(l) = contour.labels.as_mut() {
@@ -2350,7 +2350,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
 
     // Every Cartesian scene as it starts, at 1x and 2x.
     for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_bounded()) {
-        let scene = scenes::build(r, kind).map_err(e)?;
+        let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {
             let png = r

@@ -4,6 +4,12 @@ An interactive debug bench for every figgy chart family. It is a standalone
 Cargo workspace that only uses the public API of `crates/renderer`. It is not a
 workspace member, not a renderer feature, and not part of any published package.
 
+The scene catalogue (the synthetic data and the starting model of every scene)
+is `crates/renderer/tests/support/playground_scenes.rs`, which the playground
+includes with `#[path]`. The renderer's decoration oracle
+(`crates/renderer/tests/decoration_oracle.rs`) sweeps the same file, so a
+scene added there is checked in CI without a test of its own.
+
 winit owns the window and the event loop. The app owns the wgpu surface, and
 egui (`egui-winit` + `egui-wgpu`, no eframe) draws the controls on top.
 Cartesian charts are painted straight into the surface pass. Radial,

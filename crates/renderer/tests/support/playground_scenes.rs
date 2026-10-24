@@ -1,5 +1,13 @@
-//! Scene catalogue: synthetic data and the starting `Config` / series of every
-//! Cartesian scene. Bounded scenes build their models in `bounded.rs`.
+//! The playground's scene catalogue: synthetic data and the starting model
+//! of every scene, Cartesian (`Config` and series) and bounded (the four
+//! family charts in [`bounded`]).
+//!
+//! The file lives with the renderer's tests so the decoration oracle
+//! (`tests/decoration_oracle.rs`) sweeps exactly the scenes the playground
+//! shows: `tools/playground` includes it back with `#[path]`, so a scene added
+//! here is covered without a test of its own. It uses only the renderer's
+//! public API.
+#![allow(dead_code)]
 
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;
@@ -267,7 +275,13 @@ pub fn with_legend(mut config: Config, series: &[SeriesConfig]) -> Config {
 // Builders
 // ---------------------------------------------------------------------------
 
-pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyError> {
+/// The starting model of Cartesian scene `kind`, its columns uploaded to
+/// `r`. The large-data scene generates `big_data_points` samples.
+pub fn build(
+    r: &mut Renderer,
+    kind: SceneKind,
+    big_data_points: usize,
+) -> Result<CartesianScene, FiggyError> {
     match kind {
         SceneKind::Lines => lines(r),
         SceneKind::Scatter => scatter(r),
@@ -280,8 +294,8 @@ pub fn build(r: &mut Renderer, kind: SceneKind) -> Result<CartesianScene, FiggyE
         SceneKind::Subplots => subplots(r),
         SceneKind::Annotations => annotations(r),
         SceneKind::Polar => polar(r),
-        SceneKind::BigData => crate::big_data::build(r),
-        _ => unreachable!("bounded scenes are built in bounded.rs"),
+        SceneKind::BigData => big_data::build(r, big_data_points),
+        _ => unreachable!("bounded scenes are built by `bounded::chart`"),
     }
 }
 
@@ -1171,4 +1185,373 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         config: with_legend(config, &series),
         series,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Large data
+// ---------------------------------------------------------------------------
+
+/// The data half of the resident large-data scene: generated points drawn
+/// as a line, as markers or as both.
+///
+/// The data is resident: both columns live in the GPU column pool and every
+/// point is drawn on every frame. The generator writes each value straight
+/// into the pool's mapped staging range through `HiLoColumnSource`, so no
+/// dataset-sized CPU buffer exists at any point. The playground keeps the
+/// bench (sizes, timings, the pan benchmark) in its own `big_data.rs`.
+pub mod big_data {
+    use renderer::config::Config;
+    use renderer::data::split_f64_to_f32_pair;
+    use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
+    use renderer::{
+        Chart, Color, ColumnPairWriter, ColumnUploadStats, FiggyError, HiLoColumnSource, Renderer,
+    };
+
+    use super::CartesianScene;
+
+    const X_ID: &str = "big_x";
+    const Y_ID: &str = "big_y";
+    /// The X column spans `0..=X_SPAN`; hi/lo pairs keep 100 million samples
+    /// distinct where a single f32 could not.
+    const X_SPAN: f64 = 1000.0;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Mode {
+        Line,
+        Scatter,
+        Both,
+    }
+
+    impl Mode {
+        pub const ALL: [Mode; 3] = [Mode::Line, Mode::Scatter, Mode::Both];
+
+        pub fn label(self) -> &'static str {
+            match self {
+                Mode::Line => "Line",
+                Mode::Scatter => "Scatter",
+                Mode::Both => "Line + scatter",
+            }
+        }
+    }
+
+    /// One generated column, evaluated per index while it is written.
+    struct Generated {
+        len: usize,
+        y: bool,
+        min: f64,
+        max: f64,
+    }
+
+    impl Generated {
+        fn x(len: usize) -> Self {
+            Self {
+                len,
+                y: false,
+                min: 0.0,
+                max: X_SPAN,
+            }
+        }
+
+        /// The Y bounds are the exact extremes of the generated values: one pass
+        /// that evaluates the signal and keeps two scalars.
+        fn y(len: usize) -> Self {
+            let (min, max) = (0..len).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), i| {
+                let v = y_at(len, i);
+                (lo.min(v), hi.max(v))
+            });
+            Self {
+                len,
+                y: true,
+                min,
+                max,
+            }
+        }
+
+        fn value(&self, i: usize) -> f64 {
+            if self.y {
+                y_at(self.len, i)
+            } else {
+                x_at(self.len, i)
+            }
+        }
+    }
+
+    fn x_at(len: usize, i: usize) -> f64 {
+        X_SPAN * i as f64 / (len.max(2) - 1) as f64
+    }
+
+    /// Two waves and per-sample noise: a line with structure at every zoom level
+    /// and a scatter band with visible density.
+    fn y_at(len: usize, i: usize) -> f64 {
+        let x = x_at(len, i);
+        30.0 * (x / 40.0).sin() + 8.0 * (0.9 * x).sin() + 4.0 * super::noise(7, i)
+    }
+
+    impl HiLoColumnSource for Generated {
+        fn len(&self) -> usize {
+            self.len
+        }
+        fn min(&self) -> f64 {
+            self.min
+        }
+        fn max(&self) -> f64 {
+            self.max
+        }
+
+        fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+            for (i, pair) in dst.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                let (hi, lo) = split_f64_to_f32_pair(self.value(i));
+                pair[..4].copy_from_slice(&hi.to_le_bytes());
+                pair[4..].copy_from_slice(&lo.to_le_bytes());
+            }
+        }
+
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            mut dst: ColumnPairWriter<'_>,
+        ) -> ColumnUploadStats {
+            let mut min_positive = f64::INFINITY;
+            for i in 0..self.len {
+                let (hi, lo) = split_f64_to_f32_pair(self.value(i));
+                dst.write_pair(i, hi, lo);
+                let v = f64::from(hi) + f64::from(lo);
+                if v > 0.0 && v.is_finite() {
+                    min_positive = min_positive.min(v);
+                }
+            }
+            ColumnUploadStats {
+                min_positive: min_positive.is_finite().then_some(min_positive),
+            }
+        }
+    }
+
+    /// Upload `points` samples of both columns, replacing any earlier ones, and
+    /// wait until the GPU holds them. Removing a column also removes the series
+    /// that read it, so callers set the series again afterwards.
+    pub fn upload(r: &mut Renderer, points: usize) -> Result<(), FiggyError> {
+        r.remove_column(X_ID)?;
+        r.remove_column(Y_ID)?;
+        r.add_hilo_column(X_ID, &Generated::x(points))?;
+        r.add_hilo_column(Y_ID, &Generated::y(points))?;
+        // A failed wait only makes the upload time read short.
+        if let Err(e) = r.device().poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        }) {
+            eprintln!("[big data] poll: {e}");
+        }
+        Ok(())
+    }
+
+    pub fn series(mode: Mode) -> Vec<SeriesConfig> {
+        let line = super::line_style(Color::from_rgb8(31, 119, 180), 1.0);
+        let scatter =
+            super::scatter_style(Color::from_rgb8(214, 39, 40), ScatterShape::Circle, 2.0);
+        let render_type = match mode {
+            Mode::Line => DataRenderType::Line { line },
+            Mode::Scatter => DataRenderType::Scatter { scatter },
+            Mode::Both => DataRenderType::ScatterLine { scatter, line },
+        };
+        vec![super::series("samples", X_ID, Y_ID, render_type)]
+    }
+
+    fn title(points: usize) -> String {
+        format!("Resident data, {} points", group_digits(points))
+    }
+
+    /// `5000000` as `5,000,000`.
+    pub fn group_digits(n: usize) -> String {
+        let digits = n.to_string();
+        let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+        for (i, c) in digits.chars().enumerate() {
+            if i > 0 && (digits.len() - i).is_multiple_of(3) {
+                out.push(',');
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// The chart for `points` samples, fitted to the generated columns.
+    pub fn chart_config(
+        r: &Renderer,
+        points: usize,
+        series: &[SeriesConfig],
+    ) -> Result<Config, FiggyError> {
+        let mut chart = Chart::new(super::base_config(&title(points), "x", "value"));
+        chart.auto_fit_x(r.pool(), X_ID, 0.0)?;
+        chart.auto_fit_y(r.pool(), Y_ID, 0.05)?;
+        Ok(super::with_legend(chart.config().clone(), series))
+    }
+
+    /// The scene with `points` samples, drawn as a line.
+    pub fn build(r: &mut Renderer, points: usize) -> Result<CartesianScene, FiggyError> {
+        upload(r, points)?;
+        let series = series(Mode::Line);
+        Ok(CartesianScene {
+            config: chart_config(r, points, &series)?,
+            series,
+        })
+    }
+
+    /// Release the columns when the scene goes away, so other scenes get the
+    /// pool space back.
+    pub fn release(r: &mut Renderer) {
+        for id in [X_ID, Y_ID] {
+            if let Err(e) = r.remove_column(id) {
+                eprintln!("[big data] remove {id}: {e}");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bounded scenes
+// ---------------------------------------------------------------------------
+
+/// The starting models of the four bounded scenes; the playground's
+/// `bounded.rs` hosts them.
+pub mod bounded {
+    use renderer::boxplot::*;
+    use renderer::categorical::*;
+    use renderer::radar::*;
+    use renderer::radial::*;
+    use renderer::{Category, Color, Material};
+
+    pub fn radial_chart() -> RadialChart {
+        let mut chart = RadialChart {
+            title: "Traffic sources".into(),
+            kind: RadialKind::Donut { inner_radius: 0.5 },
+            slices: vec![
+                RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
+                RadialSlice::new("Direct", 25.0, Color::from_rgb8(165, 216, 72)),
+                RadialSlice::new("Email", 15.0, Color::from_rgb8(80, 96, 121)),
+                RadialSlice::new("Social", 12.0, Color::from_rgb8(255, 151, 62)),
+                RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
+            ],
+            ..Default::default()
+        };
+        chart.style = RadialStyle::three_dimensional();
+        chart
+    }
+
+    pub fn categorical_chart() -> CategoricalChart {
+        let mut chart = CategoricalChart {
+            title: "Quarterly revenue".into(),
+            categories: ["Q1", "Q2", "Q3", "Q4"]
+                .into_iter()
+                .map(|s| Category::new(s, s))
+                .collect(),
+            series: vec![
+                BarSeries::new(
+                    "north",
+                    "North",
+                    [12., 18., 9., 15.].map(Some).into(),
+                    Color::from_rgb8(85, 143, 211),
+                ),
+                BarSeries::new(
+                    "south",
+                    "South",
+                    [18., 24., 14., 21.].map(Some).into(),
+                    Color::from_rgb8(255, 166, 105),
+                ),
+                BarSeries::new(
+                    "west",
+                    "West",
+                    [7., 11., 16., 13.].map(Some).into(),
+                    Color::from_rgb8(110, 190, 120),
+                ),
+            ],
+            value_title: "Revenue (M$)".into(),
+            ..Default::default()
+        };
+        chart.style.material = Material::Matte;
+        chart
+    }
+
+    fn summary(
+        low: f64,
+        q1: f64,
+        med: f64,
+        q3: f64,
+        high: f64,
+        outliers: &[f64],
+    ) -> Option<BoxSummary> {
+        let mut v = BoxSummary::new(low, q1, med, q3, high);
+        v.outliers = outliers.to_vec();
+        v.sample_count = Some(80);
+        v.median_ci = Some([med - 4.0, med + 4.0]);
+        v.mean = Some(med + 2.0);
+        Some(v)
+    }
+
+    pub fn box_chart() -> BoxPlotChart {
+        BoxPlotChart {
+            title: "Response by dose".into(),
+            categories: ["Control", "Low", "Mid", "High"]
+                .into_iter()
+                .map(|s| Category::new(s, s))
+                .collect(),
+            series: vec![
+                BoxPlotSeries::new(
+                    "trial_a",
+                    "Trial A",
+                    vec![
+                        summary(12., 30., 42., 55., 78., &[90.]),
+                        summary(20., 42., 55., 68., 85., &[96., 4.]),
+                        summary(25., 45., 60., 70., 88., &[]),
+                        summary(8., 24., 36., 49., 67., &[82.]),
+                    ],
+                    Color::from_rgb8(65, 144, 208),
+                ),
+                BoxPlotSeries::new(
+                    "trial_b",
+                    "Trial B",
+                    vec![
+                        summary(15., 28., 38., 50., 70., &[]),
+                        summary(22., 40., 50., 62., 80., &[93.]),
+                        summary(30., 50., 64., 74., 92., &[]),
+                        summary(12., 30., 40., 52., 72., &[2.]),
+                    ],
+                    Color::from_rgb8(230, 169, 64),
+                ),
+            ],
+            value_range: Some([0., 100.]),
+            value_title: "Response".into(),
+            ..Default::default()
+        }
+    }
+
+    pub fn radar_chart() -> RadarChart {
+        RadarChart {
+            title: "Build quality".into(),
+            categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
+                .into_iter()
+                .map(|s| Category::new(s.to_lowercase(), s))
+                .collect(),
+            series: vec![
+                RadarSeries::new(
+                    "v1",
+                    "Release 1",
+                    vec![6., 8., 4., 5., 7., 6.5],
+                    Color::from_rgb8(65, 144, 208),
+                ),
+                RadarSeries::new(
+                    "v2",
+                    "Release 2",
+                    vec![8., 7., 6., 8., 9., 7.],
+                    Color::from_rgb8(230, 120, 64),
+                ),
+                RadarSeries::new(
+                    "v3",
+                    "Release 3",
+                    vec![9., 8.5, 8., 9., 9.5, 8.],
+                    Color::from_rgb8(42, 168, 120),
+                ),
+            ],
+            value_range: Some([0., 10.]),
+            ring_spacing: Some(2.5),
+            ..Default::default()
+        }
+    }
 }

@@ -16,13 +16,13 @@ use renderer::radar::*;
 use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
-    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Category, Color,
-    DecorationId, DecorationLayout, FrameBackground, LayerHit, LayerRef, Material,
-    RendererDevice, ResizeHandle,
+    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Color, DecorationId,
+    DecorationLayout, FrameBackground, LayerHit, LayerRef, Material, RendererDevice, ResizeHandle,
 };
 
 use crate::HostCtx;
 use crate::scenes::SceneKind;
+use crate::scenes::bounded::{box_chart, categorical_chart, radar_chart, radial_chart};
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -544,23 +544,6 @@ const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::NameValuePercent,
 ];
 
-fn radial_chart() -> RadialChart {
-    let mut chart = RadialChart {
-        title: "Traffic sources".into(),
-        kind: RadialKind::Donut { inner_radius: 0.5 },
-        slices: vec![
-            RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
-            RadialSlice::new("Direct", 25.0, Color::from_rgb8(165, 216, 72)),
-            RadialSlice::new("Email", 15.0, Color::from_rgb8(80, 96, 121)),
-            RadialSlice::new("Social", 12.0, Color::from_rgb8(255, 151, 62)),
-            RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
-        ],
-        ..Default::default()
-    };
-    chart.style = RadialStyle::three_dimensional();
-    chart
-}
-
 impl Family for RadialFamily {
     type Chart = RadialChart;
     type Renderer = RadialRenderer;
@@ -710,40 +693,6 @@ impl Family for RadialFamily {
 
 pub struct CategoricalFamily;
 
-fn categorical_chart() -> CategoricalChart {
-    let mut chart = CategoricalChart {
-        title: "Quarterly revenue".into(),
-        categories: ["Q1", "Q2", "Q3", "Q4"]
-            .into_iter()
-            .map(|s| Category::new(s, s))
-            .collect(),
-        series: vec![
-            BarSeries::new(
-                "north",
-                "North",
-                [12., 18., 9., 15.].map(Some).into(),
-                Color::from_rgb8(85, 143, 211),
-            ),
-            BarSeries::new(
-                "south",
-                "South",
-                [18., 24., 14., 21.].map(Some).into(),
-                Color::from_rgb8(255, 166, 105),
-            ),
-            BarSeries::new(
-                "west",
-                "West",
-                [7., 11., 16., 13.].map(Some).into(),
-                Color::from_rgb8(110, 190, 120),
-            ),
-        ],
-        value_title: "Revenue (M$)".into(),
-        ..Default::default()
-    };
-    chart.style.material = Material::Matte;
-    chart
-}
-
 impl Family for CategoricalFamily {
     type Chart = CategoricalChart;
     type Renderer = CategoricalRenderer;
@@ -889,59 +838,6 @@ impl Family for CategoricalFamily {
 
 pub struct BoxFamily;
 
-fn summary(
-    low: f64,
-    q1: f64,
-    med: f64,
-    q3: f64,
-    high: f64,
-    outliers: &[f64],
-) -> Option<BoxSummary> {
-    let mut v = BoxSummary::new(low, q1, med, q3, high);
-    v.outliers = outliers.to_vec();
-    v.sample_count = Some(80);
-    v.median_ci = Some([med - 4.0, med + 4.0]);
-    v.mean = Some(med + 2.0);
-    Some(v)
-}
-
-fn box_chart() -> BoxPlotChart {
-    BoxPlotChart {
-        title: "Response by dose".into(),
-        categories: ["Control", "Low", "Mid", "High"]
-            .into_iter()
-            .map(|s| Category::new(s, s))
-            .collect(),
-        series: vec![
-            BoxPlotSeries::new(
-                "trial_a",
-                "Trial A",
-                vec![
-                    summary(12., 30., 42., 55., 78., &[90.]),
-                    summary(20., 42., 55., 68., 85., &[96., 4.]),
-                    summary(25., 45., 60., 70., 88., &[]),
-                    summary(8., 24., 36., 49., 67., &[82.]),
-                ],
-                Color::from_rgb8(65, 144, 208),
-            ),
-            BoxPlotSeries::new(
-                "trial_b",
-                "Trial B",
-                vec![
-                    summary(15., 28., 38., 50., 70., &[]),
-                    summary(22., 40., 50., 62., 80., &[93.]),
-                    summary(30., 50., 64., 74., 92., &[]),
-                    summary(12., 30., 40., 52., 72., &[2.]),
-                ],
-                Color::from_rgb8(230, 169, 64),
-            ),
-        ],
-        value_range: Some([0., 100.]),
-        value_title: "Response".into(),
-        ..Default::default()
-    }
-}
-
 impl Family for BoxFamily {
     type Chart = BoxPlotChart;
     type Renderer = BoxPlotRenderer;
@@ -1069,39 +965,6 @@ impl Family for BoxFamily {
 // ---------------------------------------------------------------------------
 
 pub struct RadarFamily;
-
-fn radar_chart() -> RadarChart {
-    RadarChart {
-        title: "Build quality".into(),
-        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
-            .into_iter()
-            .map(|s| Category::new(s.to_lowercase(), s))
-            .collect(),
-        series: vec![
-            RadarSeries::new(
-                "v1",
-                "Release 1",
-                vec![6., 8., 4., 5., 7., 6.5],
-                Color::from_rgb8(65, 144, 208),
-            ),
-            RadarSeries::new(
-                "v2",
-                "Release 2",
-                vec![8., 7., 6., 8., 9., 7.],
-                Color::from_rgb8(230, 120, 64),
-            ),
-            RadarSeries::new(
-                "v3",
-                "Release 3",
-                vec![9., 8.5, 8., 9., 9.5, 8.],
-                Color::from_rgb8(42, 168, 120),
-            ),
-        ],
-        value_range: Some([0., 10.]),
-        ring_spacing: Some(2.5),
-        ..Default::default()
-    }
-}
 
 impl Family for RadarFamily {
     type Chart = RadarChart;
