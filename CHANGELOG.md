@@ -643,6 +643,10 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   the group's value columns was written (`ColumnPool::stack_extent`;
   per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
   is an error that says so. Value labels are not drawn yet (#40 item 13h).
+  `bar_groups.bar_gap` is logical pixels, scaled with the display config
+  (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
+  is the 1x layout doubled (`category_bars_render` and `box_plot_render`
+  check it).
   A streamed category bar series is rejected with `InvalidSeriesConfig`.
 - **The legacy categorical renderer is removed.** `CategoricalRenderer`,
   `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
@@ -906,7 +910,8 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   value-axis fit over the record and outlier statistics, a replaced record
   and mismatched sources, an overlay's and a subplot's own box groups, the
   annotation layer's spans and reference lines over the categories and
-  values, and a released document drawn through the reader;
+  values, a 2x export that is the 1x layout doubled, and a released
+  document drawn through the reader;
   `pick_draw_agreement::box_plots_pick_the_box_they_paint` holds the pick of
   every part to the painted box; `released_documents` converts every
   released box plot document and round-trips the result; the resident-body

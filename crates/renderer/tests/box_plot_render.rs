@@ -1080,3 +1080,37 @@ fn the_annotation_layer_maps_categories_and_values() {
         }
     }
 }
+
+/// A 2x export is the 1x layout doubled: every box body at 2x is twice its
+/// 1x rect in both directions, so the gap between the boxes of a group
+/// (logical pixels in `bar_groups.bar_gap`) doubles, as the box thickness
+/// does.
+#[test]
+fn a_2x_export_is_the_1x_layout_doubled() {
+    let mut r = renderer();
+    for direction in DIRECTIONS {
+        let chart = chart(direction);
+        let series = [boxes("one", RED), boxes("two", BLUE)];
+        let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+        for k in 0..3 {
+            for (name, pred) in [("red", is_red as fn(&[u8]) -> bool), ("blue", is_blue)] {
+                let case = format!("{direction:?} category {k} {name}");
+                let a = bbox(&one, slot(&chart, direction, k, 1.0), pred)
+                    .unwrap_or_else(|| panic!("{case}: no box at 1x"));
+                let b = bbox(&two, slot(&chart, direction, k, 2.0), pred)
+                    .unwrap_or_else(|| panic!("{case}: no box at 2x"));
+                let doubled = (2 * a.0, 2 * a.1, 2 * a.2 + 1, 2 * a.3 + 1);
+                let near = [
+                    (b.0, doubled.0),
+                    (b.1, doubled.1),
+                    (b.2, doubled.2),
+                    (b.3, doubled.3),
+                ]
+                .iter()
+                .all(|&(x, y)| x.abs_diff(y) <= 2);
+                assert!(near, "{case}: 2x {b:?} for 1x {a:?} doubled {doubled:?}");
+            }
+        }
+    }
+}

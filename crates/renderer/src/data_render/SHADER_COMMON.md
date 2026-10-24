@@ -1005,7 +1005,7 @@ reads as follows (CPU writer: `renderer/series.rs::box_plot_params`).
 | `positions`, `count` | the category position column's lane base and the category count |
 | `member`, `members` | the series' place among the layer's box plot series and their count |
 | `mode` | `CATEGORY_BAR_MODE_GROUPED`: boxes stand side by side |
-| `horizontal`, `gap_px`, `group_width` | as §5.13, from `Config::bar_groups`; the gap is scaled to render pixels |
+| `horizontal`, `gap_px`, `group_width` | as §5.13, from `Config::bar_groups`; the gap is in render pixels (the display config is scaled) |
 | `corner_radius_px`, `emphasis`, `scale`, `seed` | as §5.13 |
 
 The part styles are the series' bar style map (group 2, bindings 5–7):

@@ -676,8 +676,9 @@ pub(super) fn category_bar_params<'c>(
 /// The params' `values` lanes are the record's field lanes in schema order
 /// (`BOX_LANE_ABSENT` for an absent optional field), the outlier values and
 /// offsets lanes, the group count and the longest group
-/// (SHADER_COMMON.md §5.15); the group layout of `config.bar_groups`, the
-/// corner radius and the gap are scaled to `display_scale`.
+/// (SHADER_COMMON.md §5.15); the group layout of `config.bar_groups` is
+/// already in render pixels (the display config is scaled) and the corner
+/// radius is scaled to `display_scale`.
 pub(super) fn box_plot_params<'c>(
     config: &Config,
     group: impl IntoIterator<Item = &'c SeriesConfig>,
@@ -801,8 +802,9 @@ pub(super) fn box_plot_params<'c>(
     params.members = members as u32;
     params.mode = data_render::CATEGORY_BAR_MODE_GROUPED;
     params.horizontal = u32::from(groups.direction == CategoryBarDirection::Horizontal);
-    // The legacy box gap was logical pixels, scaled with the export.
-    params.gap_px = groups.bar_gap.max(0.0) * display_scale;
+    // The box gap is already in render pixels: `Config::scaled` scales
+    // `bar_groups.bar_gap` with the display config, as for category bars.
+    params.gap_px = groups.bar_gap.max(0.0);
     params.group_width = groups.group_width.clamp(0.0, 1.0);
     params.corner_radius_px = boxes.style.corner_radius.max(0.0) * display_scale;
     params.emphasis = boxes.style.emphasis_brightness;

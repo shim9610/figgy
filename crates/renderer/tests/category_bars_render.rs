@@ -979,3 +979,51 @@ fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
         "{hit:?}"
     );
 }
+
+/// A 2x export is the 1x layout doubled: every bar's rect at 2x is twice
+/// its 1x rect, in both directions and every mode, so the gap between
+/// grouped bars (logical pixels in `bar_groups.bar_gap`) doubles and the
+/// group width (a fraction of the slot) keeps its share.
+#[test]
+fn a_2x_export_is_the_1x_layout_doubled() {
+    let mut r = renderer(&ONE, &TWO);
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        for mode in [
+            CategoryBarMode::Grouped,
+            CategoryBarMode::Stacked,
+            CategoryBarMode::PercentStacked,
+        ] {
+            let value = match mode {
+                CategoryBarMode::PercentStacked => (0.0, 100.0),
+                _ => (0.0, 40.0),
+            };
+            let chart = chart(mode, direction, value);
+            let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+            let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+            let two = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+            for k in 0..3 {
+                for (name, pred) in [("red", is_red as fn(&[u8]) -> bool), ("blue", is_blue)] {
+                    let case = format!("{direction:?} {mode:?} category {k} {name}");
+                    let a = bbox(&one, slot(&chart, direction, k, 1.0), pred)
+                        .unwrap_or_else(|| panic!("{case}: no bar at 1x"));
+                    let b = bbox(&two, slot(&chart, direction, k, 2.0), pred)
+                        .unwrap_or_else(|| panic!("{case}: no bar at 2x"));
+                    // Inclusive pixel rect `a` covers `a.0..a.2 + 1` at 1x.
+                    let doubled = (2 * a.0, 2 * a.1, 2 * a.2 + 1, 2 * a.3 + 1);
+                    let near = [
+                        (b.0, doubled.0),
+                        (b.1, doubled.1),
+                        (b.2, doubled.2),
+                        (b.3, doubled.3),
+                    ]
+                    .iter()
+                    .all(|&(x, y)| x.abs_diff(y) <= 2);
+                    assert!(near, "{case}: 2x {b:?} for 1x {a:?} doubled {doubled:?}");
+                }
+            }
+        }
+    }
+}
