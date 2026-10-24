@@ -971,6 +971,17 @@ fn cartesian_scene(
             });
             let (map, measured) = measure_layer(report, &at, &cfg, layer);
             check_i1(report, &at, &cfg, &measured);
+            let drawn_count = measured.iter().filter(|m| m.bounds.is_some()).count();
+            let parts: usize = measured.iter().map(|m| m.parts.len()).sum();
+            report.count(&at, "registered elements", measured.len());
+            report.count(&at, "drawn elements", drawn_count);
+            report.count(&at, "drawn parts", parts);
+            if scale == 1.0 {
+                report.line(format!(
+                    "{scene} / {name}: {} registered, {drawn_count} drawn, {parts} parts",
+                    measured.len()
+                ));
+            }
             for m in &measured {
                 registered.insert(m.name.clone(), m.bounds);
                 drawn.insert(m.name.clone(), m.parts.clone());
