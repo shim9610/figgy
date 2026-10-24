@@ -20,7 +20,7 @@ use renderer::{
     ArrowStyle, AxisPreset, CellRef, Chart, ChartDrawItem, ChartId, ChartStyle, ChartView, Color,
     ColorCycle, ColorMap, CpuTextMeasure, DataSelectionsConfig, GpuPickRequest, HitId, HitMap,
     LayerHit, LayerRef, OverlayLayer, PickedData, PreparedFrame, RenderWarning, Renderer,
-    ResizeHandle, ScatterShape, SelectionBox, Series, Subplot, fit_display_panel, place_document,
+    ResizeHandle, ScatterShape, Series, Subplot, fit_display_panel, place_document,
 };
 
 use crate::HostCtx;
@@ -139,7 +139,7 @@ pub struct CartesianHost {
 
 impl CartesianHost {
     pub fn new(r: &mut Renderer, kind: SceneKind) -> Result<Self, renderer::FiggyError> {
-        let scene = scenes::build(r, kind)?;
+        let scene = scenes::build(r, kind, big_data::START_POINTS)?;
         let id = r.register_chart(scene.config.clone(), scene.series.clone())?;
         Ok(Self {
             kind,
@@ -313,13 +313,13 @@ impl CartesianHost {
         let mut view = view;
         if self.raster_dirty || view.panel_rect() != d.panel {
             let hitmap = HitMap::for_active_layer(&d.config);
-            let measure = CpuTextMeasure::for_style(&d.config.draw_style);
-            let boxes: Vec<SelectionBox> = self
+            let selected = self
                 .selected
-                .and_then(|id| hitmap.selection_box(id, &d.config, &measure))
-                .into_iter()
-                .collect();
-            if let Err(e) = r.refresh_axis_with_selection(&mut view, &chart, d.panel, &boxes) {
+                .and_then(|id| hitmap.get(id))
+                .map(|el| el.element_id());
+            if let Err(e) =
+                r.refresh_axis_with_selection(&mut view, &chart, d.panel, selected.as_deref())
+            {
                 self.error = Some(format!("refresh: {e}"));
             }
             self.warnings = view.render_warnings().to_vec();
@@ -529,16 +529,17 @@ impl CartesianHost {
                 };
                 let (dx, dy) = (dx / d.scale, dy / d.scale);
                 let hitmap = HitMap::for_active_layer(&d.config);
+                let measure = CpuTextMeasure::for_style(&d.config.draw_style);
                 let Some(el) = hitmap.get(id) else {
                     return false;
                 };
                 match self.drag {
                     Drag::Resize(h) => el.as_resizable().is_some_and(|rz| {
-                        rz.resize_by(&mut config, h, dx, dy) == NudgeResult::Moved
+                        rz.resize_by(&mut config, &measure, h, dx, dy) == NudgeResult::Moved
                     }),
-                    _ => el
-                        .as_draggable()
-                        .is_some_and(|dr| dr.drag_by(&mut config, dx, dy) == NudgeResult::Moved),
+                    _ => el.as_draggable().is_some_and(|dr| {
+                        dr.drag_by(&mut config, &measure, dx, dy) == NudgeResult::Moved
+                    }),
                 }
             }
         };
@@ -2271,7 +2272,7 @@ fn layers_controls(
 /// committed through the registry and exported, so a rejected config fails loudly.
 pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     let e = |e: renderer::FiggyError| e.to_string();
-    let scene = scenes::build(r, SceneKind::Lines).map_err(e)?;
+    let scene = scenes::build(r, SceneKind::Lines, big_data::START_POINTS).map_err(e)?;
     let id = r
         .register_chart(scene.config.clone(), scene.series.clone())
         .map_err(e)?;
@@ -2334,7 +2335,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
 
     // The field scene with its label workarounds: no box, no level 0.
     {
-        let mut scene = scenes::build(r, SceneKind::Field).map_err(e)?;
+        let mut scene = scenes::build(r, SceneKind::Field, big_data::START_POINTS).map_err(e)?;
         if let DataRenderType::HeatmapContour { contour, .. } = &mut scene.series[0].render_type {
             contour.levels.retain(|l| *l != 0.0);
             if let Some(l) = contour.labels.as_mut() {
@@ -2350,7 +2351,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
 
     // Every Cartesian scene as it starts, at 1x and 2x.
     for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_bounded()) {
-        let scene = scenes::build(r, kind).map_err(e)?;
+        let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {
             let png = r
