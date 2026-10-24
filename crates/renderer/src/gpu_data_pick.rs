@@ -111,6 +111,14 @@ pub(crate) enum GpuDataPickGeometry {
     CategoryBars {
         data: crate::data_render::CategoryBarData,
     },
+    /// A box plot series' boxes, picked by the box plot entry
+    /// (`pick_box_plot`) over the draw's group 3 and style map at the
+    /// pick's display scale: every part of a box (body, whiskers, caps,
+    /// median, mean, outliers) answers its box as a histogram bin whose
+    /// index is its row.
+    BoxPlot {
+        data: crate::data_render::CategoryBarData,
+    },
 }
 
 pub(crate) struct GpuDataPickSeries {
@@ -557,6 +565,22 @@ pub(crate) struct DataPickShaders<'a> {
 }
 
 /// Immutable pipelines shared by every chart and pick query on one renderer.
+/// The query of a category bar or box plot pick: the cursor, the pick
+/// distance and the paint order; the group 3 params hold the rest.
+fn category_axis_pick_query(
+    cursor_ndc_t: [f32; 4],
+    max_distance_px: f32,
+    paint_order: u32,
+) -> DataPickQueryGpu {
+    DataPickQueryGpu {
+        cursor_ndc_t,
+        limits: [max_distance_px, 0.0, 0.0, 0.0],
+        data: [0, paint_order, 0, 0],
+        bases: [0; 4],
+        baseline: [0.0; 4],
+    }
+}
+
 pub(crate) struct DataPickPipelineBundle {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -566,6 +590,7 @@ pub(crate) struct DataPickPipelineBundle {
     field: wgpu::ComputePipeline,
     vector_cell: wgpu::ComputePipeline,
     category_bar: wgpu::ComputePipeline,
+    box_plot: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
     /// Group 3 of the field pick for a contour without labels.
     empty_label_gap: wgpu::BindGroup,
@@ -706,6 +731,19 @@ impl DataPickPipelineBundle {
                 },
             )
         });
+        let box_plot = observe_value(observer, INIT_SCOPE, "pick_box_plot", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy box plot data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_box_plot"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
         let empty_bar_style_map =
             crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[]).bind_group;
         let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(
@@ -762,6 +800,7 @@ impl DataPickPipelineBundle {
             field,
             vector_cell,
             category_bar,
+            box_plot,
             empty_bar_style_map,
             empty_label_gap,
             _empty_label_gap_charge: empty_label_gap_charge,
@@ -793,6 +832,7 @@ impl DataPickPipelineBundle {
                 &[
                     ("pick_histogram_bin", "pick_histogram_bin"),
                     ("pick_category_bar", "pick_category_bar"),
+                    ("pick_box_plot", "pick_box_plot"),
                 ],
                 observer,
             )
@@ -966,6 +1006,7 @@ impl DataPickPipelineBundle {
             Field(wgpu::BindGroup, wgpu::BindGroup),
             VectorGrid(wgpu::BindGroup),
             CategoryBars(crate::data_render::CategoryBarData),
+            BoxPlot(crate::data_render::CategoryBarData),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -1066,14 +1107,18 @@ impl DataPickPipelineBundle {
                         _label: None,
                     });
                     (
-                        DataPickQueryGpu {
-                            cursor_ndc_t: cursor,
-                            limits: [query.max_distance_px, 0.0, 0.0, 0.0],
-                            data: [0, item.paint_order, 0, 0],
-                            bases: [0; 4],
-                            baseline: [0.0; 4],
-                        },
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
                         PreparedKind::CategoryBars(data),
+                    )
+                }
+                GpuDataPickGeometry::BoxPlot { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::BoxPlot(data),
                     )
                 }
             };
@@ -1150,6 +1195,11 @@ impl DataPickPipelineBundle {
                     }
                     PreparedKind::CategoryBars(data) => {
                         pass.set_pipeline(&self.category_bar);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::BoxPlot(data) => {
+                        pass.set_pipeline(&self.box_plot);
                         pass.set_bind_group(2, &data.style_map, &[]);
                         pass.set_bind_group(3, &data.bind_group, &[]);
                     }

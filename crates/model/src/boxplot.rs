@@ -1,6 +1,23 @@
-//! Small, precomputed box plots. Statistical policy belongs to the host.
-use crate::format::PlainNumberFormat;
-use crate::{Color, Material, categorical::Category};
+//! The legacy box plot document, kept as a reader.
+//!
+//! A box plot is a Cartesian chart now: a `Config` with a categorical axis
+//! ([`crate::config::AxisOptions::categories`]), `Config::bar_groups` and one
+//! [`DataRenderType::BoxPlot`](crate::data_config::DataRenderType::BoxPlot)
+//! series per box series, whose statistics are a record and whose outliers
+//! are a ragged column of the renderer's column pool. A [`BoxPlotChart`]
+//! document still parses and validates here, and `Config::from_boxplot`
+//! turns it into that chart and the uploads of its summaries. Statistical
+//! policy belongs to the host: the summaries are precomputed.
+#[cfg(test)]
+use crate::Material;
+use crate::{Color, categorical::Category};
+
+/// The box types live with the series kinds now
+/// ([`crate::data_config::DataRenderType::BoxPlot`]); these paths keep
+/// working.
+pub use crate::data_config::{
+    BoxOutlierShape, BoxPlotLabels, BoxPlotOverride, BoxPlotStyle, BoxPlotTarget,
+};
 use std::collections::HashSet;
 
 pub const MAX_BOX_CATEGORIES: usize = 64;
@@ -9,20 +26,6 @@ pub const MAX_BOXES: usize = 512;
 pub const MAX_BOX_OUTLIERS: usize = 128;
 pub const MAX_BOXPLOT_OUTLIERS: usize = 4096;
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BoxPlotTarget {
-    pub category_id: String,
-    pub series_id: String,
-}
-impl BoxPlotTarget {
-    pub fn new(category: impl Into<String>, series: impl Into<String>) -> Self {
-        Self {
-            category_id: category.into(),
-            series_id: series.into(),
-        }
-    }
-}
 /// Actual whisker endpoints, not the theoretical IQR fences. CI endpoints may
 /// extend outside Q1/Q3. No sample statistics are inferred by the renderer.
 #[derive(Clone, Debug, PartialEq)]
@@ -90,93 +93,14 @@ pub enum BoxPlotDirection {
     Vertical,
     Horizontal,
 }
-/// The former box material enum, now the shared [`Material`]. Boxes reject
-/// the materials [`Material::supported_on_flat_body`] excludes. The box
+/// The former box material enum, now the shared [`Material`](crate::Material). Boxes
+/// reject the materials
+/// [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body)
+/// excludes. The box
 /// style's default stays `Matte` (`BoxPlotStyle::default`); the enum's own
 /// default is `Flat`.
 #[deprecated(since = "0.13.0", note = "use Material")]
 pub type BoxPlotMaterial = crate::Material;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum BoxPlotLabels {
-    #[default]
-    None,
-    Median,
-    MedianAndCount,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum BoxOutlierShape {
-    #[default]
-    Circle,
-    Square,
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(default)
-)]
-pub struct BoxPlotStyle {
-    pub material: Material,
-    /// Logical pixels, capped at 3 and at half the actual box extent.
-    pub corner_radius: f32,
-    pub outline: bool,
-    pub outline_width: f32,
-    pub outline_color: Color,
-    pub median_width: f32,
-    pub median_color: Color,
-    pub whisker_width: f32,
-    pub whisker_color: Color,
-    pub caps: bool,
-    pub cap_ratio: f32,
-    pub notched: bool,
-    pub notch_depth: f32,
-    pub show_mean: bool,
-    pub mean_size: f32,
-    pub mean_color: Color,
-    pub show_outliers: bool,
-    pub outlier_size: f32,
-    pub outlier_color: Color,
-    pub outlier_shape: BoxOutlierShape,
-    pub outlier_filled: bool,
-    pub texture_strength: f32,
-    pub texture_scale: f32,
-    pub gloss: f32,
-    pub emphasis_brightness: f32,
-}
-impl Default for BoxPlotStyle {
-    fn default() -> Self {
-        let ink = Color::from_rgb8(32, 46, 60);
-        Self {
-            material: Material::Matte,
-            corner_radius: 0.0,
-            outline: true,
-            outline_width: 1.2,
-            outline_color: ink,
-            median_width: 1.2,
-            median_color: ink,
-            whisker_width: 1.2,
-            whisker_color: ink,
-            caps: true,
-            cap_ratio: 0.5,
-            notched: false,
-            notch_depth: 0.22,
-            show_mean: false,
-            mean_size: 7.0,
-            mean_color: Color::from_rgb8(180, 45, 45),
-            show_outliers: true,
-            outlier_size: 7.0,
-            outlier_color: ink,
-            outlier_shape: BoxOutlierShape::Circle,
-            outlier_filled: false,
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            gloss: 0.45,
-            emphasis_brightness: 0.08,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BoxPlotSeries {
@@ -199,24 +123,6 @@ impl BoxPlotSeries {
             values,
             color,
             style: None,
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct BoxPlotOverride {
-    pub target: BoxPlotTarget,
-    pub color: Option<Color>,
-    pub style: Option<BoxPlotStyle>,
-    pub labels: Option<BoxPlotLabels>,
-}
-impl BoxPlotOverride {
-    pub fn new(target: BoxPlotTarget) -> Self {
-        Self {
-            target,
-            color: None,
-            style: None,
-            labels: None,
         }
     }
 }
@@ -366,31 +272,6 @@ impl BoxPlotChart {
                 .unwrap_or(&self.style),
         )
     }
-    pub fn label_text(&self, target: &BoxPlotTarget) -> Option<String> {
-        let summary = self.summary(target)?;
-        let mode = self
-            .box_override(target)
-            .and_then(|o| o.labels)
-            .unwrap_or(self.labels);
-        if mode == BoxPlotLabels::None {
-            return None;
-        }
-        let median = format!(
-            "{}{}",
-            PlainNumberFormat::fixed(self.label_decimals, false).format(summary.median),
-            self.value_suffix
-        );
-        Some(if mode == BoxPlotLabels::MedianAndCount {
-            format!(
-                "{median} (n={})",
-                summary
-                    .sample_count
-                    .map_or_else(|| "—".into(), |n| n.to_string())
-            )
-        } else {
-            median
-        })
-    }
     pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
         self.validate()?;
         if ids.len() != self.categories.len()
@@ -440,7 +321,7 @@ impl BoxPlotChart {
                 return Err("invalid series ID/label, color or value count");
             }
             if let Some(st) = &s.style {
-                validate_style(st)?;
+                st.validate()?;
             }
             for v in s.values.iter().flatten() {
                 v.validate()?;
@@ -450,7 +331,7 @@ impl BoxPlotChart {
         if outliers > MAX_BOXPLOT_OUTLIERS {
             return Err("at most 4096 outliers per chart");
         }
-        validate_style(&self.style)?;
+        self.style.validate()?;
         if !range(self.font_size, 8.0, 32.0)
             || !range(self.group_width, 0.1, 0.95)
             || !range(self.box_gap, 0.0, 24.0)
@@ -483,7 +364,7 @@ impl BoxPlotChart {
                 return Err("invalid or duplicate box override");
             }
             if let Some(st) = &o.style {
-                validate_style(st)?;
+                st.validate()?;
             }
         }
         for (i, c) in self.categories.iter().enumerate() {
@@ -513,39 +394,6 @@ fn range(v: f32, a: f32, b: f32) -> bool {
 fn color(c: Color) -> bool {
     [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0.0, 1.0))
 }
-fn validate_style(s: &BoxPlotStyle) -> Result<(), &'static str> {
-    // A box is a flat body; see `Material::supported_on_flat_body`.
-    if !s.material.supported_on_flat_body() {
-        return Err("material not supported by boxes");
-    }
-    if !range(s.corner_radius, 0.0, 3.0)
-        || !range(s.outline_width, 0.0, 8.0)
-        || !range(s.median_width, 0.0, 8.0)
-        || !range(s.whisker_width, 0.0, 8.0)
-        || !range(s.cap_ratio, 0.0, 1.0)
-        || !range(s.notch_depth, 0.0, 0.45)
-        || !range(s.mean_size, 1.0, 24.0)
-        || !range(s.outlier_size, 1.0, 24.0)
-        || !range(s.texture_strength, 0.0, 1.0)
-        || !range(s.texture_scale, 0.1, 8.0)
-        || !range(s.gloss, 0.0, 1.0)
-        || !range(s.emphasis_brightness, 0.0, 0.5)
-        || [
-            s.outline_color,
-            s.median_color,
-            s.whisker_color,
-            s.mean_color,
-            s.outlier_color,
-        ]
-        .into_iter()
-        .any(|c| !color(c))
-    {
-        Err("invalid boxplot style")
-    } else {
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,22 +594,6 @@ mod tests {
         assert!(c.validate().is_err());
         c.value_range = Some([-1., 2.]);
         assert!(c.validate().is_ok());
-    }
-    #[test]
-    fn labels_use_supplied_median_and_sample_count_with_individual_override() {
-        let mut c = chart();
-        let t = BoxPlotTarget::new("a", "s");
-        assert_eq!(c.label_text(&t), None);
-        c.labels = BoxPlotLabels::MedianAndCount;
-        c.value_suffix = " ms".into();
-        assert_eq!(c.label_text(&t).unwrap(), "3.0 ms (n=—)");
-        c.series[0].values[0].as_mut().unwrap().sample_count = Some(42);
-        c.label_decimals = 2;
-        assert_eq!(c.label_text(&t).unwrap(), "3.00 ms (n=42)");
-        let mut o = BoxPlotOverride::new(t.clone());
-        o.labels = Some(BoxPlotLabels::Median);
-        c.overrides.push(o);
-        assert_eq!(c.label_text(&t).unwrap(), "3.00 ms");
     }
     #[cfg(feature = "serde")]
     #[test]

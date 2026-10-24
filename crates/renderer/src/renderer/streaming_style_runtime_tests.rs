@@ -170,6 +170,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
     scatter.point_style_index_column = (!remove_maps).then(|| "rindex".into());
@@ -1446,6 +1447,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::LineScatterErrorbarXY { .. }
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::CategoryBars { .. }
+                    | DataRenderType::BoxPlot { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();

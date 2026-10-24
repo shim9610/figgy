@@ -427,6 +427,185 @@ pub(super) fn category_bar_style_map(
     data_render::create_bar_style_map(device, layout, &overrides)
 }
 
+/// The part styles and per-box overrides of a box plot series as the bar
+/// style map its draw, pick and highlight resolve (SHADER_COMMON.md §5.15):
+/// one style slot per part (`BOX_PART_*`: the body's material, corner radius,
+/// emphasis and notch; the median and whisker strokes; the mean and outlier
+/// markers) from the series' style, and one override row per part of each
+/// overridden box at `row * BOX_PLOT_PARTS + part`, its category id looked up
+/// in `categories` (the axis' categories). An override's colour sets the
+/// body's fill; its style replaces every part. An override whose category is
+/// not on the axis is skipped (the gate rejects it). Fixed-size rows, no
+/// allocation: a series has at most one override per category.
+pub(super) fn box_plot_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    categories: &[crate::config::Category],
+    boxes: crate::data_config::BoxPlotRef<'_>,
+    scale: f32,
+) -> data_render::BarStyleMap {
+    use data_render::{BOX_PLOT_PARTS, BarStyleOverrideGpu, BarStyleSlotGpu};
+    const ROWS: usize = crate::boxplot::MAX_BOX_CATEGORIES * BOX_PLOT_PARTS as usize;
+    let slots = box_plot_part_slots(boxes.style, scale);
+    let mut rows = [<BarStyleOverrideGpu as bytemuck::Zeroable>::zeroed(); ROWS];
+    let mut count = 0usize;
+    for o in boxes.overrides {
+        let Some(row) = categories
+            .iter()
+            .position(|c| c.id == o.target.category_id)
+            .and_then(|row| u32::try_from(row).ok())
+        else {
+            continue;
+        };
+        let parts = o
+            .style
+            .as_ref()
+            .map(|style| box_plot_part_slots(style, scale));
+        for part in 0..BOX_PLOT_PARTS {
+            let mut slot: BarStyleSlotGpu = match &parts {
+                Some(parts) => parts[part as usize],
+                None => bytemuck::Zeroable::zeroed(),
+            };
+            if part == data_render::BOX_PART_BODY {
+                // The body takes the whole style's outline as well.
+                if let Some(style) = &o.style {
+                    slot.border_color_premul = premul_rgba(style.outline_color);
+                    slot.params[0] = if style.outline {
+                        style.outline_width.max(0.0) * scale
+                    } else {
+                        0.0
+                    };
+                    slot.params[3] = (data_render::BAR_STYLE_MASK_BORDER_COLOR
+                        | data_render::BAR_STYLE_MASK_BORDER_WIDTH
+                        | data_render::BAR_STYLE_MASK_MATERIAL)
+                        as f32;
+                }
+                if let Some(color) = o.color {
+                    slot.fill_color_premul = premul_rgba(color);
+                    slot.params[3] =
+                        (slot.params[3] as u32 | data_render::BAR_STYLE_MASK_FILL) as f32;
+                }
+            }
+            if slot.params[3] == 0.0 || count == ROWS {
+                continue;
+            }
+            rows[count] = BarStyleOverrideGpu {
+                bin_index: row * BOX_PLOT_PARTS + part,
+                _pad: [0; 3],
+                fill_color_premul: slot.fill_color_premul,
+                border_color_premul: slot.border_color_premul,
+                params: slot.params,
+                material: slot.material,
+                finish: slot.finish,
+            };
+            count += 1;
+        }
+    }
+    data_render::create_bar_style_map_with_slots(device, layout, &slots, &rows[..count])
+}
+
+/// The three part slots of `style` (SHADER_COMMON.md §5.15): the body's
+/// material and finish (corner radius px, emphasis, notch depth share), the
+/// strokes (median colour and width, whisker colour and width, cap length
+/// share) and the markers (mean colour, outlier colour; mean size px,
+/// outlier size px, square, filled). A hidden part has zero sizes.
+pub(super) fn box_plot_part_slots(
+    style: &crate::data_config::BoxPlotStyle,
+    scale: f32,
+) -> [data_render::BarStyleSlotGpu; data_render::BOX_PLOT_PARTS as usize] {
+    use data_render::{
+        BAR_STYLE_MASK_BORDER_COLOR, BAR_STYLE_MASK_BORDER_WIDTH, BAR_STYLE_MASK_FILL,
+        BAR_STYLE_MASK_GAP, BAR_STYLE_MASK_MATERIAL, BAR_STYLE_MASK_WIDTH_RATIO, BarStyleSlotGpu,
+    };
+    let crate::data_config::BoxPlotStyle {
+        material,
+        corner_radius,
+        // The outline is the `Style` lanes' (and an override's body row).
+        outline: _,
+        outline_width: _,
+        outline_color: _,
+        median_width,
+        median_color,
+        whisker_width,
+        whisker_color,
+        caps,
+        cap_ratio,
+        notched,
+        notch_depth,
+        show_mean,
+        mean_size,
+        mean_color,
+        show_outliers,
+        outlier_size,
+        outlier_color,
+        outlier_shape,
+        outlier_filled,
+        texture_strength,
+        texture_scale,
+        gloss,
+        emphasis_brightness,
+    } = style;
+    let shown = |on: bool, size: f32| if on { size.max(0.0) * scale } else { 0.0 };
+    let body = BarStyleSlotGpu {
+        fill_color_premul: [0.0; 4],
+        border_color_premul: [0.0; 4],
+        params: [0.0, 0.0, 0.0, BAR_STYLE_MASK_MATERIAL as f32],
+        material: data_render::flat_body_material(
+            *material,
+            *texture_strength,
+            *texture_scale,
+            *gloss,
+        ),
+        finish: [
+            corner_radius.max(0.0) * scale,
+            *emphasis_brightness,
+            if *notched { notch_depth.max(0.0) } else { 0.0 },
+            0.0,
+        ],
+    };
+    let strokes = BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(*median_color),
+        border_color_premul: premul_rgba(*whisker_color),
+        params: [
+            median_width.max(0.0) * scale,
+            whisker_width.max(0.0) * scale,
+            if *caps {
+                cap_ratio.clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
+            (BAR_STYLE_MASK_FILL
+                | BAR_STYLE_MASK_BORDER_COLOR
+                | BAR_STYLE_MASK_BORDER_WIDTH
+                | BAR_STYLE_MASK_GAP
+                | BAR_STYLE_MASK_WIDTH_RATIO) as f32,
+        ],
+        material: [0.0; 4],
+        finish: [0.0; 4],
+    };
+    let markers = BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(*mean_color),
+        border_color_premul: premul_rgba(*outlier_color),
+        params: [
+            0.0,
+            0.0,
+            0.0,
+            (BAR_STYLE_MASK_FILL | BAR_STYLE_MASK_BORDER_COLOR | BAR_STYLE_MASK_MATERIAL) as f32,
+        ],
+        material: [
+            shown(*show_mean, *mean_size),
+            shown(*show_outliers, *outlier_size),
+            match outlier_shape {
+                crate::data_config::BoxOutlierShape::Circle => 0.0,
+                crate::data_config::BoxOutlierShape::Square => 1.0,
+            },
+            if *outlier_filled { 1.0 } else { 0.0 },
+        ],
+        finish: [0.0; 4],
+    };
+    [body, strokes, markers]
+}
+
 /// Bundle of style bind groups for line, scatter, and errorbar primitives.
 /// Built via `Renderer::create_style_for_series*`. Multiple series in one
 /// chart can share a single `ChartStyle` (`Series.style: &ChartStyle`).
@@ -468,6 +647,8 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) bar: bool,
     /// A category bar series' bars. Precise mode only, like histogram bars.
     pub(super) category_bars: bool,
+    /// A box plot series' boxes. Precise mode only, like category bars.
+    pub(super) box_plot: bool,
     /// A vector (quiver) series' arrows. Precise mode only, like fields.
     pub(super) vector: bool,
 }
@@ -484,6 +665,7 @@ pub(super) fn effective_series_primitives(
             scatter: constellation_supports(render_type),
             bar: false,
             category_bars: false,
+            box_plot: false,
             vector: false,
         };
     }
@@ -506,6 +688,8 @@ pub(super) fn effective_series_primitives(
         // Category bars are precise like histogram bars, for the same reason.
         category_bars: matches!(draw_style, DrawStyle::Precise)
             && render_type.category_bars().is_some(),
+        // Boxes are precise like category bars, for the same reason.
+        box_plot: matches!(draw_style, DrawStyle::Precise) && render_type.box_plot().is_some(),
         // Arrows are a precise-mode primitive for the same reason: no stylized
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.
@@ -567,7 +751,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => false,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => false,
     }
 }
 
@@ -725,10 +910,21 @@ impl Renderer {
         // orientation. SHADER_COMMON.md's bar reinterpretation table is the SSoT.
         // A category bar series' lanes are its fill, outline and material
         // (SHADER_COMMON.md §5.13); its layout is prepared with its group.
-        let bar = match (extract_bar(render_type), render_type.category_bars()) {
-            (Some(b), _) => PrimitiveStyle::from_bar(b, scale),
-            (None, Some(bars)) => PrimitiveStyle::from_category_bars(bars.color, bars.style, scale),
-            (None, None) => PrimitiveStyle::from_color(Color::BLACK),
+        // A box plot series' lanes are its body's fill, outline and material
+        // (§5.15); its part styles are its bar style map's slots.
+        let bar = match (
+            extract_bar(render_type),
+            render_type.category_bars(),
+            render_type.box_plot(),
+        ) {
+            (Some(b), _, _) => PrimitiveStyle::from_bar(b, scale),
+            (None, Some(bars), _) => {
+                PrimitiveStyle::from_category_bars(bars.color, bars.style, scale)
+            }
+            (None, None, Some(boxes)) => {
+                PrimitiveStyle::from_box_plot(boxes.color, boxes.style, scale)
+            }
+            (None, None, None) => PrimitiveStyle::from_color(Color::BLACK),
         };
         let (mut line, mut scatter, mut bar) = (line, scatter, bar);
         line.series_salt = series_salt;

@@ -116,13 +116,13 @@
 | 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md#한국어-사용법) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
 | 범주형 막대 | 범주형 축과 범주 위치·막대 시리즈별 값 컬럼(`CategoryBars`), 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다 | [막대](crates/renderer/CATEGORICAL.md) |
-| 박스플롯 | `BoxPlotChart` 요약 통계 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |
+| 박스플롯 | 범주형 축과 범주 위치 컬럼, 시리즈별 상자 통계 레코드와 이상치 가변 길이 컬럼(`BoxPlot`), 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |
 | 레이더 차트 | `RadarChart` 범주와 시리즈별 범주당 값 하나 | [레이더](crates/renderer/RADAR.md#한국어-사용법) |
 
 컬럼 기반 차트는 렌더러·GPU 컬럼 풀·피킹·내보내기 경로를 공유하며, 오버레이와 서브플롯은 이
 차트에서 씁니다. 단, 극좌표 차트에는 보조 Y축(오버레이)을 둘 수 없습니다. GPU 메모리보다 큰
 데이터를 나눠 그리는 스트리밍은 선·산점도·오차 막대·히스토그램·히트맵을 지원합니다. 극좌표·면 채움·계단선·벡터장·점 색·크기 매핑·등고선 시리즈나 오버레이·서브플롯이 있는
-문서에 스트리밍 소스를 쓰면 오류를 반환하며, 범주형 막대도 마찬가지입니다. 파이·도넛·박스플롯·레이더는 각자 소량 데이터
+문서에 스트리밍 소스를 쓰면 오류를 반환하며, 범주형 막대와 박스플롯도 마찬가지입니다. 파이·도넛·레이더는 각자 소량 데이터
 모델과 전용 렌더러를 쓰며 컬럼이나 스트리밍 API를 거치지 않습니다. 주석 레이어는 두 종류의 차트에서
 모두 쓸 수 있습니다.
 
@@ -246,7 +246,7 @@ cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 |---|---|
 | 독립 창에서 그리기 | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | egui 화면에 넣기 | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — `egui_demo` 기능 사용 |
-| 원형·막대·박스플롯·레이더 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-examples) |
+| 원형·레이더 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-examples) |
 | 극좌표로 선·산점도 그리기 | [극좌표 사용법](crates/renderer/POLAR.md#한국어-사용법) |
 | 선택·이동·영역 크기 조정 연결 | [상호작용 사용법](crates/renderer/INTERACTION.md) |
 | GPU 메모리보다 큰 데이터 그리기 | [스트리밍과 상주 전환](crates/renderer/ARCHITECTURE.md#원본-데이터-스트리밍과-상주-전환) |
@@ -261,7 +261,7 @@ Rust 렌더러는 `wasm32-unknown-unknown`으로도 컴파일되며 브라우저
 `<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결합니다. 렌더러와 함께 관리하므로
 렌더러에 기능이 추가되면 래퍼 메서드도 함께 추가됩니다. JavaScript API는 래퍼가 따로 정의하며
 Rust 라이브러리의 API와는 별개입니다.
-직교 차트(극좌표·오버레이·서브플롯·범주형 막대 포함)는 `FiggyChart`로, 파이·도넛·박스플롯·레이더는
+직교 차트(극좌표·오버레이·서브플롯·범주형 막대·박스플롯 포함)는 `FiggyChart`로, 파이·도넛·레이더는
 `FiggyBoundedChart`로 그립니다. `<figgy-chart>` 요소는 `FiggyChart`만 감싸므로 `FiggyBoundedChart`를
 쓰는 호스트는 캔버스 이벤트와 프레임 예약을 직접 맡습니다.
 래퍼는 Cargo 패키지 `figgy`이며 이 저장소에서 빌드합니다(`publish = false`). crates.io의 `figgy`

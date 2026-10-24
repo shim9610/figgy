@@ -422,35 +422,6 @@ impl ElementSink<'_, '_> {
         );
     }
 
-    /// A -90 degree axis title centred on `(x, y)`. Offsets remain
-    /// screen-space, so horizontal pointer motion always moves the visible
-    /// text horizontally.
-    pub fn rotated_text(
-        &mut self,
-        family: &str,
-        text: &str,
-        x: f32,
-        y: f32,
-        size: f32,
-        color: Color,
-    ) {
-        let extents = self.plain_extents(family, text, size);
-        self.text(
-            Slot::Above,
-            &PlacedText {
-                text: TextRef::Plain {
-                    text,
-                    family,
-                    size,
-                    color,
-                },
-                origin: (x - extents.width * 0.5, y),
-                extents,
-                rotation: Some((-90.0, (x, y))),
-            },
-        );
-    }
-
     /// A filled rectangle, such as a legend swatch.
     pub fn fill(&mut self, rect: RectF, color: Color) {
         if color.a == 0. {

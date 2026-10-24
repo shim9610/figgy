@@ -77,7 +77,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> 
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -102,7 +103,8 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleCo
         // Arrows are not markers: they have their own pipeline, pick radius
         // and legend mark (`extract_vector`).
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -152,7 +154,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -185,7 +188,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -217,7 +221,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -246,7 +251,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -359,6 +365,17 @@ pub(super) fn series_draw_info_from_pool(
                 truncated: extent.truncated,
             }
         }
+        // One box per row of the position column; the record holds one row
+        // per category (checked when the boxes are prepared).
+        DataRenderType::BoxPlot { .. } => {
+            let (count, truncated) = paired(&[x]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         // One bar per row of the position and value columns; both hold one
         // value per category (checked when the bars are prepared).
         DataRenderType::CategoryBars { .. } => {
@@ -435,7 +452,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         // A vector's grids are not "the matrix": they are components, not z.
         // `fit_matrix` reaches the `u` grid for the coordinate lattice.
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -464,7 +482,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -484,7 +503,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -504,7 +524,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => None,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => None,
     }
 }
 
@@ -641,4 +662,157 @@ pub(super) fn category_bar_params<'c>(
     params.scale = display_scale;
     params.seed = crate::sketch::fnv1a(&series.series_id);
     Ok(params)
+}
+
+/// The params and the vertex count a box plot series of the panel `config`
+/// draws with: `group` is the panel's box plot series in order, `pool` the
+/// column pool its record and outlier column live in, `lookup` resolves a
+/// member column to its handle (so the panel's column fingerprint covers
+/// them).
+///
+/// The record is data, so it is checked here against the pool: it is a
+/// box plot record with one row per category, and the outlier column, when
+/// the series names one, is a ragged column with one group per category.
+/// The params' `values` lanes are the record's field lanes in schema order
+/// (`BOX_LANE_ABSENT` for an absent optional field), the outlier values and
+/// offsets lanes, the group count and the longest group
+/// (SHADER_COMMON.md §5.15); the group layout of `config.bar_groups` is
+/// already in render pixels (the display config is scaled) and the corner
+/// radius is scaled to `display_scale`.
+pub(super) fn box_plot_params<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    pool: &ColumnPool,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(data_render::CategoryBarParamsGpu, u32)> {
+    use crate::data_config::CategoryBarDirection;
+    use data_render::{
+        BOX_LANE_ABSENT, BOX_LANE_MAX_GROUP, BOX_LANE_OUTLIER_GROUPS, BOX_LANE_OUTLIER_OFFSETS,
+        BOX_LANE_OUTLIER_VALUES, BOX_PLOT_BASE_VERTICES, BOX_PLOT_QUAD_VERTICES,
+    };
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let boxes = series
+        .render_type
+        .box_plot()
+        .ok_or_else(|| invalid("not a box plot series".into()))?;
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    let n = category_bar_categories(config)
+        .map(<[_]>::len)
+        .ok_or_else(|| {
+            invalid(
+                "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones"
+                    .into(),
+            )
+        })?;
+    let lane = |handle: &ColumnHandle| -> Result<u32> {
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "box plot column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
+    fn set(params: &mut data_render::CategoryBarParamsGpu, k: u32, value: u32) {
+        params.values[k as usize / 4][k as usize % 4] = value;
+    }
+    let (positions, record_id) = series.box_plot_columns();
+    let record = pool.record(record_id).ok_or_else(|| {
+        invalid(format!(
+            "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
+        ))
+    })?;
+    if record.slot().schema != data_render::BOX_PLOT_RECORD {
+        return Err(invalid(format!(
+            "record {record_id:?} is not a box plot record (`BOX_PLOT_RECORD`)"
+        )));
+    }
+    if record.slot().len as usize != n {
+        return Err(invalid(format!(
+            "box plot record {record_id:?} has {} rows for {n} categories; it needs one per category",
+            record.slot().len
+        )));
+    }
+    for k in 0..data_render::BOX_PLOT_RECORD.len() {
+        let value = match record.slot().fields[k].as_deref() {
+            Some(member) => lane(&lookup(member)?)?,
+            None => BOX_LANE_ABSENT,
+        };
+        set(&mut params, k as u32, value);
+    }
+    let mut max_group = 0u32;
+    match boxes.outliers {
+        Some(id) => {
+            let ragged = pool.ragged(id).ok_or_else(|| {
+                invalid(format!(
+                    "box plot outlier column {id:?} is not resident: upload it with `upsert_ragged`"
+                ))
+            })?;
+            if ragged.slot().groups as usize != n {
+                return Err(invalid(format!(
+                    "box plot outlier column {id:?} has {} groups for {n} categories; it needs one per category",
+                    ragged.slot().groups
+                )));
+            }
+            set(
+                &mut params,
+                BOX_LANE_OUTLIER_VALUES,
+                lane(&lookup(&ragged.slot().values)?)?,
+            );
+            set(
+                &mut params,
+                BOX_LANE_OUTLIER_OFFSETS,
+                lane(&lookup(&ragged.slot().offsets)?)?,
+            );
+            set(&mut params, BOX_LANE_OUTLIER_GROUPS, ragged.slot().groups);
+            max_group = ragged.stats().max_group;
+            set(&mut params, BOX_LANE_MAX_GROUP, max_group);
+        }
+        None => {
+            set(&mut params, BOX_LANE_OUTLIER_VALUES, BOX_LANE_ABSENT);
+            set(&mut params, BOX_LANE_OUTLIER_OFFSETS, BOX_LANE_ABSENT);
+        }
+    }
+    let mut member = None;
+    let mut members = 0usize;
+    for item in group {
+        if item.render_type.box_plot().is_none() {
+            continue;
+        }
+        if item.series_id == series.series_id {
+            member = Some(members);
+        }
+        members += 1;
+    }
+    let member = member.ok_or_else(|| invalid("the series is not in its box group".into()))?;
+    let positions = lookup(positions)?;
+    if positions.len_values != n {
+        return Err(invalid(format!(
+            "box plot position column {:?} has {} values for {n} categories; it needs one per category",
+            series.x_column, positions.len_values
+        )));
+    }
+    params.positions = lane(&positions)?;
+    params.count = n as u32;
+    params.member = member as u32;
+    params.members = members as u32;
+    params.mode = data_render::CATEGORY_BAR_MODE_GROUPED;
+    params.horizontal = u32::from(groups.direction == CategoryBarDirection::Horizontal);
+    // The box gap is already in render pixels: `Config::scaled` scales
+    // `bar_groups.bar_gap` with the display config, as for category bars.
+    params.gap_px = groups.bar_gap.max(0.0);
+    params.group_width = groups.group_width.clamp(0.0, 1.0);
+    params.corner_radius_px = boxes.style.corner_radius.max(0.0) * display_scale;
+    params.emphasis = boxes.style.emphasis_brightness;
+    params.scale = display_scale;
+    params.seed = crate::sketch::fnv1a(&series.series_id);
+    let vertices = max_group
+        .checked_mul(BOX_PLOT_QUAD_VERTICES)
+        .and_then(|v| v.checked_add(BOX_PLOT_BASE_VERTICES))
+        .ok_or_else(|| invalid("a box plot outlier group is too long to draw".into()))?;
+    Ok((params, vertices))
 }

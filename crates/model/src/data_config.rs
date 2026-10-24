@@ -192,6 +192,62 @@ pub enum DataRenderType {
         )]
         overrides: Option<Vec<CategoryBarOverride>>,
     },
+    /// The boxes of a box plot: one box per category of the chart's
+    /// categorical axis ([`AxisOptions::categories`]), in this series'
+    /// colour and look, with its median, whiskers and caps, its mean and its
+    /// outliers.
+    ///
+    /// `x_column` is the category index column (the host uploads
+    /// `0, 1, ..., n - 1`) and `y_column` the id of the series' **record**
+    /// of box statistics (the renderer's `BOX_PLOT_RECORD` schema: `median`,
+    /// `q1`, `q3`, `whisker_low`, `whisker_high`, and optionally `mean`,
+    /// `sample_count`, `ci_low`, `ci_high`), one row per category; a missing
+    /// box is a row of NaN. The roles do not swap with the direction as a
+    /// category bar's do: a record is not a value column of either axis, so
+    /// the series names it in its value column slot and keeps its shape.
+    /// `outliers` names a ragged column holding one group of outliers per
+    /// category, when the series has any.
+    ///
+    /// The `BoxPlot` series of one layer form its box group: they stand side
+    /// by side in series order, laid out by `Config::bar_groups`'
+    /// direction, group width and gap ([`BarGroups`]); its mode must be
+    /// grouped. Statistics the record does not order (whisker ≤ q1 ≤
+    /// median ≤ q3 ≤ whisker, outliers outside the whiskers) are not
+    /// checked: the drawing clamps. Nothing per box is kept on the CPU.
+    ///
+    /// Value labels are configuration only for now: `labels.text` holds the
+    /// drawn strings, which the host writes (the renderer has no per-box
+    /// statistics to write them from; [`format_box_plot_labels`] helps), and
+    /// the renderer does not draw them yet.
+    ///
+    /// The record and the outliers must be GPU resident; a streamed source
+    /// is rejected with an error. Polar charts (`Config.polar`) reject box
+    /// plots.
+    BoxPlot {
+        /// The fill colour of the series' boxes, opaque.
+        color: Color,
+        /// The look of the boxes and their parts.
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: BoxPlotStyle,
+        /// Which labels the boxes show, how a median is written and the
+        /// drawn text of each box.
+        #[cfg_attr(feature = "serde", serde(default))]
+        labels: BoxPlotSeriesLabels,
+        /// The ragged column of the outliers, one group per category.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        outliers: Option<ColumnId>,
+        /// Sparse per-box overrides, keyed by category id and this series'
+        /// id. At most one per box; an override's `style` replaces the
+        /// series' style whole.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        overrides: Option<Vec<BoxPlotOverride>>,
+    },
 }
 
 /// Where a vector series' components come from.
@@ -1771,6 +1827,501 @@ pub fn format_labels(
     }
 }
 
+// ───── Box plots ─────
+
+/// One box: the id of its category and the id of its series.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BoxPlotTarget {
+    pub category_id: String,
+    pub series_id: String,
+}
+
+impl BoxPlotTarget {
+    pub fn new(category: impl Into<String>, series: impl Into<String>) -> Self {
+        Self {
+            category_id: category.into(),
+            series_id: series.into(),
+        }
+    }
+}
+
+/// Which value labels a box shows: none, its median, or its median and its
+/// sample count.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BoxPlotLabels {
+    #[default]
+    None,
+    Median,
+    MedianAndCount,
+}
+
+/// The shape of a box's outlier markers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum BoxOutlierShape {
+    #[default]
+    Circle,
+    Square,
+}
+
+/// The look of a box: [`DataRenderType::BoxPlot`]'s `style`, and a complete
+/// per-box override. Widths and sizes are logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct BoxPlotStyle {
+    /// A box is a flat body: [`Material::supported_on_flat_body`] decides.
+    pub material: Material,
+    /// Logical pixels, capped at 3 and at half the actual box extent.
+    pub corner_radius: f32,
+    pub outline: bool,
+    pub outline_width: f32,
+    pub outline_color: Color,
+    pub median_width: f32,
+    pub median_color: Color,
+    pub whisker_width: f32,
+    pub whisker_color: Color,
+    pub caps: bool,
+    /// The cap's length as a share of the box thickness.
+    pub cap_ratio: f32,
+    /// Notch the box at the median's confidence interval (`ci_low`,
+    /// `ci_high`); a box without one is drawn plain.
+    pub notched: bool,
+    /// The notch's depth as a share of the box thickness.
+    pub notch_depth: f32,
+    pub show_mean: bool,
+    pub mean_size: f32,
+    pub mean_color: Color,
+    pub show_outliers: bool,
+    pub outlier_size: f32,
+    pub outlier_color: Color,
+    pub outlier_shape: BoxOutlierShape,
+    pub outlier_filled: bool,
+    pub texture_strength: f32,
+    pub texture_scale: f32,
+    pub gloss: f32,
+    /// The brightness a picked box gains.
+    pub emphasis_brightness: f32,
+}
+
+impl Default for BoxPlotStyle {
+    fn default() -> Self {
+        let ink = Color::from_rgb8(32, 46, 60);
+        Self {
+            material: Material::Matte,
+            corner_radius: 0.0,
+            outline: true,
+            outline_width: 1.2,
+            outline_color: ink,
+            median_width: 1.2,
+            median_color: ink,
+            whisker_width: 1.2,
+            whisker_color: ink,
+            caps: true,
+            cap_ratio: 0.5,
+            notched: false,
+            notch_depth: 0.22,
+            show_mean: false,
+            mean_size: 7.0,
+            mean_color: Color::from_rgb8(180, 45, 45),
+            show_outliers: true,
+            outlier_size: 7.0,
+            outlier_color: ink,
+            outlier_shape: BoxOutlierShape::Circle,
+            outlier_filled: false,
+            texture_strength: 0.2,
+            texture_scale: 1.0,
+            gloss: 0.45,
+            emphasis_brightness: 0.08,
+        }
+    }
+}
+
+impl BoxPlotStyle {
+    /// The rules a box style is held to at every level (series, override):
+    /// a material with a look on a flat body, a corner radius in `0..=3`,
+    /// outline, median and whisker widths in `0..=8`, a cap ratio in `0..=1`,
+    /// a notch depth in `0..=0.45`, mean and outlier sizes in `1..=24`,
+    /// texture strength and gloss in `0..=1`, a texture scale in `0.1..=8`,
+    /// an emphasis brightness in `0..=0.5` and colours with channels in
+    /// `0..=1`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let Self {
+            material,
+            corner_radius,
+            outline: _,
+            outline_width,
+            outline_color,
+            median_width,
+            median_color,
+            whisker_width,
+            whisker_color,
+            caps: _,
+            cap_ratio,
+            notched: _,
+            notch_depth,
+            show_mean: _,
+            mean_size,
+            mean_color,
+            show_outliers: _,
+            outlier_size,
+            outlier_color,
+            outlier_shape: _,
+            outlier_filled: _,
+            texture_strength,
+            texture_scale,
+            gloss,
+            emphasis_brightness,
+        } = self;
+        if !material.supported_on_flat_body() {
+            return Err("material not supported by boxes");
+        }
+        if finite_in(*corner_radius, 0.0, 3.0)
+            && finite_in(*outline_width, 0.0, 8.0)
+            && finite_in(*median_width, 0.0, 8.0)
+            && finite_in(*whisker_width, 0.0, 8.0)
+            && finite_in(*cap_ratio, 0.0, 1.0)
+            && finite_in(*notch_depth, 0.0, 0.45)
+            && finite_in(*mean_size, 1.0, 24.0)
+            && finite_in(*outlier_size, 1.0, 24.0)
+            && finite_in(*texture_strength, 0.0, 1.0)
+            && finite_in(*texture_scale, 0.1, 8.0)
+            && finite_in(*gloss, 0.0, 1.0)
+            && finite_in(*emphasis_brightness, 0.0, 0.5)
+            && [
+                *outline_color,
+                *median_color,
+                *whisker_color,
+                *mean_color,
+                *outlier_color,
+            ]
+            .into_iter()
+            .all(|c| valid_bar_color(c, false))
+        {
+            Ok(())
+        } else {
+            Err("invalid boxplot style")
+        }
+    }
+}
+
+/// A per-box override. `None` fields keep the series' value; `style`
+/// replaces the series' style whole.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BoxPlotOverride {
+    pub target: BoxPlotTarget,
+    pub color: Option<Color>,
+    pub style: Option<BoxPlotStyle>,
+    pub labels: Option<BoxPlotLabels>,
+}
+
+impl BoxPlotOverride {
+    pub fn new(target: BoxPlotTarget) -> Self {
+        Self {
+            target,
+            color: None,
+            style: None,
+            labels: None,
+        }
+    }
+}
+
+/// The most characters one drawn box label may have.
+pub const MAX_BOX_PLOT_LABEL_CHARS: usize = 160;
+
+/// The value labels of a [`DataRenderType::BoxPlot`] series: which labels
+/// its boxes show, how a value is written, and the drawn text of every box.
+///
+/// `text` is the string each box shows, one per category in axis order (an
+/// empty string draws nothing), or empty when the labels were not written.
+/// The median and the sample count are per-box data the configuration does
+/// not hold, so the renderer never writes this text: a host that uploads
+/// its own records writes it (for example with
+/// [`format_box_plot_labels`] from the statistics it holds), and
+/// `Config::from_boxplot` writes it from the document's summaries.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct BoxPlotSeriesLabels {
+    pub placement: BoxPlotLabels,
+    /// Fixed decimals of a written median, `0..=6`.
+    pub decimals: usize,
+    /// Appended to a written median; one line of at most 24 characters.
+    pub value_suffix: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub text: Vec<String>,
+}
+
+impl Default for BoxPlotSeriesLabels {
+    fn default() -> Self {
+        Self {
+            placement: BoxPlotLabels::None,
+            decimals: 1,
+            value_suffix: String::new(),
+            text: Vec::new(),
+        }
+    }
+}
+
+/// The fields of a [`DataRenderType::BoxPlot`] series, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct BoxPlotRef<'a> {
+    pub color: Color,
+    pub style: &'a BoxPlotStyle,
+    pub labels: &'a BoxPlotSeriesLabels,
+    pub outliers: Option<&'a str>,
+    pub overrides: &'a [BoxPlotOverride],
+}
+
+impl DataRenderType {
+    /// The fields of a box plot series, or `None` for every other kind.
+    pub fn box_plot(&self) -> Option<BoxPlotRef<'_>> {
+        match self {
+            DataRenderType::BoxPlot {
+                color,
+                style,
+                labels,
+                outliers,
+                overrides,
+            } => Some(BoxPlotRef {
+                color: *color,
+                style,
+                labels,
+                outliers: outliers.as_deref(),
+                overrides: overrides.as_deref().unwrap_or(&[]),
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl SeriesConfig {
+    /// The column of a box plot series that holds the category positions
+    /// and the id of its record: `x_column` and `y_column`, whatever the
+    /// direction.
+    pub fn box_plot_columns(&self) -> (&str, &str) {
+        (&self.x_column, &self.y_column)
+    }
+}
+
+/// The rules one box plot series is held to against the `categories` of its
+/// axis: an opaque colour, a valid style, label decimals `0..=6`, a one-line
+/// value suffix of at most 24 characters, `labels.text` empty or one
+/// one-line string of at most [`MAX_BOX_PLOT_LABEL_CHARS`] characters per
+/// category, a record id, an outlier column id that is not empty when set,
+/// and overrides that name one of the categories and this series, at most
+/// one per box, with an opaque colour and a valid style.
+pub fn validate_box_plot_series(
+    series: &SeriesConfig,
+    categories: &[Category],
+) -> Result<(), &'static str> {
+    let Some(boxes) = series.render_type.box_plot() else {
+        return Ok(());
+    };
+    if !valid_bar_color(boxes.color, true) {
+        return Err("a box colour must be opaque with channels in 0..=1");
+    }
+    boxes.style.validate()?;
+    if boxes.labels.decimals > 6 || !single_line_within(&boxes.labels.value_suffix, 24) {
+        return Err(
+            "box labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
+        );
+    }
+    if !boxes.labels.text.is_empty() && boxes.labels.text.len() != categories.len() {
+        return Err("box label text needs one string per category");
+    }
+    if boxes
+        .labels
+        .text
+        .iter()
+        .any(|text| !single_line_within(text, MAX_BOX_PLOT_LABEL_CHARS))
+    {
+        return Err("a box label is one line of at most 160 characters");
+    }
+    let (positions, record) = series.box_plot_columns();
+    if positions.is_empty() || record.is_empty() || boxes.outliers.is_some_and(str::is_empty) {
+        return Err(
+            "a box plot series names its category positions (x_column), its record (y_column) \
+             and, when set, its outlier column",
+        );
+    }
+    for (index, o) in boxes.overrides.iter().enumerate() {
+        if o.target.series_id != series.series_id
+            || !categories.iter().any(|c| c.id == o.target.category_id)
+            || boxes.overrides[..index]
+                .iter()
+                .any(|e| e.target == o.target)
+        {
+            return Err("a box override names a category of the axis and its own series, once");
+        }
+        if o.color.is_some_and(|c| !valid_bar_color(c, true)) {
+            return Err("a box colour must be opaque with channels in 0..=1");
+        }
+        if let Some(style) = &o.style {
+            style.validate()?;
+        }
+    }
+    Ok(())
+}
+
+impl crate::config::Config {
+    /// The rules the box plot series of a chart are held to, with the series
+    /// list it draws.
+    ///
+    /// The [`DataRenderType::BoxPlot`] series of one layer are its box
+    /// group: they stand side by side in series order, laid out by the
+    /// layer's `bar_groups` ([`crate::config::Config::bar_groups_of`]), whose mode must be
+    /// [`CategoryBarMode::Grouped`] (boxes do not stack). At most
+    /// [`MAX_BOX_SERIES`](crate::boxplot::MAX_BOX_SERIES) of them, drawn
+    /// against a categorical axis (`bottom_x` for vertical boxes, `left_y`
+    /// for horizontal ones) and a linear numeric value axis, with at most
+    /// [`MAX_BOXES`](crate::boxplot::MAX_BOXES) boxes; a layer draws either
+    /// category bars or box plots. Each series passes
+    /// [`validate_box_plot_series`] against the axis' categories.
+    /// Horizontal boxes cannot sit on an overlay layer, and a polar chart
+    /// draws no box plots. Whether the record holds one row per category is
+    /// data: the renderer checks it against the pool when it prepares.
+    pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+        use crate::layer::LayerRef;
+        let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
+        if boxes().next().is_none() {
+            return Ok(());
+        }
+        if self.polar.is_some() {
+            return Err("box plots are not drawn on polar axes");
+        }
+        for layer in self.panel_layers() {
+            let members = || boxes().filter(|s| self.layer_of_series(&s.series_id) == layer);
+            let count = members().count();
+            if count == 0 {
+                continue;
+            }
+            if count > MAX_BOX_SERIES {
+                return Err("a box group holds at most 16 box plot series");
+            }
+            if series.iter().any(|s| {
+                s.render_type.category_bars().is_some()
+                    && self.layer_of_series(&s.series_id) == layer
+            }) {
+                return Err("a layer draws either category bars or box plots, not both");
+            }
+            let groups = self.bar_groups_of(layer);
+            if groups.mode != CategoryBarMode::Grouped {
+                return Err(
+                    "box plots stand side by side: their bar_groups mode must be Grouped, not \
+                     Stacked or PercentStacked",
+                );
+            }
+            let horizontal = groups.direction == CategoryBarDirection::Horizontal;
+            let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
+            if horizontal && overlay {
+                return Err(
+                    "horizontal box plots cannot sit on an overlay layer: its own axis is a value axis on y",
+                );
+            }
+            let subplot = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    self.subplot_config(index)
+                }
+                LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
+            };
+            let chart = subplot.as_ref().unwrap_or(self);
+            let category_axis = if horizontal {
+                &chart.left_y
+            } else {
+                &chart.bottom_x
+            };
+            let value_axis = match layer {
+                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => {
+                    &chart.overlays[index].y_axis
+                }
+                _ if horizontal => &chart.bottom_x,
+                _ => &chart.left_y,
+            };
+            let Some(categories) = category_axis.categories.as_deref() else {
+                return Err(
+                    "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
+                );
+            };
+            if categories.len().saturating_mul(count) > MAX_BOXES {
+                return Err("a box group draws at most 512 boxes");
+            }
+            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+                return Err("box plots need a linear numeric value axis");
+            }
+            for item in members() {
+                validate_box_plot_series(item, categories)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Write `labels.text` of every [`DataRenderType::BoxPlot`] series in
+/// `series` from the statistics the host holds for it: the edit-time helper
+/// a host that uploads records uses, since the renderer never formats a
+/// value and the configuration holds no per-box statistics.
+///
+/// `value(k, i)` is the median and the sample count of category `i` of the
+/// `k`-th box plot series in `series` (`None` for a missing box).
+/// `categories` are the axis' categories, whose order the text follows. A
+/// box's text follows its override's `labels`, else the series'
+/// `labels.placement`: nothing, the median with `labels.decimals` fixed
+/// decimals and `labels.value_suffix`, or that and `(n=<count>)`, `—` for an
+/// unknown count. A missing box's text is empty. Other series are left
+/// alone.
+pub fn format_box_plot_labels(
+    series: &mut [SeriesConfig],
+    categories: &[Category],
+    value: impl Fn(usize, usize) -> Option<(f64, Option<u64>)>,
+) {
+    let mut k = 0;
+    for item in series.iter_mut() {
+        let series_id = item.series_id.clone();
+        let DataRenderType::BoxPlot {
+            labels, overrides, ..
+        } = &mut item.render_type
+        else {
+            continue;
+        };
+        let number = crate::format::PlainNumberFormat::fixed(labels.decimals, false);
+        labels.text.clear();
+        for (i, category) in categories.iter().enumerate() {
+            let mode = overrides
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .find(|o| o.target.series_id == series_id && o.target.category_id == category.id)
+                .and_then(|o| o.labels)
+                .unwrap_or(labels.placement);
+            let text = match (value(k, i), mode) {
+                (None, _) | (_, BoxPlotLabels::None) => String::new(),
+                (Some((median, _)), BoxPlotLabels::Median) => {
+                    format!("{}{}", number.format(median), labels.value_suffix)
+                }
+                (Some((median, count)), BoxPlotLabels::MedianAndCount) => format!(
+                    "{}{} (n={})",
+                    number.format(median),
+                    labels.value_suffix,
+                    count.map_or_else(|| "—".into(), |n| n.to_string())
+                ),
+            };
+            labels.text.push(text);
+        }
+        k += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScatterShape {
@@ -3159,6 +3710,339 @@ mod category_bar_tests {
         assert_eq!(
             s.category_bar_columns(CategoryBarDirection::Horizontal),
             ("a.values", "positions")
+        );
+    }
+}
+
+#[cfg(test)]
+mod box_plot_tests {
+    use super::*;
+    use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+    use crate::config::Config;
+    use crate::layer::{OverlayLayer, Subplot};
+
+    fn categories(n: usize) -> Vec<Category> {
+        (0..n)
+            .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
+            .collect()
+    }
+
+    fn boxes(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "positions".into(),
+            y_column: format!("{id}.record"),
+            render_type: DataRenderType::BoxPlot {
+                color: Color::from_rgb8(40, 120, 200),
+                style: BoxPlotStyle::default(),
+                labels: BoxPlotSeriesLabels::default(),
+                outliers: None,
+                overrides: None,
+            },
+        }
+    }
+
+    fn chart(n: usize) -> Config {
+        let mut config = crate::default::default_config();
+        config.bottom_x.categories = Some(categories(n));
+        config
+    }
+
+    fn render(series: &mut SeriesConfig) -> &mut DataRenderType {
+        &mut series.render_type
+    }
+
+    fn style(series: &mut SeriesConfig) -> &mut BoxPlotStyle {
+        let DataRenderType::BoxPlot { style, .. } = render(series) else {
+            unreachable!()
+        };
+        style
+    }
+
+    fn overrides(series: &mut SeriesConfig) -> &mut Vec<BoxPlotOverride> {
+        let DataRenderType::BoxPlot { overrides, .. } = render(series) else {
+            unreachable!()
+        };
+        overrides.get_or_insert_with(Vec::new)
+    }
+
+    fn labels(series: &mut SeriesConfig) -> &mut BoxPlotSeriesLabels {
+        let DataRenderType::BoxPlot { labels, .. } = render(series) else {
+            unreachable!()
+        };
+        labels
+    }
+
+    #[test]
+    fn a_valid_group_passes_and_other_series_are_ignored() {
+        let config = chart(3);
+        assert_eq!(config.validate_box_plots(&[boxes("a"), boxes("b")]), Ok(()));
+        let mut plain = boxes("a");
+        plain.render_type = DataRenderType::Line {
+            line: DataLineStyleConfig::default(),
+        };
+        // No box plot series: nothing to hold, not even a categorical axis.
+        assert_eq!(
+            crate::default::default_config().validate_box_plots(&[plain]),
+            Ok(())
+        );
+        assert_eq!(boxes("a").box_plot_columns(), ("positions", "a.record"));
+    }
+
+    #[test]
+    fn box_groups_are_grouped_only() {
+        let mut config = chart(3);
+        for mode in [CategoryBarMode::Stacked, CategoryBarMode::PercentStacked] {
+            config.bar_groups = Some(BarGroups {
+                mode,
+                ..BarGroups::default()
+            });
+            assert!(
+                config
+                    .validate_box_plots(&[boxes("a")])
+                    .unwrap_err()
+                    .contains("Grouped"),
+                "{mode:?}"
+            );
+        }
+        config.bar_groups = Some(BarGroups::default());
+        assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
+    }
+
+    #[test]
+    fn boxes_need_the_categorical_axis_of_their_direction_and_a_linear_value_axis() {
+        let mut config = chart(3);
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..BarGroups::default()
+        });
+        assert!(config.validate_box_plots(&[boxes("a")]).is_err());
+        config.left_y.categories = Some(categories(3));
+        config.bottom_x.categories = None;
+        assert_eq!(config.validate_box_plots(&[boxes("a")]), Ok(()));
+        config.bottom_x.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            config.validate_box_plots(&[boxes("a")]),
+            Err("box plots need a linear numeric value axis")
+        );
+        let mut polar = chart(3);
+        polar.polar = Some(Default::default());
+        assert_eq!(
+            polar.validate_box_plots(&[boxes("a")]),
+            Err("box plots are not drawn on polar axes")
+        );
+    }
+
+    #[test]
+    fn group_size_and_box_count_are_bounded() {
+        let config = chart(2);
+        let many: Vec<_> = (0..=MAX_BOX_SERIES)
+            .map(|i| boxes(&format!("s{i}")))
+            .collect();
+        assert!(config.validate_box_plots(&many).is_err());
+        assert_eq!(config.validate_box_plots(&many[..MAX_BOX_SERIES]), Ok(()));
+        let config = chart(MAX_BOXES / 8 + 1);
+        let eight: Vec<_> = (0..8).map(|i| boxes(&format!("s{i}"))).collect();
+        assert_eq!(
+            config.validate_box_plots(&eight),
+            Err("a box group draws at most 512 boxes")
+        );
+    }
+
+    #[test]
+    fn a_layer_draws_category_bars_or_box_plots() {
+        let config = chart(3);
+        let bars = SeriesConfig {
+            render_type: DataRenderType::CategoryBars {
+                color: Color::from_rgb8(1, 2, 3),
+                style: CategoryBarStyle::default(),
+                labels: CategoryBarSeriesLabels::default(),
+                label_format: CategoryBarLabelFormat::Value,
+                overrides: None,
+            },
+            ..boxes("bars")
+        };
+        assert_eq!(
+            config.validate_box_plots(&[bars, boxes("a")]),
+            Err("a layer draws either category bars or box plots, not both")
+        );
+    }
+
+    #[test]
+    fn horizontal_boxes_stay_off_overlays_and_subplots_have_their_own_groups() {
+        let mut config = chart(3);
+        config.overlays.push(OverlayLayer::default());
+        config.overlays[0].series.push("over".into());
+        assert_eq!(config.validate_box_plots(&[boxes("over")]), Ok(()));
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..BarGroups::default()
+        });
+        config.left_y.categories = Some(categories(3));
+        assert!(
+            config
+                .validate_box_plots(&[boxes("over")])
+                .unwrap_err()
+                .contains("overlay")
+        );
+        let mut config = chart(3);
+        let mut sub = chart(2);
+        sub.bar_groups = Some(BarGroups {
+            mode: CategoryBarMode::Stacked,
+            ..BarGroups::default()
+        });
+        config.subplots.push(Subplot {
+            config: sub,
+            series: vec!["below".into()],
+            link_x: None,
+            link_y: None,
+        });
+        // The subplot's own groups decide: stacked there is rejected.
+        assert!(config.validate_box_plots(&[boxes("a")]).is_ok());
+        assert!(config.validate_box_plots(&[boxes("below")]).is_err());
+    }
+
+    #[test]
+    fn styles_labels_ids_and_overrides_are_validated() {
+        let config = chart(3);
+        let cats = categories(3);
+        let mut s = boxes("a");
+        style(&mut s).material = crate::Material::Toon;
+        assert_eq!(
+            validate_box_plot_series(&s, &cats),
+            Err("material not supported by boxes")
+        );
+        for edit in [
+            |s: &mut BoxPlotStyle| s.corner_radius = 4.0,
+            |s: &mut BoxPlotStyle| s.notch_depth = 0.5,
+            |s: &mut BoxPlotStyle| s.mean_size = 0.0,
+            |s: &mut BoxPlotStyle| s.whisker_width = -1.0,
+            |s: &mut BoxPlotStyle| s.outlier_color.a = 2.0,
+            |s: &mut BoxPlotStyle| s.gloss = f32::NAN,
+        ] {
+            let mut s = boxes("a");
+            edit(style(&mut s));
+            assert_eq!(
+                validate_box_plot_series(&s, &cats),
+                Err("invalid boxplot style")
+            );
+        }
+        let mut s = boxes("a");
+        let DataRenderType::BoxPlot { color, .. } = render(&mut s) else {
+            unreachable!()
+        };
+        color.a = 0.5;
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        labels(&mut s).decimals = 7;
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        labels(&mut s).text = vec!["1".into(); 2];
+        assert_eq!(
+            validate_box_plot_series(&s, &cats),
+            Err("box label text needs one string per category")
+        );
+        labels(&mut s).text = vec!["1".into(), "two\nlines".into(), "3".into()];
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        labels(&mut s).text = vec!["1".into(), "2".into(), String::new()];
+        assert_eq!(validate_box_plot_series(&s, &cats), Ok(()));
+        let mut s = boxes("a");
+        s.y_column.clear();
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        let DataRenderType::BoxPlot { outliers, .. } = render(&mut s) else {
+            unreachable!()
+        };
+        *outliers = Some(String::new());
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        overrides(&mut s).push(BoxPlotOverride::new(BoxPlotTarget::new("c1", "a")));
+        assert_eq!(validate_box_plot_series(&s, &cats), Ok(()));
+        overrides(&mut s).push(BoxPlotOverride::new(BoxPlotTarget::new("c1", "a")));
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        overrides(&mut s).push(BoxPlotOverride::new(BoxPlotTarget::new("zz", "a")));
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        overrides(&mut s).push(BoxPlotOverride::new(BoxPlotTarget::new("c0", "b")));
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        let mut s = boxes("a");
+        let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c0", "a"));
+        o.style = Some(BoxPlotStyle {
+            cap_ratio: 2.0,
+            ..BoxPlotStyle::default()
+        });
+        overrides(&mut s).push(o);
+        assert!(validate_box_plot_series(&s, &cats).is_err());
+        // The chart-level check runs every series' rules.
+        assert!(config.validate_box_plots(&[s]).is_err());
+    }
+
+    #[test]
+    fn format_box_plot_labels_writes_median_and_count_with_overrides() {
+        let mut series = [boxes("a"), boxes("b")];
+        let cats = categories(3);
+        let values = |k: usize, i: usize| match (k, i) {
+            (_, 1) => None,
+            (0, i) => Some((1.5 + i as f64, Some(40))),
+            (_, i) => Some((10.0 * i as f64, None)),
+        };
+        format_box_plot_labels(&mut series, &cats, values);
+        assert_eq!(labels(&mut series[0]).text, ["", "", ""]);
+        labels(&mut series[0]).placement = BoxPlotLabels::Median;
+        labels(&mut series[0]).decimals = 2;
+        labels(&mut series[0]).value_suffix = " ms".into();
+        labels(&mut series[1]).placement = BoxPlotLabels::MedianAndCount;
+        let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c2", "a"));
+        o.labels = Some(BoxPlotLabels::MedianAndCount);
+        overrides(&mut series[0]).push(o);
+        format_box_plot_labels(&mut series, &cats, values);
+        assert_eq!(
+            labels(&mut series[0]).text,
+            ["1.50 ms", "", "3.50 ms (n=40)"]
+        );
+        assert_eq!(labels(&mut series[1]).text, ["0.0 (n=—)", "", "20.0 (n=—)"]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn box_plot_series_round_trip_and_omit_their_defaults() {
+        let plain = boxes("a");
+        let json = serde_json::to_value(&plain).unwrap();
+        let fields = json["render_type"]["BoxPlot"].as_object().unwrap();
+        assert!(!fields.contains_key("outliers") && !fields.contains_key("overrides"));
+        assert!(!fields["labels"].as_object().unwrap().contains_key("text"));
+        let back: SeriesConfig = serde_json::from_value(json).unwrap();
+        assert_eq!(back, plain);
+        let mut full = boxes("a");
+        let DataRenderType::BoxPlot {
+            outliers,
+            labels: l,
+            ..
+        } = render(&mut full)
+        else {
+            unreachable!()
+        };
+        *outliers = Some("a.outliers".into());
+        l.text = vec!["1".into(), "2".into(), "3".into()];
+        style(&mut full).notched = true;
+        let mut o = BoxPlotOverride::new(BoxPlotTarget::new("c1", "a"));
+        o.color = Some(Color::WHITE);
+        o.labels = Some(BoxPlotLabels::Median);
+        overrides(&mut full).push(o);
+        let json = serde_json::to_string(&full).unwrap();
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), full);
+        // A minimal document: style and labels default.
+        let minimal: SeriesConfig = serde_json::from_str(
+            r#"{"series_id":"m","label":null,"x_column":"p","y_column":"r",
+                "render_type":{"BoxPlot":{"color":{"r":0,"g":0,"b":0,"a":1}}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            minimal.render_type.box_plot().unwrap().style,
+            &BoxPlotStyle::default()
         );
     }
 }

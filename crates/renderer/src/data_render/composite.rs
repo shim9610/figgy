@@ -16,7 +16,8 @@ pub struct SeriesLayers<'a> {
     pub field: Option<ColumnFieldLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
     pub bar: Option<ColumnBarLayer<'a>>,
-    /// The bars of a category bar series, issued where histogram bars are.
+    /// The bars of a category bar series or the boxes of a box plot
+    /// series, issued where histogram bars are.
     pub category_bars: Option<ColumnCategoryBarLayer<'a>>,
     /// Contour lines go over the field they describe and under the markers.
     pub contour: Option<ColumnContourLayer<'a>>,
@@ -128,15 +129,15 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
         }
     }
 
-    // Category bars: area primitives like histogram bars, one quad per bar
-    // built from group 3; no vertex buffers.
+    // Category bars and box plots: area primitives like histogram bars, one
+    // instance per bar or box built from group 3; no vertex buffers.
     if let Some(c) = series.category_bars.as_ref().filter(|c| c.count > 0) {
         pass.set_pipeline(c.pipeline);
         pass.set_bind_group(0, c.transform_bg, &[]);
         pass.set_bind_group(1, c.style_bg, &[]);
         pass.set_bind_group(2, &c.data.style_map, &[]);
         pass.set_bind_group(3, &c.data.bind_group, &[]);
-        pass.draw(0..CATEGORY_BAR_VERTICES, 0..c.count);
+        pass.draw(0..c.vertices, 0..c.count);
     }
 
     // Contour lines: over the field they describe, under everything stroked for

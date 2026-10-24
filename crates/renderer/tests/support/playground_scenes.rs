@@ -138,16 +138,17 @@ impl SceneKind {
                  axis: pick a bar, step with the arrows, switch grouped / stacked / \
                  percent in the chart's bar groups."
             }
-            SceneKind::BoxPlot => "Click a box; notches, means, outliers.",
+            SceneKind::BoxPlot => {
+                "A box plot document opened as box plot series on a categorical \
+                 axis: pick a box, a whisker or an outlier, step with the arrows; \
+                 notches, means and outliers come from the document's style."
+            }
             SceneKind::Radar => "Click a polygon or vertex; grid shape, markers, value labels.",
         }
     }
 
     pub fn is_bounded(self) -> bool {
-        matches!(
-            self,
-            SceneKind::Radial | SceneKind::BoxPlot | SceneKind::Radar
-        )
+        matches!(self, SceneKind::Radial | SceneKind::Radar)
     }
 }
 
@@ -307,6 +308,7 @@ pub fn build(
         SceneKind::Polar => polar(r),
         SceneKind::CategoryAxis => category_axis(r),
         SceneKind::Categorical => categorical(r),
+        SceneKind::BoxPlot => box_plot(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         _ => unreachable!("bounded scenes are built by `bounded::chart`"),
     }
@@ -1565,6 +1567,114 @@ fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene { config, series })
 }
 
+/// The legacy box plot document of the box plot scene: responses by dose
+/// of two trials, notches, means and outliers.
+pub fn boxplot_document() -> renderer::BoxPlotChart {
+    renderer::BoxPlotChart {
+        title: "Response by dose".into(),
+        categories: ["Control", "Low", "Mid", "High"]
+            .into_iter()
+            .map(|s| renderer::Category::new(s, s))
+            .collect(),
+        series: vec![
+            renderer::BoxPlotSeries::new(
+                "trial_a",
+                "Trial A",
+                vec![
+                    box_summary(12., 30., 42., 55., 78., &[90.]),
+                    box_summary(20., 42., 55., 68., 85., &[96., 4.]),
+                    box_summary(25., 45., 60., 70., 88., &[]),
+                    box_summary(8., 24., 36., 49., 67., &[82.]),
+                ],
+                Color::from_rgb8(65, 144, 208),
+            ),
+            renderer::BoxPlotSeries::new(
+                "trial_b",
+                "Trial B",
+                vec![
+                    box_summary(15., 28., 38., 50., 70., &[]),
+                    box_summary(22., 40., 50., 62., 80., &[93.]),
+                    box_summary(30., 50., 64., 74., 92., &[]),
+                    box_summary(12., 30., 40., 52., 72., &[2.]),
+                ],
+                Color::from_rgb8(230, 169, 64),
+            ),
+        ],
+        value_range: Some([0., 100.]),
+        value_title: "Response".into(),
+        ..Default::default()
+    }
+}
+
+fn box_summary(
+    low: f64,
+    q1: f64,
+    med: f64,
+    q3: f64,
+    high: f64,
+    outliers: &[f64],
+) -> Option<renderer::BoxSummary> {
+    let mut v = renderer::BoxSummary::new(low, q1, med, q3, high);
+    v.outliers = outliers.to_vec();
+    v.sample_count = Some(80);
+    v.median_ci = Some([med - 4.0, med + 4.0]);
+    v.mean = Some(med + 2.0);
+    Some(v)
+}
+
+/// The box plot scene: [`boxplot_document`] opened through
+/// `Config::from_boxplot` as a Cartesian chart of box plot series. The
+/// uploads borrow the document's summaries: the positions, then each
+/// series' record and outliers. The document fixes the value range.
+fn box_plot(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::{BOX_PLOT_RECORD, RaggedSource, RecordSource, UploadValues};
+    let document = boxplot_document();
+    let (mut config, series, uploads) = Config::from_boxplot(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    for upload in &uploads {
+        match &upload.values {
+            UploadValues::BoxRecord(_) => {
+                let Some(fields) = upload.values.box_fields() else {
+                    unreachable!("a record upload has fields");
+                };
+                let pairs: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
+                    (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
+                });
+                r.upsert_record(
+                    upload.column.clone(),
+                    &RecordSource {
+                        schema: BOX_PLOT_RECORD,
+                        fields: &pairs,
+                    },
+                )?;
+            }
+            UploadValues::BoxOutliers(_) => {
+                let Some((values, offsets)) = upload.values.box_outliers() else {
+                    unreachable!("an outlier upload has values");
+                };
+                r.upsert_ragged(
+                    upload.column.clone(),
+                    &RaggedSource {
+                        values: &values,
+                        offsets: &offsets,
+                    },
+                )?;
+            }
+            values => {
+                if r.handle_for(&upload.column).is_err() {
+                    r.add_column(upload.column.clone(), values)?;
+                }
+            }
+        }
+    }
+    Ok(CartesianScene { config, series })
+}
+
 // ---------------------------------------------------------------------------
 // Bounded scenes
 // ---------------------------------------------------------------------------
@@ -1572,7 +1682,6 @@ fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// The starting models of the four bounded scenes; the playground's
 /// `bounded.rs` hosts them.
 pub mod bounded {
-    use renderer::boxplot::*;
     use renderer::radar::*;
     use renderer::radial::*;
     use renderer::{Category, Color};
@@ -1593,59 +1702,6 @@ pub mod bounded {
         chart.style = RadialStyle::three_dimensional();
         chart.format_labels();
         chart
-    }
-
-    fn summary(
-        low: f64,
-        q1: f64,
-        med: f64,
-        q3: f64,
-        high: f64,
-        outliers: &[f64],
-    ) -> Option<BoxSummary> {
-        let mut v = BoxSummary::new(low, q1, med, q3, high);
-        v.outliers = outliers.to_vec();
-        v.sample_count = Some(80);
-        v.median_ci = Some([med - 4.0, med + 4.0]);
-        v.mean = Some(med + 2.0);
-        Some(v)
-    }
-
-    pub fn box_chart() -> BoxPlotChart {
-        BoxPlotChart {
-            title: "Response by dose".into(),
-            categories: ["Control", "Low", "Mid", "High"]
-                .into_iter()
-                .map(|s| Category::new(s, s))
-                .collect(),
-            series: vec![
-                BoxPlotSeries::new(
-                    "trial_a",
-                    "Trial A",
-                    vec![
-                        summary(12., 30., 42., 55., 78., &[90.]),
-                        summary(20., 42., 55., 68., 85., &[96., 4.]),
-                        summary(25., 45., 60., 70., 88., &[]),
-                        summary(8., 24., 36., 49., 67., &[82.]),
-                    ],
-                    Color::from_rgb8(65, 144, 208),
-                ),
-                BoxPlotSeries::new(
-                    "trial_b",
-                    "Trial B",
-                    vec![
-                        summary(15., 28., 38., 50., 70., &[]),
-                        summary(22., 40., 50., 62., 80., &[93.]),
-                        summary(30., 50., 64., 74., 92., &[]),
-                        summary(12., 30., 40., 52., 72., &[2.]),
-                    ],
-                    Color::from_rgb8(230, 169, 64),
-                ),
-            ],
-            value_range: Some([0., 100.]),
-            value_title: "Response".into(),
-            ..Default::default()
-        }
     }
 
     pub fn radar_chart() -> RadarChart {

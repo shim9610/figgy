@@ -46,21 +46,6 @@ fn boxed_text(anchor: Anchor) -> Annotation {
         }),
     })
 }
-fn pixel(image: &RasterImage, x: f32, y: f32) -> [u8; 4] {
-    let i = ((y as u32 * image.width + x as u32) * 4) as usize;
-    [
-        image.rgba[i],
-        image.rgba[i + 1],
-        image.rgba[i + 2],
-        image.rgba[i + 3],
-    ]
-}
-fn near(actual: [u8; 4], expected: [u8; 4], tolerance: u8) -> bool {
-    actual
-        .iter()
-        .zip(expected)
-        .all(|(a, e)| a.abs_diff(e) <= tolerance)
-}
 fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
     let x0 = (r.x * scale).floor().max(0.) as u32;
     let y0 = (r.y * scale).floor().max(0.) as u32;
@@ -282,48 +267,6 @@ macro_rules! family_contract {
     };
 }
 
-fn annotated_boxplot() -> BoxPlotChart {
-    BoxPlotChart {
-        title: "Annotated boxes".into(),
-        value_title: "Value".into(),
-        category_title: "Group".into(),
-        categories: vec![
-            Category::new("a", "Control"),
-            Category::new("b", "Treatment"),
-        ],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "Distribution",
-            vec![
-                Some(BoxSummary::new(10., 25., 38., 52., 70.)),
-                Some(BoxSummary::new(18., 32., 47., 61., 80.)),
-            ],
-            Color::from_rgb8(144, 69, 154),
-        )],
-        direction: BoxPlotDirection::Horizontal,
-        annotations: AnnotationLayer {
-            visible: true,
-            items: vec![
-                span(AnnotationAxis::X, 30., 50.),
-                Annotation::new(AnnotationKind::ReferenceLine {
-                    axis: AnnotationAxis::X,
-                    value: 60.,
-                    style: Default::default(),
-                    label: Some(text("limit")),
-                }),
-                boxed_text(Anchor::Data { x: 20., y: 1. }),
-                Annotation::new(AnnotationKind::Arrow {
-                    from: Anchor::Data { x: 70., y: 0.4 },
-                    to: Anchor::Data { x: 80., y: 1. },
-                    style: Default::default(),
-                    text: None,
-                }),
-            ],
-        },
-        ..Default::default()
-    }
-}
-
 fn annotated_radar() -> RadarChart {
     RadarChart {
         title: "Annotated radar".into(),
@@ -380,14 +323,6 @@ fn annotated_radial() -> RadialChart {
     chart.format_labels();
     chart
 }
-
-family_contract!(
-    boxplot_annotation_layer_contract,
-    BoxPlotRenderer,
-    BoxPlotChart,
-    annotated_boxplot(),
-    |c| c.annotations.items[0] = span(AnnotationAxis::X, 40., 55.)
-);
 
 family_contract!(
     radar_annotation_layer_contract,
@@ -614,15 +549,6 @@ macro_rules! family_routing {
 }
 
 family_routing!(
-    boxplot_active_layer_routing,
-    BoxPlotRenderer,
-    BoxPlotChart,
-    annotated_boxplot(),
-    |c| c.selected = Some(BoxPlotTarget::new("a", "s")),
-    |c| c.selected.is_some()
-);
-
-family_routing!(
     radar_active_layer_routing,
     RadarRenderer,
     RadarChart,
@@ -639,75 +565,6 @@ family_routing!(
     |c| c.interaction.selected = Some(RadialTarget::main(0)),
     |c| c.interaction.selected.is_some()
 );
-
-// A span is composited below the boxes: the box keeps its colour inside the
-// span, the gap beside it shows the span's tint over the chart background,
-// and the opaque frame of a chart without a span draws exactly as before.
-#[test]
-fn bounded_spans_sit_below_the_boxes() {
-    let _guard = LOCK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let bar = Color::from_rgb8(60, 130, 210);
-    let summary = || Some(BoxSummary::new(0., 20., 60., 80., 100.));
-    let mut c = BoxPlotChart {
-        categories: vec![Category::new("a", "A"), Category::new("b", "B")],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "S",
-            vec![summary(), summary()],
-            bar,
-        )],
-        style: BoxPlotStyle {
-            material: Material::Flat,
-            outline: false,
-            show_mean: false,
-            ..Default::default()
-        },
-        legend: false,
-        ..Default::default()
-    };
-    let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
-    assert_eq!(
-        r.prepare(&c, SIZE, 1.).unwrap().background(),
-        FrameBackground::Opaque
-    );
-    c.annotations.items.push(span(AnnotationAxis::X, -0.5, 0.5));
-    let f = r.prepare(&c, SIZE, 1.).unwrap();
-    let a = r.prepare_annotations(&c, SIZE, 1.).unwrap();
-    assert!(a.draws_underlay());
-    let with = r.export_rgba(&c, SIZE, 1.).unwrap();
-    use ::renderer::annotation::AnnotationSpace;
-    let space = f.annotation_space();
-    let bar_x = space.value_to_px(AnnotationAxis::X, 0.).unwrap();
-    let bar_y = space.value_to_px(AnnotationAxis::Y, 40.).unwrap();
-    let gap_x = space.value_to_px(AnnotationAxis::X, 0.5).unwrap() - 2.;
-    let gap_y = space.value_to_px(AnnotationAxis::Y, 90.).unwrap();
-    let bar_rgb = [60, 130, 210, 255];
-    assert!(near(pixel(&plain, bar_x, bar_y), bar_rgb, 4));
-    assert!(
-        near(pixel(&with, bar_x, bar_y), bar_rgb, 4),
-        "span tinted the bar: {:?}",
-        pixel(&with, bar_x, bar_y)
-    );
-    assert_eq!(pixel(&plain, gap_x, gap_y), [255, 255, 255, 255]);
-    assert!(
-        near(pixel(&with, gap_x, gap_y), [255, 128, 128, 255], 3),
-        "{:?}",
-        pixel(&with, gap_x, gap_y)
-    );
-    // Opaque hosts that never asked for `HostClear` keep their frame; the
-    // export used a `HostClear` frame beside it and did not evict it.
-    assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
-    assert_eq!(f.background(), FrameBackground::Opaque);
-    r.set_background(FrameBackground::HostClear);
-    let host = r.prepare(&c, SIZE, 1.).unwrap();
-    assert_eq!(host.background(), FrameBackground::HostClear);
-    assert!(f.shares_annotations_with(&host));
-    assert!(r.export_rgba(&c, SIZE, 1.).unwrap().rgba == with.rgba);
-    r.end_frame();
-}
 
 // Radial charts have no value axes: data anchors are warnings, ratio
 // anchors draw, and the chart frame is untouched either way.
@@ -786,28 +643,33 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let mut r = BoxPlotRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let thick = AnnotationLineStyle {
-        width: 12.,
+    // The radar chart is the bounded family with a decoration map left; it
+    // has no value axes, so every item is ratio-anchored.
+    let mut r = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let thick = ArrowStyle {
+        line: AnnotationLineStyle {
+            width: 12.,
+            ..Default::default()
+        },
         ..Default::default()
     };
     let items = [
         (
-            "thick line",
-            Annotation::new(AnnotationKind::ReferenceLine {
-                axis: AnnotationAxis::Y,
-                value: 15.,
+            "thick arrow",
+            Annotation::new(AnnotationKind::Arrow {
+                from: Anchor::Ratio { x: 0.1, y: 0.3 },
+                to: Anchor::Ratio { x: 0.9, y: 0.3 },
                 style: thick,
-                label: Some(text("target")),
+                text: Some(text("target")),
             }),
         ),
         (
-            "thin line",
-            Annotation::new(AnnotationKind::ReferenceLine {
-                axis: AnnotationAxis::X,
-                value: 1.,
+            "thin arrow",
+            Annotation::new(AnnotationKind::Arrow {
+                from: Anchor::Ratio { x: 0.5, y: 0.1 },
+                to: Anchor::Ratio { x: 0.5, y: 0.9 },
                 style: Default::default(),
-                label: Some(text("mid")),
+                text: Some(text("mid")),
             }),
         ),
         (
@@ -824,15 +686,16 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     // plus the label padding (2 px), plus a pixel of rounding.
     const SLACK: f32 = 6.0;
     for (name, item) in items {
-        let mut c = BoxPlotChart {
-            categories: vec![Category::new("a", "A"), Category::new("b", "B")],
-            series: vec![BoxPlotSeries::new(
+        let mut c = RadarChart {
+            categories: vec![
+                Category::new("a", "A"),
+                Category::new("b", "B"),
+                Category::new("c", "C"),
+            ],
+            series: vec![RadarSeries::new(
                 "s",
                 "S",
-                vec![
-                    Some(BoxSummary::new(0., 5., 10., 15., 20.)),
-                    Some(BoxSummary::new(5., 10., 20., 25., 30.)),
-                ],
+                vec![5., 10., 7.],
                 Color::from_rgb8(60, 130, 210),
             )],
             legend: false,

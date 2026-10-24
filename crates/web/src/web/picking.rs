@@ -17,6 +17,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -222,6 +223,60 @@ impl FiggyChart {
                     }
                 }
             }
+            // A box reports its category and its statistics, read back from
+            // the record's GPU columns the draw used.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.box_plot().is_some() =>
+            {
+                let config = self.chart_config();
+                let layer = config.layer_of_series(&series.series_id);
+                let groups = config.bar_groups_of(layer);
+                let panel = match layer {
+                    renderer::LayerRef::Subplot(index)
+                    | renderer::LayerRef::SubplotOverlay(index, _) => config
+                        .subplots
+                        .get(index)
+                        .map_or(config, |subplot| &subplot.config),
+                    renderer::LayerRef::Base
+                    | renderer::LayerRef::Overlay(_)
+                    | renderer::LayerRef::Annotations => config,
+                };
+                let categories = match groups.direction {
+                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
+                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                };
+                let category = categories
+                    .as_deref()
+                    .and_then(|categories| categories.get(*bin_index))
+                    .ok_or_else(|| js_err("selected category no longer exists"))?;
+                result["category_id"] = serde_json::json!(category.id);
+                result["category_label"] = serde_json::json!(category.label);
+                let (_, record_id) = series.box_plot_columns();
+                let record = self
+                    .renderer
+                    .pool()
+                    .record(record_id)
+                    .ok_or_else(|| js_err("the selected box's record no longer exists"))?;
+                // The record's present fields, as (name, member column).
+                let mut names = [""; renderer::MAX_RECORD_FIELDS];
+                let mut samples: [(String, usize); renderer::MAX_RECORD_FIELDS] =
+                    Default::default();
+                let mut count = 0;
+                for (k, (name, _)) in renderer::BOX_PLOT_RECORD.iter().enumerate() {
+                    if let Some(member) = record.slot().fields[k].as_ref() {
+                        names[count] = name;
+                        samples[count] = (member.clone(), *bin_index);
+                        count += 1;
+                    }
+                }
+                let values = self.read_selection_samples(&samples[..count]).await?;
+                result["index"] = serde_json::json!(bin_index);
+                for (name, value) in names.iter().zip(&values) {
+                    // A missing optional statistic (NaN) reads as null.
+                    result[*name] = serde_json::json!(value.is_finite().then_some(*value));
+                }
+                result["direction"] = serde_json::json!(groups.direction);
+            }
             // A category bar reports its category and its value, read back
             // from the GPU column the draw used.
             PickedDataRef::HistogramBin { bin_index, .. }
@@ -422,20 +477,23 @@ impl FiggyChart {
             } => {
                 // A category bar steps along its categories and across the
                 // series of its bar group, the category axis taking the
-                // pointer axis it runs along.
-                if self.chart_series()[position]
-                    .render_type
-                    .category_bars()
-                    .is_some()
-                {
+                // pointer axis it runs along; a box steps the same way along
+                // its categories and across its box group (boxes, never
+                // their outliers).
+                let selected = &self.chart_series()[position].render_type;
+                let boxes = selected.box_plot().is_some();
+                if selected.category_bars().is_some() || boxes {
                     let config = self.chart_config();
                     let layer = config.layer_of_series(series_id);
                     let groups = config.bar_groups_of(layer);
                     let horizontal = groups.direction == renderer::CategoryBarDirection::Horizontal;
                     let members = || {
                         self.chart_series().iter().filter(|s| {
-                            s.render_type.category_bars().is_some()
-                                && config.layer_of_series(&s.series_id) == layer
+                            (if boxes {
+                                s.render_type.box_plot().is_some()
+                            } else {
+                                s.render_type.category_bars().is_some()
+                            }) && config.layer_of_series(&s.series_id) == layer
                         })
                     };
                     let Some(index) = members().position(|s| s.series_id == *series_id) else {
@@ -446,8 +504,14 @@ impl FiggyChart {
                     else {
                         return Ok(false);
                     };
-                    let (positions, values) = series.category_bar_columns(groups.direction);
-                    let count = self.columns[positions].min(self.columns[values]);
+                    // A box's record is not a registry column: its positions
+                    // hold one value per category.
+                    let count = if boxes {
+                        self.columns[series.box_plot_columns().0]
+                    } else {
+                        let (positions, values) = series.category_bar_columns(groups.direction);
+                        self.columns[positions].min(self.columns[values])
+                    };
                     if count == 0 {
                         return Ok(false);
                     }

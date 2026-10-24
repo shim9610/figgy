@@ -37,19 +37,20 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
-| `ramp.wgsl` (§5.4) | field, scatter, vector, the pick marker and vector modules |
-| `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, the pick marker modules |
-| `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar and the pick marker modules |
+| `ramp.wgsl` (§5.4) | field, scatter, vector, bar (read by `marker.wgsl`), the pick marker and vector modules |
+| `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
+| `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
-| `errorbar_segment.wgsl` (§5.11) | errorbar, the pick marker modules |
+| `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `material.wgsl` (§5.9) | bar (category bars), boxplot, radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
-| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars), boxplot |
+| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
-| `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, radar |
+| `box_plot.wgsl` (§2.5, §5.15) | bar |
+| `srgb_output.wgsl` (the bounded charts' `output`) | radar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field |
 
 The module lists are the `assembled!` invocations next to each pipeline
@@ -276,6 +277,20 @@ per-selection `Style` built from the same function, with
 `color_premul` the premultiplied highlight colour and `line_width_px` the
 outline width (unscaled), as for a histogram bin (§2.1). The bar itself is
 the drawn instance, so its overrides resolve by its row like the draw.
+
+### 2.5 The box plot entries' `Style`
+
+A `DataRenderType::BoxPlot` series (§5.15) reads the category bar lanes of
+§2.4 for its box body: `color_premul` the premultiplied box colour,
+`line_width_px` the outline width (0 without an outline), `dash[0]` the
+premultiplied outline colour and `dash[1]` the material. The CPU writer is
+`style.rs::PrimitiveStyle::from_box_plot`. Every other lane is unused (0).
+The part styles (corner radius, emphasis and notch; median and whisker
+strokes and caps; mean and outlier markers) are not `Style` lanes but the
+series' bar style slots (§5.15), which the pick reads too. The selected
+box's highlight (`vs_box_plot_selection`) reads a per-selection `Style`
+built from the same function with the highlight colour and the outline
+width, as a category bar's.
 
 ---
 
@@ -618,8 +633,8 @@ The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arro
 
 Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
 into one per-instance value, `struct Material { params: vec4<f32>, finish:
-vec4<f32> }`, embedded as the `material` member of the category bar and
-boxplot `Bar` and the radial `Sector` (a category bar's lanes travel in its
+vec4<f32> }`, embedded as the `material` member of the bar `Bar` (category
+bars and box plot bodies) and the radial `Sector` (a category bar's lanes travel in its
 `Style` and the bar style table, §2.4, and are packed into `Material` in the
 fragment):
 
@@ -967,9 +982,71 @@ lanes `base + 2i` and `base + 2i + 1`.
 | Record | one per present schema field (`RecordRef::field_at(k)`), at most `MAX_RECORD_FIELDS` (12, three `vec4<u32>`) | row `r` of field `k` is value `r` of that field's column; an absent optional field has no column and reads as NaN; how a consumer marks it in its uniform is that consumer's contract |
 | Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `u32(offsets[g])..u32(offsets[g + 1])`, an offset read as `u32(hi + lo)`: offsets are integers up to 2^24, exact in the high lane, with `offsets[0] = 0` and `offsets[groups] = total` checked at upload |
 
-No module reads them yet (the box plot of #40 item 13f will); the
-convention is held by the pool test
+The box plot entries (§5.15) read them; the convention is also held by
+the pool test
 `a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset`.
+
+### 5.15 Box plots (group 3, bindings 8 and 9)
+
+The boxes of a `DataRenderType::BoxPlot` series: one instance per category
+(a row of the series' record, §5.14), drawn by the input fragment
+[`common/box_plot.wgsl`](common/box_plot.wgsl), spliced into the bar module
+after `category_bars.wgsl`, `ramp.wgsl`, `sketch_noise.wgsl`, `marker.wgsl`
+and `errorbar_segment.wgsl` and before `bar_columnar.wgsl`. The entries use
+the category bar pipeline layout and group 3 unchanged: the pool at binding
+8 and a `CategoryBarParams` (§5.13) at binding 9, whose lanes a box plot
+reads as follows (CPU writer: `renderer/series.rs::box_plot_params`).
+
+| Member | Meaning for a box plot |
+|---|---|
+| `values[0..9]` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
+| `values[9]`, `values[10]` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
+| `values[11]`, `values[12]` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
+| `positions`, `count` | the category position column's lane base and the category count |
+| `member`, `members` | the series' place among the layer's box plot series and their count |
+| `mode` | `CATEGORY_BAR_MODE_GROUPED`: boxes stand side by side |
+| `horizontal`, `gap_px`, `group_width` | as §5.13, from `Config::bar_groups`; the gap is in render pixels (the display config is scaled) |
+| `corner_radius_px`, `emphasis`, `scale`, `seed` | as §5.13 |
+
+The part styles are the series' bar style map (group 2, bindings 5–7):
+style slot `p` is part `p`'s base style, and a per-box override is one
+override row per part whose bin index is `row * BOX_PLOT_PARTS + part`
+(CPU writer: `renderer/style.rs::box_plot_style_map`). A part resolves as
+`resolve_bar_style(apply_bar_style_slot(base, slot[p]), row * 3 + p)`:
+
+| Part | Base | Lanes |
+|---|---|---|
+| `BOX_PART_BODY` (0) | `category_base_style` (the §2.5 `Style` lanes; the pick's `category_geometry_style`) | fill, border colour and width (the outline), `material`, `finish` = (corner radius px, emphasis, notch depth as a share of the thickness (0 = plain), 0) |
+| `BOX_PART_STROKES` (1) | zero | fill = median colour, border colour = whisker colour, border width = median width px, gap = whisker width px, width ratio = cap length as a share of the thickness (0 = no caps) |
+| `BOX_PART_MARKERS` (2) | zero | fill = mean colour, border colour = outlier colour, `material` = (mean size px, outlier size px, square (1) or circle (0), filled (1)); a size of 0 hides the part |
+
+One instance draws `BOX_PLOT_BASE_VERTICES` (42) plus six vertices per
+outlier of the longest group, as quads in the former box plot renderer's
+paint order: the low whisker and its cap, the high whisker and its cap, the
+body, the median, the mean, then outlier `k` of the box's group. The
+whiskers, caps and median are `ErrorBarSegment` quads (§5.11) built at the
+category position with a pixel offset across to the box's middle and
+drawn flat, as error bars are; the mean is a filled `marker.wgsl` diamond
+and an outlier a circle or square, drawn with `shape_distance` and
+`marker_edge` as markers are; the body is `bar_surface` (§5.9 bars) over
+the rounded rect, or the notched outline when the body's notch depth is
+positive and the record has both confidence bounds, sampled at 2×2
+subpixels with the outline as the inside band. A box needs its five
+summary fields; the mean and the interval are optional. Statistics the
+record does not order are clamped where they are drawn: the box spans
+min(q1, q3)..max(q1, q3), the median is held inside it and a whisker runs
+from the box outwards only. An outlier group is read as §5.14 says.
+
+`vs_box_plot_selection` / `fs_box_plot_selection` draw the picked box's
+body ring and emphasis as a category bar's. The compute entry
+`pick_box_plot` answers, per box, the nearest of its parts (body,
+whiskers, caps, median, mean and outliers, each from the function its
+draw uses) within the pick distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN`
+candidate whose index is the row: an outlier or a whisker is a candidate
+of its box, not an item of its own. Nothing per box is stored anywhere;
+the CPU keeps the lane bases, the part styles of the configuration and
+the record's and the outlier column's scalar statistics (the value-axis
+fit).
 
 ---
 ## Checklist

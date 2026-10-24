@@ -1554,6 +1554,54 @@ impl Renderer {
                 continue;
             }
 
+            if primitives.box_plot {
+                // The boxes the box plot entries draw at the pick's display
+                // transform, from the same params and style map as the draw.
+                let boxes = cfg
+                    .render_type
+                    .box_plot()
+                    .expect("the box plot primitive has a box plot config");
+                let (params, _) = box_plot_params(
+                    &display_config,
+                    series.iter().filter(|s| {
+                        effective_series_primitives(&config.draw_style, &s.render_type).box_plot
+                    }),
+                    cfg,
+                    request.display_scale,
+                    &self.pool,
+                    |id| {
+                        self.pool
+                            .handle_for(id)
+                            .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                    },
+                )?;
+                if params.count != 0 {
+                    let style_map = crate::renderer::style::box_plot_style_map(
+                        &self.device,
+                        &self.per_point_style_map_bgl,
+                        category_bar_categories(&display_config).unwrap_or(&[]),
+                        boxes,
+                        request.display_scale,
+                    );
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::BoxPlot {
+                            data: data_render::create_category_bar_data_bind_group(
+                                &self.device,
+                                &self.gpu_ledger,
+                                &self.category_bar_data_bgl,
+                                self.pool.buffer(),
+                                &params,
+                                style_map,
+                            ),
+                        },
+                    });
+                }
+                continue;
+            }
+
             if primitives.category_bars {
                 // The bars the category bar module draws at the pick's
                 // display transform, resolved like the draw's.

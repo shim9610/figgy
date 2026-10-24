@@ -3,8 +3,8 @@
 Chart settings and data definitions for figgy: Cartesian axes and series
 (including polar coordinates, vector fields, point colour and size maps, area
 fills and step lines), overlay axes, subplots, annotations, interaction
-policies, the bounded radial, boxplot and radar models, and the categorical
-bar document that releases up to 0.12 wrote.
+policies, the bounded radial and radar models, and the categorical bar and
+box plot documents that releases up to 0.12 wrote.
 This crate has no GPU or windowing dependency. The optional `serde` feature adds
 serialization and deserialization.
 
@@ -60,14 +60,14 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | Numeric input columns | `Column`, `DataCell` |
 | Pie/donut slice values and presentation | `RadialChart`, `RadialSlice` |
 | Category/series bars | `data_config::DataRenderType::CategoryBars` over a categorical axis (`AxisOptions::categories`), `Config.bar_groups`; legacy documents: `CategoricalChart`, read by `Config::from_categorical` (`bounded_sources`) |
-| Supplied statistical summaries | `BoxPlotChart`, `BoxPlotSeries` |
+| Supplied statistical summaries | `data_config::DataRenderType::BoxPlot` over a categorical axis, reading a record and a ragged outlier column, `BoxPlotSeriesLabels`, `format_box_plot_labels`; legacy documents: `BoxPlotChart`, `BoxPlotSeries`, read by `Config::from_boxplot` (`bounded_sources`) |
 | One value per category and series on shared spokes | `RadarChart`, `RadarSeries` |
 | A Cartesian chart drawn in (angle, radius) | `polar::PolarOptions` on `Config.polar`, `polar::PolarGeometry` |
 | Arrows, point colour and size maps, area fills and step lines | `data_config::DataRenderType::Vector`, `PointColorMap`, `PointSizeMap`, `LineFill`, `LineInterpolation` |
 | Selection, dragging and area handles | `Selectable` (an element's one placement, `emit`, into a `sink::Sink`), `SelectionGeometry`, `Draggable`, `Resizable`, `DecorationLayout` |
 | Secondary Y axes, subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
 | Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
-| Rich titles on pie, boxplot and radar charts | `BoundedTitleOptions` on `chart_title` |
+| Rich titles on pie and radar charts and in categorical and box plot documents | `ChartTitleOptions` (pie) and `BoundedTitleOptions` on `chart_title` |
 
 ## Chart classes
 
@@ -89,11 +89,14 @@ class.
   pool. The categorical bar chart is one of them: a `CategoryBars` series
   per bar series over a categorical axis. `Config::from_categorical` opens a
   `CategoricalChart` document as such a chart; its `SeriesUpload`s borrow
-  the document's values for the upload, nothing is copied. The box plot and
-  radar charts are moving onto columns as well and keep their values in
-  their models until they do.
+  the document's values for the upload, nothing is copied. The box plot is
+  one too: a `BoxPlot` series per box series, whose statistics are a record
+  and whose outliers a ragged column of the pool. `Config::from_boxplot`
+  opens a `BoxPlotChart` document as such a chart, its uploads borrowing the
+  document's summaries. The radar chart is moving onto columns as well and
+  keeps its values in its model until it does.
 
-Bounded charts (pie/donut, boxplot and radar) carry their values in the
+Bounded charts (pie/donut and radar) carry their values in the
 model, not in columns, and take no stream sources. Their `validate` methods
 enforce fixed size limits, such as 64 slices or categories and 16 series. The
 renderer owns GPU resources, frame caches and its `ColumnSource` upload adapter;

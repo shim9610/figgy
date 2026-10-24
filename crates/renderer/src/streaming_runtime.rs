@@ -52,7 +52,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
-        | DataRenderType::CategoryBars { .. } => false,
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. } => false,
     }
 }
 
@@ -624,6 +625,18 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::CategoryBars { .. } => Ok(&[]),
+        // Nor to box plots: a box reads a resident record and ragged
+        // column. Rejected before a cursor exists; this is a backstop.
+        DataRenderType::BoxPlot { .. } if primitives.box_plot => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "box plot series require a GPU-resident record and outlier column; \
+                         streamed sources are not supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::BoxPlot { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {

@@ -82,6 +82,16 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Nor to box plots: a box reads a resident record and ragged column
+        // by their pool lanes.
+        if series.render_type.box_plot().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "box plot series require a GPU-resident record and outlier column; \
+                         streamed sources are not supported"
+                    .into(),
+            });
+        }
         // The value maps read index-aligned columns on every draw; streaming
         // is not extended to them.
         if let Some(scatter) = extract_scatter(&series.render_type)

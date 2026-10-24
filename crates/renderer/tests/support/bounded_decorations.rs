@@ -5,9 +5,8 @@
 //! they are asked about.
 #![allow(dead_code)]
 use ::renderer::{
-    BoundedAnnotationFrame, BoxPlotChart, BoxPlotFrame, CpuTextMeasure, DecorationId,
-    DecorationLayout, HitId, LayerHit, LayerRef, RadarChart, RadarFrame, RadialChart, RadialFrame,
-    SelectionBox,
+    BoundedAnnotationFrame, CpuTextMeasure, DecorationId, DecorationLayout, HitId, LayerHit,
+    LayerRef, RadarChart, RadarFrame, RadialChart, RadialFrame, SelectionBox,
     layout::{NudgeResult, RectF},
     resize::ResizeHandle,
     select::SelectionGeometry,
@@ -161,7 +160,6 @@ macro_rules! decoration_map_frame {
         }
     };
 }
-decoration_map_frame!(BoxPlotFrame, BoxPlotChart);
 decoration_map_frame!(RadarFrame, RadarChart);
 
 impl Decorations for RadialFrame {

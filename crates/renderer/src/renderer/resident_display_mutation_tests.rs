@@ -31,7 +31,18 @@ const GRID: usize = 6;
 /// Valid replacements for string leaves: series ids, column ids of the same
 /// length as the ones they replace, and a bundled font family other than
 /// the default. The first is also the value a synthesized string takes.
-const STRINGS: &[&str] = &["line", "x", "a", "b", "u", "v", "m", "z1", "Comic Neue"];
+const STRINGS: &[&str] = &[
+    "line",
+    "x",
+    "a",
+    "b",
+    "u",
+    "v",
+    "m",
+    "z1",
+    "Comic Neue",
+    "rec_b",
+];
 
 fn add_columns(r: &mut Renderer) {
     let n = POINTS;
@@ -79,6 +90,48 @@ fn add_columns(r: &mut Renderer) {
             &column(vec![0.5, -0.3, 0.2]) as &dyn crate::ColumnSource,
         ),
     ])
+    .unwrap();
+    // Box plots: two records of three boxes and one outlier column.
+    let field = |values: [f32; 3]| column(values.to_vec());
+    for (id, shift) in [("rec_a", 0.0), ("rec_b", 0.1)] {
+        let columns = [
+            field([0.5 + shift, 0.6, 0.45]),
+            field([0.3 + shift, 0.4, 0.3]),
+            field([0.7 + shift, 0.8, 0.6]),
+            field([0.1, 0.2, 0.1]),
+            field([0.9, 1.0, 0.8]),
+            field([0.55, 0.65, 0.5]),
+            field([0.45, 0.55, 0.4]),
+            field([0.55, 0.65, 0.5]),
+        ];
+        let names = [
+            "median",
+            "q1",
+            "q3",
+            "whisker_low",
+            "whisker_high",
+            "mean",
+            "ci_low",
+            "ci_high",
+        ];
+        let fields: [(&str, &dyn crate::ColumnSource); 8] =
+            std::array::from_fn(|k| (names[k], &columns[k] as &dyn crate::ColumnSource));
+        r.upsert_record(
+            id,
+            &crate::RecordSource {
+                schema: crate::BOX_PLOT_RECORD,
+                fields: &fields,
+            },
+        )
+        .unwrap();
+    }
+    r.upsert_ragged(
+        "out_a",
+        &crate::RaggedSource {
+            values: &column(vec![0.05, 1.1, 1.2]),
+            offsets: &column(vec![0.0, 1.0, 1.0, 3.0]),
+        },
+    )
     .unwrap();
 }
 
@@ -214,6 +267,85 @@ fn category_series() -> Vec<SeriesConfig> {
         unreachable!()
     };
     labels.text = vec!["0.6".into(), "-0.4".into(), "0.9".into()];
+    vec![first, second]
+}
+
+/// The category panel with grouped boxes over it.
+fn box_config() -> Config {
+    let mut c = category_config();
+    c.bottom_x.cross_at = None;
+    c.left_y.min = -0.2;
+    c.left_y.max = 1.4;
+    c.bar_groups = Some(crate::data_config::BarGroups {
+        mode: crate::data_config::CategoryBarMode::Grouped,
+        direction: crate::data_config::CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 2.0,
+    });
+    c
+}
+
+/// Two box plot series of one group: a notched Matte series with a mean,
+/// outliers and an outline, and a flat one with a restyled, recoloured box.
+fn box_series() -> Vec<SeriesConfig> {
+    use crate::data_config::{BoxPlotOverride, BoxPlotStyle, BoxPlotTarget};
+    let boxes = |id: &str, record: &str, color: Color, style: BoxPlotStyle| {
+        declared(
+            id,
+            "cpos",
+            record,
+            DataRenderType::BoxPlot {
+                color,
+                style,
+                labels: Default::default(),
+                outliers: None,
+                overrides: None,
+            },
+        )
+    };
+    let mut first = boxes(
+        "boxes",
+        "rec_a",
+        Color::new(0.2, 0.4, 0.8, 1.0),
+        BoxPlotStyle {
+            material: crate::Material::Matte,
+            notched: true,
+            show_mean: true,
+            corner_radius: 2.0,
+            texture_strength: 0.6,
+            ..BoxPlotStyle::default()
+        },
+    );
+    let DataRenderType::BoxPlot {
+        outliers, labels, ..
+    } = &mut first.render_type
+    else {
+        unreachable!()
+    };
+    *outliers = Some("out_a".into());
+    labels.text = vec!["0.5".into(), "0.6".into(), "0.45".into()];
+    let mut second = boxes(
+        "more",
+        "rec_b",
+        Color::new(0.9, 0.5, 0.1, 1.0),
+        BoxPlotStyle {
+            material: crate::Material::Flat,
+            ..BoxPlotStyle::default()
+        },
+    );
+    let DataRenderType::BoxPlot { overrides, .. } = &mut second.render_type else {
+        unreachable!()
+    };
+    *overrides = Some(vec![BoxPlotOverride {
+        target: BoxPlotTarget::new("c", "more"),
+        color: Some(Color::new(0.1, 0.7, 0.3, 1.0)),
+        style: Some(BoxPlotStyle {
+            corner_radius: 3.0,
+            show_outliers: false,
+            ..BoxPlotStyle::default()
+        }),
+        labels: None,
+    }]);
     vec![first, second]
 }
 
@@ -562,6 +694,7 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
         category_series(),
         SIZE,
     ));
+    tally.absorb(run_suite("box", box_config(), box_series(), SIZE));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

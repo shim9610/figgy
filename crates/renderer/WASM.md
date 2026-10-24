@@ -5,7 +5,7 @@
 Rust 렌더러의 WASM/WebGPU 지원과 figgy의 브라우저용 제품인 `crates/web` 래퍼를 구분한다.
 아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 이 래퍼의 계약이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
-`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트도 `FiggyChart`가 그리며(`set_categorical_document`), 원형·박스플롯·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
+`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트와 박스플롯도 `FiggyChart`가 그리며(`set_categorical_document`, `set_boxplot_document`), 원형·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
 간단한 빌드·실행 방법은 [브라우저용 figgy 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
 The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
@@ -295,6 +295,7 @@ chart.register_ragged("outliers", values, offsets);
 - `register_record`의 필드는 `median`, `q1`, `q3`, `whisker_low`, `whisker_high`(필수)와 `mean`, `sample_count`, `ci_low`, `ci_high`(선택)이다. 없는 선택 필드는 NaN으로 읽고, 모든 필드가 NaN인 행은 빠진 박스다. 알 수 없는 필드, 빠진 필수 필드, 길이가 다른 필드는 오류다. 배열은 복사하지 않고 스테이징 버퍼에 바로 기록한다.
 - `register_ragged`는 `Float64Array` 두 개를 `(hi, lo)` 쌍으로 업로드한다. offsets가 줄어들거나 0에서 시작하지 않거나 정수가 아니거나 values.length로 끝나지 않으면 업로드를 버리고 오류를 낸다.
 - 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
+- `BoxPlot` 시리즈는 `y_column`으로 레코드를, `outliers`로 ragged 컬럼을, `x_column`으로 범주 위치 컬럼(`0..n-1`)을 가리킨다. [박스플롯 문서](#box-plot-documents)를 참고한다.
 
 빈 배열은 거부한다. 유효한 `update_register_*` 호출은 같은 값이라도 매번 교체 업로드를 수행하며, 실패하면 기존 상태를 유지한다. 해시만 비교해 업로드를 생략하지 않는다. `set_series`는 어떤 등록 컬럼을 그릴지만 바꾸고 컬럼을 업로드하지 않는다.
 
@@ -907,17 +908,51 @@ chart.set_categorical_document(JSON.stringify(categoricalDoc));
 await chart.first_frame_ready();
 ```
 
+<a id="box-plot-documents"></a>
+
+### Box plot documents
+
+`FiggyChart.set_boxplot_document(json)` opens a box plot document
+(`BoxPlotChart` JSON, which `FiggyBoundedChart` took as the `"boxplot"`
+family before this release) in the Cartesian wrapper. The document is
+validated and read by `Config::from_boxplot`: its categories become the
+categorical axis of the box direction, each of its series a `BoxPlot`
+series, and its summaries three kinds of registered sources: the
+positions column `boxplot.positions`, one record of box statistics per
+series (`boxplot.record.<series id>`, as `register_record` registers one)
+and, for a series with outliers, one ragged outlier column
+(`boxplot.outliers.<series id>`, as `register_ragged`). The summaries are
+uploaded through borrowed adapters, without a copy. Without a document
+`value_range` the value axis is fitted to the records' and outliers'
+statistics and rounded to nice ticks; the chart keeps its chart area.
+Opening another document replaces the series, columns and records of the
+previous one; every other column stays. From there on the chart is edited
+through the Cartesian API. Every part of a box (body, whiskers, caps,
+median, mean, outliers) is picked with `pick_data` as the box's
+`HistogramBin`; `selection_details()` reports the selected box's
+`category_id`, `category_label`, `index`, `direction` and its statistics
+(`median`, `q1`, `q3`, `whisker_low`, `whisker_high`, `mean`,
+`sample_count`, `ci_low`, `ci_high`; a missing one is `null`), read back
+from the record. `step_selection(dx, dy)` walks the categories and the
+series of the box group (boxes, not outliers). The value labels the
+document configures are written into `labels.text` and not drawn yet.
+
+```js
+chart.set_boxplot_document(JSON.stringify(boxPlotDoc));
+await chart.first_frame_ready();
+```
+
 <a id="bounded-chart-host"></a>
 
 ## 8. Bounded chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial`, `boxplot`, and `radar` documents to browser hosts. It
-uses the same native renderer, decoration maps, slice/box/polygon picking,
+`radial` and `radar` documents to browser hosts. It
+uses the same native renderer, decoration maps, slice/polygon picking,
 and drag/resize policies. The host owns pointer events, animation scheduling,
 and synchronization.
 `width` and `height` are the document's logical size: at least 160 by 160 for
-`radial`, 240 by 200 for `boxplot`, and 240 by 240 for
+`radial` and 240 by 240 for
 `radar`, which needs the room to place its rings and labels. The chart is drawn
 at the scale that fits this size into the canvas's pixel size (the smaller of
 the two ratios, clamped to 0.5 to 4). After the canvas size changes, pass its
@@ -993,7 +1028,8 @@ import init, { FiggyBoundedChart } from "./pkg/figgy.js"; // figgy-chart.js does
 await init(); // load the WASM module before the first create
 // radialDoc is a validated RadialChart value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(radialDoc), 960, 600);
-// "boxplot" and "radar" take the matching chart's JSON instead.
+// "radar" takes a RadarChart's JSON instead. Categorical and box plot documents
+// open in FiggyChart (set_categorical_document, set_boxplot_document).
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
 const selected = JSON.parse(await view.pick(...point, true)); // click toggles selection

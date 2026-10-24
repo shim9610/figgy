@@ -43,12 +43,13 @@ pub use config::{
 };
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
-    BarGroups, CategoryBarSeriesLabels, CategoryBarsRef, DataBarBinStyleConfig,
-    DataBarStyleOverride, DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride,
-    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
-    DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation,
-    MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape, SeriesConfig, SeriesRef,
-    SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
+    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
+    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
+    DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
+    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape,
+    SeriesConfig, SeriesRef, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    VectorStyle,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

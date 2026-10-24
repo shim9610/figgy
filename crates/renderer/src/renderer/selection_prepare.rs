@@ -53,8 +53,8 @@ pub(super) struct SelectionColumns<'a> {
     pub x: ColumnHandle,
     pub y: ColumnHandle,
     pub bar: Option<(ColumnHandle, ColumnHandle)>,
-    /// A category bar series' data and override table, as its draw binds
-    /// them; its picked bar's highlight reads the same.
+    /// A category bar or box plot series' data and style map, as its draw
+    /// binds them; its picked bar's or box's highlight reads the same.
     pub category: Option<data_render::CategoryBarData>,
     pub rows: SelectionRows,
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
@@ -370,6 +370,50 @@ impl PrepareContext<'_> {
                             values,
                             instance,
                             category: None,
+                        });
+                    }
+                    // A box is a bin whose index is its row: the highlight
+                    // builds the same body from the same group 3 and style
+                    // map as the draw.
+                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.box_plot => {
+                        let Some(category) = columns.category.clone() else {
+                            continue;
+                        };
+                        let Ok(row) = u32::try_from(*bin_index) else {
+                            continue;
+                        };
+                        let boxes = rt
+                            .box_plot()
+                            .expect("a box plot selection has a box plot config");
+                        let mut highlight = PrimitiveStyle::from_box_plot(
+                            boxes.color,
+                            boxes.style,
+                            series.style.display_scale,
+                        );
+                        highlight.color_premul =
+                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
+                        highlight.line_width_px = selection_cfg.outline_width_px;
+                        highlight.dash_len = row;
+                        let buffer =
+                            data_render::create_style_uniform_buffer(&self.device, &highlight);
+                        let style_bg = data_render::create_style_bind_group(
+                            &self.device,
+                            &self.style_bgl,
+                            &buffer,
+                        );
+                        selected_bars.push(ColumnBarSelectionLayer {
+                            pipeline: pipelines
+                                .bar_box_plot_selection
+                                .as_ref()
+                                .expect("prepare ensured box plot selection pipeline"),
+                            transform_bg: &view.transform_bg,
+                            style_bg,
+                            style_map_bg: None,
+                            pool_buffer: column_buffer,
+                            edges: columns.x,
+                            values: columns.y,
+                            instance: row,
+                            category: Some(category),
                         });
                     }
                     // A category bar is a bin whose index is its row: the

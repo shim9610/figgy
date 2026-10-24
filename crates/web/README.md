@@ -21,11 +21,13 @@ renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"
 
 The generated module exports `FiggyChart` for Cartesian charts, including polar
 plots (`Config.polar`; see the [polar guide](../renderer/POLAR.md)) and
-categorical bars, and `FiggyBoundedChart` for radial (including donuts),
-boxplot and radar charts. `FiggyChart.set_categorical_document(json)` opens a
-categorical bar document (`CategoricalChart` JSON, which `FiggyBoundedChart`
-took as the `"categorical"` family before) as category bars on a categorical
-axis. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
+categorical bars and box plots, and `FiggyBoundedChart` for radial
+(including donuts) and radar charts. `FiggyChart.set_categorical_document(json)`
+opens a categorical bar document (`CategoricalChart` JSON, which
+`FiggyBoundedChart` took as the `"categorical"` family before) as category bars
+on a categorical axis, and `FiggyChart.set_boxplot_document(json)` a box plot
+document (`BoxPlotChart` JSON, the former `"boxplot"` family) as box plot
+series reading a record and a ragged outlier column. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
 using `FiggyBoundedChart` own their canvas events and scheduling; see the
 [bounded host API](../renderer/WASM.md#bounded-chart-host).
 

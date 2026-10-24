@@ -287,20 +287,6 @@ pub async fn check(gpu: RendererDevice) {
         chart
     });
     check_chart!(
-        BoxPlotRenderer,
-        BoxPlotChart {
-            title: "Resize data area".into(),
-            categories: vec![Category::new("a", "Control")],
-            series: vec![BoxPlotSeries::new(
-                "s",
-                "Distribution",
-                vec![Some(BoxSummary::new(10., 25., 38., 52., 70.))],
-                red
-            )],
-            ..Default::default()
-        }
-    );
-    check_chart!(
         RadarRenderer,
         RadarChart {
             title: "Resize data area".into(),

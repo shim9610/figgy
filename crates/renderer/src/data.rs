@@ -503,7 +503,10 @@ impl HiLoColumnSource for Column<f32> {
 /// The borrowed values of a converted legacy document
 /// (`Config::from_categorical`'s uploads): written straight from the
 /// document into the staging pairs, as `(hi, lo)` so the document's f64
-/// values keep their precision. A missing value uploads NaN.
+/// values keep their precision. A missing value uploads NaN. A box plot's
+/// record and outlier uploads are not one column and hold no values here:
+/// they upload through their [`BoxColumn`](::model::bounded_sources::BoxColumn)
+/// adapters.
 impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
     fn len(&self) -> usize {
         ::model::bounded_sources::UploadValues::len(self)
@@ -531,6 +534,42 @@ impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
             dst.write_pair(index, hi, lo);
             record_min_positive(&mut stats, hi as f64 + lo as f64);
         }
+        stats
+    }
+}
+
+/// One column of a converted box plot document (`Config::from_boxplot`'s
+/// record fields, outlier values and offsets): every value is computed from
+/// the borrowed summaries while it is written into the staging pairs, as
+/// `(hi, lo)` so the document's f64 values keep their precision, and the
+/// offsets are integers exact in the high lane. A missing box writes NaN.
+impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
+    fn len(&self) -> usize {
+        ::model::bounded_sources::BoxColumn::len(self)
+    }
+    fn min(&self) -> f64 {
+        ::model::bounded_sources::BoxColumn::min(self)
+    }
+    fn max(&self) -> f64 {
+        ::model::bounded_sources::BoxColumn::max(self)
+    }
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self) * 4);
+        self.for_each(|i, value| {
+            dst[i * 4..i * 4 + 4].copy_from_slice(&(value as f32).to_le_bytes());
+        });
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self));
+        let mut stats = ColumnUploadStats { min_positive: None };
+        self.for_each(|index, value| {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        });
         stats
     }
 }

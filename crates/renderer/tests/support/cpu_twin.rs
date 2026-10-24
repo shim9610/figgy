@@ -564,8 +564,9 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         // A category bar is picked per (category, series) bar by the typed
-        // data pick, never as a point.
+        // data pick, never as a point; so is a box.
         | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
         // A vector series is picked at its anchors through `extract_vector`.
         | DataRenderType::Vector { .. } => None,
     }
@@ -587,6 +588,7 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
         | DataRenderType::Vector { .. } => None,
     }
 }

@@ -2924,3 +2924,219 @@ fn category_bars_pick_the_bar_they_paint() {
         }
     }
 }
+
+/// Box plots pick the box they paint: the body (plain and notched), the
+/// whiskers and caps, the median, the mean and the outliers, vertical and
+/// horizontal, at 1x and 2x. Every part answers its box, a histogram bin of
+/// the series whose index is the category row; the row of a painted pixel
+/// is the category slot it lies in. The strokes are quads drawn without an
+/// anti-aliasing margin, so a pixel the multisampling covers only at one
+/// sample may pick (`MSAA_EDGE`); the markers' anti-aliasing reaches one
+/// fringe past their contour (`STRICT.fringe`).
+#[test]
+fn box_plots_pick_the_box_they_paint() {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, BoxPlotStyle, CategoryBarDirection};
+    use renderer::{BOX_PLOT_RECORD, ColumnSource, RaggedSource, RecordSource};
+    let mut renderer = renderer();
+    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
+    // whisker low, q1, median, q3, whisker high, mean, ci low, ci high
+    let rows = [
+        [1.0, 3.0, 4.0, 6.0, 8.0, 5.0, 3.5, 4.5],
+        [2.0, 4.0, 5.0, 7.0, 9.0, 6.0, 4.5, 5.5],
+    ];
+    let field = |k: usize| col(rows.iter().map(|r| r[k]).collect());
+    let columns = [
+        field(2),
+        field(1),
+        field(3),
+        field(0),
+        field(4),
+        field(5),
+        field(6),
+        field(7),
+    ];
+    let names = [
+        "median",
+        "q1",
+        "q3",
+        "whisker_low",
+        "whisker_high",
+        "mean",
+        "ci_low",
+        "ci_high",
+    ];
+    let fields: Vec<(&str, &dyn ColumnSource)> = names
+        .iter()
+        .zip(&columns)
+        .map(|(n, c)| (*n, c as &dyn ColumnSource))
+        .collect();
+    renderer
+        .upsert_record(
+            "record",
+            &RecordSource {
+                schema: BOX_PLOT_RECORD,
+                fields: &fields,
+            },
+        )
+        .unwrap();
+    renderer
+        .upsert_ragged(
+            "outliers",
+            &RaggedSource {
+                values: &col(vec![0.2, 9.6, 9.8]),
+                offsets: &col(vec![0.0, 1.0, 3.0]),
+            },
+        )
+        .unwrap();
+    for notched in [false, true] {
+        for direction in [
+            CategoryBarDirection::Vertical,
+            CategoryBarDirection::Horizontal,
+        ] {
+            let mut chart = bare_chart();
+            let config = chart.config_mut();
+            for axis in [
+                &mut config.top_x,
+                &mut config.bottom_x,
+                &mut config.left_y,
+                &mut config.right_y,
+            ] {
+                axis.line_visible = false;
+            }
+            let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+            match direction {
+                CategoryBarDirection::Vertical => {
+                    config.bottom_x.categories = categories;
+                    config.left_y.min = 0.0;
+                    config.left_y.max = 10.0;
+                }
+                CategoryBarDirection::Horizontal => {
+                    config.left_y.categories = categories;
+                    config.bottom_x.min = 0.0;
+                    config.bottom_x.max = 10.0;
+                }
+            }
+            config.bar_groups = Some(BarGroups {
+                direction,
+                ..BarGroups::default()
+            });
+            let series = [SeriesConfig {
+                series_id: "box".into(),
+                source_id: None,
+                label: None,
+                x_column: "pos".into(),
+                y_column: "record".into(),
+                render_type: DataRenderType::BoxPlot {
+                    color: RED,
+                    style: BoxPlotStyle {
+                        material: renderer::Material::Flat,
+                        notched,
+                        show_mean: true,
+                        outlier_filled: notched,
+                        ..BoxPlotStyle::default()
+                    },
+                    labels: Default::default(),
+                    outliers: Some("outliers".into()),
+                    overrides: None,
+                },
+            }];
+            for scale in [1.0, 2.0] {
+                let what = format!("notched {notched} {direction:?} at {scale}x");
+                let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+                let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+                let window = ink_window(&with, &without, 2);
+                let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+                let painted = count_painted(window, is_painted);
+                let da = chart.config().data_area().unwrap();
+                // The category slot an export pixel lies in.
+                let row_of = |x: u32, y: u32| -> usize {
+                    match direction {
+                        CategoryBarDirection::Vertical => {
+                            let t = (x as f32 / scale - da.x as f32) / da.width as f32;
+                            (t * 2.0).floor().clamp(0.0, 1.0) as usize
+                        }
+                        CategoryBarDirection::Horizontal => {
+                            let t =
+                                ((da.y + da.height) as f32 - y as f32 / scale) / da.height as f32;
+                            (t * 2.0).floor().clamp(0.0, 1.0) as usize
+                        }
+                    }
+                };
+                let probe = Probe::register(&mut renderer, &chart, &series, scale);
+                let mut failures = Vec::new();
+                let mut picked = 0usize;
+                for (px, py) in edge_band(window, is_painted) {
+                    let ink = difference(&with, &without, px, py);
+                    let hit = match probe.pick_data(&mut renderer, px, py, 0.0) {
+                        Some(renderer::PickedData::HistogramBin {
+                            series_id,
+                            bin_index,
+                            ..
+                        }) => {
+                            assert_eq!(series_id, "box", "{what}");
+                            Some(bin_index)
+                        }
+                        None => None,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    // A marker's anti-aliasing reaches one `fwidth` past its
+                    // contour: a painted pixel picks within that fringe.
+                    if ink > 160
+                        && hit.is_none()
+                        && probe
+                            .pick_data(&mut renderer, px, py, STRICT.fringe)
+                            .is_none()
+                    {
+                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                    }
+                    if ink < MSAA_EDGE.zero_ink && hit.is_some() {
+                        failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
+                    }
+                    if let Some(row) = hit
+                        && ink > 240
+                    {
+                        picked += 1;
+                        if row != row_of(px, py) {
+                            failures.push(format!(
+                                "({px}, {py}) in slot {} picked box {row}",
+                                row_of(px, py)
+                            ));
+                        }
+                    }
+                }
+                assert!(
+                    failures.is_empty(),
+                    "{what}: {} disagreements, first {:?}",
+                    failures.len(),
+                    &failures[..failures.len().min(12)]
+                );
+                assert!(painted > 400, "{what}: {painted}");
+                assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
+                // The outliers pick their box: the first box's outlier near
+                // the bottom (or left) of the value axis, from its centre
+                // (inside an open ring, within the ring's reach).
+                let outlier = match direction {
+                    CategoryBarDirection::Vertical => {
+                        let x = da.x as f32 + da.width as f32 * 0.25;
+                        let y = (da.y + da.height) as f32 - da.height as f32 * 0.02;
+                        (x * scale, y * scale)
+                    }
+                    CategoryBarDirection::Horizontal => {
+                        let x = da.x as f32 + da.width as f32 * 0.02;
+                        let y = (da.y + da.height) as f32 - da.height as f32 * 0.25;
+                        (x * scale, y * scale)
+                    }
+                };
+                assert!(
+                    matches!(
+                        probe.pick_data_at(&mut renderer, outlier, 4.0 * scale),
+                        Some(renderer::PickedData::HistogramBin { bin_index: 0, .. })
+                    ),
+                    "{what}: the outlier picks its box"
+                );
+                renderer.remove_chart(probe.id).unwrap();
+            }
+        }
+    }
+}

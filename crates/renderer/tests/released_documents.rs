@@ -95,6 +95,39 @@ fn released_categorical_documents_convert_to_category_bars() {
     }
 }
 
+/// Every released box plot document opens as a Cartesian chart: the
+/// reader's config and series validate as box plots, survive a serde round
+/// trip, and its uploads cover every series' record, its outliers when it
+/// has any, and the positions.
+#[test]
+fn released_box_plot_documents_convert_to_box_plot_series() {
+    for file in FIXTURES.iter().filter(|f| f.contains("boxplot")) {
+        let fixture = std::fs::read_to_string(format!("{FIXTURE_DIR}/{file}")).unwrap();
+        let doc: BoxPlotChart = serde_json::from_str(&fixture).unwrap();
+        let (config, series, uploads) = Config::from_boxplot(&doc);
+        assert_eq!(series.len(), doc.series.len(), "{file}");
+        let with_outliers = doc
+            .series
+            .iter()
+            .filter(|s| s.values.iter().flatten().any(|v| !v.outliers.is_empty()))
+            .count();
+        assert_eq!(
+            uploads.len(),
+            1 + doc.series.len() + with_outliers,
+            "{file}"
+        );
+        if !doc.categories.is_empty() && !doc.series.is_empty() {
+            assert_eq!(config.validate_box_plots(&series), Ok(()), "{file}");
+        }
+        let config_json = serde_json::to_string(&config).unwrap();
+        let again: Config = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(again, config, "{file}: the config round trips");
+        let series_json = serde_json::to_string(&series).unwrap();
+        let again: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(again, series, "{file}: the series round trip");
+    }
+}
+
 /// A fixture added to the directory without a test above would be silently
 /// unchecked.
 #[test]

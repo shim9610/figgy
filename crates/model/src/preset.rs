@@ -318,6 +318,10 @@ impl ColorCycle {
             DataRenderType::CategoryBars { color, .. } => {
                 *color = c;
             }
+            // The box fill joins the cycle; per-box override colours stay.
+            DataRenderType::BoxPlot { color, .. } => {
+                *color = c;
+            }
         }
     }
 

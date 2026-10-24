@@ -45,9 +45,9 @@ The tabs at the top switch scenes.
   colour and size value maps; histogram;
   heatmap with labelled contours; vector field (quiver); log axes; twin Y axes; subplots;
   polar coordinates (an angle axis and a radius axis);
-  annotations; a one-million-point line.
-- **Bounded**: radial (pie and donut), categorical bars, box plot, radar
-  (spider).
+  annotations; a one-million-point line; categorical bars and box plots
+  (documents opened as Cartesian series on a categorical axis).
+- **Bounded**: radial (pie and donut), radar (spider).
 
 ## Pointer
 

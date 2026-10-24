@@ -1,9 +1,8 @@
-//! Independent rich titles on pie, box and radar charts.
+//! Independent rich titles on pie and radar charts.
 //! cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles
 use renderer::{
-    BoundedTitleOptions, BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary, Category, Color,
-    RadarChart, RadarRenderer, RadarSeries, RadialChart, RadialRenderer, RadialSlice,
-    RendererDevice, TextAlign,
+    BoundedTitleOptions, Category, Color, RadarChart, RadarRenderer, RadarSeries, RadialChart,
+    RadialRenderer, RadialSlice, RendererDevice, TextAlign,
     data_render::{create_instance, request_adapter, request_device},
     encode_png,
 };
@@ -48,18 +47,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ..Default::default()
     };
     pie.format_labels();
-    let boxes = BoxPlotChart {
-        chart_title: Some(title.clone()),
-        font_size: 12.,
-        categories: vec![Category::new("a", "A")],
-        series: vec![BoxPlotSeries::new(
-            "s",
-            "Summary",
-            vec![Some(BoxSummary::new(1., 2., 3., 4., 5.))],
-            color,
-        )],
-        ..Default::default()
-    };
     let radar = RadarChart {
         chart_title: Some(title),
         font_size: 12.,
@@ -73,11 +60,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let mut radial = RadialRenderer::new(gpu.clone(), format)?;
-    let mut boxplot = BoxPlotRenderer::new(gpu.clone(), format)?;
     let mut radar_renderer = RadarRenderer::new(gpu, format)?;
     for (name, image) in [
         ("pie", radial.export_rgba(&pie, (800, 520), 2.)?),
-        ("box", boxplot.export_rgba(&boxes, (800, 520), 2.)?),
         ("radar", radar_renderer.export_rgba(&radar, (800, 520), 2.)?),
     ] {
         std::fs::write(output.join(format!("{name}.png")), encode_png(&image)?)?;

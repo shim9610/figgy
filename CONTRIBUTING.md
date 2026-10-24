@@ -104,8 +104,9 @@ For other chart changes, verify the items the change affects:
 State which items are not applicable and why. An element that a rectangular chart
 lets the user select or drag is selectable or draggable in a new chart as well.
 
-Radial, categorical, boxplot and radar charts use bounded small-data models and do
-not need streaming support. Existing streaming support is not extended: a new chart
+Radial and radar charts use bounded small-data models and do not need streaming
+support; categorical bars and box plots are Cartesian series that reject streamed
+sources. Existing streaming support is not extended: a new chart
 or feature rejects streamed sources with an explicit error, as polar charts, vector
 series, line fills and step lines do with `FiggyError::InvalidSeriesConfig`.
 
