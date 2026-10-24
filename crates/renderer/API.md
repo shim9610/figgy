@@ -47,15 +47,14 @@ Tested revisions and results are in the
 | --- | --- | --- |
 | `Renderer` | `Config`, ordered `SeriesConfig`, registered numeric columns | `prepare` or `prepare_registered` |
 | `RadialRenderer` | `RadialChart`, bounded slice values | `prepare` |
-| `BoxPlotRenderer` | `BoxPlotChart`, supplied summary statistics | `prepare` |
 | `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
-Bounded charts (radial, boxplot and radar) carry every value in
+Bounded charts (radial and radar) carry every value in
 the chart model, up to fixed per-module limits such as 64 radial slices, or 64
-categories and 16 series for box plots. Their APIs are separate from `ColumnSource`
+categories and 16 series for radar charts. Their APIs are separate from `ColumnSource`
 and streaming, and they do not calculate raw-sample statistics. Chart-specific
 limits, missing values, style inheritance and picking identities are documented
-in their modules. Boxplot targets use category/series IDs, radar
+in their modules. Radar
 targets a series ID with an optional category ID for a vertex; radial targets
 use group/index positions, so a host that reorders slices must update
 interaction targets too.
@@ -189,6 +188,20 @@ columns are uploaded together with `add_columns`. A bar is picked as
 `CategoricalChart` document as such a chart; see the
 [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md).
 
+Box plots are `DataRenderType::BoxPlot` series over the same categorical
+axes and grouped `Config.bar_groups`. Each reads a positions column `0..n`, a
+record of box statistics (`Renderer::upsert_record` with the
+`BOX_PLOT_RECORD` schema: median, quartiles, whiskers and the optional mean,
+count and median CI, one row per category) and, optionally, a ragged column of
+outliers (`Renderer::upsert_ragged`, one group per category). The renderer
+does not compute statistics or check their order; the drawing clamps.
+`auto_fit_layer_union` fits the value axis to the records' and outliers'
+statistics. Every part of a box (body, whiskers, caps, median, mean,
+outliers) picks the box as `PickedData::HistogramBin` with the category row.
+`Config::from_boxplot` opens a legacy `BoxPlotChart` document as such a
+chart; see the
+[box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).
+
 ```rust
 use renderer::config::Category;
 use renderer::default::default_config;
@@ -212,7 +225,7 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
    `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
-   For bounded charts, edit the `RadialChart`, `BoxPlotChart`
+   For bounded charts, edit the `RadialChart`
    or `RadarChart` passed to `prepare`. Normal edits do not require `clear_cache`.
 3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
    the radial chart picks its slices on the GPU (`frame.pick(p)` returns a
@@ -328,7 +341,7 @@ subplots. See the
 
 This bounded example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
-the `radial_editor`, `boxplot_editor` and `radar_editor`
+the `radial_editor` and `radar_editor`
 examples (`--features egui_demo`) demonstrate render-pass submission and pointer
 events.
 
@@ -363,8 +376,8 @@ async fn edit_and_export(
 
 ## Errors
 
-Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
-`BoxPlotError` and `RadarError`. Handle validation/layout/budget errors before
+Cartesian operations return `FiggyError`; bounded renderers use `RadialError`
+and `RadarError`. Handle validation/layout/budget errors before
 replacing the last valid display.
 
 ## Construction and prewarming
@@ -388,7 +401,7 @@ still involve driver compilation work during construction.
 
 Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
-compilation-free first drawing. Separate radial/boxplot/radar
+compilation-free first drawing. Separate radial/radar
 renderers and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
 
 ## Ownership and frame validity
@@ -400,8 +413,8 @@ also retain the instance, adapter and surface needed for their own lifetime.
 
 Cartesian `PreparedFrame` validity depends on captured renderer resources and
 revisions. If painting returns `StalePreparedFrame`, rebuild the inputs and
-prepare again. A bounded chart frame (`Arc<RadialFrame>`,
-`Arc<BoxPlotFrame>` or `Arc<RadarFrame>`) owns an immutable GPU snapshot:
+prepare again. A bounded chart frame (`Arc<RadialFrame>`
+or `Arc<RadarFrame>`) owns an immutable GPU snapshot:
 keeping it alive keeps its resources alive even after the current model changes.
 Do not retain every historical frame in a live-edit loop.
 
@@ -532,7 +545,7 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial, boxplot and radar frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a renderer-measured `DecorationMap` on the box plot and radar frames, and a `HitMap<RadialChart>` on the radial frame, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial and radar frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a renderer-measured `DecorationMap` on the radar frame, and a `HitMap<RadialChart>` on the radial frame, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
 ## Pointer position in drags
 

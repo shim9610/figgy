@@ -475,11 +475,15 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### Box plots
 
-`BoxPlotRenderer` draws precomputed quartiles, medians, whiskers, means and outliers
-with matte/satin surfaces, individual styles, grouped layouts and either direction.
-Notches use explicit median confidence intervals. See the [box plot guide](BOXPLOT.md)
-or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`.
-Titles, axes, labels and legends use the [shared interaction API](INTERACTION.md).
+A `DataRenderType::BoxPlot` series draws precomputed quartiles, medians,
+whiskers, means and outliers over a categorical axis, read from a record of box
+statistics and a ragged outlier column, with matte/satin surfaces, individual
+styles, grouped layouts and either direction. Notches use explicit median
+confidence intervals. `Config::from_boxplot` opens a legacy `BoxPlotChart`
+document. See the [box plot guide](BOXPLOT.md) or run
+`cargo run -p figgy-renderer --example boxplot_gallery`. Picking, selection,
+titles, axes, labels and legends are the Cartesian chart's
+([interaction guide](INTERACTION.md)).
 
 ### Radar charts
 
@@ -947,11 +951,12 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 박스플롯
 
-`BoxPlotRenderer`는 미리 집계한 사분위수·중앙값·수염·평균·이상치를 그린다.
+`DataRenderType::BoxPlot` 시리즈는 범주형 축 위에 미리 집계한 사분위수·중앙값·수염·평균·이상치를
+상자 통계 레코드와 이상치 가변 길이 컬럼에서 읽어 그린다.
 가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
-노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](BOXPLOT.md)을 참고하거나
-`cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·축·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+노치는 입력받은 중앙값 신뢰구간으로 그린다. 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다.
+[사용법](BOXPLOT.md)을 참고하거나 `cargo run -p figgy-renderer --example boxplot_gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 직교 좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 레이더 차트
 

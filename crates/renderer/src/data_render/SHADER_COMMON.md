@@ -45,12 +45,12 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `material.wgsl` (§5.9) | bar (category bars, box plots), boxplot, radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
-| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots), boxplot |
+| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
-| `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, radar |
+| `srgb_output.wgsl` (the bounded charts' `output`) | radar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field |
 
 The module lists are the `assembled!` invocations next to each pipeline
@@ -633,8 +633,8 @@ The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arro
 
 Bars, boxes and sectors take one `Material` (`model::Material`) and pack it
 into one per-instance value, `struct Material { params: vec4<f32>, finish:
-vec4<f32> }`, embedded as the `material` member of the category bar and
-boxplot `Bar` and the radial `Sector` (a category bar's lanes travel in its
+vec4<f32> }`, embedded as the `material` member of the bar `Bar` (category
+bars and box plot bodies) and the radial `Sector` (a category bar's lanes travel in its
 `Style` and the bar style table, §2.4, and are packed into `Material` in the
 fragment):
 
@@ -1021,8 +1021,8 @@ override row per part whose bin index is `row * BOX_PLOT_PARTS + part`
 | `BOX_PART_MARKERS` (2) | zero | fill = mean colour, border colour = outlier colour, `material` = (mean size px, outlier size px, square (1) or circle (0), filled (1)); a size of 0 hides the part |
 
 One instance draws `BOX_PLOT_BASE_VERTICES` (42) plus six vertices per
-outlier of the longest group, as quads in the former box plot's paint
-order: the low whisker and its cap, the high whisker and its cap, the
+outlier of the longest group, as quads in the former box plot renderer's
+paint order: the low whisker and its cap, the high whisker and its cap, the
 body, the median, the mean, then outlier `k` of the box's group. The
 whiskers, caps and median are `ErrorBarSegment` quads (§5.11) built at the
 category position with a pixel offset across to the box's middle and

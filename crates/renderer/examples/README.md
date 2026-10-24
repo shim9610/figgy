@@ -105,9 +105,9 @@ in [gallery_concepts.rs](gallery_concepts.rs) holds its data and styling.
 | [gallery_concepts.rs](gallery_concepts.rs) | The six `concept-*.png` images | `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts` |
 | [radial_gallery.rs](radial_gallery.rs) | One PNG per material (`matte`, `ceramic`, `satin-metal`, `toon`, `enamel`, `brushed-metal`, `paper`, `plywood`, `hatch`, `pearl`), plus `outlined-raised-pie`, `corners-sharp`, `corners-rounded`, `individual-edit`, `pie-of-pie` and the hover frames `hover-00` to `hover-19` | `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery` |
 | [categorical_gallery.rs](categorical_gallery.rs) | `grouped-matte`, `horizontal-satin`, `stacked-enamel`, `percent-outline`, `signed-stacked`: categorical documents opened as Cartesian category bars | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
-| [boxplot_gallery.rs](boxplot_gallery.rs) | `01-classic-matte`, `02-satin`, `03-horizontal`, `04-grouped-notch`, `05-mean-selection` | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
+| [boxplot_gallery.rs](boxplot_gallery.rs) | `01-classic-matte`, `02-satin`, `03-horizontal`, `04-grouped-notch`, `05-mean-selection`: box plot documents opened as Cartesian box plot series | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
 | [radar_gallery.rs](radar_gallery.rs) | `01-spider-web`, `02-circle-values`, `03-fixed-axis`, `04-four-series`, `05-selection` | `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery` |
-| [bounded_titles.rs](bounded_titles.rs) | `pie.png`, `box.png`, `radar.png`: rich titles on the bounded charts | `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles` |
+| [bounded_titles.rs](bounded_titles.rs) | `pie.png`, `radar.png`: rich titles on the bounded charts | `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles` |
 | [precise_sketch_preview.rs](precise_sketch_preview.rs) | `style-growth-response-precise.png`, `style-growth-response-sketch.png` | `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch` |
 | [milkyway_line_preview.rs](milkyway_line_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png` |
 | [constellation_preview.rs](constellation_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png` |
@@ -125,7 +125,6 @@ These open native windows and show host event handling as well as drawing.
 cargo run --locked -p figgy-renderer --example winit_simple
 cargo run --locked -p figgy-renderer --features egui_demo --example egui_embed
 cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor
-cargo run --locked -p figgy-renderer --features egui_demo --example boxplot_editor
 cargo run --locked -p figgy-renderer --features egui_demo --example radar_editor
 cargo run --locked --release -p figgy-renderer --features egui_demo --example ssot_lab
 cargo run --locked --release -p figgy-renderer --features egui_demo --example streaming_capacity_demo
@@ -135,7 +134,7 @@ cargo run --locked -p figgy-renderer --features egui_demo --example constellatio
 - **winit_simple** and **egui_embed** draw three panels in a host window and
   handle pointer input. `winit_simple` also selects, drags and resizes chart
   elements.
-- **The four editors** select, edit and drag the parts of a bounded chart.
+- **The two editors** select, edit and drag the parts of a bounded chart.
   `Edit plot area` shows eight resize handles.
 - **ssot_lab** edits four charts live, one per draw style. All four series
   read one X column from the pool, and vertically adjacent panels share their
@@ -174,9 +173,9 @@ images are not in the README.
   격자 화살표와 격자 색 지도), `mixed-axes.png`(서브플롯 안의 보조 Y축)처럼 기능 확인용
   출력도 같은 예제가 함께 만든다.
 - **데이터 경로**: 선·오차 막대·히스토그램·행렬·극좌표·벡터장 예제는 컬럼을 등록한다.
-  범주형 막대 예제는 `Config::from_categorical`로 문서를 읽어 컬럼을 등록하고,
-  원형·박스플롯·레이더는 각 차트의 소량 데이터 모델을 직접 만든다. 박스플롯의
-  사분위수 등 통계값은 호출자가 제공한다.
+  범주형 막대 예제는 `Config::from_categorical`로, 박스플롯 예제는 `Config::from_boxplot`으로
+  문서를 읽어 컬럼·레코드를 등록하고, 원형·레이더는 각 차트의 소량 데이터 모델을 직접 만든다.
+  박스플롯의 사분위수 등 통계값은 호출자가 제공한다.
 - **창 예제와 도구**: 편집 예제는 실제 창을 열어 선택·이동·영역 조정을 보여준다.
   `constellation_demo`, `sketch_demo`, `raster_bench`는 렌더러를 바꿀 때 출력과 비용을
   확인하는 도구다.

@@ -1,17 +1,17 @@
 # 상호작용 가이드 / Interaction guide
 
-원형·박스플롯·레이더는 데이터 모델이 서로 다르지만, 그리기 영역·제목·축·라벨·범례는
+원형·레이더는 데이터 모델이 서로 다르지만, 그리기 영역·제목·축·라벨·범례는
 Cartesian 차트와 같은 `HitMap → Selectable → Draggable / Resizable` 계약을 사용한다. 포인터 이벤트 전달과
 드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
 
-Radial, box plot and radar charts are the bounded charts: each
+Radial and radar charts are the bounded charts: each
 renderer draws one validated model and takes no column sources. Their plot
 area, title, axes, labels and legend use the same
 `HitMap → Selectable → Draggable / Resizable` contract as Cartesian charts. The
 host forwards pointer events and requests frames while dragging; it never
 recomputes hit regions or label positions.
 
-- `frame.hit_test([x, y])` picks data: boxes, radar vertices and
+- `frame.hit_test([x, y])` picks data: radar vertices and
   polygons. The radial chart picks its slices on the GPU with the draw's own
   sector ray-march: `frame.pick([x, y])` submits the pick and returns a
   `RadialPickTicket`, whose `resolve()` (`resolve_blocking()` natively) reads
@@ -37,7 +37,7 @@ recomputes hit regions or label positions.
 
 ## 데이터 선택과 장식 요소 선택
 
-- `frame.hit_test([x, y])`는 막대·박스·레이더 꼭짓점과 다각형 같은 데이터를 고른다. 원형 차트는
+- `frame.hit_test([x, y])`는 레이더 꼭짓점과 다각형 같은 데이터를 고른다. 원형 차트는
   그리기와 같은 조각 광선 추적으로 GPU에서 조각을 고른다. `frame.pick([x, y])`가 요청을 제출하고
   `RadialPickTicket`을 돌려주며, `resolve()`(네이티브는 `resolve_blocking()`)가 결과를 읽는다.
 - `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례와 그리기 영역(`DataArea`)을 고른다.
@@ -51,7 +51,7 @@ recomputes hit regions or label positions.
 - 좌표와 이동량은 차트 내부의 논리 픽셀이다. CSS로 확대된 캔버스라면 화면 좌표를
   차트의 논리 크기로 변환한다. DPR을 곱한 framebuffer 좌표를 넘기지 않는다.
 
-장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 막대·박스플롯·레이더의
+장식 요소 선택은 `chart.decorations.selected`에, 데이터 선택과 호버는 레이더의
 `selected`·`hovered`와 원형의 `interaction.selected`·`interaction.hovered`에 저장한다.
 두 선택은 별개 상태이므로 한 종류만 선택하려면 호스트가 다른 쪽 선택을 명시적으로 지운다.
 
@@ -100,10 +100,26 @@ the value axis (`AxisOptions::cross_at`) is hit and dragged where it is
 drawn. Value labels are not drawn in this release (#40 item 13h), so they
 have no hit region yet.
 
+Box plots are a Cartesian series kind too (`DataRenderType::BoxPlot` over a
+categorical axis, [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md)),
+with the same Cartesian interactions: decoration selection and drag, the
+plot area, the annotation layer and the active layer, and overlays and
+subplots with their own box groups. Every drawn part of a box (the body,
+the whiskers and caps, the median, the mean and each outlier) is picked by
+`pick_chart_data` as `PickedData::HistogramBin { series_id, bin_index }`
+for its box, `bin_index` the category row; a host's hover and click use
+this pick. A selected box (`PickedDataRef::HistogramBin`) draws an inside
+outline around its painted body, the notch included, and gains its
+emphasis brightness. In the WASM wrapper `step_selection(dx, dy)` walks the
+categories and the series of the box group (the boxes, never their
+outliers), and `selection_details()` reports the category and the box's
+statistics read back from its record. Box value labels are not drawn yet
+(#40 item 13h).
+
 ## Manual label placement
 
 Use the displayed frame's decoration hit map to select and drag labels. Each
-radial label, each box/radar value label and each radar spoke label can move
+radial label, each radar value label and each radar spoke label can move
 independently; axis tick labels move together as a group. Drag deltas are
 floating-point logical pixels, so small fractional adjustments are supported. Store selection in `decorations.selected`,
 apply `drag_by` to `chart.decorations`, and prepare a new frame before drawing or
@@ -220,7 +236,7 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 ## 트레잇 상태 타입, 마이그레이션, 웹 연결
 
 `Selectable`, `Draggable`, `Resizable`, `HitMap`은 상태 타입을 매개변수로 받으며 기본값은 `Config`다.
-Cartesian 차트(범주형 막대 포함)는 `Config`를, 원형 차트는 `RadialChart`를, 박스플롯·레이더는
+Cartesian 차트(범주형 막대·박스플롯 포함)는 `Config`를, 원형 차트는 `RadialChart`를, 레이더는
 `DecorationLayout`을 상태로 넘긴다. 원형 차트의 요소는 넘긴 차트에서 부품을 배치하므로
 히트·선택 테두리·드래그가 그림과 같은 배치에서 나온다.
 원형·범주형 막대·박스플롯·레이더 모델의 모든 필드를 명시한 Rust 구조체 리터럴에는
@@ -230,12 +246,12 @@ Cartesian 차트(범주형 막대 포함)는 `Config`를, 원형 차트는 `Radi
 `DataAreaEdge`는 리사이즈가 내부에서 옮기는 변을 가리키며 히트 영역으로 등록하지 않는다.
 `data_area`가 없는 JSON은 영역을 자동 배치로 읽는다.
 
-Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·박스플롯·레이더를 위한
+Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·레이더를 위한
 `FiggyBoundedChart`를 제공한다. 이 클래스는 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며,
 호스트는 포인터 이벤트를 연결하고 SSOT 변경 후 새 프레임을 그린다. 초기 표시는
 `first_frame_ready()`를 기다린다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
 
-네이티브 연결 예제는 `radial_editor`, `boxplot_editor`, `radar_editor`이며
+네이티브 연결 예제는 `radial_editor`, `radar_editor`이며
 `egui_demo` 기능이 필요하다.
 `cargo run --locked -p figgy-renderer --features egui_demo --example radial_editor`처럼 실행한다.
 제목·범례·라벨을 클릭해 선택하고 드래그하며, `Reset position`으로 되돌릴 수 있다.
@@ -258,7 +274,7 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·박스플롯·레�
 
 ## Independent bounded chart titles
 
-The three bounded charts and the categorical document accept an optional
+The two bounded charts and the categorical and box plot documents accept an optional
 rich `chart_title`. `RadialChart`
 holds the shared chart title, `chart_title: Option<ChartTitleOptions>`, written
 and read as the same `{ visible, text }` object; its `offset_x`, `offset_y` and
@@ -294,9 +310,9 @@ read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
 
 Run `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles`
 for a native PNG example covering the three bounded families, multiline
-alignment and a subscript; it writes `pie.png`, `box.png` and `radar.png`. A
-categorical document's title becomes the Cartesian chart title
-(`Config::from_categorical`). See
+alignment and a subscript; it writes `pie.png` and `radar.png`. A
+categorical or box plot document's title becomes the Cartesian chart title
+(`Config::from_categorical`, `Config::from_boxplot`). See
 [the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/bounded_titles.rs). Hosts own editor widgets,
 undo and file storage.
 
@@ -559,8 +575,7 @@ anchor ↔ pixel conversion, the `AnnotationSpace` trait implemented by the
 Cartesian configs, `Frame::annotation_space()` for bounded frames,
 `AnnotationMap::space()` on any map). Rectangular Cartesian charts convert
 data anchors through `bottom_x` / `left_y` (on a chart of category bars the
-categorical axis maps category indices); box charts through the
-category index axis and the value axis. Polar charts (`Config.polar`), radial
+categorical axis maps category indices, as on a chart of box plots). Polar charts (`Config.polar`), radial
 charts and radar charts have no separable value axes: they place ratio
 anchors only and report data anchors as warnings. Drags are converted back
 through the same space, so a data-anchored item follows later zooms and a
@@ -631,7 +646,7 @@ measured by the renderer into the annotation layer's own
   frame; the decorations all stay registered below them, because a bounded
   chart has no other layer whose elements could be excluded. A radial frame
   routes through `route_active_layer(chart.active_layer(), point, ||
-  frame.decoration_at(&chart, point))`. Slices, boxes and radar
+  frame.decoration_at(&chart, point))`. Slices and radar
   vertices and polygons are not part of either map and keep answering through
   the frame's own `hit_test` (the radial frame's `pick`) on every layer, as
   GPU data picking keeps addressing the base layer on Cartesian charts.
@@ -646,9 +661,9 @@ part, which a hidden layer (`visible = false`) never does.
 Changing the layer clears the element selection, as on overlay layers: the
 registry drops its `HitId`, the WASM wrapper drops the annotation selection
 when the layer changes away from or into `Annotations`, and the bounded
-`set_active_layer` (`RadialChart`, `BoxPlotChart`, `RadarChart`,
+`set_active_layer` (`RadialChart`, `RadarChart`,
 with an `Overlay` stored as `Base`) clears `decorations.selected`. The data selection
-(`picked_*`, the bounded charts' selected box, slice or radar target) is kept. A layer
+(`picked_*`, the bounded charts' selected slice or radar target) is kept. A layer
 switch changes no raster revision of its own: the data, grid and decoration
 textures and the bounded frame and label raster are reused, and only a cleared
 selection redraws its selection chrome. Selecting or dragging an item through
@@ -658,20 +673,23 @@ methods) keep working on every layer for hosts with their own annotation
 tool.
 
 ```rust,no_run
-use renderer::{Anchor, Annotation, AnnotationAxis, AnnotationKind, DecorationId};
-# fn edit(renderer: &mut renderer::BoxPlotRenderer, chart: &mut renderer::BoxPlotChart)
-# -> Result<(), renderer::BoxPlotError> {
-chart.annotations.items.push(Annotation::new(AnnotationKind::Span {
-    axis: AnnotationAxis::X, from: -0.5, to: 0.5, fill: renderer::Color::new(1., 0., 0., 0.3),
+use renderer::{Anchor, Annotation, AnnotationKind, DecorationId};
+# fn edit(renderer: &mut renderer::RadarRenderer, chart: &mut renderer::RadarChart)
+# -> Result<(), renderer::RadarError> {
+chart.annotations.items.push(Annotation::new(AnnotationKind::Arrow {
+    from: Anchor::Ratio { x: 0.2, y: 0.8 },
+    to: Anchor::Ratio { x: 0.4, y: 0.6 },
+    style: Default::default(),
+    text: None,
 }));
 chart.annotations.items.push(Annotation::new(AnnotationKind::Text {
     anchor: Anchor::Ratio { x: 0.6, y: 0.1 },
     text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 12., ""),
     box_style: Some(Default::default()),
 }));
-// The span is an underlay: prepare the frame with a host clear and clear the
-// pass with `chart.background`.
-renderer.set_background(renderer::FrameBackground::HostClear);
+// An underlay (a span) needs the frame prepared with a host clear, the pass
+// cleared with `chart.background`:
+// renderer.set_background(renderer::FrameBackground::HostClear);
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {

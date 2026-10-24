@@ -2,8 +2,7 @@
 
 `RadarRenderer` draws radar (spider) charts: a few series compared over a
 fixed set of categories, one spoke per category, each series a closed polygon
-over one shared value axis. Like `RadialRenderer` and
-`BoxPlotRenderer`, it draws a small chart model with its own renderer: the
+over one shared value axis. Like `RadialRenderer`, it draws a small chart model with its own renderer: the
 whole chart is one `RadarChart` value, with no `ColumnSource`, and
 `RadarRenderer::prepare` draws it into an immutable frame. It does not use the
 Cartesian `Renderer`, its column pool, auto-fit or streamed sources.

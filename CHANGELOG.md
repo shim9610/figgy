@@ -19,7 +19,7 @@ Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups` and
-the `CategoryBars` series kind) are additive.
+the `CategoryBars` and `BoxPlot` series kinds) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -331,6 +331,64 @@ the `CategoryBars` series kind) are additive.
   `CategoricalChart::label_text` (a bar's geometry is the shader's, its
   label `format_labels`'). The DataLess chart class is the radial chart
   alone; the categorical chart is a Cartesian series kind.
+- **Box plots are a Cartesian series kind**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+  `DataRenderType::BoxPlot { color, style, labels, outliers, overrides }`
+  draws one box per category of the chart's categorical axis (`bottom_x`
+  for vertical boxes, `left_y` for horizontal ones) with its median,
+  whiskers and caps, mean and outliers. `x_column` is the positions column
+  `0..n-1`, `y_column` the id of the series' record of box statistics (the
+  renderer's `BOX_PLOT_RECORD` schema: `median`, `q1`, `q3`, `whisker_low`,
+  `whisker_high` and the optional `mean`, `sample_count`, `ci_low`,
+  `ci_high`; a missing box is a row of NaN), `outliers` an optional ragged
+  column with one group per category; the roles do not swap with the
+  direction. The box plot series of one layer form its box group, laid out
+  by `Config.bar_groups` (`direction`, `group_width`, `bar_gap` as the box
+  gap; the mode must be `Grouped`). `BoxPlotTarget`, `BoxPlotLabels`,
+  `BoxOutlierShape`, `BoxPlotStyle` and `BoxPlotOverride` move to
+  `model::data_config`; `model::boxplot` re-exports them, so existing paths
+  keep working. New items: `BoxPlotSeriesLabels` (placement, decimals,
+  suffix and `text`, one drawn string per category, at most
+  `MAX_BOX_PLOT_LABEL_CHARS` each), `BoxPlotRef` /
+  `DataRenderType::box_plot`, `SeriesConfig::box_plot_columns`,
+  `BoxPlotStyle::validate`, `validate_box_plot_series`,
+  `Config::validate_box_plots` (a categorical axis in the box direction, a
+  linear value axis, at most 16 box plot series per layer and 512 boxes, a
+  grouped mode, one kind per layer: a layer draws either category bars or
+  box plots, no horizontal boxes on an overlay, no polar chart) and
+  `format_box_plot_labels`, which writes `labels.text` from the host's
+  medians and counts at edit time: the renderer has no per-box statistics
+  to write it from, so a host that uploads its own records writes it.
+  Value labels are configuration only in this release; the renderer
+  validates the text and does not draw it yet (#40 item 13h). Every new key
+  is additive and omitted at its default; model 0.12.1 and older documents
+  parse and re-serialize byte for byte. Migration: an exhaustive match on
+  `DataRenderType` adds `BoxPlot`.
+- **The box plot is a document reader**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+  `BoxPlotChart` stays the serialized document of releases up to 0.12 and
+  keeps its `validate` (ordered statistics, outliers outside the whiskers, a
+  CI around the median, the limits). `Config::from_boxplot(&chart) ->
+  (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>)`
+  (`model::bounded_sources`) turns it into a Cartesian chart with a
+  categorical axis (top-down for horizontal boxes, as before), a grouped
+  `bar_groups` and one `BoxPlot` series per document series. The uploads
+  borrow the document's summaries: the positions column
+  `boxplot.positions` (`BOX_PLOT_POSITIONS_COLUMN`) first, then per series
+  its record `boxplot.record.<series id>` (`UploadValues::BoxRecord`, whose
+  nine field adapters `UploadValues::box_fields` gives as `BoxColumn`s) and,
+  when any of its boxes has an outlier, its ragged column
+  `boxplot.outliers.<series id>` (`UploadValues::BoxOutliers`, values and
+  offsets from `UploadValues::box_outliers`); every value is computed from
+  the summaries on the fly, nothing is copied. `value_range` becomes the
+  fixed value axis; the titles, grid, legend, font, colours, chart title,
+  annotations, active layer, selection, label settings (with the text
+  written from the medians and counts), overrides and decoration offsets
+  map onto their Cartesian options; the hover state, the background
+  colour, an explicit `decorations.data_area` and the data label offsets
+  are not carried. Removed: `BoxPlotChart::label_text` (a box's label is
+  `format_box_plot_labels`'). Migration: an exhaustive match on
+  `UploadValues` adds `BoxRecord` and `BoxOutliers`.
 
 <a id="unreleased-renderer"></a>
 
@@ -650,6 +708,83 @@ the `CategoryBars` series kind) are additive.
   inserted, replaced or removed as a column (`ReservedColumnId`) and a series
   cannot reference it. No serialized field and no shader change; the
   additions are API only.
+- **Box plots on the bar path**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f). A
+  `BoxPlot` series draws through the bar module: the fragment
+  `data_render/common/box_plot.wgsl` (SHADER_COMMON §2.5 and §5.15) is
+  spliced into `bar.rs::BAR_SHADER` with the marker, error bar segment,
+  ramp and sketch noise fragments, one instance per category with
+  `BOX_PLOT_BASE_VERTICES` (42) vertices plus six per outlier of the longest
+  group (`RaggedStats::max_group`), reading the record's fields and the
+  outliers by their pool lanes through the category bar binding layout
+  unchanged (group 3, bindings 8 and 9: `CategoryBarParamsGpu`, whose lanes
+  a box plot reads as its record, outlier and group lanes). The body is
+  shaded by `bar_surface` with its material and drawn with the former
+  renderer's notch polygon; the whiskers, caps and median are
+  `ErrorBarSegment` quads and the mean and outliers `marker.wgsl` shapes,
+  all built on every draw. The parts' styles are three slots of the bar
+  style map (`PrimitiveStyle::from_box_plot`,
+  `create_bar_style_map_with_slots`, the `BAR_STYLE_MASK_FILL`, `_BORDER_*`,
+  `_GAP` and `_WIDTH_RATIO` masks) and the per-box overrides its override
+  rows (`row * 3 + part`, a fixed array, no new binding).
+  `ColumnCategoryBarLayer` gains `vertices`. The typed data pick
+  (`pick_box_plot`, answered as `PickedData::HistogramBin` with the
+  category row) tests the body, the whisker and cap and median strokes, the
+  mean and every outlier of the box, each answering its box; the selection
+  outline (an inside ring around the drawn body, the notch included) and
+  emphasis, `step_selection` (the boxes, not the outliers), hover, PNG
+  export, the resident body cache (its key gains the box plot category
+  axes, and its column fingerprint the record and ragged member columns)
+  and the overlay and subplot panels are the category bars'. The
+  value-axis fit (`Chart::auto_fit_layer_union`, `box_plot_value_extent`)
+  covers the pool's statistics of every value field of the records (all
+  but `sample_count`) and of the outlier columns, hidden means and outliers
+  included as before. Nothing per box is stored on the CPU.
+  **Unordered statistics are clamped, not rejected**: the renderer cannot
+  read a record on the CPU, so it no longer checks the order the former
+  renderer checked. The body spans `min(q1, q3)..max(q1, q3)`, the median
+  is clamped into it, the stems run from `min(whisker_low, body low)` and
+  to `max(whisker_high, body high)`, a notch needs both CI endpoints, and a
+  row with a missing required field draws nothing. A `BoxPlotChart` still
+  validates the order, so a document drawn through the reader draws as
+  before. A streamed box plot series (or a streamed record or outlier id)
+  is rejected with `InvalidSeriesConfig`, and a polar chart rejects box
+  plots.
+- **The legacy box plot renderer is removed.** `BoxPlotRenderer`,
+  `BoxPlotFrame` (`hit_test`, `part_rect`, `box_rect`, `plot_rect`,
+  `decorations`, …), `BoxPlotPick`, `BoxPlotPart`, `BoxPlotError`,
+  `boxplot.wgsl` and `boxplot_layout.rs` are gone; `renderer::boxplot` is the
+  model's document module. Migration: read the document with
+  `Config::from_boxplot`, upload its `SeriesUpload`s (the positions with
+  `add_column`, each record with `upsert_record` and the `BOX_PLOT_RECORD`
+  schema, each outlier column with `upsert_ragged`), fit the value axis with
+  `auto_fit_layer_union` when the document has no `value_range` and draw
+  with the Cartesian `Renderer`; a box and every part of it is picked with
+  `pick_chart_data`, its statistics are the host's (or the document's).
+  The `boxplot_editor` example is removed; `boxplot_gallery` draws through
+  the reader.
+- **Look of a box plot document.** Opened through the reader, a document
+  draws with the Cartesian chrome instead of the former bounded layout:
+  the data area follows the Cartesian margins (the explicit
+  `decorations.data_area` is not carried), the legend is the Cartesian
+  legend box in its corner, the export clear colour (transparent in the
+  gallery) replaces the document's `background`, a selected box draws the
+  Cartesian inside outline, an unfilled outlier is the marker's 1.5 px ring
+  (formerly at most 1.2 logical px inside the marker), and value labels are
+  not drawn yet. The boxes themselves shade as before: the dominant box
+  colours of the former renderer's and the new exports of the same
+  documents are equal. Changed pixels of whole 960 × 640 exports of the
+  five `boxplot_gallery` cases against the former renderer, composited
+  over white (raw RGBA in brackets, the clear colour differing): classic
+  matte 106 874 (17.4 %) [600 005], satin 93 480 (15.2 %) [587 033],
+  horizontal 98 512 (16.0 %) [600 129], grouped notch 92 956 (15.1 %)
+  [600 227], mean and selection 95 304 (15.5 %) [600 168]; at 2x 385 432,
+  340 208, 373 575, 328 413 and 335 510. A horizontal document with
+  per-box overrides: 92 608 (15.1 %) at 1x, 344 896 at 2x. The released
+  0.12.1 edited document at 800 × 600, whose background is not white:
+  479 241 (99.8 %) raw, 90 046 with a channel difference above 8; at 2x
+  1 916 942 and 352 881. None is pixel identical; every difference is the
+  chrome above.
 
 <a id="unreleased-web"></a>
 
@@ -692,6 +827,23 @@ the `CategoryBars` series kind) are additive.
   field name, and `FiggyChart.register_ragged(id, values, offsets)` a ragged
   column from two `Float64Array`s. Both are additive; nothing draws them
   yet (the box plot series of item 13f will).
+
+- **Box plot documents in the Cartesian wrapper**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+  `FiggyChart.set_boxplot_document(json)` opens a `BoxPlotChart` document
+  as box plot series (`Config::from_boxplot`), registering its positions
+  column, one record per series and, for a series with outliers, its ragged
+  outlier column from the borrowed summaries, and fitting the value axis
+  (a tenth of the span as padding, nice ticks) unless the document fixes
+  `value_range`. `selection_details()` reports a selected box's
+  `category_id`, `category_label`, `index`, `direction` and its statistics
+  read back from the record (`null` for a missing one), and
+  `step_selection` walks the categories and the series of the box group
+  (boxes, never outliers). `FiggyBoundedChart` no longer has the `"boxplot"` family;
+  creating one with it is an error that names the new method. Migration:
+  replace `FiggyBoundedChart.create(canvas, "boxplot", json, w, h)` with a
+  `FiggyChart` and `set_boxplot_document(json)`; boxes are picked with
+  `pick_data` and selected through `picked_data`.
 
 ### Tests and guards
 
@@ -746,6 +898,29 @@ the `CategoryBars` series kind) are additive.
   browser test opens a document in `FiggyChart`. The legacy renderer's
   `categorical_render` and `categorical_browser` are removed with it; the
   bounded annotation tests that drew on bars run on box plots.
+- **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13f). `box_plot_render` checks the boxes' statistics in both
+  directions at 1x and 2x against their expected pixel extents, notches,
+  missing boxes and clamped unordered statistics, overrides and materials
+  restyling only their box, the selection outline of an overridden box, the
+  value-axis fit over the record and outlier statistics, a replaced record
+  and mismatched sources, an overlay's and a subplot's own box groups, and
+  a released document drawn through the reader;
+  `pick_draw_agreement::box_plots_pick_the_box_they_paint` holds the pick of
+  every part to the painted box; `released_documents` converts every
+  released box plot document and round-trips the result; the resident-body
+  mutation walk covers a box plot panel (384 config and 166 series leaves,
+  records and a ragged column included); the decoration oracle and the
+  playground sweep the box plot scene as a Cartesian scene (the oracle's
+  I5 rotated-title 1x/2x check excludes the box plot's left axis title,
+  whose sub-pixel centroid offset the categorical scene shares, #40); a
+  browser test opens a document in `FiggyChart`, selects, steps and exports
+  it; `streamed_series_reject_box_plots` checks the streaming refusal. The
+  legacy renderer's `boxplot_render` and `boxplot_browser` are removed with
+  it, and so are the box plot cases of the bounded interaction and label
+  layout tests and the bounded span underlay test (radial and radar charts
+  place no spans); the annotation hit-region test that drew on boxes runs
+  on a radar chart.
 - **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
   dev-dependency for the mutation walker. `figgy-renderer` gains the
   `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from
@@ -772,6 +947,18 @@ the `CategoryBars` series kind) are additive.
   the model README describe the series kind, `bar_groups`, `cross_at` and
   `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
   radial chart alone.
+- **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13f). `BOXPLOT.md` describes the `BoxPlot` series, its record and
+  ragged sources, the box group, the clamping, styles and overrides, value
+  labels, the fit, picking and the reader, and drops the removed renderer;
+  `SHADER_COMMON.md` §2.5 and §5.15 hold the box plot contract; `CONFIG.md`,
+  `API.md`, `INTERACTION.md`, `WASM.md`, `USAGE.md`, `ARCHITECTURE.md`,
+  `GALLERY.md`, the browser `README.md` and `SCHEMA.md`, the model README,
+  the example and playground READMEs and the top-level READMEs describe the
+  series kind and `set_boxplot_document`. The Korean text (the Korean
+  sections of `BOXPLOT.md`, `CONFIG.md`, `INTERACTION.md`, `USAGE.md`,
+  `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md` and
+  `examples/README.md`) is updated in Korean.
 - `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
   bindings, invariants, the flag table of §3.1) and names the file that
   holds each block; it is no longer parsed by a test. The contributing
