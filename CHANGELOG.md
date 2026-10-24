@@ -691,8 +691,9 @@ the `CategoryBars` series kind) are additive.
   1x and 2x against the bars' expected extents, signed and missing stacks,
   overrides and materials, the selection outline of an overridden bar, the
   value-axis fit over the stack extent and its refusal without a measured
-  stack, the axis crossing, and a released document drawn through the
-  reader; `pick_draw_agreement` holds the bar pick to the painted bar;
+  stack, the axis crossing, an overlay's and a subplot's own bar groups
+  drawn and picked on their layers, and a released document drawn through
+  the reader; `pick_draw_agreement` holds the bar pick to the painted bar;
   `released_documents` converts every released categorical document and
   round-trips the result; the SSOT matrix classifies `bar_groups` and
   `cross_at`, and the resident-body mutation walk covers a stacked category

@@ -777,3 +777,116 @@ fn the_category_axis_line_crosses_the_value_axis_at_zero() {
         );
     }
 }
+
+/// An overlay and a subplot draw their own bar groups: an overlay series
+/// is a group of its own over the parent's categories on the overlay's Y
+/// range, and a subplot's series stack by the subplot's `bar_groups` on its
+/// own categorical axis.
+#[test]
+fn overlays_and_subplots_draw_their_own_bar_groups() {
+    let mut r = renderer(&ONE, &TWO);
+    let direction = CategoryBarDirection::Vertical;
+    let mut parent = chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+    let mut overlay = renderer::OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 50.0;
+    overlay.y_axis.major_spacing = 10.0;
+    overlay.series = vec!["two".into()];
+    let mut sub = chart(CategoryBarMode::Stacked, direction, (0.0, 40.0))
+        .config()
+        .clone();
+    sub.chart_area = ChartArea(Rect {
+        x: 0,
+        y: HEIGHT,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    let config = parent.config_mut();
+    config.overlays.push(overlay);
+    config.subplots.push(renderer::Subplot {
+        config: sub,
+        series: vec!["sub_one".into(), "sub_two".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let mut sub_one = bars("sub_one", GREEN, direction);
+    sub_one.y_column = "one".into();
+    let mut sub_two = bars("sub_two", MAGENTA, direction);
+    sub_two.y_column = "two".into();
+    let series = [
+        bars("one", RED, direction),
+        bars("two", BLUE, direction),
+        sub_one,
+        sub_two,
+    ];
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_document_rgba(&parent, &series, scale).unwrap();
+        let (w, h) = (img.width, img.height);
+        assert_eq!(h, (2.0 * HEIGHT as f32 * scale) as u32);
+        let top = (0, 0, w, h / 2);
+        let bottom = (0, h / 2, w, h);
+        let red = bbox(&img, top, is_red).expect("the parent's bars");
+        let blue = bbox(&img, top, is_blue).expect("the overlay's bars");
+        // The overlay is a group of its own: its bars take the whole group
+        // width, as wide as the parent's two grouped bars and their gap.
+        assert!(
+            blue.2 - blue.0 > red.2 - red.0,
+            "{scale}x: {red:?} {blue:?}"
+        );
+        assert_eq!(bbox(&img, bottom, is_red), None);
+        assert_eq!(bbox(&img, bottom, is_blue), None);
+        let all = bbox(&img, bottom, is_green).expect("the subplot's first series");
+        // The first category's column of the subplot.
+        let column = (all.0, h / 2, all.0 + (4.0 * scale) as u32, h);
+        let green = bbox(&img, column, is_green).unwrap();
+        let magenta = bbox(&img, column, is_magenta).expect("the subplot's second series");
+        // Stacked: the second series sits on the first, in the same column.
+        assert!(
+            magenta.3 <= green.1 + 1 && magenta.1 < green.1,
+            "{scale}x: {green:?} {magenta:?}"
+        );
+        assert_eq!(bbox(&img, top, is_green), None);
+
+        // The typed pick finds the overlay's and the subplot's bars where
+        // they are drawn.
+        r.enable_gpu_picking().unwrap();
+        let id = r
+            .register_chart(parent.config().clone(), series.to_vec())
+            .unwrap();
+        let pick = |r: &mut Renderer, x: u32, y: u32| {
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: w,
+                    height: h,
+                },
+                display_scale: scale,
+                max_distance_px: 0.0,
+            };
+            match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+                Some(renderer::PickedData::HistogramBin { series_id, .. }) => Some(series_id),
+                _ => None,
+            }
+        };
+        // The overlay's bar of the first category, below the parent's bars'
+        // top: the blue pixels there are the overlay's.
+        let blue_first = bbox(&img, (blue.0, 0, blue.0 + 2, h / 2), is_blue).unwrap();
+        let y = blue_first.3 - 2;
+        assert!(is_blue(pixel(&img, blue.0 + 1, y)));
+        // The data pick addresses the active layer.
+        assert_eq!(pick(&mut r, blue.0 + 1, y).as_deref(), Some("one"));
+        r.set_active_layer(id, LayerRef::Overlay(0)).unwrap();
+        assert_eq!(pick(&mut r, blue.0 + 1, y).as_deref(), Some("two"));
+        r.set_active_layer(id, LayerRef::Subplot(0)).unwrap();
+        let y = green.3 - 2;
+        assert!(is_green(pixel(&img, green.0 + 1, y)));
+        assert_eq!(
+            pick(&mut r, green.0 + 1, y).as_deref(),
+            Some("sub_one"),
+            "{scale}x"
+        );
+        r.remove_chart(id).unwrap();
+    }
+}
