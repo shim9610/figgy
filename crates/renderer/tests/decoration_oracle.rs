@@ -26,6 +26,10 @@
 //! - **I5** 2x is 1x scaled: every element's bounds at 2x halved within
 //!   1 px of its 1x bounds, the same tick labels drawn, and each element's
 //!   2x ink box-filtered to 1x matching its 1x ink up to hinting.
+//! - **I6** a drag keeps every element grabbable: every draggable element
+//!   of every layer moves by (+7, +5) (an axis across its direction only),
+//!   I2 holds on its new ink, the hit test on the moved ink names it, and a
+//!   drag out of the chart is rejected without a change.
 //! - **I7** the hit map of every layer holds exactly the elements the
 //!   layer's documented registration set names, in that order; no ink
 //!   without an element, no element without ink; and the CPU decoration
@@ -54,7 +58,7 @@ use std::time::Instant;
 use renderer::axis_render::{
     AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
 };
-use renderer::layout::RectF;
+use renderer::layout::{Element, NudgeResult, RectF, Side};
 use renderer::legend::Legend;
 use renderer::select::{
     PartOutline, SELECTION_COLOR, SELECTION_PADDING, part_outline, segment_grab_half_width,
@@ -196,6 +200,9 @@ struct Report {
     phases: Vec<(&'static str, f64)>,
     /// Totals the summary prints: ink pixels, samples, rasters.
     counts: BTreeMap<String, usize>,
+    /// While set, I2 checks count as checks of this invariant for this
+    /// element: I6 runs I2 on the ink of a dragged element.
+    redirect: Option<(Inv, String)>,
 }
 
 impl Report {
@@ -208,14 +215,26 @@ impl Report {
         ok: bool,
         detail: impl FnOnce() -> String,
     ) {
-        let cell = self.matrix.entry((inv, kind_of(element))).or_default();
+        let (inv, element, detail): (Inv, String, Box<dyn FnOnce() -> String + '_>) =
+            match &self.redirect {
+                Some((to, dragged)) if inv == Inv::I2 => {
+                    let checked = element.to_string();
+                    (
+                        *to,
+                        dragged.clone(),
+                        Box::new(move || format!("after the drag, I2 of {checked}: {}", detail())),
+                    )
+                }
+                _ => (inv, element.to_string(), Box::new(detail)),
+            };
+        let cell = self.matrix.entry((inv, kind_of(&element))).or_default();
         cell.0 += 1;
         if !ok {
             cell.1 += 1;
             self.rows.push(Row {
                 scene: at.scene,
                 layer: at.layer.to_string(),
-                element: element.to_string(),
+                element,
                 inv,
                 scale: at.scale,
                 detail: detail(),
@@ -411,6 +430,11 @@ fn i4_no_two_decorations_overlap() {
 #[test]
 fn i5_2x_is_1x_scaled() {
     report().assert_clean(Inv::I5);
+}
+
+#[test]
+fn i6_a_drag_keeps_every_element_grabbable() {
+    report().assert_clean(Inv::I6);
 }
 
 #[test]
@@ -736,12 +760,15 @@ fn cartesian_scene(
             report.time("Cartesian geometry", phase);
             let phase = Instant::now();
             let masks: Vec<Mask> = measured.iter().map(|m| Mask::of(m, &ink)).collect();
-            check_i2(report, &at, &cfg, &map, &measured, &masks, &ink);
+            check_i2(report, &at, &cfg, &map, &measured, &masks, &ink, None);
             report.time("Cartesian hit regions (I2)", phase);
             if scale == 1.0 {
                 let phase = Instant::now();
                 check_i3(report, &at, &measured, &ink);
                 report.time("Cartesian highlights (I3)", phase);
+                let phase = Instant::now();
+                check_i6(report, &at, &cfg, layer, &map, &measured, &ink, &codes);
+                report.time("Cartesian drags (I6)", phase);
             }
         }
         check_owners(report, &document, &ink, &registered);
@@ -1062,6 +1089,7 @@ fn render_panels(doc: &Config) -> Vec<(LayerRef, Config)> {
 }
 
 /// One panel's decoration raster and the owner of each of its pixels.
+#[derive(Clone)]
 struct PanelInk {
     layer: LayerRef,
     config: Config,
@@ -1094,6 +1122,12 @@ struct SceneInk {
 
 impl SceneInk {
     fn new(doc: &Config, codes: &[Code]) -> Result<Self, String> {
+        Self::reusing(doc, codes, None)
+    }
+
+    /// The ink of `doc`, reusing every panel of `previous` whose config is
+    /// unchanged: a drag re-rasters only the panels it moved.
+    fn reusing(doc: &Config, codes: &[Code], previous: Option<&SceneInk>) -> Result<Self, String> {
         let area = doc.document_area();
         let (w, h) = (area.width as usize, area.height as usize);
         let mut panels = Vec::new();
@@ -1107,6 +1141,13 @@ impl SceneInk {
             table.push((code.rgb, code.name.clone(), panel));
         }
         for (index, (layer, config)) in layers.into_iter().enumerate() {
+            if let Some(p) = previous
+                .and_then(|prev| prev.panels.get(index))
+                .filter(|p| p.layer == layer && p.config == config)
+            {
+                panels.push(p.clone());
+                continue;
+            }
             let rgba = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration)
                 .map_err(|e| format!("{layer:?} raster: {e}"))?;
             let a = config.chart_area.0;
@@ -1508,6 +1549,7 @@ fn box_misfit(outline: RectF, ink: RectF) -> f32 {
 /// the region on capped edge-band samples; and at every strong ink pixel
 /// the topmost region in registration order belongs to an element that has
 /// ink there.
+#[allow(clippy::too_many_arguments)]
 fn check_i2(
     report: &mut Report,
     at: &At<'_>,
@@ -1516,11 +1558,15 @@ fn check_i2(
     measured: &[Measured],
     masks: &[Mask],
     ink: &SceneInk,
+    only: Option<usize>,
 ) {
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     let mut strong_total = 0usize;
     let mut samples_total = 0usize;
     for (index, (m, mask)) in measured.iter().zip(masks).enumerate() {
+        if only.is_some_and(|o| o != index) {
+            continue;
+        }
         let Some(sb) = &m.selection else {
             continue;
         };
@@ -1632,8 +1678,10 @@ fn check_i2(
             )
         });
     }
-    report.count(at, "strong ink pixels", strong_total);
-    report.count(at, "contains samples", samples_total);
+    if only.is_none() {
+        report.count(at, "strong ink pixels", strong_total);
+        report.count(at, "contains samples", samples_total);
+    }
 }
 
 /// The parts rule of I2: a text block or rectangle part's outline fits the
@@ -2311,6 +2359,202 @@ fn check_i5(report: &mut Report, scene: &'static str, one: &ScaleRun, two: &Scal
             format!(
                 "{differ} of its {n1} ink pixels ({:.0} %) differ by more than {SCALE_DIFF} from its 2x ink box-filtered ({n2} px)",
                 share * 100.0
+            )
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// I6: a drag keeps every element grabbable
+// ---------------------------------------------------------------------------
+
+const DRAG: (f32, f32) = (7.0, 5.0);
+/// A drag that leaves every chart area.
+const FAR_DRAG: (f32, f32) = (10_000.0, 10_000.0);
+/// Hit tests on the moved ink, per element.
+const DRAG_HIT_SAMPLES: usize = 16;
+
+/// The chart an element of `doc` belongs to: its subplot's, else the
+/// parent.
+fn chart_of(doc: &Config, name: &str) -> Config {
+    name.strip_prefix("subplot_")
+        .and_then(|rest| rest.split(':').next())
+        .and_then(|i| i.parse::<usize>().ok())
+        .and_then(|i| doc.subplot_config(i))
+        .unwrap_or_else(|| doc.clone())
+}
+
+/// How far a drag by [`DRAG`] moves an element's bounds under the nudge
+/// policy (`layout/nudge.rs`): an axis only across its direction, `None`
+/// for the polar axis and labels, which turn and slide along the ring.
+fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
+    let (dx, dy) = DRAG;
+    let polar = chart.polar.is_some();
+    match element {
+        Element::Axis(_) | Element::AxisLabel(_) if polar => None,
+        Element::Axis(Side::Top | Side::Bottom) => Some((0.0, dy)),
+        Element::Axis(_) => Some((dx, 0.0)),
+        Element::ColorBarAxis => match chart.colorbar.as_ref().map(|b| &b.side) {
+            Some(Side::Left | Side::Right) => Some((dx, 0.0)),
+            _ => Some((0.0, dy)),
+        },
+        _ => Some((dx, dy)),
+    }
+}
+
+/// Every registered element of `layer` measured, without the I7 checks of
+/// [`measure_layer`].
+fn measure_quiet(cfg: &Config, layer: LayerRef) -> (HitMap, Vec<Measured>) {
+    let map = HitMap::for_active_layer(cfg);
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    let measured = expected_names(layer)
+        .into_iter()
+        .filter_map(|name| {
+            let id = map.find(&name)?;
+            let element = map.get(id)?;
+            let mut parts = Vec::new();
+            element.emit(cfg, &measure, &mut Parts(&mut |p| parts.push(p)));
+            Some(Measured {
+                bounds: element.bounds(cfg, &measure),
+                selection: map.selection_box(id, cfg, &measure),
+                name,
+                id,
+                parts,
+            })
+        })
+        .collect();
+    (map, measured)
+}
+
+/// I6 for one layer case at 1x.
+#[allow(clippy::too_many_arguments)]
+fn check_i6(
+    report: &mut Report,
+    at: &At<'_>,
+    cfg: &Config,
+    layer: LayerRef,
+    map: &HitMap,
+    measured: &[Measured],
+    ink: &SceneInk,
+    codes: &[Code],
+) {
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    for m in measured {
+        let Some(bounds) = m.bounds else {
+            continue;
+        };
+        let Some(drag) = map.get(m.id).and_then(|e| e.as_draggable()) else {
+            continue;
+        };
+        report.count(at, "drags", 1);
+        // A drag out of every chart area is refused and changes nothing.
+        let mut far = cfg.clone();
+        let result = drag.drag_by(&mut far, &measure, FAR_DRAG.0, FAR_DRAG.1);
+        report.check(
+            at,
+            &m.name,
+            Inv::I6,
+            matches!(result, NudgeResult::Rejected(_)) && far == *cfg,
+            || {
+                format!(
+                    "a drag by {FAR_DRAG:?} gave {result:?} and the config changed: {}",
+                    far != *cfg
+                )
+            },
+        );
+        let mut moved = cfg.clone();
+        let result = drag.drag_by(&mut moved, &measure, DRAG.0, DRAG.1);
+        report.check(at, &m.name, Inv::I6, result == NudgeResult::Moved, || {
+            format!("a drag by {DRAG:?} gave {result:?}")
+        });
+        if result != NudgeResult::Moved {
+            continue;
+        }
+        let (map2, measured2) = measure_quiet(&moved, layer);
+        let Some(index) = measured2.iter().position(|n| n.name == m.name) else {
+            report.check(at, &m.name, Inv::I6, false, || "gone after the drag".into());
+            continue;
+        };
+        let after = measured2[index].bounds;
+        let expected = expected_delta(&chart_of(cfg, &m.name), &drag.nudge_element());
+        match (expected, after) {
+            (_, None) => report.check(at, &m.name, Inv::I6, false, || {
+                "draws nothing after the drag".into()
+            }),
+            (Some((dx, dy)), Some(b)) => {
+                let want = bounds.translated(dx, dy);
+                let worst = [
+                    b.x - want.x,
+                    b.y - want.y,
+                    b.width - want.width,
+                    b.height - want.height,
+                ]
+                .into_iter()
+                .map(f32::abs)
+                .fold(0.0, f32::max);
+                report.check(at, &m.name, Inv::I6, worst <= 0.05, || {
+                    format!("bounds {b:?} after the drag, {want:?} expected ({worst:.2} px off)")
+                });
+            }
+            (None, Some(b)) => report.check(at, &m.name, Inv::I6, b != bounds, || {
+                "the polar drag did not move it".into()
+            }),
+        }
+        // I2 on the new ink, for the dragged element.
+        let ink2 = match SceneInk::reusing(&moved, codes, Some(ink)) {
+            Ok(ink2) => ink2,
+            Err(e) => {
+                report.check(at, &m.name, Inv::I6, false, || e);
+                continue;
+            }
+        };
+        let masks2: Vec<Mask> = measured2.iter().map(|n| Mask::of(n, &ink2)).collect();
+        report.redirect = Some((Inv::I6, m.name.clone()));
+        check_i2(
+            report,
+            at,
+            &moved,
+            &map2,
+            &measured2,
+            &masks2,
+            &ink2,
+            Some(index),
+        );
+        report.redirect = None;
+        // The hit test names it on its moved ink, where its region is on top.
+        let Some(code) = ink2.code_of(&m.name) else {
+            continue;
+        };
+        let topmost: Vec<u32> = ink2.exact[code]
+            .iter()
+            .copied()
+            .filter(|&i| ink2.alpha(code, i) >= STRONG_ALPHA)
+            .filter(|&i| {
+                let (x, y) = (i64::from(i) % ink2.w as i64, i64::from(i) / ink2.w as i64);
+                masks2[index].get(x, y) && !masks2[index + 1..].iter().any(|t| t.get(x, y))
+            })
+            .collect();
+        report.check(at, &m.name, Inv::I6, !topmost.is_empty(), || {
+            "no pixel of its moved ink is on top of the hit map".into()
+        });
+        let stride = topmost.len().div_ceil(DRAG_HIT_SAMPLES).max(1);
+        let id2 = measured2[index].id;
+        let mut wrong = Vec::new();
+        for &i in topmost.iter().step_by(stride) {
+            let (cx, cy) = ink2.point(i as usize % ink2.w, i as usize / ink2.w);
+            let hit = map2.hit_test(&moved, &measure, cx, cy);
+            if hit != Some(id2) {
+                wrong.push((
+                    (cx, cy),
+                    hit.and_then(|h| map2.get(h)).map(|e| e.element_id()),
+                ));
+            }
+        }
+        report.check(at, &m.name, Inv::I6, wrong.is_empty(), || {
+            format!(
+                "the hit test on its moved ink names another element at {} samples, first {:?}",
+                wrong.len(),
+                wrong[0]
             )
         });
     }
