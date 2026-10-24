@@ -347,6 +347,23 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   ([#46](https://github.com/shim9610/figgy/issues/46)). Moves only: every
   public path resolves as before, and no item changes its signature or
   behaviour.
+- **Decorations draw above data on every layer**
+  ([#47](https://github.com/shim9610/figgy/issues/47)). A layered document
+  drew each panel whole, grid, data and decoration, before the next, so an
+  overlay panel's data covered the base panel's axes, tick labels, titles
+  and legend (the pressure markers of a twin-axes chart over its left axis)
+  and a subplot overlay's data its subplot's, while a single-layer chart
+  draws its decoration over its data. The compositor now draws the grid and
+  data of every panel in layer order, then the decoration of every panel in
+  layer order (`composite::FRAME_SLOTS`), on screen (`paint`,
+  `paint_prepared`) and in `export_document_*` alike; the selection boxes and
+  the annotation overlay stay above every decoration. **Behaviour change:**
+  overlay and subplot-overlay data no longer covers the base panel's axes and
+  labels. A single-layer chart draws the same pixels, and so does
+  `draw_chart_panel_columnar`. Several charts passed to one `paint` call are
+  ordered the same way: every chart's data before any chart's decoration,
+  which changes pixels only where the charts overlap. No API or serialized
+  field changes.
 
 <a id="unreleased-web"></a>
 

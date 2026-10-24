@@ -18,9 +18,10 @@ use crate::layout::{RectF, TitlePlacement};
 use crate::text::{RichText, TextExtents};
 
 /// The z position of a part relative to the data: the renderer's compositor
-/// draws every `Below` part, then the data, then every `Above` part. An
-/// element declares the slot of each part where it emits it; the geometry
-/// sinks ignore it.
+/// draws every `Below` part, then the data, then every `Above` part, and on a
+/// layered document the `Below` parts and data of every panel before the
+/// `Above` parts of any panel. An element declares the slot of each part
+/// where it emits it; the geometry sinks ignore it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
     /// Under the data: the space background, grid lines, polar rings and

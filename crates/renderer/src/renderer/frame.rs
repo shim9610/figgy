@@ -2574,71 +2574,88 @@ impl Renderer {
                 });
             }
         }
-        for item in prepared {
-            if let Some(display) = &item.stream_display {
-                if let Some(panel) =
-                    data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
-                {
-                    // D covers the whole target, unlike a panel-sized axis texture.
-                    pass.set_viewport(
-                        0.0,
-                        0.0,
-                        target_size.0 as f32,
-                        target_size.1 as f32,
-                        0.0,
-                        1.0,
-                    );
-                    pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
-                    pass.set_pipeline(&item.axis_pipeline);
-                    pass.set_bind_group(0, &display.bind_group, &[]);
-                    pass.draw(0..3, 0..1);
+        // Every panel's grid and data, then every panel's decoration
+        // (`composite::FRAME_SLOTS`): on every layer the decoration is above
+        // the data.
+        for slot in super::composite::FRAME_SLOTS {
+            for item in prepared {
+                if let Some(display) = &item.stream_display {
+                    // The stream display is the whole panel in one texture;
+                    // it is drawn once, in the first slot.
+                    if slot == crate::sink::Slot::Below
+                        && let Some(panel) =
+                            data_render::clamp_rect_to_target(item.view.panel_rect, target_size)
+                    {
+                        // D covers the whole target, unlike a panel-sized axis texture.
+                        pass.set_viewport(
+                            0.0,
+                            0.0,
+                            target_size.0 as f32,
+                            target_size.1 as f32,
+                            0.0,
+                            1.0,
+                        );
+                        pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
+                        pass.set_pipeline(&item.axis_pipeline);
+                        pass.set_bind_group(0, &display.bind_group, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                    continue;
                 }
-                continue;
+                let panel_rect = item.view.panel_rect;
+                // The series layers are read by the data slot only.
+                let series_list: Vec<_>;
+                let series_layers: &[data_render::SeriesLayers<'_>] = match slot {
+                    crate::sink::Slot::Below => {
+                        series_list = item.series.iter().map(PreparedSeries::layers).collect();
+                        &series_list
+                    }
+                    crate::sink::Slot::Above => &[],
+                };
+                let (annotation_underlay, annotation_overlay) =
+                    item.view.annotation_layers(&item.axis_pipeline);
+
+                // The single style decision per panel: the chart's `DrawStyle`
+                // resolves to a cached styled pipeline set (compiled by the
+                // prepare phase) or `None` for precise — the precise path stays
+                // untouched.
+                // Bundle every series's primitives for the panel into one call.
+
+                // Cached bodies cover the whole panel; a panel the target clips
+                // draws them directly, as before.
+                let cached = item
+                    .resident_display
+                    .as_ref()
+                    .filter(|_| {
+                        panel_rect.x.checked_add(panel_rect.width) <= Some(target_size.0)
+                            && panel_rect.y.checked_add(panel_rect.height) <= Some(target_size.1)
+                    })
+                    .map(|display| AxisLayer {
+                        pipeline: &item.axis_pipeline,
+                        bind_group: &display.bind_group,
+                    });
+                super::composite::draw_chart_panel(
+                    pass,
+                    target_size,
+                    panel_rect,
+                    item.data_area,
+                    &super::composite::PanelChrome {
+                        below: AxisLayer {
+                            pipeline: &item.axis_pipeline,
+                            bind_group: &item.view.grid_bind_group,
+                        },
+                        annotation_underlay,
+                        above: AxisLayer {
+                            pipeline: &item.axis_pipeline,
+                            bind_group: &item.view.decoration_bind_group,
+                        },
+                        annotation_overlay,
+                    },
+                    series_layers,
+                    cached,
+                    slot,
+                );
             }
-            let panel_rect = item.view.panel_rect;
-            let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
-            let (annotation_underlay, annotation_overlay) =
-                item.view.annotation_layers(&item.axis_pipeline);
-
-            // The single style decision per panel: the chart's `DrawStyle`
-            // resolves to a cached styled pipeline set (compiled by the
-            // prepare phase) or `None` for precise — the precise path stays
-            // untouched.
-            // Bundle every series's primitives for the panel into one call.
-
-            // Cached bodies cover the whole panel; a panel the target clips
-            // draws them directly, as before.
-            let cached = item
-                .resident_display
-                .as_ref()
-                .filter(|_| {
-                    panel_rect.x.checked_add(panel_rect.width) <= Some(target_size.0)
-                        && panel_rect.y.checked_add(panel_rect.height) <= Some(target_size.1)
-                })
-                .map(|display| AxisLayer {
-                    pipeline: &item.axis_pipeline,
-                    bind_group: &display.bind_group,
-                });
-            super::composite::draw_chart_panel(
-                pass,
-                target_size,
-                panel_rect,
-                item.data_area,
-                super::composite::PanelChrome {
-                    below: AxisLayer {
-                        pipeline: &item.axis_pipeline,
-                        bind_group: &item.view.grid_bind_group,
-                    },
-                    annotation_underlay,
-                    above: AxisLayer {
-                        pipeline: &item.axis_pipeline,
-                        bind_group: &item.view.decoration_bind_group,
-                    },
-                    annotation_overlay,
-                },
-                &series_list,
-                cached,
-            );
         }
         Ok(())
     }
