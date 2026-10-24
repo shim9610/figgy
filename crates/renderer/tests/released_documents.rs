@@ -5,7 +5,7 @@
 #![cfg(feature = "serde")]
 
 use renderer::config::DrawStyle;
-use renderer::{BoxPlotChart, CategoricalChart, Config, RadialChart, SeriesConfig};
+use renderer::{BoxPlotChart, CategoricalChart, Config, RadarChart, RadialChart, SeriesConfig};
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/released");
 
@@ -30,6 +30,15 @@ macro_rules! released_documents {
 }
 
 released_documents! {
+    model_0_12_1_radial_default: RadialChart = "model-0.12.1-radial-default.json";
+    model_0_12_1_radial_edited: RadialChart = "model-0.12.1-radial-edited.json";
+    model_0_12_1_categorical_default: CategoricalChart = "model-0.12.1-categorical-default.json";
+    model_0_12_1_categorical_edited: CategoricalChart = "model-0.12.1-categorical-edited.json";
+    model_0_12_1_boxplot_default: BoxPlotChart = "model-0.12.1-boxplot-default.json";
+    model_0_12_1_boxplot_edited: BoxPlotChart = "model-0.12.1-boxplot-edited.json";
+    model_0_12_1_radar_default: RadarChart = "model-0.12.1-radar-default.json";
+    model_0_12_1_radar_edited: RadarChart = "model-0.12.1-radar-edited.json";
+
     model_0_11_0_config_default: Config = "model-0.11.0-config-default.json";
     model_0_11_0_config_series: Config = "model-0.11.0-config-series.json";
     model_0_11_0_config_edited: Config = "model-0.11.0-config-edited.json";
