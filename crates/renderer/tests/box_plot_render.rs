@@ -5,7 +5,8 @@
 //! and outliers, notches, missing boxes and clamped statistics, per-box
 //! overrides and materials, the selected box's outline, the value-axis fit
 //! from the pool's statistics, record replacement, overlays and subplots,
-//! and a released document opened through `Config::from_boxplot`.
+//! the annotation layer over categories and values, and a released document
+//! opened through `Config::from_boxplot`.
 //!
 //! Every part has its own pure colour: the first series' boxes red, the
 //! second's blue, medians green, whiskers and caps yellow, means cyan and
@@ -996,5 +997,86 @@ fn a_box_plot_document_draws_through_the_reader() {
             changed > (5000.0 * scale * scale) as usize,
             "{scale}x: {changed}"
         );
+    }
+}
+
+/// The annotation layer of a chart of box plots maps its category axis by
+/// category index and its value axis by value, in both directions at 1x
+/// and 2x: a span over the first category's slot (`-0.5..0.5`) fills that
+/// slot only and lies under its boxes, and a reference line at a value
+/// crosses the other slots at that value.
+#[test]
+fn the_annotation_layer_maps_categories_and_values() {
+    use renderer::{Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle};
+    let mut r = renderer();
+    for direction in DIRECTIONS {
+        let mut chart = chart(direction);
+        let (category_axis, value_axis) = match direction {
+            CategoryBarDirection::Vertical => (AnnotationAxis::X, AnnotationAxis::Y),
+            CategoryBarDirection::Horizontal => (AnnotationAxis::Y, AnnotationAxis::X),
+        };
+        chart.config_mut().annotations.items = vec![
+            Annotation::new(AnnotationKind::Span {
+                axis: category_axis,
+                from: -0.5,
+                to: 0.5,
+                fill: MAGENTA,
+            }),
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: value_axis,
+                value: 90.0,
+                style: AnnotationLineStyle {
+                    color: Color::from_rgb8(0, 0, 0),
+                    width: 2.0,
+                    ..AnnotationLineStyle::default()
+                },
+                label: None,
+            }),
+        ];
+        let series = [boxes("one", RED), boxes("two", BLUE)];
+        for scale in [1.0f32, 2.0] {
+            let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+            let case = format!("{direction:?} {scale}x");
+            // The export pixel at value `v` in the middle of slot `k`.
+            let at = |k: usize, v: f64| {
+                let region = slot(&chart, direction, k, scale);
+                let along = value_px(&chart, direction, v, scale).round() as u32;
+                match direction {
+                    CategoryBarDirection::Vertical => ((region.0 + region.2) / 2, along),
+                    CategoryBarDirection::Horizontal => (along, (region.1 + region.3) / 2),
+                }
+            };
+            // Below every whisker: the span fills the first slot only.
+            let (x, y) = at(0, 5.0);
+            assert!(is_magenta(pixel(&img, x, y)), "{case}: span in slot 0");
+            for k in [1, 2] {
+                let (x, y) = at(k, 5.0);
+                assert!(!is_magenta(pixel(&img, x, y)), "{case}: span in slot {k}");
+            }
+            // The boxes of the first slot draw over the span.
+            let red = bbox(&img, slot(&chart, direction, 0, scale), is_red)
+                .unwrap_or_else(|| panic!("{case}: the first box is under the span"));
+            // Between q1 (20) and the median (30), off the median line.
+            let body = value_px(&chart, direction, 25.0, scale).round() as u32;
+            let inside = match direction {
+                CategoryBarDirection::Vertical => ((red.0 + red.2) / 2, body),
+                CategoryBarDirection::Horizontal => (body, (red.1 + red.3) / 2),
+            };
+            assert!(
+                is_red(pixel(&img, inside.0, inside.1)),
+                "{case}: body over the span"
+            );
+            // The reference line crosses the last slot at 90.
+            let (x, y) = at(2, 90.0);
+            let dark = (-2i32..=2).any(|d| {
+                let (x, y) = match direction {
+                    CategoryBarDirection::Vertical => (x, (y as i32 + d) as u32),
+                    CategoryBarDirection::Horizontal => ((x as i32 + d) as u32, y),
+                };
+                let p = pixel(&img, x, y);
+                p[3] > 200 && p[0].max(p[1]).max(p[2]) < 60
+            });
+            assert!(dark, "{case}: no reference line at 90");
+        }
     }
 }

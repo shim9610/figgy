@@ -904,8 +904,9 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   missing boxes and clamped unordered statistics, overrides and materials
   restyling only their box, the selection outline of an overridden box, the
   value-axis fit over the record and outlier statistics, a replaced record
-  and mismatched sources, an overlay's and a subplot's own box groups, and
-  a released document drawn through the reader;
+  and mismatched sources, an overlay's and a subplot's own box groups, the
+  annotation layer's spans and reference lines over the categories and
+  values, and a released document drawn through the reader;
   `pick_draw_agreement::box_plots_pick_the_box_they_paint` holds the pick of
   every part to the painted box; `released_documents` converts every
   released box plot document and round-trips the result; the resident-body
