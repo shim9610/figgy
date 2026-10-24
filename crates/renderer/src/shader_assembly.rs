@@ -67,6 +67,7 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("categorical", crate::categorical::CATEGORICAL_SHADER),
     ("radar", crate::radar::RADAR_SHADER),
     ("radial", crate::radial::RADIAL_SHADER),
+    ("radial_pick", crate::radial::RADIAL_PICK_SHADER),
     (
         "vector_points",
         crate::data_render::vector::VECTOR_POINTS_SHADER,
@@ -331,6 +332,7 @@ mod tests {
         use crate::gpu_contour::{AnchorParamsGpu, LabelAnchorGpu, LabelParamsGpu};
         use crate::gpu_data_pick::{DataPickCandidateGpu, DataPickQueryGpu};
         use crate::gpu_pick::types::{PickCandidateGpu, PickQueryParamsGpu};
+        use crate::radial::{RadialPickQueryGpu, RadialPickResultGpu, Sector};
         let transform = |module, wgsl| {
             mirror!(
                 "",
@@ -362,6 +364,26 @@ mod tests {
         };
         let material =
             |module| mirror!("", "", MaterialGpu { params, finish }).with(module, "Material");
+        // The draw and the pick read the same sector layout.
+        let sector = |module| {
+            mirror!(
+                "",
+                "",
+                Sector {
+                    geometry,
+                    arc,
+                    color,
+                    material,
+                    detail,
+                    rounding,
+                    outline,
+                    outline_color,
+                    effects,
+                    light,
+                }
+            )
+            .with(module, "Sector")
+        };
         let meta = |module, wgsl| {
             mirror!(
                 "",
@@ -474,6 +496,24 @@ mod tests {
             material("boxplot"),
             material("categorical"),
             material("radial"),
+            material("radial_pick"),
+            sector("radial"),
+            sector("radial_pick"),
+            mirror!(
+                "radial_pick",
+                "RadialPickQuery",
+                RadialPickQueryGpu { pixel, count, rest }
+            ),
+            mirror!(
+                "radial_pick",
+                "RadialPickResult",
+                RadialPickResultGpu {
+                    index,
+                    hit,
+                    t,
+                    reserved
+                }
+            ),
             slot("scatter", "ScatterStyleSlot"),
             over("scatter", "ScatterStyleOverride"),
             meta("scatter", "ScatterStyleMapMeta"),

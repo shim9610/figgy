@@ -229,8 +229,8 @@ pub async fn check(gpu: RendererDevice) {
                         {
                             assert!(
                                 moved
-                                    .hit_test([(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale])
-                                    .is_some(),
+                                    .has_data([(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale])
+                                    .await,
                                 "visible data did not move with picking"
                             );
                             picked += 1;

@@ -16,6 +16,9 @@ use ::renderer::{
 
 pub trait Decorations {
     type Chart: Clone + PartialEq;
+    /// Whether the frame draws data under `p`: the categorical, box plot
+    /// and radar frames' CPU hit tests, the radial frame's GPU pick.
+    async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool;
     /// The chart's decoration state.
     fn layout(chart: &mut Self::Chart) -> &mut DecorationLayout;
     /// Every decoration the frame draws.
@@ -75,6 +78,9 @@ macro_rules! decoration_map_frame {
     ($frame:ty, $chart:ty) => {
         impl Decorations for $frame {
             type Chart = $chart;
+            async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool {
+                self.hit_test(p).is_some()
+            }
             fn layout(chart: &mut $chart) -> &mut DecorationLayout {
                 &mut chart.decorations
             }
@@ -161,6 +167,14 @@ decoration_map_frame!(RadarFrame, RadarChart);
 
 impl Decorations for RadialFrame {
     type Chart = RadialChart;
+    async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool {
+        self.pick(p)
+            .expect("pick request")
+            .resolve()
+            .await
+            .expect("pick result")
+            .is_some()
+    }
     fn layout(chart: &mut RadialChart) -> &mut DecorationLayout {
         &mut chart.decorations
     }

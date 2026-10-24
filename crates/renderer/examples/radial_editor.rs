@@ -195,6 +195,10 @@ impl Editor {
         Ok(())
     }
 }
+/// A radial pick request resolved on the spot; a failed pick reads as a miss.
+fn resolved(ticket: Result<renderer::RadialPickTicket, RadialError>) -> Option<RadialTarget> {
+    ticket.ok()?.resolve_blocking().ok()?
+}
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -337,9 +341,7 @@ impl eframe::App for Editor {
                 // until the user explicitly selects the area for editing.
                 if key == renderer::DecorationId::DataArea
                     && self.chart.decorations.selected != Some(key.clone())
-                    && frame
-                        .hit_test([p.x - rect.left(), p.y - rect.top()])
-                        .is_some()
+                    && resolved(frame.pick([p.x - rect.left(), p.y - rect.top()])).is_some()
                 {
                     return None;
                 }
@@ -391,9 +393,10 @@ impl eframe::App for Editor {
                 .and_then(|p| {
                     let frame = self.frame.as_ref()?;
                     let point = [p.x - rect.left(), p.y - rect.top()];
-                    frame.hit_test(point).or_else(|| {
-                        frame
-                            .hit_test_at_rest(point)
+                    // The GPU pick, read back at once: the editor redraws
+                    // from the answer in the same frame.
+                    resolved(frame.pick(point)).or_else(|| {
+                        resolved(frame.pick_at_rest(point))
                             .filter(|t| Some(*t) == self.chart.interaction.hovered)
                     })
                 });

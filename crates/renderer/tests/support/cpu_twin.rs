@@ -1,7 +1,8 @@
 //! The CPU twins of the draw shaders' coverage, for tests only: a nearest
 //! point picker over f32 columns that mirrors the GPU picker's shape, stroke,
-//! dash, styled-marker, arrow and polar projection functions, so the parity
-//! tests can compare the two. Compiled into the renderer as
+//! dash, styled-marker, arrow and polar projection functions, and the radial
+//! sector ray-march the radial pick module runs, so the parity tests can
+//! compare the two. Compiled into the renderer as
 //! `renderer::pick::cpu_twin` under the `cpu-twin` feature, which the
 //! crate's own tests enable; it is not part of the public API.
 //!
@@ -1919,4 +1920,115 @@ mod tests {
         assert_eq!(picked.source_id, Some("src-b".into()));
         assert_eq!(picked.point_index, 1);
     }
+}
+
+// ---------------------------------------------------------------------------
+// The radial sector (`data_render/common/radial_sector.wgsl`)
+// ---------------------------------------------------------------------------
+
+use crate::radial::{RadialTarget, Sector};
+use std::f32::consts::{PI, TAU};
+
+/// The CPU twin of the radial pick module (`radial_pick.wgsl`): the sector
+/// nearest the camera under `position` (logical pixels) of a frame of
+/// physical `size` at `scale`, by the twin of `hit_pixel`, with every
+/// sector at rest when `rest`. For the pick agreement test only.
+pub(crate) fn radial_pick(
+    sectors: &[Sector],
+    targets: &[RadialTarget],
+    position: [f32; 2],
+    scale: f32,
+    size: (u32, u32),
+    rest: bool,
+) -> Option<RadialTarget> {
+    if position.iter().any(|v| !v.is_finite()) {
+        return None;
+    }
+    let pixel = [position[0] * scale, position[1] * scale];
+    if pixel[0] < 0.0 || pixel[1] < 0.0 || pixel[0] >= size.0 as f32 || pixel[1] >= size.1 as f32 {
+        return None;
+    }
+    sectors
+        .iter()
+        .zip(targets)
+        .filter_map(|(s, t)| {
+            let mut s = *s;
+            if rest {
+                s.rounding[2] = 0.0;
+            }
+            radial_hit(&s, pixel).map(|depth| (depth, *t))
+        })
+        .min_by(|a, b| a.0.total_cmp(&b.0))
+        .map(|(_, t)| t)
+}
+
+fn radial_round_intersection(a: f32, b: f32, radius: f32) -> f32 {
+    if radius < 0.000001 {
+        return a.max(b);
+    }
+    (-radius).min(a.max(b)) + (radius + a).max(0.0).hypot((radius + b).max(0.0))
+}
+fn radial_footprint(p: [f32; 2], s: &Sector) -> f32 {
+    let r = p[0].hypot(p[1]);
+    let outer = r - 1.0;
+    let inner = if s.geometry[3] > 0.0 {
+        s.geometry[3] - r
+    } else {
+        -10.0
+    };
+    if s.arc[1] >= TAU - 0.00001 {
+        return outer.max(inner);
+    }
+    let a = s.arc[0] + s.detail[1] * 0.5;
+    let b = s.arc[0] + s.arc[1] - s.detail[1] * 0.5;
+    let da = p[0] * a.sin() - p[1] * a.cos();
+    let db = -p[0] * b.sin() + p[1] * b.cos();
+    let wedge = if b - a <= PI { da.max(db) } else { da.min(db) };
+    let cap = ((1.0 - s.geometry[3]) * 0.45).min((b - a) * s.geometry[3].max(0.2) * 0.35);
+    let wedge = if s.geometry[3] == 0.0 && b - a <= PI {
+        radial_round_intersection(da, db, s.rounding[0].min(cap))
+    } else {
+        wedge
+    };
+    radial_round_intersection(outer, wedge, s.rounding[1].min(cap)).max(radial_round_intersection(
+        inner,
+        wedge,
+        s.rounding[0].min(cap),
+    ))
+}
+fn radial_solid(p: [f32; 3], s: &Sector) -> f32 {
+    let bevel = s.detail[2]
+        .min(s.arc[3] * 0.48)
+        .min((1.0 - s.geometry[3]) * 0.2);
+    let a = radial_footprint([p[0], p[1]], s) + bevel;
+    let b = (p[2] - s.arc[3] * 0.5).abs() - (s.arc[3] * 0.5 - bevel);
+    a.max(0.0).hypot(b.max(0.0)) + a.max(b).min(0.0) - bevel
+}
+fn radial_hit(s: &Sector, pixel: [f32; 2]) -> Option<f32> {
+    let cs = s.arc[2].cos();
+    let sn = s.arc[2].sin();
+    let mid = s.arc[0] + s.arc[1] * 0.5;
+    let x = (pixel[0] - s.geometry[0]) / s.geometry[2] - s.detail[0] * mid.cos();
+    let y = (pixel[1] - s.geometry[1]) / s.geometry[2] - s.detail[0] * mid.sin() * cs;
+    if x.abs() > 1.001 || y.abs() > 1.0 + s.arc[3] + s.rounding[2] {
+        return None;
+    }
+    let ro = [x, y * cs + sn * 3.0, -y * sn + cs * 3.0 - s.rounding[2]];
+    let rd = [0.0, -sn, -cs];
+    let mut t = ((s.arc[3] - ro[2]) / rd[2]).max(0.0);
+    let end = -ro[2] / rd[2] + 0.0002;
+    if s.arc[3] <= 0.0 {
+        return (radial_footprint([ro[0], ro[1] + rd[1] * t], s) <= 0.0).then_some(t);
+    }
+    for _ in 0..128 {
+        if t > end {
+            return None;
+        }
+        let d = radial_solid([ro[0], ro[1] + rd[1] * t, ro[2] + rd[2] * t], s);
+        if d < 0.00012 {
+            return Some(t);
+        }
+        t += d.max(0.00005);
+    }
+    None
 }

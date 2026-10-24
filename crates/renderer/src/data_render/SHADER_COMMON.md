@@ -45,7 +45,8 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `material.wgsl` (§5.9) | boxplot, categorical, radial |
+| `material.wgsl` (§5.9) | boxplot, categorical, radial, the radial pick module |
+| `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | boxplot, categorical |
 | `srgb_output.wgsl` (the bounded charts' `output`) | boxplot, categorical, radar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field |
@@ -793,6 +794,61 @@ The struct, the constants and the functions are the fragment
 [`data_render/common/errorbar_segment.wgsl`](common/errorbar_segment.wgsl),
 spliced after `sketch_noise.wgsl` into the errorbar module and the pick
 marker modules by `wgsl_module!` (`shader_assembly.rs`).
+
+### 5.12 Radial sector
+
+The radial chart draws each slice as a solid: an extruded sector, its
+footprint rounded at its corners and walls, seen by an orthographic camera
+tilted about the x axis, and ray-marched per pixel. The draw (`radial.wgsl`,
+`scene` and the moving inside glyphs of `label_pixel`) shades the sector a
+pixel's ray reaches first, and the radial pick module (`radial_pick.wgsl`)
+answers which slice that is: both run the same functions over the same
+storage layout, so the pick is the draw's own geometry and occlusion.
+
+```wgsl
+struct Sector { geometry, arc, color, material: Material, detail, rounding,
+    outline, outline_color, effects, light: vec4<f32> };   // 176 bytes
+const TAU: f32;
+struct Hit { t: f32, p: vec3<f32>, n: vec3<f32> };
+fn round_intersection(a: f32, b: f32, r: f32) -> f32
+fn edges(p: vec2<f32>, s: Sector) -> vec3<f32>
+fn footprint(p: vec2<f32>, s: Sector) -> f32
+fn solid(p: vec3<f32>, s: Sector) -> f32
+fn hit_sector(ro: vec3<f32>, rd: vec3<f32>, s: Sector) -> Hit
+fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
+```
+
+| Member | Meaning |
+|---|---|
+| `geometry` | centre x, y and radius in physical pixels, inner radius as a share of the radius |
+| `arc` | start angle and span in radians, tilt in radians, depth as a share of the radius |
+| `color`, `material` | the slice colour and its material (§5.9) |
+| `detail` | explode, angular gap, bevel, reserved 0 |
+| `rounding` | inner and outer corner radii, the vertical hover lift, reserved 0 |
+| `outline`, `outline_color` | rim and separator flags, the emphasis amount, the outline width in physical pixels; its colour |
+| `effects` | reserved 0, reserved 0, the inside-label flag, the inside label's lift in physical pixels |
+| `light` | the light direction, the shadow flag |
+
+`hit_pixel` returns the hit of the ray through a physical pixel, `t` its
+distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
+picked, as the sector with the smallest `t`, the first one on a tie.
+
+Rust twin: `radial::Sector` (`radial.rs`), built per slice by
+`radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds
+both modules' `Sector` to it. The pick module reads one
+`RadialPickQuery { pixel, count, rest }` (the pixel centre, the sector
+count, and 1 to pick every sector at rest without its lift) and writes one
+`RadialPickResult { index, hit, t, reserved }`; their twins are
+`radial::RadialPickQueryGpu` and `RadialPickResultGpu`. The CPU twin of the
+ray-march (`radial_pick` in `tests/support/cpu_twin.rs`) is test support for
+the pick agreement test in `tests/radial_render.rs`; the product picks on
+the GPU only.
+
+The struct, the constant, `Hit` and the six functions are the fragment
+[`data_render/common/radial_sector.wgsl`](common/radial_sector.wgsl),
+spliced after `material.wgsl` into the radial draw module and the radial
+pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
+block was taken from with a one-line comment.
 
 ---
 ## Checklist

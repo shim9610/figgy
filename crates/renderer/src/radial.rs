@@ -11,11 +11,19 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radial module.
-pub(crate) const RADIAL_SHADER: crate::shader_assembly::Assembled =
-    crate::shader_assembly::assembled!("data_render/common/material.wgsl", "radial.wgsl",);
+pub(crate) const RADIAL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
+    "radial.wgsl",
+);
+/// The radial pick module: the same sector fragment as the draw, with a
+/// compute entry that picks the sector the draw shows under one pixel.
+pub(crate) const RADIAL_PICK_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
+    "radial_pick.wgsl",
+);
 
-#[path = "radial_geometry.rs"]
-mod geometry;
 #[path = "radial_layout.rs"]
 mod layout;
 
@@ -37,25 +45,26 @@ impl std::fmt::Display for RadialError {
     }
 }
 impl std::error::Error for RadialError {}
+/// One sector as the radial modules read it (`radial_sector.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Sector {
-    geometry: [f32; 4],
-    arc: [f32; 4],
-    color: [f32; 4],
-    material: crate::data_render::MaterialGpu,
-    detail: [f32; 4], // explode, angular gap, bevel, reserved (0, seed moved to `material`)
-    rounding: [f32; 4], // inner corner, outer corner, vertical lift, reserved (0, gloss moved)
-    outline: [f32; 4],
-    outline_color: [f32; 4],
+pub(crate) struct Sector {
+    pub(crate) geometry: [f32; 4],
+    pub(crate) arc: [f32; 4],
+    pub(crate) color: [f32; 4],
+    pub(crate) material: crate::data_render::MaterialGpu,
+    pub(crate) detail: [f32; 4], // explode, angular gap, bevel, reserved (0, seed moved to `material`)
+    pub(crate) rounding: [f32; 4], // inner corner, outer corner, vertical lift, reserved (0, gloss moved)
+    pub(crate) outline: [f32; 4],
+    pub(crate) outline_color: [f32; 4],
     // reserved (0, highlight moved), reserved (0, texture angle moved),
     // inside-label flag, inside-label lift: how far the lifted top face moves
     // up the screen in physical pixels (`rounding[2] * sin(arc[2]) *
     // geometry[2]`), computed once where the sector is built
     // (`radial_layout.rs`). The layout moves the inside labels or their hit
     // map by it and the shader moves the inside glyphs by it.
-    effects: [f32; 4],
-    light: [f32; 4],
+    pub(crate) effects: [f32; 4],
+    pub(crate) light: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -70,19 +79,48 @@ struct Globals {
 const _: () =
     assert!(std::mem::size_of::<Sector>() == 176 && std::mem::size_of::<Globals>() == 112);
 
+/// The radial pick's query (`RadialPickQuery` of `radial_pick.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct RadialPickQueryGpu {
+    pub(crate) pixel: [f32; 2],
+    pub(crate) count: u32,
+    pub(crate) rest: u32,
+}
+/// The radial pick's result (`RadialPickResult` of `radial_pick.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct RadialPickResultGpu {
+    pub(crate) index: u32,
+    pub(crate) hit: u32,
+    pub(crate) t: f32,
+    pub(crate) reserved: u32,
+}
+const _: () = assert!(
+    std::mem::size_of::<RadialPickQueryGpu>() == 16
+        && std::mem::size_of::<RadialPickResultGpu>() == 16
+);
+const RADIAL_PICK_RESULT_BYTES: u64 = std::mem::size_of::<RadialPickResultGpu>() as u64;
+
 /// Immutable GPU snapshot. Its shader draws straight into a same-format,
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
 pub struct RadialFrame {
     decorations: crate::HitMap<RadialChart>,
-    _gpu: RendererDevice,
+    gpu: RendererDevice,
+    ledger: Arc<GpuLedger>,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    pick_pipeline: wgpu::ComputePipeline,
+    pick_layout: wgpu::BindGroupLayout,
     _uniform: TrackedBuffer,
-    _sectors: TrackedBuffer,
+    sectors: TrackedBuffer,
     _annotations: Arc<TrackedTexture>,
+    /// The CPU sectors, kept only for the CPU twin's agreement test.
+    #[cfg(feature = "cpu-twin")]
     geometry: Vec<Sector>,
+    /// The slice each sector of the buffer draws, in buffer order.
     targets: Vec<RadialTarget>,
     scale: f32,
     space: crate::annotation::PixelSpace,
@@ -247,18 +285,31 @@ impl RadialFrame {
     pub fn background(&self) -> crate::annotation::FrameBackground {
         self.background
     }
-    /// Original footprint for hover hysteresis: retain the previous hover while
-    /// the pointer is in its unraised footprint, even if the lifted surface moved away.
-    pub fn hit_test_at_rest(&self, position: [f32; 2]) -> Option<RadialTarget> {
-        self.pick(position, true)
+    /// Request the slice drawn under `position` (chart-local logical
+    /// pixels): the visible surface nearest the camera, with tilt, gap,
+    /// rounding, explode and the hover lift, picked on the GPU by the draw's
+    /// own sector ray-march and occlusion rule from this frame's sectors.
+    /// Resolve the ticket with [`RadialPickTicket::resolve`]; a position
+    /// outside the canvas, or not finite, resolves to `None` at once.
+    pub fn pick(self: &Arc<Self>, position: [f32; 2]) -> Result<RadialPickTicket, RadialError> {
+        self.request_pick(position, false)
     }
-    /// Visible surface picking in logical pixels, using this immutable snapshot.
-    pub fn hit_test(&self, position: [f32; 2]) -> Option<RadialTarget> {
-        self.pick(position, false)
+    /// [`Self::pick`] on the unlifted surfaces, for hover hysteresis: a host
+    /// keeps the previous hover while the pointer is in its unraised
+    /// footprint, even where the lifted surface moved away.
+    pub fn pick_at_rest(
+        self: &Arc<Self>,
+        position: [f32; 2],
+    ) -> Result<RadialPickTicket, RadialError> {
+        self.request_pick(position, true)
     }
-    fn pick(&self, position: [f32; 2], rest: bool) -> Option<RadialTarget> {
-        if position.iter().any(|v| !v.is_finite()) {
-            return None;
+    fn request_pick(
+        self: &Arc<Self>,
+        position: [f32; 2],
+        rest: bool,
+    ) -> Result<RadialPickTicket, RadialError> {
+        if position.iter().any(|v| !v.is_finite()) || self.targets.is_empty() {
+            return Ok(RadialPickTicket::none());
         }
         let pixel = [position[0] * self.scale, position[1] * self.scale];
         if pixel[0] < 0.0
@@ -266,20 +317,94 @@ impl RadialFrame {
             || pixel[0] >= self.size.0 as f32
             || pixel[1] >= self.size.1 as f32
         {
-            return None;
+            return Ok(RadialPickTicket::none());
         }
-        self.geometry
-            .iter()
-            .zip(&self.targets)
-            .filter_map(|(s, t)| {
-                let mut s = *s;
-                if rest {
-                    s.rounding[2] = 0.0;
-                }
-                geometry::hit(&s, pixel).map(|depth| (depth, *t))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, t)| t)
+        let device = self.gpu.device();
+        // gpu-alloc: PickScratch
+        let query = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("radial pick query"),
+            contents: bytemuck::bytes_of(&RadialPickQueryGpu {
+                pixel,
+                count: self.targets.len() as u32,
+                rest: u32::from(rest),
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let query = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, query);
+        // gpu-alloc: PickScratch
+        let result = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("radial pick result"),
+            size: RADIAL_PICK_RESULT_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let result = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, result);
+        // gpu-alloc: Readback
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("radial pick readback"),
+            size: RADIAL_PICK_RESULT_BYTES,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let readback = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, readback);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("radial pick"),
+            layout: &self.pick_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: query.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.sectors.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("radial pick"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("radial pick"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pick_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&result, 0, &readback, 0, RADIAL_PICK_RESULT_BYTES);
+        self.gpu.queue().submit([encoder.finish()]);
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = sender.send(r);
+        });
+        Ok(RadialPickTicket {
+            pending: Some(PendingRadialPick {
+                frame: Arc::clone(self),
+                readback,
+                receiver,
+                _scratch: [query, result],
+            }),
+        })
+    }
+    /// The CPU twin's pick on this frame's sectors, for the GPU pick's
+    /// agreement test only.
+    #[cfg(feature = "cpu-twin")]
+    #[doc(hidden)]
+    pub fn cpu_twin_pick(&self, position: [f32; 2], rest: bool) -> Option<RadialTarget> {
+        crate::pick::cpu_twin::radial_pick(
+            &self.geometry,
+            &self.targets,
+            position,
+            self.scale,
+            self.size,
+            rest,
+        )
     }
 
     /// Physical target dimensions, rounded from logical size times scale.
@@ -297,6 +422,70 @@ impl RadialFrame {
         pass.draw(0..3, 0..1);
     }
 }
+/// An asynchronous radial pick, from [`RadialFrame::pick`] or
+/// [`RadialFrame::pick_at_rest`]: the request is submitted, and
+/// [`Self::resolve`] reads the GPU's answer back. The ticket keeps its frame
+/// alive until it resolves or is dropped.
+pub struct RadialPickTicket {
+    pending: Option<PendingRadialPick>,
+}
+struct PendingRadialPick {
+    frame: Arc<RadialFrame>,
+    readback: TrackedBuffer,
+    receiver: futures_channel::oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    /// The query and result buffers, credited when the pick resolves.
+    _scratch: [TrackedBuffer; 2],
+}
+impl RadialPickTicket {
+    fn none() -> Self {
+        Self { pending: None }
+    }
+    /// The slice the GPU picked, or `None` where no sector is drawn.
+    pub async fn resolve(self) -> Result<Option<RadialTarget>, RadialError> {
+        let Some(pending) = self.pending else {
+            return Ok(None);
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        pending
+            .frame
+            .gpu
+            .device()
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+        pending
+            .receiver
+            .await
+            .map_err(|e| RadialError::Gpu(e.to_string()))?
+            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+        let result = {
+            let mapped = pending
+                .readback
+                .get_mapped_range(..)
+                .map_err(|e| RadialError::Gpu(e.to_string()))?;
+            *bytemuck::from_bytes::<RadialPickResultGpu>(&mapped)
+        };
+        pending.readback.unmap();
+        if result.hit == 0 {
+            return Ok(None);
+        }
+        pending
+            .frame
+            .targets
+            .get(result.index as usize)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| RadialError::Gpu("radial pick returned no sector of the frame".into()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Native blocking wrapper for [`Self::resolve`].
+    pub fn resolve_blocking(self) -> Result<Option<RadialTarget>, RadialError> {
+        pollster::block_on(self.resolve())
+    }
+}
+
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
 /// Kept separate from the large numeric-data/Cartesian renderer deliberately.
 pub struct RadialRenderer {
@@ -304,6 +493,8 @@ pub struct RadialRenderer {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    pick_layout: wgpu::BindGroupLayout,
+    pick_pipeline: wgpu::ComputePipeline,
     ledger: Arc<GpuLedger>,
     budget: u64,
     annotations_cached: Option<(RadialChart, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
@@ -330,6 +521,16 @@ impl RadialRenderer {
             format,
             1,
             None,
+            &mut |_| {},
+        )
+        .await
+        .map_err(RadialError::Gpu)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::browser_compile::compute(
+            gpu.device(),
+            "renderer.radial_pick",
+            RADIAL_PICK_SHADER.source,
+            &[("radial pick", "pick")],
             &mut |_| {},
         )
         .await
@@ -433,11 +634,84 @@ impl RadialRenderer {
                 cache: None,
             },
         );
+        // The pick module's own bindings: its query, the frame's sectors and
+        // its result.
+        let pick_layout = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("radial pick"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                                RadialPickQueryGpu,
+                            >()
+                                as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Sector>() as u64
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(RADIAL_PICK_RESULT_BYTES),
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        );
+        let pick_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("radial pick"),
+                bind_group_layouts: &[Some(&pick_layout)],
+                immediate_size: 0,
+            },
+        );
+        let pick_shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("radial pick"),
+                source: wgpu::ShaderSource::Wgsl(RADIAL_PICK_SHADER.source.into()),
+            },
+        );
+        let pick_pipeline = crate::gpu_compile::compute_pipeline(
+            &device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("radial pick"),
+                layout: Some(&pick_pipeline_layout),
+                module: &pick_shader,
+                entry_point: Some("pick"),
+                compilation_options: Default::default(),
+                cache: None,
+            },
+        );
         Ok(Self {
             gpu,
             format,
             layout,
             pipeline,
+            pick_layout,
+            pick_pipeline,
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
             budget: 256 * 1024 * 1024,
@@ -693,13 +967,17 @@ impl RadialRenderer {
         });
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
-            _gpu: self.gpu.clone(),
+            gpu: self.gpu.clone(),
+            ledger: Arc::clone(&self.ledger),
             size: (width, height),
             pipeline: self.pipeline.clone(),
             bind_group,
+            pick_pipeline: self.pick_pipeline.clone(),
+            pick_layout: self.pick_layout.clone(),
             _uniform: uniform,
-            _sectors: sectors,
+            sectors,
             _annotations: Arc::clone(&annotations),
+            #[cfg(feature = "cpu-twin")]
             geometry: l.sectors,
             targets: l.targets,
             scale,
@@ -1092,6 +1370,39 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
         }
     }
     c
+}
+
+#[cfg(test)]
+mod pick_module_tests {
+    use super::*;
+    /// The draw and the pick splice one sector fragment after the material,
+    /// so the pick answers with the draw's own ray-march.
+    #[test]
+    fn draw_and_pick_splice_the_same_sector_fragment() {
+        let shared = [
+            "data_render/common/material.wgsl",
+            "data_render/common/radial_sector.wgsl",
+        ];
+        assert_eq!(RADIAL_SHADER.fragments[..2], shared);
+        assert_eq!(RADIAL_PICK_SHADER.fragments[..2], shared);
+        assert_eq!(RADIAL_SHADER.fragments.len(), 3);
+        assert_eq!(RADIAL_PICK_SHADER.fragments.len(), 3);
+        // The draw's own file keeps no sector definition, only the markers
+        // of the blocks the fragment holds.
+        let draw = include_str!("radial.wgsl");
+        for definition in ["struct Sector", "fn hit_pixel", "fn footprint", "fn solid"] {
+            assert!(
+                !draw.lines().any(|line| line.starts_with(definition)),
+                "{definition}"
+            );
+        }
+        assert_eq!(
+            draw.lines()
+                .filter(|line| line.starts_with("// [data_render/common/radial_sector.wgsl:"))
+                .count(),
+            2
+        );
+    }
 }
 
 #[cfg(test)]

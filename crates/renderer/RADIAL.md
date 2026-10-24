@@ -25,7 +25,7 @@
 | `RadialChart::validate()` | 값과 옵션 검사. 실제 라벨 배치는 `prepare`에서 추가 검사 |
 | `RadialRenderer::prepare()` | 모델을 읽고 불변 `Arc<RadialFrame>` 반환 |
 | `RadialFrame::draw()` | 호스트가 연 render pass에 그리기 |
-| `RadialFrame::hit_test()` | 해당 프레임에서 보이는 조각 선택 |
+| `RadialFrame::pick()` | 해당 프레임에서 보이는 조각을 GPU에서 고르는 요청. `RadialPickTicket::resolve()`가 결과를 돌려준다 |
 | `export_rgba_async()` / `export_rgba()` | 현재 모델을 그려 `RasterImage` 반환. 동기판은 네이티브 전용 |
 | `clear_cache()` / `end_frame()` | 내부 캐시 참조 해제 / 제출이 끝난 자원의 회수 예약 |
 
@@ -259,8 +259,11 @@ chart.interaction.selected = Some(target);
 백분율은 원별 합계, 값은 원래 단위를 사용한다. 세부 원의 백분율은 부모 소계를 기준으로 한다.
 표기 변경은 원본 값과 조각 각도를 바꾸지 않는다.
 
-`frame.hit_test([x, y])`는 차트 내부의 **논리 픽셀**을 받아 화면에 실제로 보이는 조각의
-`RadialTarget`을 반환한다. 기울기·둥근 모서리·간격·들림·가림 관계를 반영한다.
+`frame.pick([x, y])`는 차트 내부의 **논리 픽셀**을 받아 그 위치에 실제로 보이는 조각을
+GPU에서 고르는 요청을 제출하고 `RadialPickTicket`을 돌려준다. `ticket.resolve().await`가
+그 조각의 `RadialTarget`을 돌려주며, 네이티브 호스트는 `resolve_blocking()`을 쓸 수 있다.
+그리기 셰이더와 같은 조각 광선 추적과 가림 규칙으로 고르므로 기울기·둥근 모서리·간격·
+들림·가림 관계가 화면과 같다.
 `group=0`은 큰 원, `group=1`은 세부 원이며 `index`는 값이 0인 항목도 포함한 원본 인덱스다.
 값이 0인 항목, 구멍, 배경은 선택되지 않는다. 배열을 재정렬하거나 항목을 삭제한 호스트는
 선택 인덱스도 함께 갱신해야 한다.
@@ -270,7 +273,7 @@ chart.interaction.selected = Some(target);
 진행한다. 다른 조각으로 이동할 때는 이전 조각이 내려온 뒤 새 조각이 올라간다. duration이
 0이면 즉시 전환한다. 스타일의 `hover_lift`와 `hover_brightness`를 0으로 두면 해당 효과를 끈다.
 클릭 선택은 포인터가 나가도 강조를 유지하며, 다시 선택을 해제하면 복원된다.
-`hit_test_at_rest`는 들리기 전 위치를 조회한다. 호스트는 이 결과가 직전 호버와 같을 때만
+`pick_at_rest`는 들리기 전 위치를 조회한다. 호스트는 이 결과가 직전 호버와 같을 때만
 보조 판정에 사용해 가장자리에서 호버가 반복해서 켜지고 꺼지는 것을 막을 수 있다.
 
 호버 중 외부 라벨은 제자리에 있고, 내부 라벨은 같은 라벨 텍스처를 들림만큼 옮겨 그려
@@ -313,7 +316,7 @@ UI가 이미 논리 좌표를 제공하면 DPR로 다시 나누지 않는다. �
 use renderer::{RadialChart, RadialError, RadialFrame, RadialRenderer};
 use std::sync::Arc;
 
-fn update_hover(
+async fn update_hover(
     renderer: &mut RadialRenderer,
     chart: &mut RadialChart,
     displayed: &Arc<RadialFrame>,
@@ -322,12 +325,17 @@ fn update_hover(
     logical_size: (u32, u32),
     scale: f32,
 ) -> Result<Arc<RadialFrame>, RadialError> {
-    let target = pointer.and_then(|p| {
-        displayed.hit_test(p).or_else(|| {
-            displayed.hit_test_at_rest(p)
-                .filter(|t| Some(*t) == chart.interaction.hovered)
-        })
-    });
+    let target = match pointer {
+        Some(p) => match displayed.pick(p)?.resolve().await? {
+            Some(hit) => Some(hit),
+            None => displayed
+                .pick_at_rest(p)?
+                .resolve()
+                .await?
+                .filter(|t| Some(*t) == chart.interaction.hovered),
+        },
+        None => None,
+    };
     chart.interaction.animate_hover(target, elapsed_seconds, 0.16);
     renderer.prepare(chart, logical_size, scale)
 }
@@ -335,7 +343,8 @@ fn update_hover(
 
 호스트가 애니메이션 중 프레임을 요청해야 한다. 포인터가 멈춰도 진입·이탈이 끝날 때까지
 진행하며, 렌더러 자체는 타이머를 돌리지 않는다. 클릭 선택은
-`chart.interaction.selected = displayed.hit_test(position)`으로 설정하고 `None`으로 해제한다.
+`chart.interaction.selected = displayed.pick(position)?.resolve().await?`로 설정하고 `None`으로
+해제한다.
 새 프레임을 그린 command buffer를 제출하고 이전 프레임을 놓은 뒤 `end_frame()`을 호출한다.
 크기·DPR·내용 변경도 같은 `prepare` 경로를 사용하며, 단순 UI 편집 때 `clear_cache()`를
 호출하면 재사용 가능한 라벨까지 버리므로 필요하지 않다.

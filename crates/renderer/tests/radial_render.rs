@@ -25,6 +25,10 @@ fn chart() -> RadialChart {
         ..Default::default()
     }
 }
+/// The GPU pick at `p`, resolved.
+fn pick(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Option<RadialTarget> {
+    frame.pick(p).unwrap().resolve_blocking().unwrap()
+}
 fn renderer() -> RadialRenderer {
     RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap()
 }
@@ -419,7 +423,7 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
             };
             if let Some(index) = expected {
                 assert_eq!(
-                    frame.hit_test([x as f32 + 0.5, y as f32 + 0.5]),
+                    pick(&frame, [x as f32 + 0.5, y as f32 + 0.5]),
                     Some(RadialTarget::main(index)),
                     "wrong pick at {x},{y}"
                 );
@@ -428,9 +432,10 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
         }
     }
     assert!(hits.into_iter().all(|n| n > 100));
-    assert_eq!(frame.hit_test([160.0, 160.0]), None, "hole must not pick");
-    assert_eq!(frame.hit_test([f32::NAN, 0.0]), None);
-    assert_eq!(frame.hit_test([-1.0, 0.0]), None);
+    assert_eq!(pick(&frame, [160.0, 160.0]), None, "hole must not pick");
+    assert_eq!(pick(&frame, [f32::NAN, 0.0]), None);
+    assert_eq!(pick(&frame, [-1.0, 0.0]), None);
+    assert_eq!(pick(&frame, [320.0, 10.0]), None, "outside the canvas");
     // Color edits target the original index, including zero-value entries.
     c.slices
         .insert(0, RadialSlice::new("hidden", 0.0, Color::WHITE));
@@ -440,9 +445,9 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
     let mut found = false;
     for y in (20..300).step_by(10) {
         for x in (20..300).step_by(10) {
-            if frame.hit_test([x as f32, y as f32]) == Some(RadialTarget::main(0)) {
+            if pick(&frame, [x as f32, y as f32]) == Some(RadialTarget::main(0)) {
                 assert_eq!(
-                    shifted.hit_test([x as f32, y as f32]),
+                    pick(&shifted, [x as f32, y as f32]),
                     Some(RadialTarget::main(1))
                 );
                 found = true;
@@ -450,6 +455,122 @@ fn radial_picking_matches_visible_rounded_lifted_surfaces() {
         }
     }
     assert!(found);
+}
+
+/// A lifted slice picks where it is drawn, and at rest where it was: the
+/// hover hysteresis a host keeps the hover with.
+#[test]
+fn radial_pick_at_rest_finds_the_unlifted_footprint() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.style.tilt_degrees = 50.0;
+    c.style.depth = 0.15;
+    c.style.hover_lift = 0.25;
+    c.interaction.hovered = Some(RadialTarget::main(0));
+    c.interaction.hover_progress = 1.0;
+    let frame = r.prepare(&c, (320, 320), 1.0).unwrap();
+    let (mut lifted_only, mut rest_only) = (0, 0);
+    for y in (10..310).step_by(4) {
+        for x in (10..310).step_by(4) {
+            let p = [x as f32 + 0.5, y as f32 + 0.5];
+            let (drawn, rest) = (
+                pick(&frame, p),
+                frame.pick_at_rest(p).unwrap().resolve_blocking().unwrap(),
+            );
+            let a = RadialTarget::main(0);
+            lifted_only += usize::from(drawn == Some(a) && rest != Some(a));
+            rest_only += usize::from(rest == Some(a) && drawn != Some(a));
+        }
+    }
+    assert!(
+        lifted_only > 10,
+        "the lifted slice picks above its footprint"
+    );
+    assert!(
+        rest_only > 10,
+        "the footprint the lift uncovered picks at rest"
+    );
+}
+
+/// The GPU pick and the CPU twin of its ray-march (test support) pick the
+/// same slice wherever neither is on an edge between two answers: over
+/// tilt, depth, bevel, gaps, rounded corners, explode, the donut hole, the
+/// detail circle and the hover lift, lifted and at rest.
+#[cfg(feature = "cpu-twin")]
+#[test]
+fn radial_gpu_pick_agrees_with_the_cpu_twin() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut charts = Vec::new();
+    let mut flat = chart();
+    flat.slices
+        .push(RadialSlice::new("C", 40.0, Color::from_rgb8(30, 160, 60)));
+    charts.push(flat.clone());
+    let mut solid = flat.clone();
+    solid.kind = RadialKind::Donut { inner_radius: 0.45 };
+    solid.style = RadialStyle::three_dimensional();
+    solid.style.gap_degrees = 6.0;
+    solid.style.inner_corner = 0.1;
+    solid.style.outer_corner = 0.1;
+    solid.slices[1].explode = 0.2;
+    solid.interaction.hovered = Some(RadialTarget::main(2));
+    solid.interaction.hover_progress = 0.7;
+    charts.push(solid.clone());
+    let mut split = solid.clone();
+    split.interaction = Default::default();
+    split.style.tilt_degrees = 30.0;
+    split.split = Some(RadialSplit {
+        slice_index: 1,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 50.0, Color::from_rgb8(200, 120, 20)),
+            RadialSlice::new("E", 25.0, Color::from_rgb8(120, 20, 200)),
+        ],
+    });
+    split.interaction.selected = Some(RadialTarget::detail(0));
+    charts.push(split);
+    let (mut compared, mut edges) = (0usize, 0usize);
+    for c in &charts {
+        for scale in [1.0, 2.0] {
+            let frame = r.prepare(c, (400, 300), scale).unwrap();
+            for rest in [false, true] {
+                let twin = |p: [f32; 2]| frame.cpu_twin_pick(p, rest);
+                for y in (4..300).step_by(7) {
+                    for x in (4..400).step_by(7) {
+                        let p = [x as f32 + 0.5, y as f32 + 0.5];
+                        let gpu = if rest {
+                            frame.pick_at_rest(p).unwrap().resolve_blocking().unwrap()
+                        } else {
+                            pick(&frame, p)
+                        };
+                        compared += 1;
+                        if gpu == twin(p) {
+                            continue;
+                        }
+                        // f32 trigonometry differs in the last bits between the
+                        // GPU and the CPU: a disagreement is allowed only where
+                        // the twin's own answer changes within a pixel.
+                        let edge = [[-1.0, 0.0], [1.0, 0.0], [0.0, -1.0], [0.0, 1.0]]
+                            .iter()
+                            .any(|d| twin([p[0] + d[0], p[1] + d[1]]) != twin(p));
+                        assert!(
+                            edge,
+                            "GPU {gpu:?} and twin {:?} disagree off an edge at {p:?}, scale {scale}, rest {rest}",
+                            twin(p)
+                        );
+                        edges += 1;
+                    }
+                }
+            }
+            drop(frame);
+            drain(&r);
+        }
+    }
+    assert!(
+        edges * 200 <= compared,
+        "{edges} of {compared} samples disagree on edges"
+    );
 }
 
 #[test]
