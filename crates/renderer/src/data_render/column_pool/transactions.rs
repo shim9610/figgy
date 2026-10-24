@@ -2236,6 +2236,33 @@ impl ColumnPool {
         self.raggeds.get(id).map(|slot| slot.stats)
     }
 
+    /// What `id` names when it is a record, a ragged column or one of their
+    /// member columns, for the renderer's id checks.
+    pub(crate) fn composite_kind(&self, id: &str) -> Option<&'static str> {
+        if self.records.contains_key(id) {
+            Some("a record")
+        } else if self.raggeds.contains_key(id) {
+            Some("a ragged column")
+        } else if self.is_member_column(id) {
+            Some("a member column of a record or ragged column")
+        } else {
+            None
+        }
+    }
+
+    /// Whether `id` is a member column of a resident record or ragged column.
+    pub(crate) fn is_member_column(&self, id: &str) -> bool {
+        let Some((owner, _)) = id.split_once(MEMBER_SEPARATOR) else {
+            return false;
+        };
+        if let Some(record) = self.records.get(owner) {
+            return record.fields.iter().flatten().any(|field| field == id);
+        }
+        self.raggeds
+            .get(owner)
+            .is_some_and(|ragged| ragged.values == id || ragged.offsets == id)
+    }
+
     fn check_composite_id(&self, id: &str, kind: &str) -> crate::Result<()> {
         if id.is_empty() {
             return Err(composite_error(

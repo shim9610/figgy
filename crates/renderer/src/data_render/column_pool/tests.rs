@@ -3136,12 +3136,15 @@ fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
         .map(String::as_str)
         .collect();
     assert_eq!(members.len(), 6);
+    assert!(members.iter().all(|member| pool.is_member_column(member)));
     assert_eq!(
         record.slot().epoch,
         pool.allocation_epoch(members[0]).unwrap()
     );
     assert_eq!(pool.used_bytes(), 6 * ALIGN, "six one-block fields");
     assert!(pool.slot(members[0]).unwrap().stack_extent.is_none());
+    assert_eq!(pool.composite_kind("box"), Some("a record"));
+    assert!(!pool.is_member_column("box"));
 }
 
 /// Replacing a record (same id, new length) uploads the new fields, frees
@@ -3188,6 +3191,7 @@ fn a_record_replacement_takes_a_new_length_and_a_new_epoch() {
     );
     for member in old_members.iter().flatten() {
         assert!(pool.slot(member).is_none(), "{member:?} was freed");
+        assert!(!pool.is_member_column(member));
     }
     let median = read_column_values(ctx(), &pool, record.field("median").unwrap());
     assert_eq!(median.len(), 40);
@@ -3528,6 +3532,8 @@ fn a_ragged_column_uploads_with_offset_statistics() {
         ragged.slot().epoch,
         pool.allocation_epoch(&ragged.slot().values).unwrap()
     );
+    assert_eq!(pool.composite_kind("outliers"), Some("a ragged column"));
+    assert!(pool.is_member_column(&ragged.slot().offsets));
     assert_eq!(pool.used_bytes(), 2 * ALIGN);
 }
 
@@ -3769,6 +3775,7 @@ fn records_and_ragged_columns_survive_defragmentation_and_clear() {
 
     pool.clear().unwrap();
     assert!(pool.record("box").is_none());
+    assert!(pool.composite_kind("box").is_none());
 }
 
 /// A shader reads a record field and a ragged group by their pool lane
