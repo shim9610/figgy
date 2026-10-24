@@ -890,3 +890,92 @@ fn overlays_and_subplots_draw_their_own_bar_groups() {
         r.remove_chart(id).unwrap();
     }
 }
+
+/// An inverted categorical axis walks its categories from the far end:
+/// horizontal bars over an inverted `left_y` put the first category at the
+/// top, its bar in the top slot, and the stack, the selection outline and
+/// the pick follow it there.
+#[test]
+fn an_inverted_category_axis_puts_the_first_category_at_the_top() {
+    let mut r = renderer(&ONE, &TWO);
+    let direction = CategoryBarDirection::Horizontal;
+    let mut upright = chart(CategoryBarMode::Stacked, direction, (0.0, 40.0));
+    let mut inverted = Chart::new(upright.config().clone());
+    inverted.config_mut().left_y.inverted = true;
+    let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+    for scale in [1.0f32, 2.0] {
+        let a = r.export_panel_rgba(&upright, &series, scale).unwrap();
+        let b = r.export_panel_rgba(&inverted, &series, scale).unwrap();
+        // Slot `k` of the upright axis holds category `2 - k` when inverted.
+        for k in 0..3 {
+            let region = slot(&upright, direction, k, scale);
+            let mirrored = slot(&upright, direction, 2 - k, scale);
+            let span = |img: &RasterImage, region, pred: fn(&[u8]) -> bool| {
+                bbox(img, region, pred).map(|b| value_span(b, direction))
+            };
+            assert_eq!(
+                span(&b, region, is_red),
+                span(&a, mirrored, is_red),
+                "{scale}x slot {k}"
+            );
+            assert_eq!(
+                span(&b, region, is_blue),
+                span(&a, mirrored, is_blue),
+                "{scale}x slot {k}"
+            );
+        }
+        // The first category's bars are in the top slot.
+        let top = slot(&upright, direction, 2, scale);
+        let (start, end) = value_span(bbox(&b, top, is_red).unwrap(), direction);
+        let want = value_px(&inverted, direction, ONE[0], scale);
+        assert!((end - want).abs() <= 2.0 * scale && start < end, "{scale}x");
+    }
+    // The selected first bar is outlined in the top slot.
+    inverted.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "one".into(),
+            bin_index: 0,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 3.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let outlined = r.export_panel_rgba(&inverted, &series, 1.0).unwrap();
+    assert!(bbox(&outlined, slot(&upright, direction, 2, 1.0), is_magenta).is_some());
+    assert_eq!(
+        bbox(&outlined, slot(&upright, direction, 0, 1.0), is_magenta),
+        None
+    );
+    // The pick of a pixel in the top slot's red bar names category row 0.
+    upright.config_mut().picked_data = None;
+    inverted.config_mut().picked_data = None;
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(inverted.config().clone(), series.to_vec())
+        .unwrap();
+    let img = r.export_panel_rgba(&inverted, &series, 1.0).unwrap();
+    let bar = bbox(&img, slot(&upright, direction, 2, 1.0), is_red).unwrap();
+    let (x, y) = ((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index: 0, .. }) if series_id == "one"
+        ),
+        "{hit:?}"
+    );
+}

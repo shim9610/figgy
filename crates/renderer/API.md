@@ -169,7 +169,8 @@ axis' `label_style`, thinned like numeric labels when neighbours crowd. Upload
 the data of a categorical axis as category indices `0..n`. `min`, `max`,
 `major_spacing`, `minor_count` and `label_style.format` are ignored there,
 and `set_x_range` / `set_y_range`, the `auto_fit_*` helpers and view states
-leave the axis unchanged. A categorical axis must be linear and not inverted,
+leave the axis unchanged. A categorical axis must be linear; `inverted` walks
+its categories from the far end (the first category at the top of a `left_y`),
 with 1 to 64 categories whose ids are unique; polar axes and the colourbar
 axis cannot be categorical yet, and streamed series are rejected on a chart
 with a categorical axis.

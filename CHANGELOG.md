@@ -261,7 +261,9 @@ the `CategoryBars` series kind) are additive.
   walks, `axis_fraction`, the annotation space and the overlay and subplot
   expansion read) and `validate_categories` (1 to 64 categories, unique
   non-empty single-line ids, single-line labels of at most 80 characters,
-  `MAX_CATEGORY_TEXT_CHARS`, a linear scale, no inversion);
+  `MAX_CATEGORY_TEXT_CHARS`, a linear scale; an inverted categorical axis
+  walks its categories from the far end, the ticks, labels, grid, data and
+  picks following the same `axis_fraction`);
   `PolarOptions::validate` rejects a categorical angle axis (it arrives
   with the radar series kind) and radius axis. A linked subplot axis
   follows its target's categories. `Category` moves to `model::config`
@@ -322,7 +324,9 @@ the `CategoryBars` series kind) are additive.
   The titles, grid, legend, font, colours, chart title, annotations,
   active layer, selection and decoration offsets map onto their Cartesian
   options; the hover state, the background colour, the explicit
-  `decorations.data_area` and the data label offsets are not carried.
+  `decorations.data_area` and the data label offsets are not carried. A
+  horizontal document's category axis is inverted, so its first category
+  stays at the top and its `Y` annotations land on the same categories.
   Removed: `CategoricalChart::segments`, `CategoryBarSegment` and
   `CategoricalChart::label_text` (a bar's geometry is the shader's, its
   label `format_labels`'). The DataLess chart class is the radial chart
@@ -602,15 +606,18 @@ the `CategoryBars` series kind) are additive.
   `decorations.data_area` is not carried), the legend is the Cartesian
   legend box in its corner instead of the row below the chart (the bottom
   row legend is gone), the export clear colour replaces the document's
-  `background`, horizontal categories run bottom-up, and value labels are
+  `background`, and value labels are
   not drawn yet. The bars themselves shade as before: the dominant bar
   colours of the former renderer's and the new exports of the same
   documents are equal for Flat, Enamel and Paper and within 1/255 for
   SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
   of whole 900 × 620 exports of the five `categorical_gallery` cases
   against the former renderer: grouped-matte 533 431 (95.6 %),
-  horizontal-satin 557 936 (100 %), stacked-enamel 369 997 (66.3 %),
-  percent-outline 386 412 (69.2 %), signed-stacked 454 125 (81.4 %); the
+  horizontal-satin 514 021 (92.1 %), stacked-enamel 369 997 (66.3 %),
+  percent-outline 373 719 (67.0 %), signed-stacked 454 125 (81.4 %); the
+  reader inverts the category axis of a horizontal document, so its first
+  category is at the top as before (the two horizontal cases drew it at the
+  bottom before that, 557 936 and 386 412 changed pixels); the
   released 0.12.1 edited document at 800 × 600: 446 660 at 1x, 1 788 971
   at 2x. None is pixel identical; every difference is the chrome above.
 

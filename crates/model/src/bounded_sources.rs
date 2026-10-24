@@ -162,6 +162,9 @@ impl Config {
         value_axis.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
         // The category axis line is the zero line of the value axis.
         category_axis.cross_at = Some(0.0);
+        // Horizontal categories run top-down, as the legacy chart drew them,
+        // so its annotations on `Y` land on the same categories.
+        category_axis.inverted = horizontal;
         if horizontal {
             config.left_y = category_axis;
             config.bottom_x = value_axis;
@@ -375,14 +378,15 @@ mod tests {
             Some(&c.categories[..])
         );
         assert_eq!(config.left_y.categories, None);
+        assert!(!config.bottom_x.inverted);
         let mut h = chart();
         h.direction = CategoryBarDirection::Horizontal;
         let (config, series, _) = Config::from_categorical(&h);
         assert_eq!(config.left_y.categories.as_deref(), Some(&h.categories[..]));
         assert_eq!(config.bottom_x.categories, None);
-        // A categorical axis is never inverted: the categories run
-        // bottom-up, where the legacy chart drew them top-down.
-        assert!(!config.left_y.inverted);
+        // Top-down, as the legacy chart drew them.
+        assert!(config.left_y.inverted);
+        assert_eq!(config.left_y.validate_categories(), Ok(()));
         assert_eq!(series[0].y_column, CATEGORY_POSITIONS_COLUMN);
         assert_eq!(series[0].x_column, category_values_column("s"));
         assert_eq!(config.validate_category_bars(&series), Ok(()));

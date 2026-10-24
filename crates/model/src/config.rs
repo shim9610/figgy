@@ -158,9 +158,10 @@ pub struct AxisOptions {
     /// `categories` is removed again), `label_style.format` and
     /// `label_style.significant_digits` are ignored, the range helpers
     /// (`Chart::set_x_range`, the `auto_fit_*` family, a view state) leave the
-    /// axis unchanged, and the renderer rejects a logarithmic `scale`, an
-    /// `inverted` axis, and lists outside [`AxisOptions::validate_categories`]'
-    /// limits. A polar chart's angle and radius axes and the colourbar axis
+    /// axis unchanged, and the renderer rejects a logarithmic `scale` and
+    /// lists outside [`AxisOptions::validate_categories`]' limits. `inverted`
+    /// flips the walk: the first category sits at the far end, and the ticks,
+    /// labels, grid, data and picks follow the same `axis_fraction`. A polar chart's angle and radius axes and the colourbar axis
     /// cannot be categorical yet.
     #[cfg_attr(
         feature = "serde",
@@ -234,8 +235,8 @@ impl AxisOptions {
     /// The rules a categorical axis is held to; a numeric axis always passes.
     /// 1 to [`crate::categorical::MAX_CATEGORIES`] categories, ids non-empty
     /// and unique, ids and labels single-line and at most
-    /// [`MAX_CATEGORY_TEXT_CHARS`] characters, a linear scale and no
-    /// inversion.
+    /// [`MAX_CATEGORY_TEXT_CHARS`] characters, and a linear scale. An
+    /// inverted categorical axis is valid.
     pub fn validate_categories(&self) -> Result<(), &'static str> {
         let Some(categories) = &self.categories else {
             return Ok(());
@@ -258,9 +259,6 @@ impl AxisOptions {
         }
         if self.scale == AxisScale::Logarithmic {
             return Err("a categorical axis cannot be logarithmic");
-        }
-        if self.inverted {
-            return Err("a categorical axis cannot be inverted");
         }
         Ok(())
     }
@@ -1960,7 +1958,7 @@ mod category_axis_tests {
     }
 
     #[test]
-    fn a_logarithmic_or_inverted_categorical_axis_is_rejected() {
+    fn a_logarithmic_categorical_axis_is_rejected_and_an_inverted_one_is_valid() {
         let mut axis = categorical(3);
         axis.scale = AxisScale::Logarithmic;
         assert_eq!(
@@ -1969,10 +1967,26 @@ mod category_axis_tests {
         );
         let mut axis = categorical(3);
         axis.inverted = true;
-        assert_eq!(
-            axis.validate_categories(),
-            Err("a categorical axis cannot be inverted")
-        );
+        assert_eq!(axis.validate_categories(), Ok(()));
+    }
+
+    /// An inverted categorical axis walks its categories from the far end:
+    /// category `i` lands where category `n - 1 - i` lands on the upright
+    /// axis, and the range and the major ticks stay the category positions.
+    #[test]
+    fn an_inverted_categorical_axis_walks_from_the_far_end() {
+        let upright = categorical(3);
+        let mut inverted = categorical(3);
+        inverted.inverted = true;
+        assert_eq!(inverted.data_range(), upright.data_range());
+        for i in 0..3 {
+            let a = crate::layout::axis_fraction(i as f64, &inverted);
+            let b = crate::layout::axis_fraction((2 - i) as f64, &upright);
+            assert!((a - b).abs() < 1e-6, "category {i}: {a} vs {b}");
+        }
+        // The first category's slot is the far end of the axis.
+        assert!((crate::layout::axis_fraction(-0.5, &inverted) - 1.0).abs() < 1e-6);
+        assert!((crate::layout::axis_fraction(0.0, &inverted) - 5.0 / 6.0).abs() < 1e-6);
     }
 
     /// Category `i` at `i`, majors at every category, no minors, whatever

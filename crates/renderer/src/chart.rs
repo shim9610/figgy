@@ -1237,6 +1237,14 @@ mod tests {
             validate_renderer_config(&cfg)
         };
         assert!(with(&|c| c.bottom_x.categories = categories(3)).is_ok());
+        // An inverted categorical axis walks its categories from the far end.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(3);
+                c.left_y.inverted = true;
+            })
+            .is_ok()
+        );
         // `min` / `max` are ignored on a categorical axis.
         assert!(
             with(&|c| {
@@ -1255,10 +1263,7 @@ mod tests {
                 c.bottom_x.categories = categories(2);
                 c.bottom_x.scale = AxisScale::Logarithmic;
             }),
-            ("left_y", |c| {
-                c.left_y.categories = categories(2);
-                c.left_y.inverted = true;
-            }),
+            ("left_y", |c| c.left_y.categories = categories(65)),
             ("right_y", |c| {
                 c.right_y.categories = categories(2);
                 c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();
