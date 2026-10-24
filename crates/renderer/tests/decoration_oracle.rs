@@ -651,6 +651,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Subplots => "Subplots",
         SceneKind::Annotations => "Annotations",
         SceneKind::Polar => "Polar",
+        SceneKind::CategoryAxis => "CategoryAxis",
         SceneKind::BigData => "BigData",
         SceneKind::Radial => "Radial",
         SceneKind::Categorical => "Categorical",
