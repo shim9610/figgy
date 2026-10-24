@@ -977,10 +977,11 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 범주형 막대
 
-Categorical bars are `DataRenderType::CategoryBars` series of the Cartesian
-`Renderer` over a categorical axis; `Config::from_categorical` opens a legacy
-`CategoricalChart` document as such a chart. See the [bar guide](CATEGORICAL.md)
-or run `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
+범주형 막대는 직교 좌표 `Renderer`가 범주형 축 위에 그리는 `DataRenderType::CategoryBars` 시리즈다.
+가로·세로 묶음, 누적, 100% 누적은 `Config.bar_groups`로 정하고, 위치와 값은 `ColumnSource`로 올린
+컬럼에서 읽는다. 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다.
+[API 사용법](CATEGORICAL.md)을 참고하거나
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
 
 ### 원형 차트
 

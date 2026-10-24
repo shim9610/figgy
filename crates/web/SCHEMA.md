@@ -1032,14 +1032,12 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 <a id="categorybars-render_type"></a>
 
-## `CategoryBars` render_type, `bar_groups` and `cross_at`
+## `CategoryBars` render_type, `bar_groups`, `cross_at`
 
-A category bar series reads a positions column (`0, 1, …, n - 1`) and a
-values column of one value per category of the chart's categorical axis
-(`bottom_x` for vertical bars, `left_y` for horizontal ones; with
-`Horizontal`, `x_column` holds the values and `y_column` the positions). A
-`null` or NaN value is a missing bar. `style` and `labels` are always
-written; `overrides` is omitted when `None`, `labels.text` when empty.
+범주형 막대 시리즈는 위치 컬럼(`0, 1, …, n - 1`)과, 차트의 범주형 축(세로 막대는 `bottom_x`,
+가로 막대는 `left_y`)의 범주마다 값 하나를 둔 값 컬럼을 읽는다. `Horizontal`이면 `x_column`이 값,
+`y_column`이 위치다. 값이 `null`이나 NaN이면 그 막대가 없다. `style`과 `labels`는 항상 기록하고,
+`overrides`는 `None`이면, `labels.text`는 비어 있으면 생략한다.
 
 ```json
 {
@@ -1072,8 +1070,7 @@ written; `overrides` is omitted when `None`, `labels.text` when empty.
 }
 ```
 
-The chart's bar groups and the category axis crossing are additive keys of
-`get_config()`, omitted at `None`:
+묶음 설정과 범주 축의 교차 위치는 `get_config()`에 새로 추가된 키이며, `None`이면 생략한다.
 
 ```json
 {
@@ -1082,15 +1079,12 @@ The chart's bar groups and the category axis crossing are additive keys of
 }
 ```
 
-`mode` is `"Grouped"`, `"Stacked"` or `"PercentStacked"`; `direction`
-`"Vertical"` or `"Horizontal"`. `group_width` is 0.1 to 0.95, `bar_gap`
-0 to 24 logical pixels. `cross_at` is a value of the perpendicular axis
-(`left_y` for the top and bottom axes, `bottom_x` for the left and right
-ones) and must be finite. A selected bar's `selection_details()` adds
-`category_id`, `category_label`, `value`, `direction` and `mode`, and
-`step_selection(dx, dy)` moves along the categories on the category axis'
-delta and across the series of the bar group on the other. Documents
-without these keys are read and written as before.
+`mode`는 `"Grouped"`·`"Stacked"`·`"PercentStacked"`, `direction`은 `"Vertical"`·`"Horizontal"`이다.
+`group_width`는 0.1~0.95, `bar_gap`은 0~24 논리 픽셀이다. `cross_at`은 수직인 축(위·아래 축은 `left_y`,
+왼쪽·오른쪽 축은 `bottom_x`)의 값이며 유한해야 한다. 가로 막대의 범주 축은 `inverted`로 뒤집어 첫 범주를
+위에 둘 수 있다. 선택한 막대의 `selection_details()`에는 `category_id`, `category_label`, `value`,
+`direction`, `mode`가 더해지고, `step_selection(dx, dy)`는 범주 축 방향의 값으로 범주를, 다른 값으로
+묶음 안의 시리즈를 옮긴다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
 ## `Vector` render_type의 전체 형식
 

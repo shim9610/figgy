@@ -80,7 +80,7 @@ The example uploads the data once and reuses those columns for both directions.
 구간이 N개면 경계는 N+1개, 빈도는 N개를 전달한다. 길이가 맞지 않으면 경계와 빈도가
 모두 있는 구간만 그리고, `renderer.series_draw_info(chart_id, series_id)?.truncated`가
 `true`가 된다. 집계는 호스트가 담당하며, 일반 컬럼 데이터 소스를 그대로 사용한다.
-소규모 범주형 막대의 별도 입력 계약과는 다르다.
+범주형 막대도 같은 방식으로 위치와 값 컬럼을 읽는다.
 방향 변경이 자동 맞춤을 요청하지는 않는다. 축 눈금·로그 설정·뒤집기·그리드도
 용도에 맞게 호스트에서 지정한다. 보조 축을 표시한다면 해당 축도 함께 설정한다.
 

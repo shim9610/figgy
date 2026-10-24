@@ -726,13 +726,14 @@ the `CategoryBars` series kind) are additive.
   its publication target is still open. No API, serialized field or build
   change.
 - **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13d). `CATEGORICAL.md` describes the category bar series, the bar
-  groups, the overrides, picking and the document reader, in English,
-  replacing the guide of the removed bounded renderer; `SHADER_COMMON.md`
+  item 13d). `CATEGORICAL.md` (Korean) says that the categorical chart is a
+  `CategoryBars` series on a `Config` with a categorical axis, read from
+  legacy documents by `Config::from_categorical`, and drops the sections of
+  the removed bounded renderer; `SHADER_COMMON.md`
   §2.4 and §5.13 hold the category bar contract; `CONFIG.md`, `API.md`,
   `INTERACTION.md`, `WASM.md`, the browser `README.md` and `SCHEMA.md` and
   the model README describe the series kind, `bar_groups`, `cross_at` and
-  `set_categorical_document`. The model README's DataLess class is the
+  `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
   radial chart alone.
 - `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
   bindings, invariants, the flag table of §3.1) and names the file that

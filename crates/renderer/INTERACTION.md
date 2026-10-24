@@ -220,7 +220,7 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 ## 트레잇 상태 타입, 마이그레이션, 웹 연결
 
 `Selectable`, `Draggable`, `Resizable`, `HitMap`은 상태 타입을 매개변수로 받으며 기본값은 `Config`다.
-Cartesian 차트는 `Config`를, 원형 차트는 `RadialChart`를, 범주형 막대·박스플롯·레이더는
+Cartesian 차트(범주형 막대 포함)는 `Config`를, 원형 차트는 `RadialChart`를, 박스플롯·레이더는
 `DecorationLayout`을 상태로 넘긴다. 원형 차트의 요소는 넘긴 차트에서 부품을 배치하므로
 히트·선택 테두리·드래그가 그림과 같은 배치에서 나온다.
 원형·범주형 막대·박스플롯·레이더 모델의 모든 필드를 명시한 Rust 구조체 리터럴에는
@@ -230,7 +230,7 @@ Cartesian 차트는 `Config`를, 원형 차트는 `RadialChart`를, 범주형 �
 `DataAreaEdge`는 리사이즈가 내부에서 옮기는 변을 가리키며 히트 영역으로 등록하지 않는다.
 `data_area`가 없는 JSON은 영역을 자동 배치로 읽는다.
 
-Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·박스플롯·레이더를 위한
+Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·박스플롯·레이더를 위한
 `FiggyBoundedChart`를 제공한다. 이 클래스는 히트맵·ID·선택·드래그·크기 조정·출력을 노출하며,
 호스트는 포인터 이벤트를 연결하고 SSOT 변경 후 새 프레임을 그린다. 초기 표시는
 `first_frame_ready()`를 기다린다. [WASM API](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)를 참고한다.
