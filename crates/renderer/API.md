@@ -175,8 +175,11 @@ or exports the chart. After any edit, refresh the derived view as described belo
    For bounded charts, edit the `RadialChart`, `CategoricalChart`, `BoxPlotChart`
    or `RadarChart` passed to `prepare`. Normal edits do not require `clear_cache`.
 3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
-   bounded titles/axes/labels/legends/plot areas use `frame.decorations()`. Both
-   take chart-local logical pixels. Cartesian decorations use
+   the radial chart picks its slices on the GPU (`frame.pick(p)` returns a
+   ticket, `resolve()` reads the slice back). Bounded titles/axes/labels/
+   legends/plot areas use `frame.decorations()`; the radial frame's is a
+   `HitMap<RadialChart>` queried with the chart it was prepared from
+   (`frame.decoration_at(&chart, p)`). All take chart-local logical pixels. Cartesian decorations use
    `HitMap::for_active_layer(&config)`, or `ChartView::hit_test_active_layer` to
    include annotations, in the pixels of the config the view was refreshed with.
    Cartesian data picks address a registered chart ID: `Renderer::pick_chart` /
@@ -396,7 +399,10 @@ UI subregion or a multisampled host pass, draw to a matching offscreen texture a
 composite it. Supported formats are RGBA8/BGRA8, linear or sRGB.
 
 Bounded chart `prepare` takes logical size and scale; picking takes logical
-coordinates. Frame sizes and data geometry rectangles are physical pixels;
+coordinates. The radial chart draws the label strings of its slices'
+`text` and formats nothing: write them with `RadialChart::format_labels`
+after editing values or formats (`normalize_labels` fills a loaded document
+that has none). Frame sizes and data geometry rectangles are physical pixels;
 `frame.decorations()` exposes its hit bounds and selection boxes in logical pixels.
 Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
@@ -486,7 +492,7 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial, categorical, boxplot and radar frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a renderer-measured `DecorationMap` on the categorical, box plot and radar frames, and a `HitMap<RadialChart>` on the radial frame, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
 ## Pointer position in drags
 

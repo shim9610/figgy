@@ -11,10 +11,15 @@ area, title, axes, labels and legend use the same
 host forwards pointer events and requests frames while dragging; it never
 recomputes hit regions or label positions.
 
-- `frame.hit_test([x, y])` picks data: slices, bars, boxes, radar vertices and
-  polygons. `frame.decorations().hit_test([x, y])` picks the title, axes,
-  labels, legend and plot area, and returns `DataArea` wherever no other
-  decoration is hit, including over data.
+- `frame.hit_test([x, y])` picks data: bars, boxes, radar vertices and
+  polygons. The radial chart picks its slices on the GPU with the draw's own
+  sector ray-march: `frame.pick([x, y])` submits the pick and returns a
+  `RadialPickTicket`, whose `resolve()` (`resolve_blocking()` natively) reads
+  the slice back. `frame.decorations().hit_test([x, y])` picks the title,
+  axes, labels, legend and plot area, and returns `DataArea` wherever no other
+  decoration is hit, including over data. The radial frame's decorations are
+  a `HitMap<RadialChart>` placed from the chart: pass the chart the frame was
+  prepared from (`frame.decoration_at(&chart, [x, y])`).
 - Test the selected plot area's resize handles first (`hit_resize_handle`),
   then foreground decorations, then data, then `DataArea`. The plot area wins
   over data only while the host is in a plot-area edit mode.
@@ -32,8 +37,12 @@ recomputes hit regions or label positions.
 
 ## 데이터 선택과 장식 요소 선택
 
-- `frame.hit_test([x, y])`는 원형 조각·막대·박스·레이더 꼭짓점과 다각형 같은 데이터를 고른다.
+- `frame.hit_test([x, y])`는 막대·박스·레이더 꼭짓점과 다각형 같은 데이터를 고른다. 원형 차트는
+  그리기와 같은 조각 광선 추적으로 GPU에서 조각을 고른다. `frame.pick([x, y])`가 요청을 제출하고
+  `RadialPickTicket`을 돌려주며, `resolve()`(네이티브는 `resolve_blocking()`)가 결과를 읽는다.
 - `frame.decorations().hit_test([x, y])`는 제목·축·라벨·범례와 그리기 영역(`DataArea`)을 고른다.
+  원형 차트의 장식 요소는 차트에서 위치를 다시 계산하는 `HitMap<RadialChart>`이므로, 프레임을
+  준비한 차트를 함께 넘긴다(`frame.decoration_at(&chart, [x, y])`).
 - 영역을 선택한 상태라면 `map.hit_resize_handle(id, [x, y])`로 리사이즈 핸들을 먼저 검사한다.
   핸들은 영역 경계 밖으로도 걸쳐 있다.
 - 그다음 제목·라벨·축·범례 같은 앞쪽 요소, 데이터, `DataArea` 순서로 호스트가 판정한다.
@@ -54,7 +63,7 @@ recomputes hit regions or label positions.
 | 눈금·범주 라벨 | `AxisLabel(Side)` | 해당 축의 라벨 묶음을 이동 |
 | 축 제목 | `AxisTitle(Side)` | 회전된 제목도 포인터의 화면 방향으로 이동 |
 | 범례 | `Legend` | 기호와 모든 행을 함께 이동 |
-| 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨 연결선 끝도 갱신 |
+| 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨의 연결선은 라벨의 일부로, 조각에서 시작해 옮긴 글자까지 이어진다. 선택 테두리와 판정 영역은 글자 줄과 연결선을 각각 감싼다 |
 | 막대·박스·레이더 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
 | 레이더 스포크 라벨 | `SpokeLabel { category_id }` | 바깥 고리 끝의 범주 이름 하나만 이동. 재정렬해도 같은 ID에 적용 |
 
@@ -113,14 +122,17 @@ let result = element.as_draggable().unwrap()
 
 `HitId`는 해당 프레임 히트맵에서만 유효하다. 장기간 저장할 때는 `DecorationId`를 쓴다.
 크기·폰트·데이터·방향·모양을 바꾼 다음에는 `prepare`한 새 프레임에서 다시 조회한다.
-`map.bounds(hit)`와 `map.selection_box(hit)`도 논리 픽셀이다. 선택 테두리는 공통
+`map.bounds(hit)`와 `map.selection_box(hit)`도 논리 픽셀이다. 원형 프레임에서는
+`frame.decoration_bounds(&chart, hit)`와 `frame.decoration_selection_box(&chart, hit)`가 같은
+값을 돌려주며, 캔버스보다 넓은 제목의 선택 테두리는 캔버스 안으로 잘린다. 선택 테두리는 공통
 `SelectionBox` 규칙으로 렌더러가 그린다.
 
 ## 그리기 영역 선택과 크기 조정
 
 `DecorationId::DataArea`의 히트맵 요소는 `as_draggable()`와 `as_resizable()`을 모두 제공한다.
 선택 테두리의 8개 핸들, 핸들 판정과 이동 방향은 기존 공통 리사이즈 계약을 사용한다.
-`DecorationMap::hit_resize_handle`과 `resize_by`는 같은 트레잇 호출을 편하게 감싼 메서드다.
+`DecorationMap::hit_resize_handle`과 `resize_by`, 원형 프레임의 `decoration_resize_handle`과
+`resize_decoration`은 같은 트레잇 호출을 편하게 감싼 메서드다.
 
 ```rust,no_run
 # fn resize(renderer: &mut renderer::RadialRenderer, chart: &mut renderer::RadialChart)
@@ -181,7 +193,9 @@ DPR이나 PNG 배율은 저장한 논리 영역을 바꾸지 않는다. 캔버�
 ## 트레잇 상태 타입, 마이그레이션, 웹 연결
 
 `Selectable`, `Draggable`, `Resizable`, `HitMap`은 상태 타입을 매개변수로 받으며 기본값은 `Config`다.
-Cartesian 차트는 `Config`를, 원형·범주형 막대·박스플롯·레이더는 `DecorationLayout`을 상태로 넘긴다.
+Cartesian 차트는 `Config`를, 원형 차트는 `RadialChart`를, 범주형 막대·박스플롯·레이더는
+`DecorationLayout`을 상태로 넘긴다. 원형 차트의 요소는 넘긴 차트에서 부품을 배치하므로
+히트·선택 테두리·드래그가 그림과 같은 배치에서 나온다.
 원형·범주형 막대·박스플롯·레이더 모델의 모든 필드를 명시한 Rust 구조체 리터럴에는
 `decorations: Default::default()`가, `DecorationLayout`의 모든 필드를 명시한 리터럴에는
 `data_area: None`이 필요하다. `..Default::default()`로 끝내도 된다. `DecorationId`를 빠짐없이
@@ -217,10 +231,14 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형·범주형 막대·
 
 ## Independent bounded chart titles
 
-The four bounded charts, `RadialChart`, `CategoricalChart`, `BoxPlotChart` and
-`RadarChart`, accept an optional
-`chart_title: BoundedTitleOptions { visible, text: RichText }`. When present it
-is authoritative. The legacy plain `title` is a fallback only. Call
+The four bounded charts accept an optional rich `chart_title`. `RadialChart`
+holds the shared chart title, `chart_title: Option<ChartTitleOptions>`, written
+and read as the same `{ visible, text }` object; its `offset_x`, `offset_y` and
+`top_margin` must be 0 there, because the position lives in `decorations`, and
+the title is centred in the chart's own title band across the canvas through
+`select::emit_chart_title_in`. `CategoricalChart`, `BoxPlotChart` and
+`RadarChart` hold `chart_title: BoundedTitleOptions { visible, text: RichText }`.
+When present it is authoritative. The legacy plain `title` is a fallback only. Call
 `normalize_title()` once when loading an old document into an editor: it copies
 its title, family, color and former `font_size * 1.5` size into the independent
 rich document. Later label size/color/family edits do not alter that document.
@@ -234,7 +252,10 @@ Hidden titles are not registered in the hit map. Automatic plot space accounts
 for title metrics; incompatible explicit data areas fail preparation atomically.
 
 Title font sizes are 6–160 logical pixels, with at most 512 characters and eight
-lines. The label font fields control axis, category, data and legend text as
+lines (`RichText::within_limits`). A radial title wider than the canvas is drawn
+clipped by it; its hit region, selection box and drag containment are its drawn
+extent intersected with the canvas. The other bounded charts refuse such a
+title. The label font fields control axis, category, data and legend text as
 specified by each bounded family, not an explicit title.
 
 Multi-line titles also support `text.align` (`TextAlign::Left`, `Center`, or
@@ -577,10 +598,12 @@ measured by the renderer into the annotation layer's own
 - Bounded: `BoundedAnnotationFrame::hit_test_active_layer(chart.active_layer(),
   frame.decorations(), point)` tests the items above every decoration of the
   frame; the decorations all stay registered below them, because a bounded
-  chart has no other layer whose elements could be excluded. Slices, bars,
-  boxes and radar vertices and polygons are not part of either map and keep
-  answering through the frame's own `hit_test` on every layer, as GPU data picking keeps addressing the base
-  layer on Cartesian charts.
+  chart has no other layer whose elements could be excluded. A radial frame
+  routes through `route_active_layer(chart.active_layer(), point, ||
+  frame.decoration_at(&chart, point))`. Slices, bars, boxes and radar
+  vertices and polygons are not part of either map and keep answering through
+  the frame's own `hit_test` (the radial frame's `pick`) on every layer, as
+  GPU data picking keeps addressing the base layer on Cartesian charts.
 
 Both return a `LayerHit`: `Annotation { index, id }` (select
 `DecorationId::Annotation(index)` and drag through the annotation map with

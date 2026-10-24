@@ -80,7 +80,9 @@ class.
   (`RadialChart`: pie, donut and the detail ring of a split) is the only
   DataLess chart. A slice is named, coloured, exploded and labelled by the
   host, its `value` is stored on it, and the chart is bounded by its nature
-  (`MAX_RADIAL_SLICES`).
+  (`MAX_RADIAL_SLICES`). Its drawn label strings are SSOT strings too
+  (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
+  the renderer draws them and formats nothing.
 - **Column-backed charts** are the series kinds of `Config`: per-point data
   enters only through the renderer's `ColumnSource` and lives in its column
   pool. The categorical bar, box plot and radar charts are moving onto
