@@ -97,9 +97,9 @@ impl PreparationFeature {
         }
         for item in series {
             let group = match item.render_type {
-                DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {
-                    Self::Bars
-                }
+                DataRenderType::Histogram { .. }
+                | DataRenderType::CategoryBars { .. }
+                | DataRenderType::BoxPlot { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
@@ -292,6 +292,8 @@ impl Renderer {
                     && p.bar_selection_mapped.is_some()
                     && p.bar_category.is_some()
                     && p.bar_category_selection.is_some()
+                    && p.bar_box_plot.is_some()
+                    && p.bar_box_plot_selection.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -398,6 +400,8 @@ impl TargetPipelines {
             bar_selection_mapped: None,
             bar_category: None,
             bar_category_selection: None,
+            bar_box_plot: None,
+            bar_box_plot_selection: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -453,6 +457,12 @@ impl TargetPipelines {
         }
         if self.bar_category_selection.is_none() {
             self.bar_category_selection = other.bar_category_selection;
+        }
+        if self.bar_box_plot.is_none() {
+            self.bar_box_plot = other.bar_box_plot;
+        }
+        if self.bar_box_plot_selection.is_none() {
+            self.bar_box_plot_selection = other.bar_box_plot_selection;
         }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;

@@ -205,6 +205,11 @@ pub(super) struct TargetPipelines {
     pub(super) bar_category: Option<wgpu::RenderPipeline>,
     /// The picked category bar's highlight over the same layout.
     pub(super) bar_category_selection: Option<wgpu::RenderPipeline>,
+    /// The box plot draw (`vs_box_plot` / `fs_box_plot`) over the category
+    /// bar layout.
+    pub(super) bar_box_plot: Option<wgpu::RenderPipeline>,
+    /// The picked box's highlight over the same layout.
+    pub(super) bar_box_plot_selection: Option<wgpu::RenderPipeline>,
     pub(super) field: Option<wgpu::RenderPipeline>,
     pub(super) field_selection: Option<wgpu::RenderPipeline>,
     /// The selected contour level's highlight for a labelled contour, with
@@ -292,6 +297,8 @@ impl TargetPipelines {
         let mut need_bar_selection_mapped = false;
         let mut need_category_bars = false;
         let mut need_category_bar_selection = false;
+        let mut need_box_plot = false;
+        let mut need_box_plot_selection = false;
         let mut need_field_selection = false;
         let mut need_scatter_mapped = false;
         let mut need_errorbar_mapped = false;
@@ -356,6 +363,8 @@ impl TargetPipelines {
                 need_bar |= primitives.bar;
                 need_category_bars |= primitives.category_bars;
                 need_category_bar_selection |= primitives.category_bars && typed_bin;
+                need_box_plot |= primitives.box_plot;
+                need_box_plot_selection |= primitives.box_plot && typed_bin;
                 if primitives.vector
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
@@ -547,6 +556,26 @@ impl TargetPipelines {
             };
             if need && slot.is_none() {
                 *slot = Some(data_render::create_category_bar_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    category_bar_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                    selection,
+                ));
+            }
+        }
+        for (need, selection) in [(need_box_plot, false), (need_box_plot_selection, true)] {
+            let slot = if selection {
+                &mut self.bar_box_plot_selection
+            } else {
+                &mut self.bar_box_plot
+            };
+            if need && slot.is_none() {
+                *slot = Some(data_render::create_box_plot_pipeline_with_sample_count(
                     device,
                     &self.shaders.bar,
                     transform_bgl,
@@ -928,6 +957,40 @@ impl TargetPipelines {
                 );
             }
         }
+        for selection in [false, true] {
+            let slot = if selection {
+                &mut self.bar_box_plot_selection
+            } else {
+                &mut self.bar_box_plot
+            };
+            if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_box_plot")) {
+                *slot = Some(
+                    observe_value_async(
+                        observer,
+                        "renderer.prewarm",
+                        if selection {
+                            "selected box"
+                        } else {
+                            "box plots"
+                        },
+                        || {
+                            data_render::create_box_plot_pipeline_with_sample_count(
+                                device,
+                                &self.shaders.bar,
+                                transform_bgl,
+                                style_bgl,
+                                per_point_style_map_bgl,
+                                category_bar_data_bgl,
+                                surface_format,
+                                self.sample_count,
+                                selection,
+                            )
+                        },
+                    )
+                    .await,
+                );
+            }
+        }
         ensure!(
             field,
             "heatmap field",
@@ -1141,6 +1204,8 @@ pub(super) fn create_target_pipelines_observed(
         bar_selection_mapped: None,
         bar_category: None,
         bar_category_selection: None,
+        bar_box_plot: None,
+        bar_box_plot_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1217,6 +1282,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_selection_mapped: None,
         bar_category: None,
         bar_category_selection: None,
+        bar_box_plot: None,
+        bar_box_plot_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,

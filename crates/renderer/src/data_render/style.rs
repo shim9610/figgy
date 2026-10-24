@@ -163,6 +163,47 @@ impl PrimitiveStyle {
         s
     }
 
+    /// A box plot series' style: the body's lanes of the `Style`
+    /// reinterpretation (SHADER_COMMON.md §5.15), as a category bar's: the
+    /// fill colour, the outline width (0 without an outline) and colour, and
+    /// the material. The group layout is the series' `CategoryBarParamsGpu`;
+    /// the part styles (corner radius and notch, strokes, markers) are its
+    /// bar style map's slots, which the pick reads too.
+    ///
+    /// The selected box's highlight starts from this style and then holds
+    /// the highlight colour in `color_premul` and the outline width
+    /// (unscaled) in `line_width_px`, like a category bar's.
+    pub fn from_box_plot(
+        color: Color,
+        style: &crate::data_config::BoxPlotStyle,
+        scale: f32,
+    ) -> Self {
+        let premul = |c: Color| {
+            let a = c.a.clamp(0.0, 1.0);
+            [c.r * a, c.g * a, c.b * a, a]
+        };
+        let mut s = Self::from_color(color);
+        s.line_width_px = if style.outline {
+            style.outline_width.max(0.0) * scale
+        } else {
+            0.0
+        };
+        s.point_radius_px = 0.0;
+        s.cap_half_px = 0.0;
+        s.cap_width_px = 0.0;
+        s.shape_id = 0;
+        s.dash = [
+            premul(style.outline_color),
+            flat_body_material(
+                style.material,
+                style.texture_strength,
+                style.texture_scale,
+                style.gloss,
+            ),
+        ];
+        s
+    }
+
     pub(crate) fn pack_dash_pattern(&mut self, pattern: &[f32], scale: f32) {
         let capacity: usize = self.dash.iter().map(|lane| lane.len()).sum();
         self.dash.iter_mut().flatten().for_each(|slot| *slot = 0.0);
@@ -282,13 +323,25 @@ pub(crate) const MATERIAL_PEARL: u32 = 10;
 /// A category bar's material lanes: `(kind, texture strength, texture
 /// scale, gloss)`, the `material` of `BarStyleSlotGpu` and `Style.dash[1]`.
 pub(crate) fn category_bar_material(style: &crate::data_config::CategoryBarStyle) -> [f32; 4] {
-    let kind = MaterialGpu::pack(style.material, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0).params[0];
-    [
-        kind,
+    flat_body_material(
+        style.material,
         style.texture_strength,
         style.texture_scale,
         style.gloss,
-    ]
+    )
+}
+
+/// A flat body's material lanes: `(kind, texture strength, texture scale,
+/// gloss)`, as a category bar's and a box's `Style.dash[1]` and the
+/// `material` of their style slots.
+pub(crate) fn flat_body_material(
+    material: crate::Material,
+    texture_strength: f32,
+    texture_scale: f32,
+    gloss: f32,
+) -> [f32; 4] {
+    let kind = MaterialGpu::pack(material, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0).params[0];
+    [kind, texture_strength, texture_scale, gloss]
 }
 
 /// The roughness a bar or a box is shaded with: `RadialStyle`'s default.
@@ -467,6 +520,14 @@ const _: () = assert!(std::mem::size_of::<BarStyleSlotGpu>() == 80);
 /// finish of a category bar (`bar_columnar.wgsl`'s
 /// `BAR_STYLE_MASK_MATERIAL`).
 pub(crate) const BAR_STYLE_MASK_MATERIAL: u32 = 32;
+/// `BarStyleSlotGpu::params[3]` bits of `bar_columnar.wgsl`: the record sets
+/// the fill, the border colour, the border width, the gap or the width
+/// ratio.
+pub(crate) const BAR_STYLE_MASK_FILL: u32 = 1;
+pub(crate) const BAR_STYLE_MASK_BORDER_COLOR: u32 = 2;
+pub(crate) const BAR_STYLE_MASK_BORDER_WIDTH: u32 = 4;
+pub(crate) const BAR_STYLE_MASK_GAP: u32 = 8;
+pub(crate) const BAR_STYLE_MASK_WIDTH_RATIO: u32 = 16;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -620,23 +681,39 @@ pub fn create_bar_style_map(
     layout: &wgpu::BindGroupLayout,
     overrides: &[BarStyleOverrideGpu],
 ) -> BarStyleMap {
+    create_bar_style_map_with_slots(device, layout, &[], overrides)
+}
+
+/// A bar style map with style slots: the box plot's part slots
+/// (SHADER_COMMON.md §5.15). An empty slot list binds one padding row.
+pub fn create_bar_style_map_with_slots(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slots: &[BarStyleSlotGpu],
+    overrides: &[BarStyleOverrideGpu],
+) -> BarStyleMap {
     let dummy_style = [<BarStyleSlotGpu as bytemuck::Zeroable>::zeroed()];
     let dummy_override = [<BarStyleOverrideGpu as bytemuck::Zeroable>::zeroed()];
+    let style_rows = if slots.is_empty() {
+        &dummy_style[..]
+    } else {
+        slots
+    };
     let override_rows = if overrides.is_empty() {
         &dummy_override[..]
     } else {
         overrides
     };
     let meta = BarStyleMapMeta {
-        style_count: 0,
+        style_count: slots.len().min(u32::MAX as usize) as u32,
         override_count: overrides.len().min(u32::MAX as usize) as u32,
         has_index: 0,
         _pad: 0,
     };
     // gpu-alloc: caller
     let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("figgy histogram style padding row"),
-        contents: bytemuck::cast_slice(&dummy_style),
+        label: Some("figgy bar style slots"),
+        contents: bytemuck::cast_slice(style_rows),
         usage: wgpu::BufferUsages::STORAGE,
     });
     // gpu-alloc: caller

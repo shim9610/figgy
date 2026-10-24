@@ -157,7 +157,13 @@ impl PrepareContext<'_> {
             let constellation_only = matches!(styled, Some(StyleSet::Constellation(_)));
             let primitives = effective_series_primitives(&chart_config.draw_style, rt);
             let x_h = lookup(&cfg.x_column)?;
-            let y_h = lookup(&cfg.y_column)?;
+            // A box plot's `y_column` is its record, not a column: its
+            // member columns are looked up with its params below.
+            let y_h = if rt.box_plot().is_some() {
+                x_h
+            } else {
+                lookup(&cfg.y_column)?
+            };
 
             // A field: the group-2 state was resolved in `ensure_field_scratches`
             // (the prepare phase's `&mut self` half) and is reused whole while
@@ -291,7 +297,64 @@ impl PrepareContext<'_> {
                     &params,
                     style_map,
                 );
-                Some((data, params.count))
+                Some((
+                    data,
+                    params.count,
+                    data_render::CATEGORY_BAR_VERTICES,
+                    pipelines
+                        .bar_category
+                        .as_ref()
+                        .expect("prepare ensured category bar pipeline"),
+                ))
+            } else if primitives.box_plot && phase.is_none() {
+                // Box plots: the group is this panel's box plot series; the
+                // params read the record's and the outlier column's member
+                // lanes, and the style map resolves the overrides against the
+                // panel's categorical axis on every prepare. No streamed form.
+                let boxes = rt
+                    .box_plot()
+                    .expect("the box plot primitive has a box plot config");
+                let (params, vertices) = box_plot_params(
+                    chart_config,
+                    series_specs
+                        .iter()
+                        .filter(|s| {
+                            effective_series_primitives(
+                                &chart_config.draw_style,
+                                &s.config.render_type,
+                            )
+                            .box_plot
+                        })
+                        .map(|s| s.config),
+                    cfg,
+                    series.style.display_scale,
+                    self.pool,
+                    &mut lookup,
+                )?;
+                let style_map = crate::renderer::style::box_plot_style_map(
+                    &self.device,
+                    self.per_point_style_map_bgl,
+                    category_bar_categories(chart_config).unwrap_or(&[]),
+                    boxes,
+                    series.style.display_scale,
+                );
+                let data = data_render::create_category_bar_data_bind_group(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.category_bar_data_bgl,
+                    column_buffer,
+                    &params,
+                    style_map,
+                );
+                Some((
+                    data,
+                    params.count,
+                    vertices,
+                    pipelines
+                        .bar_box_plot
+                        .as_ref()
+                        .expect("prepare ensured box plot pipeline"),
+                ))
             } else {
                 None
             };
@@ -666,7 +729,7 @@ impl PrepareContext<'_> {
                         x: x_h,
                         y: y_h,
                         bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
-                        category: category_bars.as_ref().map(|(data, _)| data.clone()),
+                        category: category_bars.as_ref().map(|(data, ..)| data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
                     },
@@ -679,17 +742,16 @@ impl PrepareContext<'_> {
                 )?
             };
 
-            let category_bars =
-                category_bars.map(|(data, count)| data_render::ColumnCategoryBarLayer {
-                    pipeline: pipelines
-                        .bar_category
-                        .as_ref()
-                        .expect("prepare ensured category bar pipeline"),
+            let category_bars = category_bars.map(|(data, count, vertices, pipeline)| {
+                data_render::ColumnCategoryBarLayer {
+                    pipeline,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.bar_bg,
                     data,
                     count,
-                });
+                    vertices,
+                }
+            });
             out.push(data_render::SeriesLayers {
                 area,
                 field,

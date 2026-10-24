@@ -998,6 +998,11 @@ pub(super) fn require_resident_sources(
 pub(super) trait ColumnRegistration {
     fn column_len(&self, id: &str) -> Option<u64>;
 
+    /// Whether `id` names a resident record (a box plot's `y_column`) or a
+    /// resident ragged column (its outliers). Records and ragged columns are
+    /// resident only.
+    fn contains_composite(&self, id: &str) -> bool;
+
     fn contains_column(&self, id: &str) -> bool {
         self.column_len(id).is_some()
     }
@@ -1012,6 +1017,10 @@ impl ColumnRegistration for ColumnPool {
             .filter(|_| !self.is_member_column(id))
             .map(|slot| slot.len_values as u64)
     }
+
+    fn contains_composite(&self, id: &str) -> bool {
+        self.record(id).is_some() || self.ragged(id).is_some()
+    }
 }
 
 impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
@@ -1020,6 +1029,10 @@ impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamCol
             .get(id)
             .map(|source| source.len)
             .or_else(|| self.0.column_len(id))
+    }
+
+    fn contains_composite(&self, id: &str) -> bool {
+        self.0.contains_composite(id)
     }
 }
 
@@ -1310,6 +1323,14 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::Histogram { .. }
         // Category positions and values are its x and y columns.
         | DataRenderType::CategoryBars { .. } => {}
+        // Its positions are its x column and its record its y column; the
+        // outliers are a referenced ragged column like a matrix' columns, so
+        // replacing or removing them invalidates the series.
+        DataRenderType::BoxPlot { outliers, .. } => {
+            if let Some(id) = outliers {
+                visit(id);
+            }
+        }
         // A matrix' constituent columns are referenced columns like any other:
         // remove-column cascade, validation, and the derived-identity stamp all
         // reach them through here, so a grid column cannot be dropped from under
@@ -1368,6 +1389,17 @@ pub(super) fn validate_renderer_series(
             reason: reason.to_string(),
         });
     }
+    // The box plot rules are the chart's too: its box groups, their axes and
+    // every box series' style, labels and overrides.
+    if let Err(reason) = config.validate_box_plots(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.box_plot().is_some())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     for (index, item) in series.iter().enumerate() {
         if item.series_id.is_empty() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -1386,7 +1418,23 @@ pub(super) fn validate_renderer_series(
         }
 
         validate_registered_column(pool, &item.x_column)?;
-        validate_registered_column(pool, &item.y_column)?;
+        if let Some(boxes) = item.render_type.box_plot() {
+            // A box plot reads a record and a ragged column, not columns.
+            for id in std::iter::once(item.y_column.as_str()).chain(boxes.outliers) {
+                if !pool.contains_composite(id) {
+                    return Err(FiggyError::InvalidSeriesConfig {
+                        series_id: item.series_id.clone(),
+                        reason: format!(
+                            "box plot {id:?} is not a resident record or ragged column: upload \
+                             the record with `upsert_record` and the outliers with \
+                             `upsert_ragged`"
+                        ),
+                    });
+                }
+            }
+        } else {
+            validate_registered_column(pool, &item.y_column)?;
+        }
         if let Some(scatter) = extract_scatter(&item.render_type) {
             if let Some(column) = scatter.point_style_index_column.as_deref() {
                 validate_registered_column(pool, column)?;
@@ -1499,6 +1547,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::CategoryBars { .. } => {
             return Err(invalid("category bars are not drawn on polar axes"));
+        }
+        DataRenderType::BoxPlot { .. } => {
+            return Err(invalid("box plots are not drawn on polar axes"));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

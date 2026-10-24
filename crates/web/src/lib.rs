@@ -255,6 +255,7 @@ fn err_refs(
         // Bars, fields and vectors carry no error columns.
         DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -379,7 +380,8 @@ fn series_extent_request_from(
         | renderer::DataRenderType::LineScatterErrorbarY { .. }
         | renderer::DataRenderType::LineScatterErrorbarXY { .. }
         | renderer::DataRenderType::Histogram { .. }
-        | renderer::DataRenderType::CategoryBars { .. } => (Vec::new(), None),
+        | renderer::DataRenderType::CategoryBars { .. }
+        | renderer::DataRenderType::BoxPlot { .. } => (Vec::new(), None),
     };
     let vector_factor_bits = match &cfg.render_type {
         renderer::DataRenderType::Vector {
@@ -786,6 +788,7 @@ fn prepare_demo_declarations(
                 | DataRenderType::LineScatterErrorbarXY { .. } => cycle.color(index),
                 DataRenderType::Histogram { bar } => bar.fill_color,
                 DataRenderType::CategoryBars { color, .. } => *color,
+                DataRenderType::BoxPlot { color, .. } => *color,
                 DataRenderType::Contour { contour, .. }
                 | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch

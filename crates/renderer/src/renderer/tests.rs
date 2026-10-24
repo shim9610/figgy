@@ -6398,6 +6398,33 @@ fn streamed_series_reject_category_bars() {
     ));
 }
 
+/// Streaming is not extended to box plots: a streamed box plot series is
+/// rejected with an explicit reason (CLAUDE.md rule 8), and the draw-phase
+/// backstop says the same.
+#[test]
+fn streamed_series_reject_box_plots() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "record".into(),
+        render_type: DataRenderType::BoxPlot {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+            outliers: None,
+            overrides: None,
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("box plot") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to polar charts: a streamed series on one
 /// is rejected with an explicit reason.
 #[test]

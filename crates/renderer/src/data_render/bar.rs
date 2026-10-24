@@ -2,11 +2,15 @@
 
 use super::*;
 
-/// The assembled bar module: the histogram entries of `bar_columnar.wgsl`
-/// and the category bar entries of its input fragment
+/// The assembled bar module: the histogram entries of `bar_columnar.wgsl`,
+/// the category bar entries of its input fragment
 /// (`common/category_bars.wgsl`, SHADER_COMMON.md §5.13), which read the
 /// same override table and are shaded as flat bodies (`material.wgsl`,
-/// `bounded_shading.wgsl`).
+/// `bounded_shading.wgsl`), and the box plot entries of its box plot input
+/// fragment (`common/box_plot.wgsl`, §5.15), whose whiskers, caps and
+/// median are the error bar's stroke quads (`errorbar_segment.wgsl`) and
+/// whose mean and outliers are `marker.wgsl` shapes (with `ramp.wgsl` and
+/// `sketch_noise.wgsl`, which that fragment reads).
 pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -15,6 +19,11 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/material.wgsl",
     "data_render/common/bounded_shading.wgsl",
     "data_render/common/category_bars.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/sketch_noise.wgsl",
+    "data_render/common/marker.wgsl",
+    "data_render/common/errorbar_segment.wgsl",
+    "data_render/common/box_plot.wgsl",
     "data_render/bar_columnar.wgsl",
 );
 
@@ -318,6 +327,33 @@ pub fn bar_instance_count(edge_values: usize, value_values: usize) -> u32 {
 /// `category_bars.wgsl`'s `CATEGORY_BAR_VERTICES`.
 pub const CATEGORY_BAR_VERTICES: u32 = 6;
 
+// ───── Box plots ─────
+
+/// Vertices of one box before its outliers: four whisker and cap quads, the
+/// body, the median and the mean. Must match `box_plot.wgsl`'s
+/// `BOX_PLOT_BASE_VERTICES`.
+pub const BOX_PLOT_BASE_VERTICES: u32 = 42;
+/// Vertices per quad of a box: one outlier marker adds one quad.
+pub const BOX_PLOT_QUAD_VERTICES: u32 = 6;
+/// Style slots and override rows per box (`box_plot.wgsl`'s
+/// `BOX_PLOT_PARTS`): the body, the strokes and the markers.
+pub const BOX_PLOT_PARTS: u32 = 3;
+/// The body's part (`BOX_PART_BODY`).
+pub(crate) const BOX_PART_BODY: u32 = 0;
+/// `CategoryBarParamsGpu::values` lane of a box plot's outlier values
+/// (`BOX_LANE_OUTLIER_VALUES`); lanes 0..9 are the record's fields in
+/// `BOX_PLOT_RECORD` order.
+pub(crate) const BOX_LANE_OUTLIER_VALUES: u32 = 9;
+/// The lane of the outlier offsets (`BOX_LANE_OUTLIER_OFFSETS`).
+pub(crate) const BOX_LANE_OUTLIER_OFFSETS: u32 = 10;
+/// The lane of the outlier group count (`BOX_LANE_OUTLIER_GROUPS`).
+pub(crate) const BOX_LANE_OUTLIER_GROUPS: u32 = 11;
+/// The lane of the longest outlier group (`BOX_LANE_MAX_GROUP`).
+pub(crate) const BOX_LANE_MAX_GROUP: u32 = 12;
+/// A lane with no column: an absent optional record field, or no outlier
+/// column (`BOX_LANE_ABSENT`).
+pub(crate) const BOX_LANE_ABSENT: u32 = u32::MAX;
+
 /// `CategoryBarParamsGpu::mode`: bars stand side by side.
 pub(crate) const CATEGORY_BAR_MODE_GROUPED: u32 = 0;
 /// `CategoryBarParamsGpu::mode`: bars stack.
@@ -475,7 +511,7 @@ pub(crate) fn create_category_bar_pipeline_with_sample_count(
     sample_count: u32,
     selection: bool,
 ) -> wgpu::RenderPipeline {
-    let (vertex_entry, fragment_entry, label) = if selection {
+    let entries = if selection {
         (
             "vs_category_bar_selection",
             "fs_category_bar_selection",
@@ -488,6 +524,66 @@ pub(crate) fn create_category_bar_pipeline_with_sample_count(
             "figgy category bar columnar pipeline",
         )
     };
+    create_category_axis_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
+        target_format,
+        sample_count,
+        entries,
+    )
+}
+
+/// A box plot pipeline, over the category bar pipeline's layout (groups 0
+/// transform, 1 style, 2 the series' bar style map, 3 its data; no vertex
+/// buffers): `vs_box_plot` / `fs_box_plot` draw the boxes,
+/// `vs_box_plot_selection` / `fs_box_plot_selection` the picked one's
+/// highlight.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_box_plot_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    data_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    selection: bool,
+) -> wgpu::RenderPipeline {
+    let entries = if selection {
+        (
+            "vs_box_plot_selection",
+            "fs_box_plot_selection",
+            "figgy selected box plot columnar pipeline",
+        )
+    } else {
+        (
+            "vs_box_plot",
+            "fs_box_plot",
+            "figgy box plot columnar pipeline",
+        )
+    };
+    create_category_axis_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
+        target_format,
+        sample_count,
+        entries,
+    )
+}
+
+/// A pipeline of the bar module's category axis entries (category bars,
+/// box plots) with `(vertex entry, fragment entry, label)`.
+fn create_category_axis_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    [transform_bgl, style_bgl, style_map_bgl, data_bgl]: [&wgpu::BindGroupLayout; 4],
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    (vertex_entry, fragment_entry, label): (&str, &str, &str),
+) -> wgpu::RenderPipeline {
     let layout = crate::gpu_compile::pipeline_layout(
         device,
         &wgpu::PipelineLayoutDescriptor {
@@ -539,11 +635,16 @@ pub(crate) fn create_category_bar_pipeline_with_sample_count(
     )
 }
 
-/// One category bar series: `count` instances of `CATEGORY_BAR_VERTICES`.
+/// One category bar series (`count` instances of `CATEGORY_BAR_VERTICES`)
+/// or one box plot series (`count` instances of `vertices`: the box's
+/// strokes, body and markers, `BOX_PLOT_BASE_VERTICES` plus six per outlier
+/// of the longest group).
 pub struct ColumnCategoryBarLayer<'a> {
     pub pipeline: &'a wgpu::RenderPipeline,
     pub transform_bg: &'a wgpu::BindGroup,
     pub style_bg: &'a wgpu::BindGroup,
     pub data: CategoryBarData,
     pub count: u32,
+    /// Vertices per instance.
+    pub vertices: u32,
 }

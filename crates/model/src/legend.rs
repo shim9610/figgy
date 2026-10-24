@@ -372,6 +372,10 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
         DataRenderType::CategoryBars { color, .. } => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
+        // A box is a filled swatch in the box colour, like a bar.
+        DataRenderType::BoxPlot { color, .. } => {
+            scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterErrorbarX { scatter, .. }
         | DataRenderType::ScatterErrorbarY { scatter, .. }

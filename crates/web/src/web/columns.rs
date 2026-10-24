@@ -75,7 +75,14 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         }
     }
 
-    let mut ids: Vec<&str> = vec![&cfg.x_column, &cfg.y_column];
+    // A box plot's `y_column` is its record, which is not a registry
+    // column (records and ragged columns are registered through
+    // `register_record` / `register_ragged`).
+    let mut ids: Vec<&str> = if cfg.render_type.box_plot().is_some() {
+        vec![&cfg.x_column]
+    } else {
+        vec![&cfg.x_column, &cfg.y_column]
+    };
     match &cfg.render_type {
         DataRenderType::Scatter { scatter } => push_scatter_ref(&mut ids, scatter),
         DataRenderType::Line { .. } => {}
@@ -131,6 +138,9 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         }
         // A category bar reads its positions and values only.
         DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {}
+        // A box plot reads its positions here; its record and outliers are
+        // resident composites outside the column registry.
+        DataRenderType::BoxPlot { .. } => {}
         // The grid's constituent columns are referenced columns: a matrix
         // series' derived identity has to change when any of them does, or a
         // replaced grid column would keep serving a stale cache entry.

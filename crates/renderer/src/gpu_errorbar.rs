@@ -156,8 +156,11 @@ impl GpuSeriesFitMode {
                 // stop at sample points.
                 (matrix, matches!(fill.shading, Shading::Interpolated))
             }
-            // Category bars fit from column and stack statistics.
-            DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {
+            // Category bars fit from column and stack statistics, box plots
+            // from record and ragged statistics.
+            DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. } => {
                 return None;
             }
             // A grid vector's anchors are the grid's sample points: the
@@ -243,6 +246,7 @@ impl GpuSeriesExtentMode {
             }
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,

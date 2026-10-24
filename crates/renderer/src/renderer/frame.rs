@@ -345,6 +345,7 @@ pub(super) struct PreparedCategoryBarLayer {
     pub(super) style_bg: wgpu::BindGroup,
     pub(super) data: data_render::CategoryBarData,
     pub(super) count: u32,
+    pub(super) vertices: u32,
 }
 
 pub(super) struct PreparedErrorBarLayer {
@@ -540,8 +541,8 @@ pub(super) struct ResidentDisplayKey {
     /// gap and stacking are drawn into the bodies.
     pub(super) bar_groups: Option<crate::data_config::BarGroups>,
     /// The panel's category axes (`bottom_x`, `left_y`) when it draws a
-    /// category bar series, `None` otherwise: a bar override names its
-    /// category by id, resolved to a row against these.
+    /// category bar or box plot series, `None` otherwise: a bar or box
+    /// override names its category by id, resolved to a row against these.
     pub(super) categories: Option<[Option<Vec<crate::config::Category>>; 2]>,
     /// The tick-label face: contour labels baked into the bodies take it
     /// (`ContourLabelAtlasInput::from_config`).
@@ -632,11 +633,13 @@ impl ResidentDisplayKey {
     }
 }
 
-/// Whether any of the panel's series is a category bar series.
+/// Whether any of the panel's series is a category bar or a box plot
+/// series: their overrides name their category by id.
 fn has_category_bars(series: &[Series<'_>]) -> bool {
-    series
-        .iter()
-        .any(|series| series.config.render_type.category_bars().is_some())
+    series.iter().any(|series| {
+        let rt = &series.config.render_type;
+        rt.category_bars().is_some() || rt.box_plot().is_some()
+    })
 }
 
 /// A token's hold on one [`ResidentDisplay`]: the bind group to blit and the
@@ -739,6 +742,7 @@ impl PreparedSeries {
                 style_bg: layer.style_bg.clone(),
                 data: layer.data,
                 count: layer.count,
+                vertices: layer.vertices,
             }),
             vector: layers.vector.map(|layer| PreparedVectorLayer {
                 pipeline: layer.pipeline.clone(),
@@ -901,6 +905,7 @@ impl PreparedSeries {
                     style_bg: &layer.style_bg,
                     data: layer.data.clone(),
                     count: layer.count,
+                    vertices: layer.vertices,
                 }
             }),
             vector: self

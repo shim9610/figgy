@@ -1165,6 +1165,161 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Open a legacy box plot document (`BoxPlotChart` JSON, what
+    /// `FiggyBoundedChart` took as the `"boxplot"` family) as this Cartesian
+    /// chart.
+    ///
+    /// `Config::from_boxplot` turns the document into a config with a
+    /// categorical axis and a grouped `bar_groups`, one `BoxPlot` series per
+    /// document series and what those read: the category positions
+    /// (`boxplot.positions`, a registry column), and per series its record
+    /// of box statistics (`boxplot.record.<series id>`, as `register_record`
+    /// registers one) and, when it has outliers, its ragged outlier column
+    /// (`boxplot.outliers.<series id>`, as `register_ragged`). The summaries
+    /// upload through borrowed adapters; nothing is copied. Without a
+    /// document `value_range` the value axis is fitted to the records' and
+    /// outliers' statistics with a tenth of the span as padding and rounded
+    /// to nice ticks. The chart keeps its chart area; the series, columns,
+    /// records and config of a box plot document opened before are
+    /// replaced, every other column stays. From here on the chart is edited
+    /// through the Cartesian API.
+    ///
+    /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
+    pub fn set_boxplot_document(&mut self, json: &str) -> Result<(), JsValue> {
+        use renderer::{BOX_PLOT_RECORD, ColumnSource, UploadValues};
+        let document: renderer::BoxPlotChart = serde_json::from_str(json).map_err(js_err)?;
+        document.validate().map_err(js_err)?;
+        let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
+        config.chart_area = self.chart_config().chart_area.clone();
+
+        // Retire the previous document's series, then its positions.
+        let empty = self.chart_config().clone();
+        self.replace_chart_state(empty, Vec::new())?;
+        self.labels.clear();
+        self.styles.clear();
+        for upload in &uploads {
+            match &upload.values {
+                UploadValues::BoxRecord(_) => {
+                    let fields = upload
+                        .values
+                        .box_fields()
+                        .ok_or_else(|| js_err("a box plot record upload has fields"))?;
+                    let sources: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
+                        (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
+                    });
+                    self.renderer
+                        .upsert_record(
+                            upload.column.clone(),
+                            &renderer::RecordSource {
+                                schema: BOX_PLOT_RECORD,
+                                fields: &sources,
+                            },
+                        )
+                        .map_err(js_err)?;
+                }
+                UploadValues::BoxOutliers(_) => {
+                    let (values, offsets) = upload
+                        .values
+                        .box_outliers()
+                        .ok_or_else(|| js_err("a box plot outlier upload has values"))?;
+                    self.renderer
+                        .upsert_ragged(
+                            upload.column.clone(),
+                            &renderer::RaggedSource {
+                                values: &values,
+                                offsets: &offsets,
+                            },
+                        )
+                        .map_err(js_err)?;
+                }
+                values => {
+                    if self.columns.contains_key(&upload.column) {
+                        self.remove_column(&upload.column)?;
+                    }
+                    self.upsert_column_atomic(
+                        &upload.column,
+                        values.len(),
+                        super::columns::ColumnUploadSource::Scalar(values),
+                    )?;
+                }
+            }
+        }
+        // A series without outliers now drops the outliers of a previous
+        // document's series of the same id.
+        for cfg in &series {
+            if cfg
+                .render_type
+                .box_plot()
+                .is_some_and(|b| b.outliers.is_none())
+            {
+                self.renderer
+                    .remove_ragged(&renderer::bounded_sources::box_plot_outliers(
+                        &cfg.series_id,
+                    ))
+                    .map_err(js_err)?;
+            }
+        }
+
+        let horizontal = document.direction == renderer::BoxPlotDirection::Horizontal;
+        if document.value_range.is_none() {
+            let format = if horizontal {
+                config.bottom_x.label_style.format.clone()
+            } else {
+                config.left_y.label_style.format.clone()
+            };
+            let mut chart = renderer::Chart::new(config);
+            chart
+                .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.1)
+                .map_err(js_err)?;
+            config = chart.config().clone();
+            let value = if horizontal {
+                &mut config.bottom_x
+            } else {
+                &mut config.left_y
+            };
+            value.label_style.format = format;
+            let (min, max) = (value.min, value.max);
+            if value.auto_ticks(min, max, 5).is_ok() {
+                let fitted = value.clone();
+                let twin = if horizontal {
+                    &mut config.top_x
+                } else {
+                    &mut config.right_y
+                };
+                twin.min = fitted.min;
+                twin.max = fitted.max;
+                twin.major_spacing = fitted.major_spacing;
+                twin.minor_count = fitted.minor_count;
+            }
+        }
+
+        let (scale, _) = self.display_scale_and_panel();
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
+        let count = series.len();
+        self.replace_chart_state(config, series)?;
+        // The document wrote its own legend.
+        self.legend_auto_managed = false;
+        self.labels = labels;
+        self.styles = styles;
+        self.color_seq = count.max(self.color_seq);
+        Ok(())
+    }
+
     // ---- frame / resize / export ----
 
     /// Wait until previously submitted GPU work has finished. Does not

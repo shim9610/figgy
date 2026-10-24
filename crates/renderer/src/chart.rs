@@ -374,6 +374,76 @@ pub fn category_bar_value_extent(
     Ok((extent, groups.direction))
 }
 
+/// The value-axis extent of the box plots `layer` of `config` draws, from
+/// the pool's scalar statistics, with their direction.
+///
+/// Each box plot series spans the finite range of its record's value fields
+/// (every field but `sample_count`: the summary, the mean and the
+/// confidence interval, as the former box plot fitted every supplied value)
+/// and of its outlier column, hidden means and outliers included, so a style
+/// toggle never moves the axis. The statistics are the ones the pool
+/// measured when the record and the outliers were written; nothing per box
+/// is read back. A layer without box plots gives the empty extent.
+pub fn box_plot_value_extent(
+    pool: &ColumnPool,
+    config: &Config,
+    layer: LayerRef,
+    series: &[SeriesConfig],
+) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
+    let groups = config.bar_groups_of(layer);
+    let mut extent = FitExtent::EMPTY;
+    let mut include = |min: f64, max: f64| {
+        if min.is_finite() && max.is_finite() && min <= max {
+            let min_positive = if min > 0.0 {
+                Some(min)
+            } else if max > 0.0 {
+                Some(max)
+            } else {
+                None
+            };
+            extent.union(&FitExtent {
+                min,
+                max,
+                min_positive,
+            });
+        }
+    };
+    for item in series.iter().filter(|s| {
+        s.render_type.box_plot().is_some() && config.layer_of_series(&s.series_id) == layer
+    }) {
+        let (_, record_id) = item.box_plot_columns();
+        let record = pool
+            .record(record_id)
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: format!(
+                    "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
+                ),
+            })?;
+        let stats = record.stats();
+        for (k, (name, _)) in crate::data_render::BOX_PLOT_RECORD.iter().enumerate() {
+            if *name != "sample_count" && stats.present[k] && stats.finite[k] > 0 {
+                include(stats.min[k], stats.max[k]);
+            }
+        }
+        if let Some(id) = item.render_type.box_plot().and_then(|b| b.outliers) {
+            let ragged = pool
+                .ragged(id)
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "box plot outlier column {id:?} is not resident: upload it with `upsert_ragged`"
+                    ),
+                })?;
+            let stats = ragged.stats();
+            if stats.finite > 0 {
+                include(stats.min, stats.max);
+            }
+        }
+    }
+    Ok((extent, groups.direction))
+}
+
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
 pub struct Chart {
     config: Config,
@@ -921,6 +991,21 @@ impl Chart {
                 let own = self.config.layer_of_series(&cfg.series_id);
                 let (extent, direction) =
                     category_bar_value_extent(pool, &self.config, own, series)?;
+                match direction {
+                    crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
+                    crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                        x.union(&extent)
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            // A box plot series fits its value axis to its records' and
+            // outliers' statistics; its positions sit on a categorical axis.
+            if cfg.render_type.box_plot().is_some() {
+                let own = self.config.layer_of_series(&cfg.series_id);
+                let (extent, direction) =
+                    box_plot_value_extent(pool, &self.config, own, std::slice::from_ref(cfg))?;
                 match direction {
                     crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
                     crate::data_config::CategoryBarDirection::Horizontal if fit_x => {

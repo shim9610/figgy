@@ -46,6 +46,7 @@ mod time_axis;
 // its single-crate spelling: `renderer::config::…`, `renderer::layout::…`, etc.
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
+pub use ::model::bounded_sources::{BoxColumn, BoxField};
 pub use ::model::{SeriesUpload, UploadValues};
 pub use ::model::{
     bounded_sources, categorical, color, colormap, config, data_config, default, drag, expand,
