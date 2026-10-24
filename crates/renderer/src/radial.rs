@@ -497,13 +497,13 @@ pub struct RadialRenderer {
     pick_pipeline: wgpu::ComputePipeline,
     ledger: Arc<GpuLedger>,
     budget: u64,
-    annotations_cached: Option<(RadialChart, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
+    annotations_cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
     /// The dedicated annotation layer, drawn around the frame by its own pass.
     annotation_layer: crate::annotation::BoundedAnnotationCache,
     background: crate::annotation::FrameBackground,
     /// One frame per background mode, so an export that needs `HostClear`
     /// beside an interactive `Opaque` frame does not evict it.
-    cached: Vec<(RadialChart, (u32, u32), f32, u64, Arc<RadialFrame>)>,
+    cached: Vec<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
 impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
@@ -828,7 +828,7 @@ impl RadialRenderer {
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
             self.cached.iter().find(|(c, s, k, generation, frame)| {
-                frame_eq(c, chart)
+                c.matches(chart)
                     && *s == size
                     && *k == scale
                     && *generation == fonts
@@ -988,7 +988,7 @@ impl RadialRenderer {
         self.cached
             .retain(|(_, _, _, _, cached)| cached.background != background);
         self.cached
-            .push((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
+            .push((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -1226,73 +1226,141 @@ fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
             .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
 }
 
-/// The part of the chart this frame's pixels, geometry and hit map depend on.
-/// `active_layer` only routes interaction and the annotation layer is drawn
-/// by its own pass, so editing either must reuse the cached frame and its
-/// label raster rather than rebuild them.
-fn frame_key(chart: &RadialChart) -> RadialChart {
-    let mut c = chart.clone();
-    c.active_layer = Default::default();
-    c.annotations = Default::default();
-    // Selecting an annotation draws its box on the annotation overlay.
-    if crate::annotation::selected_index(c.decorations.selected.as_ref()).is_some() {
-        c.decorations.selected = None;
+/// What a radial frame's pixels, sectors and hit map are built from: the
+/// chart's fields that reach them, named one by one (#66). [`Self::of`] and
+/// [`Self::matches`] destructure `RadialChart` without a rest pattern, so a
+/// new chart field does not compile until it is classified there: taken
+/// into the key, or named as not reaching the frame, with the reason. The
+/// per-field mutation test (`frame_key_tests`) holds each classification.
+#[derive(Clone, Debug, PartialEq)]
+struct FrameKey {
+    data_area: Option<crate::layout::RectF>,
+    offsets: Vec<model::DecorationOffset>,
+    /// The decoration selection the frame highlights: an annotation's is
+    /// drawn on the annotation overlay instead.
+    selected: Option<model::DecorationId>,
+    title: String,
+    chart_title: Option<model::config::ChartTitleOptions>,
+    slices: Vec<RadialSlice>,
+    kind: RadialKind,
+    start_angle_degrees: f32,
+    split: Option<RadialSplit>,
+    style: RadialStyle,
+    labels: RadialLabels,
+    interaction: RadialInteraction,
+    font_family: String,
+    font_size: f32,
+    label_color: crate::Color,
+    background: crate::Color,
+}
+/// A decoration selection as the frame sees it.
+fn frame_selection(selected: &Option<model::DecorationId>) -> Option<&model::DecorationId> {
+    selected
+        .as_ref()
+        .filter(|s| crate::annotation::selected_index(Some(s)).is_none())
+}
+impl FrameKey {
+    fn of(chart: &RadialChart) -> Self {
+        let RadialChart {
+            decorations,
+            title,
+            chart_title,
+            // Routes pointer interaction only; no pixel depends on it.
+            active_layer: _,
+            // Drawn by its own pass (`BoundedAnnotationCache`).
+            annotations: _,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style,
+            labels,
+            // The frame draws each slice's `text`; these only write it, at
+            // edit time (`RadialChart::format_labels`).
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+        } = chart;
+        let model::DecorationLayout {
+            data_area,
+            offsets,
+            selected,
+        } = decorations;
+        Self {
+            data_area: *data_area,
+            offsets: offsets.clone(),
+            selected: frame_selection(selected).cloned(),
+            title: title.clone(),
+            chart_title: chart_title.clone(),
+            slices: slices.clone(),
+            kind: *kind,
+            start_angle_degrees: *start_angle_degrees,
+            split: split.clone(),
+            style: style.clone(),
+            labels: *labels,
+            interaction: interaction.clone(),
+            font_family: font_family.clone(),
+            font_size: *font_size,
+            label_color: *label_color,
+            background: *background,
+        }
     }
-    c
+    /// `*self == Self::of(chart)` without building the key: the per-frame
+    /// cache check.
+    fn matches(&self, chart: &RadialChart) -> bool {
+        let RadialChart {
+            decorations,
+            title,
+            chart_title,
+            active_layer: _,
+            annotations: _,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style,
+            labels,
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+        } = chart;
+        let model::DecorationLayout {
+            data_area,
+            offsets,
+            selected,
+        } = decorations;
+        self.data_area == *data_area
+            && self.offsets == *offsets
+            && self.selected.as_ref() == frame_selection(selected)
+            && self.title == *title
+            && self.chart_title == *chart_title
+            && self.slices == *slices
+            && self.kind == *kind
+            && self.start_angle_degrees == *start_angle_degrees
+            && self.split == *split
+            && self.style == *style
+            && self.labels == *labels
+            && self.interaction == *interaction
+            && self.font_family == *font_family
+            && self.font_size == *font_size
+            && self.label_color == *label_color
+            && self.background == *background
+    }
 }
-/// `decorations` compared as `frame_key` normalizes them.
-fn decorations_eq(a: &model::DecorationLayout, b: &model::DecorationLayout) -> bool {
-    let base = |d: &model::DecorationLayout| {
-        d.selected
-            .clone()
-            .filter(|s| crate::annotation::selected_index(Some(s)).is_none())
-    };
-    a.data_area == b.data_area && a.offsets == b.offsets && base(a) == base(b)
-}
-/// `frame_key(a) == frame_key(b)` without cloning, for the per-frame cache
-/// hit check. Exhaustive so a new field must be classified here.
-fn frame_eq(a: &RadialChart, b: &RadialChart) -> bool {
-    let RadialChart {
-        decorations,
-        title,
-        chart_title,
-        active_layer,
-        annotations,
-        slices,
-        kind,
-        start_angle_degrees,
-        split,
-        style,
-        labels,
-        label_format,
-        label_decimals,
-        value_suffix,
-        interaction,
-        font_family,
-        font_size,
-        label_color,
-        background,
-    } = a;
-    let _ = (active_layer, annotations);
-    decorations_eq(decorations, &b.decorations)
-        && title == &b.title
-        && chart_title == &b.chart_title
-        && slices == &b.slices
-        && kind == &b.kind
-        && start_angle_degrees == &b.start_angle_degrees
-        && split == &b.split
-        && style == &b.style
-        && labels == &b.labels
-        && label_format == &b.label_format
-        && label_decimals == &b.label_decimals
-        && value_suffix == &b.value_suffix
-        && interaction == &b.interaction
-        && font_family == &b.font_family
-        && font_size == &b.font_size
-        && label_color == &b.label_color
-        && background == &b.background
-}
-fn annotation_key(chart: &RadialChart) -> RadialChart {
+/// The key of a frame's label raster: its [`FrameKey`] with what only the
+/// GPU draws put to fixed values, so appearance edits and ordinary hover
+/// reuse the raster.
+fn annotation_key(chart: &RadialChart) -> FrameKey {
     fn style(s: &RadialStyle) -> RadialStyle {
         let RadialStyle {
             tilt_degrees,
@@ -1353,7 +1421,7 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
             texture_angle_degrees,
         }
     }
-    let mut c = frame_key(chart);
+    let mut c = FrameKey::of(chart);
     c.style = style(&c.style);
     if !raster_moves_inside_labels(chart) {
         c.interaction = RadialInteraction::default();
@@ -1406,6 +1474,141 @@ mod pick_module_tests {
 }
 
 #[cfg(test)]
+mod frame_key_tests {
+    use super::*;
+    use model::{DecorationId, DecorationOffset, LayerRef};
+    fn base() -> RadialChart {
+        let mut chart = RadialChart {
+            slices: vec![
+                RadialSlice::new("a", 1., crate::Color::WHITE),
+                RadialSlice::new("b", 2., crate::Color::BLACK),
+            ],
+            ..Default::default()
+        };
+        chart.format_labels();
+        chart
+    }
+    /// Every field of `RadialChart`, mutated once: the frame key moves
+    /// exactly for the fields it names, and `matches` agrees with `of`.
+    #[test]
+    fn every_chart_field_is_in_the_frame_key_or_named_out_of_it() {
+        // Exhaustive, like `FrameKey::of`: a new field must get a row here.
+        let RadialChart {
+            decorations: _,
+            title: _,
+            chart_title: _,
+            active_layer: _,
+            annotations: _,
+            slices: _,
+            kind: _,
+            start_angle_degrees: _,
+            split: _,
+            style: _,
+            labels: _,
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction: _,
+            font_family: _,
+            font_size: _,
+            label_color: _,
+            background: _,
+        } = base();
+        type Edit = fn(&mut RadialChart);
+        let reaching: &[(&str, Edit)] = &[
+            ("decorations.data_area", |c| {
+                c.decorations.data_area = Some(crate::layout::RectF {
+                    x: 30.,
+                    y: 80.,
+                    width: 200.,
+                    height: 150.,
+                })
+            }),
+            ("decorations.offsets", |c| {
+                c.decorations.offsets.push(DecorationOffset {
+                    element: DecorationId::ChartTitle,
+                    offset: [1., 2.],
+                })
+            }),
+            ("decorations.selected", |c| {
+                c.decorations.selected = Some(DecorationId::ChartTitle)
+            }),
+            ("title", |c| c.title = "T".into()),
+            ("chart_title", |c| c.normalize_title()),
+            ("slices", |c| c.slices[0].explode = 0.1),
+            ("slices.text", |c| c.slices[0].text = Some("x".into())),
+            ("kind", |c| c.kind = RadialKind::Donut { inner_radius: 0.5 }),
+            ("start_angle_degrees", |c| c.start_angle_degrees = 0.),
+            ("split", |c| {
+                c.split = Some(RadialSplit {
+                    slice_index: 1,
+                    kind: RadialKind::Pie,
+                    children: vec![RadialSlice::new("c", 2., crate::Color::WHITE)],
+                })
+            }),
+            ("style", |c| c.style.depth = 0.2),
+            ("labels", |c| c.labels = RadialLabels::Inside),
+            ("interaction", |c| {
+                c.interaction.selected = Some(RadialTarget::main(0))
+            }),
+            ("font_family", |c| c.font_family = "Comic Neue".into()),
+            ("font_size", |c| c.font_size = 20.),
+            ("label_color", |c| c.label_color = crate::Color::BLACK),
+            ("background", |c| c.background = crate::Color::BLACK),
+        ];
+        let outside: &[(&str, Edit)] = &[
+            ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+            ("annotations", |c| c.annotations.visible = false),
+            ("decorations.selected (an annotation)", |c| {
+                c.decorations.selected = Some(DecorationId::Annotation(0))
+            }),
+            ("label_format", |c| {
+                c.label_format = RadialLabelFormat::Value
+            }),
+            ("label_decimals", |c| c.label_decimals = 3),
+            ("value_suffix", |c| c.value_suffix = " kg".into()),
+        ];
+        // A slice is keyed whole, as the one field `slices`: its name and
+        // its own label format ride with it although the frame reads them
+        // only through the `text` `format_labels` writes.
+        let key = FrameKey::of(&base());
+        for (name, edit) in reaching {
+            let mut c = base();
+            edit(&mut c);
+            assert_ne!(FrameKey::of(&c), key, "{name} must reach the frame key");
+            assert!(!key.matches(&c), "{name}: matches disagrees with of");
+            assert!(FrameKey::of(&c).matches(&c), "{name}");
+        }
+        for (name, edit) in outside {
+            let mut c = base();
+            edit(&mut c);
+            assert_eq!(FrameKey::of(&c), key, "{name} must not reach the frame key");
+            assert!(key.matches(&c), "{name}: matches disagrees with of");
+        }
+    }
+    #[test]
+    fn the_label_raster_key_ignores_what_only_the_gpu_draws() {
+        let key = annotation_key(&base());
+        for edit in [
+            |c: &mut RadialChart| c.style.material = crate::Material::Wood,
+            |c: &mut RadialChart| c.background = crate::Color::BLACK,
+            |c: &mut RadialChart| {
+                c.interaction.hovered = Some(RadialTarget::main(0));
+                c.interaction.hover_progress = 0.5;
+            },
+            |c: &mut RadialChart| c.active_layer = LayerRef::Annotations,
+        ] {
+            let mut c = base();
+            edit(&mut c);
+            assert_eq!(annotation_key(&c), key);
+        }
+        let mut c = base();
+        c.slices[0].text = Some("x".into());
+        assert_ne!(annotation_key(&c), key);
+    }
+}
+
+#[cfg(test)]
 mod layer_cache_key_tests {
     use super::*;
     #[test]
@@ -1417,13 +1620,13 @@ mod layer_cache_key_tests {
         let mut layered = base.clone();
         layered.active_layer = model::LayerRef::Annotations;
         layered.annotations.visible = false;
-        assert_eq!(frame_key(&base), frame_key(&layered));
-        assert!(frame_eq(&frame_key(&base), &layered));
+        assert_eq!(FrameKey::of(&base), FrameKey::of(&layered));
+        assert!(FrameKey::of(&base).matches(&layered));
         assert_eq!(annotation_key(&base), annotation_key(&layered));
         let mut edited = base.clone();
         edited.title = "x".into();
-        assert_ne!(frame_key(&base), frame_key(&edited));
-        assert!(!frame_eq(&frame_key(&base), &edited));
+        assert_ne!(FrameKey::of(&base), FrameKey::of(&edited));
+        assert!(!FrameKey::of(&base).matches(&edited));
         assert_ne!(annotation_key(&base), annotation_key(&edited));
     }
 }
