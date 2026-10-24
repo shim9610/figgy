@@ -961,15 +961,30 @@ mod stream_tests {
             Persistent::new(&pipelines, &device, &ledger, 8, u64::MAX, 0, Some(&map)).unwrap();
         assert_eq!(persistent.charged_bytes(), 128);
         let empty_map_ledger = Arc::new(GpuLedger::new());
+        // The 8 pixels' 128 bytes and one padding row of each map buffer.
+        let padded = 128
+            + (std::mem::size_of::<BarStyleSlotGpu>()
+                + std::mem::size_of::<BarStyleOverrideGpu>()
+                + std::mem::size_of::<BarStyleMapMeta>()) as u64;
+        assert_eq!(padded, 320);
         assert_eq!(
-            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, 255, 0, None).err(),
+            Persistent::new(
+                &pipelines,
+                &device,
+                &empty_map_ledger,
+                8,
+                padded - 1,
+                0,
+                None
+            )
+            .err(),
             Some(StreamError::TooLarge),
             "the unmapped padding style map must be inside admission"
         );
         let empty_map =
-            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, 256, 0, None).unwrap();
-        assert_eq!(empty_map.charged_bytes(), 256);
-        assert_eq!(empty_map_ledger.total_bytes(), 256);
+            Persistent::new(&pipelines, &device, &empty_map_ledger, 8, padded, 0, None).unwrap();
+        assert_eq!(empty_map.charged_bytes(), padded);
+        assert_eq!(empty_map_ledger.total_bytes(), padded);
         drop(empty_map);
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("stream histogram test clear"),
