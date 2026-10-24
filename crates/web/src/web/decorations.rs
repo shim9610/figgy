@@ -316,7 +316,9 @@ impl FiggyChart {
                     }
                     None => {}
                 },
-                DataRenderType::Line { .. } | DataRenderType::Histogram { .. } => {}
+                DataRenderType::Line { .. }
+                | DataRenderType::Histogram { .. }
+                | DataRenderType::CategoryBars { .. } => {}
             }
         }
         let mut chart = Chart::new(self.chart_config().clone());

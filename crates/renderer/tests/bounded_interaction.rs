@@ -20,12 +20,6 @@ fn gpu() -> RendererDevice {
 #[path = "support/bounded_decorations.rs"]
 mod bounded_decorations;
 use bounded_decorations::Decorations;
-fn id(map: &decoration::DecorationMap, element: &DecorationId) -> HitId {
-    map.entries()
-        .find(|(_, e)| &e.id == element)
-        .unwrap_or_else(|| panic!("missing {element:?}"))
-        .0
-}
 /// Equal up to the rounding of placing a moved element again: a radial
 /// decoration is placed from its offset, not translated as a box.
 fn near(a: Option<RectF>, b: Option<RectF>) -> bool {
@@ -178,63 +172,6 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         );
         r.end_frame();
     }
-}
-#[test]
-fn categorical_chrome_survives_hover_cache_reorder_and_resize() {
-    let _guard = LOCK.lock().unwrap();
-    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let mut c = CategoricalChart {
-        title: "Editable bars".into(),
-        categories: vec![
-            Category::new("a", "Control"),
-            Category::new("b", "Treatment"),
-        ],
-        series: vec![BarSeries::new(
-            "s",
-            "Trial",
-            vec![Some(30.), Some(60.)],
-            Color::from_rgb8(60, 130, 210),
-        )],
-        ..Default::default()
-    };
-    let f = r.prepare(&c, (800, 560), 1.).unwrap();
-    let key = DecorationId::DataLabel {
-        category_id: "a".into(),
-        series_id: "s".into(),
-    };
-    moved(&*f, &mut c, &key, 30., 0.);
-    let edited = r.prepare(&c, (800, 560), 1.).unwrap();
-    c.hovered = Some(CategoryBarTarget::new("a", "s"));
-    let hover = r.prepare(&c, (800, 560), 1.).unwrap();
-    assert!(edited.shares_annotations_with(&hover));
-    assert_eq!(
-        edited.decorations().bounds(id(edited.decorations(), &key)),
-        hover.decorations().bounds(id(hover.decorations(), &key))
-    );
-    c.reorder_categories(&["b", "a"]).unwrap();
-    let reordered = r.prepare(&c, (900, 600), 2.).unwrap();
-    let bounds = reordered
-        .decorations()
-        .bounds(id(reordered.decorations(), &key))
-        .unwrap();
-    let mut plain = c.clone();
-    plain.decorations = Default::default();
-    let default = r.prepare(&plain, (900, 600), 2.).unwrap();
-    assert_eq!(
-        bounds,
-        default
-            .decorations()
-            .bounds(id(default.decorations(), &key))
-            .unwrap()
-            .translated(30., 0.)
-    );
-    assert!(reordered.decorations().hit_test([f32::NAN, 0.]).is_none());
-    c.decorations.selected = Some(key);
-    save(
-        "categorical-label-selected",
-        &r.export_rgba(&c, (900, 600), 2.).unwrap(),
-    );
-    r.end_frame();
 }
 #[test]
 fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
@@ -523,18 +460,6 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
             series_id: "s".into(),
         },
     ];
-    check!(
-        CategoricalRenderer,
-        [CategoricalChart {
-            title: "Editable bar title".into(),
-            category_title: "Group".into(),
-            value_title: "Value".into(),
-            categories: vec![Category::new("a", "Control")],
-            series: vec![BarSeries::new("s", "Response", vec![Some(35.0)], color)],
-            ..Default::default()
-        }],
-        keys.clone()
-    );
     let boxes = BoxPlotChart {
         title: "Editable box title".into(),
         category_title: "Group".into(),
@@ -682,14 +607,6 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         chart.format_labels();
         chart
     });
-    check!(
-        CategoricalRenderer,
-        CategoricalChart {
-            categories: vec![Category::new("a", "A")],
-            series: vec![BarSeries::new("s", "Values", vec![Some(3.)], Color::BLACK)],
-            ..Default::default()
-        }
-    );
     check!(
         BoxPlotRenderer,
         BoxPlotChart {

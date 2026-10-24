@@ -67,6 +67,19 @@ fn add_columns(r: &mut Renderer) {
         &column(vec![0.1, 0.3, 0.5, 0.2, 0.6, 0.4, 0.25, 0.15]),
     )
     .unwrap();
+    // Category bars: the positions, then the two value columns as one batch.
+    r.add_column("cpos", &column(vec![0.0, 1.0, 2.0])).unwrap();
+    r.add_columns(&[
+        (
+            "cva",
+            &column(vec![0.6, -0.4, 0.9]) as &dyn crate::ColumnSource,
+        ),
+        (
+            "cvb",
+            &column(vec![0.5, -0.3, 0.2]) as &dyn crate::ColumnSource,
+        ),
+    ])
+    .unwrap();
 }
 
 fn chart_config() -> Config {
@@ -122,6 +135,86 @@ fn subplot_config() -> (Config, (u32, u32)) {
         link_y: None,
     });
     (c, (SIZE.0, SIZE.1 * 2))
+}
+
+/// The panel with a categorical bottom axis whose line crosses the value
+/// axis at zero, and stacked category bars over it.
+fn category_config() -> Config {
+    let mut c = chart_config();
+    c.colorbar = None;
+    c.bottom_x.categories = Some(vec![
+        crate::config::Category::new("a", "A"),
+        crate::config::Category::new("b", "B"),
+        crate::config::Category::new("c", "C"),
+    ]);
+    c.bottom_x.cross_at = Some(0.0);
+    c.left_y.min = -1.0;
+    c.left_y.max = 2.0;
+    c.bar_groups = Some(crate::data_config::BarGroups {
+        mode: crate::data_config::CategoryBarMode::Stacked,
+        direction: crate::data_config::CategoryBarDirection::Vertical,
+        group_width: 0.8,
+        bar_gap: 2.0,
+    });
+    c
+}
+
+/// Two category bar series of one group: a Matte series with an outline
+/// and rounded corners, and a flat one with a restyled, recoloured bar.
+fn category_series() -> Vec<SeriesConfig> {
+    use crate::data_config::{CategoryBarOverride, CategoryBarStyle, CategoryBarTarget};
+    let bars = |id: &str, values: &str, color: Color, style: CategoryBarStyle| {
+        declared(
+            id,
+            "cpos",
+            values,
+            DataRenderType::CategoryBars {
+                color,
+                style,
+                labels: Default::default(),
+                label_format: Default::default(),
+                overrides: None,
+            },
+        )
+    };
+    let mut first = bars(
+        "bars",
+        "cva",
+        Color::new(0.2, 0.4, 0.8, 1.0),
+        CategoryBarStyle {
+            material: crate::Material::Matte,
+            corner_radius: 4.0,
+            outline: true,
+            outline_width: 1.5,
+            texture_strength: 0.6,
+            ..CategoryBarStyle::default()
+        },
+    );
+    let mut second = bars(
+        "more",
+        "cvb",
+        Color::new(0.9, 0.5, 0.1, 1.0),
+        CategoryBarStyle::default(),
+    );
+    let DataRenderType::CategoryBars { overrides, .. } = &mut second.render_type else {
+        unreachable!()
+    };
+    *overrides = Some(vec![CategoryBarOverride {
+        target: CategoryBarTarget::new("c", "more"),
+        color: Some(Color::new(0.1, 0.7, 0.3, 1.0)),
+        style: Some(CategoryBarStyle {
+            corner_radius: 6.0,
+            outline: true,
+            ..CategoryBarStyle::default()
+        }),
+        labels: None,
+        label_format: None,
+    }]);
+    let DataRenderType::CategoryBars { labels, .. } = &mut first.render_type else {
+        unreachable!()
+    };
+    labels.text = vec!["0.6".into(), "-0.4".into(), "0.9".into()];
+    vec![first, second]
 }
 
 fn line_style(color: Color) -> DataLineStyleConfig {
@@ -463,6 +556,12 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     tally.absorb(run_suite("overlay", overlay_config(), chart_series(), SIZE));
     let (config, size) = subplot_config();
     tally.absorb(run_suite("subplot", config, chart_series(), size));
+    tally.absorb(run_suite(
+        "category",
+        category_config(),
+        category_series(),
+        SIZE,
+    ));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

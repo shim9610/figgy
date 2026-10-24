@@ -104,6 +104,13 @@ pub(crate) enum GpuDataPickGeometry {
         vector_bg: wgpu::BindGroup,
         charge: SharedCharge,
     },
+    /// A category bar series' bars, picked by the category bar module's own
+    /// entry (`pick_category_bar`) over the draw's group 3 and override
+    /// table at the pick's display scale. A bar answers as a histogram bin
+    /// whose index is its row.
+    CategoryBars {
+        data: crate::data_render::CategoryBarData,
+    },
 }
 
 pub(crate) struct GpuDataPickSeries {
@@ -558,6 +565,7 @@ pub(crate) struct DataPickPipelineBundle {
     histogram: wgpu::ComputePipeline,
     field: wgpu::ComputePipeline,
     vector_cell: wgpu::ComputePipeline,
+    category_bar: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
     /// Group 3 of the field pick for a contour without labels.
     empty_label_gap: wgpu::BindGroup,
@@ -578,6 +586,7 @@ impl DataPickPipelineBundle {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
         let DataPickShaders {
@@ -630,6 +639,19 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        let category_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy category bar data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    Some(bar_style_bgl),
+                    Some(category_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
 
         let histogram = observe_value(observer, INIT_SCOPE, "pick_histogram_bin", || {
@@ -667,6 +689,19 @@ impl DataPickPipelineBundle {
                     module: vector_grid_shader,
                     entry_point: Some("pick_vector_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let category_bar = observe_value(observer, INIT_SCOPE, "pick_category_bar", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy category bar data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_category_bar"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
                     cache: None,
                 },
             )
@@ -726,6 +761,7 @@ impl DataPickPipelineBundle {
             histogram,
             field,
             vector_cell,
+            category_bar,
             empty_bar_style_map,
             empty_label_gap,
             _empty_label_gap_charge: empty_label_gap_charge,
@@ -745,6 +781,7 @@ impl DataPickPipelineBundle {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         #[cfg(target_arch = "wasm32")]
@@ -753,7 +790,10 @@ impl DataPickPipelineBundle {
                 &device,
                 "gpu.data_pick.bar.async",
                 crate::data_render::BAR_SHADER.source,
-                &[("pick_histogram_bin", "pick_histogram_bin")],
+                &[
+                    ("pick_histogram_bin", "pick_histogram_bin"),
+                    ("pick_category_bar", "pick_category_bar"),
+                ],
                 observer,
             )
             .await
@@ -798,6 +838,7 @@ impl DataPickPipelineBundle {
             field_bgl,
             bar_style_bgl,
             vector_bgl,
+            category_bgl,
             observer,
         ))
     }
@@ -924,6 +965,7 @@ impl DataPickPipelineBundle {
             Histogram(wgpu::BindGroup),
             Field(wgpu::BindGroup, wgpu::BindGroup),
             VectorGrid(wgpu::BindGroup),
+            CategoryBars(crate::data_render::CategoryBarData),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -1018,6 +1060,22 @@ impl DataPickPipelineBundle {
                         PreparedKind::VectorGrid(vector_bg),
                     )
                 }
+                GpuDataPickGeometry::CategoryBars { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        DataPickQueryGpu {
+                            cursor_ndc_t: cursor,
+                            limits: [query.max_distance_px, 0.0, 0.0, 0.0],
+                            data: [0, item.paint_order, 0, 0],
+                            bases: [0; 4],
+                            baseline: [0.0; 4],
+                        },
+                        PreparedKind::CategoryBars(data),
+                    )
+                }
             };
             let query_buffer = charged_buffer_init(
                 &scratch_tally,
@@ -1089,6 +1147,11 @@ impl DataPickPipelineBundle {
                     PreparedKind::VectorGrid(vector_bg) => {
                         pass.set_pipeline(&self.vector_cell);
                         pass.set_bind_group(2, vector_bg, &[]);
+                    }
+                    PreparedKind::CategoryBars(data) => {
+                        pass.set_pipeline(&self.category_bar);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
                     }
                 }
                 pass.set_bind_group(1, &item.query_bg, &[]);
@@ -1426,6 +1489,7 @@ mod stream_tests {
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let category_bgl = data_render::create_category_bar_data_bind_group_layout(&device);
         DataPickPipelineBundle::new_observed(
             device,
             queue,
@@ -1439,6 +1503,7 @@ mod stream_tests {
             &field_bgl,
             &style,
             &vector_bgl,
+            &category_bgl,
             &mut |_| {},
         )
     }
@@ -1535,6 +1600,8 @@ mod stream_tests {
                             fill_color_premul: [0.0; 4],
                             border_color_premul: [0.0; 4],
                             params: [0.0, 0.0, 0.0, 16.0],
+                            material: [0.0; 4],
+                            finish: [0.0; 4],
                         }],
                     )
                     .bind_group

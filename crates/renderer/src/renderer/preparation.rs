@@ -97,7 +97,9 @@ impl PreparationFeature {
         }
         for item in series {
             let group = match item.render_type {
-                DataRenderType::Histogram { .. } => Self::Bars,
+                DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {
+                    Self::Bars
+                }
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
@@ -141,6 +143,7 @@ pub struct PipelinePreparation {
     field: wgpu::BindGroupLayout,
     star: wgpu::BindGroupLayout,
     vector: wgpu::BindGroupLayout,
+    category_bar: wgpu::BindGroupLayout,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -183,6 +186,7 @@ impl PipelinePreparation {
                     &self.field,
                     &self.mapped,
                     &self.vector,
+                    &self.category_bar,
                     observer,
                 )
                 .await
@@ -230,6 +234,7 @@ impl PipelinePreparation {
                     &self.selection,
                     &self.field,
                     &self.vector,
+                    &self.category_bar,
                     &self.star,
                     contour.as_ref(),
                     Some(self.feature),
@@ -285,6 +290,8 @@ impl Renderer {
                     && p.bar_mapped.is_some()
                     && p.bar_selection.is_some()
                     && p.bar_selection_mapped.is_some()
+                    && p.bar_category.is_some()
+                    && p.bar_category_selection.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -327,6 +334,7 @@ impl Renderer {
             field: self.field_bgl.clone(),
             star: self.star_data_bgl.clone(),
             vector: self.vector_bgl.clone(),
+            category_bar: self.category_bar_data_bgl.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
@@ -388,6 +396,8 @@ impl TargetPipelines {
             bar_mapped: None,
             bar_selection: None,
             bar_selection_mapped: None,
+            bar_category: None,
+            bar_category_selection: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -437,6 +447,12 @@ impl TargetPipelines {
         }
         if self.bar_selection_mapped.is_none() {
             self.bar_selection_mapped = other.bar_selection_mapped;
+        }
+        if self.bar_category.is_none() {
+            self.bar_category = other.bar_category;
+        }
+        if self.bar_category_selection.is_none() {
+            self.bar_category_selection = other.bar_category_selection;
         }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;

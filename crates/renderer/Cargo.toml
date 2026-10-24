@@ -105,11 +105,6 @@ name = "radial_editor"
 path = "examples/radial_editor.rs"
 required-features = ["egui_demo"]
 
-[[example]]
-name = "categorical_editor"
-path = "examples/categorical_editor.rs"
-required-features = ["egui_demo"]
-
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
 

@@ -366,7 +366,65 @@ pub(super) fn bar_style_slot_gpu(
         fill_color_premul,
         border_color_premul,
         params: [border_width_px, gap_px, width_ratio, mask as f32],
+        material: [0.0; 4],
+        finish: [0.0; 4],
     }
+}
+
+/// The per-bar overrides of a category bar series as the bar override table
+/// its draw, pick and highlight resolve by row: each override's category id
+/// is looked up in `categories` (the axis' categories), its colour sets the
+/// fill and its style the outline, the material, the corner radius and the
+/// emphasis. An override whose category is not on the axis is skipped (the
+/// gate rejects it). An empty list binds the empty table.
+pub(super) fn category_bar_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    categories: &[crate::config::Category],
+    bars: crate::data_config::CategoryBarsRef<'_>,
+    scale: f32,
+) -> data_render::BarStyleMap {
+    const MASK_FILL: u32 = 1;
+    const MASK_BORDER_COLOR: u32 = 2;
+    const MASK_BORDER_WIDTH: u32 = 4;
+    let overrides: Vec<data_render::BarStyleOverrideGpu> = bars
+        .overrides
+        .iter()
+        .filter_map(|o| {
+            let row = categories
+                .iter()
+                .position(|c| c.id == o.target.category_id)?;
+            let mut record = data_render::BarStyleOverrideGpu {
+                bin_index: u32::try_from(row).ok()?,
+                ..bytemuck::Zeroable::zeroed()
+            };
+            let mut mask = 0;
+            if let Some(color) = o.color {
+                mask |= MASK_FILL;
+                record.fill_color_premul = premul_rgba(color);
+            }
+            if let Some(style) = &o.style {
+                mask |=
+                    MASK_BORDER_COLOR | MASK_BORDER_WIDTH | data_render::BAR_STYLE_MASK_MATERIAL;
+                record.border_color_premul = premul_rgba(style.outline_color);
+                record.params[0] = if style.outline {
+                    style.outline_width.max(0.0) * scale
+                } else {
+                    0.0
+                };
+                record.material = data_render::category_bar_material(style);
+                record.finish = [
+                    style.corner_radius.max(0.0) * scale,
+                    style.emphasis_brightness,
+                    0.0,
+                    0.0,
+                ];
+            }
+            record.params[3] = mask as f32;
+            Some(record)
+        })
+        .collect();
+    data_render::create_bar_style_map(device, layout, &overrides)
 }
 
 /// Bundle of style bind groups for line, scatter, and errorbar primitives.
@@ -408,6 +466,8 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) line: bool,
     pub(super) scatter: bool,
     pub(super) bar: bool,
+    /// A category bar series' bars. Precise mode only, like histogram bars.
+    pub(super) category_bars: bool,
     /// A vector (quiver) series' arrows. Precise mode only, like fields.
     pub(super) vector: bool,
 }
@@ -423,6 +483,7 @@ pub(super) fn effective_series_primitives(
             line: constellation_supports(render_type),
             scatter: constellation_supports(render_type),
             bar: false,
+            category_bars: false,
             vector: false,
         };
     }
@@ -442,6 +503,9 @@ pub(super) fn effective_series_primitives(
         // would mix two visual languages in one panel — so a stylized chart
         // draws no bars at all, the same answer `constellation_supports` gives.
         bar: matches!(draw_style, DrawStyle::Precise) && has_bar(render_type),
+        // Category bars are precise like histogram bars, for the same reason.
+        category_bars: matches!(draw_style, DrawStyle::Precise)
+            && render_type.category_bars().is_some(),
         // Arrows are a precise-mode primitive for the same reason: no stylized
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.
@@ -502,7 +566,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => false,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => false,
     }
 }
 
@@ -658,9 +723,12 @@ impl Renderer {
         errorbar.primitive_flags = errorbar_direction_flags(render_type);
         // Bars reinterpret the same `Style` bytes — fill, border, gap, baseline,
         // orientation. SHADER_COMMON.md's bar reinterpretation table is the SSoT.
-        let bar = match extract_bar(render_type) {
-            Some(b) => PrimitiveStyle::from_bar(b, scale),
-            None => PrimitiveStyle::from_color(Color::BLACK),
+        // A category bar series' lanes are its fill, outline and material
+        // (SHADER_COMMON.md §5.13); its layout is prepared with its group.
+        let bar = match (extract_bar(render_type), render_type.category_bars()) {
+            (Some(b), _) => PrimitiveStyle::from_bar(b, scale),
+            (None, Some(bars)) => PrimitiveStyle::from_category_bars(bars.color, bars.style, scale),
+            (None, None) => PrimitiveStyle::from_color(Color::BLACK),
         };
         let (mut line, mut scatter, mut bar) = (line, scatter, bar);
         line.series_salt = series_salt;
@@ -981,6 +1049,8 @@ impl Renderer {
                     fill_color_premul: slot.fill_color_premul,
                     border_color_premul: slot.border_color_premul,
                     params: slot.params,
+                    material: slot.material,
+                    finish: slot.finish,
                 })
             })
             .collect();

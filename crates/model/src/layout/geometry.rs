@@ -16,17 +16,65 @@ pub const LEGEND_INSET: f32 = 6.0;
 /// pixel. A data area's rectangle is `RectF::from_rect(&data_area)`, which
 /// is exact; a plot rectangle that is not integer-aligned takes the same
 /// half-pixel insets.
-pub fn axis_anchor(side: Side, plot: &RectF) -> ((f32, f32), (f32, f32)) {
+///
+/// `cross` is where the line crosses the perpendicular axis, as that axis'
+/// fraction ([`axis_cross`]): the line then runs through the pixel centre
+/// under that fraction, clamped between the two edge lines. `None` keeps it
+/// on its own edge.
+pub fn axis_anchor(side: Side, plot: &RectF, cross: Option<f32>) -> ((f32, f32), (f32, f32)) {
     let x0 = plot.x + 0.5;
     let y0 = plot.y + 0.5;
     let x1 = plot.x + plot.width - 0.5;
     let y1 = plot.y + plot.height - 0.5;
-    match side {
-        Side::Top => ((x0, y0), (x1, y0)),
-        Side::Bottom => ((x0, y1), (x1, y1)),
-        Side::Left => ((x0, y0), (x0, y1)),
-        Side::Right => ((x1, y0), (x1, y1)),
+    // The pixel centre a crossing lands in, kept between the edge lines.
+    let snap = |v: f32, lo: f32, hi: f32| (v.floor() + 0.5).max(lo).min(hi);
+    match (side, cross) {
+        (Side::Top | Side::Bottom, Some(t)) => {
+            let (_, y) = point_on_rect_side(t, &Side::Left, plot);
+            let y = snap(y, y0, y1);
+            ((x0, y), (x1, y))
+        }
+        (Side::Left | Side::Right, Some(t)) => {
+            let (x, _) = point_on_rect_side(t, &Side::Bottom, plot);
+            let x = snap(x, x0, x1);
+            ((x, y0), (x, y1))
+        }
+        (Side::Top, None) => ((x0, y0), (x1, y0)),
+        (Side::Bottom, None) => ((x0, y1), (x1, y1)),
+        (Side::Left, None) => ((x0, y0), (x0, y1)),
+        (Side::Right, None) => ((x1, y0), (x1, y1)),
     }
+}
+
+/// Where the axis on `side` crosses its perpendicular axis, as that axis'
+/// fraction clamped to `0..=1`: the position of
+/// [`AxisOptions::cross_at`] on `left_y` for the top and bottom axes, on
+/// `bottom_x` for the left and right ones. `None` without a crossing, for a
+/// value with no position on that axis, and on a polar chart.
+pub fn axis_cross(config: &Config, side: &Side) -> Option<f32> {
+    if config.polar.is_some() {
+        return None;
+    }
+    let (axis, perpendicular) = match side {
+        Side::Top => (&config.top_x, &config.left_y),
+        Side::Bottom => (&config.bottom_x, &config.left_y),
+        Side::Left => (&config.left_y, &config.bottom_x),
+        Side::Right => (&config.right_y, &config.bottom_x),
+    };
+    let value = axis.cross_at?;
+    let t = match perpendicular.scale {
+        _ if perpendicular.categories.is_some() => {
+            let (min, max) = perpendicular.data_range();
+            span_fraction(value, min, max, false)
+        }
+        AxisScale::Linear => span_fraction(value, perpendicular.min, perpendicular.max, false),
+        AxisScale::Logarithmic => {
+            let (min, max) = guarded_log_range(perpendicular.min, perpendicular.max);
+            span_fraction(value, min, max, true)
+        }
+    }?;
+    let t = if perpendicular.inverted { 1.0 - t } else { t };
+    Some(t.clamp(0.0, 1.0) as f32)
 }
 
 /// Perpendicular screen translation for a detached axis.
@@ -598,6 +646,59 @@ mod tests {
     use crate::default::default_config;
     use crate::layout::Rect;
 
+    /// `cross_at` is a value of the perpendicular axis: the bottom axis line
+    /// crosses `left_y` at it, the left one `bottom_x`, through the pixel
+    /// centre under it and never past the plot's edge lines.
+    #[test]
+    fn axis_lines_cross_the_perpendicular_axis_at_cross_at() {
+        let mut config = default_config();
+        config.left_y.min = -10.0;
+        config.left_y.max = 10.0;
+        config.bottom_x.min = 0.0;
+        config.bottom_x.max = 4.0;
+        let plot = RectF {
+            x: 100.0,
+            y: 50.0,
+            width: 400.0,
+            height: 200.0,
+        };
+        assert_eq!(axis_cross(&config, &Side::Bottom), None);
+        assert_eq!(
+            axis_anchor(Side::Bottom, &plot, None),
+            ((100.5, 249.5), (499.5, 249.5))
+        );
+        config.bottom_x.cross_at = Some(0.0);
+        let t = axis_cross(&config, &Side::Bottom);
+        assert_eq!(t, Some(0.5));
+        assert_eq!(
+            axis_anchor(Side::Bottom, &plot, t),
+            ((100.5, 150.5), (499.5, 150.5))
+        );
+        // A value past the axis range stays on the edge line.
+        config.bottom_x.cross_at = Some(-50.0);
+        let t = axis_cross(&config, &Side::Bottom);
+        assert_eq!(t, Some(0.0));
+        assert_eq!(axis_anchor(Side::Bottom, &plot, t).0.1, 249.5);
+        // The left axis crosses bottom_x; an inverted perpendicular axis
+        // mirrors the fraction.
+        config.left_y.cross_at = Some(1.0);
+        assert_eq!(axis_cross(&config, &Side::Left), Some(0.25));
+        assert_eq!(axis_anchor(Side::Left, &plot, Some(0.25)).0, (200.5, 50.5));
+        config.bottom_x.inverted = true;
+        assert_eq!(axis_cross(&config, &Side::Left), Some(0.75));
+        // A categorical perpendicular axis maps its category range.
+        config.bottom_x.inverted = false;
+        config.bottom_x.categories = Some(vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+        ]);
+        config.left_y.cross_at = Some(0.5);
+        assert_eq!(axis_cross(&config, &Side::Left), Some(0.5));
+        // Polar charts draw no Cartesian axis lines.
+        config.polar = Some(crate::polar::PolarOptions::default());
+        assert_eq!(axis_cross(&config, &Side::Left), None);
+    }
+
     fn areas() -> (ChartArea, DataArea) {
         (
             ChartArea(Rect {
@@ -635,9 +736,12 @@ mod tests {
     fn axis_anchors_preserve_half_pixels() {
         let (_, data) = areas();
         let data = RectF::from_rect(&data);
-        assert_eq!(axis_anchor(Side::Top, &data), ((50.5, 60.5), (249.5, 60.5)));
         assert_eq!(
-            axis_anchor(Side::Right, &data),
+            axis_anchor(Side::Top, &data, None),
+            ((50.5, 60.5), (249.5, 60.5))
+        );
+        assert_eq!(
+            axis_anchor(Side::Right, &data, None),
             ((249.5, 60.5), (249.5, 159.5))
         );
     }
@@ -653,19 +757,19 @@ mod tests {
             height: 100.25,
         };
         assert_eq!(
-            axis_anchor(Side::Top, &plot),
+            axis_anchor(Side::Top, &plot, None),
             ((50.75, 61.25), (249.25, 61.25))
         );
         assert_eq!(
-            axis_anchor(Side::Bottom, &plot),
+            axis_anchor(Side::Bottom, &plot, None),
             ((50.75, 160.5), (249.25, 160.5))
         );
         assert_eq!(
-            axis_anchor(Side::Left, &plot),
+            axis_anchor(Side::Left, &plot, None),
             ((50.75, 61.25), (50.75, 160.5))
         );
         assert_eq!(
-            axis_anchor(Side::Right, &plot),
+            axis_anchor(Side::Right, &plot, None),
             ((249.25, 61.25), (249.25, 160.5))
         );
     }
@@ -690,10 +794,10 @@ mod tests {
                 width,
                 height,
             });
-            assert_eq!(axis_anchor(Side::Top, &plot), ((x0, y0), (x1, y0)));
-            assert_eq!(axis_anchor(Side::Bottom, &plot), ((x0, y1), (x1, y1)));
-            assert_eq!(axis_anchor(Side::Left, &plot), ((x0, y0), (x0, y1)));
-            assert_eq!(axis_anchor(Side::Right, &plot), ((x1, y0), (x1, y1)));
+            assert_eq!(axis_anchor(Side::Top, &plot, None), ((x0, y0), (x1, y0)));
+            assert_eq!(axis_anchor(Side::Bottom, &plot, None), ((x0, y1), (x1, y1)));
+            assert_eq!(axis_anchor(Side::Left, &plot, None), ((x0, y0), (x0, y1)));
+            assert_eq!(axis_anchor(Side::Right, &plot, None), ((x1, y0), (x1, y1)));
         }
     }
 

@@ -2163,6 +2163,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         &cfg.bottom_x,
         Side::Bottom,
         &data_area_rect(&da),
+        None,
         FontPolicy::Standard,
         &majors,
         |stroke, a, _| {
@@ -2232,6 +2233,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         &cfg.bottom_x,
         Side::Bottom,
         &plot,
+        None,
         fp,
         &majors,
         |stroke, a, b| match stroke {
@@ -2265,7 +2267,7 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
                 (da.y + da.height) as f32 - 0.5,
             ),
         );
-        let (a, b) = axis_anchor(side.clone(), &exact);
+        let (a, b) = axis_anchor(side.clone(), &exact, None);
         let expected = match side {
             Side::Top => (integer.0, (integer.1.0, integer.0.1)),
             Side::Bottom => ((integer.0.0, integer.1.1), integer.1),

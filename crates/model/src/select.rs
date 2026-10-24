@@ -651,6 +651,7 @@ impl SubplotElement {
                 // `subplot_config` resets these two; the stored ones stay.
                 active_layer: _,
                 annotations: _,
+                bar_groups,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -670,6 +671,7 @@ impl SubplotElement {
                 subplots,
                 active_layer: stored.active_layer,
                 annotations: std::mem::take(&mut stored.annotations),
+                bar_groups,
             };
         }
         result
@@ -1575,8 +1577,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::default::default_config;
     use crate::layout::{
-        ChartArea, LABEL_GAP, Rect, axis_anchor, axis_offset, colorbar_rect, label_origin,
-        point_on_rect_side,
+        ChartArea, LABEL_GAP, Rect, axis_anchor, axis_cross, axis_offset, colorbar_rect,
+        label_origin, point_on_rect_side,
     };
     use crate::sink::StrokeStyle;
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
@@ -1700,13 +1702,17 @@ pub(crate) mod tests {
                         return true;
                     };
                     let axis = axis_of(cfg, side);
-                    let (a, b) = axis_anchor(side.clone(), &RectF::from_rect(&da));
+                    let plot = RectF::from_rect(&da);
                     let o = axis_offset(side.clone(), axis.line_offset);
                     if let Element::Axis(_) = element {
+                        // The line crosses where `cross_at` puts it; the
+                        // labels stay at the edge.
+                        let (a, b) = axis_anchor(side.clone(), &plot, axis_cross(cfg, side));
                         if axis.line_visible {
                             place_stroke(sink, [a.0 + o.0, a.1 + o.1], [b.0 + o.0, b.1 + o.1]);
                         }
                     } else if axis.label_style.label_visible {
+                        let (a, b) = axis_anchor(side.clone(), &plot, None);
                         let mid = ((a.0 + b.0) * 0.5 + o.0, (a.1 + b.1) * 0.5 + o.1);
                         let offset = (
                             axis.label_style.label_offset_x,

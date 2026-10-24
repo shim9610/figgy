@@ -902,6 +902,22 @@ impl CartesianHost {
                     choice(ui, "map", &mut bar.colormap, COLORMAPS);
                 });
             }
+            // How the category bar series share a slot. The direction stays:
+            // it decides which columns and axes the series read.
+            if let Some(groups) = config.bar_groups.as_mut() {
+                choice(
+                    ui,
+                    "bar mode",
+                    &mut groups.mode,
+                    &[
+                        renderer::CategoryBarMode::Grouped,
+                        renderer::CategoryBarMode::Stacked,
+                        renderer::CategoryBarMode::PercentStacked,
+                    ],
+                );
+                slider(ui, "group width", &mut groups.group_width, 0.1..=0.95);
+                slider(ui, "bar gap px", &mut groups.bar_gap, 0.0..=24.0);
+            }
         });
 
         section(ui, "Layers: overlays & subplots", true, |ui| {
@@ -1373,6 +1389,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. } => "line+scatter+errors",
         DataRenderType::Histogram { .. } => "histogram",
+        DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
@@ -1716,6 +1733,17 @@ fn series_controls(
                 chart.set_y_range(x.0, x.1);
                 *config = chart.config().clone();
             }
+        }
+        // The direction and stacking are the chart's (`Config::bar_groups`),
+        // shared by every bar series of the panel.
+        DataRenderType::CategoryBars {
+            color: fill, style, ..
+        } => {
+            color(ui, "fill", fill);
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
+            ui.checkbox(&mut style.outline, "outline");
+            color(ui, "outline colour", &mut style.outline_color);
+            slider(ui, "outline width", &mut style.outline_width, 0.0..=4.0);
         }
         DataRenderType::Heatmap { fill, .. } => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);

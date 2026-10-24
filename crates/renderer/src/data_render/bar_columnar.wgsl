@@ -245,6 +245,11 @@ struct BarStyleSlot {
     border_color_premul: vec4<f32>,
     // x = border width, y = gap, z = width ratio, w = mask bits.
     params: vec4<f32>,
+    // Category bars only (`BAR_STYLE_MASK_MATERIAL`): x = material kind,
+    // y = texture strength, z = texture scale, w = gloss.
+    material: vec4<f32>,
+    // Category bars only: x = corner radius px, y = emphasis brightness.
+    finish: vec4<f32>,
 };
 
 struct BarStyleOverride {
@@ -255,6 +260,8 @@ struct BarStyleOverride {
     fill_color_premul: vec4<f32>,
     border_color_premul: vec4<f32>,
     params: vec4<f32>,
+    material: vec4<f32>,
+    finish: vec4<f32>,
 };
 
 struct BarStyleMapMeta {
@@ -274,6 +281,10 @@ struct ResolvedBarStyle {
     border_width_px: f32,
     gap_px: f32,
     width_ratio: f32,
+    // The material and finish of a category bar (`category_bars.wgsl`);
+    // a histogram bin never reads them.
+    material: vec4<f32>,
+    finish: vec4<f32>,
 };
 
 const BAR_STYLE_MASK_FILL: u32 = 1u;
@@ -281,6 +292,7 @@ const BAR_STYLE_MASK_BORDER_COLOR: u32 = 2u;
 const BAR_STYLE_MASK_BORDER_WIDTH: u32 = 4u;
 const BAR_STYLE_MASK_GAP: u32 = 8u;
 const BAR_STYLE_MASK_WIDTH_RATIO: u32 = 16u;
+const BAR_STYLE_MASK_MATERIAL: u32 = 32u;
 
 fn apply_bar_style_slot(base: ResolvedBarStyle, slot: BarStyleSlot) -> ResolvedBarStyle {
     let mask = u32(slot.params.w);
@@ -300,6 +312,10 @@ fn apply_bar_style_slot(base: ResolvedBarStyle, slot: BarStyleSlot) -> ResolvedB
     if ((mask & BAR_STYLE_MASK_WIDTH_RATIO) != 0u) {
         out.width_ratio = clamp(slot.params.z, 0.0, 1.0);
     }
+    if ((mask & BAR_STYLE_MASK_MATERIAL) != 0u) {
+        out.material = slot.material;
+        out.finish = slot.finish;
+    }
     return out;
 }
 
@@ -312,7 +328,7 @@ fn resolve_bar_style(base: ResolvedBarStyle, inst: u32) -> ResolvedBarStyle {
         if (ov.bin_index == inst) {
             out = apply_bar_style_slot(
                 out,
-                BarStyleSlot(ov.fill_color_premul, ov.border_color_premul, ov.params),
+                BarStyleSlot(ov.fill_color_premul, ov.border_color_premul, ov.params, ov.material, ov.finish),
             );
         }
     }
@@ -326,6 +342,8 @@ fn base_bar_style() -> ResolvedBarStyle {
         max(style.line_width_px, 0.0),
         max(style.cap_half_px, 0.0),
         clamp(style.cap_width_px, 0.0, 1.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
     );
 }
 
@@ -666,6 +684,8 @@ fn data_pick_bar(bin_index: u32) -> DataPickCandidate {
             0.0,
             data_pick_query.limits.y,
             data_pick_query.limits.z,
+            vec4<f32>(0.0),
+            vec4<f32>(0.0),
         ),
         bin_index + data_pick_query.bases.z,
     );

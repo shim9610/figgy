@@ -1,7 +1,17 @@
-//! Bounded categorical bars. Values are model-owned, not ColumnSource payloads.
-//! Stable category/series IDs identify edits and selection; values follow category order.
-use crate::format::PlainNumberFormat;
-use crate::{Color, Material};
+//! The legacy categorical bar chart document, kept as a reader.
+//!
+//! A categorical bar chart is a Cartesian chart now: a `Config` with a
+//! categorical axis ([`crate::config::AxisOptions::categories`]),
+//! `Config::bar_groups` and one
+//! [`DataRenderType::CategoryBars`](crate::data_config::DataRenderType::CategoryBars)
+//! series per bar series, whose values are pool columns. A
+//! [`CategoricalChart`] document still parses and validates here, and
+//! `Config::from_categorical` turns it into that chart and the uploads of its
+//! values. Stable category and series ids identify edits and selections;
+//! values follow category order.
+use crate::Color;
+#[cfg(test)]
+use crate::Material;
 use std::collections::HashSet;
 
 pub const MAX_CATEGORIES: usize = 64;
@@ -11,20 +21,13 @@ pub const MAX_CATEGORY_BARS: usize = 512;
 /// The category type lives with the axis options now
 /// ([`crate::config::AxisOptions::categories`]); this path keeps working.
 pub use crate::config::Category;
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CategoryBarTarget {
-    pub category_id: String,
-    pub series_id: String,
-}
-impl CategoryBarTarget {
-    pub fn new(category: impl Into<String>, series: impl Into<String>) -> Self {
-        Self {
-            category_id: category.into(),
-            series_id: series.into(),
-        }
-    }
-}
+/// The bar types live with the series kinds now
+/// ([`crate::data_config::DataRenderType::CategoryBars`]); these paths keep
+/// working.
+pub use crate::data_config::{
+    CategoryBarDirection, CategoryBarLabelFormat, CategoryBarLabels, CategoryBarMode,
+    CategoryBarOverride, CategoryBarStyle, CategoryBarTarget,
+};
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BarSeries {
@@ -52,97 +55,10 @@ impl BarSeries {
         }
     }
 }
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarMode {
-    #[default]
-    Grouped,
-    Stacked,
-    PercentStacked,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarDirection {
-    #[default]
-    Vertical,
-    Horizontal,
-}
-/// The former bar material enum, now the shared [`Material`]. Bars reject
-/// the materials [`Material::supported_on_flat_body`] excludes.
+/// The former bar material enum, now the shared [`Material`](crate::Material). Bars reject
+/// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body) excludes.
 #[deprecated(since = "0.13.0", note = "use Material")]
 pub type CategoryBarMaterial = crate::Material;
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarLabels {
-    None,
-    Inside,
-    Outside,
-    #[default]
-    Auto,
-}
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum CategoryBarLabelFormat {
-    #[default]
-    Value,
-    Percent,
-    ValuePercent,
-    CategoryValue,
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(default)
-)]
-pub struct CategoryBarStyle {
-    pub material: Material,
-    /// Logical pixels. Only the exposed end of a stack is rounded.
-    pub corner_radius: f32,
-    pub outline: bool,
-    pub outline_width: f32,
-    pub outline_color: Color,
-    pub texture_strength: f32,
-    pub texture_scale: f32,
-    pub gloss: f32,
-    /// Highlight preserves the data endpoint; it never grows/lifts a bar.
-    pub emphasis_brightness: f32,
-}
-impl Default for CategoryBarStyle {
-    fn default() -> Self {
-        Self {
-            material: Material::Flat,
-            corner_radius: 5.0,
-            outline: false,
-            outline_width: 1.0,
-            outline_color: Color::from_rgb8(40, 55, 75),
-            texture_strength: 0.2,
-            texture_scale: 1.0,
-            gloss: 0.45,
-            emphasis_brightness: 0.08,
-        }
-    }
-}
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CategoryBarOverride {
-    pub target: CategoryBarTarget,
-    pub color: Option<Color>,
-    pub style: Option<CategoryBarStyle>,
-    pub labels: Option<CategoryBarLabels>,
-    pub label_format: Option<CategoryBarLabelFormat>,
-}
-impl CategoryBarOverride {
-    pub fn new(target: CategoryBarTarget) -> Self {
-        Self {
-            target,
-            color: None,
-            style: None,
-            labels: None,
-            label_format: None,
-        }
-    }
-}
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -231,18 +147,6 @@ impl Default for CategoricalChart {
             background: Color::WHITE,
         }
     }
-}
-/// Resolved data segment in axis units. Percent stacks use 0..100; originals stay unchanged.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CategoryBarSegment {
-    pub target: CategoryBarTarget,
-    pub category_index: usize,
-    pub series_index: usize,
-    pub value: f64,
-    pub start: f64,
-    pub end: f64,
-    pub percent: Option<f64>,
-    pub exposed_end: bool,
 }
 fn text(s: &str, max: usize) -> bool {
     s.chars().count() <= max && !s.chars().any(char::is_control)
@@ -417,118 +321,24 @@ impl CategoricalChart {
                 return Err("interaction target is missing or unknown");
             }
         }
-        self.resolve_segments()?;
-        Ok(())
-    }
-    /// Validates the model, then computes positive/negative stacks independently.
-    /// Percentages are undefined (None) for a zero or signed category total.
-    pub fn segments(&self) -> Result<Vec<CategoryBarSegment>, &'static str> {
-        self.validate()?;
-        self.resolve_segments()
-    }
-    fn resolve_segments(&self) -> Result<Vec<CategoryBarSegment>, &'static str> {
-        let mut out = Vec::new();
-        for (ci, c) in self.categories.iter().enumerate() {
-            let max = self
-                .series
-                .iter()
-                .filter_map(|s| s.values.get(ci).copied().flatten())
-                .fold(0.0, f64::max);
-            let has_negative = self
-                .series
-                .iter()
-                .any(|s| s.values.get(ci).copied().flatten().is_some_and(|v| v < 0.0));
-            // Normalize before summing: percent stacks remain valid even if the raw total overflows.
-            let denominator = if max > 0.0 {
-                self.series
-                    .iter()
-                    .filter_map(|s| s.values.get(ci).copied().flatten())
-                    .map(|v| v / max)
-                    .sum::<f64>()
-            } else {
-                0.0
-            };
-            let mut positive = 0.0;
-            let mut negative = 0.0;
-            let mut last_positive = None;
-            let mut last_negative = None;
-            for (si, s) in self.series.iter().enumerate() {
-                let Some(value) = s.values.get(ci).copied().flatten() else {
-                    continue;
-                };
-                let percent = if !has_negative && denominator > 0.0 {
-                    Some(value / max / denominator * 100.0)
-                } else {
-                    None
-                };
-                let amount = if self.mode == CategoryBarMode::PercentStacked {
-                    percent.unwrap_or(0.0)
-                } else {
-                    value
-                };
-                let start = if self.mode == CategoryBarMode::Grouped {
-                    0.0
-                } else if amount < 0.0 {
-                    negative
-                } else {
-                    positive
-                };
-                let end = start + amount;
-                if !end.is_finite() {
+        if self.mode == CategoryBarMode::Stacked {
+            // Each stack's running total must stay finite; percent stacks
+            // normalize per category and cannot overflow.
+            for i in 0..n {
+                let (mut positive, mut negative) = (0.0f64, 0.0f64);
+                for v in self.series.iter().filter_map(|s| s.values[i]) {
+                    if v < 0.0 {
+                        negative += v;
+                    } else {
+                        positive += v;
+                    }
+                }
+                if !positive.is_finite() || !negative.is_finite() {
                     return Err("stack total overflow");
                 }
-                if amount < 0.0 {
-                    negative = end;
-                    last_negative = Some(out.len());
-                } else if amount > 0.0 {
-                    positive = end;
-                    last_positive = Some(out.len());
-                }
-                out.push(CategoryBarSegment {
-                    target: CategoryBarTarget::new(&c.id, &s.id),
-                    category_index: ci,
-                    series_index: si,
-                    value,
-                    start,
-                    end,
-                    percent,
-                    exposed_end: self.mode == CategoryBarMode::Grouped,
-                });
-            }
-            if self.mode != CategoryBarMode::Grouped {
-                for i in [last_positive, last_negative].into_iter().flatten() {
-                    out[i].exposed_end = true;
-                }
-            }
-            // Sum rounding must not leave the final percent stack short of 100.
-            if self.mode == CategoryBarMode::PercentStacked {
-                if let Some(i) = last_positive {
-                    out[i].end = 100.0;
-                }
             }
         }
-        Ok(out)
-    }
-    pub fn label_text(&self, segment: &CategoryBarSegment) -> String {
-        let plain = PlainNumberFormat::fixed(self.label_decimals, true);
-        let number = |v: f64| plain.format(v);
-        let value = format!("{}{}", number(segment.value), self.value_suffix);
-        let pct = segment
-            .percent
-            .map(|v| format!("{}%", number(v)))
-            .unwrap_or_else(|| "—".into());
-        match self
-            .bar_override(&segment.target)
-            .and_then(|o| o.label_format)
-            .unwrap_or(self.label_format)
-        {
-            CategoryBarLabelFormat::Value => value,
-            CategoryBarLabelFormat::Percent => pct,
-            CategoryBarLabelFormat::ValuePercent => format!("{value} ({pct})"),
-            CategoryBarLabelFormat::CategoryValue => {
-                format!("{}: {value}", self.categories[segment.category_index].label)
-            }
-        }
+        Ok(())
     }
 }
 
@@ -546,37 +356,18 @@ mod tests {
         }
     }
     #[test]
-    fn missing_zero_and_stacks_are_distinct() {
-        let mut c = chart();
-        c.mode = CategoryBarMode::Stacked;
-        let s = c.segments().unwrap();
-        assert_eq!(s.len(), 3);
-        assert_eq!((s[1].start, s[1].end), (2.0, 5.0));
-        assert!(!s[0].exposed_end);
-        assert!(s[1].exposed_end);
-        assert_eq!(s[2].percent, None);
-        c.mode = CategoryBarMode::PercentStacked;
-        let s = c.segments().unwrap();
-        assert_eq!(s[0].end, 40.0);
-        assert_eq!(s[1].end, 100.0);
-        assert_eq!(s[2].end, 0.0);
-    }
-    #[test]
     fn signed_stacks_and_overflow_have_explicit_rules() {
         let mut c = chart();
         c.mode = CategoryBarMode::Stacked;
         c.series[1].values[0] = Some(-3.0);
-        let s = c.segments().unwrap();
-        assert_eq!((s[1].start, s[1].end), (0.0, -3.0));
-        assert!(s[0].exposed_end && s[1].exposed_end);
-        assert_eq!(s[0].percent, None);
+        assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::PercentStacked;
         assert!(c.validate().is_err());
         c.series[0].values[0] = Some(f64::MAX);
         c.series[1].values[0] = Some(f64::MAX);
-        assert_eq!(c.segments().unwrap()[1].end, 100.0);
+        assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::Stacked;
-        assert!(c.validate().is_err());
+        assert_eq!(c.validate(), Err("stack total overflow"));
     }
     #[test]
     fn identity_survives_reordering_and_rename() {

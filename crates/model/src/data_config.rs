@@ -5,10 +5,11 @@
 //! and which render type / style to use.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, AxisScale};
+use crate::config::{AxisOptions, AxisScale, Category};
 use crate::data::ColumnId;
 use crate::format::LabelFormat;
 use crate::line::LineStylePreset;
+use crate::material::Material;
 use crate::text::RichText;
 use crate::tick::TickError;
 
@@ -143,6 +144,53 @@ pub enum DataRenderType {
     Vector {
         components: VectorComponents,
         style: VectorStyle,
+    },
+    /// The bars of a categorical bar chart: one bar per category of the
+    /// chart's categorical axis ([`AxisOptions::categories`]), in this
+    /// series' colour and look.
+    ///
+    /// The bar direction ([`BarGroups::direction`] of `Config::bar_groups`)
+    /// decides the column roles, like a histogram's orientation:
+    /// `Vertical` reads `x_column` as the category positions (the host
+    /// uploads `0, 1, ..., n - 1`) and `y_column` as the values, one per
+    /// category with NaN for a missing bar; `Horizontal` reads `y_column`
+    /// as the positions and `x_column` as the values. Both columns hold
+    /// exactly one value per category.
+    ///
+    /// The `CategoryBars` series of one layer form its bar group: they
+    /// stand side by side, stack or stack to 100 % as
+    /// [`BarGroups::mode`] says, in series order. The renderer reads the
+    /// other series' values from the pool for a stack; nothing per bar is
+    /// kept on the CPU.
+    ///
+    /// Value labels are configuration only for now: `labels.text` holds the
+    /// drawn strings ([`format_labels`] writes them) and is validated, and
+    /// the renderer does not draw them yet.
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject category bars.
+    CategoryBars {
+        /// The fill colour of the series' bars, opaque.
+        color: Color,
+        /// The look of the bars: material, corner radius, outline, texture,
+        /// gloss and the brightness of a picked bar.
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: CategoryBarStyle,
+        /// Where the value labels go, how values are written and the drawn
+        /// text of each bar.
+        #[cfg_attr(feature = "serde", serde(default))]
+        labels: CategoryBarSeriesLabels,
+        /// What a value label says.
+        #[cfg_attr(feature = "serde", serde(default))]
+        label_format: CategoryBarLabelFormat,
+        /// Sparse per-bar overrides, keyed by category id and this series'
+        /// id. At most one per bar; an override's `style` replaces the
+        /// series' style whole.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        overrides: Option<Vec<CategoryBarOverride>>,
     },
 }
 
@@ -1169,6 +1217,560 @@ pub enum BarOrientation {
     Horizontal,
 }
 
+// ───── Category bars ─────
+
+/// How the bars of one bar group share a category slot.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CategoryBarMode {
+    /// Side by side, one bar per series in series order.
+    #[default]
+    Grouped,
+    /// On top of each other in series order; positive and negative values
+    /// stack away from zero independently.
+    Stacked,
+    /// Stacked to the share of the category total, `0..=100` on the value
+    /// axis. Values must not be negative.
+    PercentStacked,
+}
+
+/// The direction bars grow in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CategoryBarDirection {
+    /// Categories along x, values along y.
+    #[default]
+    Vertical,
+    /// Categories along y, values along x.
+    Horizontal,
+}
+
+/// Where a bar's value label goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CategoryBarLabels {
+    None,
+    Inside,
+    Outside,
+    /// Outside grouped bars, inside stacked ones.
+    #[default]
+    Auto,
+}
+
+/// What a bar's value label says.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum CategoryBarLabelFormat {
+    #[default]
+    Value,
+    /// The bar's share of its category total.
+    Percent,
+    ValuePercent,
+    CategoryValue,
+}
+
+/// The look of a bar: [`DataRenderType::CategoryBars`]' `style`, and a
+/// complete per-bar override.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct CategoryBarStyle {
+    /// A bar is a flat body: [`Material::supported_on_flat_body`] decides.
+    pub material: Material,
+    /// Logical pixels. Only the exposed end of a stack is rounded.
+    pub corner_radius: f32,
+    pub outline: bool,
+    pub outline_width: f32,
+    pub outline_color: Color,
+    pub texture_strength: f32,
+    pub texture_scale: f32,
+    pub gloss: f32,
+    /// The brightness a picked bar gains. A highlight keeps the bar's data
+    /// end; it never grows or lifts the bar.
+    pub emphasis_brightness: f32,
+}
+
+impl Default for CategoryBarStyle {
+    fn default() -> Self {
+        Self {
+            material: Material::Flat,
+            corner_radius: 5.0,
+            outline: false,
+            outline_width: 1.0,
+            outline_color: Color::from_rgb8(40, 55, 75),
+            texture_strength: 0.2,
+            texture_scale: 1.0,
+            gloss: 0.45,
+            emphasis_brightness: 0.08,
+        }
+    }
+}
+
+fn finite_in(v: f32, lo: f32, hi: f32) -> bool {
+    v.is_finite() && (lo..=hi).contains(&v)
+}
+
+/// Every channel in `0..=1`, and opaque when `opaque` is set.
+pub(crate) fn valid_bar_color(c: Color, opaque: bool) -> bool {
+    [c.r, c.g, c.b, c.a]
+        .into_iter()
+        .all(|v| finite_in(v, 0.0, 1.0))
+        && (!opaque || c.a == 1.0)
+}
+
+/// Whether `text` is one line of at most `max` characters.
+pub(crate) fn single_line_within(text: &str, max: usize) -> bool {
+    text.chars().count() <= max && !text.chars().any(char::is_control)
+}
+
+impl CategoryBarStyle {
+    /// The rules a bar style is held to at every level (series, override):
+    /// a material with a look on a flat body, a corner radius in `0..=32`,
+    /// an outline width in `0..=8`, an outline colour with channels in
+    /// `0..=1`, texture strength and gloss in `0..=1`, a texture scale in
+    /// `0.1..=8` and an emphasis brightness in `0..=0.5`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !self.material.supported_on_flat_body() {
+            return Err("material not supported by bars");
+        }
+        if finite_in(self.corner_radius, 0.0, 32.0)
+            && finite_in(self.outline_width, 0.0, 8.0)
+            && valid_bar_color(self.outline_color, false)
+            && finite_in(self.texture_strength, 0.0, 1.0)
+            && finite_in(self.texture_scale, 0.1, 8.0)
+            && finite_in(self.gloss, 0.0, 1.0)
+            && finite_in(self.emphasis_brightness, 0.0, 0.5)
+        {
+            Ok(())
+        } else {
+            Err("invalid bar style")
+        }
+    }
+}
+
+/// One bar: the id of its category and the id of its series.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryBarTarget {
+    pub category_id: String,
+    pub series_id: String,
+}
+
+impl CategoryBarTarget {
+    pub fn new(category: impl Into<String>, series: impl Into<String>) -> Self {
+        Self {
+            category_id: category.into(),
+            series_id: series.into(),
+        }
+    }
+}
+
+/// A per-bar override. `None` fields keep the series' value; `style`
+/// replaces the series' style whole.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct CategoryBarOverride {
+    pub target: CategoryBarTarget,
+    pub color: Option<Color>,
+    pub style: Option<CategoryBarStyle>,
+    pub labels: Option<CategoryBarLabels>,
+    pub label_format: Option<CategoryBarLabelFormat>,
+}
+
+impl CategoryBarOverride {
+    pub fn new(target: CategoryBarTarget) -> Self {
+        Self {
+            target,
+            color: None,
+            style: None,
+            labels: None,
+            label_format: None,
+        }
+    }
+}
+
+/// The most characters one drawn value label may have.
+pub const MAX_CATEGORY_BAR_LABEL_CHARS: usize = 160;
+
+/// The value labels of a [`DataRenderType::CategoryBars`] series: where they
+/// go, how a value is written, and the drawn text of every bar.
+///
+/// `text` is the string each bar shows, one per category in axis order (an
+/// empty string draws nothing), or empty when the labels were not written
+/// yet. The renderer never formats a value: [`format_labels`] writes `text`
+/// at edit time from the values the host holds, `label_format`, `decimals`
+/// and `value_suffix`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct CategoryBarSeriesLabels {
+    pub placement: CategoryBarLabels,
+    /// Fixed decimals of a written value, `0..=6`; trailing zeros are
+    /// dropped.
+    pub decimals: usize,
+    /// Appended to a written value; one line of at most 24 characters.
+    pub value_suffix: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub text: Vec<String>,
+}
+
+impl Default for CategoryBarSeriesLabels {
+    fn default() -> Self {
+        Self {
+            placement: CategoryBarLabels::Auto,
+            decimals: 1,
+            value_suffix: String::new(),
+            text: Vec::new(),
+        }
+    }
+}
+
+/// How the [`DataRenderType::CategoryBars`] series of one layer share their
+/// categorical axis: `Config::bar_groups`. The property of the set of bar
+/// series, not of one series. `None` there reads as the default (grouped,
+/// vertical, 0.7 of the slot, 3 px apart).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct BarGroups {
+    pub mode: CategoryBarMode,
+    pub direction: CategoryBarDirection,
+    /// Fraction of a category slot all bars of the slot cover, `0.1..=0.95`.
+    pub group_width: f32,
+    /// Logical pixels between grouped bars, `0..=24`.
+    pub bar_gap: f32,
+}
+
+impl Default for BarGroups {
+    fn default() -> Self {
+        Self {
+            mode: CategoryBarMode::Grouped,
+            direction: CategoryBarDirection::Vertical,
+            group_width: 0.7,
+            bar_gap: 3.0,
+        }
+    }
+}
+
+impl BarGroups {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if finite_in(self.group_width, 0.1, 0.95) && finite_in(self.bar_gap, 0.0, 24.0) {
+            Ok(())
+        } else {
+            Err("bar groups need a group width in 0.1..=0.95 and a bar gap in 0..=24 px")
+        }
+    }
+}
+
+/// The fields of a [`DataRenderType::CategoryBars`] series, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct CategoryBarsRef<'a> {
+    pub color: Color,
+    pub style: &'a CategoryBarStyle,
+    pub labels: &'a CategoryBarSeriesLabels,
+    pub label_format: CategoryBarLabelFormat,
+    pub overrides: &'a [CategoryBarOverride],
+}
+
+impl DataRenderType {
+    /// The fields of a category bar series, or `None` for every other kind.
+    pub fn category_bars(&self) -> Option<CategoryBarsRef<'_>> {
+        match self {
+            DataRenderType::CategoryBars {
+                color,
+                style,
+                labels,
+                label_format,
+                overrides,
+            } => Some(CategoryBarsRef {
+                color: *color,
+                style,
+                labels,
+                label_format: *label_format,
+                overrides: overrides.as_deref().unwrap_or(&[]),
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl SeriesConfig {
+    /// The column of a category bar series that holds the category
+    /// positions and the one that holds the values, by `direction`.
+    pub fn category_bar_columns(&self, direction: CategoryBarDirection) -> (&str, &str) {
+        match direction {
+            CategoryBarDirection::Vertical => (&self.x_column, &self.y_column),
+            CategoryBarDirection::Horizontal => (&self.y_column, &self.x_column),
+        }
+    }
+}
+
+/// The rules one category bar series is held to against the `categories`
+/// of its axis: an opaque colour, a valid style, label decimals `0..=6`, a
+/// one-line value suffix of at most 24 characters, `labels.text` empty or
+/// one one-line string of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`]
+/// characters per category, and overrides that name one of the categories
+/// and this series, at most one per bar, with an opaque colour and a valid
+/// style.
+pub fn validate_category_bar_series(
+    series: &SeriesConfig,
+    categories: &[Category],
+) -> Result<(), &'static str> {
+    let Some(bars) = series.render_type.category_bars() else {
+        return Ok(());
+    };
+    if !valid_bar_color(bars.color, true) {
+        return Err("a bar colour must be opaque with channels in 0..=1");
+    }
+    bars.style.validate()?;
+    if bars.labels.decimals > 6 || !single_line_within(&bars.labels.value_suffix, 24) {
+        return Err(
+            "bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
+        );
+    }
+    if !bars.labels.text.is_empty() && bars.labels.text.len() != categories.len() {
+        return Err("bar label text needs one string per category");
+    }
+    if bars
+        .labels
+        .text
+        .iter()
+        .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
+    {
+        return Err("a bar label is one line of at most 160 characters");
+    }
+    for (index, o) in bars.overrides.iter().enumerate() {
+        if o.target.series_id != series.series_id
+            || !categories.iter().any(|c| c.id == o.target.category_id)
+            || bars.overrides[..index].iter().any(|e| e.target == o.target)
+        {
+            return Err("a bar override names a category of the axis and its own series, once");
+        }
+        if o.color.is_some_and(|c| !valid_bar_color(c, true)) {
+            return Err("a bar colour must be opaque with channels in 0..=1");
+        }
+        if let Some(style) = &o.style {
+            style.validate()?;
+        }
+    }
+    Ok(())
+}
+
+impl crate::config::Config {
+    /// The bar group options of `layer`: the `bar_groups` of the chart that
+    /// draws it (the parent's for `Base` and an overlay, the subplot's own
+    /// for a subplot and its overlays), or the default.
+    pub fn bar_groups_of(&self, layer: crate::layer::LayerRef) -> BarGroups {
+        use crate::layer::LayerRef;
+        let groups = match layer {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => self
+                .subplots
+                .get(index)
+                .and_then(|subplot| subplot.config.bar_groups.as_ref()),
+            LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => {
+                self.bar_groups.as_ref()
+            }
+        };
+        groups.cloned().unwrap_or_default()
+    }
+
+    /// The rules the category bar series of a chart are held to, with the
+    /// series list it draws.
+    ///
+    /// Every `bar_groups` (the chart's and each subplot's) passes
+    /// [`BarGroups::validate`]. The [`DataRenderType::CategoryBars`] series
+    /// of one layer are its bar group: at most
+    /// [`MAX_BAR_SERIES`](crate::categorical::MAX_BAR_SERIES) of them, each
+    /// with its own value column, drawn against a categorical axis
+    /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
+    /// linear numeric value axis, with at most
+    /// [`MAX_CATEGORY_BARS`](crate::categorical::MAX_CATEGORY_BARS) bars, and
+    /// each series passes [`validate_category_bar_series`] against the
+    /// axis' categories. Horizontal bars cannot sit on an overlay layer,
+    /// whose own axis is a value axis on y, and a polar chart draws no
+    /// category bars. Whether a column holds one value per category is
+    /// data: the renderer checks it against the pool when it prepares.
+    pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+        use crate::layer::LayerRef;
+        if let Some(groups) = &self.bar_groups {
+            groups.validate()?;
+        }
+        for subplot in &self.subplots {
+            if let Some(groups) = &subplot.config.bar_groups {
+                groups.validate()?;
+            }
+        }
+        let bars = || {
+            series
+                .iter()
+                .filter(|s| s.render_type.category_bars().is_some())
+        };
+        if bars().next().is_none() {
+            return Ok(());
+        }
+        if self.polar.is_some() {
+            return Err("category bars are not drawn on polar axes");
+        }
+        for layer in self.panel_layers() {
+            let members = || bars().filter(|s| self.layer_of_series(&s.series_id) == layer);
+            let count = members().count();
+            if count == 0 {
+                continue;
+            }
+            if count > MAX_BAR_SERIES {
+                return Err("a bar group holds at most 16 category bar series");
+            }
+            let groups = self.bar_groups_of(layer);
+            let horizontal = groups.direction == CategoryBarDirection::Horizontal;
+            let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
+            if horizontal && overlay {
+                return Err(
+                    "horizontal category bars cannot sit on an overlay layer: its own axis is a value axis on y",
+                );
+            }
+            // The axes as the layer draws them: a subplot with its links.
+            let subplot = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    self.subplot_config(index)
+                }
+                LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
+            };
+            let chart = subplot.as_ref().unwrap_or(self);
+            let category_axis = if horizontal {
+                &chart.left_y
+            } else {
+                &chart.bottom_x
+            };
+            let value_axis = match layer {
+                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => {
+                    &chart.overlays[index].y_axis
+                }
+                _ if horizontal => &chart.bottom_x,
+                _ => &chart.left_y,
+            };
+            let Some(categories) = category_axis.categories.as_deref() else {
+                return Err(
+                    "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
+                );
+            };
+            if categories.len().saturating_mul(count) > MAX_CATEGORY_BARS {
+                return Err("a bar group draws at most 512 bars");
+            }
+            if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
+                return Err("category bars need a linear numeric value axis");
+            }
+            for (k, item) in members().enumerate() {
+                validate_category_bar_series(item, categories)?;
+                let (_, values) = item.category_bar_columns(groups.direction);
+                if members()
+                    .take(k)
+                    .any(|earlier| earlier.category_bar_columns(groups.direction).1 == values)
+                {
+                    return Err("the category bar series of a group need distinct value columns");
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Write `labels.text` of every [`DataRenderType::CategoryBars`] series in
+/// `series` from the values the host holds for it: the edit-time helper
+/// the renderer relies on, since it never formats a value.
+///
+/// `value(k, i)` is the value of category `i` of the `k`-th category bar
+/// series in `series` (`None` for a missing bar). `categories` are the
+/// axis' categories, whose order the text follows. A bar's text follows its
+/// override's `label_format`, else the series' one: the value with
+/// `labels.decimals` fixed decimals (trailing zeros dropped) and
+/// `labels.value_suffix`, its share of the category total, both, or the
+/// category label with the value. The share is that of the bars of all the
+/// category bar series in `series` at that category, and reads `—` where a
+/// category has a negative value or no positive total. A missing bar's text
+/// is empty. Other series are left alone.
+pub fn format_labels(
+    series: &mut [SeriesConfig],
+    categories: &[Category],
+    value: impl Fn(usize, usize) -> Option<f64>,
+) {
+    let members = series
+        .iter()
+        .filter(|s| s.render_type.category_bars().is_some())
+        .count();
+    let share = |k: usize, i: usize| -> Option<f64> {
+        let v = value(k, i)?;
+        // Normalize before summing so the shares stay finite even when the
+        // raw total overflows.
+        let mut max = 0.0f64;
+        let mut negative = false;
+        for m in 0..members {
+            if let Some(x) = value(m, i) {
+                max = max.max(x);
+                negative |= x < 0.0;
+            }
+        }
+        if negative || max <= 0.0 {
+            return None;
+        }
+        let total: f64 = (0..members)
+            .filter_map(|m| value(m, i))
+            .map(|x| x / max)
+            .sum();
+        (total > 0.0).then(|| v / max / total * 100.0)
+    };
+    let mut k = 0;
+    for item in series.iter_mut() {
+        let series_id = item.series_id.clone();
+        let DataRenderType::CategoryBars {
+            labels,
+            label_format,
+            overrides,
+            ..
+        } = &mut item.render_type
+        else {
+            continue;
+        };
+        let number = crate::format::PlainNumberFormat::fixed(labels.decimals, true);
+        labels.text.clear();
+        for (i, category) in categories.iter().enumerate() {
+            let Some(v) = value(k, i) else {
+                labels.text.push(String::new());
+                continue;
+            };
+            let format = overrides
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .find(|o| o.target.series_id == series_id && o.target.category_id == category.id)
+                .and_then(|o| o.label_format)
+                .unwrap_or(*label_format);
+            let written = format!("{}{}", number.format(v), labels.value_suffix);
+            let percent = share(k, i)
+                .map(|p| format!("{}%", number.format(p)))
+                .unwrap_or_else(|| "—".into());
+            labels.text.push(match format {
+                CategoryBarLabelFormat::Value => written,
+                CategoryBarLabelFormat::Percent => percent,
+                CategoryBarLabelFormat::ValuePercent => format!("{written} ({percent})"),
+                CategoryBarLabelFormat::CategoryValue => {
+                    format!("{}: {written}", category.label)
+                }
+            });
+        }
+        k += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScatterShape {
@@ -2139,6 +2741,424 @@ mod contour_level_tests {
         assert_eq!(
             ContourConfig::nice_levels(&axis(1e16, 1e16 + 4.0, AxisScale::Linear), 2001),
             Err(TickError::InvalidRange)
+        );
+    }
+}
+
+#[cfg(test)]
+mod category_bar_tests {
+    use super::*;
+    use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+    use crate::config::Config;
+    use crate::layer::{OverlayLayer, Subplot};
+
+    pub(crate) fn categories(n: usize) -> Vec<Category> {
+        (0..n)
+            .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
+            .collect()
+    }
+
+    pub(crate) fn bars(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "positions".into(),
+            y_column: format!("{id}.values"),
+            render_type: DataRenderType::CategoryBars {
+                color: Color::from_rgb8(40, 120, 200),
+                style: CategoryBarStyle::default(),
+                labels: CategoryBarSeriesLabels::default(),
+                label_format: CategoryBarLabelFormat::Value,
+                overrides: None,
+            },
+        }
+    }
+
+    pub(crate) fn chart(n: usize) -> Config {
+        let mut config = crate::default::default_config();
+        config.bottom_x.categories = Some(categories(n));
+        config
+    }
+
+    fn edit(series: &mut SeriesConfig, f: impl FnOnce(&mut CategoryBarStyle, &mut Color)) {
+        let DataRenderType::CategoryBars { style, color, .. } = &mut series.render_type else {
+            unreachable!()
+        };
+        f(style, color);
+    }
+
+    fn overrides(series: &mut SeriesConfig) -> &mut Vec<CategoryBarOverride> {
+        let DataRenderType::CategoryBars { overrides, .. } = &mut series.render_type else {
+            unreachable!()
+        };
+        overrides.get_or_insert_with(Vec::new)
+    }
+
+    fn labels(series: &mut SeriesConfig) -> &mut CategoryBarSeriesLabels {
+        let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type else {
+            unreachable!()
+        };
+        labels
+    }
+
+    #[test]
+    fn a_valid_group_passes_and_other_series_are_ignored() {
+        let config = chart(3);
+        assert_eq!(
+            config.validate_category_bars(&[bars("a"), bars("b")]),
+            Ok(())
+        );
+        assert_eq!(
+            crate::default::default_config().validate_category_bars(&[]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn bars_need_a_categorical_axis_in_their_direction() {
+        let config = crate::default::default_config();
+        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+        let mut config = chart(3);
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..Default::default()
+        });
+        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+        config.left_y.categories = Some(categories(3));
+        config.bottom_x.categories = None;
+        assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
+    }
+
+    #[test]
+    fn group_limits_and_columns_are_checked() {
+        let config = chart(4);
+        let many: Vec<_> = (0..=MAX_BAR_SERIES)
+            .map(|i| bars(&format!("s{i}")))
+            .collect();
+        assert!(config.validate_category_bars(&many).is_err());
+        assert_eq!(
+            config.validate_category_bars(&many[..MAX_BAR_SERIES]),
+            Ok(())
+        );
+        let config = chart(MAX_CATEGORY_BARS / 8 + 1);
+        let eight: Vec<_> = (0..8).map(|i| bars(&format!("s{i}"))).collect();
+        assert!(config.validate_category_bars(&eight).is_err());
+        let mut shared = bars("b");
+        shared.y_column = "a.values".into();
+        assert!(
+            chart(3)
+                .validate_category_bars(&[bars("a"), shared])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn the_value_axis_is_linear_and_numeric() {
+        let mut config = chart(3);
+        config.left_y.scale = AxisScale::Logarithmic;
+        config.left_y.min = 1.0;
+        config.left_y.max = 10.0;
+        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+        let mut config = chart(3);
+        config.left_y.categories = Some(categories(2));
+        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+    }
+
+    #[test]
+    fn bar_groups_are_validated_on_the_chart_and_every_subplot() {
+        for groups in [
+            BarGroups {
+                group_width: 0.05,
+                ..Default::default()
+            },
+            BarGroups {
+                group_width: 0.96,
+                ..Default::default()
+            },
+            BarGroups {
+                bar_gap: -1.0,
+                ..Default::default()
+            },
+            BarGroups {
+                bar_gap: f32::NAN,
+                ..Default::default()
+            },
+            BarGroups {
+                bar_gap: 24.5,
+                ..Default::default()
+            },
+        ] {
+            assert!(groups.validate().is_err(), "{groups:?}");
+            let mut config = chart(3);
+            config.bar_groups = Some(groups.clone());
+            assert!(config.validate_category_bars(&[]).is_err());
+            let mut config = chart(3);
+            config.subplots.push(Subplot {
+                config: chart(3),
+                ..Default::default()
+            });
+            config.subplots[0].config.bar_groups = Some(groups);
+            assert!(config.validate_category_bars(&[]).is_err());
+        }
+        assert_eq!(BarGroups::default().validate(), Ok(()));
+    }
+
+    #[test]
+    fn overlays_and_subplots_hold_groups_of_their_own() {
+        let mut config = chart(3);
+        config.overlays.push(OverlayLayer {
+            series: vec!["b".into()],
+            ..Default::default()
+        });
+        assert_eq!(
+            config.validate_category_bars(&[bars("a"), bars("b")]),
+            Ok(())
+        );
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..Default::default()
+        });
+        config.left_y.categories = Some(categories(3));
+        config.bottom_x.categories = None;
+        assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
+        assert!(
+            config
+                .validate_category_bars(&[bars("a"), bars("b")])
+                .unwrap_err()
+                .contains("overlay")
+        );
+
+        let mut config = crate::default::default_config();
+        config.subplots.push(Subplot {
+            config: chart(2),
+            series: vec!["a".into()],
+            ..Default::default()
+        });
+        assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
+        // The parent has no categorical axis for a series of its own.
+        assert!(
+            config
+                .validate_category_bars(&[bars("a"), bars("b")])
+                .is_err()
+        );
+        assert_eq!(
+            config.bar_groups_of(crate::layer::LayerRef::Subplot(0)),
+            BarGroups::default()
+        );
+    }
+
+    #[test]
+    fn polar_charts_draw_no_category_bars() {
+        let mut config = chart(3);
+        config.polar = Some(Default::default());
+        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+    }
+
+    #[test]
+    fn series_rules_hold_colours_styles_labels_and_overrides() {
+        let cats = categories(2);
+        assert_eq!(validate_category_bar_series(&bars("a"), &cats), Ok(()));
+        let mut s = bars("a");
+        edit(&mut s, |_, c| c.a = 0.5);
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        let mut s = bars("a");
+        edit(&mut s, |style, _| style.material = Material::Toon);
+        assert_eq!(
+            validate_category_bar_series(&s, &cats),
+            Err("material not supported by bars")
+        );
+        let edits: Vec<Box<dyn Fn(&mut CategoryBarStyle)>> = vec![
+            Box::new(|s| s.corner_radius = 32.5),
+            Box::new(|s| s.outline_width = -1.0),
+            Box::new(|s| s.outline_color.a = 1.5),
+            Box::new(|s| s.texture_strength = 1.5),
+            Box::new(|s| s.texture_scale = 0.05),
+            Box::new(|s| s.gloss = f32::NAN),
+            Box::new(|s| s.emphasis_brightness = 0.6),
+        ];
+        for change in &edits {
+            let mut s = bars("a");
+            edit(&mut s, |style, _| change(style));
+            assert!(validate_category_bar_series(&s, &cats).is_err());
+            let mut s = bars("a");
+            let mut style = CategoryBarStyle::default();
+            change(&mut style);
+            let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c0", "a"));
+            o.style = Some(style);
+            overrides(&mut s).push(o);
+            assert!(validate_category_bar_series(&s, &cats).is_err());
+        }
+        let mut s = bars("a");
+        labels(&mut s).decimals = 7;
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        let mut s = bars("a");
+        labels(&mut s).value_suffix = "a\nb".into();
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        let mut s = bars("a");
+        labels(&mut s).text = vec!["1".into()];
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        labels(&mut s).text = vec!["1".into(), "x".repeat(161)];
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        labels(&mut s).text = vec!["1".into(), String::new()];
+        assert_eq!(validate_category_bar_series(&s, &cats), Ok(()));
+
+        for target in [
+            CategoryBarTarget::new("missing", "a"),
+            CategoryBarTarget::new("c0", "other"),
+        ] {
+            let mut s = bars("a");
+            overrides(&mut s).push(CategoryBarOverride::new(target));
+            assert!(validate_category_bar_series(&s, &cats).is_err());
+        }
+        let mut s = bars("a");
+        let target = CategoryBarTarget::new("c1", "a");
+        overrides(&mut s).push(CategoryBarOverride::new(target.clone()));
+        assert_eq!(validate_category_bar_series(&s, &cats), Ok(()));
+        overrides(&mut s).push(CategoryBarOverride::new(target));
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+        let mut s = bars("a");
+        let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c1", "a"));
+        o.color = Some(Color::new(1.0, 0.0, 0.0, 0.5));
+        overrides(&mut s).push(o);
+        assert!(validate_category_bar_series(&s, &cats).is_err());
+    }
+
+    #[test]
+    fn format_labels_writes_each_format_from_the_host_values() {
+        let cats = categories(3);
+        let values = [
+            [Some(2.0), None, Some(1.0)],
+            [Some(3.0), Some(0.0), Some(-1.0)],
+        ];
+        let mut series = vec![bars("a"), bars("b")];
+        labels(&mut series[0]).value_suffix = " kg".into();
+        let read = |k: usize, i: usize| values[k][i];
+        format_labels(&mut series, &cats, read);
+        assert_eq!(labels(&mut series[0]).text, ["2 kg", "", "1 kg"]);
+        assert_eq!(labels(&mut series[1]).text, ["3", "0", "-1"]);
+
+        let set = |s: &mut SeriesConfig, f: CategoryBarLabelFormat| {
+            let DataRenderType::CategoryBars { label_format, .. } = &mut s.render_type else {
+                unreachable!()
+            };
+            *label_format = f;
+        };
+        for s in &mut series {
+            set(s, CategoryBarLabelFormat::Percent);
+        }
+        format_labels(&mut series, &cats, read);
+        // A negative value leaves its category without shares.
+        assert_eq!(labels(&mut series[0]).text, ["40%", "", "—"]);
+        assert_eq!(labels(&mut series[1]).text, ["60%", "—", "—"]);
+        for s in &mut series {
+            set(s, CategoryBarLabelFormat::ValuePercent);
+        }
+        format_labels(&mut series, &cats, read);
+        assert_eq!(labels(&mut series[0]).text[0], "2 kg (40%)");
+        for s in &mut series {
+            set(s, CategoryBarLabelFormat::CategoryValue);
+        }
+        let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c2", "b"));
+        o.label_format = Some(CategoryBarLabelFormat::Value);
+        overrides(&mut series[1]).push(o);
+        labels(&mut series[1]).decimals = 2;
+        format_labels(&mut series, &cats, |k, i| values[k][i].map(|v| v + 0.3));
+        assert_eq!(labels(&mut series[0]).text[0], "C0: 2.3 kg");
+        assert_eq!(labels(&mut series[1]).text, ["C0: 3.3", "C1: 0.3", "-0.7"]);
+        // Every series that is not a category bar series is left alone.
+        let mut line = bars("a");
+        line.render_type = DataRenderType::Line {
+            line: DataLineStyleConfig::default(),
+        };
+        let before = line.clone();
+        format_labels(std::slice::from_mut(&mut line), &cats, read);
+        assert_eq!(line, before);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn category_bars_round_trip_and_default_their_optional_fields() {
+        let mut series = bars("a");
+        let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c0", "a"));
+        o.color = Some(Color::WHITE);
+        o.style = Some(CategoryBarStyle {
+            material: Material::Paper,
+            ..Default::default()
+        });
+        o.labels = Some(CategoryBarLabels::Inside);
+        o.label_format = Some(CategoryBarLabelFormat::Percent);
+        overrides(&mut series).push(o);
+        labels(&mut series).text = vec!["1".into(), "2".into()];
+        let json = serde_json::to_string(&series).unwrap();
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), series);
+
+        let minimal = serde_json::json!({
+            "series_id": "a",
+            "label": null,
+            "x_column": "positions",
+            "y_column": "a.values",
+            "render_type": {"CategoryBars": {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}}
+        });
+        let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
+        let bars = parsed.render_type.category_bars().unwrap();
+        assert_eq!(bars.style, &CategoryBarStyle::default());
+        assert_eq!(bars.labels, &CategoryBarSeriesLabels::default());
+        assert!(bars.overrides.is_empty());
+        let written = serde_json::to_value(&parsed).unwrap();
+        let fields = &written["render_type"]["CategoryBars"];
+        assert!(fields.get("overrides").is_none());
+        assert!(fields["labels"].get("text").is_none());
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn bar_groups_and_cross_at_are_additive_on_the_wire() {
+        let config = crate::default::default_config();
+        let json = serde_json::to_value(&config).unwrap();
+        assert!(json.get("bar_groups").is_none());
+        assert!(json["bottom_x"].get("cross_at").is_none());
+        let mut edited = config.clone();
+        edited.bar_groups = Some(BarGroups {
+            mode: CategoryBarMode::PercentStacked,
+            direction: CategoryBarDirection::Horizontal,
+            group_width: 0.5,
+            bar_gap: 2.0,
+        });
+        edited.bottom_x.cross_at = Some(0.0);
+        let text = serde_json::to_string(&edited).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&text).unwrap(), edited);
+        let groups: BarGroups = serde_json::from_str("{}").unwrap();
+        assert_eq!(groups, BarGroups::default());
+    }
+
+    #[test]
+    fn the_bar_gap_scales_and_the_rest_of_the_groups_stay() {
+        let mut config = chart(3);
+        config.bar_groups = Some(BarGroups {
+            mode: CategoryBarMode::Stacked,
+            direction: CategoryBarDirection::Vertical,
+            group_width: 0.6,
+            bar_gap: 3.0,
+        });
+        config.bottom_x.cross_at = Some(1.5);
+        let scaled = config.scaled(2.0);
+        let groups = scaled.bar_groups.unwrap();
+        assert_eq!((groups.bar_gap, groups.group_width), (6.0, 0.6));
+        assert_eq!(groups.mode, CategoryBarMode::Stacked);
+        assert_eq!(scaled.bottom_x.cross_at, Some(1.5));
+    }
+
+    #[test]
+    fn the_columns_follow_the_direction() {
+        let s = bars("a");
+        assert_eq!(
+            s.category_bar_columns(CategoryBarDirection::Vertical),
+            ("positions", "a.values")
+        );
+        assert_eq!(
+            s.category_bar_columns(CategoryBarDirection::Horizontal),
+            ("a.values", "positions")
         );
     }
 }

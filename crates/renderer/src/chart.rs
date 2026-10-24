@@ -146,6 +146,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     {
         axis.validate_categories()
             .map_err(|reason| FiggyError::InvalidConfig { field, reason })?;
+        if axis.cross_at.is_some_and(|v| !v.is_finite()) {
+            return Err(FiggyError::InvalidConfig {
+                field,
+                reason: "an axis crossing (`cross_at`) must be finite",
+            });
+        }
         // A categorical axis maps its category range; `min` / `max` are
         // ignored there.
         if axis.categories.is_some() {
@@ -294,6 +300,78 @@ pub(crate) fn apply_auto_fit_all(
         apply_axis_range(&mut config.left_y, min, max, log);
         apply_axis_range(&mut config.right_y, min, max, log);
     }
+}
+
+/// The value-axis extent of the category bars `layer` of `config` draws,
+/// from the pool's statistics, with its bar direction.
+///
+/// The bars grow from zero, so zero is always in it. Grouped bars span their
+/// value columns' range; stacked bars the group's [`StackExtent`], which the
+/// pool measured when the group's value columns were uploaded together
+/// ([`crate::Renderer::add_columns`]); a group whose columns were not is an
+/// error naming that, since no column statistic gives a stack's height.
+/// Percent stacks span `0..=100`. A layer without category bars gives the
+/// empty extent.
+///
+/// [`StackExtent`]: crate::data_render::StackExtent
+pub fn category_bar_value_extent(
+    pool: &ColumnPool,
+    config: &Config,
+    layer: LayerRef,
+    series: &[SeriesConfig],
+) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
+    use crate::data_config::CategoryBarMode;
+    let groups = config.bar_groups_of(layer);
+    let members = || {
+        series.iter().filter(move |s| {
+            s.render_type.category_bars().is_some() && config.layer_of_series(&s.series_id) == layer
+        })
+    };
+    let zero = FitExtent {
+        min: 0.0,
+        max: 0.0,
+        min_positive: None,
+    };
+    let mut extent = FitExtent::EMPTY;
+    if members().next().is_none() {
+        return Ok((extent, groups.direction));
+    }
+    extent.union(&zero);
+    match groups.mode {
+        CategoryBarMode::Grouped => {
+            for item in members() {
+                extent.union(&Chart::slot_extent(
+                    pool,
+                    item.category_bar_columns(groups.direction).1,
+                )?);
+            }
+        }
+        CategoryBarMode::Stacked => {
+            let stack = pool
+                .stack_extent(members().map(|s| s.category_bar_columns(groups.direction).1))
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: members()
+                        .next()
+                        .map_or_else(String::new, |s| s.series_id.clone()),
+                    reason: "a stacked bar group fits its value axis to the stack extent the \
+                             pool measures when exactly the group's value columns, at most 64 \
+                             values each, are uploaded as one batch (`add_columns`); upload \
+                             them again that way"
+                        .into(),
+                })?;
+            extent.union(&FitExtent {
+                min: stack.min,
+                max: stack.max,
+                min_positive: (stack.max > 0.0).then_some(stack.max),
+            });
+        }
+        CategoryBarMode::PercentStacked => extent.union(&FitExtent {
+            min: 0.0,
+            max: 100.0,
+            min_positive: Some(100.0),
+        }),
+    }
+    Ok((extent, groups.direction))
 }
 
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
@@ -837,6 +915,21 @@ impl Chart {
         let mut y = FitExtent::EMPTY;
         for cfg in series {
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            // A category bar series fits its value axis to its group's bars;
+            // its category positions sit on a categorical axis no fit moves.
+            if cfg.render_type.category_bars().is_some() {
+                let own = self.config.layer_of_series(&cfg.series_id);
+                let (extent, direction) =
+                    category_bar_value_extent(pool, &self.config, own, series)?;
+                match direction {
+                    crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
+                    crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                        x.union(&extent)
+                    }
+                    _ => {}
+                }
+                continue;
+            }
             if fit_x {
                 x.union(&Self::slot_extent(pool, &cfg.x_column)?);
             }
@@ -1144,6 +1237,14 @@ mod tests {
             validate_renderer_config(&cfg)
         };
         assert!(with(&|c| c.bottom_x.categories = categories(3)).is_ok());
+        // An inverted categorical axis walks its categories from the far end.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(3);
+                c.left_y.inverted = true;
+            })
+            .is_ok()
+        );
         // `min` / `max` are ignored on a categorical axis.
         assert!(
             with(&|c| {
@@ -1162,10 +1263,7 @@ mod tests {
                 c.bottom_x.categories = categories(2);
                 c.bottom_x.scale = AxisScale::Logarithmic;
             }),
-            ("left_y", |c| {
-                c.left_y.categories = categories(2);
-                c.left_y.inverted = true;
-            }),
+            ("left_y", |c| c.left_y.categories = categories(65)),
             ("right_y", |c| {
                 c.right_y.categories = categories(2);
                 c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();

@@ -133,7 +133,11 @@ impl SceneKind {
                  drawn. Set the size, upload, then zoom, pan, pick or run the benchmark."
             }
             SceneKind::Radial => "Click a slice; drag the title or legend.",
-            SceneKind::Categorical => "Click a bar; grouped / stacked / percent modes.",
+            SceneKind::Categorical => {
+                "A categorical document opened as category bars on a categorical \
+                 axis: pick a bar, step with the arrows, switch grouped / stacked / \
+                 percent in the chart's bar groups."
+            }
             SceneKind::BoxPlot => "Click a box; notches, means, outliers.",
             SceneKind::Radar => "Click a polygon or vertex; grid shape, markers, value labels.",
         }
@@ -142,7 +146,7 @@ impl SceneKind {
     pub fn is_bounded(self) -> bool {
         matches!(
             self,
-            SceneKind::Radial | SceneKind::Categorical | SceneKind::BoxPlot | SceneKind::Radar
+            SceneKind::Radial | SceneKind::BoxPlot | SceneKind::Radar
         )
     }
 }
@@ -302,6 +306,7 @@ pub fn build(
         SceneKind::Annotations => annotations(r),
         SceneKind::Polar => polar(r),
         SceneKind::CategoryAxis => category_axis(r),
+        SceneKind::Categorical => categorical(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         _ => unreachable!("bounded scenes are built by `bounded::chart`"),
     }
@@ -1480,6 +1485,86 @@ pub mod big_data {
     }
 }
 
+/// The legacy categorical document of the categorical scene: quarterly
+/// revenue of three regions, Matte bars.
+pub fn categorical_document() -> renderer::CategoricalChart {
+    let mut chart = renderer::CategoricalChart {
+        title: "Quarterly revenue".into(),
+        categories: ["Q1", "Q2", "Q3", "Q4"]
+            .into_iter()
+            .map(|s| renderer::config::Category::new(s, s))
+            .collect(),
+        series: vec![
+            renderer::BarSeries::new(
+                "north",
+                "North",
+                [12., 18., 9., 15.].map(Some).into(),
+                Color::from_rgb8(85, 143, 211),
+            ),
+            renderer::BarSeries::new(
+                "south",
+                "South",
+                [18., 24., 14., 21.].map(Some).into(),
+                Color::from_rgb8(255, 166, 105),
+            ),
+            renderer::BarSeries::new(
+                "west",
+                "West",
+                [7., 11., 16., 13.].map(Some).into(),
+                Color::from_rgb8(110, 190, 120),
+            ),
+        ],
+        value_title: "Revenue (M$)".into(),
+        ..Default::default()
+    };
+    chart.style.material = renderer::Material::Matte;
+    chart
+}
+
+/// The categorical scene: [`categorical_document`] opened through
+/// `Config::from_categorical` as a Cartesian chart of category bars. The
+/// uploads borrow the document's values: the positions first, then the
+/// value columns as one batch, so the pool measures their stack. The value
+/// axis is fitted to the bars and keeps the document's label format.
+fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let document = categorical_document();
+    let (mut config, series, uploads) = Config::from_categorical(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    let Some((positions, values)) = uploads.split_first() else {
+        unreachable!("the reader writes the positions first");
+    };
+    if r.handle_for(&positions.column).is_err() {
+        r.add_column(positions.column.clone(), &positions.values)?;
+    }
+    for upload in values {
+        if r.handle_for(&upload.column).is_ok() {
+            r.remove_column(&upload.column)?;
+        }
+    }
+    let columns: Vec<(&str, &dyn ColumnSource)> = values
+        .iter()
+        .map(|upload| (upload.column.as_str(), &upload.values as &dyn ColumnSource))
+        .collect();
+    r.add_columns(&columns)?;
+    let format = config.left_y.label_style.format.clone();
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
+    let mut config = chart.config().clone();
+    config.left_y.label_style.format = format;
+    let (min, max) = (config.left_y.min, config.left_y.max);
+    // Nice ticks when they exist; the fitted range stays otherwise.
+    if config.left_y.auto_ticks(min, max, 5).is_err() {
+        config.left_y.min = min;
+        config.left_y.max = max;
+    }
+    Ok(CartesianScene { config, series })
+}
+
 // ---------------------------------------------------------------------------
 // Bounded scenes
 // ---------------------------------------------------------------------------
@@ -1488,10 +1573,9 @@ pub mod big_data {
 /// `bounded.rs` hosts them.
 pub mod bounded {
     use renderer::boxplot::*;
-    use renderer::categorical::*;
     use renderer::radar::*;
     use renderer::radial::*;
-    use renderer::{Category, Color, Material};
+    use renderer::{Category, Color};
 
     pub fn radial_chart() -> RadialChart {
         let mut chart = RadialChart {
@@ -1508,40 +1592,6 @@ pub mod bounded {
         };
         chart.style = RadialStyle::three_dimensional();
         chart.format_labels();
-        chart
-    }
-
-    pub fn categorical_chart() -> CategoricalChart {
-        let mut chart = CategoricalChart {
-            title: "Quarterly revenue".into(),
-            categories: ["Q1", "Q2", "Q3", "Q4"]
-                .into_iter()
-                .map(|s| Category::new(s, s))
-                .collect(),
-            series: vec![
-                BarSeries::new(
-                    "north",
-                    "North",
-                    [12., 18., 9., 15.].map(Some).into(),
-                    Color::from_rgb8(85, 143, 211),
-                ),
-                BarSeries::new(
-                    "south",
-                    "South",
-                    [18., 24., 14., 21.].map(Some).into(),
-                    Color::from_rgb8(255, 166, 105),
-                ),
-                BarSeries::new(
-                    "west",
-                    "West",
-                    [7., 11., 16., 13.].map(Some).into(),
-                    Color::from_rgb8(110, 190, 120),
-                ),
-            ],
-            value_title: "Revenue (M$)".into(),
-            ..Default::default()
-        };
-        chart.style.material = Material::Matte;
         chart
     }
 

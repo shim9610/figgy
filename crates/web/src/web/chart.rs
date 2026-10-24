@@ -1050,6 +1050,121 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Open a legacy categorical bar chart document (`CategoricalChart` JSON,
+    /// what `FiggyBoundedChart` took as the `"categorical"` family) as this
+    /// Cartesian chart.
+    ///
+    /// `Config::from_categorical` turns the document into a config with a
+    /// categorical axis and `bar_groups`, one `CategoryBars` series per
+    /// document series and the columns those read: the category positions
+    /// (`categorical.positions`) and one value column per series
+    /// (`categorical.values.<series id>`), registered as one batch so a
+    /// stacked group's extent is measured. The value axis is fitted to the
+    /// bars and rounded to nice ticks. The chart keeps its chart area; the
+    /// series, columns and config of a categorical document opened before
+    /// are replaced, every other column stays. From here on the chart is
+    /// edited through the Cartesian API (`get_config` / `set_config`,
+    /// `get_series` / `set_series`, the column registry).
+    ///
+    /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
+    pub fn set_categorical_document(&mut self, json: &str) -> Result<(), JsValue> {
+        let document: renderer::CategoricalChart = serde_json::from_str(json).map_err(js_err)?;
+        document.validate().map_err(js_err)?;
+        let (mut config, series, uploads) = renderer::config::Config::from_categorical(&document);
+        config.chart_area = self.chart_config().chart_area.clone();
+
+        // Retire the previous document's series, then its columns.
+        let empty = self.chart_config().clone();
+        self.replace_chart_state(empty, Vec::new())?;
+        self.labels.clear();
+        self.styles.clear();
+        for upload in &uploads {
+            if self.columns.contains_key(&upload.column) {
+                self.remove_column(&upload.column)?;
+            }
+        }
+        let Some((positions, values)) = uploads.split_first() else {
+            return Err(js_err(
+                "a categorical document converts to at least its positions",
+            ));
+        };
+        self.upsert_column_atomic(
+            &positions.column,
+            positions.values.len(),
+            super::columns::ColumnUploadSource::Scalar(&positions.values),
+        )?;
+        // The value columns go together: the batch measures the stack.
+        let mut ids = Vec::new();
+        ids.try_reserve_exact(values.len()).map_err(js_err)?;
+        ids.extend(values.iter().map(|upload| upload.column.clone()));
+        let mut sources = Vec::new();
+        sources.try_reserve_exact(values.len()).map_err(js_err)?;
+        sources.extend(values.iter().map(|upload| upload.values));
+        self.commit_column_batch(&ids, document.categories.len(), &sources)?;
+
+        // Fit the value axis to the bars and round it to nice ticks. A range
+        // fit resets the label format, so the document's is put back.
+        let horizontal = config
+            .bar_groups
+            .as_ref()
+            .is_some_and(|g| g.direction == renderer::CategoryBarDirection::Horizontal);
+        let format = if horizontal {
+            config.bottom_x.label_style.format.clone()
+        } else {
+            config.left_y.label_style.format.clone()
+        };
+        let mut chart = renderer::Chart::new(config);
+        chart
+            .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.0)
+            .map_err(js_err)?;
+        let mut config = chart.config().clone();
+        let value = if horizontal {
+            &mut config.bottom_x
+        } else {
+            &mut config.left_y
+        };
+        value.label_style.format = format;
+        let (min, max) = (value.min, value.max);
+        if value.auto_ticks(min, max, 5).is_ok() {
+            let fitted = value.clone();
+            let twin = if horizontal {
+                &mut config.top_x
+            } else {
+                &mut config.right_y
+            };
+            twin.min = fitted.min;
+            twin.max = fitted.max;
+            twin.major_spacing = fitted.major_spacing;
+            twin.minor_count = fitted.minor_count;
+        }
+
+        let (scale, _) = self.display_scale_and_panel();
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
+        let count = series.len();
+        self.replace_chart_state(config, series)?;
+        // The document wrote its own legend.
+        self.legend_auto_managed = false;
+        self.labels = labels;
+        self.styles = styles;
+        self.color_seq = count.max(self.color_seq);
+        Ok(())
+    }
+
     // ---- frame / resize / export ----
 
     /// Wait until previously submitted GPU work has finished. Does not

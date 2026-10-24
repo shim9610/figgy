@@ -77,6 +77,34 @@ pub struct ColumnSlot {
     /// per-point geometry (dashed-line arc length) is computed on the GPU
     /// (`line_arc.wgsl`). Do not reintroduce CPU shadows.
     pub min_positive: Option<f64>,
+    /// The stacked extent of the batch the column was uploaded in, when that
+    /// batch could be a bar group (see [`StackExtent`]). `None` for a column
+    /// uploaded on its own or in a larger batch; replacing the column clears
+    /// it. A scalar statistic like `min_positive`, not a copy of the data.
+    pub stack_extent: Option<StackExtent>,
+}
+
+/// The stacked extent of a bar group, measured while its value columns are
+/// uploaded together ([`ColumnPool::add_columns`]): the upload pass adds every
+/// finite value of row `i` to that row's positive or negative total in a
+/// fixed `[f64; MAX_CATEGORIES]` accumulator, and the extent is the lowest
+/// negative and the highest positive total. A stacked category bar group fits
+/// its value axis to it (`Chart::auto_fit_layer_union`).
+///
+/// Every column of the batch carries the same record. A batch measures one
+/// when it has at most `MAX_BAR_SERIES` columns of at most `MAX_CATEGORIES`
+/// values each. A bar group's columns hold its extent exactly when they all
+/// carry the record of one batch and the batch had exactly those columns.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct StackExtent {
+    /// The lowest negative row total, 0 when no row has a negative value.
+    pub min: f64,
+    /// The highest positive row total, 0 when no row has a positive value.
+    pub max: f64,
+    /// The batch: the allocation epoch of its first column.
+    pub batch: u64,
+    /// The number of columns in the batch.
+    pub members: usize,
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
@@ -209,6 +237,24 @@ pub struct ColumnPool {
 }
 
 impl ColumnPool {
+    /// The stacked extent of the bar group whose value columns are `ids`:
+    /// `Some` exactly when every one of them carries the [`StackExtent`] of
+    /// one upload batch that had exactly these columns, `None` when one of
+    /// them was uploaded on its own, replaced, or in another batch.
+    pub fn stack_extent<'a>(&self, ids: impl IntoIterator<Item = &'a str>) -> Option<StackExtent> {
+        let mut found: Option<StackExtent> = None;
+        let mut count = 0usize;
+        for id in ids {
+            let extent = self.slots.get(id)?.stack_extent?;
+            if found.is_some_and(|f| f != extent) {
+                return None;
+            }
+            found = Some(extent);
+            count += 1;
+        }
+        found.filter(|extent| extent.members == count)
+    }
+
     /// New pool. `capacity_bytes` is rounded up to a multiple of `ALIGN`.
     pub fn new(ctx: GpuAllocCtx<'_>, capacity_bytes: u64) -> Result<Self, AllocError> {
         let device = ctx.device;

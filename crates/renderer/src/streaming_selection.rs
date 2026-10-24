@@ -653,6 +653,7 @@ impl Renderer {
             &self.data_selection_bgl,
             &self.field_bgl,
             &self.vector_bgl,
+            &self.category_bar_data_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             &[ChartDrawItem {
@@ -694,6 +695,7 @@ impl Renderer {
                     x,
                     y,
                     bar: None,
+                    category: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
@@ -900,6 +902,7 @@ impl Renderer {
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.category_bar_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {
@@ -1020,6 +1023,7 @@ impl Renderer {
                     x,
                     y,
                     bar,
+                    category: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,

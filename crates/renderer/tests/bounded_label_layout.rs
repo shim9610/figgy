@@ -224,67 +224,6 @@ fn crowded_radar_labels_prepare_pick_drag_export_and_reset() {
 }
 
 #[test]
-fn crowded_bar_labels_prepare_pick_drag_export_and_reset() {
-    let mut renderer = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let mut chart = CategoricalChart {
-        categories: vec![
-            Category::new("a", "Control response group"),
-            Category::new("b", "Treatment response group"),
-        ],
-        series: (0..3)
-            .map(|i| {
-                BarSeries::new(
-                    i.to_string(),
-                    i.to_string(),
-                    vec![Some(40.), Some(40.)],
-                    Color::from_rgb8(30, 110, 210),
-                )
-            })
-            .collect(),
-        label_format: CategoryBarLabelFormat::CategoryValue,
-        labels: CategoryBarLabels::Outside,
-        legend: false,
-        ..Default::default()
-    };
-    for direction in [
-        CategoryBarDirection::Vertical,
-        CategoryBarDirection::Horizontal,
-    ] {
-        chart.direction = direction;
-        for scale in [1., 2.] {
-            chart.decorations = Default::default();
-            let frame = renderer
-                .prepare(&chart, (640, 360), scale)
-                .expect("label spacing cannot reject the first frame");
-            assert_eq!(labels(frame.decorations()).len(), 6);
-            assert_separated(frame.decorations());
-            let image = renderer.export_rgba(&chart, (640, 360), scale).unwrap();
-            assert_pixels(&image);
-            save(&format!("bar-{direction:?}-{scale}"), &image);
-            let key = editable(frame.decorations(), &mut chart.decorations);
-            let moved = renderer.prepare(&chart, (640, 360), scale).unwrap();
-            assert_moved(frame.decorations(), moved.decorations(), &key);
-            assert_ne!(
-                image.rgba,
-                renderer
-                    .export_rgba(&chart, (640, 360), scale)
-                    .unwrap()
-                    .rgba
-            );
-            chart.decorations.reset(&key);
-            assert_eq!(
-                image.rgba,
-                renderer
-                    .export_rgba(&chart, (640, 360), scale)
-                    .unwrap()
-                    .rgba
-            );
-            renderer.end_frame();
-        }
-    }
-}
-
-#[test]
 fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     let mut renderer = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let mut chart = RadialChart {
@@ -353,54 +292,5 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
     let small = renderer.prepare(&chart, (240, 200), 1.).unwrap();
     assert_eq!(radial_labels(&*small, &chart).len(), 16);
     assert_pixels(&renderer.export_rgba(&chart, (240, 200), 1.).unwrap());
-    renderer.end_frame();
-}
-
-#[test]
-fn exhausted_label_space_still_returns_all_explicit_labels_and_stable_frames() {
-    let mut renderer = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let chart = CategoricalChart {
-        categories: (0..16)
-            .map(|i| Category::new(i.to_string(), format!("Category {i}")))
-            .collect(),
-        series: (0..8)
-            .map(|i| {
-                BarSeries::new(
-                    i.to_string(),
-                    i.to_string(),
-                    vec![Some(100.); 16],
-                    Color::from_rgb8(30, 110, 210),
-                )
-            })
-            .collect(),
-        labels: CategoryBarLabels::Outside,
-        label_format: CategoryBarLabelFormat::CategoryValue,
-        bar_gap: 0.,
-        legend: false,
-        ..Default::default()
-    };
-    let original = chart.clone();
-    let frame = renderer.prepare(&chart, (440, 320), 1.).unwrap();
-    assert_eq!(labels(frame.decorations()).len(), 128);
-    assert_eq!(chart, original, "automatic placement changed the model");
-    assert!(Arc::ptr_eq(
-        &frame,
-        &renderer.prepare(&chart, (440, 320), 1.).unwrap()
-    ));
-    let before = renderer.export_rgba(&chart, (440, 320), 1.).unwrap();
-    assert_pixels(&before);
-    renderer.clear_cache();
-    let again = renderer.prepare(&chart, (440, 320), 1.).unwrap();
-    let geometry = |map: &DecorationMap| {
-        labels(map)
-            .into_iter()
-            .map(|(_, key, r)| (key, r))
-            .collect::<Vec<_>>()
-    };
-    assert_eq!(geometry(frame.decorations()), geometry(again.decorations()));
-    assert_eq!(
-        before.rgba,
-        renderer.export_rgba(&chart, (440, 320), 1.).unwrap().rgba
-    );
     renderer.end_frame();
 }

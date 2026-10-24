@@ -839,6 +839,7 @@ impl RendererPicker {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -869,6 +870,7 @@ impl RendererPicker {
                     field_bgl,
                     bar_style_bgl,
                     vector_bgl,
+                    category_bgl,
                     observer,
                 );
                 self.pipeline_state = PickerPipelineState::Ready { point, data };
@@ -892,6 +894,7 @@ impl RendererPicker {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -924,6 +927,7 @@ impl RendererPicker {
                     field_bgl,
                     bar_style_bgl,
                     vector_bgl,
+                    category_bgl,
                     observer,
                 )
                 .await
@@ -1275,6 +1279,7 @@ impl Renderer {
             &self.field_bgl,
             &self.per_point_style_map_bgl,
             &self.vector_bgl,
+            &self.category_bar_data_bgl,
             observer,
         )
     }
@@ -1304,6 +1309,7 @@ impl Renderer {
                 &self.field_bgl,
                 &self.per_point_style_map_bgl,
                 &self.vector_bgl,
+                &self.category_bar_data_bgl,
                 observer,
             )
             .await
@@ -1542,6 +1548,55 @@ impl Renderer {
                             width_ratio: data_render::sanitize_bar_width_ratio(bar.width_ratio),
                             horizontal,
                             style_map,
+                        },
+                    });
+                }
+                continue;
+            }
+
+            if primitives.category_bars {
+                // The bars the category bar module draws at the pick's
+                // display transform, resolved like the draw's.
+                let bars = cfg
+                    .render_type
+                    .category_bars()
+                    .expect("the category bar primitive has a category bar config");
+                let params = category_bar_params(
+                    &display_config,
+                    series.iter().filter(|s| {
+                        effective_series_primitives(&config.draw_style, &s.render_type)
+                            .category_bars
+                    }),
+                    cfg,
+                    request.display_scale,
+                    |id| {
+                        self.pool
+                            .handle_for(id)
+                            .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                    },
+                    |id| self.pool.slot(id).map(|slot| slot.min),
+                )?;
+                if params.count != 0 {
+                    let style_map = crate::renderer::style::category_bar_style_map(
+                        &self.device,
+                        &self.per_point_style_map_bgl,
+                        category_bar_categories(&display_config).unwrap_or(&[]),
+                        bars,
+                        request.display_scale,
+                    );
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::CategoryBars {
+                            data: data_render::create_category_bar_data_bind_group(
+                                &self.device,
+                                &self.gpu_ledger,
+                                &self.category_bar_data_bgl,
+                                self.pool.buffer(),
+                                &params,
+                                style_map,
+                            ),
                         },
                     });
                 }

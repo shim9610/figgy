@@ -18,7 +18,8 @@ at the time. The first crates.io publication is recorded below.
 Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
-two new keys (`"math"`, `{"Plain":{}}`) are additive.
+new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups` and
+the `CategoryBars` series kind) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -260,7 +261,9 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   walks, `axis_fraction`, the annotation space and the overlay and subplot
   expansion read) and `validate_categories` (1 to 64 categories, unique
   non-empty single-line ids, single-line labels of at most 80 characters,
-  `MAX_CATEGORY_TEXT_CHARS`, a linear scale, no inversion);
+  `MAX_CATEGORY_TEXT_CHARS`, a linear scale; an inverted categorical axis
+  walks its categories from the far end, the ticks, labels, grid, data and
+  picks following the same `axis_fraction`);
   `PolarOptions::validate` rejects a categorical angle axis (it arrives
   with the radar series kind) and radius axis. A linked subplot axis
   follows its target's categories. `Category` moves to `model::config`
@@ -273,6 +276,61 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   not integer-aligned is anchored by the same code; an integer data area
   gives the same endpoints bit for bit. Migration: pass
   `&RectF::from_rect(&data_area)`.
+- **Categorical bars are a Cartesian series kind**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+  `DataRenderType::CategoryBars { color, style, labels, label_format,
+  overrides }` draws one bar per category of the chart's categorical axis
+  (`bottom_x` for vertical bars, `left_y` for horizontal ones): the
+  positions column holds `0..n-1`, the values column one value per category
+  (NaN for a missing bar). The category bar series of one layer form its bar
+  group, laid out by the new `Config.bar_groups: Option<BarGroups>` (`mode`
+  `Grouped` / `Stacked` / `PercentStacked`, `direction`, `group_width`,
+  `bar_gap`; `None` reads as the default). `CategoryBarMode`,
+  `CategoryBarDirection`, `CategoryBarLabels`, `CategoryBarLabelFormat`,
+  `CategoryBarStyle`, `CategoryBarTarget` and `CategoryBarOverride` move to
+  `model::data_config`; `model::categorical` re-exports them, so existing
+  paths keep working. New items: `BarGroups`, `CategoryBarSeriesLabels`
+  (placement, decimals, suffix and `text`, one drawn string per category),
+  `CategoryBarsRef` / `DataRenderType::category_bars`,
+  `SeriesConfig::category_bar_columns`, `validate_category_bar_series`,
+  `Config::validate_category_bars` (a categorical axis in the bar
+  direction, a linear value axis, at most `MAX_BAR_SERIES` series per
+  group and `MAX_CATEGORY_BARS` bars, distinct value columns, no polar
+  chart, horizontal groups on the base panel only), `Config::bar_groups_of`
+  and `format_labels`, which writes `labels.text` from the host's values at
+  edit time. Value labels are configuration only in this release: the text
+  is written and validated, and the renderer does not draw it yet (#40
+  item 13h). `AxisOptions` gains `cross_at: Option<f64>`: the value of the
+  perpendicular axis the axis line crosses at (`layout::axis_cross`;
+  `axis_anchor(side, plot, cross)` takes it); only the line moves, the
+  labels and the title stay at the plot edge. The overlay panels of
+  `Config::expand` keep their categorical axes' categories and carry
+  `bar_groups`. Every new key is additive and omitted at its default;
+  model 0.12.1 and older documents parse and re-serialize byte for byte.
+  Migration: a `Config { .. }` literal adds `bar_groups: None`, an
+  `AxisOptions { .. }` literal adds `cross_at: None`, an exhaustive match
+  on `DataRenderType` adds `CategoryBars`, and `axis_anchor` takes a third
+  argument (`None` for the previous anchor).
+- **The categorical chart is a document reader**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+  `CategoricalChart` stays the serialized document of releases up to 0.12;
+  `Config::from_categorical(&chart) -> (Config, Vec<SeriesConfig>,
+  Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a
+  Cartesian chart with a categorical axis, `bar_groups` and one
+  `CategoryBars` series per document series. The uploads borrow the
+  document's values (`UploadValues`, a `ColumnSource` in the renderer):
+  the positions column `categorical.positions` first, then one value
+  column `categorical.values.<series id>` per series; nothing is copied.
+  The titles, grid, legend, font, colours, chart title, annotations,
+  active layer, selection and decoration offsets map onto their Cartesian
+  options; the hover state, the background colour, the explicit
+  `decorations.data_area` and the data label offsets are not carried. A
+  horizontal document's category axis is inverted, so its first category
+  stays at the top and its `Y` annotations land on the same categories.
+  Removed: `CategoricalChart::segments`, `CategoryBarSegment` and
+  `CategoricalChart::label_text` (a bar's geometry is the shader's, its
+  label `format_labels`'). The DataLess chart class is the radial chart
+  alone; the categorical chart is a Cartesian series kind.
 
 <a id="unreleased-renderer"></a>
 
@@ -504,6 +562,65 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
 - **Axis walks on the plot rectangle.** The Cartesian axis, tick, tick
   label and grid walks take the plot `RectF` instead of the integer data
   area. Every existing document draws the same pixels.
+- **Category bars on the bar path**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d). A
+  `CategoryBars` series draws through the bar module: the input fragment
+  `data_render/common/category_bars.wgsl` (SHADER_COMMON §5.13) is spliced
+  into `bar.rs::BAR_SHADER` beside the histogram entries, one instance per
+  category, the rect built on every draw from the positions, the group
+  layout and, for a stack, the other series' values read by their pool
+  lanes in a fixed loop of at most 16 (group 3, bindings 8 and 9:
+  `CategoryBarParamsGpu`). The bars are shaded by `bar_surface` with their
+  material; the histogram's override table carries the per-bar overrides
+  (`BarStyleSlotGpu` / `BarStyleOverrideGpu` gain the `material` and
+  `finish` lanes, `BAR_STYLE_MASK_MATERIAL`). The typed data pick
+  (`pick_category_bar`, answered as `PickedData::HistogramBin` with the
+  category row), the selection outline and emphasis, `step_selection`,
+  hover, PNG export, the resident body cache (its key gains `bar_groups`
+  and the category axes) and the overlay and subplot panels are the
+  histogram's. The value-axis fit (`Chart::auto_fit_layer_union`,
+  `category_bar_value_extent`) covers zero and each column's range for
+  grouped bars, `0..100` for percent bars, and for stacked bars the
+  `StackExtent` the pool measured while one `add_columns` batch of exactly
+  the group's value columns was written (`ColumnPool::stack_extent`;
+  per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
+  is an error that says so. Value labels are not drawn yet (#40 item 13h).
+  A streamed category bar series is rejected with `InvalidSeriesConfig`.
+- **The legacy categorical renderer is removed.** `CategoricalRenderer`,
+  `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
+  `CategoricalError`, `categorical.wgsl` and `categorical_layout.rs` are
+  gone; `renderer::categorical` is the model's document module. Migration:
+  read the document with `Config::from_categorical`, upload its
+  `SeriesUpload`s (positions with `add_column`, the value columns together
+  with `add_columns`), fit the value axis with `auto_fit_layer_union` and
+  draw with the Cartesian `Renderer`; a bar is picked with
+  `pick_chart_data`.
+- **Axis crossing.** `AxisOptions::cross_at` moves the axis line and its hit
+  area to the value of the perpendicular axis (the ticks, labels and title
+  stay at the plot edge)
+  (`layout::axis_cross`); a non-finite value is rejected with
+  `InvalidConfig`. `None` draws every existing document the same.
+- **Look of a categorical document.** Opened through the reader, a
+  document draws with the Cartesian chrome instead of the former bounded
+  layout: the data area follows the Cartesian margins (the explicit
+  `decorations.data_area` is not carried), the legend is the Cartesian
+  legend box in its corner instead of the row below the chart (the bottom
+  row legend is gone), the export clear colour replaces the document's
+  `background`, and value labels are
+  not drawn yet. The bars themselves shade as before: the dominant bar
+  colours of the former renderer's and the new exports of the same
+  documents are equal for Flat, Enamel and Paper and within 1/255 for
+  SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
+  of whole 900 × 620 exports of the five `categorical_gallery` cases
+  against the former renderer: grouped-matte 533 431 (95.6 %),
+  horizontal-satin 514 021 (92.1 %), stacked-enamel 369 997 (66.3 %),
+  percent-outline 373 719 (67.0 %), signed-stacked 454 125 (81.4 %); the
+  reader inverts the category axis of a horizontal document, so its first
+  category is at the top as before (the two horizontal cases drew it at the
+  bottom before that, 557 936 and 386 412 changed pixels); the
+  released 0.12.1 edited document at 800 × 600: 446 660 at 1x, 1 788 971
+  at 2x. None is pixel identical; every difference is the chrome above.
+
 
 <a id="unreleased-web"></a>
 
@@ -525,6 +642,19 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   mutation test found it ([#46](https://github.com/shim9610/figgy/issues/46)).
 - The wrapper's inline `mod web` is split into files under `src/web/`
   (moves only); no JavaScript export changes.
+- **Categorical documents in the Cartesian wrapper**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+  `FiggyChart.set_categorical_document(json)` opens a `CategoricalChart`
+  document as category bars (`Config::from_categorical`), registering its
+  positions and value columns and fitting the value axis.
+  `selection_details()` reports a selected bar's `category_id`,
+  `category_label`, `value`, `direction` and `mode`, and `step_selection`
+  walks the categories and the series of the bar group.
+  `FiggyBoundedChart` no longer has the `"categorical"` family; creating
+  one with it is an error that names the new method. Migration: replace
+  `FiggyBoundedChart.create(canvas, "categorical", json, w, h)` with a
+  `FiggyChart` and `set_categorical_document(json)`; bars are picked with
+  `pick_data` and selected through `picked_data`.
 
 ### Tests and guards
 
@@ -563,6 +693,22 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   duplicate tests are removed and 7 pairs merged, each keeping every check;
   the draw-and-pick agreement tests probe the pixels of an edge band around
   each primitive.
+- **Category bars** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13d). `category_bars_render` checks every mode in both directions at
+  1x and 2x against the bars' expected extents, signed and missing stacks,
+  overrides and materials, the selection outline of an overridden bar, the
+  value-axis fit over the stack extent and its refusal without a measured
+  stack, the axis crossing, an overlay's and a subplot's own bar groups
+  drawn and picked on their layers, and a released document drawn through
+  the reader; `pick_draw_agreement` holds the bar pick to the painted bar;
+  `released_documents` converts every released categorical document and
+  round-trips the result; the SSOT matrix classifies `bar_groups` and
+  `cross_at`, and the resident-body mutation walk covers a stacked category
+  bar panel (385 config and 82 series leaves); the decoration oracle and
+  the playground sweep the categorical scene as a Cartesian scene; a
+  browser test opens a document in `FiggyChart`. The legacy renderer's
+  `categorical_render` and `categorical_browser` are removed with it; the
+  bounded annotation tests that drew on bars run on box plots.
 - **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
   dev-dependency for the mutation walker. `figgy-renderer` gains the
   `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from
@@ -579,6 +725,16 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   integration example. The package keeps its own version and `publish = false`;
   its publication target is still open. No API, serialized field or build
   change.
+- **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13d). `CATEGORICAL.md` (Korean) says that the categorical chart is a
+  `CategoryBars` series on a `Config` with a categorical axis, read from
+  legacy documents by `Config::from_categorical`, and drops the sections of
+  the removed bounded renderer; `SHADER_COMMON.md`
+  §2.4 and §5.13 hold the category bar contract; `CONFIG.md`, `API.md`,
+  `INTERACTION.md`, `WASM.md`, the browser `README.md` and `SCHEMA.md` and
+  the model README describe the series kind, `bar_groups`, `cross_at` and
+  `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
+  radial chart alone.
 - `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
   bindings, invariants, the flag table of §3.1) and names the file that
   holds each block; it is no longer parsed by a test. The contributing

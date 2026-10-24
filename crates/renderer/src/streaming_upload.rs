@@ -1054,6 +1054,7 @@ mod tests {
                                 area: None,
                                 field: None,
                                 bar: None,
+                                category_bars: None,
                                 contour: None,
                                 vector: None,
                                 errorbar: None,

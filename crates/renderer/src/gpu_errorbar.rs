@@ -156,7 +156,10 @@ impl GpuSeriesFitMode {
                 // stop at sample points.
                 (matrix, matches!(fill.shading, Shading::Interpolated))
             }
-            DataRenderType::Histogram { .. } => return None,
+            // Category bars fit from column and stack statistics.
+            DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {
+                return None;
+            }
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -239,6 +242,7 @@ impl GpuSeriesExtentMode {
                 ..
             }
             | DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,

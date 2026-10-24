@@ -72,6 +72,16 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Streaming is not extended to category bars: a stack reads the
+        // other series' resident columns by their pool lanes.
+        if series.render_type.category_bars().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "category bar series require GPU-resident columns; streamed sources are \
+                         not supported"
+                    .into(),
+            });
+        }
         // The value maps read index-aligned columns on every draw; streaming
         // is not extended to them.
         if let Some(scatter) = extract_scatter(&series.render_type)

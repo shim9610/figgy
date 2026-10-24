@@ -40,9 +40,9 @@
 //! product's exports, and its highlight painted through the chart view as
 //! on screen.
 //!
-//! The four bounded families (radial, categorical, box plot, radar) run the
+//! The three bounded families (radial, box plot, radar) run the
 //! same invariants on their hit maps (the renderer-measured `DecorationMap`
-//! of the categorical, box plot and radar frames; the radial frame's
+//! of the box plot and radar frames; the radial frame's
 //! `HitMap<RadialChart>`, whose elements place their parts from the chart,
 //! an outside label's leader line among them), with each element's ink
 //! measured by drag differential and the highlight through
@@ -86,11 +86,10 @@ use renderer::select::{
 use renderer::sink::Parts;
 use renderer::text::{MeasureText, RichText};
 use renderer::{
-    BoxPlotChart, BoxPlotFrame, BoxPlotRenderer, CategoricalChart, CategoricalFrame,
-    CategoricalRenderer, Chart, Color, ColorMap, Config, CpuTextMeasure, DecorationId,
-    DecorationLayout, DrawnPart, HitId, HitMap, LayerRef, OverlayLayer, RadarChart, RadarFrame,
-    RadarRenderer, RadialChart, RadialFrame, RadialRenderer, RasterImage, Renderer, RendererDevice,
-    ResizeHandle, SelectionBox, SelectionGeometry, SelectionOutline, SeriesConfig,
+    BoxPlotChart, BoxPlotFrame, BoxPlotRenderer, Chart, Color, ColorMap, Config, CpuTextMeasure,
+    DecorationId, DecorationLayout, DrawnPart, HitId, HitMap, LayerRef, OverlayLayer, RadarChart,
+    RadarFrame, RadarRenderer, RadialChart, RadialFrame, RadialRenderer, RasterImage, Renderer,
+    RendererDevice, ResizeHandle, SelectionBox, SelectionGeometry, SelectionOutline, SeriesConfig,
 };
 
 use scenes::SceneKind;
@@ -434,7 +433,7 @@ impl Report {
 
     /// Add `n` to the total `what` of the scene family `at` belongs to.
     fn count(&mut self, at: &At<'_>, what: &str, n: usize) {
-        let family = if ["Radial", "Categorical", "BoxPlot", "Radar"].contains(&at.scene) {
+        let family = if ["Radial", "BoxPlot", "Radar"].contains(&at.scene) {
             "bounded"
         } else {
             "Cartesian"
@@ -2786,8 +2785,8 @@ fn check_i6(
 // Bounded families
 // ---------------------------------------------------------------------------
 //
-// A bounded chart (radial, categorical, box plot, radar) draws its
-// decorations into its own GPU frame. The categorical, box plot and radar
+// A bounded chart (radial, box plot, radar) draws its
+// decorations into its own GPU frame. The box plot and radar
 // frames register each as one renderer-measured box in their
 // `DecorationMap`; the radial frame registers each in its
 // `HitMap<RadialChart>`, placed from the chart by the one emit its raster
@@ -2809,7 +2808,7 @@ const BOUNDED_SCALE_SHARE: f64 = 0.004;
 
 /// One bounded family's renderer, behind one face for the sweep. Its frame
 /// answers the decoration queries of `bounded_decorations::Decorations`:
-/// the categorical, box plot and radar frames through their
+/// the box plot and radar frames through their
 /// `DecorationMap`, the radial frame through its `HitMap<RadialChart>`.
 trait Bounded {
     type Chart: Clone + PartialEq;
@@ -2842,12 +2841,6 @@ macro_rules! bounded_family {
 }
 
 bounded_family!(RadialFamily, RadialRenderer, RadialChart, RadialFrame);
-bounded_family!(
-    CategoricalFamily,
-    CategoricalRenderer,
-    CategoricalChart,
-    CategoricalFrame
-);
 bounded_family!(BoxFamily, BoxPlotRenderer, BoxPlotChart, BoxPlotFrame);
 bounded_family!(RadarFamily, RadarRenderer, RadarChart, RadarFrame);
 
@@ -2873,15 +2866,6 @@ fn bounded_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
                 scene,
                 RadialFamily(r),
                 scenes::bounded::radial_chart(),
-            ),
-            Err(e) => failed(report, e.to_string()),
-        },
-        SceneKind::Categorical => match CategoricalRenderer::new(gpu.clone(), format) {
-            Ok(r) => sweep_bounded(
-                report,
-                scene,
-                CategoricalFamily(r),
-                scenes::bounded::categorical_chart(),
             ),
             Err(e) => failed(report, e.to_string()),
         },

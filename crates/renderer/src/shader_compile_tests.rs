@@ -121,8 +121,6 @@ fn all_shader_compilation_times_and_entry_coverage() {
         );
     }
     crate::radial::RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    crate::categorical::CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
-        .unwrap();
     crate::boxplot::BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     crate::radar::RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let capture = session.finish();

@@ -162,6 +162,8 @@ fn edits() -> Vec<Edit> {
             edit!($axis.title_option.offset_y, 4.0, Prefix);
             edit!($axis.out_margin, 42.0, Packed);
             edit!($axis.major_tick_length, 8.0, Packed);
+            // Only the axis line moves; the data area does not.
+            edit!($axis.cross_at, Some(0.5), Prefix);
         };
     }
     axis!(bottom_x);
@@ -312,6 +314,18 @@ fn edits() -> Vec<Edit> {
         annotation: false,
         pixels: Pixels::Changed,
         streams: false,
+    });
+    // How category bars share a slot: the baseline has no category bar
+    // series, so the bodies, the chrome and the data area all stay.
+    cases.push(Edit {
+        name: "bar_groups (None -> Some)",
+        apply: |c| c.bar_groups = Some(crate::data_config::BarGroups::default()),
+        work: Work::Prefix,
+        differs: true,
+        raster: false,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
     });
     // Adding a colourbar reserves its band, so the data area moves.
     cases.push(Edit {
@@ -1329,6 +1343,7 @@ fn config_fields_are_classified() {
         subplots,         // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _,  // layer only: no raster, no pixels
         annotations: _,   // annotation_edits(): annotation revision only
+        bar_groups: _,    // "bar_groups (None -> Some)" + resident display mutations
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,
@@ -1349,6 +1364,7 @@ fn config_fields_are_classified() {
         major_tick_length: _,
         minor_tick_length: _,
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
+        cross_at: _,   // axis!(...).cross_at: Prefix
     } = top_x;
     let LabelStyle {
         visible: _,

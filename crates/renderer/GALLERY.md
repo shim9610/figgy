@@ -93,8 +93,8 @@ uses only the public Cartesian, categorical and radial APIs. See
 [configuration](CONFIG.md), [categorical bars](CATEGORICAL.md) and
 [radial materials](RADIAL.md) to adapt the recipes.
 
-The PNGs are the native export, written without resizing or post-processing. The export clear color supplies the Cartesian background; the
-categorical and radial charts use their model's `background` field.
+The PNGs are the native export, written without resizing or post-processing. The export clear color supplies the Cartesian background, the
+category bars of `revenue` included; the radial charts use their model's `background` field.
 
 ## Generate PNGs and animation frames
 
@@ -182,9 +182,13 @@ page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
 `target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
 examples and `gallery_concepts` already write their final names. The
-bounded examples use `RadialRenderer`, `CategoricalRenderer`, `BoxPlotRenderer`
-and `RadarRenderer`, respectively; their small-data models do not use the
-Cartesian column pool.
+bounded examples use `RadialRenderer`, `BoxPlotRenderer` and `RadarRenderer`,
+respectively; their small-data models do not use the Cartesian column pool.
+`categorical_gallery` opens categorical documents with
+`Config::from_categorical` and draws them with the Cartesian `Renderer`.
+`gallery-categorical.png` was drawn by the former bounded bar renderer, with
+value labels, which the Cartesian category bars do not draw yet (#40 item
+13h); it is replaced when they do.
 
 ## Precise and hand-drawn Sketch previews
 

@@ -108,8 +108,8 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Colour and size maps (bubbles) | A value column per point, mapped by `PointColorMap` through the colorbar (`Config.colorbar`) or by `PointSizeMap` through its size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
 | Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text and arrows | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
+| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical` | [Bars](crates/renderer/CATEGORICAL.md) |
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
-| Categorical bars | `CategoricalChart` categories and series | [Bars (in Korean)](crates/renderer/CATEGORICAL.md) |
 | Box plots | `BoxPlotChart` summaries | [Boxes](crates/renderer/BOXPLOT.md) |
 | Radar charts | `RadarChart` categories and one value per category per series | [Radar](crates/renderer/RADAR.md) |
 
@@ -120,8 +120,8 @@ charts, except that a polar chart takes no overlay axes. Streamed, non-resident
 sources draw lines, scatter, error bars, histograms and heatmaps in a
 single-panel document. Contours, fills and step lines, vector fields, colour and
 size maps, polar plots, and documents with overlays or subplots reject streamed
-sources with an explicit error. Pies and donuts, categorical bars, box plots and
-radar charts keep their categories and values in their own small model, with no
+sources with an explicit error, and so do categorical bars. Pies and donuts, box
+plots and radar charts keep their categories and values in their own small model, with no
 `ColumnSource`, and each has its own renderer. The annotation layer works on
 both kinds.
 
@@ -347,8 +347,9 @@ wasm-bindgen wrapper and the `<figgy-chart>` custom element, which connect a
 canvas, events and async calls. It is maintained with the renderer, and every
 renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
 own, separate from the Rust library's API. The `FiggyChart` export and
-`<figgy-chart>` element cover Cartesian and polar charts; `FiggyBoundedChart`
-covers pies, donuts, categorical bars, box plots and radar charts, and the host
+`<figgy-chart>` element cover Cartesian charts, categorical bars included,
+and polar charts; `FiggyBoundedChart`
+covers pies, donuts, box plots and radar charts, and the host
 handles their canvas events. The wrapper is the Cargo package `figgy`, built from
 this repository (`publish = false`); the `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects.
@@ -363,7 +364,7 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
+| Pies/donuts · categorical bars · box plots · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |

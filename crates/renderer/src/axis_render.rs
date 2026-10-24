@@ -253,10 +253,15 @@ pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn 
         polar::emit_polar_axes(config, &da, fp, sink);
     } else {
         emit_grid(config, &plot, fp, sink);
-        emit_axis(&config.top_x, Side::Top, &plot, fp, sink);
-        emit_axis(&config.bottom_x, Side::Bottom, &plot, fp, sink);
-        emit_axis(&config.left_y, Side::Left, &plot, fp, sink);
-        emit_axis(&config.right_y, Side::Right, &plot, fp, sink);
+        for (axis, side) in [
+            (&config.top_x, Side::Top),
+            (&config.bottom_x, Side::Bottom),
+            (&config.left_y, Side::Left),
+            (&config.right_y, Side::Right),
+        ] {
+            let cross = crate::layout::axis_cross(config, &side);
+            emit_axis(axis, side, &plot, cross, fp, sink);
+        }
     }
 
     emit_colorbar(config, &da, fp, &measure, sink);
@@ -311,7 +316,14 @@ pub(crate) fn emit_part_of(
             emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
         }
         Element::Axis(side) => {
-            emit_axis_strokes(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
+            emit_axis_strokes(
+                axis_of(side),
+                side.clone(),
+                &data_area_rect(&da),
+                crate::layout::axis_cross(config, side),
+                fp,
+                sink,
+            );
         }
         Element::ColorBarLabel => {
             if let Some((bar, rect)) = drawn_colorbar(config, &da) {

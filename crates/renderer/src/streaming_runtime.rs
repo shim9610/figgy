@@ -51,7 +51,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => false,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. } => false,
     }
 }
 
@@ -612,6 +613,17 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Vector { .. } => Ok(&[]),
+        // Streaming is not extended to category bars either: rejected
+        // before a cursor exists, so this is a backstop too.
+        DataRenderType::CategoryBars { .. } if primitives.category_bars => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "category bar series require GPU-resident columns; streamed sources are not supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::CategoryBars { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {
@@ -4038,6 +4050,7 @@ impl Renderer {
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.category_bar_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {

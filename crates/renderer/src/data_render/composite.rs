@@ -16,6 +16,8 @@ pub struct SeriesLayers<'a> {
     pub field: Option<ColumnFieldLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
     pub bar: Option<ColumnBarLayer<'a>>,
+    /// The bars of a category bar series, issued where histogram bars are.
+    pub category_bars: Option<ColumnCategoryBarLayer<'a>>,
     /// Contour lines go over the field they describe and under the markers.
     pub contour: Option<ColumnContourLayer<'a>>,
     /// Arrows go over the field and contours they annotate, under the series'
@@ -124,6 +126,17 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
                 envelope.draw(pass, b.transform_bg, b.style_bg);
             }
         }
+    }
+
+    // Category bars: area primitives like histogram bars, one quad per bar
+    // built from group 3; no vertex buffers.
+    if let Some(c) = series.category_bars.as_ref().filter(|c| c.count > 0) {
+        pass.set_pipeline(c.pipeline);
+        pass.set_bind_group(0, c.transform_bg, &[]);
+        pass.set_bind_group(1, c.style_bg, &[]);
+        pass.set_bind_group(2, &c.data.style_map, &[]);
+        pass.set_bind_group(3, &c.data.bind_group, &[]);
+        pass.draw(0..CATEGORY_BAR_VERTICES, 0..c.count);
     }
 
     // Contour lines: over the field they describe, under everything stroked for
@@ -254,6 +267,15 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_bind_group(1, &selection.style_bg, &[]);
         if let Some(map) = selection.style_map_bg {
             pass.set_bind_group(2, map, &[]);
+        }
+        if let Some(category) = &selection.category {
+            pass.set_bind_group(2, &category.style_map, &[]);
+            pass.set_bind_group(3, &category.bind_group, &[]);
+            pass.draw(
+                0..CATEGORY_BAR_VERTICES,
+                selection.instance..selection.instance + 1,
+            );
+            continue;
         }
         let edges = selection.edges.byte_range();
         let edges_next = (edges.start + crate::data::COLUMN_VALUE_BYTES as u64)..edges.end;

@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod bounded_sources;
 pub mod categorical;
 pub mod color;
 pub mod colormap;
@@ -33,6 +34,7 @@ pub mod text;
 pub mod tick;
 
 // Public API re-exports.
+pub use bounded_sources::{SeriesUpload, UploadValues};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
@@ -41,12 +43,12 @@ pub use config::{
 };
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
-    DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
-    DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape,
-    SeriesConfig, SeriesRef, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
-    VectorStyle,
+    BarGroups, CategoryBarSeriesLabels, CategoryBarsRef, DataBarBinStyleConfig,
+    DataBarStyleOverride, DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride,
+    DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation,
+    MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape, SeriesConfig, SeriesRef,
+    SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

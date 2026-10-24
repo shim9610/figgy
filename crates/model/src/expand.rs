@@ -517,6 +517,9 @@ impl Config {
             subplots: _,
             active_layer: _,
             annotations: _,
+            // An overlay's category bar series form a group of their own
+            // with the parent's options.
+            bar_groups,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -548,6 +551,8 @@ impl Config {
                 minor_tick_length: _,
                 // The hidden left axis maps the overlay's range.
                 categories: _,
+                // The hidden left axis draws no line.
+                cross_at: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, default_axis_options_y());
             left.out_margin = *out_margin;
@@ -620,6 +625,8 @@ impl Config {
                 minor_tick_length: _,
                 // A colourbar axis is never categorical.
                 categories: _,
+                // The hidden colourbar draws no axis line.
+                cross_at: _,
             } = axis;
             let mut hidden = default_colorbar_options();
             hidden.visible = false;
@@ -650,6 +657,7 @@ impl Config {
             subplots: Vec::new(),
             active_layer: LayerRef::Base,
             annotations: AnnotationLayer::default(),
+            bar_groups: bar_groups.clone(),
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -682,6 +690,8 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         minor_tick_length: _,
         // The categories are the range of a categorical axis.
         categories,
+        // Where the line crosses: each chart's own, like the line style.
+        cross_at: _,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -719,6 +729,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             major_tick_length: _,
             minor_tick_length: _,
             categories,
+            // Not linked.
+            cross_at: _,
         } = axis;
         (scale.clone(), *min, *max, *inverted, categories.as_deref())
     }
@@ -750,9 +762,12 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         line_style: _,
         major_tick_length,
         minor_tick_length: _,
-        // A hidden axis draws no labels: a categorical axis hands on its
-        // category range as a numeric one, without copying the categories.
-        categories: _,
+        // A hidden axis draws no labels, but a categorical axis keeps its
+        // categories: the panel's category bars resolve their per-bar
+        // overrides by category id against them.
+        categories,
+        // A hidden axis draws no line.
+        cross_at: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -773,6 +788,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         major_tick_length: _,
         minor_tick_length,
         categories: _,
+        cross_at: _,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -793,7 +809,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         line_style,
         major_tick_length: *major_tick_length,
         minor_tick_length,
-        categories: None,
+        categories: categories.clone(),
+        cross_at: None,
     }
     .with_hidden_text()
 }
@@ -837,6 +854,7 @@ impl Config {
             subplots: _,
             active_layer: _,
             annotations: _,
+            bar_groups: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -880,6 +898,7 @@ fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
         subplots: _,
         active_layer: _,
         annotations: _,
+        bar_groups: _,
     } = panel;
     if let Some(picked) = picked_points.as_mut() {
         picked
@@ -1637,9 +1656,9 @@ mod tests {
         )
     }
 
-    /// An overlay panel's hidden axes carry a categorical axis' range as a
-    /// numeric one, and the overlay's own categorical axis is drawn on the
-    /// panel's right side.
+    /// An overlay panel's hidden axes keep a categorical axis' range and
+    /// categories (its category bars resolve their overrides by id), and the
+    /// overlay's own categorical axis is drawn on the panel's right side.
     #[test]
     fn overlay_panels_map_categorical_axes_by_their_range() {
         let mut cfg = two_layer_config();
@@ -1647,9 +1666,10 @@ mod tests {
         cfg.overlays[0].y_axis.categories = categories(3);
         let expansion = cfg.expand().unwrap();
         let overlay = &expansion.panels[1].config;
-        assert_eq!(overlay.bottom_x.categories, None);
-        assert_eq!((overlay.bottom_x.min, overlay.bottom_x.max), (-0.5, 4.5));
-        assert_eq!(overlay.left_y.categories, None);
+        assert_eq!(overlay.bottom_x.categories, categories(5));
+        assert_eq!(overlay.bottom_x.data_range(), (-0.5, 4.5));
+        assert!(!overlay.bottom_x.line_visible && !overlay.bottom_x.label_style.label_visible);
+        assert_eq!(overlay.left_y.categories, categories(3));
         assert_eq!((overlay.left_y.min, overlay.left_y.max), (-0.5, 2.5));
         assert_eq!(overlay.right_y.categories, categories(3));
         assert_eq!(
