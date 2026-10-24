@@ -68,6 +68,24 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
 | Rich titles on pie, bar, boxplot and radar charts | `BoundedTitleOptions` on `chart_title` |
 
+## Chart classes
+
+A chart's per-element data enters in one of two ways, and that decides its
+class.
+
+- **DataLess charts** are defined by their SSOT alone. They have no
+  `ColumnSource`, no column in the renderer's pool and no streaming, by
+  definition: every element is a configured entity, and its value is one of
+  its attributes beside its name, colour and the rest. The radial chart
+  (`RadialChart`: pie, donut and the detail ring of a split) is the only
+  DataLess chart. A slice is named, coloured, exploded and labelled by the
+  host, its `value` is stored on it, and the chart is bounded by its nature
+  (`MAX_RADIAL_SLICES`).
+- **Column-backed charts** are the series kinds of `Config`: per-point data
+  enters only through the renderer's `ColumnSource` and lives in its column
+  pool. The categorical bar, box plot and radar charts are moving onto
+  columns as well and keep their values in their models until they do.
+
 Bounded charts (pie/donut, bar, boxplot and radar) carry their values in the
 model, not in columns, and take no stream sources. Their `validate` methods
 enforce fixed size limits, such as 64 slices or categories and 16 series. The

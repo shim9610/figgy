@@ -1,5 +1,10 @@
-//! Small categorical charts. Values and appearance are independent of Cartesian
-//! axes and column streams. The renderer consumes a complete validated snapshot.
+//! The radial chart: pie, donut and the detail ring of a split.
+//!
+//! This is the DataLess chart class (see the crate's "Chart classes"): the
+//! chart is defined by its SSOT alone, with no `ColumnSource`, no column pool
+//! and no streaming. A slice is a configured entity, and its value is one of
+//! its attributes like its name, colour and explode. The renderer consumes a
+//! complete validated snapshot.
 use crate::format::PlainNumberFormat;
 use crate::{Color, Material};
 
