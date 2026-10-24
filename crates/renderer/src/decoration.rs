@@ -233,11 +233,6 @@ impl<'a> DecorationPainter<'a> {
             entries: vec![],
         }
     }
-    pub fn shift_hit(&mut self, id: &DecorationId, dx: f32, dy: f32) {
-        if let Some(e) = self.entries.iter_mut().find(|e| &e.id == id) {
-            e.base_bounds = e.base_bounds.translated(dx, dy);
-        }
-    }
     pub fn offset(&self, id: &DecorationId) -> [f32; 2] {
         self.state.effective_offset(id)
     }

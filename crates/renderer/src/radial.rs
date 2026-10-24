@@ -11,11 +11,19 @@ use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
 /// The assembled radial module.
-pub(crate) const RADIAL_SHADER: crate::shader_assembly::Assembled =
-    crate::shader_assembly::assembled!("data_render/common/material.wgsl", "radial.wgsl",);
+pub(crate) const RADIAL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
+    "radial.wgsl",
+);
+/// The radial pick module: the same sector fragment as the draw, with a
+/// compute entry that picks the sector the draw shows under one pixel.
+pub(crate) const RADIAL_PICK_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/material.wgsl",
+    "data_render/common/radial_sector.wgsl",
+    "radial_pick.wgsl",
+);
 
-#[path = "radial_geometry.rs"]
-mod geometry;
 #[path = "radial_layout.rs"]
 mod layout;
 
@@ -37,25 +45,26 @@ impl std::fmt::Display for RadialError {
     }
 }
 impl std::error::Error for RadialError {}
+/// One sector as the radial modules read it (`radial_sector.wgsl`).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct Sector {
-    geometry: [f32; 4],
-    arc: [f32; 4],
-    color: [f32; 4],
-    material: crate::data_render::MaterialGpu,
-    detail: [f32; 4], // explode, angular gap, bevel, reserved (0, seed moved to `material`)
-    rounding: [f32; 4], // inner corner, outer corner, vertical lift, reserved (0, gloss moved)
-    outline: [f32; 4],
-    outline_color: [f32; 4],
+pub(crate) struct Sector {
+    pub(crate) geometry: [f32; 4],
+    pub(crate) arc: [f32; 4],
+    pub(crate) color: [f32; 4],
+    pub(crate) material: crate::data_render::MaterialGpu,
+    pub(crate) detail: [f32; 4], // explode, angular gap, bevel, reserved (0, seed moved to `material`)
+    pub(crate) rounding: [f32; 4], // inner corner, outer corner, vertical lift, reserved (0, gloss moved)
+    pub(crate) outline: [f32; 4],
+    pub(crate) outline_color: [f32; 4],
     // reserved (0, highlight moved), reserved (0, texture angle moved),
     // inside-label flag, inside-label lift: how far the lifted top face moves
     // up the screen in physical pixels (`rounding[2] * sin(arc[2]) *
     // geometry[2]`), computed once where the sector is built
     // (`radial_layout.rs`). The layout moves the inside labels or their hit
     // map by it and the shader moves the inside glyphs by it.
-    effects: [f32; 4],
-    light: [f32; 4],
+    pub(crate) effects: [f32; 4],
+    pub(crate) light: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -70,28 +79,198 @@ struct Globals {
 const _: () =
     assert!(std::mem::size_of::<Sector>() == 176 && std::mem::size_of::<Globals>() == 112);
 
+/// The radial pick's query (`RadialPickQuery` of `radial_pick.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct RadialPickQueryGpu {
+    pub(crate) pixel: [f32; 2],
+    pub(crate) count: u32,
+    pub(crate) rest: u32,
+}
+/// The radial pick's result (`RadialPickResult` of `radial_pick.wgsl`).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct RadialPickResultGpu {
+    pub(crate) index: u32,
+    pub(crate) hit: u32,
+    pub(crate) t: f32,
+    pub(crate) reserved: u32,
+}
+const _: () = assert!(
+    std::mem::size_of::<RadialPickQueryGpu>() == 16
+        && std::mem::size_of::<RadialPickResultGpu>() == 16
+);
+const RADIAL_PICK_RESULT_BYTES: u64 = std::mem::size_of::<RadialPickResultGpu>() as u64;
+
 /// Immutable GPU snapshot. Its shader draws straight into a same-format,
 /// single-sample target; four analytic subpixel samples provide edge AA.
 /// Labels are rasterized at the requested output resolution, never upscaled.
 pub struct RadialFrame {
-    decorations: crate::decoration::DecorationMap,
-    _gpu: RendererDevice,
+    decorations: crate::HitMap<RadialChart>,
+    gpu: RendererDevice,
+    ledger: Arc<GpuLedger>,
     size: (u32, u32),
     pipeline: wgpu::RenderPipeline,
     bind_group: wgpu::BindGroup,
+    pick_pipeline: wgpu::ComputePipeline,
+    pick_layout: wgpu::BindGroupLayout,
     _uniform: TrackedBuffer,
-    _sectors: TrackedBuffer,
+    sectors: TrackedBuffer,
     _annotations: Arc<TrackedTexture>,
+    /// The CPU sectors, kept only for the CPU twin's agreement test.
+    #[cfg(feature = "cpu-twin")]
     geometry: Vec<Sector>,
+    /// The slice each sector of the buffer draws, in buffer order.
     targets: Vec<RadialTarget>,
     scale: f32,
     space: crate::annotation::PixelSpace,
     background: crate::annotation::FrameBackground,
 }
 impl RadialFrame {
-    /// Renderer-measured decorations using the common HitMap/Draggable contract.
-    pub fn decorations(&self) -> &crate::decoration::DecorationMap {
+    /// The frame's decorations, the plot area, the title and every slice
+    /// label with its leader line, on the common `HitMap` / `Selectable` /
+    /// `Draggable` / `Resizable` contract with the chart as the state. Each
+    /// element places its parts from the chart it is asked about, with the
+    /// one placement the label raster draws with, so pass the chart this
+    /// frame was prepared from; a drag edits that chart's `decorations`.
+    /// The elements measure text themselves: any `MeasureText` may be
+    /// passed. Hit-test through [`Self::decoration_at`], which names nothing
+    /// outside the canvas.
+    pub fn decorations(&self) -> &crate::HitMap<RadialChart> {
         &self.decorations
+    }
+    /// The topmost decoration at `position` (chart-local logical pixels) of
+    /// `chart`, the chart this frame was prepared from; nothing outside the
+    /// canvas.
+    pub fn decoration_at(&self, chart: &RadialChart, position: [f32; 2]) -> Option<crate::HitId> {
+        let canvas = self.space.panel;
+        if position.iter().any(|v| !v.is_finite()) || !canvas.contains(position[0], position[1]) {
+            return None;
+        }
+        self.decorations.hit_test(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            position[0],
+            position[1],
+        )
+    }
+    /// The hit-map entry of decoration `id`, when the frame draws it.
+    pub fn decoration(&self, id: &model::DecorationId) -> Option<crate::HitId> {
+        self.decorations.find(&id.element_id())
+    }
+    /// Every decoration this frame draws, with its hit-map entry: the plot
+    /// area, the title, then the slice labels in slice order, main circle
+    /// first.
+    pub fn decoration_ids<'a>(
+        &'a self,
+        chart: &'a RadialChart,
+    ) -> impl Iterator<Item = (crate::HitId, model::DecorationId)> + 'a {
+        let labels = chart
+            .slices
+            .iter()
+            .enumerate()
+            .map(|(index, _)| RadialTarget::main(index))
+            .chain(
+                chart
+                    .split
+                    .iter()
+                    .flat_map(|s| s.children.iter().enumerate())
+                    .map(|(index, _)| RadialTarget::detail(index)),
+            )
+            .map(model::DecorationId::RadialLabel);
+        [
+            model::DecorationId::DataArea,
+            model::DecorationId::ChartTitle,
+        ]
+        .into_iter()
+        .chain(labels)
+        .filter_map(|id| Some((self.decoration(&id)?, id)))
+    }
+    /// The id of decoration `hit` of `chart`.
+    pub fn decoration_id(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<model::DecorationId> {
+        self.decoration_ids(chart)
+            .find(|(h, _)| *h == hit)
+            .map(|(_, id)| id)
+    }
+    /// The drawn bounds of decoration `hit` of `chart`, its leader line
+    /// included.
+    pub fn decoration_bounds(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<crate::layout::RectF> {
+        use model::select::SelectionGeometry;
+        self.decorations
+            .get(hit)?
+            .bounds(chart, &crate::CpuTextMeasure::default())
+    }
+    /// Move decoration `hit` of `chart` by a pointer delta through the
+    /// common `Draggable` policy, writing `chart.decorations`; `None` for an
+    /// unknown hit. A rejected move leaves the chart unchanged. Prepare a
+    /// new frame before drawing or hit-testing again.
+    pub fn drag_decoration(
+        &self,
+        chart: &mut RadialChart,
+        hit: crate::HitId,
+        dx: f32,
+        dy: f32,
+    ) -> Option<crate::layout::NudgeResult> {
+        Some(self.decorations.get(hit)?.as_draggable()?.drag_by(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            dx,
+            dy,
+        ))
+    }
+    /// The resize handle of decoration `hit` (the plot area) at `position`.
+    pub fn decoration_resize_handle(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+        position: [f32; 2],
+    ) -> Option<crate::resize::ResizeHandle> {
+        self.decorations
+            .get(hit)?
+            .as_resizable()?
+            .hit_resize_handle(
+                chart,
+                &crate::CpuTextMeasure::default(),
+                position[0],
+                position[1],
+            )
+    }
+    /// Resize decoration `hit` (the plot area) of `chart` by dragging
+    /// `handle`; both edges move or neither does.
+    pub fn resize_decoration(
+        &self,
+        chart: &mut RadialChart,
+        hit: crate::HitId,
+        handle: crate::resize::ResizeHandle,
+        dx: f32,
+        dy: f32,
+    ) -> Option<crate::layout::NudgeResult> {
+        Some(self.decorations.get(hit)?.as_resizable()?.resize_by(
+            chart,
+            &crate::CpuTextMeasure::default(),
+            handle,
+            dx,
+            dy,
+        ))
+    }
+    /// The selection box of decoration `hit` of `chart`, inside the canvas:
+    /// a title wider than the canvas is selected as what the canvas shows.
+    pub fn decoration_selection_box(
+        &self,
+        chart: &RadialChart,
+        hit: crate::HitId,
+    ) -> Option<crate::SelectionBox> {
+        self.decorations
+            .selection_box(hit, chart, &crate::CpuTextMeasure::default())
+            .map(|b| b.clipped_to(self.space.panel))
     }
     /// True when annotation GPU storage is shared (e.g. hover/material-only edits).
     pub fn shares_annotations_with(&self, other: &Self) -> bool {
@@ -106,18 +285,31 @@ impl RadialFrame {
     pub fn background(&self) -> crate::annotation::FrameBackground {
         self.background
     }
-    /// Original footprint for hover hysteresis: retain the previous hover while
-    /// the pointer is in its unraised footprint, even if the lifted surface moved away.
-    pub fn hit_test_at_rest(&self, position: [f32; 2]) -> Option<RadialTarget> {
-        self.pick(position, true)
+    /// Request the slice drawn under `position` (chart-local logical
+    /// pixels): the visible surface nearest the camera, with tilt, gap,
+    /// rounding, explode and the hover lift, picked on the GPU by the draw's
+    /// own sector ray-march and occlusion rule from this frame's sectors.
+    /// Resolve the ticket with [`RadialPickTicket::resolve`]; a position
+    /// outside the canvas, or not finite, resolves to `None` at once.
+    pub fn pick(self: &Arc<Self>, position: [f32; 2]) -> Result<RadialPickTicket, RadialError> {
+        self.request_pick(position, false)
     }
-    /// Visible surface picking in logical pixels, using this immutable snapshot.
-    pub fn hit_test(&self, position: [f32; 2]) -> Option<RadialTarget> {
-        self.pick(position, false)
+    /// [`Self::pick`] on the unlifted surfaces, for hover hysteresis: a host
+    /// keeps the previous hover while the pointer is in its unraised
+    /// footprint, even where the lifted surface moved away.
+    pub fn pick_at_rest(
+        self: &Arc<Self>,
+        position: [f32; 2],
+    ) -> Result<RadialPickTicket, RadialError> {
+        self.request_pick(position, true)
     }
-    fn pick(&self, position: [f32; 2], rest: bool) -> Option<RadialTarget> {
-        if position.iter().any(|v| !v.is_finite()) {
-            return None;
+    fn request_pick(
+        self: &Arc<Self>,
+        position: [f32; 2],
+        rest: bool,
+    ) -> Result<RadialPickTicket, RadialError> {
+        if position.iter().any(|v| !v.is_finite()) || self.targets.is_empty() {
+            return Ok(RadialPickTicket::none());
         }
         let pixel = [position[0] * self.scale, position[1] * self.scale];
         if pixel[0] < 0.0
@@ -125,20 +317,94 @@ impl RadialFrame {
             || pixel[0] >= self.size.0 as f32
             || pixel[1] >= self.size.1 as f32
         {
-            return None;
+            return Ok(RadialPickTicket::none());
         }
-        self.geometry
-            .iter()
-            .zip(&self.targets)
-            .filter_map(|(s, t)| {
-                let mut s = *s;
-                if rest {
-                    s.rounding[2] = 0.0;
-                }
-                geometry::hit(&s, pixel).map(|depth| (depth, *t))
-            })
-            .min_by(|a, b| a.0.total_cmp(&b.0))
-            .map(|(_, t)| t)
+        let device = self.gpu.device();
+        // gpu-alloc: PickScratch
+        let query = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("radial pick query"),
+            contents: bytemuck::bytes_of(&RadialPickQueryGpu {
+                pixel,
+                count: self.targets.len() as u32,
+                rest: u32::from(rest),
+            }),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let query = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, query);
+        // gpu-alloc: PickScratch
+        let result = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("radial pick result"),
+            size: RADIAL_PICK_RESULT_BYTES,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let result = TrackedBuffer::new(&self.ledger, GpuResourceKind::PickScratch, result);
+        // gpu-alloc: Readback
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("radial pick readback"),
+            size: RADIAL_PICK_RESULT_BYTES,
+            usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let readback = TrackedBuffer::new(&self.ledger, GpuResourceKind::Readback, readback);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("radial pick"),
+            layout: &self.pick_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: query.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: self.sectors.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: result.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("radial pick"),
+        });
+        {
+            let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("radial pick"),
+                timestamp_writes: None,
+            });
+            pass.set_pipeline(&self.pick_pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(1, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&result, 0, &readback, 0, RADIAL_PICK_RESULT_BYTES);
+        self.gpu.queue().submit([encoder.finish()]);
+        let (sender, receiver) = futures_channel::oneshot::channel();
+        readback.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+            let _ = sender.send(r);
+        });
+        Ok(RadialPickTicket {
+            pending: Some(PendingRadialPick {
+                frame: Arc::clone(self),
+                readback,
+                receiver,
+                _scratch: [query, result],
+            }),
+        })
+    }
+    /// The CPU twin's pick on this frame's sectors, for the GPU pick's
+    /// agreement test only.
+    #[cfg(feature = "cpu-twin")]
+    #[doc(hidden)]
+    pub fn cpu_twin_pick(&self, position: [f32; 2], rest: bool) -> Option<RadialTarget> {
+        crate::pick::cpu_twin::radial_pick(
+            &self.geometry,
+            &self.targets,
+            position,
+            self.scale,
+            self.size,
+            rest,
+        )
     }
 
     /// Physical target dimensions, rounded from logical size times scale.
@@ -156,6 +422,70 @@ impl RadialFrame {
         pass.draw(0..3, 0..1);
     }
 }
+/// An asynchronous radial pick, from [`RadialFrame::pick`] or
+/// [`RadialFrame::pick_at_rest`]: the request is submitted, and
+/// [`Self::resolve`] reads the GPU's answer back. The ticket keeps its frame
+/// alive until it resolves or is dropped.
+pub struct RadialPickTicket {
+    pending: Option<PendingRadialPick>,
+}
+struct PendingRadialPick {
+    frame: Arc<RadialFrame>,
+    readback: TrackedBuffer,
+    receiver: futures_channel::oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    /// The query and result buffers, credited when the pick resolves.
+    _scratch: [TrackedBuffer; 2],
+}
+impl RadialPickTicket {
+    fn none() -> Self {
+        Self { pending: None }
+    }
+    /// The slice the GPU picked, or `None` where no sector is drawn.
+    pub async fn resolve(self) -> Result<Option<RadialTarget>, RadialError> {
+        let Some(pending) = self.pending else {
+            return Ok(None);
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        pending
+            .frame
+            .gpu
+            .device()
+            .poll(wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            })
+            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+        pending
+            .receiver
+            .await
+            .map_err(|e| RadialError::Gpu(e.to_string()))?
+            .map_err(|e| RadialError::Gpu(e.to_string()))?;
+        let result = {
+            let mapped = pending
+                .readback
+                .get_mapped_range(..)
+                .map_err(|e| RadialError::Gpu(e.to_string()))?;
+            *bytemuck::from_bytes::<RadialPickResultGpu>(&mapped)
+        };
+        pending.readback.unmap();
+        if result.hit == 0 {
+            return Ok(None);
+        }
+        pending
+            .frame
+            .targets
+            .get(result.index as usize)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| RadialError::Gpu("radial pick returned no sector of the frame".into()))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Native blocking wrapper for [`Self::resolve`].
+    pub fn resolve_blocking(self) -> Result<Option<RadialTarget>, RadialError> {
+        pollster::block_on(self.resolve())
+    }
+}
+
 /// Shares the host device/queue. Owns one pipeline and at most one cached frame.
 /// Kept separate from the large numeric-data/Cartesian renderer deliberately.
 pub struct RadialRenderer {
@@ -163,15 +493,17 @@ pub struct RadialRenderer {
     format: wgpu::TextureFormat,
     layout: wgpu::BindGroupLayout,
     pipeline: wgpu::RenderPipeline,
+    pick_layout: wgpu::BindGroupLayout,
+    pick_pipeline: wgpu::ComputePipeline,
     ledger: Arc<GpuLedger>,
     budget: u64,
-    annotations_cached: Option<(RadialChart, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
+    annotations_cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
     /// The dedicated annotation layer, drawn around the frame by its own pass.
     annotation_layer: crate::annotation::BoundedAnnotationCache,
     background: crate::annotation::FrameBackground,
     /// One frame per background mode, so an export that needs `HostClear`
     /// beside an interactive `Opaque` frame does not evict it.
-    cached: Vec<(RadialChart, (u32, u32), f32, u64, Arc<RadialFrame>)>,
+    cached: Vec<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
 impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
@@ -189,6 +521,16 @@ impl RadialRenderer {
             format,
             1,
             None,
+            &mut |_| {},
+        )
+        .await
+        .map_err(RadialError::Gpu)?;
+        #[cfg(target_arch = "wasm32")]
+        crate::browser_compile::compute(
+            gpu.device(),
+            "renderer.radial_pick",
+            RADIAL_PICK_SHADER.source,
+            &[("radial pick", "pick")],
             &mut |_| {},
         )
         .await
@@ -292,11 +634,84 @@ impl RadialRenderer {
                 cache: None,
             },
         );
+        // The pick module's own bindings: its query, the frame's sectors and
+        // its result.
+        let pick_layout = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("radial pick"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                                RadialPickQueryGpu,
+                            >()
+                                as u64),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: true },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Sector>() as u64
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(RADIAL_PICK_RESULT_BYTES),
+                        },
+                        count: None,
+                    },
+                ],
+            },
+        );
+        let pick_pipeline_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("radial pick"),
+                bind_group_layouts: &[Some(&pick_layout)],
+                immediate_size: 0,
+            },
+        );
+        let pick_shader = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: Some("radial pick"),
+                source: wgpu::ShaderSource::Wgsl(RADIAL_PICK_SHADER.source.into()),
+            },
+        );
+        let pick_pipeline = crate::gpu_compile::compute_pipeline(
+            &device,
+            &wgpu::ComputePipelineDescriptor {
+                label: Some("radial pick"),
+                layout: Some(&pick_pipeline_layout),
+                module: &pick_shader,
+                entry_point: Some("pick"),
+                compilation_options: Default::default(),
+                cache: None,
+            },
+        );
         Ok(Self {
             gpu,
             format,
             layout,
             pipeline,
+            pick_layout,
+            pick_pipeline,
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
             budget: 256 * 1024 * 1024,
@@ -400,6 +815,11 @@ impl RadialRenderer {
         background: crate::annotation::FrameBackground,
     ) -> Result<Arc<RadialFrame>, RadialError> {
         chart.validate().map_err(RadialError::Invalid)?;
+        if !chart.labels_have_text() {
+            return Err(RadialError::Invalid(
+                "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
+            ));
+        }
         if size.0 < 160 || size.1 < 160 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
             return Err(RadialError::Invalid(
                 "radial canvas must be at least 160x160; scale must be 0.5..4",
@@ -408,7 +828,7 @@ impl RadialRenderer {
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
             self.cached.iter().find(|(c, s, k, generation, frame)| {
-                frame_eq(c, chart)
+                c.matches(chart)
                     && *s == size
                     && *k == scale
                     && *generation == fonts
@@ -547,13 +967,17 @@ impl RadialRenderer {
         });
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
-            _gpu: self.gpu.clone(),
+            gpu: self.gpu.clone(),
+            ledger: Arc::clone(&self.ledger),
             size: (width, height),
             pipeline: self.pipeline.clone(),
             bind_group,
+            pick_pipeline: self.pick_pipeline.clone(),
+            pick_layout: self.pick_layout.clone(),
             _uniform: uniform,
-            _sectors: sectors,
+            sectors,
             _annotations: Arc::clone(&annotations),
+            #[cfg(feature = "cpu-twin")]
             geometry: l.sectors,
             targets: l.targets,
             scale,
@@ -564,7 +988,7 @@ impl RadialRenderer {
         self.cached
             .retain(|(_, _, _, _, cached)| cached.background != background);
         self.cached
-            .push((frame_key(chart), size, scale, fonts, Arc::clone(&frame)));
+            .push((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
@@ -802,73 +1226,141 @@ fn raster_moves_inside_labels(chart: &RadialChart) -> bool {
             .any(|o| matches!(o.element, model::DecorationId::RadialLabel(_))))
 }
 
-/// The part of the chart this frame's pixels, geometry and hit map depend on.
-/// `active_layer` only routes interaction and the annotation layer is drawn
-/// by its own pass, so editing either must reuse the cached frame and its
-/// label raster rather than rebuild them.
-fn frame_key(chart: &RadialChart) -> RadialChart {
-    let mut c = chart.clone();
-    c.active_layer = Default::default();
-    c.annotations = Default::default();
-    // Selecting an annotation draws its box on the annotation overlay.
-    if crate::annotation::selected_index(c.decorations.selected.as_ref()).is_some() {
-        c.decorations.selected = None;
+/// What a radial frame's pixels, sectors and hit map are built from: the
+/// chart's fields that reach them, named one by one (#66). [`Self::of`] and
+/// [`Self::matches`] destructure `RadialChart` without a rest pattern, so a
+/// new chart field does not compile until it is classified there: taken
+/// into the key, or named as not reaching the frame, with the reason. The
+/// per-field mutation test (`frame_key_tests`) holds each classification.
+#[derive(Clone, Debug, PartialEq)]
+struct FrameKey {
+    data_area: Option<crate::layout::RectF>,
+    offsets: Vec<model::DecorationOffset>,
+    /// The decoration selection the frame highlights: an annotation's is
+    /// drawn on the annotation overlay instead.
+    selected: Option<model::DecorationId>,
+    title: String,
+    chart_title: Option<model::config::ChartTitleOptions>,
+    slices: Vec<RadialSlice>,
+    kind: RadialKind,
+    start_angle_degrees: f32,
+    split: Option<RadialSplit>,
+    style: RadialStyle,
+    labels: RadialLabels,
+    interaction: RadialInteraction,
+    font_family: String,
+    font_size: f32,
+    label_color: crate::Color,
+    background: crate::Color,
+}
+/// A decoration selection as the frame sees it.
+fn frame_selection(selected: &Option<model::DecorationId>) -> Option<&model::DecorationId> {
+    selected
+        .as_ref()
+        .filter(|s| crate::annotation::selected_index(Some(s)).is_none())
+}
+impl FrameKey {
+    fn of(chart: &RadialChart) -> Self {
+        let RadialChart {
+            decorations,
+            title,
+            chart_title,
+            // Routes pointer interaction only; no pixel depends on it.
+            active_layer: _,
+            // Drawn by its own pass (`BoundedAnnotationCache`).
+            annotations: _,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style,
+            labels,
+            // The frame draws each slice's `text`; these only write it, at
+            // edit time (`RadialChart::format_labels`).
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+        } = chart;
+        let model::DecorationLayout {
+            data_area,
+            offsets,
+            selected,
+        } = decorations;
+        Self {
+            data_area: *data_area,
+            offsets: offsets.clone(),
+            selected: frame_selection(selected).cloned(),
+            title: title.clone(),
+            chart_title: chart_title.clone(),
+            slices: slices.clone(),
+            kind: *kind,
+            start_angle_degrees: *start_angle_degrees,
+            split: split.clone(),
+            style: style.clone(),
+            labels: *labels,
+            interaction: interaction.clone(),
+            font_family: font_family.clone(),
+            font_size: *font_size,
+            label_color: *label_color,
+            background: *background,
+        }
     }
-    c
+    /// `*self == Self::of(chart)` without building the key: the per-frame
+    /// cache check.
+    fn matches(&self, chart: &RadialChart) -> bool {
+        let RadialChart {
+            decorations,
+            title,
+            chart_title,
+            active_layer: _,
+            annotations: _,
+            slices,
+            kind,
+            start_angle_degrees,
+            split,
+            style,
+            labels,
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction,
+            font_family,
+            font_size,
+            label_color,
+            background,
+        } = chart;
+        let model::DecorationLayout {
+            data_area,
+            offsets,
+            selected,
+        } = decorations;
+        self.data_area == *data_area
+            && self.offsets == *offsets
+            && self.selected.as_ref() == frame_selection(selected)
+            && self.title == *title
+            && self.chart_title == *chart_title
+            && self.slices == *slices
+            && self.kind == *kind
+            && self.start_angle_degrees == *start_angle_degrees
+            && self.split == *split
+            && self.style == *style
+            && self.labels == *labels
+            && self.interaction == *interaction
+            && self.font_family == *font_family
+            && self.font_size == *font_size
+            && self.label_color == *label_color
+            && self.background == *background
+    }
 }
-/// `decorations` compared as `frame_key` normalizes them.
-fn decorations_eq(a: &model::DecorationLayout, b: &model::DecorationLayout) -> bool {
-    let base = |d: &model::DecorationLayout| {
-        d.selected
-            .clone()
-            .filter(|s| crate::annotation::selected_index(Some(s)).is_none())
-    };
-    a.data_area == b.data_area && a.offsets == b.offsets && base(a) == base(b)
-}
-/// `frame_key(a) == frame_key(b)` without cloning, for the per-frame cache
-/// hit check. Exhaustive so a new field must be classified here.
-fn frame_eq(a: &RadialChart, b: &RadialChart) -> bool {
-    let RadialChart {
-        decorations,
-        title,
-        chart_title,
-        active_layer,
-        annotations,
-        slices,
-        kind,
-        start_angle_degrees,
-        split,
-        style,
-        labels,
-        label_format,
-        label_decimals,
-        value_suffix,
-        interaction,
-        font_family,
-        font_size,
-        label_color,
-        background,
-    } = a;
-    let _ = (active_layer, annotations);
-    decorations_eq(decorations, &b.decorations)
-        && title == &b.title
-        && chart_title == &b.chart_title
-        && slices == &b.slices
-        && kind == &b.kind
-        && start_angle_degrees == &b.start_angle_degrees
-        && split == &b.split
-        && style == &b.style
-        && labels == &b.labels
-        && label_format == &b.label_format
-        && label_decimals == &b.label_decimals
-        && value_suffix == &b.value_suffix
-        && interaction == &b.interaction
-        && font_family == &b.font_family
-        && font_size == &b.font_size
-        && label_color == &b.label_color
-        && background == &b.background
-}
-fn annotation_key(chart: &RadialChart) -> RadialChart {
+/// The key of a frame's label raster: its [`FrameKey`] with what only the
+/// GPU draws put to fixed values, so appearance edits and ordinary hover
+/// reuse the raster.
+fn annotation_key(chart: &RadialChart) -> FrameKey {
     fn style(s: &RadialStyle) -> RadialStyle {
         let RadialStyle {
             tilt_degrees,
@@ -929,7 +1421,7 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
             texture_angle_degrees,
         }
     }
-    let mut c = frame_key(chart);
+    let mut c = FrameKey::of(chart);
     c.style = style(&c.style);
     if !raster_moves_inside_labels(chart) {
         c.interaction = RadialInteraction::default();
@@ -949,6 +1441,174 @@ fn annotation_key(chart: &RadialChart) -> RadialChart {
 }
 
 #[cfg(test)]
+mod pick_module_tests {
+    use super::*;
+    /// The draw and the pick splice one sector fragment after the material,
+    /// so the pick answers with the draw's own ray-march.
+    #[test]
+    fn draw_and_pick_splice_the_same_sector_fragment() {
+        let shared = [
+            "data_render/common/material.wgsl",
+            "data_render/common/radial_sector.wgsl",
+        ];
+        assert_eq!(RADIAL_SHADER.fragments[..2], shared);
+        assert_eq!(RADIAL_PICK_SHADER.fragments[..2], shared);
+        assert_eq!(RADIAL_SHADER.fragments.len(), 3);
+        assert_eq!(RADIAL_PICK_SHADER.fragments.len(), 3);
+        // The draw's own file keeps no sector definition, only the markers
+        // of the blocks the fragment holds.
+        let draw = include_str!("radial.wgsl");
+        for definition in ["struct Sector", "fn hit_pixel", "fn footprint", "fn solid"] {
+            assert!(
+                !draw.lines().any(|line| line.starts_with(definition)),
+                "{definition}"
+            );
+        }
+        assert_eq!(
+            draw.lines()
+                .filter(|line| line.starts_with("// [data_render/common/radial_sector.wgsl:"))
+                .count(),
+            2
+        );
+    }
+}
+
+#[cfg(test)]
+mod frame_key_tests {
+    use super::*;
+    use model::{DecorationId, DecorationOffset, LayerRef};
+    fn base() -> RadialChart {
+        let mut chart = RadialChart {
+            slices: vec![
+                RadialSlice::new("a", 1., crate::Color::WHITE),
+                RadialSlice::new("b", 2., crate::Color::BLACK),
+            ],
+            ..Default::default()
+        };
+        chart.format_labels();
+        chart
+    }
+    /// Every field of `RadialChart`, mutated once: the frame key moves
+    /// exactly for the fields it names, and `matches` agrees with `of`.
+    #[test]
+    fn every_chart_field_is_in_the_frame_key_or_named_out_of_it() {
+        // Exhaustive, like `FrameKey::of`: a new field must get a row here.
+        let RadialChart {
+            decorations: _,
+            title: _,
+            chart_title: _,
+            active_layer: _,
+            annotations: _,
+            slices: _,
+            kind: _,
+            start_angle_degrees: _,
+            split: _,
+            style: _,
+            labels: _,
+            label_format: _,
+            label_decimals: _,
+            value_suffix: _,
+            interaction: _,
+            font_family: _,
+            font_size: _,
+            label_color: _,
+            background: _,
+        } = base();
+        type Edit = fn(&mut RadialChart);
+        let reaching: &[(&str, Edit)] = &[
+            ("decorations.data_area", |c| {
+                c.decorations.data_area = Some(crate::layout::RectF {
+                    x: 30.,
+                    y: 80.,
+                    width: 200.,
+                    height: 150.,
+                })
+            }),
+            ("decorations.offsets", |c| {
+                c.decorations.offsets.push(DecorationOffset {
+                    element: DecorationId::ChartTitle,
+                    offset: [1., 2.],
+                })
+            }),
+            ("decorations.selected", |c| {
+                c.decorations.selected = Some(DecorationId::ChartTitle)
+            }),
+            ("title", |c| c.title = "T".into()),
+            ("chart_title", |c| c.normalize_title()),
+            ("slices", |c| c.slices[0].explode = 0.1),
+            ("slices.text", |c| c.slices[0].text = Some("x".into())),
+            ("kind", |c| c.kind = RadialKind::Donut { inner_radius: 0.5 }),
+            ("start_angle_degrees", |c| c.start_angle_degrees = 0.),
+            ("split", |c| {
+                c.split = Some(RadialSplit {
+                    slice_index: 1,
+                    kind: RadialKind::Pie,
+                    children: vec![RadialSlice::new("c", 2., crate::Color::WHITE)],
+                })
+            }),
+            ("style", |c| c.style.depth = 0.2),
+            ("labels", |c| c.labels = RadialLabels::Inside),
+            ("interaction", |c| {
+                c.interaction.selected = Some(RadialTarget::main(0))
+            }),
+            ("font_family", |c| c.font_family = "Comic Neue".into()),
+            ("font_size", |c| c.font_size = 20.),
+            ("label_color", |c| c.label_color = crate::Color::BLACK),
+            ("background", |c| c.background = crate::Color::BLACK),
+        ];
+        let outside: &[(&str, Edit)] = &[
+            ("active_layer", |c| c.active_layer = LayerRef::Annotations),
+            ("annotations", |c| c.annotations.visible = false),
+            ("decorations.selected (an annotation)", |c| {
+                c.decorations.selected = Some(DecorationId::Annotation(0))
+            }),
+            ("label_format", |c| {
+                c.label_format = RadialLabelFormat::Value
+            }),
+            ("label_decimals", |c| c.label_decimals = 3),
+            ("value_suffix", |c| c.value_suffix = " kg".into()),
+        ];
+        // A slice is keyed whole, as the one field `slices`: its name and
+        // its own label format ride with it although the frame reads them
+        // only through the `text` `format_labels` writes.
+        let key = FrameKey::of(&base());
+        for (name, edit) in reaching {
+            let mut c = base();
+            edit(&mut c);
+            assert_ne!(FrameKey::of(&c), key, "{name} must reach the frame key");
+            assert!(!key.matches(&c), "{name}: matches disagrees with of");
+            assert!(FrameKey::of(&c).matches(&c), "{name}");
+        }
+        for (name, edit) in outside {
+            let mut c = base();
+            edit(&mut c);
+            assert_eq!(FrameKey::of(&c), key, "{name} must not reach the frame key");
+            assert!(key.matches(&c), "{name}: matches disagrees with of");
+        }
+    }
+    #[test]
+    fn the_label_raster_key_ignores_what_only_the_gpu_draws() {
+        let key = annotation_key(&base());
+        for edit in [
+            |c: &mut RadialChart| c.style.material = crate::Material::Wood,
+            |c: &mut RadialChart| c.background = crate::Color::BLACK,
+            |c: &mut RadialChart| {
+                c.interaction.hovered = Some(RadialTarget::main(0));
+                c.interaction.hover_progress = 0.5;
+            },
+            |c: &mut RadialChart| c.active_layer = LayerRef::Annotations,
+        ] {
+            let mut c = base();
+            edit(&mut c);
+            assert_eq!(annotation_key(&c), key);
+        }
+        let mut c = base();
+        c.slices[0].text = Some("x".into());
+        assert_ne!(annotation_key(&c), key);
+    }
+}
+
+#[cfg(test)]
 mod layer_cache_key_tests {
     use super::*;
     #[test]
@@ -960,13 +1620,13 @@ mod layer_cache_key_tests {
         let mut layered = base.clone();
         layered.active_layer = model::LayerRef::Annotations;
         layered.annotations.visible = false;
-        assert_eq!(frame_key(&base), frame_key(&layered));
-        assert!(frame_eq(&frame_key(&base), &layered));
+        assert_eq!(FrameKey::of(&base), FrameKey::of(&layered));
+        assert!(FrameKey::of(&base).matches(&layered));
         assert_eq!(annotation_key(&base), annotation_key(&layered));
         let mut edited = base.clone();
         edited.title = "x".into();
-        assert_ne!(frame_key(&base), frame_key(&edited));
-        assert!(!frame_eq(&frame_key(&base), &edited));
+        assert_ne!(FrameKey::of(&base), FrameKey::of(&edited));
+        assert!(!FrameKey::of(&base).matches(&edited));
         assert_ne!(annotation_key(&base), annotation_key(&edited));
     }
 }

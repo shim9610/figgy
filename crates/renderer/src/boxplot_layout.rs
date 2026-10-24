@@ -145,7 +145,7 @@ pub(super) fn layout(
     } else {
         24.0
     };
-    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale);
     let top = title.top;
     let axis_title = if horizontal {
         &c.value_title

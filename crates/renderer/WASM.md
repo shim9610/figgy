@@ -893,7 +893,11 @@ returned to the host. `frame()` alone only submits work.
 
 `set_document(documentJson, width, height)` validates and prepares the new
 document before replacing the whole document, and keeps the previous one on
-failure. Omitted fields are not kept: they take their defaults or fail to
+failure. A `radial` document's slices draw their `text`: `create` and
+`set_document` fill a missing one from the slice's label format (as
+`RadialChart::normalize_labels` does) and keep one that is set, so after
+editing a value or a format remove the affected `text` fields (or write the
+new strings) before sending the document back. Omitted fields are not kept: they take their defaults or fail to
 parse, so read `get_document()`, change the fields you need and send the
 complete document back.
 
@@ -902,10 +906,11 @@ The interactive editing and export methods are:
 - `decorations()` returns the measured decorations as JSON
   `[{ id, rect, handles }]`, with `rect` and each handle as
   `[x, y, width, height]`.
-- `hit_decoration(x, y, editArea)` returns the id of the topmost decoration
-  under the point, or `undefined`. With `editArea` false, a point over data
-  inside an unselected data area returns `undefined`, so the click can go to
-  `pick`.
+- `hit_decoration(x, y, editArea)` resolves to the id of the topmost
+  decoration under the point, or `undefined`. With `editArea` false, a point
+  over data inside an unselected data area resolves to `undefined`, so the
+  click can go to `pick`. It is asynchronous because a radial chart answers
+  "data here" with its GPU pick.
 - `select_decoration(id | null)` selects the decoration with that id, or none,
   and clears the data selection; an unknown id throws.
 - `resize_handle(id, x, y)` returns the compass name of that decoration's
@@ -914,11 +919,15 @@ The interactive editing and export methods are:
   is a compass name such as `"SE"` (`null` for a move), and returns whether it
   moved.
 - `pick(x, y, toggle)` selects the mark under the point, clears the decoration
-  selection and returns the data selection as JSON (`"null"` for none). With
-  `toggle` true, picking the selected mark again clears it.
-- `hover(x, y, dt)` returns whether another frame is needed; `dt` is the time
-  since the previous call in seconds, capped at 0.1. Pass `null` for both
+  selection and resolves to the data selection as JSON (`"null"` for none).
+  With `toggle` true, picking the selected mark again clears it.
+- `hover(x, y, dt)` resolves to whether another frame is needed; `dt` is the
+  time since the previous call in seconds, capped at 0.1. Pass `null` for both
   coordinates when the pointer leaves.
+- `pick`, `hover` and `hit_decoration` return Promises, like
+  `FiggyChart.pick_point`: a radial chart picks its slices on the GPU with the
+  draw's own sector ray-march and reads the answer back. Await each before the
+  next call on the object.
 - `step_selection(backwards)` takes one boolean, unlike the Cartesian two-axis
   navigation method.
 - `get_document()`, `clear_selection()`, `resize(width, height)`, `frame()` and
@@ -950,7 +959,7 @@ const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(rad
 // "categorical", "boxplot" and "radar" take the matching chart's JSON instead.
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
-const selected = JSON.parse(view.pick(...point, true)); // click toggles selection
+const selected = JSON.parse(await view.pick(...point, true)); // click toggles selection
 view.select_decoration("chart_title");
 view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
 view.frame();

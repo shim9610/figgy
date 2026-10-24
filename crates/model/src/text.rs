@@ -331,6 +331,37 @@ impl RichSegment {
 }
 
 impl RichText {
+    /// The limits a rich text a document carries is held to: font size
+    /// 6..160, an RGBA colour of finite components in 0..1, a font name of
+    /// at most 160 characters without control characters, at most 512
+    /// segments and eight lines, no control characters but line breaks and
+    /// tabs, and finite per-segment styles (size 6..160, colour, `field_em`
+    /// 0..32, at most 32 dash entries of 0.01..32). Chart titles and
+    /// annotation texts are validated with it.
+    pub fn within_limits(&self) -> bool {
+        fn range(v: f32, lo: f32, hi: f32) -> bool {
+            v.is_finite() && (lo..=hi).contains(&v)
+        }
+        fn color(c: Color) -> bool {
+            [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0., 1.))
+        }
+        range(self.font_size, 6., 160.)
+            && color(self.color)
+            && self.font.chars().count() <= 160
+            && !self.font.chars().any(char::is_control)
+            && self.segments.len() <= 512
+            && self.segments.iter().filter(|s| s.text == '\n').count() <= 7
+            && !self.segments.iter().any(|s| {
+                (s.text.is_control() && !matches!(s.text, '\n' | '\t'))
+                    || s.font_size.is_some_and(|v| !range(v, 6., 160.))
+                    || s.color.is_some_and(|v| !color(v))
+                    || s.field_em.is_some_and(|v| !range(v, 0., 32.))
+                    || s.rule_dash
+                        .as_ref()
+                        .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
+            })
+    }
+
     pub fn plain(text: &str, color: Color, font_size: f32, font: impl Into<String>) -> Self {
         Self {
             segments: rich_segments_from_text(text),

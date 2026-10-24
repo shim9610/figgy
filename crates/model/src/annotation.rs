@@ -347,25 +347,10 @@ impl AnnotationLineStyle {
     }
 }
 
-/// The rich text limits shared with bounded chart titles: font size 6..160,
-/// at most 512 segments and eight lines, finite per-segment styles.
+/// The rich text limits of [`RichText::within_limits`], shared with chart
+/// titles.
 fn validate_rich_text(t: &RichText) -> Result<(), &'static str> {
-    if !range(t.font_size, 6., 160.)
-        || validate_color(t.color).is_err()
-        || t.font.chars().count() > 160
-        || t.font.chars().any(char::is_control)
-        || t.segments.len() > 512
-        || t.segments.iter().filter(|s| s.text == '\n').count() > 7
-        || t.segments.iter().any(|s| {
-            (s.text.is_control() && !matches!(s.text, '\n' | '\t'))
-                || s.font_size.is_some_and(|v| !range(v, 6., 160.))
-                || s.color.is_some_and(|v| validate_color(v).is_err())
-                || s.field_em.is_some_and(|v| !range(v, 0., 32.))
-                || s.rule_dash
-                    .as_ref()
-                    .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
-        })
-    {
+    if !t.within_limits() {
         return Err(
             "invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles",
         );

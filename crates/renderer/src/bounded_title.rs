@@ -17,28 +17,18 @@ pub(crate) struct TitleLayout {
     pub top: f32,
 }
 impl TitleLayout {
-    pub fn new(title: BoundedTitleOptions, scale: f32, radial: bool) -> Self {
+    pub fn new(title: BoundedTitleOptions, scale: f32) -> Self {
         let m = measure_rich_text(&scaled_rich_text(&title.text, scale), FontPolicy::Standard);
         let metrics = TextExtents {
             width: m.width / scale,
             ascent: m.ascent / scale,
             descent: m.descent / scale,
         };
-        let baseline = (if radial {
-            42.
-        } else {
-            title.text.font_size + 12.
-        })
-        .max(metrics.ascent + 12.);
+        let baseline = (title.text.font_size + 12.).max(metrics.ascent + 12.);
         let top = if !title.has_text() {
-            if radial { 24. } else { 32. }
+            32.
         } else {
-            (if radial {
-                70.
-            } else {
-                title.text.font_size + 42.
-            })
-            .max(baseline + metrics.descent + 20.)
+            (title.text.font_size + 42.).max(baseline + metrics.descent + 20.)
         };
         Self {
             title,

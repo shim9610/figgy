@@ -2,12 +2,15 @@
 //! family's frame, its own cache beside the frame and label raster caches,
 //! export parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
+#[path = "support/bounded_decorations.rs"]
+mod bounded_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{
     layout::{NudgeResult, RectF},
     *,
 };
+use bounded_decorations::Decorations;
 use std::sync::{Arc, Mutex, OnceLock};
 static LOCK: Mutex<()> = Mutex::new(());
 fn gpu() -> RendererDevice {
@@ -390,7 +393,7 @@ fn annotated_radar() -> RadarChart {
 }
 
 fn annotated_radial() -> RadialChart {
-    RadialChart {
+    let mut chart = RadialChart {
         title: "Annotated donut".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
@@ -410,7 +413,9 @@ fn annotated_radial() -> RadialChart {
             ],
         },
         ..Default::default()
-    }
+    };
+    chart.format_labels();
+    chart
 }
 
 family_contract!(
@@ -512,7 +517,9 @@ macro_rules! family_routing {
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 let f = r.prepare(&c, SIZE, scale).unwrap();
                 let a = r.prepare_annotations(&c, SIZE, scale).unwrap();
-                let decorations = f.decorations();
+                // The decorations answer for the chart the frame was prepared
+                // from, while `c` is edited below.
+                let shown = c.clone();
                 let annotations = a.annotations();
                 let centre = |b: RectF| [b.x + b.width * 0.5, b.y + b.height * 0.5];
                 let items: Vec<(usize, [f32; 2])> = annotations
@@ -520,17 +527,13 @@ macro_rules! family_routing {
                     .map(|(id, e)| (e.index, on_item(annotations, &c.annotations, id)))
                     .collect();
                 assert_eq!(items.len(), c.annotations.items.len());
-                let (title_id, title) = decorations
-                    .entries()
-                    .find(|(_, e)| e.id == DecorationId::ChartTitle)
-                    .map(|(id, _)| (id, centre(decorations.bounds(id).unwrap())))
-                    .expect("title is registered");
+                let title_id = f.id_of(&shown, &DecorationId::ChartTitle);
+                let title = centre(f.bounds(&shown, title_id).unwrap());
                 assert!(
                     annotations.hit_test(title).is_none(),
                     "an item covers the title"
                 );
-                let route =
-                    |layer: LayerRef, p: [f32; 2]| a.hit_test_active_layer(layer, decorations, p);
+                let route = |layer: LayerRef, p: [f32; 2]| f.route(&a, layer, &shown, p);
 
                 // `Base` and an out-of-range overlay: items are not routed.
                 for layer in [LayerRef::Base, LayerRef::Overlay(3)] {
@@ -539,10 +542,7 @@ macro_rules! family_routing {
                             !matches!(route(layer, *p), Some(LayerHit::Annotation { .. })),
                             "scale {scale} {layer:?}: item {index} answered"
                         );
-                        assert_eq!(
-                            route(layer, *p),
-                            decorations.hit_test(*p).map(LayerHit::Element)
-                        );
+                        assert_eq!(route(layer, *p), f.hit(&shown, *p).map(LayerHit::Element));
                     }
                     assert_eq!(route(layer, title), Some(LayerHit::Element(title_id)));
                 }
@@ -606,7 +606,7 @@ macro_rules! family_routing {
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 for (_, p) in &items {
                     assert!(!matches!(
-                        h.hit_test_active_layer(LayerRef::Annotations, decorations, *p),
+                        f.route(&h, LayerRef::Annotations, &shown, *p),
                         Some(LayerHit::Annotation { .. })
                     ));
                 }
@@ -770,6 +770,7 @@ fn radial_data_anchors_are_warnings() {
         ],
         ..Default::default()
     };
+    c.format_labels();
     let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
     let f = r.prepare(&c, SIZE, 1.).unwrap();
     c.annotations.items = vec![

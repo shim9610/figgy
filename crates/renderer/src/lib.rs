@@ -127,8 +127,8 @@ pub use text_render::{CpuTextMeasure, FontPolicy};
 pub use model::Material;
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialOutline, RadialRenderer, RadialSlice, RadialSplit, RadialStyle,
-    RadialTarget,
+    RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice, RadialSplit,
+    RadialStyle, RadialTarget,
 };
 // The deprecated name stays importable from the crate root.
 #[allow(deprecated)]

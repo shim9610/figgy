@@ -206,6 +206,50 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   hidden), for example 2 px larger at 12 px and 1 px smaller at 21 px. No API
   or serialized field changes.
 
+- **The radial chart is the DataLess chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The model
+  documents two chart classes: a DataLess chart is defined by its SSOT alone,
+  with no `ColumnSource`, no column pool and no streaming, and the radial
+  chart is its only member; the series kinds of `Config` are the
+  column-backed class. No new type.
+- **Radial label strings in the SSOT.** `RadialSlice` gains
+  `text: Option<String>` (additive, omitted when absent): the drawn label, at
+  most two lines joined by `'\n'`, each at most 400 characters without
+  control characters. `RadialChart::format_labels()` writes every slice's and
+  detail child's text from the label format, `label_decimals`, `value_suffix`
+  and its circle's total at edit time; `normalize_labels()` fills only the
+  missing ones, so a document written before the field draws the strings it
+  drew; `labels_have_text()` says whether a frame can draw every shown label.
+  `label_lines` is the helper both use. Migration: an exhaustive
+  `RadialSlice` struct literal needs `text: None` (or use `RadialSlice::new`);
+  call `format_labels()` after building or editing slices, values, names or
+  label formats, and `normalize_labels()` on a loaded document, because the
+  renderer draws `text` and refuses a shown label without it (see
+  [Renderer](#unreleased-renderer)).
+- **Radial title through the shared chart title.** `RadialChart.chart_title`
+  is `Option<ChartTitleOptions>` instead of `Option<BoundedTitleOptions>`,
+  written and read as the same `{"visible", "text"}` object in the same
+  order, so documents keep their bytes. The position stays in
+  `decorations`: the offsets and `top_margin` read as 0 and
+  `RadialChart::validate` rejects other values. `resolved_title()` returns a
+  `ChartTitleOptions` built by the new
+  `ChartTitleOptions::from_legacy_plain(title, font, label_size, color)`.
+  `select::emit_chart_title_in(title, chart_area, top_margin, measure, sink)`
+  is the one title placement, split out of the Cartesian title (whose pixels
+  do not change), with `layout::chart_title_placement_in` its `RectF`
+  arithmetic. The rich-text limits of bounded titles and annotations are one
+  check, `RichText::within_limits()`. `CategoricalChart`, `BoxPlotChart` and
+  `RadarChart` keep `BoundedTitleOptions`. Migration: code that sets a radial
+  `chart_title` builds a `ChartTitleOptions` (zero offsets and band) where it
+  built a `BoundedTitleOptions`.
+- **`RadialChart` is a drag state.** `impl DragConfig for RadialChart`
+  (`Element = DecorationElement`): a decoration of the radial frame's
+  `HitMap<RadialChart>` moves in `decorations` by the bounded charts' rule.
+  `SelectionBox::clipped_to(area)` intersects a selection box with a canvas.
+  `RadialChart::step_selection(backwards)` is the radial step of the bounded
+  web wrapper's `step_selection`, moved into the model since it edits only
+  the SSOT; the wrapper calls it and its behaviour is unchanged.
+
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
@@ -365,10 +409,71 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   which changes pixels only where the charts overlap. No API or serialized
   field changes.
 
+- **Radial decorations on the shared sinks and hit map**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The radial
+  frame's title, plot area and slice labels are `Selectable<RadialChart>`
+  elements of a `HitMap<RadialChart>`: each places its parts from the chart
+  through one emit into the `model::sink` sinks, and the label raster draws
+  with the same emit, so hit regions, selection boxes, drag containment and
+  the drawn highlight come from one placement. An outside label's leader
+  line is a part of the label: it starts at the slice, follows the label's
+  offset from its elbow, and is hit and outlined with the text part by part
+  (the oracle's leader-line exclusion is gone). **Behaviour change:** the
+  selected outside label's highlight outlines each text line and the leader
+  line instead of one box around the text; a drag is contained on the text it
+  moves. `RadialFrame::decorations()` returns the `HitMap<RadialChart>`
+  instead of a `DecorationMap`; query it with the chart the frame was
+  prepared from. `decoration_at`, `decoration`, `decoration_id`,
+  `decoration_ids`, `decoration_bounds`, `decoration_selection_box`,
+  `drag_decoration`, `decoration_resize_handle` and `resize_decoration` wrap
+  the trait calls as the `DecorationMap` methods did, and
+  `BoundedAnnotationFrame::route_active_layer` routes the annotation layer
+  over them. The categorical, box plot and radar charts keep `DecorationMap`.
+  Migration: replace `frame.decorations().hit_test(p)` with
+  `frame.decoration_at(&chart, p)`, `map.element(hit).id` with
+  `frame.decoration_id(&chart, hit)`, and `map.drag_by(&mut chart.decorations,
+  hit, dx, dy)` with `frame.drag_decoration(&mut chart, hit, dx, dy)`.
+- **Radial title band.** The radial title is drawn through
+  `emit_chart_title_in`, centred in the chart's own title band across the
+  canvas. **Behaviour change:** a default title moves about 2 px down (it
+  was placed on a fixed baseline); the plot area does not move. A title wider
+  than the canvas is drawn clipped instead of refusing the frame with "title
+  does not fit"; its hit region, selection box and drag containment are its
+  drawn extent intersected with the canvas.
+- **Radial labels draw their SSOT text.** The radial layout draws
+  `RadialSlice::text` and formats no value. **Behaviour change:** `prepare`
+  refuses (`RadialError::Invalid`, naming `format_labels`) a chart where a
+  slice with a value shows a label without text. The outside-label stacking
+  keeps its order and arithmetic in fixed arrays of `MAX_RADIAL_SLICES`.
+- **Radial slices are picked on the GPU.** The sector layout and its
+  ray-march are the shader fragment `data_render/common/radial_sector.wgsl`,
+  spliced into the draw module and a new pick module (`radial_pick`); the
+  pick runs the draw's `hit_pixel` and occlusion rule over the frame's own
+  sector buffer. `RadialFrame::hit_test` and `hit_test_at_rest`, whose CPU
+  twin was product code, are replaced by `RadialFrame::pick(position)` and
+  `pick_at_rest(position)`, which submit the pick and return a
+  `RadialPickTicket`; `resolve().await` (natively `resolve_blocking()`) reads
+  the slice back, like the Cartesian pick ticket. The frame no longer keeps
+  its sectors on the CPU; the CPU twin is test support under the `cpu-twin`
+  feature. Migration: replace `frame.hit_test(p)` with
+  `frame.pick(p)?.resolve().await?` (`pick` takes `&Arc<RadialFrame>`).
+- **Radial frame key.** The frame cache is keyed by `FrameKey`, the chart's
+  fields that reach the frame named one by one, instead of a clone of the
+  chart; a mutation test classifies every field
+  ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
+  `label_format`, `label_decimals` or `value_suffix` without writing the
+  labels again reuses the frame, since nothing it draws changed.
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Asynchronous bounded picks.** `FiggyBoundedChart.pick`, `hover` and
+  `hit_decoration` return Promises, because a radial chart picks its slices
+  on the GPU ([#40](https://github.com/shim9610/figgy/issues/40) item 13b).
+  Migration: `await` them. A parsed radial document's slices without `text`
+  get the text their label format writes (`normalize_labels`); a set `text`
+  is drawn as it is, so remove or rewrite it after editing a value or format.
 - **Selection outlines.** `decoration_bounds(id)` returns `outline` (one
   polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
   instead of `labels` for an element that outlines its parts
@@ -382,6 +487,18 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
 
 ### Tests and guards
 
+- **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13b). `radial_render` compares the GPU pick with the CPU twin over
+  tilt, depth, gaps, corners, explode, the hole, the detail circle and the
+  lift, lifted and at rest, and checks the at-rest pick; the shader mirrors
+  hold both radial modules' `Sector` and the pick query and result to their
+  Rust twins. The oracle's bounded branch and the bounded interaction tests
+  go through the radial frame's `HitMap<RadialChart>` (a test-support
+  adapter covers both hit-map APIs), and the selection-only check accepts a
+  selection that outlines its parts.
+- Released-document fixtures written by figgy-model 0.12.1 cover the radial,
+  categorical, box plot and radar charts at their default and edited
+  (`released_documents`, #40 item 13a).
 - **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
   that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag
   as a factor of a hand-written blend (`x + f * (y - x)`,

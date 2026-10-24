@@ -229,9 +229,21 @@ pub fn chart_title_placement(
     offset: (f32, f32),
     extents: TextExtents,
 ) -> TitlePlacement {
+    chart_title_placement_in(RectF::from_rect(chart_area), top_margin, offset, extents)
+}
+
+/// [`chart_title_placement`] in an `f32` rectangle: a chart that lays out
+/// its own title band (the radial chart) centres its title across its
+/// canvas with it.
+pub fn chart_title_placement_in(
+    chart_area: RectF,
+    top_margin: f32,
+    offset: (f32, f32),
+    extents: TextExtents,
+) -> TitlePlacement {
     let origin = (
-        chart_area.x as f32 + chart_area.width as f32 * 0.5 - extents.width * 0.5 + offset.0,
-        chart_area.y as f32 + (top_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
+        chart_area.x + chart_area.width * 0.5 - extents.width * 0.5 + offset.0,
+        chart_area.y + (top_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
     );
     TitlePlacement {
         origin,

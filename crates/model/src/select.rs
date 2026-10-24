@@ -20,13 +20,13 @@
 //! without bounds.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config};
+use crate::config::{AxisOptions, ChartTitleOptions, Config};
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
     Element, LEGEND_BORDER_WIDTH, NudgeReject, NudgeResult, RectF, Side, axis_title_placement,
-    chart_title_placement, colorbar_title_placement, legend_rect, visible_colorbar_rect,
+    chart_title_placement_in, colorbar_title_placement, legend_rect, visible_colorbar_rect,
 };
 use crate::resize::{Resizable, ResizeHandle};
 use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, TextRef, union};
@@ -98,6 +98,23 @@ impl SelectionBox {
     /// What the highlight outlines: `rect`, or each drawn part.
     pub fn outline(&self) -> &SelectionOutline {
         &self.outline
+    }
+
+    /// This box inside `area`: its rectangle intersected with it, for an
+    /// element its canvas clips. The handles and the part outlines are
+    /// kept.
+    pub fn clipped_to(mut self, area: RectF) -> Self {
+        let r = self.rect;
+        let (x0, y0) = (r.x.max(area.x), r.y.max(area.y));
+        let x1 = (r.x + r.width).min(area.x + area.width);
+        let y1 = (r.y + r.height).min(area.y + area.height);
+        self.rect = RectF {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0.0),
+            height: (y1 - y0).max(0.0),
+        };
+        self
     }
 }
 
@@ -924,16 +941,33 @@ pub fn emit_element(
 
 fn emit_chart_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     let ct = &cfg.chart_title;
+    emit_chart_title_in(
+        ct,
+        RectF::from_rect(&cfg.chart_area),
+        ct.top_margin,
+        measure,
+        sink,
+    );
+}
+
+/// The one placement of a chart title: `title` centred across `chart_area`
+/// and in the band `top_margin` high at its top, moved by the title's
+/// offsets. A Cartesian chart passes its chart area and the title's own
+/// band; a chart that lays out its own title band (the radial chart) passes
+/// its canvas and that band. Places nothing for a hidden or empty title.
+pub fn emit_chart_title_in(
+    title: &ChartTitleOptions,
+    chart_area: RectF,
+    top_margin: f32,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
+    let ct = title;
     if !ct.visible || ct.text.segments.is_empty() {
         return;
     }
     let m = measure.measure_rich(&ct.text);
-    let placement = chart_title_placement(
-        &cfg.chart_area,
-        ct.top_margin,
-        (ct.offset_x, ct.offset_y),
-        m,
-    );
+    let placement = chart_title_placement_in(chart_area, top_margin, (ct.offset_x, ct.offset_y), m);
     sink.text(
         Slot::Above,
         &PlacedText {

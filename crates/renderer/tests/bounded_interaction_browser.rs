@@ -3,8 +3,8 @@
 use renderer::{
     BarSeries, BoxPlotChart, BoxPlotRenderer, BoxPlotSeries, BoxSummary, CategoricalChart,
     CategoricalRenderer, Category, Color, DecorationId, DecorationLayout, RadarChart,
-    RadarRenderer, RadarSeries, RadialChart, RadialKind, RadialRenderer, RadialSlice, RadialTarget,
-    RendererDevice, decoration::DecorationMap, layout::NudgeResult,
+    RadarRenderer, RadarSeries, RadialChart, RadialFrame, RadialKind, RadialRenderer, RadialSlice,
+    RadialTarget, RendererDevice, decoration::DecorationMap, layout::NudgeResult,
 };
 use std::sync::Arc;
 use wasm_bindgen_test::*;
@@ -33,6 +33,41 @@ fn edit(map: &DecorationMap, state: &mut DecorationLayout, key: DecorationId) {
     );
     state.selected = Some(element.id.clone());
 }
+/// [`edit`] on a radial frame, whose decorations place their parts from the
+/// chart they edit.
+fn edit_radial(frame: &RadialFrame, chart: &mut RadialChart, key: DecorationId) {
+    let id = frame.decoration(&key).unwrap();
+    let b = frame.decoration_bounds(chart, id).unwrap();
+    // An outside label hits on its text and its leader line: press its text.
+    let text = frame
+        .decoration_selection_box(chart, id)
+        .and_then(|s| match s.outline() {
+            renderer::SelectionOutline::Parts(parts) => parts.iter().find_map(|p| match p {
+                renderer::DrawnPart::Text(r) => Some(*r),
+                _ => None,
+            }),
+            renderer::SelectionOutline::Rect => None,
+        })
+        .unwrap_or(b);
+    assert_eq!(
+        frame.decoration_at(
+            chart,
+            [text.x + text.width * 0.5, text.y + text.height * 0.5]
+        ),
+        Some(id)
+    );
+    assert_eq!(
+        frame
+            .decorations()
+            .get(id)
+            .unwrap()
+            .as_draggable()
+            .unwrap()
+            .drag_by(chart, &renderer::CpuTextMeasure::default(), 0., 12.),
+        NudgeResult::Moved
+    );
+    chart.decorations.selected = Some(key);
+}
 #[wasm_bindgen_test(async)]
 async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
     let instance = renderer::data_render::create_instance();
@@ -56,11 +91,12 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         ],
         ..Default::default()
     };
+    c.format_labels();
     let frame = r.prepare(&c, (800, 520), 2.).unwrap();
     let before = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
-    edit(
-        frame.decorations(),
-        &mut c.decorations,
+    edit_radial(
+        &frame,
+        &mut c,
         DecorationId::RadialLabel(RadialTarget::main(0)),
     );
     let after = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();

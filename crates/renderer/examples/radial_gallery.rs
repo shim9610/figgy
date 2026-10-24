@@ -157,7 +157,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         );
         cases.push((format!("hover-{frame:02}"), hover.clone()));
     }
-    for (name, chart) in cases {
+    for (name, mut chart) in cases {
+        // The drawn label strings are written once each case is edited.
+        chart.format_labels();
         let img = renderer.export_rgba(&chart, (900, 620), 1.0)?;
         std::fs::write(directory.join(format!("{name}.png")), encode_png(&img)?)?;
         renderer.end_frame();
