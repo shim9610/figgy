@@ -77,6 +77,11 @@ pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
 /// position and maps to the axis start.
 pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     let t = match axis.scale {
+        // A categorical axis is linear over its category range.
+        _ if axis.categories.is_some() => {
+            let (min, max) = axis.data_range();
+            span_fraction(value, min, max, false)
+        }
         AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
         AxisScale::Logarithmic => {
             let (min, max) = guarded_log_range(axis.min, axis.max);

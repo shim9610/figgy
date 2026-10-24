@@ -163,8 +163,11 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let chart_h = ca.height.max(1) as f32;
 
     use crate::config::AxisScale;
-    let log_x = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
-    let log_y = matches!(config.left_y.scale, AxisScale::Logarithmic);
+    // A categorical axis is linear over its category range.
+    let log_x = matches!(config.bottom_x.scale, AxisScale::Logarithmic)
+        && config.bottom_x.categories.is_none();
+    let log_y =
+        matches!(config.left_y.scale, AxisScale::Logarithmic) && config.left_y.categories.is_none();
 
     // For log axes, guard only the axis range. Data values still follow the
     // shader's NaN/non-positive handling.
@@ -172,12 +175,12 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (x_min, x_max) = if log_x {
         crate::chart::guarded_log_range(config.bottom_x.min, config.bottom_x.max)
     } else {
-        (config.bottom_x.min, config.bottom_x.max)
+        config.bottom_x.data_range()
     };
     let (y_min, y_max) = if log_y {
         crate::chart::guarded_log_range(config.left_y.min, config.left_y.max)
     } else {
-        (config.left_y.min, config.left_y.max)
+        config.left_y.data_range()
     };
 
     let data_min_x = if log_x { to_log(x_min) } else { x_min };

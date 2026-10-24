@@ -234,6 +234,15 @@ impl PolarOptions {
         if config.bottom_x.inverted {
             return Err("the polar angle axis (bottom_x) cannot be inverted; use clockwise");
         }
+        if config.bottom_x.categories.is_some() {
+            return Err(
+                "the polar angle axis (bottom_x) cannot be categorical yet; a categorical \
+                 angle axis arrives with the radar series kind",
+            );
+        }
+        if config.left_y.categories.is_some() {
+            return Err("the polar radius axis (left_y) cannot be categorical");
+        }
         if !config.overlays.is_empty() {
             return Err("polar charts have no overlay layers");
         }
@@ -349,6 +358,20 @@ mod tests {
         let mut c = config.clone();
         c.bottom_x.inverted = true;
         assert!(c.validate_polar().is_err());
+        let category = || Some(vec![crate::config::Category::new("a", "A")]);
+        let mut c = config.clone();
+        c.bottom_x.categories = category();
+        assert!(
+            c.validate_polar()
+                .unwrap_err()
+                .contains("categorical angle axis arrives with the radar series kind")
+        );
+        let mut c = config.clone();
+        c.left_y.categories = category();
+        assert_eq!(
+            c.validate_polar(),
+            Err("the polar radius axis (left_y) cannot be categorical")
+        );
         let mut c = config.clone();
         c.overlays.push(crate::layer::OverlayLayer::default());
         assert!(c.validate_polar().is_err());

@@ -1203,6 +1203,7 @@ fn config_fields_are_classified() {
         line_style: _,
         major_tick_length: _,
         minor_tick_length: _,
+        categories: _, // axis!(...) categories edits: Prefix / Packed
     } = top_x;
     let LabelStyle {
         visible: _,

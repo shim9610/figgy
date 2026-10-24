@@ -38,7 +38,9 @@
 //! references of a subplot's series go to that subplot's panels, which split
 //! them by the same rule.
 
-use crate::config::{AxisOptions, ChartTitleOptions, ColorBarOptions, Config, TickVisibility};
+use crate::config::{
+    AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config, TickVisibility,
+};
 use crate::default::{
     default_axis_options_x, default_axis_options_y, default_chart_title_options,
     default_colorbar_options, default_grid_options, default_legend,
@@ -544,6 +546,8 @@ impl Config {
                 line_style: _,
                 major_tick_length,
                 minor_tick_length: _,
+                // The hidden left axis maps the overlay's range.
+                categories: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, default_axis_options_y());
             left.out_margin = *out_margin;
@@ -614,6 +618,8 @@ impl Config {
                 line_style: _,
                 major_tick_length: _,
                 minor_tick_length: _,
+                // A colourbar axis is never categorical.
+                categories: _,
             } = axis;
             let mut hidden = default_colorbar_options();
             hidden.visible = false;
@@ -674,6 +680,8 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         line_style: _,
         major_tick_length: _,
         minor_tick_length: _,
+        // The categories are the range of a categorical axis.
+        categories,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -681,6 +689,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.inverted = *inverted;
     to.major_spacing = *major_spacing;
     to.minor_count = *minor_count;
+    to.categories.clone_from(categories);
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -688,7 +697,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
 /// a range writer such as a view state re-derives it from an unchanged range;
 /// it travels with the edited range instead.
 fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
-    let range = |axis: &AxisOptions| {
+    fn range(axis: &AxisOptions) -> (AxisScale, f64, f64, bool, Option<&[Category]>) {
         let AxisOptions {
             scale,
             min,
@@ -709,9 +718,10 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             line_style: _,
             major_tick_length: _,
             minor_tick_length: _,
+            categories,
         } = axis;
-        (scale.clone(), *min, *max, *inverted)
-    };
+        (scale.clone(), *min, *max, *inverted, categories.as_deref())
+    }
     range(a) == range(b)
 }
 
@@ -721,8 +731,9 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
 fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
     let AxisOptions {
         scale,
-        min,
-        max,
+        // Through `data_range` below.
+        min: _,
+        max: _,
         // A hidden axis draws no ticks, so its spacing is the template's.
         major_spacing: _,
         minor_count: _,
@@ -739,6 +750,9 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         line_style: _,
         major_tick_length,
         minor_tick_length: _,
+        // A hidden axis draws no labels: a categorical axis hands on its
+        // category range as a numeric one, without copying the categories.
+        categories: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -758,11 +772,13 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         line_style,
         major_tick_length: _,
         minor_tick_length,
+        categories: _,
     } = template;
+    let (min, max) = axis.data_range();
     AxisOptions {
         scale: scale.clone(),
-        min: *min,
-        max: *max,
+        min,
+        max,
         major_spacing,
         minor_count,
         inverted: *inverted,
@@ -777,6 +793,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         line_style,
         major_tick_length: *major_tick_length,
         minor_tick_length,
+        categories: None,
     }
     .with_hidden_text()
 }
@@ -1610,5 +1627,53 @@ mod tests {
         assert_eq!(cfg.subplots[1].config.chart_area.0.y, 247);
         let plain = default_config();
         assert_eq!(plain.document_area(), plain.chart_area.0);
+    }
+
+    fn categories(n: usize) -> Option<Vec<Category>> {
+        Some(
+            (0..n)
+                .map(|i| Category::new(format!("k{i}"), format!("Kind {i}")))
+                .collect(),
+        )
+    }
+
+    /// An overlay panel's hidden axes carry a categorical axis' range as a
+    /// numeric one, and the overlay's own categorical axis is drawn on the
+    /// panel's right side.
+    #[test]
+    fn overlay_panels_map_categorical_axes_by_their_range() {
+        let mut cfg = two_layer_config();
+        cfg.bottom_x.categories = categories(5);
+        cfg.overlays[0].y_axis.categories = categories(3);
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!(overlay.bottom_x.categories, None);
+        assert_eq!((overlay.bottom_x.min, overlay.bottom_x.max), (-0.5, 4.5));
+        assert_eq!(overlay.left_y.categories, None);
+        assert_eq!((overlay.left_y.min, overlay.left_y.max), (-0.5, 2.5));
+        assert_eq!(overlay.right_y.categories, categories(3));
+        assert_eq!(
+            expansion.panels[0].config.bottom_x.categories,
+            categories(5)
+        );
+    }
+
+    /// A linked axis follows its target's categories with the rest of its
+    /// range, and an edit of a member's categories moves the link group.
+    #[test]
+    fn linked_axes_follow_the_categories_of_their_target() {
+        let mut cfg = subplot_document();
+        cfg.bottom_x.categories = categories(4);
+        let linked = cfg.subplot_config(1).unwrap();
+        assert_eq!(linked.bottom_x.categories, categories(4));
+        let own = cfg.subplot_config(0).unwrap();
+        assert_eq!(own.bottom_x.categories, None);
+
+        let mut edited = cfg.clone();
+        edited.subplots[1].config.bottom_x.categories = categories(2);
+        let before = cfg.clone();
+        edited.sync_subplot_links(Some(&before));
+        assert_eq!(edited.bottom_x.categories, categories(2));
+        assert_eq!(edited.subplots[1].config.bottom_x.categories, categories(2));
     }
 }

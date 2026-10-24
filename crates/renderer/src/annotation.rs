@@ -61,6 +61,11 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
 
 fn axis_space(axis: &AxisOptions) -> AxisSpace {
     let map = match axis.scale {
+        // Category `i` is centred at coordinate `i`, as on the bounded bar
+        // and box charts.
+        _ if axis.categories.is_some() => AxisMap::Index {
+            count: axis.category_count().unwrap_or(0),
+        },
         AxisScale::Linear => AxisMap::Linear {
             min: axis.min,
             max: axis.max,

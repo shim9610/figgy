@@ -8,20 +8,9 @@ pub const MAX_CATEGORIES: usize = 64;
 pub const MAX_BAR_SERIES: usize = 16;
 pub const MAX_CATEGORY_BARS: usize = 512;
 
-#[derive(Clone, Debug, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Category {
-    pub id: String,
-    pub label: String,
-}
-impl Category {
-    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            label: label.into(),
-        }
-    }
-}
+/// The category type lives with the axis options now
+/// ([`crate::config::AxisOptions::categories`]); this path keeps working.
+pub use crate::config::Category;
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CategoryBarTarget {

@@ -6405,6 +6405,57 @@ fn streamed_series_reject_polar_charts() {
     assert!(PrepareContext::validate_stream_series(&config, &series).is_ok());
 }
 
+/// Streaming is not extended to categorical axes: a streamed series on a
+/// chart with one, the overlays' included, is rejected with an explicit
+/// reason.
+#[test]
+fn streamed_series_reject_categorical_axes() {
+    let base = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Line {
+            line: crate::data_config::DataLineStyleConfig {
+                line_style: crate::line::LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
+            },
+        },
+    };
+    assert!(PrepareContext::validate_stream_series(&base, &series).is_ok());
+    let categories = Some(vec![crate::config::Category::new("a", "A")]);
+    let edits: [fn(&mut Config, Option<Vec<crate::config::Category>>); 5] = [
+        |c, k| c.top_x.categories = k,
+        |c, k| c.bottom_x.categories = k,
+        |c, k| c.left_y.categories = k,
+        |c, k| c.right_y.categories = k,
+        |c, k| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = k;
+            c.overlays.push(layer);
+        },
+    ];
+    for (index, edit) in edits.into_iter().enumerate() {
+        let mut config = base.clone();
+        edit(&mut config, categories.clone());
+        assert!(
+            matches!(
+                PrepareContext::validate_stream_series(&config, &series),
+                Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                    if reason.contains("categorical")
+                        && reason.contains("streamed sources are not supported")
+            ),
+            "axis {index}"
+        );
+    }
+}
+
 /// The vector scratch (params, grid table, bind groups) is rebuilt only
 /// when its inputs change: two prepares of the same chart share one
 /// entry, a style edit replaces its params, and replacing a component

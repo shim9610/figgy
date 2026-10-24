@@ -728,12 +728,20 @@ impl Iterator for MajorTicks {
 
 /// The major tick values an axis draws, in increasing order.
 ///
-/// Linear: absolute multiples of [`effective_major_spacing`] inside the
+/// Categorical ([`AxisOptions::categories`]): every category position
+/// `0, 1, …, n - 1`, whatever the scale and spacing. Linear: absolute multiples of [`effective_major_spacing`] inside the
 /// range, at most [`MAX_MAJOR_INTERVALS`] + 1, none on a range that is not
 /// [`walkable_range`]. Logarithmic: every [`effective_log_decade_step`]-th
 /// whole decade inside the [`crate::layout::guarded_log_range`] of the axis
 /// range, at most [`MAX_LOG_DECADES`].
 pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
+    if axis.categories.is_some() {
+        let (min, max) = axis.data_range();
+        return MajorTicks(
+            LinearGrid::new(min, max, 1.0, MAX_MAJOR_INTERVALS)
+                .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
+        );
+    }
     MajorTicks(match axis.scale {
         AxisScale::Linear => {
             if !walkable_range(axis) {
@@ -799,12 +807,12 @@ impl Iterator for MinorTicks {
 /// absolute grid the majors use, including the partial intervals before the
 /// first and after the last major.
 ///
-/// None when `minor_count` is 0. Linear: [`drawn_minor_count`] subdivisions
+/// None when `minor_count` is 0 and on a categorical axis. Linear: [`drawn_minor_count`] subdivisions
 /// of each [`effective_major_spacing`] interval, the majors left out.
 /// Logarithmic: [`LogMinors`] over the [`crate::layout::guarded_log_range`]
 /// of the axis range, whatever the count.
 pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
-    if axis.minor_count == 0 {
+    if axis.minor_count == 0 || axis.categories.is_some() {
         return MinorTicks(MinorWalk::Empty);
     }
     MinorTicks(match axis.scale {

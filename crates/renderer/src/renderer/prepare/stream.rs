@@ -29,6 +29,24 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Streaming is not extended to categorical axes.
+        if [
+            &config.top_x,
+            &config.bottom_x,
+            &config.left_y,
+            &config.right_y,
+        ]
+        .into_iter()
+        .chain(config.overlays.iter().map(|overlay| &overlay.y_axis))
+        .any(|axis| axis.categories.is_some())
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "categorical axes require GPU-resident columns; streamed sources are \
+                         not supported"
+                    .into(),
+            });
+        }
         // A fill between two series needs index-aligned chunks of two streams,
         // which nonresident streaming cannot guarantee, and a stepped line's
         // arc prefix is not part of the streamed canonical scan. Both are

@@ -43,6 +43,11 @@ pub(crate) fn timestamp_tick_plan(
     da: &DataArea,
     fp: FontPolicy,
 ) -> Option<crate::time_axis::TimestampTickPlan> {
+    // A categorical axis ignores its label format: its ticks are the
+    // category positions.
+    if axis.categories.is_some() {
+        return None;
+    }
     let ls = &axis.label_style;
     crate::time_axis::build_timestamp_tick_plan(
         axis,
@@ -131,6 +136,11 @@ pub(super) fn push_walker_warnings(
     which: WarningAxis,
     axis: &AxisOptions,
 ) {
+    // A categorical axis walks its category positions; it has no spacing,
+    // count or decade step to replace.
+    if axis.categories.is_some() {
+        return;
+    }
     match axis.scale {
         AxisScale::Linear => {
             // Both linear walkers draw nothing on any other range.
