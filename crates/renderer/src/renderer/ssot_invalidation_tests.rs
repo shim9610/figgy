@@ -168,6 +168,42 @@ fn edits() -> Vec<Edit> {
     axis!(left_y);
     axis!(top_x);
     axis!(right_y);
+    // A categorical axis on the plain baseline: chrome on the top and right
+    // axes, the data range on the bottom and left ones. The stream pass
+    // rejects categorical axes, so these are resident only.
+    for (name, apply, work) in [
+        (
+            "top_x.categories (None -> Some)",
+            (|c: &mut Config| c.top_x.categories = three_categories()) as fn(&mut Config),
+            Work::Prefix,
+        ),
+        (
+            "right_y.categories (None -> Some)",
+            |c| c.right_y.categories = three_categories(),
+            Work::Prefix,
+        ),
+        (
+            "bottom_x.categories (None -> Some)",
+            |c| c.bottom_x.categories = three_categories(),
+            Work::Replay,
+        ),
+        (
+            "left_y.categories (None -> Some)",
+            |c| c.left_y.categories = three_categories(),
+            Work::Replay,
+        ),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: false,
+        });
+    }
     edit!(bottom_x.inverted, true, Replay);
     edit!(left_y.inverted, true, Replay);
     edit!(top_x.inverted, true, Prefix);
@@ -288,6 +324,114 @@ fn edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: true,
     });
+    cases
+}
+
+/// Three categories, for the categorical axis edits.
+fn three_categories() -> Option<Vec<crate::config::Category>> {
+    Some(vec![
+        crate::config::Category::new("a", "Alpha"),
+        crate::config::Category::new("b", "Beta"),
+        crate::config::Category::new("c", "Gamma"),
+    ])
+}
+
+/// The baseline with categorical top and bottom axes (three categories
+/// each). The stream pass rejects categorical axes, so every case here is
+/// resident only.
+fn baseline_with_categories() -> Config {
+    let mut c = baseline();
+    c.top_x.categories = three_categories();
+    c.bottom_x.categories = three_categories();
+    c
+}
+
+/// Every field of `AxisOptions::categories`, one edit each. A label is tick
+/// text (raster only); an id is drawn nowhere, but it is part of the axis the
+/// raster key compares, so the raster is redone with unchanged pixels; the
+/// category count is the bottom axis' data range, so it moves the data.
+fn category_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! category {
+        ($name:literal, $apply:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: $name,
+                apply: $apply,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    category!(
+        "top_x.categories[1].label",
+        |c| c.top_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        Prefix,
+        Changed
+    );
+    category!(
+        "top_x.categories[1].id",
+        |c| c.top_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        Prefix,
+        Unchanged
+    );
+    category!(
+        "top_x.categories (one more)",
+        |c| c
+            .top_x
+            .categories
+            .as_mut()
+            .unwrap()
+            .push(crate::config::Category::new("d", "Delta")),
+        Prefix,
+        Changed
+    );
+    category!(
+        "top_x.categories (Some -> None)",
+        |c| c.top_x.categories = None,
+        Prefix,
+        Changed
+    );
+    category!(
+        "bottom_x.categories[1].label",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        Prefix,
+        Changed
+    );
+    category!(
+        "bottom_x.categories[1].id",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        Prefix,
+        Unchanged
+    );
+    category!(
+        "bottom_x.categories (one more)",
+        |c| c
+            .bottom_x
+            .categories
+            .as_mut()
+            .unwrap()
+            .push(crate::config::Category::new("d", "Delta")),
+        Replay,
+        Changed
+    );
+    category!(
+        "bottom_x.categories (Some -> None)",
+        |c| c.bottom_x.categories = None,
+        Replay,
+        Changed
+    );
+    // `min` / `max` are ignored on a categorical axis: a written range is
+    // configuration only.
+    category!(
+        "bottom_x.max (categorical)",
+        |c| c.bottom_x.max = 2.0,
+        Prefix,
+        Unchanged
+    );
     cases
 }
 
@@ -1013,6 +1157,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_overlay(), overlay_edits()),
         (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
+        (baseline_with_categories(), category_edits()),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
@@ -1203,7 +1348,7 @@ fn config_fields_are_classified() {
         line_style: _,
         major_tick_length: _,
         minor_tick_length: _,
-        categories: _, // axis!(...) categories edits: Prefix / Packed
+        categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
     } = top_x;
     let LabelStyle {
         visible: _,

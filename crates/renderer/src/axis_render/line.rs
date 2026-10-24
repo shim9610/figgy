@@ -55,7 +55,8 @@ pub(crate) fn emit_axis_strokes(
 
 /// The tick labels of `axis` on `side` (`Element::AxisLabel`): every label
 /// [`each_axis_tick_label`] walks, placed at its tick and moved by the
-/// detached-axis translation.
+/// detached-axis translation; a categorical axis' labels come from
+/// [`emit_category_tick_labels`].
 pub(crate) fn emit_axis_tick_labels(
     axis: &AxisOptions,
     side: Side,
@@ -63,11 +64,40 @@ pub(crate) fn emit_axis_tick_labels(
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
+    if let Some(categories) = &axis.categories {
+        emit_category_tick_labels(axis, categories, side, da, fp, sink);
+        return;
+    }
     let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
     let offset = axis_offset(side.clone(), axis.line_offset);
     each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
         place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
     });
+}
+
+/// The tick labels of a categorical `axis` on `side`, part of the same
+/// `Element::AxisLabel` as numeric labels: `categories[i].label` at category
+/// `i` ([`each_category_tick_label`]), placed by [`place_tick_text`] in the
+/// axis' label style and moved by the detached-axis translation, so hover,
+/// hit, selection, both drag offsets and the picked highlight are the
+/// numeric labels'.
+pub(crate) fn emit_category_tick_labels(
+    axis: &AxisOptions,
+    categories: &[crate::config::Category],
+    side: Side,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let offset = axis_offset(side.clone(), axis.line_offset);
+    each_category_tick_label(
+        axis,
+        categories,
+        side.clone(),
+        fp,
+        |value| value_to_screen(value, axis, side.clone(), da),
+        |text, pos| place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink),
+    );
 }
 
 /// Where `value` falls along its axis ([`crate::layout::axis_fraction`]).

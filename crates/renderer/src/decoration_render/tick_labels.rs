@@ -100,14 +100,27 @@ pub(crate) fn prune_numeric_labels(
                 })
         })
         .collect();
+    let stride = label_stride(labels.len(), ls.font_size, |index| labels[index].bounds);
+    labels
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, label)| (index % stride == 0).then_some(label))
+        .collect()
+}
+
+/// The stride an axis keeps every `stride`-th of its `count` labels by:
+/// the first of 1, 2, 5, 10, 20, 50... at which every kept label's box
+/// (`bounds(index)`) stays half an em of `font_size` clear of the previous
+/// kept one, either across or along the screen.
+pub(crate) fn label_stride(count: usize, font_size: f32, bounds: impl Fn(usize) -> RectF) -> usize {
     // Half an em also scales with HiDPI/PNG export, unlike a fixed pixel gap.
-    let gap = ls.font_size * 0.5;
+    let gap = font_size * 0.5;
     let mut stride = 1;
     loop {
         let mut previous: Option<RectF> = None;
         let apart = |a: (f32, f32), b: (f32, f32)| b.0 >= a.1 + gap || a.0 >= b.1 + gap;
-        let fits = labels.iter().step_by(stride).all(|label| {
-            let b = label.bounds;
+        let fits = (0..count).step_by(stride).all(|index| {
+            let b = bounds(index);
             let fits = previous.is_none_or(|a| {
                 apart((a.x, a.x + a.width), (b.x, b.x + b.width))
                     || apart((a.y, a.y + a.height), (b.y, b.y + b.height))
@@ -116,7 +129,7 @@ pub(crate) fn prune_numeric_labels(
             fits
         });
         if fits {
-            break;
+            return stride;
         }
         // Regular 1/2/5 multiples avoid alternating crowded and sparse labels.
         let decade = 10usize.pow(stride.ilog10());
@@ -126,11 +139,49 @@ pub(crate) fn prune_numeric_labels(
             _ => 10 * decade,
         };
     }
-    labels
-        .into_iter()
-        .enumerate()
-        .filter_map(|(index, label)| (index % stride == 0).then_some(label))
-        .collect()
+}
+
+/// Every tick label of a categorical axis with its tick position, in draw
+/// order: `categories[i].label` at category `i`, measured and placed like a
+/// plain numeric label in the axis' label style, and thinned by the same
+/// [`label_stride`] rule when neighbours crowd. An empty label keeps its
+/// slot in the stride and draws nothing. Nothing is collected: the stride is
+/// measured on the categories themselves.
+pub(crate) fn each_category_tick_label(
+    axis: &AxisOptions,
+    categories: &[crate::config::Category],
+    side: Side,
+    fp: FontPolicy,
+    position: impl Fn(f64) -> (f32, f32),
+    mut each: impl FnMut(TickText<'_>, (f32, f32)),
+) {
+    let ls = &axis.label_style;
+    if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    let placed = |index: usize| {
+        let text = categories[index].label.as_str();
+        let position = position(index as f64);
+        let metrics = measure_plain_text(text, &ls.label_font, ls.font_size, false, false, fp);
+        let origin = label_origin(
+            side.clone(),
+            position,
+            axis.major_tick_length,
+            (ls.label_offset_x, ls.label_offset_y),
+            metrics,
+        );
+        (text, position, label_rect(origin, metrics))
+    };
+    let stride = label_stride(categories.len(), ls.font_size, |index| placed(index).2);
+    for index in (0..categories.len()).step_by(stride) {
+        let (text, position, bounds) = placed(index);
+        let finite = [bounds.x, bounds.y, bounds.width, bounds.height]
+            .into_iter()
+            .all(f32::is_finite);
+        if !text.is_empty() && finite {
+            each(TickText::Plain(text), position);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -331,6 +382,17 @@ pub(crate) fn each_axis_tick_label(
 ) {
     let ls = &axis.label_style;
     if !(ls.visible && ls.label_visible) {
+        return;
+    }
+    if let Some(categories) = &axis.categories {
+        each_category_tick_label(
+            axis,
+            categories,
+            side.clone(),
+            fp,
+            |value| value_to_screen(value, axis, side.clone(), da),
+            each,
+        );
         return;
     }
     if let LabelFormat::Timestamp(_) = &ls.format {

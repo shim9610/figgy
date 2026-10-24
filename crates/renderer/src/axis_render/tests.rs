@@ -1951,3 +1951,230 @@ fn a_polar_tick_label_selection_boxes_each_label() {
         }
     }
 }
+
+/// The plain texts a sink receives, with their drawn boxes.
+#[derive(Default)]
+struct TextLog(Vec<(String, RectF)>);
+
+impl Sink for TextLog {
+    fn text(&mut self, _slot: Slot, text: &crate::sink::PlacedText<'_>) {
+        if let crate::sink::TextRef::Plain { text: plain, .. } = text.text {
+            self.0.push((plain.to_owned(), text.rect()));
+        }
+    }
+    fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
+    fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<crate::sink::Border<'_>>) {}
+    fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn ramp(&mut self, _: Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
+}
+
+fn category_axis(labels: &[&str]) -> AxisOptions {
+    let mut axis = default_config().bottom_x;
+    axis.categories = Some(
+        labels
+            .iter()
+            .enumerate()
+            .map(|(i, label)| crate::config::Category::new(format!("c{i}"), *label))
+            .collect(),
+    );
+    axis
+}
+
+/// A categorical axis labels every category with its own label, centred on
+/// its tick like a numeric label, in the axis' label style, on every side.
+#[test]
+fn category_labels_sit_on_their_ticks_in_category_order() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+    let da = DataArea(crate::layout::Rect {
+        x: 80,
+        y: 40,
+        width: 700,
+        height: 420,
+    });
+    for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+        let mut axis = category_axis(&names);
+        // Ignored on a categorical axis.
+        axis.label_style.format = LabelFormat::Scientific;
+        let mut log = TextLog::default();
+        emit_axis_tick_labels(&axis, side.clone(), &da, FontPolicy::Standard, &mut log);
+        let texts: Vec<&str> = log.0.iter().map(|(t, _)| t.as_str()).collect();
+        assert_eq!(texts, names, "{side:?}");
+        for (i, (_, rect)) in log.0.iter().enumerate() {
+            let tick = value_to_screen(i as f64, &axis, side.clone(), &da);
+            let (centre, along) = match side {
+                Side::Top | Side::Bottom => (rect.x + rect.width * 0.5, tick.0),
+                Side::Left | Side::Right => (rect.y + rect.height * 0.5, tick.1),
+            };
+            assert!(
+                (centre - along).abs() < 1.0,
+                "{side:?} {i}: {centre} vs {along}"
+            );
+        }
+        // The category positions are the slot centres.
+        let first = value_to_screen(0.0, &axis, side.clone(), &da);
+        let slot = match side {
+            Side::Top | Side::Bottom => 700.0 / 7.0,
+            Side::Left | Side::Right => 420.0 / 7.0,
+        };
+        match side {
+            Side::Top | Side::Bottom => assert!((first.0 - (80.0 + slot * 0.5)).abs() < 1e-3),
+            Side::Left | Side::Right => {
+                assert!((first.1 - (40.0 + 420.0 - slot * 0.5)).abs() < 1e-3)
+            }
+        }
+        // Hidden labels emit nothing.
+        axis.label_style.label_visible = false;
+        let mut hidden = TextLog::default();
+        emit_axis_tick_labels(&axis, side.clone(), &da, FontPolicy::Standard, &mut hidden);
+        assert!(hidden.0.is_empty());
+    }
+}
+
+/// Crowded category labels are thinned by the numeric labels' rule: every
+/// 2nd, 5th, 10th... label, each kept box half an em clear of the previous
+/// one; a wide axis keeps them all. An empty label keeps its slot and draws
+/// nothing.
+#[test]
+fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let names = [
+        "North",
+        "East",
+        "South",
+        "West and a much longer label than the others",
+        "Up",
+        "Down",
+        "Centre",
+    ];
+    let narrow = DataArea(crate::layout::Rect {
+        x: 60,
+        y: 20,
+        width: 260,
+        height: 160,
+    });
+    let wide = DataArea(crate::layout::Rect {
+        x: 60,
+        y: 20,
+        width: 4000,
+        height: 160,
+    });
+    let axis = category_axis(&names);
+    let gap = axis.label_style.font_size * 0.5;
+    let mut log = TextLog::default();
+    emit_axis_tick_labels(&axis, Side::Bottom, &narrow, FontPolicy::Standard, &mut log);
+    let kept: Vec<usize> = log
+        .0
+        .iter()
+        .map(|(t, _)| names.iter().position(|n| n == t).unwrap())
+        .collect();
+    assert!(kept.len() >= 2 && kept.len() < names.len(), "{kept:?}");
+    let stride = kept[1] - kept[0];
+    assert!([2, 5].contains(&stride), "{kept:?}");
+    assert!(
+        kept.iter().enumerate().all(|(n, &i)| i == n * stride),
+        "{kept:?}"
+    );
+    for pair in log.0.windows(2) {
+        assert!(pair[1].1.x >= pair[0].1.x + pair[0].1.width + gap - 1e-3);
+    }
+    let mut all = TextLog::default();
+    emit_axis_tick_labels(&axis, Side::Bottom, &wide, FontPolicy::Standard, &mut all);
+    assert_eq!(all.0.len(), names.len());
+
+    let mut with_empty = category_axis(&["A", "", "C"]);
+    let mut log = TextLog::default();
+    emit_axis_tick_labels(
+        &with_empty,
+        Side::Bottom,
+        &wide,
+        FontPolicy::Standard,
+        &mut log,
+    );
+    let texts: Vec<&str> = log.0.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(texts, ["A", "C"]);
+    with_empty.categories = None;
+    let mut numeric = TextLog::default();
+    emit_axis_tick_labels(
+        &with_empty,
+        Side::Bottom,
+        &wide,
+        FontPolicy::Standard,
+        &mut numeric,
+    );
+    assert!(numeric.0.iter().all(|(t, _)| t != "A"));
+}
+
+/// The categorical axis strokes: a major tick at every category, no minor
+/// ticks, and grid lines at the category positions when that axis' major
+/// grid is on (none for its minor grid).
+#[test]
+fn category_ticks_and_grid_lines_are_at_the_category_positions() {
+    let mut cfg = default_config();
+    cfg.bottom_x = category_axis(&["a", "b", "c", "d"]);
+    cfg.bottom_x.minor_count = 4;
+    cfg.bottom_x.tick = TickVisibility::Outside;
+    let da = cfg.data_area().unwrap();
+    let majors = major_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &da, FontPolicy::Standard);
+    assert_eq!(majors, vec![0.0, 1.0, 2.0, 3.0]);
+    assert!(
+        minor_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &da, FontPolicy::Standard)
+            .is_empty()
+    );
+    let expected: Vec<f32> = (0..4)
+        .map(|i| value_to_screen(f64::from(i), &cfg.bottom_x, Side::Bottom, &da).0)
+        .collect();
+    let mut ticks = Vec::new();
+    each_axis_stroke(
+        &cfg.bottom_x,
+        Side::Bottom,
+        &da,
+        FontPolicy::Standard,
+        &majors,
+        |stroke, a, _| {
+            if let AxisStroke::Tick(_) = stroke {
+                ticks.push(a.0);
+            }
+        },
+    );
+    assert_eq!(ticks, expected);
+
+    struct GridLog(Vec<(String, f32)>);
+    impl Sink for GridLog {
+        fn text(&mut self, _: Slot, _: &crate::sink::PlacedText<'_>) {}
+        fn stroke(&mut self, _: Slot, a: [f32; 2], _: [f32; 2], style: &StrokeStyle<'_>) {
+            self.0.push((style.tag.to_owned(), a[0]));
+        }
+        fn rect(
+            &mut self,
+            _: Slot,
+            _: RectF,
+            _: Option<Color>,
+            _: Option<crate::sink::Border<'_>>,
+        ) {
+        }
+        fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+        fn ramp(&mut self, _: Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
+    }
+    cfg.grid.show_major_x = true;
+    cfg.grid.show_minor_x = true;
+    let mut grid = GridLog(Vec::new());
+    emit_grid(&cfg, &da, FontPolicy::Standard, &mut grid);
+    let major_x: Vec<f32> = grid
+        .0
+        .iter()
+        .filter(|(tag, _)| tag.starts_with("grid_major_x_"))
+        .map(|(_, x)| *x)
+        .collect();
+    assert_eq!(major_x, expected);
+    assert!(
+        !grid
+            .0
+            .iter()
+            .any(|(tag, _)| tag.starts_with("grid_minor_x_"))
+    );
+}
