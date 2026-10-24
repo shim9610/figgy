@@ -9,6 +9,12 @@ use crate::format::PlainNumberFormat;
 use crate::{Color, Material};
 
 pub const MAX_RADIAL_SLICES: usize = 64;
+/// The lines of a slice's drawn label text.
+const MAX_LABEL_LINES: usize = 2;
+/// The characters of one line of a slice's drawn label text: room for the
+/// longest line [`RadialChart::format_labels`] writes (a 309-digit value with
+/// six decimals, a 24-character suffix and a percentage).
+const MAX_LABEL_LINE_CHARS: usize = 400;
 
 /// One category. Construct with [`RadialSlice::new`]; optional fields inherit
 /// chart settings. Zero-valued slices keep their index but have no visible surface.
@@ -33,6 +39,19 @@ pub struct RadialSlice {
     /// Explicit color overrides automatic inside-label contrast selection.
     #[cfg_attr(feature = "serde", serde(default))]
     pub label_color: Option<Color>,
+    /// The drawn label text: at most two lines joined by `'\n'`. The
+    /// renderer draws this string and never formats a value.
+    /// [`RadialChart::format_labels`] writes it from the label format, the
+    /// decimals, the suffix and the circle's total when the host edits the
+    /// slices; a host may also set its own text. A document without it is
+    /// filled by [`RadialChart::normalize_labels`]. A shown label of a
+    /// slice with a value needs it: `None` there is rejected when a frame
+    /// is prepared.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text: Option<String>,
 }
 impl RadialSlice {
     pub fn new(label: impl Into<String>, value: f64, color: Color) -> Self {
@@ -45,6 +64,7 @@ impl RadialSlice {
             labels: None,
             label_format: None,
             label_color: None,
+            text: None,
         }
     }
 }
@@ -421,6 +441,16 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
         if s.label.chars().count() > 80 || s.label.contains(['\n', '\r']) {
             return Err("slice labels must be single-line, at most 80 characters");
         }
+        if let Some(text) = &s.text
+            && (text.split('\n').count() > MAX_LABEL_LINES
+                || text.split('\n').any(|line| {
+                    line.chars().count() > MAX_LABEL_LINE_CHARS || line.contains(char::is_control)
+                }))
+        {
+            return Err(
+                "slice label text must have at most two lines of at most 400 characters, without control characters",
+            );
+        }
         sum += s.value;
     }
     if !sum.is_finite() || sum <= 0.0 {
@@ -506,6 +536,8 @@ impl RadialChart {
     /// Two label lines at most. Values use the original units; detail percentages
     /// use the detail subtotal. Formatting never changes numeric data.
     /// Call on a validated chart and pass the positive finite sum for this circle.
+    /// The edit-time helper [`Self::format_labels`] writes its lines into
+    /// [`RadialSlice::text`]; the renderer never calls it.
     pub fn label_lines(&self, slice: &RadialSlice, total: f64) -> Vec<String> {
         let plain = PlainNumberFormat::fixed(self.label_decimals, true);
         let value = format!("{}{}", plain.format(slice.value), self.value_suffix);
@@ -521,6 +553,59 @@ impl RadialChart {
                 vec![slice.label.clone(), format!("{value} ({pct})")]
             }
         }
+    }
+
+    /// Write every slice's and every detail child's drawn [`RadialSlice::text`]
+    /// from its label format, [`Self::label_decimals`], [`Self::value_suffix`]
+    /// and its circle's total, replacing what was there. Call it after
+    /// editing values, names, formats, the decimals or the suffix; the
+    /// renderer draws the stored strings and formats nothing. A slice whose
+    /// text the host wrote itself is overwritten too: set it again after
+    /// this call.
+    pub fn format_labels(&mut self) {
+        self.write_labels(true);
+    }
+
+    /// Fill the drawn text of every slice and detail child that has none, as
+    /// [`Self::format_labels`] writes it, and keep the texts that are set:
+    /// the step that makes a document written before `text` existed draw
+    /// the labels it drew then. Like [`Self::normalize_title`], run it once
+    /// when a document is loaded.
+    pub fn normalize_labels(&mut self) {
+        self.write_labels(false);
+    }
+
+    fn write_labels(&mut self, all: bool) {
+        let mut slices = std::mem::take(&mut self.slices);
+        self.write_group(&mut slices, all);
+        self.slices = slices;
+        if let Some(mut split) = self.split.take() {
+            self.write_group(&mut split.children, all);
+            self.split = Some(split);
+        }
+    }
+
+    /// The texts of one circle: percentages are of this circle's total.
+    fn write_group(&self, slices: &mut [RadialSlice], all: bool) {
+        let total = slices.iter().map(|s| s.value).sum::<f64>();
+        for slice in slices {
+            if all || slice.text.is_none() {
+                slice.text = Some(self.label_lines(slice, total).join("\n"));
+            }
+        }
+    }
+
+    /// Whether a frame can draw every shown label: each slice and detail
+    /// child with a value whose label is shown has its drawn text.
+    pub fn labels_have_text(&self) -> bool {
+        self.slices
+            .iter()
+            .chain(self.split.iter().flat_map(|s| s.children.iter()))
+            .all(|s| {
+                s.value == 0.0
+                    || s.labels.unwrap_or(self.labels) == RadialLabels::None
+                    || s.text.is_some()
+            })
     }
 
     /// Zero values are retained in the model, but have no geometry or label.
@@ -713,6 +798,159 @@ mod editing_contract {
         chart.slices[0].style = None;
         chart.label_decimals = 7;
         assert!(chart.validate().is_err());
+    }
+    fn split_chart() -> RadialChart {
+        RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 20.0, Color::WHITE),
+                RadialSlice::new("B", 80.0, Color::WHITE),
+            ],
+            split: Some(RadialSplit {
+                slice_index: 1,
+                kind: RadialKind::Pie,
+                children: vec![
+                    RadialSlice::new("B1", 60.0, Color::WHITE),
+                    RadialSlice::new("B2", 20.0, Color::WHITE),
+                ],
+            }),
+            label_format: RadialLabelFormat::NameValuePercent,
+            label_decimals: 0,
+            value_suffix: " kg".into(),
+            ..Default::default()
+        }
+    }
+    fn texts(chart: &RadialChart) -> Vec<Option<&str>> {
+        chart
+            .slices
+            .iter()
+            .chain(chart.split.iter().flat_map(|s| s.children.iter()))
+            .map(|s| s.text.as_deref())
+            .collect()
+    }
+    #[test]
+    fn format_labels_writes_the_drawn_strings_at_edit_time() {
+        let mut chart = split_chart();
+        assert!(!chart.labels_have_text());
+        chart.format_labels();
+        assert!(chart.labels_have_text());
+        // Detail percentages are of the detail subtotal.
+        assert_eq!(
+            texts(&chart),
+            [
+                Some("A\n20 kg (20%)"),
+                Some("B\n80 kg (80%)"),
+                Some("B1\n60 kg (75%)"),
+                Some("B2\n20 kg (25%)"),
+            ]
+        );
+        // Each text is today's lines joined, for every format.
+        for format in [
+            RadialLabelFormat::Name,
+            RadialLabelFormat::Value,
+            RadialLabelFormat::Percent,
+            RadialLabelFormat::NamePercent,
+            RadialLabelFormat::NameValue,
+            RadialLabelFormat::ValuePercent,
+            RadialLabelFormat::NameValuePercent,
+        ] {
+            chart.slices[0].label_format = Some(format);
+            chart.format_labels();
+            let lines = chart.label_lines(&chart.slices[0], 100.0);
+            assert_eq!(chart.slices[0].text, Some(lines.join("\n")), "{format:?}");
+            assert!(lines.len() <= 2);
+        }
+        // An edit is reflected only once the host writes the labels again.
+        chart.slices[0].value = 30.0;
+        chart.split.as_mut().unwrap().children[0].value = 50.0;
+        chart.split.as_mut().unwrap().children[1].value = 20.0;
+        chart.slices[1].value = 70.0;
+        chart.slices[0].label_format = None;
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n20 kg (20%)"));
+        chart.format_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n30 kg (30%)"));
+        assert_eq!(
+            chart.split.as_ref().unwrap().children[0].text.as_deref(),
+            Some("B1\n50 kg (71%)")
+        );
+    }
+    #[test]
+    fn normalize_labels_fills_only_missing_texts() {
+        let mut chart = split_chart();
+        chart.slices[0].text = Some("Custom".into());
+        chart.normalize_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("Custom"));
+        assert_eq!(chart.slices[1].text.as_deref(), Some("B\n80 kg (80%)"));
+        // A hidden label or an empty slice needs no text.
+        let mut hidden = split_chart();
+        hidden.labels = RadialLabels::None;
+        assert!(hidden.labels_have_text());
+        let mut empty = split_chart();
+        empty.split = None;
+        empty.slices[0].value = 0.0;
+        empty.slices[1].text = Some(String::new());
+        assert!(empty.labels_have_text());
+        // `format_labels` replaces a host's own text as well.
+        chart.format_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n20 kg (20%)"));
+    }
+    #[test]
+    fn label_text_keeps_two_lines_and_rejects_control_characters() {
+        let mut chart = split_chart();
+        chart.format_labels();
+        assert!(chart.validate().is_ok());
+        for bad in [
+            "a\nb\nc".to_string(),
+            "a\rb".to_string(),
+            "a\tb".to_string(),
+            "x".repeat(401),
+        ] {
+            let mut c = chart.clone();
+            c.slices[0].text = Some(bad.clone());
+            assert!(c.validate().is_err(), "{bad:?}");
+            let mut c = chart.clone();
+            c.split.as_mut().unwrap().children[1].text = Some(bad.clone());
+            assert!(c.validate().is_err(), "{bad:?}");
+        }
+        chart.slices[0].text = Some(format!("{}\n{}", "x".repeat(400), "y"));
+        assert!(chart.validate().is_ok());
+        // The longest line the formatter writes fits.
+        let mut largest = RadialChart {
+            slices: vec![RadialSlice::new("A", f64::MAX, Color::WHITE)],
+            label_format: RadialLabelFormat::ValuePercent,
+            label_decimals: 6,
+            value_suffix: "x".repeat(24),
+            ..Default::default()
+        };
+        largest.format_labels();
+        assert_eq!(largest.validate(), Ok(()));
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_document_without_text_normalizes_to_the_strings_it_drew() {
+        let mut chart = split_chart();
+        let old = serde_json::to_value(&chart).unwrap();
+        assert!(
+            old["slices"][0].get("text").is_none(),
+            "skipped when absent"
+        );
+        let mut loaded: RadialChart = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded, chart);
+        loaded.normalize_labels();
+        // The strings `label_lines` produced at draw time before `text`:
+        // main slices of the total 100, detail children of their 80.
+        let slices = chart
+            .slices
+            .iter()
+            .chain(chart.split.as_ref().unwrap().children.iter());
+        for ((slice, total), text) in slices.zip([100.0, 100.0, 80.0, 80.0]).zip(texts(&loaded)) {
+            let drawn = chart.label_lines(slice, total).join("\n");
+            assert_eq!(text, Some(drawn.as_str()));
+        }
+        chart.format_labels();
+        assert_eq!(loaded, chart);
+        let json = serde_json::to_string(&chart).unwrap();
+        assert!(json.contains("\"text\":\"A\\n20 kg (20%)\""), "{json}");
+        assert_eq!(serde_json::from_str::<RadialChart>(&json).unwrap(), chart);
     }
     #[cfg(feature = "serde")]
     #[test]

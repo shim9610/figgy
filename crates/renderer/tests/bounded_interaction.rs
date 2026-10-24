@@ -93,6 +93,7 @@ fn radial_label_click_drag_changes_pixels_leader_and_roundtrips() {
         ],
         ..Default::default()
     };
+    c.format_labels();
     for scale in [1., 2.] {
         c.decorations = Default::default();
         let f = r.prepare(&c, (800, 520), scale).unwrap();
@@ -225,6 +226,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
         slices: vec![RadialSlice::new("High", 1., Color::from_rgb8(20, 65, 115))],
         ..Default::default()
     };
+    c.format_labels();
     c.style.tilt_degrees = 55.;
     c.style.depth = 0.18;
     let key = DecorationId::RadialLabel(RadialTarget::main(0));
@@ -493,14 +495,18 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     let color = Color::from_rgb8(70, 130, 180);
     check!(
         RadialRenderer,
-        [RadialChart {
-            title: "Editable donut title".into(),
-            kind: RadialKind::Donut { inner_radius: 0.5 },
-            slices: vec![
-                RadialSlice::new("A", 35.0, color),
-                RadialSlice::new("B", 65.0, Color::BLACK)
-            ],
-            ..Default::default()
+        [{
+            let mut chart = RadialChart {
+                title: "Editable donut title".into(),
+                kind: RadialKind::Donut { inner_radius: 0.5 },
+                slices: vec![
+                    RadialSlice::new("A", 35.0, color),
+                    RadialSlice::new("B", 65.0, Color::BLACK),
+                ],
+                ..Default::default()
+            };
+            chart.format_labels();
+            chart
         }],
         [
             DecorationId::ChartTitle,
@@ -672,16 +678,17 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
             }
         }};
     }
-    check!(
-        RadialRenderer,
-        RadialChart {
+    check!(RadialRenderer, {
+        let mut chart = RadialChart {
             slices: vec![
                 RadialSlice::new("A", 30., Color::BLACK),
-                RadialSlice::new("B", 70., Color::from_rgb8(70, 120, 170))
+                RadialSlice::new("B", 70., Color::from_rgb8(70, 120, 170)),
             ],
             ..Default::default()
-        }
-    );
+        };
+        chart.format_labels();
+        chart
+    });
     check!(
         CategoricalRenderer,
         CategoricalChart {

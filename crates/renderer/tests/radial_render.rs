@@ -97,6 +97,7 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     c.style.tilt_degrees = 25.0;
     c.style.depth = 0.18;
     c.style.texture_strength = 0.8;
+    c.format_labels();
     let original = r.prepare(&c, (480, 320), 1.0).unwrap();
     let usage = r.gpu_memory_usage();
     assert!(Arc::ptr_eq(
@@ -155,6 +156,8 @@ fn radial_snapshot_reuse_and_each_visible_edit_updates_pixels() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        // The host writes the drawn label strings after each edit.
+        changed.format_labels();
         let frame = r.prepare(&changed, (480, 320), 1.0).unwrap();
         assert!(!Arc::ptr_eq(&original, &frame), "stale {name} snapshot");
         let after = r.export_rgba(&changed, (480, 320), 1.0).unwrap().rgba;
@@ -239,6 +242,7 @@ fn radial_detail_and_all_materials_render_and_change() {
             RadialSlice::new("E", 50.0, Color::from_rgb8(220, 180, 80)),
         ],
     });
+    c.format_labels();
     let mut r = renderer();
     let mut images = Vec::new();
     for material in [
@@ -290,6 +294,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     c.style.depth = 0.18;
     c.style.bevel = 0.025;
     c.style.gap_degrees = 2.0;
+    c.format_labels();
     let baseline = r.export_rgba(&c, (480, 320), 1.0).unwrap().rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
@@ -350,6 +355,7 @@ fn radial_editing_options_invalidate_pixels_but_hover_reuses_labels() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        changed.format_labels();
         let frame = r.prepare(&changed, (480, 320), 1.0).unwrap();
         let again = r.prepare(&changed, (480, 320), 1.0).unwrap();
         assert!(
@@ -521,6 +527,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     };
     c.interaction.hovered = Some(RadialTarget::main(0));
     c.interaction.hover_progress = 0.5;
+    c.format_labels();
     let before = r.export_rgba(&c, (500, 360), 1.0).unwrap().rgba;
     drain(&r);
     let edits: Vec<(&str, Box<dyn Fn(&mut RadialChart)>)> = vec![
@@ -565,6 +572,7 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     for (name, edit) in edits {
         let mut changed = c.clone();
         edit(&mut changed);
+        changed.format_labels();
         assert_ne!(
             r.export_rgba(&changed, (500, 360), 1.0).unwrap().rgba,
             before,
@@ -601,6 +609,47 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
         );
     }
     assert_ne!(original.rgba, edited.rgba);
+}
+
+/// The renderer draws `RadialSlice::text` and formats nothing: a slice whose
+/// text is another slice's formatted string draws exactly what that slice
+/// draws, and a shown label without text is refused.
+#[test]
+fn radial_labels_draw_the_slice_text() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut named = chart();
+    named.labels = RadialLabels::Outside;
+    named.label_format = RadialLabelFormat::Name;
+    named.slices[0].label = "Zed".into();
+    named.format_labels();
+    assert_eq!(named.slices[0].text.as_deref(), Some("Zed"));
+    let expected = r.export_rgba(&named, (480, 320), 1.0).unwrap().rgba;
+    drain(&r);
+    let mut custom = named.clone();
+    custom.slices[0].label = "A".into();
+    custom.label_format = RadialLabelFormat::NameValuePercent;
+    // The name and format no longer produce "Zed"; the stored text does.
+    assert_eq!(custom.slices[0].text.as_deref(), Some("Zed"));
+    assert_eq!(
+        r.export_rgba(&custom, (480, 320), 1.0).unwrap().rgba,
+        expected
+    );
+    drain(&r);
+    custom.slices[0].text = Some("Custom\ntwo lines".into());
+    assert_ne!(
+        r.export_rgba(&custom, (480, 320), 1.0).unwrap().rgba,
+        expected
+    );
+    drain(&r);
+    custom.slices[1].text = None;
+    let refused = r.prepare(&custom, (480, 320), 1.0).err();
+    assert!(
+        refused.is_some_and(|e| e.to_string().contains("format_labels")),
+        "a shown label without text must be refused"
+    );
+    custom.slices[1].labels = Some(RadialLabels::None);
+    assert!(r.prepare(&custom, (480, 320), 1.0).is_ok());
 }
 
 // Exhaustive destructuring makes future SSOT additions require an explicit review
@@ -676,6 +725,7 @@ fn radial_ssot_fields_are_explicit() {
         labels: _,
         label_format: _,
         label_color: _,
+        text: _,
     } = RadialSlice::new("A", 1.0, Color::WHITE);
     let RadialOutline {
         rim: _,
@@ -710,6 +760,7 @@ fn radial_inside_labels_follow_lift_without_raster_reallocation() {
     c.style.depth = 0.1;
     c.style.hover_lift = 0.15;
     c.style.hover_brightness = 0.0;
+    c.format_labels();
     let rest = r.prepare(&c, (320, 320), 1.0).unwrap();
     let a = r.export_rgba(&c, (320, 320), 1.0).unwrap();
     drain(&r);

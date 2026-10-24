@@ -216,6 +216,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         },
         ..Default::default()
     };
+    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
@@ -245,6 +246,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         shadow: true,
         ..Default::default()
     };
+    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();

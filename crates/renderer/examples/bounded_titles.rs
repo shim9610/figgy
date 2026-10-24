@@ -32,7 +32,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|s| s.text == '2')
         .unwrap()
         .subscript = true;
-    let pie = RadialChart {
+    let mut pie = RadialChart {
         chart_title: Some(title.clone()),
         font_size: 12.,
         slices: vec![
@@ -41,6 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         ..Default::default()
     };
+    pie.format_labels();
     let bar = CategoricalChart {
         chart_title: Some(title.clone()),
         font_size: 12.,

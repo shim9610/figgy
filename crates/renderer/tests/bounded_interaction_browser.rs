@@ -56,6 +56,7 @@ async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
         ],
         ..Default::default()
     };
+    c.format_labels();
     let frame = r.prepare(&c, (800, 520), 2.).unwrap();
     let before = r.export_rgba_async(&c, (800, 520), 2.).await.unwrap();
     edit(

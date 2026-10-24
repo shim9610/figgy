@@ -321,7 +321,10 @@ impl eframe::App for Editor {
                 egui::vec2(logical.0 as f32, logical.1 as f32),
                 egui::Sense::click_and_drag(),
             );
-            // Prepare before picking: resize and inspector edits must not use old bounds.
+            // The inspector may have edited names, values or formats: write the
+            // drawn label strings, then prepare before picking so resize and
+            // inspector edits never use old bounds.
+            self.chart.format_labels();
             if let Err(e) = self.draw(logical, ctx.pixels_per_point()) {
                 self.error = e.to_string();
             }

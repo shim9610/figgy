@@ -284,15 +284,16 @@ pub async fn check(gpu: RendererDevice) {
         }};
     }
     let red = Color::from_rgb8(220, 70, 40);
-    check_chart!(
-        RadialRenderer,
-        RadialChart {
+    check_chart!(RadialRenderer, {
+        let mut chart = RadialChart {
             title: "Resize data area".into(),
             slices: vec![RadialSlice::new("A", 1., red)],
             labels: RadialLabels::Inside,
             ..Default::default()
-        }
-    );
+        };
+        chart.format_labels();
+        chart
+    });
     check_chart!(
         CategoricalRenderer,
         CategoricalChart {

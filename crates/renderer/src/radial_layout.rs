@@ -28,6 +28,11 @@ fn width(c: &RadialChart, text: &str, size: f32) -> f32 {
     )
     .width
 }
+/// The drawn lines of a slice's label: its SSOT text split at its line
+/// breaks. The layout draws these strings and formats nothing.
+fn text_lines(slice: &RadialSlice) -> std::str::Split<'_, char> {
+    slice.text.as_deref().unwrap_or_default().split('\n')
+}
 fn projected(s: &Sector, angle: f32, r: f32) -> (f32, f32) {
     let mid = s.arc[0] + s.arc[1] * 0.5;
     let cs = s.arc[2].cos();
@@ -136,8 +141,8 @@ pub(super) fn layout(
             let max_label = slices
                 .iter()
                 .filter(|s| s.value > 0.0 && outside(s))
-                .flat_map(|s| chart.label_lines(s, total))
-                .map(|line| width(chart, &line, chart.font_size))
+                .flat_map(|s| text_lines(s))
+                .map(|line| width(chart, line, chart.font_size))
                 .fold(0.0, f32::max);
             margin = max_label + 12.0;
         }
@@ -283,9 +288,8 @@ pub(super) fn layout(
                     y -= lift;
                 }
                 let fs = chart.font_size * scale;
-                let lines = chart.label_lines(slice, total);
-                let text_width = lines
-                    .iter()
+                let line_count = text_lines(slice).count();
+                let text_width = text_lines(slice)
                     .map(|s| width(chart, s, fs))
                     .fold(0.0, f32::max);
                 // Keep inside glyphs anchored to their slice, so the cached
@@ -294,7 +298,7 @@ pub(super) fn layout(
                 let available = (s.arc[1] * r * s.geometry[2] * s.arc[2].cos())
                     .min(s.geometry[2] * (1.0 - s.geometry[3]));
                 let fit = (available * 1.05 / text_width.max(1.))
-                    .min(available / (fs * lines.len() as f32 * 1.2))
+                    .min(available / (fs * line_count as f32 * 1.2))
                     .min(1.);
                 let fs = (fs * fit).max(scale);
                 let luminance = s.color[0] * 0.2126 + s.color[1] * 0.7152 + s.color[2] * 0.0722;
@@ -303,14 +307,14 @@ pub(super) fn layout(
                 } else {
                     chart.label_color
                 });
-                for (i, line) in lines.iter().enumerate() {
+                for (i, line) in text_lines(slice).enumerate() {
                     decorations
                         .on(DecorationId::RadialLabel(*target), &mut canvas)
                         .plain_text(
                             &chart.font_family,
                             line,
                             (x - width(chart, line, fs) * 0.5) / scale,
-                            (y + (i as f32 * 1.2 - (lines.len() - 1) as f32 * 0.6 + 0.45) * fs)
+                            (y + (i as f32 * 1.2 - (line_count - 1) as f32 * 0.6 + 0.45) * fs)
                                 / scale,
                             fs / scale,
                             color,
@@ -379,8 +383,7 @@ pub(super) fn layout(
                         canvas.draw_line(anchor, elbow, &rule);
                         canvas.draw_line(elbow, (tx + offset[0], y + offset[1]), &rule);
                     }
-                    let lines = chart.label_lines(slice, total);
-                    for (i, line) in lines.iter().enumerate() {
+                    for (i, line) in text_lines(slice).enumerate() {
                         let x = if left_side {
                             tx - width(chart, line, fs)
                         } else {
@@ -469,6 +472,7 @@ mod title_tests {
             ..Default::default()
         };
         c.title = "Independent title".into();
+        c.format_labels();
         for scale in [1., 2.] {
             let legacy = layout(&c, (800, 520), scale, true).unwrap();
             c.normalize_title();

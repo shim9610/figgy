@@ -443,7 +443,13 @@ impl DocumentFrame {
 
 fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
     Ok(match family {
-        "radial" => DocumentChart::Radial(serde_json::from_str(value).map_err(js_err)?),
+        "radial" => {
+            let mut chart: RadialChart = serde_json::from_str(value).map_err(js_err)?;
+            // A slice without its drawn text gets the one its label format
+            // writes; a text the document carries is drawn as it is.
+            chart.normalize_labels();
+            DocumentChart::Radial(chart)
+        }
         "categorical" => DocumentChart::Categorical(serde_json::from_str(value).map_err(js_err)?),
         "boxplot" => DocumentChart::BoxPlot(serde_json::from_str(value).map_err(js_err)?),
         "radar" => DocumentChart::Radar(serde_json::from_str(value).map_err(js_err)?),

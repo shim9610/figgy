@@ -400,6 +400,11 @@ impl RadialRenderer {
         background: crate::annotation::FrameBackground,
     ) -> Result<Arc<RadialFrame>, RadialError> {
         chart.validate().map_err(RadialError::Invalid)?;
+        if !chart.labels_have_text() {
+            return Err(RadialError::Invalid(
+                "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
+            ));
+        }
         if size.0 < 160 || size.1 < 160 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
             return Err(RadialError::Invalid(
                 "radial canvas must be at least 160x160; scale must be 0.5..4",

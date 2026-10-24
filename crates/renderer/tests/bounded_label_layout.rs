@@ -281,6 +281,7 @@ fn crowded_radial_labels_prepare_and_remain_in_the_hit_map() {
             .collect(),
         ..Default::default()
     };
+    chart.format_labels();
     for mode in [RadialLabels::Inside, RadialLabels::Outside] {
         chart.labels = mode;
         for scale in [1., 2.] {

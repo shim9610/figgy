@@ -390,7 +390,7 @@ fn annotated_radar() -> RadarChart {
 }
 
 fn annotated_radial() -> RadialChart {
-    RadialChart {
+    let mut chart = RadialChart {
         title: "Annotated donut".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
@@ -410,7 +410,9 @@ fn annotated_radial() -> RadialChart {
             ],
         },
         ..Default::default()
-    }
+    };
+    chart.format_labels();
+    chart
 }
 
 family_contract!(
@@ -770,6 +772,7 @@ fn radial_data_anchors_are_warnings() {
         ],
         ..Default::default()
     };
+    c.format_labels();
     let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
     let f = r.prepare(&c, SIZE, 1.).unwrap();
     c.annotations.items = vec![

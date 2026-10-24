@@ -238,6 +238,7 @@ async fn radial_paper_material_and_hover_render_on_webgpu() {
         labels: RadialLabels::Outside,
         ..Default::default()
     };
+    c.format_labels();
     c.style.material = Material::Paper;
     c.style.tilt_degrees = 55.;
     c.style.depth = 0.2;

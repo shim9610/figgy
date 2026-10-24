@@ -1432,6 +1432,7 @@ pub mod bounded {
             ..Default::default()
         };
         chart.style = RadialStyle::three_dimensional();
+        chart.format_labels();
         chart
     }
 
