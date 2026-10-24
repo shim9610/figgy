@@ -359,17 +359,6 @@ const EXCLUSIONS: &[Exclusion] = &[
     },
     Exclusion {
         scene: "Polar",
-        layer: "*",
-        element: "*",
-        inv: Inv::I5,
-        detail: "*",
-        reason: "`Config::polar_geometry` (model `polar.rs`) adds a fixed 6 px to the ring's \
-                 label band, which `Config::scaled` cannot scale: at 2x the ring and its \
-                 labels are 2.5 to 4 px (1x) off the 1x layout scaled",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Polar",
         layer: "base",
         element: "axis_left",
         inv: Inv::I6,
