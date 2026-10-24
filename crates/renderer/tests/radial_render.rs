@@ -573,15 +573,16 @@ fn radial_gpu_pick_agrees_with_the_cpu_twin() {
     );
 }
 
-/// The picked highlight of every slice a selection can step to (the main
-/// circle's slices with a value, then the detail circle's children) is drawn
-/// on that slice alone. Against the export without a selection, every
+/// `step_selection` walks every slice with a value (the main circle's, then
+/// the detail circle's children) and wraps, and the picked highlight of each
+/// stepped slice is drawn on that slice alone. Against the export without a
+/// selection, every
 /// changed pixel lies on the selected slice where it rests or where it is
 /// lifted (the CPU twin of the pick, within a pixel of antialiasing), and
 /// the GPU pick of the selected frame finds the slice there, at 1x and 2x.
 #[cfg(feature = "cpu-twin")]
 #[test]
-fn radial_selected_highlight_is_drawn_on_its_slice_alone() {
+fn radial_step_selection_moves_the_highlight_to_each_slice() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut r = renderer();
     let mut c = chart();
@@ -617,8 +618,11 @@ fn radial_selected_highlight_is_drawn_on_its_slice_alone() {
         c.interaction = Default::default();
         let rest = r.export_rgba(&c, size, scale).unwrap();
         drain(&r);
-        for target in targets {
-            c.interaction.selected = Some(target);
+        // Step from no selection through every target and wrap to the first.
+        for expected in targets.iter().chain(&targets[..1]) {
+            c.step_selection(false);
+            let target = c.interaction.selected.unwrap();
+            assert_eq!(target, *expected, "step order at {scale}x");
             let frame = r.prepare(&c, size, scale).unwrap();
             let image = r.export_rgba(&c, size, scale).unwrap();
             assert_eq!((image.width, image.height), (rest.width, rest.height));

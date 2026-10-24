@@ -614,6 +614,48 @@ impl RadialChart {
             })
     }
 
+    /// Move the persistent selection to the next (or, `backwards`, the
+    /// previous) slice with a value: the main circle's slices in order, then
+    /// the detail circle's children while a split is set, wrapping at either
+    /// end. From no selection, or one on a slice without a value, it starts
+    /// at the first (or the last). Nothing changes when no slice has a value.
+    pub fn step_selection(&mut self, backwards: bool) {
+        let n = self.steppable().count();
+        if n == 0 {
+            return;
+        }
+        let i = self
+            .interaction
+            .selected
+            .and_then(|s| self.steppable().position(|t| t == s));
+        let i = match i {
+            Some(i) if backwards => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if backwards => n - 1,
+            None => 0,
+        };
+        let next = self.steppable().nth(i);
+        self.interaction.selected = next;
+    }
+    /// The targets [`Self::step_selection`] visits, in its order.
+    fn steppable(&self) -> impl Iterator<Item = RadialTarget> + '_ {
+        let main = self
+            .slices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.value > 0.)
+            .map(|(i, _)| RadialTarget::main(i));
+        let detail = self.split.iter().flat_map(|split| {
+            split
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.value > 0.)
+                .map(|(i, _)| RadialTarget::detail(i))
+        });
+        main.chain(detail)
+    }
+
     /// Zero values are retained in the model, but have no geometry or label.
     /// This checks model constraints; the renderer additionally checks output size,
     /// device limits, label layout and GPU budget when preparing a frame.
@@ -707,6 +749,56 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+    #[test]
+    fn radial_step_selection_walks_every_slice_with_a_value_and_wraps() {
+        let mut c = RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 1.0, Color::WHITE),
+                RadialSlice::new("Z", 0.0, Color::WHITE),
+                RadialSlice::new("B", 2.0, Color::WHITE),
+                RadialSlice::new("C", 3.0, Color::WHITE),
+            ],
+            ..Default::default()
+        };
+        let (m, d) = (RadialTarget::main, RadialTarget::detail);
+        let walk = |c: &mut RadialChart, backwards: bool, steps: usize| {
+            c.interaction.selected = None;
+            (0..steps)
+                .map(|_| {
+                    c.step_selection(backwards);
+                    c.interaction.selected.unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(walk(&mut c, false, 4), [m(0), m(2), m(3), m(0)]);
+        assert_eq!(walk(&mut c, true, 4), [m(3), m(2), m(0), m(3)]);
+        c.split = Some(RadialSplit {
+            slice_index: 2,
+            kind: RadialKind::Pie,
+            children: vec![
+                RadialSlice::new("D", 1.0, Color::WHITE),
+                RadialSlice::new("Y", 0.0, Color::WHITE),
+                RadialSlice::new("E", 1.0, Color::WHITE),
+            ],
+        });
+        assert_eq!(walk(&mut c, false, 6), [m(0), m(2), m(3), d(0), d(2), m(0)]);
+        assert_eq!(walk(&mut c, true, 6), [d(2), d(0), m(3), m(2), m(0), d(2)]);
+        // A selection on a slice without a value steps as no selection.
+        c.interaction.selected = Some(m(1));
+        c.step_selection(false);
+        assert_eq!(c.interaction.selected, Some(m(0)));
+        c.interaction.selected = Some(d(1));
+        c.step_selection(true);
+        assert_eq!(c.interaction.selected, Some(d(2)));
+        // Nothing to step to: the selection stays as it is.
+        for s in c.slices.iter_mut() {
+            s.value = 0.0;
+        }
+        c.split = None;
+        c.interaction.selected = Some(m(2));
+        c.step_selection(false);
+        assert_eq!(c.interaction.selected, Some(m(2)));
     }
     #[test]
     fn radial_rejects_invalid_values_and_materials() {

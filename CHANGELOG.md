@@ -246,6 +246,9 @@ two new keys (`"math"`, `{"Plain":{}}`) are additive.
   (`Element = DecorationElement`): a decoration of the radial frame's
   `HitMap<RadialChart>` moves in `decorations` by the bounded charts' rule.
   `SelectionBox::clipped_to(area)` intersects a selection box with a canvas.
+  `RadialChart::step_selection(backwards)` is the radial step of the bounded
+  web wrapper's `step_selection`, moved into the model since it edits only
+  the SSOT; the wrapper calls it and its behaviour is unchanged.
 
 <a id="unreleased-renderer"></a>
 

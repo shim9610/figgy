@@ -252,26 +252,7 @@ impl DocumentChart {
             *selected = Some(items[i].clone());
         }
         match self {
-            Self::Radial(c) => {
-                let mut items = c
-                    .slices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.value > 0.)
-                    .map(|(i, _)| RadialTarget::main(i))
-                    .collect::<Vec<_>>();
-                if let Some(split) = &c.split {
-                    items.extend(
-                        split
-                            .children
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.value > 0.)
-                            .map(|(i, _)| RadialTarget::detail(i)),
-                    );
-                }
-                next(items, &mut c.interaction.selected, backwards);
-            }
+            Self::Radial(c) => c.step_selection(backwards),
             Self::Categorical(c) => {
                 let items = c
                     .categories
