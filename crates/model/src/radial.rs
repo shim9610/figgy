@@ -335,12 +335,18 @@ pub struct RadialChart {
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
-    /// Independent rich title. Position remains in `decorations`.
+    /// Independent rich title, the shared chart title. Its position remains
+    /// in `decorations`: the offsets and `top_margin` must be 0, and the wire
+    /// form is the `{"visible", "text"}` object of a bounded title.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::bounded_title::bounded_title_wire"
+        )
     )]
-    pub chart_title: Option<crate::BoundedTitleOptions>,
+    pub chart_title: Option<crate::config::ChartTitleOptions>,
     /// The layer that receives pointer interaction. Bounded charts have no
     /// overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
@@ -497,9 +503,9 @@ impl RadialChart {
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
-    pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
+    pub fn resolved_title(&self) -> crate::config::ChartTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
+            crate::config::ChartTitleOptions::from_legacy_plain(
                 &self.title,
                 &self.font_family,
                 self.font_size,
@@ -614,7 +620,17 @@ impl RadialChart {
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
         self.annotations.validate()?;
-        self.resolved_title().validate()?;
+        let title = self.resolved_title();
+        if !title.text.within_limits() {
+            return Err(
+                "invalid radial title: size 6..160, at most 512 characters / 8 lines, finite styles",
+            );
+        }
+        if [title.offset_x, title.offset_y, title.top_margin] != [0.0; 3] {
+            return Err(
+                "a radial chart title keeps its position in decorations: its offsets and top_margin must be 0",
+            );
+        }
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {
             return Err("invalid radial shape or start angle");
@@ -951,6 +967,71 @@ mod editing_contract {
         let json = serde_json::to_string(&chart).unwrap();
         assert!(json.contains("\"text\":\"A\\n20 kg (20%)\""), "{json}");
         assert_eq!(serde_json::from_str::<RadialChart>(&json).unwrap(), chart);
+    }
+    #[test]
+    fn the_title_is_the_shared_chart_title_positioned_by_decorations() {
+        let mut chart = split_chart();
+        chart.title = "Plain".into();
+        let legacy = chart.resolved_title();
+        assert_eq!(
+            legacy,
+            crate::config::ChartTitleOptions::from_legacy_plain(
+                "Plain",
+                &chart.font_family,
+                chart.font_size,
+                chart.label_color
+            )
+        );
+        assert_eq!(legacy.text.font_size, chart.font_size * 1.5);
+        assert_eq!(chart.validate(), Ok(()));
+        chart.normalize_title();
+        assert_eq!(chart.chart_title, Some(legacy));
+        for edit in [
+            |t: &mut crate::config::ChartTitleOptions| t.offset_x = 4.0,
+            |t: &mut crate::config::ChartTitleOptions| t.offset_y = -1.0,
+            |t: &mut crate::config::ChartTitleOptions| t.top_margin = 30.0,
+        ] {
+            let mut moved = chart.clone();
+            edit(moved.chart_title.as_mut().unwrap());
+            assert!(
+                moved.validate().is_err(),
+                "the position lives in decorations"
+            );
+        }
+        let mut big = chart.clone();
+        big.chart_title.as_mut().unwrap().text.font_size = 161.0;
+        assert!(big.validate().is_err());
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_title_keeps_the_bounded_wire_form() {
+        let mut chart = split_chart();
+        chart.title = "T".into();
+        chart.normalize_title();
+        let json = serde_json::to_value(&chart).unwrap();
+        let title = json["chart_title"].as_object().unwrap();
+        assert_eq!(title.len(), 2, "no offsets or band are written");
+        // In the bounded title's order.
+        let text = serde_json::to_string(&chart).unwrap();
+        assert!(
+            text.contains("\"chart_title\":{\"visible\":true,\"text\":{"),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<RadialChart>(&text).unwrap(), chart);
+        // Offsets and a band in a document are not the chart's: they read as 0.
+        let mut placed = json.clone();
+        placed["chart_title"]["offset_x"] = 9.0.into();
+        placed["chart_title"]["top_margin"] = 40.0.into();
+        let read: RadialChart = serde_json::from_value(placed).unwrap();
+        assert_eq!(read.chart_title, chart.chart_title);
+        let mut none = json;
+        none["chart_title"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<RadialChart>(none)
+                .unwrap()
+                .chart_title,
+            None
+        );
     }
     #[cfg(feature = "serde")]
     #[test]

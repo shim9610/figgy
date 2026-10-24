@@ -23,6 +23,30 @@ pub struct ChartTitleOptions {
     pub top_margin: f32,
 }
 
+impl ChartTitleOptions {
+    /// A plain title in one style: the characters of `title` in `font`,
+    /// `label_size * 1.5` high, in `color`, left-aligned, visible, with no
+    /// offset and no band of its own (`top_margin` 0). This is the rich
+    /// title a bounded chart's legacy plain `title` stands for; once
+    /// installed as its `chart_title` it is authoritative and the legacy
+    /// string is ignored.
+    pub fn from_legacy_plain(title: &str, font: &str, label_size: f32, color: Color) -> Self {
+        Self {
+            text: RichText {
+                segments: title.chars().map(crate::text::RichSegment::plain).collect(),
+                color,
+                font_size: label_size * 1.5,
+                font: font.into(),
+                align: crate::text::TextAlign::Left,
+            },
+            visible: true,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            top_margin: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct GridOptions {

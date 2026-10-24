@@ -133,7 +133,7 @@ pub(super) fn layout(
         .zip(&c.series)
         .map(|((row, x, width), series)| (*row, *x, *width, series.label.as_str(), series.color))
         .collect();
-    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale);
     let automatic_area = RectF {
         x: 16.0,
         y: title.top,

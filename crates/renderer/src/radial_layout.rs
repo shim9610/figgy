@@ -1,9 +1,10 @@
 use super::*;
 use crate::data_render::MaterialGpu;
+use crate::decoration::scaled_rich_text;
 use crate::decoration::{DecorationMap, DecorationPainter};
 use crate::raster::{Canvas, Paint};
-use crate::text_render::{FontPolicy, measure_plain_text};
-use model::DecorationId;
+use crate::text_render::{FontPolicy, measure_plain_text, measure_rich_text};
+use model::{DecorationId, MeasureText, TextExtents};
 use std::f32::consts::TAU;
 
 pub(super) struct Layout {
@@ -16,6 +17,32 @@ pub(super) struct Layout {
     /// Anchor space for the annotation layer: the plot area with no value
     /// axes, so only ratio anchors can be placed on a radial chart.
     pub space: crate::annotation::PixelSpace,
+}
+/// The radial layout's text measure: a text measured at the frame's scale
+/// and expressed in logical pixels, as the label raster draws it.
+struct FrameMeasure {
+    scale: f32,
+}
+impl MeasureText for FrameMeasure {
+    fn measure_rich(&self, rt: &model::text::RichText) -> TextExtents {
+        let m = measure_rich_text(&scaled_rich_text(rt, self.scale), FontPolicy::Standard);
+        TextExtents {
+            width: m.width / self.scale,
+            ascent: m.ascent / self.scale,
+            descent: m.descent / self.scale,
+        }
+    }
+}
+/// The height of the radial title band: the room a default title needs
+/// above the circles (70 logical pixels), grown for a taller title, or the
+/// plain 24 pixel margin without a title.
+fn title_band(title: &model::config::ChartTitleOptions, measure: &FrameMeasure) -> f32 {
+    if !title.visible || title.text.segments.is_empty() {
+        return 24.;
+    }
+    let m = measure.measure_rich(&title.text);
+    let baseline = 42f32.max(m.ascent + 12.);
+    70f32.max(baseline + m.descent + 20.)
 }
 fn width(c: &RadialChart, text: &str, size: f32) -> f32 {
     measure_plain_text(
@@ -89,8 +116,10 @@ pub(super) fn layout(
             y: crate::annotation::AxisSpace::NONE,
         },
     };
-    let title = crate::bounded_title::TitleLayout::new(chart.resolved_title(), scale, true);
-    let top = title.top;
+    let title = chart.resolved_title();
+    let measure = FrameMeasure { scale };
+    let band = title_band(&title, &measure);
+    let top = band;
     let bottom = h - 24.0;
     let automatic_area = crate::layout::RectF {
         x: 24.,
@@ -106,9 +135,22 @@ pub(super) fn layout(
     out.space.plot = area;
     let (top, bottom) = (area.y, area.y + area.height);
 
-    title
-        .draw(&mut decorations, &mut canvas, w)
-        .map_err(RadialError::Invalid)?;
+    let canvas_rect = crate::layout::RectF {
+        x: 0.,
+        y: 0.,
+        width: w,
+        height: h,
+    };
+    // Centred in its band across the canvas; a title wider than the canvas
+    // is clipped by it, and its hit region is what the canvas shows.
+    model::select::emit_chart_title_in(
+        &title,
+        canvas_rect,
+        band,
+        &measure,
+        &mut decorations.on(DecorationId::ChartTitle, &mut canvas),
+    );
+    decorations.clip_hit(&DecorationId::ChartTitle, canvas_rect);
     let mut groups = vec![(
         &chart.slices,
         chart.kind,

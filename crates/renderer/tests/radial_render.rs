@@ -611,6 +611,48 @@ fn radial_secondary_controls_and_detail_edits_are_not_stale() {
     assert_ne!(original.rgba, edited.rgba);
 }
 
+/// A title wider than the canvas is drawn clipped by it, not refused: its
+/// hit region is what the canvas shows, and it can still be dragged.
+#[test]
+fn radial_title_wider_than_the_canvas_is_clipped() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.title = "A title that is far wider than the canvas it is drawn on".into();
+    c.font_size = 24.0;
+    let frame = r
+        .prepare(&c, (320, 320), 1.0)
+        .expect("a wide title is clipped");
+    let map = frame.decorations();
+    let (id, _) = map
+        .entries()
+        .find(|(_, e)| e.id == renderer::DecorationId::ChartTitle)
+        .expect("the title is in the hit map");
+    let bounds = map.bounds(id).unwrap();
+    assert!(
+        bounds.x >= 0.0 && bounds.x + bounds.width <= 320.0 && bounds.width > 300.0,
+        "{bounds:?}"
+    );
+    assert_eq!(map.hit_test([2.0, bounds.y + 4.0]), Some(id));
+    let image = r.export_rgba(&c, (320, 320), 1.0).unwrap();
+    let ink = |columns: std::ops::Range<usize>| {
+        (0..60).any(|y| {
+            columns.clone().any(|x| {
+                image.rgba[(y * 320 + x) * 4..][..3]
+                    .iter()
+                    .any(|&v| v < 128)
+            })
+        })
+    };
+    assert!(ink(0..8) && ink(312..320), "the title runs off both edges");
+    let mut moved = c.clone();
+    assert_eq!(
+        map.drag_by(&mut moved.decorations, id, 0.0, 6.0),
+        Some(renderer::layout::NudgeResult::Moved)
+    );
+    assert!(r.prepare(&moved, (320, 320), 1.0).is_ok());
+}
+
 /// The renderer draws `RadialSlice::text` and formats nothing: a slice whose
 /// text is another slice's formatted string draws exactly what that slice
 /// draws, and a shown label without text is refused.
@@ -686,8 +728,13 @@ fn radial_ssot_fields_are_explicit() {
     } = RadialChart::default();
     // Independent title fields are covered by the three CPU layout/pixel tests.
     // Keep this exhaustive so additions require an explicit editing/cache review.
-    let renderer::BoundedTitleOptions {
+    // The offsets and `top_margin` must be 0 on a radial chart (its
+    // position is in `decorations`); validation enforces it.
+    let renderer::config::ChartTitleOptions {
         visible: _,
+        offset_x: _,
+        offset_y: _,
+        top_margin: _,
         text:
             renderer::text::RichText {
                 segments: _,
@@ -696,7 +743,7 @@ fn radial_ssot_fields_are_explicit() {
                 font: _,
                 align: _,
             },
-    } = renderer::BoundedTitleOptions::from_legacy("Title", "", 16., Color::BLACK);
+    } = renderer::config::ChartTitleOptions::from_legacy_plain("Title", "", 16., Color::BLACK);
     let RadialStyle {
         material: _,
         tilt_degrees: _,

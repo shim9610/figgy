@@ -33,7 +33,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap()
         .subscript = true;
     let mut pie = RadialChart {
-        chart_title: Some(title.clone()),
+        // The radial chart holds the shared chart title; the other three
+        // charts still hold the bounded one.
+        chart_title: Some(renderer::config::ChartTitleOptions {
+            text: title.text.clone(),
+            visible: title.visible,
+            ..renderer::config::ChartTitleOptions::from_legacy_plain("", "", 16., Color::BLACK)
+        }),
         font_size: 12.,
         slices: vec![
             RadialSlice::new("A", 30., color),
