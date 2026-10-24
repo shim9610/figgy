@@ -13200,3 +13200,165 @@ fn errorbar_and_fill_pick_keys_follow_what_they_paint() {
             .any(|descriptor| descriptor.series_id == "bars")
     );
 }
+
+fn composite_test_record(rows: usize) -> Vec<(&'static str, Column<f64>)> {
+    ["median", "q1", "q3", "whisker_low", "whisker_high"]
+        .iter()
+        .map(|name| {
+            let data: Vec<f64> = (0..rows).map(|row| row as f64).collect();
+            let max = data.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+            (
+                *name,
+                Column {
+                    data,
+                    min: 0.0,
+                    max,
+                },
+            )
+        })
+        .collect()
+}
+
+/// Streaming is not extended to records and ragged columns (rule 8): an
+/// upsert onto a streamed id and a stream registered onto a record or ragged
+/// id both fail with `InvalidSeriesConfig` naming the limitation.
+#[test]
+fn records_and_ragged_columns_reject_streaming_both_ways() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .register_streamed_columns(vec![state_test_stream("s", 1)])
+        .unwrap();
+    let columns = composite_test_record(3);
+    let fields: Vec<(&str, &dyn ColumnSource)> = columns
+        .iter()
+        .map(|(name, column)| (*name, column as &dyn ColumnSource))
+        .collect();
+    let record = RecordSource {
+        schema: data_render::BOX_PLOT_RECORD,
+        fields: &fields,
+    };
+    let values = Column {
+        data: vec![1.0, 2.0],
+        min: 1.0,
+        max: 2.0,
+    };
+    let offsets = Column {
+        data: vec![0.0, 2.0],
+        min: 0.0,
+        max: 2.0,
+    };
+    let ragged = RaggedSource {
+        values: &values,
+        offsets: &offsets,
+    };
+    let streamed = |result: Result<String>| match result {
+        Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
+            assert!(
+                reason.contains("streaming is not extended to records and ragged columns"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected InvalidSeriesConfig, got {other:?}"),
+    };
+    streamed(renderer.upsert_record("s", &record));
+    streamed(renderer.upsert_ragged("s", &ragged));
+    assert!(renderer.pool().record("s").is_none());
+    assert!(renderer.pool().ragged("s").is_none());
+
+    renderer.upsert_record("box", &record).unwrap();
+    renderer.upsert_ragged("outliers", &ragged).unwrap();
+    for id in ["box", "outliers"] {
+        match renderer.register_streamed_columns(vec![state_test_stream(id, 1)]) {
+            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => assert!(
+                reason.contains("streaming is not extended to records and ragged columns"),
+                "{reason}"
+            ),
+            other => panic!("expected InvalidSeriesConfig for {id}, got {other:?}"),
+        }
+        assert!(renderer.logical_column(id).is_none());
+    }
+}
+
+/// Records, ragged columns and columns share one id space, and the member
+/// columns belong to their record: the host cannot insert, replace, remove
+/// or reference them as columns.
+#[test]
+fn member_columns_are_owned_by_their_record_or_ragged_column() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let columns = composite_test_record(3);
+    let fields: Vec<(&str, &dyn ColumnSource)> = columns
+        .iter()
+        .map(|(name, column)| (*name, column as &dyn ColumnSource))
+        .collect();
+    let record = RecordSource {
+        schema: data_render::BOX_PLOT_RECORD,
+        fields: &fields,
+    };
+    let column = Column {
+        data: vec![1.0, 2.0, 3.0],
+        min: 1.0,
+        max: 3.0,
+    };
+    renderer.upsert_record("box", &record).unwrap();
+    let member = renderer.pool().record("box").unwrap().slot().fields[0]
+        .clone()
+        .unwrap();
+
+    assert!(matches!(
+        renderer.upsert_column(member.clone(), &column),
+        Err(FiggyError::ReservedColumnId { .. })
+    ));
+    assert!(matches!(
+        renderer.remove_column(&member),
+        Err(FiggyError::ReservedColumnId { .. })
+    ));
+    assert!(matches!(
+        renderer.add_columns(&[(member.as_str(), &column as &dyn ColumnSource)]),
+        Err(FiggyError::ReservedColumnId { .. })
+    ));
+    assert!(matches!(
+        renderer.upsert_column("box", &column),
+        Err(FiggyError::Pool(data_render::AllocError::DuplicateId(_)))
+    ));
+    renderer.add_column("x", &column).unwrap();
+    assert!(matches!(
+        renderer.register_chart(
+            crate::default::default_config(),
+            vec![state_test_line("member", "x", &member)],
+        ),
+        Err(FiggyError::UnknownColumn { .. })
+    ));
+    assert!(matches!(
+        renderer.upsert_record("x", &record),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("the id is a column")
+    ));
+    assert_eq!(
+        renderer.pool().record("box").unwrap().slot().fields[0].as_deref(),
+        Some(member.as_str())
+    );
+
+    // Replacing and removing go through the record.
+    let revision = renderer.visual_revision();
+    renderer.upsert_record("box", &record).unwrap();
+    assert!(
+        renderer.pool().slot(&member).is_none(),
+        "the old member was freed"
+    );
+    assert!(
+        renderer.has_pending_maintenance(),
+        "the freed members leave a hole"
+    );
+    assert!(renderer.remove_record("box").unwrap());
+    assert!(!renderer.remove_record("box").unwrap());
+    assert!(!renderer.remove_ragged("box").unwrap());
+    assert!(renderer.pool().record("box").is_none());
+    assert_eq!(
+        renderer.visual_revision(),
+        revision,
+        "no chart reads a record yet"
+    );
+}

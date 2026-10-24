@@ -3023,3 +3023,925 @@ fn successful_stamp_transitions_separate_replacement_from_pool_relocation() {
     assert!(pool.is_valid_handle(&pool.handle_for("relocate-a").unwrap()));
     assert!(pool.is_valid_handle(&pool.handle_for("relocate-c").unwrap()));
 }
+
+// ── Records and ragged columns ──────────────────────────────────────────────
+
+fn box_fields<'a>(columns: &'a [(&'a str, Column<f64>)]) -> Vec<(&'a str, &'a dyn ColumnSource)> {
+    columns
+        .iter()
+        .map(|(name, column)| (*name, column as &dyn ColumnSource))
+        .collect()
+}
+
+fn five_fields(rows: usize, base: f64) -> Vec<(&'static str, Column<f64>)> {
+    ["median", "q1", "q3", "whisker_low", "whisker_high"]
+        .iter()
+        .enumerate()
+        .map(|(field, name)| {
+            (
+                *name,
+                col_f64(
+                    (0..rows)
+                        .map(|row| base + field as f64 * 10.0 + row as f64)
+                        .collect(),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn invalid_reason(result: crate::Result<impl std::fmt::Debug>) -> String {
+    match result {
+        Err(crate::FiggyError::InvalidSeriesConfig { reason, .. }) => reason,
+        other => panic!("expected InvalidSeriesConfig, got {other:?}"),
+    }
+}
+
+/// A record's fields upload in one batch (one staging buffer), keep their
+/// schema slots, and carry the statistics the write observer measured.
+#[test]
+fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
+    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let mut columns = five_fields(3, 1.0);
+    columns.push(("mean", col_f64(vec![2.0, f64::NAN, f64::INFINITY])));
+    let fields = box_fields(&columns);
+    let creations = pool.buffer_creations();
+
+    let id = pool
+        .upsert_record(
+            "box",
+            &RecordSource {
+                schema: BOX_PLOT_RECORD,
+                fields: &fields,
+            },
+            ctx(),
+        )
+        .expect("record upsert");
+    assert_eq!(id, "box");
+    assert_eq!(
+        pool.buffer_creations() - creations,
+        1,
+        "a record is one staging buffer"
+    );
+
+    let record = pool.record("box").expect("resident record");
+    assert_eq!(record.slot().len, 3);
+    assert_eq!(
+        read_column_values(ctx(), &pool, record.field("median").unwrap()),
+        [1.0, 2.0, 3.0]
+    );
+    assert_eq!(
+        read_column_values(ctx(), &pool, record.field("whisker_high").unwrap()),
+        [41.0, 42.0, 43.0]
+    );
+    assert!(record.field("ci_low").is_none(), "an absent optional field");
+    assert!(record.field("no_such_field").is_none());
+    assert_eq!(
+        record.field_at(0).unwrap().offset,
+        record.field("median").unwrap().offset,
+        "slot 0 is the schema's first field"
+    );
+
+    let stats = pool.record_stats("box").unwrap();
+    assert_eq!(stats, record.stats());
+    assert_eq!(stats.len, 3);
+    assert_eq!(
+        stats.present,
+        [
+            true, true, true, true, true, true, false, false, false, false, false, false
+        ]
+    );
+    assert_eq!(
+        (stats.min[1], stats.max[1], stats.finite[1], stats.nan[1]),
+        (11.0, 13.0, 3, 0)
+    );
+    // mean: one finite value, one NaN, one infinity (neither finite nor NaN).
+    assert_eq!(
+        (stats.min[5], stats.max[5], stats.finite[5], stats.nan[5]),
+        (2.0, 2.0, 1, 1)
+    );
+    assert_eq!(stats.min[6], f64::INFINITY);
+    assert_eq!(stats.max[6], f64::NEG_INFINITY);
+    assert_eq!((stats.finite[6], stats.nan[6]), (0, 0));
+
+    // The members are pool columns, in one region of the batch's layout.
+    let members: Vec<&str> = record
+        .slot()
+        .fields
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(members.len(), 6);
+    assert!(members.iter().all(|member| pool.is_member_column(member)));
+    assert_eq!(
+        record.slot().epoch,
+        pool.allocation_epoch(members[0]).unwrap()
+    );
+    assert_eq!(pool.used_bytes(), 6 * ALIGN, "six one-block fields");
+    assert!(pool.slot(members[0]).unwrap().stack_extent.is_none());
+    assert_eq!(pool.composite_kind("box"), Some("a record"));
+    assert!(!pool.is_member_column("box"));
+}
+
+/// Replacing a record (same id, new length) uploads the new fields, frees
+/// the old ones, bumps the epoch and leaves only the new bytes resident.
+#[test]
+fn a_record_replacement_takes_a_new_length_and_a_new_epoch() {
+    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let first = five_fields(3, 1.0);
+    let fields = box_fields(&first);
+    let source = RecordSource {
+        schema: BOX_PLOT_RECORD,
+        fields: &fields,
+    };
+    pool.upsert_record("box", &source, ctx()).unwrap();
+    let old_epoch = pool.record("box").unwrap().slot().epoch;
+    let old_members = pool.record("box").unwrap().slot().fields.clone();
+    let old_generation = pool.generation();
+
+    let second = five_fields(40, 100.0);
+    let fields = box_fields(&second);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+
+    let record = pool.record("box").unwrap();
+    assert_eq!(record.slot().len, 40);
+    assert_eq!(record.stats().len, 40);
+    assert!(
+        record.slot().epoch > old_epoch,
+        "a replacement bumps the epoch"
+    );
+    assert!(
+        pool.generation() > old_generation,
+        "freed members invalidate handles"
+    );
+    for member in old_members.iter().flatten() {
+        assert!(pool.slot(member).is_none(), "{member:?} was freed");
+        assert!(!pool.is_member_column(member));
+    }
+    let median = read_column_values(ctx(), &pool, record.field("median").unwrap());
+    assert_eq!(median.len(), 40);
+    assert_eq!(median[39], 139.0);
+    // 40 pairs = 320 bytes: two blocks per field, nothing else resident.
+    assert_eq!(pool.used_bytes(), 5 * 2 * ALIGN);
+}
+
+/// Deleting a record frees every field and returns the pool to one free
+/// region; deleting it again reports `false`.
+#[test]
+fn removing_a_record_or_ragged_column_frees_its_members() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let columns = five_fields(4, 0.0);
+    let fields = box_fields(&columns);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let values = col_f64(vec![1.0, 2.0, 3.0]);
+    let offsets = col_f64(vec![0.0, 1.0, 3.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    assert_eq!(pool.slots.len(), 7);
+
+    assert!(pool.remove_record("box").unwrap());
+    assert!(pool.record("box").is_none());
+    assert!(pool.record_stats("box").is_none());
+    assert!(!pool.remove_record("box").unwrap());
+    assert_eq!(pool.slots.len(), 2);
+
+    assert!(pool.remove_ragged("outliers").unwrap());
+    assert!(pool.ragged("outliers").is_none());
+    assert!(pool.ragged_stats("outliers").is_none());
+    assert!(!pool.remove_ragged("outliers").unwrap());
+    assert!(pool.slots.is_empty());
+    assert!(pool.allocation_epochs.is_empty());
+    assert_eq!(pool.used_bytes(), 0);
+    assert_eq!(free_state(&pool.free), [(0, 16 * ALIGN)]);
+}
+
+/// The schema is checked by name and the lengths are checked before
+/// anything is allocated; every rejection names its reason and leaves the
+/// pool exactly as it was.
+#[test]
+fn record_schema_and_length_errors_are_explicit_and_change_nothing() {
+    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let other = col_f64(vec![1.0]);
+    pool.add_column("taken".into(), &other, ctx()).unwrap();
+    let values = col_f64(vec![1.0]);
+    let offsets = col_f64(vec![0.0, 1.0]);
+    pool.upsert_ragged(
+        "ragged",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let before = full_pool_state(&pool);
+
+    let base = five_fields(3, 0.0);
+    let short = col_f64(vec![1.0, 2.0]);
+    let empty = col_f64(Vec::new());
+    let mut cases: Vec<(&str, Vec<(&str, &dyn ColumnSource)>, &str)> = Vec::new();
+    let mut unknown = box_fields(&base);
+    unknown.push(("mode", &short));
+    cases.push(("box", unknown, "'mode' is not a field"));
+    let mut repeated = box_fields(&base);
+    repeated.push(("median", &short));
+    cases.push(("box", repeated, "given twice"));
+    let missing: Vec<_> = box_fields(&base)
+        .into_iter()
+        .filter(|(name, _)| *name != "q3")
+        .collect();
+    cases.push(("box", missing, "required record field 'q3' is missing"));
+    let mut mismatch = box_fields(&base);
+    mismatch.push(("mean", &short));
+    cases.push(("box", mismatch, "'mean' has 2 rows but 'median' has 3"));
+    let empties: Vec<(&str, &dyn ColumnSource)> =
+        ["median", "q1", "q3", "whisker_low", "whisker_high"]
+            .iter()
+            .map(|name| (*name, &empty as &dyn ColumnSource))
+            .collect();
+    cases.push(("box", empties, "at least one row"));
+    cases.push(("taken", box_fields(&base), "the id is a column"));
+    cases.push(("ragged", box_fields(&base), "the id is a ragged column"));
+    cases.push(("", box_fields(&base), "must not be empty"));
+    cases.push(("a\u{1f}b", box_fields(&base), "U+001F"));
+
+    for (id, fields, expected) in &cases {
+        let reason = invalid_reason(pool.upsert_record(
+            *id,
+            &RecordSource {
+                schema: BOX_PLOT_RECORD,
+                fields,
+            },
+            ctx(),
+        ));
+        assert!(
+            reason.contains(expected),
+            "{id:?}: {reason:?} lacks {expected:?}"
+        );
+        assert_eq!(full_pool_state(&pool), before, "{expected}: pool changed");
+        assert!(pool.record(id).is_none());
+    }
+
+    // A schema of optional fields only still needs one field.
+    const OPTIONAL: &RecordSchema = &[("a", false), ("b", false)];
+    let reason = invalid_reason(pool.upsert_record(
+        "optional",
+        &RecordSource {
+            schema: OPTIONAL,
+            fields: &[],
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("at least one field"), "{reason}");
+    assert_eq!(full_pool_state(&pool), before);
+}
+
+/// `MAX_RECORD_FIELDS` bounds both the schema and the source.
+#[test]
+fn a_record_holds_at_most_max_record_fields() {
+    let Some((device, queue, mut pool)) = mk_pool(64 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    const NAMES: [&str; 13] = [
+        "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m",
+    ];
+    const WIDE: &RecordSchema = &[
+        ("a", true),
+        ("b", false),
+        ("c", false),
+        ("d", false),
+        ("e", false),
+        ("f", false),
+        ("g", false),
+        ("h", false),
+        ("i", false),
+        ("j", false),
+        ("k", false),
+        ("l", false),
+        ("m", false),
+    ];
+    let column = col_f64(vec![1.0, 2.0]);
+    let fields: Vec<(&str, &dyn ColumnSource)> = NAMES
+        .iter()
+        .map(|name| (*name, &column as &dyn ColumnSource))
+        .collect();
+    let reason = invalid_reason(pool.upsert_record(
+        "wide",
+        &RecordSource {
+            schema: WIDE,
+            fields: &fields[..1],
+        },
+        ctx(),
+    ));
+    assert!(
+        reason.contains("schema has 13 fields") && reason.contains("MAX_RECORD_FIELDS (12)"),
+        "{reason}"
+    );
+
+    let full: &RecordSchema = &WIDE[..MAX_RECORD_FIELDS];
+    let reason = invalid_reason(pool.upsert_record(
+        "wide",
+        &RecordSource {
+            schema: full,
+            fields: &fields,
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("source has 13 fields"), "{reason}");
+    assert!(pool.slots.is_empty());
+
+    // Exactly MAX_RECORD_FIELDS fields fit.
+    pool.upsert_record(
+        "wide",
+        &RecordSource {
+            schema: full,
+            fields: &fields[..MAX_RECORD_FIELDS],
+        },
+        ctx(),
+    )
+    .unwrap();
+    let stats = pool.record_stats("wide").unwrap();
+    assert_eq!(stats.present, [true; MAX_RECORD_FIELDS]);
+    assert_eq!(pool.slots.len(), MAX_RECORD_FIELDS);
+}
+
+/// A failure after the batch was staged rolls the batch back: an
+/// out-of-space replacement and a failing dependent preparation both leave
+/// the previous record, its values and the allocator exactly as they were.
+#[test]
+fn a_failed_record_upsert_rolls_the_batch_back() {
+    let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let first = five_fields(3, 1.0);
+    let fields = box_fields(&first);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let before = full_pool_state(&pool);
+    let stats = pool.record_stats("box").unwrap();
+    let epoch = pool.record("box").unwrap().slot().epoch;
+
+    // Ten blocks of new fields do not fit beside the five live ones.
+    let wide = five_fields(40, 0.0);
+    let fields = box_fields(&wide);
+    let result = pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    );
+    assert!(
+        matches!(
+            result,
+            Err(crate::FiggyError::Pool(AllocError::OutOfSpace { .. }))
+        ),
+        "{result:?}"
+    );
+    assert_eq!(full_pool_state(&pool), before);
+    assert_eq!(pool.record_stats("box"), Some(stats));
+
+    // The batch fits, but the dependent preparation fails after staging.
+    let same = five_fields(3, 50.0);
+    let fields = box_fields(&same);
+    let result = pool.upsert_record_with(
+        "box".into(),
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+        |provisional, relocated| {
+            assert!(!relocated);
+            let record_members = provisional.slots.len();
+            assert_eq!(
+                record_members, 5,
+                "the provisional pool holds only the new fields"
+            );
+            Err::<(), _>(crate::FiggyError::InvalidSeriesConfig {
+                series_id: "box".into(),
+                reason: "injected".into(),
+            })
+        },
+    );
+    assert_eq!(invalid_reason(result), "injected");
+    assert_eq!(full_pool_state(&pool), before);
+    let record = pool.record("box").unwrap();
+    assert_eq!(record.slot().epoch, epoch);
+    assert_eq!(
+        read_column_values(ctx(), &pool, record.field("median").unwrap()),
+        [1.0, 2.0, 3.0]
+    );
+}
+
+/// A ragged column's values and offsets upload in one batch; the observer
+/// measures the values' range and counts, the offsets' monotonicity and the
+/// longest group in the same pass.
+#[test]
+fn a_ragged_column_uploads_with_offset_statistics() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = col_f64(vec![4.0, -2.0, f64::NAN, 9.0, 1.0]);
+    let offsets = col_f64(vec![0.0, 2.0, 2.0, 5.0]);
+    let creations = pool.buffer_creations();
+    let id = pool
+        .upsert_ragged(
+            "outliers",
+            &RaggedSource {
+                values: &values,
+                offsets: &offsets,
+            },
+            ctx(),
+        )
+        .unwrap();
+    assert_eq!(id, "outliers");
+    assert_eq!(pool.buffer_creations() - creations, 1, "one staging buffer");
+
+    let ragged = pool.ragged("outliers").unwrap();
+    assert_eq!((ragged.slot().groups, ragged.slot().total), (3, 5));
+    assert_eq!(
+        ragged.stats(),
+        RaggedStats {
+            groups: 3,
+            total: 5,
+            min: -2.0,
+            max: 9.0,
+            finite: 4,
+            nan: 1,
+            non_decreasing: true,
+            max_group: 3,
+        }
+    );
+    assert_eq!(pool.ragged_stats("outliers"), Some(ragged.stats()));
+    assert_eq!(
+        read_column_values(ctx(), &pool, ragged.offsets()),
+        [0.0, 2.0, 2.0, 5.0]
+    );
+    let read = read_column_values(ctx(), &pool, ragged.values());
+    assert_eq!((read[0], read[1], read[3], read[4]), (4.0, -2.0, 9.0, 1.0));
+    assert!(read[2].is_nan());
+    assert_eq!(
+        ragged.slot().epoch,
+        pool.allocation_epoch(&ragged.slot().values).unwrap()
+    );
+    assert_eq!(pool.composite_kind("outliers"), Some("a ragged column"));
+    assert!(pool.is_member_column(&ragged.slot().offsets));
+    assert_eq!(pool.used_bytes(), 2 * ALIGN);
+}
+
+/// Offsets that decrease, do not start at 0, do not end at the value count
+/// or are not integers are rejected after the observer measured them; the
+/// abandoned batch leaves the pool exactly as it was, an old ragged column
+/// included.
+#[test]
+fn invalid_ragged_offsets_are_rejected_and_roll_the_batch_back() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = col_f64(vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    let good = col_f64(vec![0.0, 5.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &good,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let before = full_pool_state(&pool);
+    let stats = pool.ragged_stats("outliers").unwrap();
+
+    let cases: [(&[f64], &str); 6] = [
+        (&[0.0, 3.0, 2.0, 5.0], "non-decreasing"),
+        (&[1.0, 3.0, 5.0], "start at 0"),
+        (
+            &[0.0, 2.0, 4.0],
+            "last ragged offset is 4 but there are 5 values",
+        ),
+        (&[0.0, 2.5, 5.0], "finite non-negative integers"),
+        (&[0.0, f64::NAN, 5.0], "finite non-negative integers"),
+        (&[0.0], "at least two"),
+    ];
+    for (offsets, expected) in cases {
+        let offsets = col_f64(offsets.to_vec());
+        for id in ["outliers", "fresh"] {
+            let reason = invalid_reason(pool.upsert_ragged(
+                id,
+                &RaggedSource {
+                    values: &values,
+                    offsets: &offsets,
+                },
+                ctx(),
+            ));
+            assert!(
+                reason.contains(expected),
+                "{id}: {reason:?} lacks {expected:?}"
+            );
+            assert_eq!(full_pool_state(&pool), before, "{expected}");
+        }
+    }
+    let empty = col_f64(Vec::new());
+    let reason = invalid_reason(pool.upsert_ragged(
+        "fresh",
+        &RaggedSource {
+            values: &empty,
+            offsets: &good,
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("at least one value"), "{reason}");
+    assert!(pool.ragged("fresh").is_none());
+    assert_eq!(pool.ragged_stats("outliers"), Some(stats));
+    let ragged = pool.ragged("outliers").unwrap();
+    assert_eq!(
+        read_column_values(ctx(), &pool, ragged.values()),
+        [1.0, 2.0, 3.0, 4.0, 5.0]
+    );
+}
+
+/// A ragged replacement takes a new group count and a new epoch and frees
+/// the old members; a record and a ragged column cannot share an id.
+#[test]
+fn a_ragged_replacement_takes_new_groups_and_a_new_epoch() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = col_f64(vec![1.0, 2.0]);
+    let offsets = col_f64(vec![0.0, 1.0, 2.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let old = pool.ragged("outliers").unwrap().slot().clone();
+
+    let values = col_f64((0..70).map(f64::from).collect());
+    let offsets = col_f64(vec![0.0, 0.0, 70.0, 70.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let new = pool.ragged("outliers").unwrap();
+    assert!(new.slot().epoch > old.epoch);
+    assert_eq!(
+        (new.stats().groups, new.stats().total, new.stats().max_group),
+        (3, 70, 70)
+    );
+    assert!(pool.slot(&old.values).is_none() && pool.slot(&old.offsets).is_none());
+    // 70 pairs = 560 bytes: three blocks of values, one of offsets.
+    assert_eq!(pool.used_bytes(), 4 * ALIGN);
+
+    let columns = five_fields(2, 0.0);
+    let fields = box_fields(&columns);
+    let reason = invalid_reason(pool.upsert_record(
+        "outliers",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("the id is a ragged column"), "{reason}");
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let reason = invalid_reason(pool.upsert_ragged(
+        "box",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    ));
+    assert!(reason.contains("the id is a record"), "{reason}");
+}
+
+/// The monitor counts a record's and a ragged column's member columns like
+/// any column: used bytes, one staging buffer per upload, the staging peak,
+/// and the freed bytes after removal.
+#[test]
+fn the_monitor_accounts_records_and_ragged_columns() {
+    let Some((device, queue, mut pool)) = mk_pool(32 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let creations = pool.buffer_creations();
+    let columns = five_fields(40, 0.0);
+    let fields = box_fields(&columns);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let record_bytes = 5 * 2 * ALIGN;
+    assert_eq!(pool.used_bytes(), record_bytes);
+    assert_eq!(pool.free_bytes(), 32 * ALIGN - record_bytes);
+    assert_eq!(pool.buffer_creations() - creations, 1);
+    assert!(
+        pool.peak_bytes() >= pool.gpu_bytes() + record_bytes,
+        "the staging buffer of the whole record coexists with the pool"
+    );
+
+    let values = col_f64((0..33).map(f64::from).collect());
+    let offsets = col_f64(vec![0.0, 33.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let ragged_bytes = 2 * ALIGN + ALIGN;
+    assert_eq!(pool.used_bytes(), record_bytes + ragged_bytes);
+    assert_eq!(pool.buffer_creations() - creations, 2);
+    assert_eq!(
+        pool.gpu_bytes(),
+        32 * ALIGN,
+        "members live in the one primary buffer"
+    );
+
+    pool.remove_record("box").unwrap();
+    assert_eq!(pool.used_bytes(), ragged_bytes);
+    pool.remove_ragged("outliers").unwrap();
+    assert_eq!(pool.used_bytes(), 0);
+    assert_eq!(pool.free_bytes(), 32 * ALIGN);
+    assert_eq!(
+        pool.buffer_creations() - creations,
+        2,
+        "removal creates no buffer"
+    );
+}
+
+/// Defragmentation moves member columns like any column; the record and the
+/// ragged column follow because they name their members, not offsets.
+#[test]
+fn records_and_ragged_columns_survive_defragmentation_and_clear() {
+    let Some((device, queue, mut pool)) = mk_pool(32 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let filler = col_f64(vec![0.0; 100]);
+    pool.add_column("filler".into(), &filler, ctx()).unwrap();
+    let columns = five_fields(3, 1.0);
+    let fields = box_fields(&columns);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let before = pool.record("box").unwrap().field("median").unwrap().offset;
+    pool.remove_column("filler").unwrap();
+    assert!(pool.defragment(ctx()).unwrap());
+    let record = pool.record("box").unwrap();
+    let after = record.field("median").unwrap();
+    assert!(after.offset < before, "the member moved");
+    assert_eq!(read_column_values(ctx(), &pool, after), [1.0, 2.0, 3.0]);
+
+    pool.clear().unwrap();
+    assert!(pool.record("box").is_none());
+    assert!(pool.composite_kind("box").is_none());
+}
+
+/// A shader reads a record field and a ragged group by their pool lane
+/// bases (`offset / 4`), the offsets as `(hi, lo)` pairs: the convention
+/// `SHADER_COMMON.md` states for records and ragged columns.
+#[test]
+fn a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let columns = five_fields(3, 1.5);
+    let fields = box_fields(&columns);
+    pool.upsert_record(
+        "box",
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let values = col_f64(vec![10.0, 20.0, 30.0, 40.0, 50.0]);
+    let offsets = col_f64(vec![0.0, 2.0, 2.0, 5.0]);
+    pool.upsert_ragged(
+        "outliers",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let record = pool.record("box").unwrap();
+    let ragged = pool.ragged("outliers").unwrap();
+    let lane = |handle: ColumnHandle| (handle.offset / 4) as u32;
+    // (field lane base, row, values lane base, offsets lane base, group, pad)
+    let params: [u32; 8] = [
+        lane(record.field("q3").unwrap()),
+        2,
+        lane(ragged.values()),
+        lane(ragged.offsets()),
+        2,
+        0,
+        0,
+        0,
+    ];
+
+    const SHADER: &str = r#"
+struct Params { field_base: u32, row: u32, values_base: u32, offsets_base: u32, group: u32 }
+@group(0) @binding(0) var<storage, read> pool: array<f32>;
+@group(0) @binding(1) var<storage, read> params: Params;
+@group(0) @binding(2) var<storage, read_write> out: array<f32>;
+
+fn pair_at(base: u32, index: u32) -> f32 {
+    return pool[base + 2u * index] + pool[base + 2u * index + 1u];
+}
+
+@compute @workgroup_size(1)
+fn main() {
+    out[0] = pair_at(params.field_base, params.row);
+    let start = u32(pair_at(params.offsets_base, params.group));
+    let end = u32(pair_at(params.offsets_base, params.group + 1u));
+    out[1] = f32(end - start);
+    for (var i = 0u; i < 4u; i++) {
+        if (start + i < end) {
+            out[2u + i] = pair_at(params.values_base, start + i);
+        } else {
+            out[2u + i] = -1.0;
+        }
+    }
+}
+"#;
+    let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("figgy record read-back test"),
+        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+    });
+    let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+        label: Some("figgy record read-back test"),
+        layout: None,
+        module: &module,
+        entry_point: Some("main"),
+        compilation_options: Default::default(),
+        cache: None,
+    });
+    let params_buffer = device.create_buffer(&BufferDescriptor {
+        label: Some("figgy record read-back params"),
+        size: 32,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    queue.write_buffer(&params_buffer, 0, bytemuck::cast_slice(&params));
+    let out_bytes = 6 * 4;
+    let out = device.create_buffer(&BufferDescriptor {
+        label: Some("figgy record read-back out"),
+        size: out_bytes,
+        usage: BufferUsages::STORAGE | BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    });
+    let readback = device.create_buffer(&BufferDescriptor {
+        label: Some("figgy record read-back readback"),
+        size: out_bytes,
+        usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy record read-back test"),
+        layout: &pipeline.get_bind_group_layout(0),
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: pool.buffer().as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: params_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: out.as_entire_binding(),
+            },
+        ],
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("figgy record read-back test"),
+    });
+    {
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("figgy record read-back test"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&pipeline);
+        pass.set_bind_group(0, &bind_group, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+    }
+    encoder.copy_buffer_to_buffer(&out, 0, &readback, 0, out_bytes);
+    let (sender, receiver) = std::sync::mpsc::channel();
+    encoder.map_buffer_on_submit(
+        &readback,
+        wgpu::MapMode::Read,
+        0..out_bytes,
+        move |result| {
+            let _ = sender.send(result);
+        },
+    );
+    let submission = queue.submit(std::iter::once(encoder.finish()));
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(std::time::Duration::from_secs(30)),
+        })
+        .expect("read-back poll");
+    receiver
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("read-back callback")
+        .expect("map read-back");
+    let mapped = readback
+        .slice(..out_bytes)
+        .get_mapped_range()
+        .expect("read-back is mapped after map_async");
+    let read: Vec<f32> = mapped
+        .chunks_exact(4)
+        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .collect();
+    drop(mapped);
+    readback.unmap();
+    // q3 of row 2 is 1.5 + 20 + 2; group 2 is values[2..5].
+    assert_eq!(read, [23.5, 3.0, 30.0, 40.0, 50.0, -1.0]);
+}

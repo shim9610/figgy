@@ -384,6 +384,14 @@ impl Renderer {
                 reason: "remove the streamed registration before resident insertion",
             });
         }
+        // A record's or ragged column's id, and its member columns, are not
+        // columns a host can insert or replace.
+        if self.pool.is_member_column(id) {
+            return Err(FiggyError::ReservedColumnId { id: id.to_owned() });
+        }
+        if self.pool.composite_kind(id).is_some() {
+            return Err(data_render::AllocError::DuplicateId(id.to_owned()).into());
+        }
         Ok(())
     }
 
@@ -462,6 +470,15 @@ impl Renderer {
     ) -> Result<()> {
         for (index, source) in columns.iter().enumerate() {
             source.validate()?;
+            if let Some(kind) = self.pool.composite_kind(&source.id) {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: source.id.clone(),
+                    reason: format!(
+                        "the id is {kind}; streaming is not extended to records and ragged \
+                         columns, which are resident only"
+                    ),
+                });
+            }
             if self.pool.slot(&source.id).is_some()
                 || columns[..index].iter().any(|s| s.id == source.id)
             {

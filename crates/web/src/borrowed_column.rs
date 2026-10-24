@@ -403,6 +403,14 @@ impl JsStreamColumn {
             Self::F64(values) => renderer::StreamColumnSource::HiLo(values),
         }
     }
+    /// The typed array as a batch upload source: a `Float64Array` keeps its
+    /// `(hi, lo)` split, as [`BorrowedSplitF64Column`] does for slices.
+    pub(crate) fn column_source(&self) -> &dyn ColumnSource {
+        match self {
+            Self::F32(values) => values,
+            Self::F64(values) => values,
+        }
+    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -494,6 +502,34 @@ fn js_f64_extreme(values: &JsF64StreamSource, min: bool) -> f64 {
         };
     }
     result
+}
+
+/// The batch path accepts only `&dyn ColumnSource`, so the typed array writes
+/// its split pairs through this trait too (record fields are batch uploads).
+#[cfg(target_arch = "wasm32")]
+impl ColumnSource for JsF64StreamSource {
+    fn len(&self) -> usize {
+        HiLoColumnSource::len(self)
+    }
+
+    fn min(&self) -> f64 {
+        HiLoColumnSource::min(self)
+    }
+
+    fn max(&self) -> f64 {
+        HiLoColumnSource::max(self)
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), self.0.length() as usize * size_of::<f32>());
+        for (index, bytes) in dst.chunks_exact_mut(size_of::<f32>()).enumerate() {
+            bytes.copy_from_slice(&(self.0.get_index(index as u32) as f32).to_le_bytes());
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
+        HiLoColumnSource::write_f32_pair_le_into_with_stats(self, dst)
+    }
 }
 
 #[cfg(target_arch = "wasm32")]

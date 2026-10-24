@@ -72,8 +72,10 @@ pub use data_config::{
     ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use data_render::{
-    AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
-    GrowthPolicy, StackExtent,
+    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
+    GpuBudget, GrowthPolicy, MAX_RAGGED_VALUES, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot,
+    RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource,
+    RecordStats, StackExtent,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};

@@ -1004,8 +1004,13 @@ pub(super) trait ColumnRegistration {
 }
 
 impl ColumnRegistration for ColumnPool {
+    /// A record's or ragged column's member columns are not columns a series
+    /// can reference: they belong to their record and change id on every
+    /// replacement.
     fn column_len(&self, id: &str) -> Option<u64> {
-        self.slot(id).map(|slot| slot.len_values as u64)
+        self.slot(id)
+            .filter(|_| !self.is_member_column(id))
+            .map(|slot| slot.len_values as u64)
     }
 }
 
@@ -2695,6 +2700,9 @@ impl Renderer {
         if self.pool.slot(id).is_none() && !self.streaming_sources.contains_key(id) {
             return Ok(false);
         }
+        if self.pool.is_member_column(id) {
+            return Err(FiggyError::ReservedColumnId { id: id.to_owned() });
+        }
         if let Some((chart_id, config)) = config_override.as_ref() {
             crate::chart::validate_renderer_config(config)?;
             if !self.chart_states.contains_key(chart_id) {
@@ -3067,6 +3075,192 @@ impl Renderer {
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
         Ok(self.begin_upsert_hilo_column(id, source)?.commit())
+    }
+
+    /// Insert or replace the record `id`: named scalar fields of one length,
+    /// checked by name against `source.schema` and uploaded as one batch
+    /// transaction ([`ColumnPool::upsert_record`]). Records are resident
+    /// only: a streamed id is rejected, and so is an id that names a column
+    /// or a ragged column. Failure-atomic, as [`Self::add_columns`]; the
+    /// active picker is prepared against the final pool before publication.
+    pub fn upsert_record(
+        &mut self,
+        id: impl Into<RecordId>,
+        source: &RecordSource<'_>,
+    ) -> Result<RecordId> {
+        let id = id.into();
+        self.reject_streamed_composite(&id, "a record")?;
+        let old = self
+            .pool
+            .record(&id)
+            .map(|record| record.slot().fields.clone())
+            .unwrap_or_default();
+        let mut changed = [""; data_render::MAX_RECORD_FIELDS + 1];
+        changed[0] = id.as_str();
+        let mut count = 1usize;
+        for member in old.iter().flatten() {
+            changed[count] = member;
+            count += 1;
+        }
+        let replaced = count > 1;
+        let changed = &changed[..count];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let ctx = pool_alloc_ctx(
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            self.memory_budget,
+            self.gpu_ledger.as_ref(),
+        );
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let (relocated, picker) =
+            self.pool
+                .upsert_record_with(id.clone(), source, ctx, move |pool, relocated| {
+                    let picker = prepare_picker_for_pool_mutation(
+                        picker_state,
+                        pool,
+                        chart_states,
+                        relocated,
+                        changed,
+                    )?;
+                    Ok((relocated, picker))
+                })?;
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.settle_composite_defrag(relocated, replaced);
+        Ok(id)
+    }
+
+    /// Insert or replace the ragged column `id`: groups of values with
+    /// offsets, uploaded as one batch transaction whose write observer
+    /// rejects offsets that do not start at 0, decrease, or do not end at the
+    /// value count ([`ColumnPool::upsert_ragged`]). Resident only, as
+    /// [`Self::upsert_record`].
+    pub fn upsert_ragged(
+        &mut self,
+        id: impl Into<RaggedId>,
+        source: &RaggedSource<'_>,
+    ) -> Result<RaggedId> {
+        let id = id.into();
+        self.reject_streamed_composite(&id, "a ragged column")?;
+        let old = self
+            .pool
+            .ragged(&id)
+            .map(|ragged| (ragged.slot().values.clone(), ragged.slot().offsets.clone()));
+        let changed_ids = match old.as_ref() {
+            Some((values, offsets)) => [id.as_str(), values.as_str(), offsets.as_str()],
+            None => [id.as_str(), "", ""],
+        };
+        let replaced = old.is_some();
+        let changed = &changed_ids[..if replaced { 3 } else { 1 }];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let ctx = pool_alloc_ctx(
+            self.device.as_ref(),
+            self.queue.as_ref(),
+            self.memory_budget,
+            self.gpu_ledger.as_ref(),
+        );
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let (relocated, picker) =
+            self.pool
+                .upsert_ragged_with(id.clone(), source, ctx, move |pool, relocated| {
+                    let picker = prepare_picker_for_pool_mutation(
+                        picker_state,
+                        pool,
+                        chart_states,
+                        relocated,
+                        changed,
+                    )?;
+                    Ok((relocated, picker))
+                })?;
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.settle_composite_defrag(relocated, replaced);
+        Ok(id)
+    }
+
+    /// Delete the record `id` and free its member columns. `false` when no
+    /// such record is resident.
+    pub fn remove_record(&mut self, id: &str) -> Result<bool> {
+        let Some(record) = self.pool.record(id) else {
+            return Ok(false);
+        };
+        let old = record.slot().fields.clone();
+        let mut changed = [""; data_render::MAX_RECORD_FIELDS + 1];
+        changed[0] = id;
+        let mut count = 1usize;
+        for member in old.iter().flatten() {
+            changed[count] = member;
+            count += 1;
+        }
+        let changed = &changed[..count];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let picker = self.pool.remove_record_with(id, move |pool| {
+            prepare_picker_for_pool_mutation(picker_state, pool, chart_states, false, changed)
+        })?;
+        let Some(picker) = picker else {
+            return Ok(false);
+        };
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.pending_defrag = true;
+        Ok(true)
+    }
+
+    /// Delete the ragged column `id` and free its two member columns.
+    /// `false` when no such ragged column is resident.
+    pub fn remove_ragged(&mut self, id: &str) -> Result<bool> {
+        let Some(ragged) = self.pool.ragged(id) else {
+            return Ok(false);
+        };
+        let (values, offsets) = (ragged.slot().values.clone(), ragged.slot().offsets.clone());
+        let changed_ids = [id, values.as_str(), offsets.as_str()];
+        let changed = &changed_ids[..];
+        let invalidation = self.prepare_columns_invalidation(changed.iter().copied())?;
+        let (picker_state, chart_states) = (&mut self.picker, &self.chart_states);
+        let picker = self.pool.remove_ragged_with(id, move |pool| {
+            prepare_picker_for_pool_mutation(picker_state, pool, chart_states, false, changed)
+        })?;
+        let Some(picker) = picker else {
+            return Ok(false);
+        };
+        invalidation.publish(&mut self.chart_states, &mut self.visual_revision);
+        if let Some(picker) = picker {
+            picker.commit();
+        }
+        self.pending_defrag = true;
+        Ok(true)
+    }
+
+    /// Records and ragged columns are resident only: streaming is not
+    /// extended to them (CLAUDE.md rule 8).
+    fn reject_streamed_composite(&self, id: &str, kind: &str) -> Result<()> {
+        if self.streaming_sources.contains_key(id) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: id.to_owned(),
+                reason: format!(
+                    "the id is a streamed column; streaming is not extended to records and \
+                     ragged columns, so {kind} needs a resident id"
+                ),
+            });
+        }
+        Ok(())
+    }
+
+    /// Maintenance after a record or ragged upsert: freed old members leave
+    /// holes worth compacting; a relayout without them already compacted.
+    fn settle_composite_defrag(&mut self, relocated: bool, replaced: bool) {
+        if replaced {
+            self.pending_defrag = true;
+        } else if relocated {
+            self.pending_defrag = false;
+        }
     }
 
     /// Remove a column and cascade-remove every renderer-owned series that

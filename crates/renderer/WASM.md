@@ -283,6 +283,19 @@ GPU 풀은 값마다 8바이트를 쓴다. 위 배치는 값 80만 개, 약 6.4M
 - 리비전은 배치 단위가 아니라 컬럼마다 증가한다.
 - `register_columns_f64`도 `(hi, lo)` 정밀도를 유지하며 f32 하나로 축소하지 않는다.
 
+박스 플롯용 레코드와 가변 길이 그룹(ragged) 컬럼은 각각 한 번의 배치 업로드로 등록한다.
+
+```js
+// 필드 이름을 키로, 같은 길이의 Float32Array/Float64Array를 값으로 갖는 객체. 행 하나가 박스 하나다.
+chart.register_record("boxes", { median, q1, q3, whisker_low, whisker_high, mean });
+// 그룹 g는 values[offsets[g]..offsets[g + 1]]이다. offsets는 0에서 시작하고 줄어들지 않으며 values.length로 끝난다.
+chart.register_ragged("outliers", values, offsets);
+```
+
+- `register_record`의 필드는 `median`, `q1`, `q3`, `whisker_low`, `whisker_high`(필수)와 `mean`, `sample_count`, `ci_low`, `ci_high`(선택)이다. 없는 선택 필드는 NaN으로 읽고, 모든 필드가 NaN인 행은 빠진 박스다. 알 수 없는 필드, 빠진 필수 필드, 길이가 다른 필드는 오류다. 배열은 복사하지 않고 스테이징 버퍼에 바로 기록한다.
+- `register_ragged`는 `Float64Array` 두 개를 `(hi, lo)` 쌍으로 업로드한다. offsets가 줄어들거나 0에서 시작하지 않거나 정수가 아니거나 values.length로 끝나지 않으면 업로드를 버리고 오류를 낸다.
+- 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
+
 빈 배열은 거부한다. 유효한 `update_register_*` 호출은 같은 값이라도 매번 교체 업로드를 수행하며, 실패하면 기존 상태를 유지한다. 해시만 비교해 업로드를 생략하지 않는다. `set_series`는 어떤 등록 컬럼을 그릴지만 바꾸고 컬럼을 업로드하지 않는다.
 
 <a id="34-이벤트-입력--포인터를-모델-정책으로-그대로-전달"></a>
@@ -510,7 +523,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 객체 수명 | `ready` Promise, `figgy-ready` / `figgy-init-progress` / `figgy-error` / `figgy-select` / `figgy-drag` / `figgy-release` / `figgy-resize` / `figgy-stream-progress` 이벤트, `free()`. 이벤트의 `detail`은 `figgy-ready`가 `{ chart, kernel }`, `figgy-select`가 `{ selected, x, y, originalEvent }`, `figgy-drag`가 `{ x, y, dx, dy }`, `figgy-release`가 `{ selected }`, `figgy-resize`가 `{ width, height, cssWidth, cssHeight, devicePixelRatio }`, `figgy-error`가 `{ error, operation?, recoverable? }`, `figgy-stream-progress`가 `{ executionId, revision, status, submittedPrimitives, totalPrimitives }`이다. 이미 완료된 스트림 화면을 다시 쓰는 `render_chart()`의 `figgy-stream-progress`에는 `status`, `submittedPrimitives`, `totalPrimitives`만 들어 있다. 첫 프레임과 준비 완료 알림 후 백그라운드 피킹 준비를 시작한다. 실패하면 `operation: "prewarm_gpu_picking"`, `recoverable: true`인 `figgy-error`를 보내며 준비 완료 상태는 유지한다. |
 | 폰트 | `register_font(Uint8Array)`는 TTF/OTF/TTC를 등록하고 글꼴 이름 배열을 반환한다. 반환된 이름을 `font`에 사용할 수 있다. 등록 폰트가 시스템 폰트보다 우선한다. 내용이 같은 파일은 중복 저장하거나 폰트 세대를 늘리지 않으며 글꼴 ID별 데이터를 재사용한다. 찾을 수 없는 글꼴은 내장 Liberation Sans로 대체한다. 브라우저에서는 설치된 시스템 폰트를 찾지 않으므로 한글을 표시하려면 한글 폰트를 등록해야 한다. |
 | 스타일 옵션 | 독립 함수 `draw_style_modes()`는 모드 이름의 JSON 배열을, `draw_style_param_specs(mode)`는 `{key, min, max, default, integer}`의 JSON 배열을 반환한다. UI 슬라이더를 만들 때 이 값을 사용한다. 최소·최대는 권장 범위이며 설정은 바깥 값도 허용하고 렌더러가 안전상 필요한 제한만 적용한다. 기본값은 모델의 `Default`와 같다. |
-| 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. |
+| 컬럼 등록·교체·제거 | `register_column_f32/f64(id, TypedArray)`는 새 ID를 등록한다. `register_columns_f32/f64(ids, TypedArray, valuesPerColumn)`은 연속된 배열로 새 컬럼을 한 번에 등록하며 전체 성공 또는 전체 실패한다. `update_register_column_f32/f64(id, TypedArray)`는 기존 ID를 매번 업로드해 교체한다. `remove_column(id)`로 제거한다. `register_record(id, fields)`와 `register_ragged(id, values, offsets)`는 레코드와 ragged 컬럼을 등록하거나 교체한다. |
 | 시리즈 | `add_line_series(id, x, y, width, label)`은 추가 또는 교체, `remove_series(id)`는 제거다. |
 | 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
 | 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. 저수준 `FiggyChart.decoration_bounds(id)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. 서브플롯(`{ "Subplot": i }`)이나 그 오버레이(`{ "SubplotOverlay": [i, j] }`)가 활성이면 그 서브플롯 차트의 요소가 `subplot_<i>:` 접두사를 붙인 id(`subplot_0:data_area`, `subplot_0:axis_left`, `subplot_0:overlay_0:axis_right` 등)로 답하고 부모 요소는 답하지 않는다. 드래그·리사이즈는 그 서브플롯의 `config`에 기록된다. |

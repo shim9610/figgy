@@ -339,6 +339,30 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.remove_column(id)
     }
 
+    pub fn upsert_record(
+        &mut self,
+        id: impl Into<RecordId>,
+        source: &RecordSource<'_>,
+    ) -> Result<RecordId> {
+        self.inner.upsert_record(id, source)
+    }
+
+    pub fn upsert_ragged(
+        &mut self,
+        id: impl Into<RaggedId>,
+        source: &RaggedSource<'_>,
+    ) -> Result<RaggedId> {
+        self.inner.upsert_ragged(id, source)
+    }
+
+    pub fn remove_record(&mut self, id: &str) -> Result<bool> {
+        self.inner.remove_record(id)
+    }
+
+    pub fn remove_ragged(&mut self, id: &str) -> Result<bool> {
+        self.inner.remove_ragged(id)
+    }
+
     pub fn remove_column_with_chart_config(
         &mut self,
         id: &str,

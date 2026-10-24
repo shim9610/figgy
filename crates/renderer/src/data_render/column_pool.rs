@@ -11,6 +11,39 @@
 //! - `defragment` packs survivors into a backup buffer with GPU-internal
 //!   copies (no PCIe traffic) then swaps `primary <-> backup`.
 //!
+//! # Source kinds
+//!
+//! Per-point data enters the pool in one of three kinds, all through
+//! [`ColumnSource`]:
+//!
+//! - **Columns**: one `ColumnSource` per id ([`ColumnPool::add_column`],
+//!   [`ColumnPool::add_columns`], the upserts). A [`ColumnSlot`] holds its
+//!   byte range and scalar statistics.
+//! - **Records** ([`RecordSource`], [`ColumnPool::upsert_record`]): a fixed
+//!   set of named scalar fields per row, checked by name against a static
+//!   [`RecordSchema`]. Every field is a column of the pool, uploaded together
+//!   in one batch transaction (one region, one staging write); a
+//!   [`RecordSlot`] names the field columns in schema order in a fixed array
+//!   of [`MAX_RECORD_FIELDS`] and keeps the per-field [`RecordStats`].
+//! - **Ragged columns** ([`RaggedSource`], [`ColumnPool::upsert_ragged`]):
+//!   variable-length groups of values, group `g` being
+//!   `values[offsets[g]..offsets[g + 1]]`. The values and the offsets are two
+//!   columns of the pool uploaded in one batch; a [`RaggedSlot`] names them
+//!   and keeps the [`RaggedStats`], measured while the offsets are written
+//!   (a non-monotone offsets column is rejected).
+//!
+//! The pool has no integer column type, so ragged offsets are `(hi, lo)` f32
+//! pairs like every other column; offsets up to 2^24 are exact in the high
+//! lane, which is why a ragged column holds at most 2^24 values. A shader
+//! reads a record field or a ragged column by its pool lane base
+//! (`handle.offset / 4`), as every column (`SHADER_COMMON.md`).
+//!
+//! The member columns of a record or ragged column are owned by it: their ids
+//! are internal, the host cannot replace, remove or stream them, and deleting
+//! the record ([`ColumnPool::remove_record`], [`ColumnPool::remove_ragged`])
+//! frees them. Records and ragged columns are resident only: streaming is not
+//! extended to them, and the renderer rejects a streamed id on either side.
+//!
 //! `ColumnHandle` carries a public `generation` value. Mutations that can
 //! invalidate positional handles, including removal, replacement, relocation,
 //! and clear, bump it so callers can detect staleness with `is_valid_handle`
@@ -105,6 +138,202 @@ pub struct StackExtent {
     pub batch: u64,
     /// The number of columns in the batch.
     pub members: usize,
+}
+
+/// The most fields one record holds. The box plot's schema has nine;
+/// twelve leaves room for three more without changing the slot layout, and
+/// twelve field lane bases fill exactly three `vec4<u32>` of a shader
+/// uniform.
+pub const MAX_RECORD_FIELDS: usize = 12;
+
+/// The most values one ragged column holds: its offsets are f32 pairs, and
+/// every integer up to 2^24 is exact in the high lane.
+pub const MAX_RAGGED_VALUES: usize = 1 << 24;
+
+/// Separates a record or ragged column id from its member column ids. Record
+/// and ragged ids may not contain it.
+const MEMBER_SEPARATOR: char = '\u{1f}';
+
+/// The id of a record source in the pool. Records, ragged columns and
+/// columns share one id space.
+pub type RecordId = ColumnId;
+
+/// The id of a ragged column in the pool. Records, ragged columns and
+/// columns share one id space.
+pub type RaggedId = ColumnId;
+
+/// A record schema: the field names in slot order, each with whether the
+/// field is required. Static per consumer; a record's fields are checked by
+/// name against it at upsert.
+pub type RecordSchema = [(&'static str, bool)];
+
+/// The box plot's record schema: one row per box. The five summary fields
+/// are required; `mean`, `sample_count`, `ci_low` and `ci_high` are optional,
+/// and an optional field that is not supplied reads as NaN. A missing box is
+/// a row whose every field is NaN.
+pub const BOX_PLOT_RECORD: &RecordSchema = &[
+    ("median", true),
+    ("q1", true),
+    ("q3", true),
+    ("whisker_low", true),
+    ("whisker_high", true),
+    ("mean", false),
+    ("sample_count", false),
+    ("ci_low", false),
+    ("ci_high", false),
+];
+
+/// A record: named scalar fields of the same length, one row per element.
+///
+/// `fields` pairs a schema field name with its column source, in any order.
+/// Every name must be a field of `schema`, every required field of `schema`
+/// must be present, no name may repeat, and every source must have the same
+/// non-zero length; [`ColumnPool::upsert_record`] rejects anything else with
+/// an explicit error.
+#[derive(Clone, Copy)]
+pub struct RecordSource<'a> {
+    pub schema: &'static RecordSchema,
+    pub fields: &'a [(&'a str, &'a dyn ColumnSource)],
+}
+
+/// A ragged column: `offsets.len() - 1` groups of values, group `g` being
+/// `values[offsets[g]..offsets[g + 1]]`.
+///
+/// `offsets` starts at 0, never decreases, holds integers and ends at
+/// `values.len()`. Both sources are non-empty: a host whose every group is
+/// empty registers no ragged column. [`ColumnPool::upsert_ragged`] checks the
+/// offsets while it writes them and rejects anything else with an explicit
+/// error.
+#[derive(Clone, Copy)]
+pub struct RaggedSource<'a> {
+    pub values: &'a dyn ColumnSource,
+    pub offsets: &'a dyn ColumnSource,
+}
+
+/// The scalar statistics of a record, measured from the encoded `(hi, lo)`
+/// values while the fields were written. Index `k` is schema field `k`;
+/// a field that is not present has `present[k] == false`, no counts and an
+/// empty range (`min = +inf`, `max = -inf`), as has a field without a
+/// finite value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RecordStats {
+    /// Rows: the length of every field.
+    pub len: u32,
+    pub present: [bool; MAX_RECORD_FIELDS],
+    /// Smallest finite value per field.
+    pub min: [f64; MAX_RECORD_FIELDS],
+    /// Largest finite value per field.
+    pub max: [f64; MAX_RECORD_FIELDS],
+    /// Finite values per field.
+    pub finite: [u32; MAX_RECORD_FIELDS],
+    /// NaN values per field (infinities are `len - finite - nan`).
+    pub nan: [u32; MAX_RECORD_FIELDS],
+}
+
+/// The scalar statistics of a ragged column, measured while it was written.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RaggedStats {
+    pub groups: u32,
+    /// Values in all groups: `offsets[groups]`.
+    pub total: u32,
+    /// Smallest finite value, `+inf` without one.
+    pub min: f64,
+    /// Largest finite value, `-inf` without one.
+    pub max: f64,
+    pub finite: u32,
+    pub nan: u32,
+    /// Whether the offsets never decrease. Always `true` for a resident
+    /// ragged column: an upload whose offsets decrease is rejected.
+    pub non_decreasing: bool,
+    /// The length of the longest group.
+    pub max_group: u32,
+}
+
+/// A resident record: its member columns in schema order, a fixed array with
+/// no `Vec`. `epoch` is the allocation epoch of its first member column; a
+/// replacement always has a larger one.
+#[derive(Debug, Clone)]
+pub struct RecordSlot {
+    pub schema: &'static RecordSchema,
+    /// The pool column of schema field `k`, `None` when it was not supplied.
+    pub fields: [Option<ColumnId>; MAX_RECORD_FIELDS],
+    pub len: u32,
+    pub epoch: u64,
+    pub stats: RecordStats,
+}
+
+/// A resident ragged column: its two member columns.
+#[derive(Debug, Clone)]
+pub struct RaggedSlot {
+    pub values: ColumnId,
+    pub offsets: ColumnId,
+    pub groups: u32,
+    pub total: u32,
+    pub epoch: u64,
+    pub stats: RaggedStats,
+}
+
+/// A record looked up in the pool ([`ColumnPool::record`]).
+#[derive(Clone, Copy)]
+pub struct RecordRef<'a> {
+    pool: &'a ColumnPool,
+    slot: &'a RecordSlot,
+}
+
+impl<'a> RecordRef<'a> {
+    pub fn slot(&self) -> &'a RecordSlot {
+        self.slot
+    }
+
+    pub fn stats(&self) -> RecordStats {
+        self.slot.stats
+    }
+
+    /// The handle of schema field `index`, `None` when it was not supplied.
+    pub fn field_at(&self, index: usize) -> Option<ColumnHandle> {
+        let id = self.slot.fields.get(index)?.as_deref()?;
+        self.pool.handle_for(id)
+    }
+
+    /// The handle of the field named `name`, `None` when the schema has no
+    /// such field or it was not supplied.
+    pub fn field(&self, name: &str) -> Option<ColumnHandle> {
+        let index = self
+            .slot
+            .schema
+            .iter()
+            .position(|(field, _)| *field == name)?;
+        self.field_at(index)
+    }
+}
+
+/// A ragged column looked up in the pool ([`ColumnPool::ragged`]).
+#[derive(Clone, Copy)]
+pub struct RaggedRef<'a> {
+    pool: &'a ColumnPool,
+    slot: &'a RaggedSlot,
+}
+
+impl<'a> RaggedRef<'a> {
+    pub fn slot(&self) -> &'a RaggedSlot {
+        self.slot
+    }
+
+    pub fn stats(&self) -> RaggedStats {
+        self.slot.stats
+    }
+
+    pub fn values(&self) -> ColumnHandle {
+        self.pool
+            .handle_for(&self.slot.values)
+            .expect("a ragged column's values are resident")
+    }
+
+    pub fn offsets(&self) -> ColumnHandle {
+        self.pool
+            .handle_for(&self.slot.offsets)
+            .expect("a ragged column's offsets are resident")
+    }
 }
 
 /// Lightweight handle handed out to the chart layer. `generation` lets
@@ -206,6 +435,10 @@ pub struct ColumnPool {
     primary: Buffer,
     capacity: u64,
     slots: HashMap<ColumnId, ColumnSlot>,
+    /// Resident records; their member columns are in `slots`.
+    records: HashMap<RecordId, RecordSlot>,
+    /// Resident ragged columns; their member columns are in `slots`.
+    raggeds: HashMap<RaggedId, RaggedSlot>,
     /// Kept sorted by offset (coalesce and first-fit both rely on this).
     free: Vec<FreeRegion>,
     generation: u32,
@@ -290,6 +523,8 @@ impl ColumnPool {
             primary,
             capacity,
             slots: HashMap::new(),
+            records: HashMap::new(),
+            raggeds: HashMap::new(),
             free: vec![FreeRegion {
                 offset: 0,
                 size: capacity,
@@ -355,13 +590,15 @@ impl ColumnPool {
         self.slots.get(id)
     }
 
-    /// Drop all columns. The primary buffer is reused (capacity unchanged).
+    /// Drop all columns, records and ragged columns. The primary buffer is reused (capacity unchanged).
     /// Bumps public and layout generations; allocation epochs are removed
     /// without resetting their monotonic issuer.
     pub fn clear(&mut self) -> Result<(), AllocError> {
         let next_generation = self.checked_generation_successor()?;
         let next_layout_generation = self.checked_layout_successor()?;
         self.slots.clear();
+        self.records.clear();
+        self.raggeds.clear();
         self.allocation_epochs.clear();
         self.free.clear();
         self.free.push(FreeRegion {
