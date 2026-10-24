@@ -20,6 +20,9 @@
 //!   ink pixel belonging to an element with ink there.
 //! - **I3** the drawn highlight is the model's selection box: the pixels it
 //!   changes lie on the box's outline and handles, and every edge is drawn.
+//! - **I4** no two decorations that must stay apart overlap: the pair
+//!   table of [`overlap_pairs`] on drawn part extents, with 1 px of
+//!   tolerance.
 //! - **I7** the hit map of every layer holds exactly the elements the
 //!   layer's documented registration set names, in that order; no ink
 //!   without an element, no element without ink; and the CPU decoration
@@ -360,6 +363,9 @@ fn kind_of(element: &str) -> String {
         }
         part.to_string()
     };
+    if let Some((a, b)) = element.split_once(" x ") {
+        return format!("{} x {}", kind_of(a), kind_of(b));
+    }
     element.split(':').map(fold).collect::<Vec<_>>().join(":")
 }
 
@@ -392,6 +398,11 @@ fn i2_every_hit_region_is_the_drawn_outline() {
 #[test]
 fn i3_every_drawn_highlight_is_the_model_box() {
     report().assert_clean(Inv::I3);
+}
+
+#[test]
+fn i4_no_two_decorations_overlap() {
+    report().assert_clean(Inv::I4);
 }
 
 #[test]
@@ -684,6 +695,8 @@ fn cartesian_scene(
         report.time("Cartesian exports", phase);
         // Each element's bounds in the layer cases that register it.
         let mut registered: BTreeMap<String, Option<RectF>> = BTreeMap::new();
+        // Each element's drawn parts, for the overlap pairs of I4.
+        let mut drawn: BTreeMap<String, Vec<DrawnPart>> = BTreeMap::new();
         for &layer in &layers {
             let phase = Instant::now();
             let mut cfg = doc.clone();
@@ -701,6 +714,7 @@ fn cartesian_scene(
             check_i1(report, &at, &cfg, &measured);
             for m in &measured {
                 registered.insert(m.name.clone(), m.bounds);
+                drawn.insert(m.name.clone(), m.parts.clone());
             }
             report.time("Cartesian geometry", phase);
             let phase = Instant::now();
@@ -714,6 +728,7 @@ fn cartesian_scene(
             }
         }
         check_owners(report, &document, &ink, &registered);
+        check_i4(report, &document, &doc, &drawn);
     }
     layers.len()
 }
@@ -2016,4 +2031,132 @@ fn missing_edges(
                 < need
         })
         .collect()
+}
+
+// ---------------------------------------------------------------------------
+// I4: no overlap
+// ---------------------------------------------------------------------------
+
+/// Two drawn parts overlap when their extents share more than this, in
+/// both directions (anti-aliasing of abutting parts).
+const OVERLAP_TOLERANCE: f32 = 1.0;
+
+/// The pairs of elements of one chart (`prefix`: the parent's or a
+/// subplot's) that must not overlap, `(a, b)` with `a == b` for the parts
+/// of one element among themselves: the labels of one axis pairwise; each
+/// side's labels and title; the chart title and the top labels and title;
+/// the axis titles of different sides; the colourbar strip, labels and
+/// title pairwise and against the labels and title of the side they sit
+/// on; the legend and the colourbar chrome; each overlay's labels and
+/// title against the parent's right ones and every other overlay's; a
+/// polar chart's angle labels against its radius labels.
+fn overlap_pairs(cfg: &Config, prefix: &str) -> Vec<(String, String)> {
+    let n = |name: &str| format!("{prefix}{name}");
+    let mut pairs = Vec::new();
+    for side in SIDES {
+        let labels = n(&format!("tick_labels_{side}"));
+        pairs.push((labels.clone(), labels.clone()));
+        pairs.push((labels, n(&format!("axis_title_{side}"))));
+    }
+    pairs.push((n("chart_title"), n("tick_labels_top")));
+    pairs.push((n("chart_title"), n("axis_title_top")));
+    for (i, a) in SIDES.iter().enumerate() {
+        for b in &SIDES[i + 1..] {
+            pairs.push((n(&format!("axis_title_{a}")), n(&format!("axis_title_{b}"))));
+        }
+    }
+    if let Some(bar) = &cfg.colorbar {
+        let side = match bar.side {
+            renderer::layout::Side::Top => "top",
+            renderer::layout::Side::Bottom => "bottom",
+            renderer::layout::Side::Left => "left",
+            renderer::layout::Side::Right => "right",
+        };
+        let group = ["colorbar", "colorbar_tick_labels", "colorbar_title"];
+        pairs.push((n("colorbar_tick_labels"), n("colorbar_tick_labels")));
+        for (i, a) in group.iter().enumerate() {
+            for b in &group[i + 1..] {
+                pairs.push((n(a), n(b)));
+            }
+            pairs.push((n(a), n(&format!("tick_labels_{side}"))));
+            pairs.push((n(a), n(&format!("axis_title_{side}"))));
+        }
+        for a in [
+            "colorbar",
+            "colorbar_axis",
+            "colorbar_tick_labels",
+            "colorbar_title",
+        ] {
+            pairs.push((n("legend"), n(a)));
+        }
+    }
+    for i in 0..cfg.overlays.len() {
+        let own = [
+            n(&format!("overlay_{i}:tick_labels_right")),
+            n(&format!("overlay_{i}:axis_title_right")),
+        ];
+        pairs.push((own[0].clone(), own[0].clone()));
+        pairs.push((own[0].clone(), own[1].clone()));
+        for a in &own {
+            pairs.push((a.clone(), n("tick_labels_right")));
+            pairs.push((a.clone(), n("axis_title_right")));
+            for j in i + 1..cfg.overlays.len() {
+                pairs.push((a.clone(), n(&format!("overlay_{j}:tick_labels_right"))));
+                pairs.push((a.clone(), n(&format!("overlay_{j}:axis_title_right"))));
+            }
+        }
+    }
+    if cfg.polar.is_some() {
+        pairs.push((n("tick_labels_bottom"), n("tick_labels_left")));
+    }
+    pairs
+}
+
+fn overlap(a: &DrawnPart, b: &DrawnPart) -> bool {
+    intersects(a.extent(), b.extent(), OVERLAP_TOLERANCE)
+}
+
+/// I4 for one document: every pair of [`overlap_pairs`] of the parent and
+/// of every subplot, on the parts the layer cases measured.
+fn check_i4(
+    report: &mut Report,
+    at: &At<'_>,
+    doc: &Config,
+    drawn: &BTreeMap<String, Vec<DrawnPart>>,
+) {
+    let mut charts = vec![(doc.clone(), String::new())];
+    for i in 0..doc.subplots.len() {
+        if let Some(sub) = doc.subplot_config(i) {
+            charts.push((sub, format!("subplot_{i}:")));
+        }
+    }
+    for (cfg, prefix) in &charts {
+        for (a, b) in overlap_pairs(cfg, prefix) {
+            let (Some(pa), Some(pb)) = (drawn.get(&a), drawn.get(&b)) else {
+                continue;
+            };
+            let mut hits = Vec::new();
+            for (i, x) in pa.iter().enumerate() {
+                let others = if a == b { &pb[i + 1..] } else { &pb[..] };
+                for y in others {
+                    if overlap(x, y) {
+                        hits.push((x.extent(), y.extent()));
+                    }
+                }
+            }
+            let name = if a == b {
+                a.clone()
+            } else {
+                format!("{a} x {b}")
+            };
+            report.check(at, &name, Inv::I4, hits.is_empty(), || {
+                format!(
+                    "{} overlapping part pairs, first {:?} and {:?}",
+                    hits.len(),
+                    hits[0].0,
+                    hits[0].1
+                )
+            });
+        }
+    }
 }
