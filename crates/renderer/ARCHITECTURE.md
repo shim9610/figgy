@@ -22,7 +22,7 @@ JavaScript API for every renderer. [Browser product scope](https://github.com/sh
 
 - **Resident GPU columnar pool**: columns admitted to the resident path share a single GPU buffer with first-fit allocation. A removal schedules a ping-pong defragmentation that runs when the host calls `process_pending_maintenance()` (or `defragment()`); under `DefragPolicy::OnAllocFailure` an upload that hits `OutOfSpace` also defragments once and retries. The default policy is `Manual`. Logical values are stored as f32 hi/lo pairs when uploaded through `HiLoColumnSource`, preserving timestamp-sized offsets on the GPU. Upload caches scalar stats (min / max / smallest-positive) for auto-fit; per-point geometry such as the dashed-line arc-length prefix is computed on the GPU by a compute scan (`line_arc.wgsl`).
 - **Nonresident rendering**: replayable columns are registered by logical ID, length, encoding, and revision without keeping their complete data in the GPU pool. The renderer requests bounded original ranges and accumulates the exact drawing; the host retains the source for replay after a view or output change. Contours, Milkyway lines, polar charts, line fills and step lines, vector series, point colour and size maps, and documents with overlay layers or subplots reject streamed sources with an explicit error. Admission, supported styles, cancellation, and completed-revision queries are described in the [web streaming contract](WASM.md#exact-streaming-en).
-- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
+- **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at `scale` 0.25–8.0 (about 24–768 DPI; `clamp_export_scale` clamps other values, and the scaled target must fit the device texture limit) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
@@ -444,8 +444,10 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
 
 `export_document_rgba_async` follows the same pipeline for a layered document:
 the one temporary `ChartView` holds a panel per layer, `Config::expand()` turns
-the scaled document into one draw item per panel, and the panels composite in
-layer order into the same offscreen texture. `export_panel_*` keeps only the
+the scaled document into one draw item per panel, and the panels composite
+into the same offscreen texture as on screen: the grid and data of every
+panel in layer order, then the decoration of every panel in layer order, so
+no layer's data covers another layer's axes and labels. `export_panel_*` keeps only the
 base panel of that expansion; for a document without overlays the two images
 are byte-identical. A document with subplots exports the union of every chart
 area (`Config::document_area`): the document is placed at the target's
@@ -464,7 +466,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 - **상주 GPU 컬럼 풀**: 여러 컬럼이 하나의 GPU 버퍼를 공유하며, 충분한 크기의 첫 빈 공간에 할당한다. 컬럼을 제거하면 두 버퍼를 번갈아 쓰는 재배치를 예약하고, 호스트가 `process_pending_maintenance()`나 `defragment()`를 호출할 때 실행한다. `DefragPolicy::OnAllocFailure`를 지정하면 공간이 부족한 업로드도 한 번 재배치한 뒤 다시 시도한다. 기본 정책은 `Manual`이다. `HiLoColumnSource`로 올린 값은 두 f32의 hi/lo 쌍으로 저장하므로 큰 타임스탬프에서도 작은 값 차이를 보존한다. 업로드할 때 최소·최대·최소 양수 값을 저장해 자동 범위 맞춤에 사용한다. 점선의 누적 경로 길이처럼 점마다 필요한 값은 GPU 스캔 연산(`line_arc.wgsl`)으로 계산한다.
 - **비상주 렌더링**: 컬럼의 ID·길이·인코딩·리비전만 등록하고 전체 데이터를 GPU 풀에 보관하지 않는다. 렌더러가 제한된 크기로 원본 구간을 요청해 빠짐없이 그린다. 화면이나 출력 조건이 바뀌면 호스트가 같은 원본을 다시 공급한다. 등고선, 은하수 모드의 선, 극좌표 차트, 선 채우기와 계단 보간, 벡터 시리즈, 점 색상·크기 매핑, 오버레이 레이어나 서브플롯이 있는 문서는 스트리밍 원본을 명시적인 오류로 거부한다. 실행 가능 조건, 지원 스타일, 취소와 완료 결과 조회는 [WASM 가이드](WASM.md#exact-streaming)를 참고한다.
-- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
+- **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
 - **창 없이 PNG 출력**: 배율 0.25~8.0(약 24~768 DPI)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 범위를 벗어난 배율은 `clamp_export_scale`이 범위 안으로 제한하며, 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 한다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
 - **선택·드래그·크기 조절**: 마우스 위치 판정, 선택 상자, 축에 수직인 방향으로 드래그, `line_offset`을 이용한 축 이동, 데이터 영역의 8개 조절점을 지원한다. 정책은 `model`에 정의돼 있으며 호스트가 포인터 이벤트를 전달할 때만 동작한다.
@@ -702,7 +704,8 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
     바꾸지 않음)
         ↓
     RasterImage { width, height, rgba: Vec<u8> }   ← API 반환
-    (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 순서대로 합성.
+    (export_document_rgba_async: 레이어마다 한 패널을 같은 텍스처에 합성. 모든 패널의 격자·데이터를
+     레이어 순서로 먼저 그리고, 모든 패널의 장식을 레이어 순서로 그 위에 그린다.
      export_panel_*는 기본 패널만 그리며, 오버레이가 없으면 두 결과는 바이트 단위로 같다.
      서브플롯이 있으면 문서 출력은 모든 차트 영역의 합집합 크기다)
         ↓

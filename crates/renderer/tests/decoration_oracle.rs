@@ -367,27 +367,6 @@ const EXCLUSIONS: &[Exclusion] = &[
         issue: "#47",
     },
     Exclusion {
-        scene: "TwinAxes",
-        layer: "document",
-        element: "<export>",
-        inv: Inv::I7,
-        detail: "*opaque decoration pixels differ from the export*",
-        reason: "an overlay panel's data is drawn over the base panel's decoration (the \
-                 pressure markers over the left axis); a single-layer chart draws its \
-                 decoration over its data",
-        issue: "#47",
-    },
-    Exclusion {
-        scene: "Subplots",
-        layer: "document",
-        element: "<export>",
-        inv: Inv::I7,
-        detail: "*opaque decoration pixels differ from the export*",
-        reason: "a subplot overlay's data is drawn over the subplot's decoration, as for twin \
-                 axes",
-        issue: "#47",
-    },
-    Exclusion {
         scene: "Polar",
         layer: "document",
         element: "axis_bottom",
@@ -2089,7 +2068,10 @@ fn check_owners(
 /// The CPU composite of the panel rasters is what the product exports:
 /// every opaque decoration pixel of `ink` has the same colour in the
 /// renderer's `export_document_rgba` of the palette document (annotation
-/// layer hidden, so nothing is drawn over the decoration).
+/// layer hidden, so nothing is drawn over the decoration). The renderer
+/// draws every panel's data before any panel's decoration
+/// (`composite::FRAME_SLOTS`), so the decoration rasters composited alone,
+/// in panel order, are the export's top layer.
 fn check_export(
     report: &mut Report,
     at: &At<'_>,
@@ -2119,7 +2101,8 @@ fn check_export(
         });
         return;
     }
-    // Composite the panels as the renderer does: in order, premultiplied over.
+    // Composite the decoration rasters as the renderer does: in panel order,
+    // premultiplied over, above all data.
     let mut doc_rgba = vec![0u8; ink.w * ink.h * 4];
     for p in &ink.panels {
         for y in 0..p.h {

@@ -307,9 +307,13 @@ decoration texture, above every layer. The registry classifies every
 direction, band or series list is also a geometry edit (the `view` revision),
 its colours and legend are not.
 
-**Drawing order and pixels.** Panels composite in layer order, each as
-grid → data (then its picked highlights) → decoration, so the picked-highlight
-order is "A data → A highlight → B data → B highlight". Overlay panels draw
+**Drawing order and pixels.** Panels composite in layer order in two
+passes: first every panel's grid → data (then its picked highlights), then
+every panel's decoration. So the picked-highlight order is "A data →
+A highlight → B data → B highlight", and on every layer the decoration is
+above the data, as on a single-layer chart: an overlay's data never covers
+the base panel's axes and labels, nor a subplot overlay's data its
+subplot's. Overlay panels draw
 no grid, X axis, title or colourbar and, in the Milkyway style, no backdrop.
 `ChartView::render_warnings` merges every panel's tick warnings, overlay ones
 tagged `WarningAxis::OverlayY(index)`.

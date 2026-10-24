@@ -272,7 +272,7 @@ Panel export helpers build their own scaled view and styles from the supplied
 configs. A correct PNG does not establish that a separately displayed view has
 been refreshed. Apply the same model edits to both paths. A `Config` with
 `overlays` is exported as a whole by the `export_document_*` helpers (every
-layer composited in order). A document with `subplots` (more charts, each with
+layer composited in order, every layer's decoration above every layer's data). A document with `subplots` (more charts, each with
 its own axes) exports the union of every chart area (`Config::document_area`),
 and a display fits that union with `display_config_for_surface`. The
 `export_panel_*` helpers render only the parent chart's own base layer in its
