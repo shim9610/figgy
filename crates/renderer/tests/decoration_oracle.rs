@@ -35,6 +35,11 @@
 //!   without an element, no element without ink; and the CPU decoration
 //!   raster is what the product exports.
 //!
+//! The annotation layer runs I1, I2, I3, I6 and I7 on its
+//! renderer-measured `AnnotationMap`, with each item's ink measured on the
+//! product's exports, and its highlight painted through the chart view as
+//! on screen.
+//!
 //! The four bounded families (radial, categorical, box plot, radar) run the
 //! same invariants on their renderer-measured `DecorationMap`, with each
 //! element's ink measured by drag differential and the highlight through
@@ -67,13 +72,14 @@ use renderer::axis_render::{
     AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
 };
 use renderer::decoration::DecorationMap;
+use renderer::drag::DragConfig;
 use renderer::layout::{Element, NudgeResult, RectF, Side};
 use renderer::legend::Legend;
 use renderer::select::{
     PartOutline, SELECTION_COLOR, SELECTION_PADDING, part_outline, segment_grab_half_width,
 };
 use renderer::sink::Parts;
-use renderer::text::RichText;
+use renderer::text::{MeasureText, RichText};
 use renderer::{
     BoxPlotChart, BoxPlotFrame, BoxPlotRenderer, CategoricalChart, CategoricalFrame,
     CategoricalRenderer, Chart, Color, ColorMap, Config, CpuTextMeasure, DecorationId,
@@ -772,8 +778,25 @@ fn cartesian_scene(
             report.time("Cartesian geometry", phase);
             let phase = Instant::now();
             let masks: Vec<Mask> = measured.iter().map(|m| Mask::of(m, &ink)).collect();
-            check_i2(report, &at, &cfg, &map, &measured, &masks, &ink, None);
+            check_i2(
+                report,
+                &at,
+                &cfg,
+                &CpuTextMeasure::for_style(&cfg.draw_style),
+                &map,
+                &measured,
+                &masks,
+                &ink,
+                None,
+            );
             report.time("Cartesian hit regions (I2)", phase);
+            if layer == LayerRef::Annotations {
+                let geometry_items =
+                    check_annotations(report, &at, r, config, series, &cfg, &measured, &ink);
+                for (item, bounds) in geometry_items {
+                    geometry.insert((name.clone(), item), (bounds, 0));
+                }
+            }
             if scale == 1.0 {
                 let phase = Instant::now();
                 check_i3(report, &at, &measured, &ink);
@@ -1562,17 +1585,17 @@ fn box_misfit(outline: RectF, ink: RectF) -> f32 {
 /// the topmost region in registration order belongs to an element that has
 /// ink there.
 #[allow(clippy::too_many_arguments)]
-fn check_i2(
+fn check_i2<C: DragConfig>(
     report: &mut Report,
     at: &At<'_>,
-    cfg: &Config,
-    map: &HitMap,
+    cfg: &C,
+    measure: &dyn MeasureText,
+    map: &HitMap<C>,
     measured: &[Measured],
     masks: &[Mask],
     ink: &SceneInk,
     only: Option<usize>,
 ) {
-    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     let mut strong_total = 0usize;
     let mut samples_total = 0usize;
     for (index, (m, mask)) in measured.iter().zip(masks).enumerate() {
@@ -1597,7 +1620,7 @@ fn check_i2(
         for &(x, y) in band.iter().step_by(stride) {
             samples_total += 1;
             let (cx, cy) = ink.point(x as usize, y as usize);
-            if element.contains(cfg, &measure, cx, cy) != mask.get(i64::from(x), i64::from(y)) {
+            if element.contains(cfg, measure, cx, cy) != mask.get(i64::from(x), i64::from(y)) {
                 disagree.push((cx, cy));
             }
         }
@@ -2526,6 +2549,7 @@ fn check_i6(
             report,
             at,
             &moved,
+            &measure,
             &map2,
             &measured2,
             &masks2,
@@ -3244,6 +3268,628 @@ fn bounded_selection<B: Bounded>(
                 .and_then(|p| p.downcast_ref::<String>().cloned())
                 .or_else(|| payload.and_then(|p| p.downcast_ref::<&str>().map(|s| s.to_string())))
                 .unwrap_or_else(|| "assert_selection_only failed".into())
+        });
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The annotation layer
+// ---------------------------------------------------------------------------
+//
+// The annotation layer is rastered into its own textures, so its ink is
+// measured on the product's exports: the document with every item against
+// the document with one item hidden (`Annotation::visible`). Its hit map is
+// the renderer-measured `AnnotationMap` of a `ChartView`; its highlight is
+// only drawn on screen, so I3 paints the view into an offscreen target.
+
+/// One scale's annotation geometry, for I5.
+type AnnotationGeometry = Vec<(String, Option<RectF>)>;
+
+fn annotation_name(index: usize) -> String {
+    DecorationId::Annotation(index).element_id()
+}
+
+/// The export of `config` at `scale` with item `hidden` (or the whole
+/// layer, for `usize::MAX`) not drawn.
+fn export_annotations(
+    r: &mut Renderer,
+    config: &Config,
+    series: &[SeriesConfig],
+    scale: f32,
+    hidden: Option<usize>,
+) -> Result<RasterImage, String> {
+    let mut doc = config.clone();
+    match hidden {
+        Some(usize::MAX) => doc.annotations.visible = false,
+        Some(i) => doc.annotations.items[i].visible = false,
+        None => {}
+    }
+    r.export_document_rgba(&Chart::new(doc), series, scale)
+        .map_err(|e| e.to_string())
+}
+
+/// The annotation map of `cfg` (already at its scale), from a chart view.
+fn annotation_view(r: &Renderer, cfg: &Config) -> Result<renderer::ChartView, String> {
+    r.create_chart_view(&Chart::new(cfg.clone()), cfg.chart_area.0)
+        .map_err(|e| e.to_string())
+}
+
+/// The ink of every item as a one-panel [`SceneInk`]: item `k` owns the
+/// pixels the export changes when it is hidden.
+fn items_ink(cfg: &Config, all: &RasterImage, without: &[&RasterImage]) -> SceneInk {
+    let (w, h) = (all.width as usize, all.height as usize);
+    let mut owner = vec![0u16; w * h];
+    let mut owner2 = vec![0u16; w * h];
+    let mut rgba = vec![0u8; w * h * 4];
+    for i in 0..w * h {
+        for (k, image) in without.iter().enumerate() {
+            let d = pixel_diff(all, image, i);
+            if d <= CHANGED_DIFF {
+                continue;
+            }
+            rgba[i * 4 + 3] = rgba[i * 4 + 3].max(d);
+            if owner[i] == 0 {
+                owner[i] = k as u16 + 1;
+            } else if owner2[i] == 0 {
+                owner2[i] = k as u16 + 1;
+            }
+        }
+    }
+    let mut by_code = vec![Vec::new(); without.len()];
+    let mut exact = vec![Vec::new(); without.len()];
+    for i in 0..w * h {
+        if owner[i] != 0 {
+            by_code[usize::from(owner[i]) - 1].push(i as u32);
+            match owner2[i] {
+                0 => exact[usize::from(owner[i]) - 1].push(i as u32),
+                o2 => by_code[usize::from(o2) - 1].push(i as u32),
+            }
+        }
+    }
+    let area = cfg.document_area();
+    SceneInk {
+        origin: [area.x as f32, area.y as f32],
+        w,
+        h,
+        codes: (0..without.len())
+            .map(|k| ([0, 0, 0], annotation_name(k), 0))
+            .collect(),
+        panels: vec![PanelInk {
+            layer: LayerRef::Annotations,
+            config: cfg.clone(),
+            x0: 0,
+            y0: 0,
+            w,
+            h,
+            rgba,
+            owner,
+            owner2,
+        }],
+        by_code,
+        exact,
+    }
+}
+
+/// Every item of an annotation map, measured.
+fn measure_items(map: &renderer::AnnotationMap) -> Vec<Measured> {
+    let measure = CpuTextMeasure::default();
+    map.entries()
+        .map(|(id, e)| {
+            let mut parts = Vec::new();
+            if let Some(element) = map.hit_map().get(id) {
+                element.emit(map.layer(), &measure, &mut Parts(&mut |p| parts.push(p)));
+            }
+            Measured {
+                name: annotation_name(e.index),
+                id,
+                bounds: map.bounds(id),
+                parts,
+                selection: map.selection_box(id),
+            }
+        })
+        .collect()
+}
+
+/// The annotation layer of the `Annotations` layer case at `cfg`'s scale:
+/// I1 (parts inside the chart area), I2 on the items' export ink, I7 (an
+/// entry per visible item, no ghost, no ink of no item) and, at 1x, I3 and
+/// I6. Decoration ink under an item's region without item ink is an I2 row
+/// of the decoration element. Returns the items' bounds for I5.
+#[allow(clippy::too_many_arguments)]
+fn check_annotations(
+    report: &mut Report,
+    at: &At<'_>,
+    r: &mut Renderer,
+    config: &Config,
+    series: &[SeriesConfig],
+    cfg: &Config,
+    decorations: &[Measured],
+    palette_ink: &SceneInk,
+) -> AnnotationGeometry {
+    let phase = Instant::now();
+    let items = config.annotations.items.len();
+    let view = match annotation_view(r, cfg) {
+        Ok(view) => view,
+        Err(e) => {
+            report.check(at, "<annotations>", Inv::I7, false, || e);
+            return Vec::new();
+        }
+    };
+    let map = view.annotation_map();
+    let measured = measure_items(map);
+    report.check(
+        at,
+        "<annotations>",
+        Inv::I7,
+        map.hit_map().len() == items,
+        || format!("{} entries for {items} visible items", map.hit_map().len()),
+    );
+    for index in 0..items {
+        let found = map.find(index);
+        report.check(
+            at,
+            &annotation_name(index),
+            Inv::I7,
+            found.is_some(),
+            || "the visible item is not registered".into(),
+        );
+        if let Some(id) = found {
+            let name = map.hit_map().get(id).map(|e| e.element_id());
+            report.check(
+                at,
+                &annotation_name(index),
+                Inv::I7,
+                name.as_deref() == Some(annotation_name(index).as_str()),
+                || format!("registered as {name:?}"),
+            );
+        }
+    }
+    let area = RectF::from_rect(&cfg.chart_area.0);
+    for m in &measured {
+        let outside: Vec<RectF> = m
+            .parts
+            .iter()
+            .map(DrawnPart::extent)
+            .filter(|e| !inside(area, *e))
+            .collect();
+        report.check(at, &m.name, Inv::I1, outside.is_empty(), || {
+            format!(
+                "{} parts leave the chart area, first {:?}",
+                outside.len(),
+                outside[0]
+            )
+        });
+    }
+    // The items' ink on the product's export.
+    let exports: Result<Vec<RasterImage>, String> = std::iter::once(None)
+        .chain(std::iter::once(Some(usize::MAX)))
+        .chain((0..items).map(Some))
+        .map(|hidden| export_annotations(r, config, series, at.scale, hidden))
+        .collect();
+    let exports = match exports {
+        Ok(e) => e,
+        Err(e) => {
+            report.check(at, "<annotations>", Inv::I7, false, || e);
+            return Vec::new();
+        }
+    };
+    report.count(at, "annotation exports", exports.len());
+    let (all, none) = (&exports[0], &exports[1]);
+    let without: Vec<&RasterImage> = exports[2..].iter().collect();
+    let ink = items_ink(cfg, all, &without);
+    let masks: Vec<Mask> = measured.iter().map(|m| Mask::of(m, &ink)).collect();
+    check_i2(
+        report,
+        at,
+        map.layer(),
+        &CpuTextMeasure::default(),
+        map.hit_map(),
+        &measured,
+        &masks,
+        &ink,
+        None,
+    );
+    // I7: no ghost item, and no layer ink that is no item's.
+    for m in &measured {
+        let pixels = ink.code_of(&m.name).map_or(0, |c| ink.by_code[c].len());
+        report.check(
+            at,
+            &m.name,
+            Inv::I7,
+            m.bounds.is_none() || pixels > 0,
+            || format!("ghost: bounds {:?} but no ink", m.bounds),
+        );
+        report.count(at, "annotation ink pixels", pixels);
+    }
+    // A pixel two items cover changes with the layer but with neither item
+    // alone; only ink outside every item's region is no item's.
+    let orphan: Vec<usize> = (0..ink.w * ink.h)
+        .filter(|&i| {
+            let (x, y) = ((i % ink.w) as i64, (i / ink.w) as i64);
+            pixel_diff(all, none, i) > CHANGED_DIFF
+                && ink.panels[0].owner[i] == 0
+                && !masks.iter().any(|m| m.get(x, y))
+        })
+        .collect();
+    report.check(at, "<annotation layer>", Inv::I7, orphan.is_empty(), || {
+        format!(
+            "{} pixels the layer draws belong to no item, first {:?}",
+            orphan.len(),
+            ink.point(orphan[0] % ink.w, orphan[0] / ink.w)
+        )
+    });
+    // The items sit on top of the chart's hit map: decoration ink under an
+    // item's region must have item ink nearby.
+    for m in decorations {
+        let Some(code) = palette_ink.code_of(&m.name) else {
+            continue;
+        };
+        let mut covered: BTreeMap<String, usize> = BTreeMap::new();
+        let mut first = None;
+        for &i in &palette_ink.exact[code] {
+            if palette_ink.alpha(code, i) < STRONG_ALPHA {
+                continue;
+            }
+            let (x, y) = (
+                i64::from(i) % palette_ink.w as i64,
+                i64::from(i) / palette_ink.w as i64,
+            );
+            if let Some((t, tm)) = masks
+                .iter()
+                .zip(&measured)
+                .enumerate()
+                .rev()
+                .find(|(_, (tmask, _))| tmask.get(x, y))
+                .map(|(t, (_, tm))| (t, tm))
+                && !ink.inked_near(t, x, y, TOPMOST_REACH)
+            {
+                *covered.entry(tm.name.clone()).or_default() += 1;
+                first.get_or_insert(palette_ink.point(x as usize, y as usize));
+            }
+        }
+        report.check(at, &m.name, Inv::I2, covered.is_empty(), || {
+            format!(
+                "{} strong ink pixels hit an annotation item that has no ink there ({covered:?}), first {first:?}",
+                covered.values().sum::<usize>()
+            )
+        });
+    }
+    report.time("annotation layer (I1, I2, I7)", phase);
+    if at.scale == 1.0 {
+        let phase = Instant::now();
+        annotation_highlights(report, at, r, cfg, &measured);
+        report.time("annotation highlights (I3)", phase);
+        let phase = Instant::now();
+        annotation_drags(report, at, r, config, series, cfg, map, &measured);
+        report.time("annotation drags (I6)", phase);
+    }
+    measured
+        .iter()
+        .map(|m| (m.name.clone(), m.bounds))
+        .collect()
+}
+
+/// Paint `chart`'s view (no series) with annotation `selected` highlighted
+/// into an offscreen target and read it back: the on-screen path, where the
+/// annotation highlight is drawn.
+fn paint_view(
+    r: &mut Renderer,
+    cfg: &Config,
+    selected: Option<usize>,
+) -> Result<RasterImage, String> {
+    let e = |e: renderer::FiggyError| e.to_string();
+    let chart = Chart::new(cfg.clone());
+    let rect = cfg.chart_area.0;
+    let mut view = r.create_chart_view(&chart, rect).map_err(e)?;
+    r.refresh_annotations(&mut view, &chart, rect, selected)
+        .map_err(e)?;
+    let items = [renderer::ChartDrawItem {
+        view: &view,
+        chart_config: chart.config(),
+        series: &[],
+    }];
+    let prepared = r.prepare(&items).map_err(e)?;
+    let (w, h) = (rect.x + rect.width, rect.y + rect.height);
+    let device = r.device().clone();
+    let queue = r.queue().clone();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("decoration oracle target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("decoration oracle readback"),
+        size: u64::from(row) * u64::from(h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("decoration oracle paint"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        r.paint_prepared(&mut pass, (w, h), &prepared).map_err(e)?;
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    drop(prepared);
+    r.end_gpu_frame();
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .map_err(|e| e.to_string())?;
+    let data = slice.get_mapped_range().map_err(|e| e.to_string())?;
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let start = (y * row) as usize;
+        rgba.extend_from_slice(&data[start..start + (w * 4) as usize]);
+    }
+    drop(data);
+    buffer.unmap();
+    Ok(RasterImage {
+        width: w,
+        height: h,
+        rgba,
+    })
+}
+
+/// I3 of the annotation layer at 1x: the highlight of each item, painted
+/// through the view as on screen, changes only its outline and handles.
+fn annotation_highlights(
+    report: &mut Report,
+    at: &At<'_>,
+    r: &mut Renderer,
+    cfg: &Config,
+    measured: &[Measured],
+) {
+    let base = match paint_view(r, cfg, None) {
+        Ok(image) => image,
+        Err(e) => {
+            report.check(at, "<annotation paint>", Inv::I3, false, || e);
+            return;
+        }
+    };
+    for (index, m) in measured.iter().enumerate() {
+        let Some(sb) = &m.selection else {
+            continue;
+        };
+        let item = m
+            .name
+            .trim_start_matches("annotation_")
+            .parse::<usize>()
+            .unwrap_or(index);
+        let image = match paint_view(r, cfg, Some(item)) {
+            Ok(image) => image,
+            Err(e) => {
+                report.check(at, &m.name, Inv::I3, false, || e);
+                continue;
+            }
+        };
+        report.count(at, "annotation paints", 1);
+        let halo = sb.stroke_width() * 0.5 + 1.0;
+        let (w, h) = (image.width as usize, image.height as usize);
+        let changed: Vec<(f32, f32)> = (0..w * h)
+            .filter(|&i| image.rgba[i * 4..i * 4 + 4] != base.rgba[i * 4..i * 4 + 4])
+            .map(|i| ((i % w) as f32 + 0.5, (i / w) as f32 + 0.5))
+            .collect();
+        let stray: Vec<(f32, f32)> = changed
+            .iter()
+            .copied()
+            .filter(|&(x, y)| !on_outline(sb, x, y, halo))
+            .collect();
+        report.check(at, &m.name, Inv::I3, stray.is_empty(), || {
+            format!(
+                "{} of {} highlight pixels off the box outline and handles, first {:?}",
+                stray.len(),
+                changed.len(),
+                stray[0]
+            )
+        });
+        let missing = missing_edges(sb, &changed, halo);
+        report.check(at, &m.name, Inv::I3, missing.is_empty(), || {
+            format!(
+                "{} outline edges are not drawn, first {:?}",
+                missing.len(),
+                missing[0]
+            )
+        });
+    }
+}
+
+/// How a (+7, +5) drag moves an item: a reference line or span along its
+/// axis, a text box or arrow by the whole delta.
+fn annotation_delta(kind: &renderer::AnnotationKind) -> (f32, f32) {
+    use renderer::{AnnotationAxis, AnnotationKind};
+    match kind {
+        AnnotationKind::ReferenceLine { axis, .. } | AnnotationKind::Span { axis, .. } => {
+            match axis {
+                AnnotationAxis::X => (DRAG.0, 0.0),
+                AnnotationAxis::Y => (0.0, DRAG.1),
+            }
+        }
+        _ => DRAG,
+    }
+}
+
+/// I6 of the annotation layer at 1x: every item drags by (+7, +5), its
+/// bounds move by its axis' share of it, its new ink lies in its new
+/// region and picks it, and a drag off the chart is refused unchanged.
+#[allow(clippy::too_many_arguments)]
+fn annotation_drags(
+    report: &mut Report,
+    at: &At<'_>,
+    r: &mut Renderer,
+    config: &Config,
+    series: &[SeriesConfig],
+    cfg: &Config,
+    map: &renderer::AnnotationMap,
+    measured: &[Measured],
+) {
+    for m in measured {
+        let Some(bounds) = m.bounds else {
+            continue;
+        };
+        let Some(index) = map.element(m.id).map(|e| e.index) else {
+            continue;
+        };
+        report.count(at, "annotation drags", 1);
+        let mut far = cfg.annotations.clone();
+        let result = map.drag_by(&mut far, m.id, FAR_DRAG.0, FAR_DRAG.1);
+        report.check(
+            at,
+            &m.name,
+            Inv::I6,
+            matches!(result, Some(NudgeResult::Rejected(_))) && far == cfg.annotations,
+            || format!("a drag by {FAR_DRAG:?} gave {result:?}"),
+        );
+        let mut layer = cfg.annotations.clone();
+        let result = map.drag_by(&mut layer, m.id, DRAG.0, DRAG.1);
+        report.check(
+            at,
+            &m.name,
+            Inv::I6,
+            result == Some(NudgeResult::Moved),
+            || format!("a drag by {DRAG:?} gave {result:?}"),
+        );
+        if result != Some(NudgeResult::Moved) {
+            continue;
+        }
+        let mut moved = cfg.clone();
+        moved.annotations = layer;
+        let mut moved_1x = config.clone();
+        moved_1x.annotations = moved.annotations.clone();
+        let view = match annotation_view(r, &moved) {
+            Ok(view) => view,
+            Err(e) => {
+                report.check(at, &m.name, Inv::I6, false, || e);
+                continue;
+            }
+        };
+        let map2 = view.annotation_map();
+        let measured2 = measure_items(map2);
+        let Some(k) = measured2.iter().position(|n| n.name == m.name) else {
+            report.check(at, &m.name, Inv::I6, false, || "gone after the drag".into());
+            continue;
+        };
+        let (dx, dy) = annotation_delta(&cfg.annotations.items[index].kind);
+        let want = bounds.translated(dx, dy);
+        let worst = measured2[k].bounds.map_or(f32::INFINITY, |b| {
+            [
+                b.x - want.x,
+                b.y - want.y,
+                b.width - want.width,
+                b.height - want.height,
+            ]
+            .into_iter()
+            .map(f32::abs)
+            .fold(0.0, f32::max)
+        });
+        report.check(at, &m.name, Inv::I6, worst <= 0.05, || {
+            format!(
+                "bounds {:?} after the drag, {want:?} expected",
+                measured2[k].bounds
+            )
+        });
+        // Its new ink lies in its new region, and picks it where on top.
+        let (Ok(all), Ok(without)) = (
+            export_annotations(r, &moved_1x, series, 1.0, None),
+            export_annotations(r, &moved_1x, series, 1.0, Some(index)),
+        ) else {
+            report.check(at, &m.name, Inv::I6, false, || "export failed".into());
+            continue;
+        };
+        report.count(at, "annotation exports", 2);
+        // Only the dragged item's ink is measured.
+        let others: Vec<&RasterImage> = (0..moved_1x.annotations.items.len())
+            .map(|j| if j == index { &without } else { &all })
+            .collect();
+        let ink2 = items_ink(&moved, &all, &others);
+        let masks2: Vec<Mask> = measured2.iter().map(|n| Mask::of(n, &ink2)).collect();
+        report.redirect = Some((Inv::I6, m.name.clone()));
+        check_i2(
+            report,
+            at,
+            map2.layer(),
+            &CpuTextMeasure::default(),
+            map2.hit_map(),
+            &measured2,
+            &masks2,
+            &ink2,
+            Some(k),
+        );
+        report.redirect = None;
+        let code = ink2.code_of(&m.name).unwrap_or(index);
+        let id2 = measured2[k].id;
+        let topmost: Vec<u32> = ink2.exact[code]
+            .iter()
+            .copied()
+            .filter(|&i| ink2.alpha(code, i) >= STRONG_ALPHA)
+            .filter(|&i| {
+                let (x, y) = (i64::from(i) % ink2.w as i64, i64::from(i) / ink2.w as i64);
+                masks2[k].get(x, y) && !masks2[k + 1..].iter().any(|t| t.get(x, y))
+            })
+            .collect();
+        let stride = topmost.len().div_ceil(DRAG_HIT_SAMPLES).max(1);
+        let wrong = topmost
+            .iter()
+            .step_by(stride)
+            .filter(|&&i| {
+                let (cx, cy) = ink2.point(i as usize % ink2.w, i as usize / ink2.w);
+                map2.hit_test([cx, cy]) != Some(id2)
+            })
+            .count();
+        report.check(at, &m.name, Inv::I6, !topmost.is_empty() && wrong == 0, || {
+            format!(
+                "the hit test on its moved ink names another item at {wrong} samples ({} on top)",
+                topmost.len()
+            )
         });
     }
 }
