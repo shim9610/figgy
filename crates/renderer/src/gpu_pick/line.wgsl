@@ -1,151 +1,15 @@
 // Exact fragment: line strokes (SHADER_COMMON.md §5.6), their step pieces,
-// dash phase and styled extrusion, and the segment candidate.
+// dash phase and styled extrusion, and the segment candidate that measures
+// them with the line's fill (`gpu_pick/area.wgsl`).
 
-// Data-space corners of step piece `k` of the segment a → b. Same rules as
-// `step_piece` in line_columnar.wgsl (data-space midpoint for step-mid), in
-// this shader's own pick_* ABI; the CPU twin is `line_step::step_pieces`.
-struct PickStepPiece {
-    x0: vec2<f32>,
-    y0: vec2<f32>,
-    x1: vec2<f32>,
-    y1: vec2<f32>,
-};
-
-// The mode word: bits 0-1 the step mode, bits 4 and up the polar arc
-// pieces per segment (`transform.polar_extent.z`), as `step_piece_count` in
-// line_columnar.wgsl reads it.
-const PICK_ARC_SHIFT: u32 = 4u;
-
+// The mode word of `step_piece_count` (common/line_step.wgsl): bits 0-1 the
+// step mode, bits 4 and up the polar arc pieces per segment
+// (`transform.polar_extent.z`), as `line_step_mode` in line_columnar.wgsl
+// builds it.
 fn pick_line_mode() -> u32 {
     let arc = u32(max(pick_query_params.transform.polar_extent.z, 0.0));
-    return (pick_query_params.line.x & 3u) | (arc << PICK_ARC_SHIFT);
+    return (pick_query_params.line.x & LINE_STEP_MASK) | (arc << LINE_ARC_SHIFT);
 }
-
-fn pick_step_piece_count(mode: u32) -> u32 {
-    let arc = mode >> PICK_ARC_SHIFT;
-    if arc > 0u {
-        return arc;
-    }
-    let step = mode & 3u;
-    if step == PICK_STEP_PRE || step == PICK_STEP_POST {
-        return 2u;
-    }
-    if step == PICK_STEP_MID {
-        return 3u;
-    }
-    return 1u;
-}
-
-fn pick_step_piece(ax: vec2<f32>, ay: vec2<f32>, bx: vec2<f32>, by: vec2<f32>, mode: u32, k: u32) -> PickStepPiece {
-    var p: PickStepPiece;
-    p.x0 = ax;
-    p.y0 = ay;
-    p.x1 = bx;
-    p.y1 = by;
-    let arc = mode >> PICK_ARC_SHIFT;
-    if arc > 0u {
-        let t0 = f32(k) / f32(arc);
-        let t1 = f32(k + 1u) / f32(arc);
-        p.x0 = mix(ax, bx, t0);
-        p.y0 = mix(ay, by, t0);
-        p.x1 = mix(ax, bx, t1);
-        p.y1 = mix(ay, by, t1);
-        return p;
-    }
-    let step = mode & 3u;
-    if step == PICK_STEP_PRE {
-        if k == 0u { p.x1 = ax; } else { p.y0 = by; }
-    } else if step == PICK_STEP_POST {
-        if k == 0u { p.y1 = ay; } else { p.x0 = bx; }
-    } else if step == PICK_STEP_MID {
-        let xm = (ax + bx) * 0.5;
-        if k == 0u {
-            p.x1 = xm;
-            p.y1 = ay;
-        } else if k == 1u {
-            p.x0 = xm;
-            p.x1 = xm;
-        } else {
-            p.x0 = xm;
-            p.y0 = by;
-        }
-    }
-    return p;
-}
-
-// ───── shared line stroke (SHADER_COMMON.md §5.6; `shader_consistency`
-// compares these function bodies and constants with the line shader) ─────
-
-// Solid strokes grow their quad by this anti-aliasing fringe on every side;
-// dashed strokes keep the bare stroke so the measured dash lengths hold.
-const LINE_AA_EXTENT_PX: f32 = 0.5;
-// Subdivision count S per segment instance: the sketch pipeline draws
-// 2*(S+1) strip vertices per instance. The CPU-side draw count lives in
-// mod.rs (`LINE_SKETCH_VERTICES_PER_INSTANCE`) — keep the two in sync.
-const SKETCH_SUBDIV: u32 = 8u;
-
-/// Signed pixel distance from a stroke fragment to the edge of its piece's
-/// square-capped rectangle. `along` runs from the piece start along its
-/// direction, `side` across it; the rectangle is
-/// `[-half_w, len + half_w] x [-half_w, half_w]`. The stroke covers a pixel
-/// where this is below its anti-aliasing width.
-fn line_stroke_distance(along: f32, side: f32, len: f32, half_w: f32) -> f32 {
-    let p = vec2<f32>(along - len * 0.5, side);
-    let half_rect = vec2<f32>(len * 0.5 + half_w, half_w);
-    let q = abs(p) - half_rect;
-    let outside = max(q, vec2<f32>(0.0, 0.0));
-    return length(outside) + min(max(q.x, q.y), 0.0);
-}
-
-/// Whether the dash pattern is "on" at arc position `dist_px`. `dash` packs
-/// up to eight sequential `[on, off, ...]` pixel lengths (`dash[0].xyzw`
-/// first) and `count` says how many are used; zero is a solid line, and so is
-/// a pattern whose spans are all zero or negative.
-fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool {
-    if count == 0u {
-        return true;
-    }
-    // A local copy, so the spans can be indexed at run time on every
-    // backend. Clamp to the 8-scalar capacity so a bad CPU-side count cannot
-    // index past the array.
-    var spans = dash;
-    let n = min(count, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(spans[i / 4u][i % 4u], 0.0);
-    }
-    if period <= 0.0 {
-        return true;
-    }
-    // The square-cap extension can push dist_px slightly negative at the
-    // polyline start — wrap into [0, period) with the sign-safe form.
-    let phase = ((dist_px % period) + period) % period;
-    var acc = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        let end = acc + max(spans[i / 4u][i % 4u], 0.0);
-        acc = end;
-        if phase <= end || i == n - 1u {
-            // Even spans are "on", odd spans are "off". Dash membership is
-            // intentionally binary so the requested pattern length stays
-            // stable; antialiasing is applied to the stroke outline itself.
-            return (i & 1u) == 0u;
-        }
-    }
-    // phase == period can occur from float rounding; that point is the
-    // start of the next repetition, which always opens with an "on" span.
-    return true;
-}
-
-/// The sketch line's perpendicular displacement at arc position `arc_px`:
-/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
-/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
-/// layers degrade identically.
-fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
-    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
-    return select(0.0, wobble, wavelength_px > 0.0);
-}
-
-// ───── end shared line stroke ─────
 
 // The arc distances from `dist_px`, which lies in an "off" span of the dash
 // pattern, back to the end of the previous "on" span (x) and forward to the
@@ -268,7 +132,18 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
     return max(best, PICK_F32_EPSILON);
 }
 
-fn pick_line_candidate(
+// The source point a hit on segment `segment_index` names, from `position`
+// along its stepped path (0 at A, 1 at B): the nearer endpoint. Projected
+// endpoints are f32. Reciprocal/fused evaluation can put an exact midpoint
+// a rounding step on either side of 0.5 across backends. Resolve that
+// uncertainty by the same lower-index rule as the CPU picker.
+fn pick_segment_endpoint(segment_index: u32, position: f32, coordinate_scale: f32, total_length: f32) -> u32 {
+    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
+    let use_b = position > 0.5 + midpoint_tolerance;
+    return select(segment_index, segment_index + 1u, use_b);
+}
+
+fn pick_stroke_candidate(
     segment_index: u32,
     ax: vec2<f32>,
     ay: vec2<f32>,
@@ -279,14 +154,15 @@ fn pick_line_candidate(
     if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
         return pick_invalid_candidate(series_order);
     }
-    if !pick_polar_valid(ax, ay) || !pick_polar_valid(bx, by) {
+    let t = pick_query_params.transform;
+    if !polar_sample_valid(t, ax, ay) || !polar_sample_valid(t, bx, by) {
         return pick_invalid_candidate(series_order);
     }
     // A step mode tests every axis-aligned piece of the segment and keeps the
     // nearest (lowest piece index on a tie); a linear segment is its single
     // piece and reproduces the straight-segment rule exactly.
     let mode = pick_line_mode();
-    let pieces = pick_step_piece_count(mode);
+    let pieces = step_piece_count(mode);
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
     // The cumulative arc prefix the line was drawn with, when bound: the
     // dash phase and the sketch wobble walk it.
@@ -306,7 +182,7 @@ fn pick_line_candidate(
     var best_prefix = 0.0;
     var best_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
-        let piece = pick_step_piece(ax, ay, bx, by, mode, k);
+        let piece = step_piece(ax, ay, bx, by, mode, k);
         let a_px = pick_project_pair(piece.x0, piece.y0);
         let b_px = pick_project_pair(piece.x1, piece.y1);
         if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
@@ -357,20 +233,37 @@ fn pick_line_candidate(
     if pieces > 1u {
         position = (best_prefix + best_t * best_length) / total_length;
     }
-    // Projected endpoints are f32. Reciprocal/fused evaluation can put an
-    // exact midpoint a rounding step on either side of 0.5 across backends.
-    // Resolve that uncertainty by the same lower-index rule as the CPU picker.
-    let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
-    let use_b = position > 0.5 + midpoint_tolerance;
-    let point_index = select(segment_index, segment_index + 1u, use_b);
+    let point_index = pick_segment_endpoint(segment_index, position, coordinate_scale, total_length);
     return PickCandidate(
         1u,
         series_order,
         pick_source_row(point_index),
-        1u,
+        PICK_KIND_LINE,
         pick_source_row(segment_index),
         distance_sq,
         distance,
         0u,
     );
+}
+
+// A line series' segment primitive: the stroke and, when the line has a fill
+// (`PICK_VARIANT_AREA`, a non-zero filled segment count), the fill under the
+// segment. The fill only picks inside it, at distance zero, and loses every
+// tie (`pick_candidate_is_better`), so a stroke over it keeps picking.
+fn pick_line_candidate(
+    segment_index: u32,
+    ax: vec2<f32>,
+    ay: vec2<f32>,
+    bx: vec2<f32>,
+    by: vec2<f32>,
+) -> PickCandidate {
+    let stroke = pick_stroke_candidate(segment_index, ax, ay, bx, by);
+    if !pick_variant(PICK_VARIANT_AREA) || pick_query_params.area.y == 0u {
+        return stroke;
+    }
+    let fill = pick_area_candidate(segment_index, ax, ay, bx, by);
+    if pick_candidate_is_better(fill, stroke) {
+        return fill;
+    }
+    return stroke;
 }

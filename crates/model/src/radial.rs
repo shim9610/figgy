@@ -1,8 +1,20 @@
-//! Small categorical charts. Values and appearance are independent of Cartesian
-//! axes and column streams. The renderer consumes a complete validated snapshot.
-use crate::Color;
+//! The radial chart: pie, donut and the detail ring of a split.
+//!
+//! This is the DataLess chart class (see the crate's "Chart classes"): the
+//! chart is defined by its SSOT alone, with no `ColumnSource`, no column pool
+//! and no streaming. A slice is a configured entity, and its value is one of
+//! its attributes like its name, colour and explode. The renderer consumes a
+//! complete validated snapshot.
+use crate::format::PlainNumberFormat;
+use crate::{Color, Material};
 
 pub const MAX_RADIAL_SLICES: usize = 64;
+/// The lines of a slice's drawn label text.
+const MAX_LABEL_LINES: usize = 2;
+/// The characters of one line of a slice's drawn label text: room for the
+/// longest line [`RadialChart::format_labels`] writes (a 309-digit value with
+/// six decimals, a 24-character suffix and a percentage).
+const MAX_LABEL_LINE_CHARS: usize = 400;
 
 /// One category. Construct with [`RadialSlice::new`]; optional fields inherit
 /// chart settings. Zero-valued slices keep their index but have no visible surface.
@@ -27,6 +39,19 @@ pub struct RadialSlice {
     /// Explicit color overrides automatic inside-label contrast selection.
     #[cfg_attr(feature = "serde", serde(default))]
     pub label_color: Option<Color>,
+    /// The drawn label text: at most two lines joined by `'\n'`. The
+    /// renderer draws this string and never formats a value.
+    /// [`RadialChart::format_labels`] writes it from the label format, the
+    /// decimals, the suffix and the circle's total when the host edits the
+    /// slices; a host may also set its own text. A document without it is
+    /// filled by [`RadialChart::normalize_labels`]. A shown label of a
+    /// slice with a value needs it: `None` there is rejected when a frame
+    /// is prepared.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub text: Option<String>,
 }
 impl RadialSlice {
     pub fn new(label: impl Into<String>, value: f64, color: Color) -> Self {
@@ -39,6 +64,7 @@ impl RadialSlice {
             labels: None,
             label_format: None,
             label_color: None,
+            text: None,
         }
     }
 }
@@ -58,21 +84,10 @@ impl RadialKind {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RadialMaterial {
-    Flat,
-    Matte,
-    Ceramic,
-    BrushedMetal,
-    Paper,
-    Wood,
-    SatinMetal,
-    Toon,
-    Enamel,
-    Hatch,
-    Pearl,
-}
+/// The former sector material enum, now the shared [`Material`]. Sectors
+/// accept every variant.
+#[deprecated(since = "0.13.0", note = "use Material")]
+pub type RadialMaterial = crate::Material;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -200,7 +215,7 @@ impl RadialInteraction {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct RadialStyle {
-    pub material: RadialMaterial,
+    pub material: Material,
     /// Orthographic camera tilt, 0..65 degrees. Zero is an undistorted top view.
     pub tilt_degrees: f32,
     /// Extrusion height / radius, 0..0.4. Does not change slice proportions.
@@ -235,16 +250,45 @@ impl RadialStyle {
     /// Oblique 3D view used by the native editor. Explicit preset so existing
     /// flat charts and serialized styles do not silently change appearance.
     pub fn three_dimensional() -> Self {
+        // Every field is named: the preset sets the 3D view and keeps the
+        // flat default for the rest.
+        let Self {
+            material: _,
+            tilt_degrees: _,
+            depth: _,
+            bevel: _,
+            gap_degrees: _,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
+            shadow: _,
+            inner_corner: _,
+            outer_corner: _,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
+        } = Self::default();
         Self {
-            material: RadialMaterial::Ceramic,
-            depth: 0.16,
+            material: Material::Ceramic,
             tilt_degrees: 55.0,
-            inner_corner: 0.045,
-            outer_corner: 0.045,
+            depth: 0.16,
             bevel: 0.025,
             gap_degrees: 1.4,
+            roughness,
+            texture_strength,
+            texture_scale,
+            light,
             shadow: true,
-            ..Self::default()
+            inner_corner: 0.045,
+            outer_corner: 0.045,
+            outline,
+            hover_lift,
+            hover_brightness,
+            gloss,
+            texture_angle_degrees,
         }
     }
 }
@@ -252,7 +296,7 @@ impl RadialStyle {
 impl Default for RadialStyle {
     fn default() -> Self {
         Self {
-            material: RadialMaterial::Flat,
+            material: Material::Flat,
             tilt_degrees: 0.0,
             depth: 0.0,
             bevel: 0.015,
@@ -291,12 +335,18 @@ pub struct RadialChart {
     pub decorations: crate::DecorationLayout,
     /// Legacy plain title, used only when `chart_title` is absent.
     pub title: String,
-    /// Independent rich title. Position remains in `decorations`.
+    /// Independent rich title, the shared chart title. Its position remains
+    /// in `decorations`: the offsets and `top_margin` must be 0, and the wire
+    /// form is the `{"visible", "text"}` object of a bounded title.
     #[cfg_attr(
         feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
+        serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "crate::bounded_title::bounded_title_wire"
+        )
     )]
-    pub chart_title: Option<crate::BoundedTitleOptions>,
+    pub chart_title: Option<crate::config::ChartTitleOptions>,
     /// The layer that receives pointer interaction. Bounded charts have no
     /// overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
@@ -397,6 +447,16 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
         if s.label.chars().count() > 80 || s.label.contains(['\n', '\r']) {
             return Err("slice labels must be single-line, at most 80 characters");
         }
+        if let Some(text) = &s.text
+            && (text.split('\n').count() > MAX_LABEL_LINES
+                || text.split('\n').any(|line| {
+                    line.chars().count() > MAX_LABEL_LINE_CHARS || line.contains(char::is_control)
+                }))
+        {
+            return Err(
+                "slice label text must have at most two lines of at most 400 characters, without control characters",
+            );
+        }
         sum += s.value;
     }
     if !sum.is_finite() || sum <= 0.0 {
@@ -405,6 +465,8 @@ fn total(slices: &[RadialSlice]) -> Result<f64, &'static str> {
     Ok(sum)
 }
 fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
+    // No material check: a sector has a curved, lit surface and draws every
+    // `Material`, unlike the flat bodies of bars and boxes.
     if !range(s.tilt_degrees, 0.0, 65.0)
         || !range(s.depth, 0.0, 0.4)
         || !range(s.bevel, 0.0, 0.1)
@@ -441,9 +503,9 @@ impl RadialChart {
     pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
         crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
-    pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
+    pub fn resolved_title(&self) -> crate::config::ChartTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
-            crate::BoundedTitleOptions::from_legacy(
+            crate::config::ChartTitleOptions::from_legacy_plain(
                 &self.title,
                 &self.font_family,
                 self.font_size,
@@ -480,24 +542,12 @@ impl RadialChart {
     /// Two label lines at most. Values use the original units; detail percentages
     /// use the detail subtotal. Formatting never changes numeric data.
     /// Call on a validated chart and pass the positive finite sum for this circle.
+    /// The edit-time helper [`Self::format_labels`] writes its lines into
+    /// [`RadialSlice::text`]; the renderer never calls it.
     pub fn label_lines(&self, slice: &RadialSlice, total: f64) -> Vec<String> {
-        let d = self.label_decimals;
-        let trim = |s: String| {
-            if d == 0 {
-                s
-            } else {
-                s.trim_end_matches('0').trim_end_matches('.').to_owned()
-            }
-        };
-        let value = format!(
-            "{}{}",
-            trim(format!("{:.*}", d, slice.value)),
-            self.value_suffix
-        );
-        let pct = format!(
-            "{}%",
-            trim(format!("{:.*}", d, slice.value / total * 100.0))
-        );
+        let plain = PlainNumberFormat::fixed(self.label_decimals, true);
+        let value = format!("{}{}", plain.format(slice.value), self.value_suffix);
+        let pct = format!("{}%", plain.format(slice.value / total * 100.0));
         match slice.label_format.unwrap_or(self.label_format) {
             RadialLabelFormat::Name => vec![slice.label.clone()],
             RadialLabelFormat::Value => vec![value],
@@ -511,13 +561,118 @@ impl RadialChart {
         }
     }
 
+    /// Write every slice's and every detail child's drawn [`RadialSlice::text`]
+    /// from its label format, [`Self::label_decimals`], [`Self::value_suffix`]
+    /// and its circle's total, replacing what was there. Call it after
+    /// editing values, names, formats, the decimals or the suffix; the
+    /// renderer draws the stored strings and formats nothing. A slice whose
+    /// text the host wrote itself is overwritten too: set it again after
+    /// this call.
+    pub fn format_labels(&mut self) {
+        self.write_labels(true);
+    }
+
+    /// Fill the drawn text of every slice and detail child that has none, as
+    /// [`Self::format_labels`] writes it, and keep the texts that are set:
+    /// the step that makes a document written before `text` existed draw
+    /// the labels it drew then. Like [`Self::normalize_title`], run it once
+    /// when a document is loaded.
+    pub fn normalize_labels(&mut self) {
+        self.write_labels(false);
+    }
+
+    fn write_labels(&mut self, all: bool) {
+        let mut slices = std::mem::take(&mut self.slices);
+        self.write_group(&mut slices, all);
+        self.slices = slices;
+        if let Some(mut split) = self.split.take() {
+            self.write_group(&mut split.children, all);
+            self.split = Some(split);
+        }
+    }
+
+    /// The texts of one circle: percentages are of this circle's total.
+    fn write_group(&self, slices: &mut [RadialSlice], all: bool) {
+        let total = slices.iter().map(|s| s.value).sum::<f64>();
+        for slice in slices {
+            if all || slice.text.is_none() {
+                slice.text = Some(self.label_lines(slice, total).join("\n"));
+            }
+        }
+    }
+
+    /// Whether a frame can draw every shown label: each slice and detail
+    /// child with a value whose label is shown has its drawn text.
+    pub fn labels_have_text(&self) -> bool {
+        self.slices
+            .iter()
+            .chain(self.split.iter().flat_map(|s| s.children.iter()))
+            .all(|s| {
+                s.value == 0.0
+                    || s.labels.unwrap_or(self.labels) == RadialLabels::None
+                    || s.text.is_some()
+            })
+    }
+
+    /// Move the persistent selection to the next (or, `backwards`, the
+    /// previous) slice with a value: the main circle's slices in order, then
+    /// the detail circle's children while a split is set, wrapping at either
+    /// end. From no selection, or one on a slice without a value, it starts
+    /// at the first (or the last). Nothing changes when no slice has a value.
+    pub fn step_selection(&mut self, backwards: bool) {
+        let n = self.steppable().count();
+        if n == 0 {
+            return;
+        }
+        let i = self
+            .interaction
+            .selected
+            .and_then(|s| self.steppable().position(|t| t == s));
+        let i = match i {
+            Some(i) if backwards => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if backwards => n - 1,
+            None => 0,
+        };
+        let next = self.steppable().nth(i);
+        self.interaction.selected = next;
+    }
+    /// The targets [`Self::step_selection`] visits, in its order.
+    fn steppable(&self) -> impl Iterator<Item = RadialTarget> + '_ {
+        let main = self
+            .slices
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.value > 0.)
+            .map(|(i, _)| RadialTarget::main(i));
+        let detail = self.split.iter().flat_map(|split| {
+            split
+                .children
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| s.value > 0.)
+                .map(|(i, _)| RadialTarget::detail(i))
+        });
+        main.chain(detail)
+    }
+
     /// Zero values are retained in the model, but have no geometry or label.
     /// This checks model constraints; the renderer additionally checks output size,
     /// device limits, label layout and GPU budget when preparing a frame.
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
         self.annotations.validate()?;
-        self.resolved_title().validate()?;
+        let title = self.resolved_title();
+        if !title.text.within_limits() {
+            return Err(
+                "invalid radial title: size 6..160, at most 512 characters / 8 lines, finite styles",
+            );
+        }
+        if [title.offset_x, title.offset_y, title.top_margin] != [0.0; 3] {
+            return Err(
+                "a radial chart title keeps its position in decorations: its offsets and top_margin must be 0",
+            );
+        }
         total(&self.slices)?;
         if !kind(self.kind) || !self.start_angle_degrees.is_finite() {
             return Err("invalid radial shape or start angle");
@@ -565,6 +720,24 @@ impl RadialChart {
     }
 }
 
+/// A radial chart is the state its decorations' hit map edits
+/// (`HitMap<RadialChart>`): a decoration moves in [`RadialChart::decorations`]
+/// as on any bounded chart, by the same containment rule. The element the
+/// renderer hands in carries the decoration's drawn bounds before its offset,
+/// measured on the chart it moves, so `measure` is not read.
+impl crate::drag::DragConfig for RadialChart {
+    type Element = crate::DecorationElement;
+    fn nudge(
+        &mut self,
+        element: crate::DecorationElement,
+        measure: &dyn crate::text::MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> crate::layout::NudgeResult {
+        self.decorations.nudge(element, measure, dx, dy)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +749,56 @@ mod tests {
             ],
             ..Default::default()
         }
+    }
+    #[test]
+    fn radial_step_selection_walks_every_slice_with_a_value_and_wraps() {
+        let mut c = RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 1.0, Color::WHITE),
+                RadialSlice::new("Z", 0.0, Color::WHITE),
+                RadialSlice::new("B", 2.0, Color::WHITE),
+                RadialSlice::new("C", 3.0, Color::WHITE),
+            ],
+            ..Default::default()
+        };
+        let (m, d) = (RadialTarget::main, RadialTarget::detail);
+        let walk = |c: &mut RadialChart, backwards: bool, steps: usize| {
+            c.interaction.selected = None;
+            (0..steps)
+                .map(|_| {
+                    c.step_selection(backwards);
+                    c.interaction.selected.unwrap()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(walk(&mut c, false, 4), [m(0), m(2), m(3), m(0)]);
+        assert_eq!(walk(&mut c, true, 4), [m(3), m(2), m(0), m(3)]);
+        c.split = Some(RadialSplit {
+            slice_index: 2,
+            kind: RadialKind::Pie,
+            children: vec![
+                RadialSlice::new("D", 1.0, Color::WHITE),
+                RadialSlice::new("Y", 0.0, Color::WHITE),
+                RadialSlice::new("E", 1.0, Color::WHITE),
+            ],
+        });
+        assert_eq!(walk(&mut c, false, 6), [m(0), m(2), m(3), d(0), d(2), m(0)]);
+        assert_eq!(walk(&mut c, true, 6), [d(2), d(0), m(3), m(2), m(0), d(2)]);
+        // A selection on a slice without a value steps as no selection.
+        c.interaction.selected = Some(m(1));
+        c.step_selection(false);
+        assert_eq!(c.interaction.selected, Some(m(0)));
+        c.interaction.selected = Some(d(1));
+        c.step_selection(true);
+        assert_eq!(c.interaction.selected, Some(d(2)));
+        // Nothing to step to: the selection stays as it is.
+        for s in c.slices.iter_mut() {
+            s.value = 0.0;
+        }
+        c.split = None;
+        c.interaction.selected = Some(m(2));
+        c.step_selection(false);
+        assert_eq!(c.interaction.selected, Some(m(2)));
     }
     #[test]
     fn radial_rejects_invalid_values_and_materials() {
@@ -596,6 +819,32 @@ mod tests {
         let mut c = chart();
         c.slices[0].value = 0.0;
         assert!(c.validate().is_ok());
+    }
+    #[test]
+    fn sectors_accept_every_material() {
+        for material in [
+            Material::Flat,
+            Material::Matte,
+            Material::Ceramic,
+            Material::BrushedMetal,
+            Material::Paper,
+            Material::Wood,
+            Material::SatinMetal,
+            Material::Toon,
+            Material::Enamel,
+            Material::Hatch,
+            Material::Pearl,
+        ] {
+            let mut c = chart();
+            c.style.material = material;
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+            let mut c = chart();
+            c.slices[0].style = Some(RadialStyle {
+                material,
+                ..Default::default()
+            });
+            assert_eq!(c.validate(), Ok(()), "{material:?}");
+        }
     }
     #[test]
     fn radial_detail_conserves_parent_total() {
@@ -676,6 +925,224 @@ mod editing_contract {
         chart.label_decimals = 7;
         assert!(chart.validate().is_err());
     }
+    fn split_chart() -> RadialChart {
+        RadialChart {
+            slices: vec![
+                RadialSlice::new("A", 20.0, Color::WHITE),
+                RadialSlice::new("B", 80.0, Color::WHITE),
+            ],
+            split: Some(RadialSplit {
+                slice_index: 1,
+                kind: RadialKind::Pie,
+                children: vec![
+                    RadialSlice::new("B1", 60.0, Color::WHITE),
+                    RadialSlice::new("B2", 20.0, Color::WHITE),
+                ],
+            }),
+            label_format: RadialLabelFormat::NameValuePercent,
+            label_decimals: 0,
+            value_suffix: " kg".into(),
+            ..Default::default()
+        }
+    }
+    fn texts(chart: &RadialChart) -> Vec<Option<&str>> {
+        chart
+            .slices
+            .iter()
+            .chain(chart.split.iter().flat_map(|s| s.children.iter()))
+            .map(|s| s.text.as_deref())
+            .collect()
+    }
+    #[test]
+    fn format_labels_writes_the_drawn_strings_at_edit_time() {
+        let mut chart = split_chart();
+        assert!(!chart.labels_have_text());
+        chart.format_labels();
+        assert!(chart.labels_have_text());
+        // Detail percentages are of the detail subtotal.
+        assert_eq!(
+            texts(&chart),
+            [
+                Some("A\n20 kg (20%)"),
+                Some("B\n80 kg (80%)"),
+                Some("B1\n60 kg (75%)"),
+                Some("B2\n20 kg (25%)"),
+            ]
+        );
+        // Each text is today's lines joined, for every format.
+        for format in [
+            RadialLabelFormat::Name,
+            RadialLabelFormat::Value,
+            RadialLabelFormat::Percent,
+            RadialLabelFormat::NamePercent,
+            RadialLabelFormat::NameValue,
+            RadialLabelFormat::ValuePercent,
+            RadialLabelFormat::NameValuePercent,
+        ] {
+            chart.slices[0].label_format = Some(format);
+            chart.format_labels();
+            let lines = chart.label_lines(&chart.slices[0], 100.0);
+            assert_eq!(chart.slices[0].text, Some(lines.join("\n")), "{format:?}");
+            assert!(lines.len() <= 2);
+        }
+        // An edit is reflected only once the host writes the labels again.
+        chart.slices[0].value = 30.0;
+        chart.split.as_mut().unwrap().children[0].value = 50.0;
+        chart.split.as_mut().unwrap().children[1].value = 20.0;
+        chart.slices[1].value = 70.0;
+        chart.slices[0].label_format = None;
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n20 kg (20%)"));
+        chart.format_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n30 kg (30%)"));
+        assert_eq!(
+            chart.split.as_ref().unwrap().children[0].text.as_deref(),
+            Some("B1\n50 kg (71%)")
+        );
+    }
+    #[test]
+    fn normalize_labels_fills_only_missing_texts() {
+        let mut chart = split_chart();
+        chart.slices[0].text = Some("Custom".into());
+        chart.normalize_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("Custom"));
+        assert_eq!(chart.slices[1].text.as_deref(), Some("B\n80 kg (80%)"));
+        // A hidden label or an empty slice needs no text.
+        let mut hidden = split_chart();
+        hidden.labels = RadialLabels::None;
+        assert!(hidden.labels_have_text());
+        let mut empty = split_chart();
+        empty.split = None;
+        empty.slices[0].value = 0.0;
+        empty.slices[1].text = Some(String::new());
+        assert!(empty.labels_have_text());
+        // `format_labels` replaces a host's own text as well.
+        chart.format_labels();
+        assert_eq!(chart.slices[0].text.as_deref(), Some("A\n20 kg (20%)"));
+    }
+    #[test]
+    fn label_text_keeps_two_lines_and_rejects_control_characters() {
+        let mut chart = split_chart();
+        chart.format_labels();
+        assert!(chart.validate().is_ok());
+        for bad in [
+            "a\nb\nc".to_string(),
+            "a\rb".to_string(),
+            "a\tb".to_string(),
+            "x".repeat(401),
+        ] {
+            let mut c = chart.clone();
+            c.slices[0].text = Some(bad.clone());
+            assert!(c.validate().is_err(), "{bad:?}");
+            let mut c = chart.clone();
+            c.split.as_mut().unwrap().children[1].text = Some(bad.clone());
+            assert!(c.validate().is_err(), "{bad:?}");
+        }
+        chart.slices[0].text = Some(format!("{}\n{}", "x".repeat(400), "y"));
+        assert!(chart.validate().is_ok());
+        // The longest line the formatter writes fits.
+        let mut largest = RadialChart {
+            slices: vec![RadialSlice::new("A", f64::MAX, Color::WHITE)],
+            label_format: RadialLabelFormat::ValuePercent,
+            label_decimals: 6,
+            value_suffix: "x".repeat(24),
+            ..Default::default()
+        };
+        largest.format_labels();
+        assert_eq!(largest.validate(), Ok(()));
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn a_document_without_text_normalizes_to_the_strings_it_drew() {
+        let mut chart = split_chart();
+        let old = serde_json::to_value(&chart).unwrap();
+        assert!(
+            old["slices"][0].get("text").is_none(),
+            "skipped when absent"
+        );
+        let mut loaded: RadialChart = serde_json::from_value(old).unwrap();
+        assert_eq!(loaded, chart);
+        loaded.normalize_labels();
+        // The strings `label_lines` produced at draw time before `text`:
+        // main slices of the total 100, detail children of their 80.
+        let slices = chart
+            .slices
+            .iter()
+            .chain(chart.split.as_ref().unwrap().children.iter());
+        for ((slice, total), text) in slices.zip([100.0, 100.0, 80.0, 80.0]).zip(texts(&loaded)) {
+            let drawn = chart.label_lines(slice, total).join("\n");
+            assert_eq!(text, Some(drawn.as_str()));
+        }
+        chart.format_labels();
+        assert_eq!(loaded, chart);
+        let json = serde_json::to_string(&chart).unwrap();
+        assert!(json.contains("\"text\":\"A\\n20 kg (20%)\""), "{json}");
+        assert_eq!(serde_json::from_str::<RadialChart>(&json).unwrap(), chart);
+    }
+    #[test]
+    fn the_title_is_the_shared_chart_title_positioned_by_decorations() {
+        let mut chart = split_chart();
+        chart.title = "Plain".into();
+        let legacy = chart.resolved_title();
+        assert_eq!(
+            legacy,
+            crate::config::ChartTitleOptions::from_legacy_plain(
+                "Plain",
+                &chart.font_family,
+                chart.font_size,
+                chart.label_color
+            )
+        );
+        assert_eq!(legacy.text.font_size, chart.font_size * 1.5);
+        assert_eq!(chart.validate(), Ok(()));
+        chart.normalize_title();
+        assert_eq!(chart.chart_title, Some(legacy));
+        for edit in [
+            |t: &mut crate::config::ChartTitleOptions| t.offset_x = 4.0,
+            |t: &mut crate::config::ChartTitleOptions| t.offset_y = -1.0,
+            |t: &mut crate::config::ChartTitleOptions| t.top_margin = 30.0,
+        ] {
+            let mut moved = chart.clone();
+            edit(moved.chart_title.as_mut().unwrap());
+            assert!(
+                moved.validate().is_err(),
+                "the position lives in decorations"
+            );
+        }
+        let mut big = chart.clone();
+        big.chart_title.as_mut().unwrap().text.font_size = 161.0;
+        assert!(big.validate().is_err());
+    }
+    #[cfg(feature = "serde")]
+    #[test]
+    fn the_title_keeps_the_bounded_wire_form() {
+        let mut chart = split_chart();
+        chart.title = "T".into();
+        chart.normalize_title();
+        let json = serde_json::to_value(&chart).unwrap();
+        let title = json["chart_title"].as_object().unwrap();
+        assert_eq!(title.len(), 2, "no offsets or band are written");
+        // In the bounded title's order.
+        let text = serde_json::to_string(&chart).unwrap();
+        assert!(
+            text.contains("\"chart_title\":{\"visible\":true,\"text\":{"),
+            "{text}"
+        );
+        assert_eq!(serde_json::from_str::<RadialChart>(&text).unwrap(), chart);
+        // Offsets and a band in a document are not the chart's: they read as 0.
+        let mut placed = json.clone();
+        placed["chart_title"]["offset_x"] = 9.0.into();
+        placed["chart_title"]["top_margin"] = 40.0.into();
+        let read: RadialChart = serde_json::from_value(placed).unwrap();
+        assert_eq!(read.chart_title, chart.chart_title);
+        let mut none = json;
+        none["chart_title"] = serde_json::Value::Null;
+        assert_eq!(
+            serde_json::from_value::<RadialChart>(none)
+                .unwrap()
+                .chart_title,
+            None
+        );
+    }
     #[cfg(feature = "serde")]
     #[test]
     fn editing_options_roundtrip_and_old_snapshots_default() {
@@ -684,7 +1151,7 @@ mod editing_contract {
             ..Default::default()
         };
         chart.style.outer_corner = 0.05;
-        chart.style.material = RadialMaterial::SatinMetal;
+        chart.style.material = Material::SatinMetal;
         chart.slices[0].label_format = Some(RadialLabelFormat::Value);
         chart.interaction.selected = Some(RadialTarget::main(0));
         let json = serde_json::to_value(&chart).unwrap();

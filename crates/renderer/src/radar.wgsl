@@ -51,7 +51,7 @@ fn polygon_sdf(p: vec2<f32>, offset: u32, count: u32) -> f32 {
     }
     return select(distance, -distance, inside);
 }
-fn sdf(p: vec2<f32>, prim: Prim) -> f32 {
+fn prim_sdf(p: vec2<f32>, prim: Prim) -> f32 {
     let kind = prim.kind.x;
     if kind == KIND_POLYGON {
         return polygon_sdf(p, u32(prim.kind.y), u32(prim.kind.z));
@@ -68,14 +68,6 @@ fn sdf(p: vec2<f32>, prim: Prim) -> f32 {
         return max(abs(d.x), abs(d.y)) - prim.points.z;
     }
     return length(d) - prim.points.z;
-}
-fn output(c: vec4<f32>) -> vec4<f32> {
-    if globals.size.w > 0.5 && c.a > 0.0 {
-        let rgb = c.rgb / c.a;
-        let linear = select(pow((rgb + 0.055) / 1.055, vec3(2.4)), rgb / 12.92, rgb <= vec3(0.04045));
-        return vec4(linear * c.a, c.a);
-    }
-    return c;
 }
 @fragment fn fs(v: Vertex) -> @location(0) vec4<f32> {
     let p = v.position.xy;
@@ -94,7 +86,7 @@ fn output(c: vec4<f32>) -> vec4<f32> {
     for (var y = 0u; y < 2u; y++) {
         for (var x = 0u; x < 2u; x++) {
             let sample = p + (vec2(f32(x), f32(y)) + 0.5) * 0.5 - 0.5;
-            if sdf(sample, prim) <= 0.0 { coverage += 0.25; }
+            if prim_sdf(sample, prim) <= 0.0 { coverage += 0.25; }
         }
     }
     let alpha = prim.color.a * coverage;

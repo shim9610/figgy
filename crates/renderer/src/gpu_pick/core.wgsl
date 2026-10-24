@@ -1,9 +1,13 @@
 
 // Exact GPU point/segment picking over ColumnPool split-f32 values.
 //
-// This module deliberately uses pick_* names and its own layouts. It is not
-// part of the render-shader common block: the picker consumes the same public
-// data representation but owns a compute-only ABI.
+// The picker owns a compute-only ABI (pick_* names, the pool at group 0
+// binding 0, the transform inside `PickQueryParams`) and splices the draw
+// shaders' projection, sample validity, ramp and step fragments, passing
+// `pick_query_params.transform` where a draw passes its `transform` uniform
+// (SHADER_COMMON.md §1). It does not splice `transform.wgsl`, whose uniform
+// declaration would take the pool's binding; `Transform` below is the same
+// struct.
 //
 // Small queries scan directly. Larger queries use two streaming gates instead
 // of a traversal index. The X pass reads one axis and writes one scatter/line
@@ -29,7 +33,7 @@ const PICK_FLAG_VECTOR: u32 = 64u;
 const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 
 // ───── exact-pass variants ─────
-// The point picker is assembled from fragments in Rust (`gpu_pick.rs`,
+// The point picker is assembled from fragments in Rust (`gpu_pick/shader.rs`,
 // `PickShader`): this core, the gate entries for the gate module, and for
 // each exact module the fragments of one primitive class (markers, vector
 // arrows, lines, or markers and lines) with the exact entry. Within an exact
@@ -38,6 +42,8 @@ const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 // folds the others away at pipeline creation. The default carries every
 // path, which is what a streamed pick uses.
 const PICK_VARIANT_STYLED_MARKER: u32 = 2u; // sketch, planet and star markers (§5.7)
+const PICK_VARIANT_ERRORBAR: u32 = 4u;      // error-bar stems and caps (§5.11)
+const PICK_VARIANT_AREA: u32 = 8u;          // a line's area fill (§2.2)
 const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
@@ -50,7 +56,7 @@ fn pick_variant(bits: u32) -> bool {
 const PICK_STYLE_MASK_RADIUS: u32 = 2u;
 const PICK_STYLE_MASK_SHAPE: u32 = 4u;
 
-struct PickQueryTransform {
+struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
     data_min_lo: vec2<f32>,
@@ -65,7 +71,7 @@ struct PickQueryTransform {
 };
 
 struct PickQueryParams {
-    transform: PickQueryTransform,
+    transform: Transform,
     // (cursor_x, cursor_y, chart_x, chart_y), all canvas pixels.
     cursor_chart: vec4<f32>,
     // (chart_width, chart_height, maximum pick distance, maximum per-axis
@@ -114,12 +120,29 @@ struct PickQueryParams {
     vector_px: vec4<f32>,
     // (minimum length, 0, 0, 0), canvas pixels.
     vector_min: vec4<f32>,
+    // The error bars drawn with the markers (`gpu_pick/errorbar.wgsl`): (bar
+    // count — the shortest of the six columns the error-bar shader reads,
+    // zero without error bars —, the `ERRORBAR_HAS_*` directions,
+    // error-bar style-index f32-lane base, style-index logical length; zero
+    // without an index column).
+    errorbar: vec4<u32>,
+    // The error columns' f32-lane bases: (y lower, y upper, x lower, x upper).
+    errorbar_lanes: vec4<u32>,
+    // The error-bar style rows, after the marker rows in `pick_style_slots`
+    // and `pick_style_overrides`: (first slot row, slot count, first
+    // override row, override count).
+    errorbar_rows: vec4<u32>,
+    // (stem width, cap half length, cap width, 1 when the base colour
+    // paints else 0), logical pixels; the display scale is applied with the
+    // other sizes.
+    errorbar_px: vec4<f32>,
+    // The line's area fill (`gpu_pick/area.wgsl`): (second y column's f32-lane
+    // base, filled segment count — zero without a fill —, 1 when it fills to
+    // that series else to the baseline, 0).
+    area: vec4<u32>,
+    // (baseline hi, baseline lo, 0, 0): `Style.dash[1].xy` of the fill.
+    area_baseline: vec4<f32>,
 };
-
-const PICK_STEP_LINEAR: u32 = 0u;
-const PICK_STEP_PRE: u32 = 1u;
-const PICK_STEP_POST: u32 = 2u;
-const PICK_STEP_MID: u32 = 3u;
 
 struct PickScatterStyleSlot {
     color_premul: vec4<f32>,
@@ -142,7 +165,7 @@ struct PickCandidate {
     valid: u32,
     series_order: u32,
     point_index: u32,
-    primitive_kind: u32, // scatter=0, line=1 (CPU traversal order)
+    primitive_kind: u32, // `PICK_KIND_*`
     primitive_index: u32,
     distance_sq: f32,
     distance_px: f32,
@@ -207,30 +230,10 @@ fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
         && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0);
 }
 
-fn pick_log10(v: f32) -> f32 {
-    return log(max(v, 1e-30)) / log(10.0);
-}
-
-fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
-    let raw = v.x + v.y;
-    let min_hi = pick_query_params.transform.data_min[axis];
-    let max_hi = pick_query_params.transform.data_max[axis];
-    let min_lo = pick_query_params.transform.data_min_lo[axis];
-    let max_lo = pick_query_params.transform.data_max_lo[axis];
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (pick_log10(raw) - min_hi) - min_lo;
-    if pick_query_params.transform.scale_log[axis] > 0.5 {
-        return fma(log_num / range, pick_query_params.transform.data_to_panel_scale[axis],
-            pick_query_params.transform.data_to_panel_offset[axis]);
-    }
-    let data_t = mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
-    return fma(data_t, pick_query_params.transform.data_to_panel_scale[axis],
-        pick_query_params.transform.data_to_panel_offset[axis]);
-}
-
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
-    let t = pick_axis_pair_to_t(v, axis);
+    let tr = pick_query_params.transform;
+    let t = axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
+        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis]);
     if axis == 0u {
         return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
     }
@@ -241,89 +244,22 @@ fn pick_polar() -> bool {
     return pick_variant(PICK_VARIANT_POLAR) && pick_query_params.transform.polar_angle.x > 0.5;
 }
 
-// Twin of `polar_ndc` in the data shaders, in canvas pixels.
-fn pick_project_pair_polar(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
-    let t = pick_query_params.transform;
-    let ty = pick_axis_pair_to_t(y, 1u);
-    let angle = t.polar_angle.y + t.polar_angle.z * (x.x + x.y);
-    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    let r = mix(t.polar_angle.w, 1.0, max(rt, 0.0));
-    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    let ndc = center + vec2<f32>(cos(angle), sin(angle)) * r * t.polar_extent.w * t.pixel_to_ndc;
+// NDC into canvas pixels (y down) on this query's chart rectangle.
+fn pick_ndc_to_canvas(ndc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
         pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
     );
 }
 
+// The draw's projection in canvas pixels. A polar sample goes through the
+// draw's NDC (`data_to_ndc`); a rectangular one maps each axis' panel `t`
+// straight to pixels, which keeps the precision `t * 2 - 1` would round off.
 fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
     if pick_polar() {
-        return pick_project_pair_polar(x, y);
+        return pick_ndc_to_canvas(data_to_ndc(pick_query_params.transform, x, y));
     }
     return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
-}
-
-// Twin of `polar_sample_valid`: a radius below the axis start is not drawn,
-// so it is not picked. The sector, the outer ring and the hole cut the drawn
-// primitive per fragment instead; `pick_polar_clip_distance` applies that
-// clip at the cursor.
-fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
-    if !pick_polar() {
-        return true;
-    }
-    let t = pick_query_params.transform;
-    let ty = pick_axis_pair_to_t(y, 1u);
-    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    return rt >= 0.0;
-}
-
-// The polar fragment clip of the draw shaders (SHADER_COMMON.md, coordinate
-// sample validity). `polar_fragment_visible` is copied byte-for-byte; the
-// three inputs it takes are computed from this shader's transform exactly
-// as `polar_clip_offset` / `polar_clip_limits` / `polar_clip_sector` compute
-// them from the draw transform.
-fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
-    if (limits.x < 0.5) {
-        return true;
-    }
-    let r = length(px);
-    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
-        return false;
-    }
-    if (limits.w < 0.5) {
-        return true;
-    }
-    // The data angle of the fragment, brought into the turn that starts at
-    // the sector start.
-    let turn = 6.283185307179586 / abs(sector.y);
-    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
-    a = a - floor((a - sector.z) / turn) * turn;
-    return a <= sector.w + 1e-6 * turn;
-}
-
-// The cursor's offset from the polar centre in pixels, y up: what
-// `polar_clip_offset` interpolates to at the fragment under the cursor.
-fn pick_polar_cursor_offset() -> vec2<f32> {
-    let t = pick_query_params.transform;
-    let cursor = pick_query_params.cursor_chart;
-    let ndc = vec2<f32>(
-        (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
-        1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
-    );
-    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return (ndc - center) / t.pixel_to_ndc;
-}
-
-fn pick_polar_clip_limits() -> vec4<f32> {
-    let p = pick_query_params.transform.polar_angle;
-    let e = pick_query_params.transform.polar_extent;
-    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
-}
-
-fn pick_polar_clip_sector() -> vec4<f32> {
-    let p = pick_query_params.transform.polar_angle;
-    let e = pick_query_params.transform.polar_extent;
-    return vec4<f32>(p.y, p.z, e.x, e.y);
 }
 
 // Distance from the ray at screen angle `angle` (from the polar centre) to
@@ -346,9 +282,17 @@ fn pick_polar_clip_distance() -> f32 {
     if !pick_polar() {
         return 0.0;
     }
-    let px = pick_polar_cursor_offset();
-    let limits = pick_polar_clip_limits();
-    let sector = pick_polar_clip_sector();
+    // The cursor in NDC: where the draw's `polar_clip_offset` is
+    // interpolated at the fragment under the cursor.
+    let t = pick_query_params.transform;
+    let cursor = pick_query_params.cursor_chart;
+    let ndc = vec2<f32>(
+        (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
+        1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
+    );
+    let px = polar_clip_offset(t, ndc);
+    let limits = polar_clip_limits(t);
+    let sector = polar_clip_sector(t);
     if polar_fragment_visible(px, limits, sector) {
         return 0.0;
     }
@@ -392,10 +336,10 @@ fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
 
 fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
     let x = pick_read_pair(pick_query_params.data.y, point_index);
-    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y) {
+    if !pick_pair_is_valid(x) || !polar_sample_valid(pick_query_params.transform, x, y) {
         return false;
     }
-    let projected = pick_project_pair_polar(x, y);
+    let projected = pick_project_pair(x, y);
     if !pick_is_finite(projected.x) || !pick_is_finite(projected.y) {
         return false;
     }
@@ -453,6 +397,15 @@ fn pick_flip(v: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(v.x, -v.y);
 }
 
+// `PickCandidate.primitive_kind`, numbered so that within one series a lower
+// kind is painted over a higher one: markers over the line over the error
+// bars (`issue_series_data`). Fills are painted before every series' body
+// (`issue_series_fill`).
+const PICK_KIND_MARKER: u32 = 0u;
+const PICK_KIND_LINE: u32 = 1u;
+const PICK_KIND_ERRORBAR: u32 = 2u;
+const PICK_KIND_FILL: u32 = 3u;
+
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
     return PickCandidate(
         0u,
@@ -476,10 +429,18 @@ fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) 
     if candidate.distance_sq != incumbent.distance_sq {
         return candidate.distance_sq < incumbent.distance_sq;
     }
-    // An exact tie goes to whatever is painted on top. Series paint in
-    // order, so a later series covers an earlier one; within a series the
-    // markers paint over the line; and instances paint in index order, so a
-    // higher marker or segment index covers a lower one.
+    // An exact tie goes to whatever is painted on top. Every fill paints
+    // before every series' body, so a fill loses a tie to anything else;
+    // series paint in order, so a later series covers an earlier one (a
+    // later fill an earlier fill too); within a series the markers paint
+    // over the line and the line over the error bars; and instances paint
+    // in index order, so a higher marker, bar or segment index covers a
+    // lower one.
+    let candidate_fill = candidate.primitive_kind == PICK_KIND_FILL;
+    let incumbent_fill = incumbent.primitive_kind == PICK_KIND_FILL;
+    if candidate_fill != incumbent_fill {
+        return incumbent_fill;
+    }
     if candidate.series_order != incumbent.series_order {
         return candidate.series_order > incumbent.series_order;
     }

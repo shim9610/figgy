@@ -63,10 +63,30 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | One value per category and series on shared spokes | `RadarChart`, `RadarSeries` |
 | A Cartesian chart drawn in (angle, radius) | `polar::PolarOptions` on `Config.polar`, `polar::PolarGeometry` |
 | Arrows, point colour and size maps, area fills and step lines | `data_config::DataRenderType::Vector`, `PointColorMap`, `PointSizeMap`, `LineFill`, `LineInterpolation` |
-| Selection, dragging and area handles | `Selectable`, `Draggable`, `Resizable`, `DecorationLayout` |
+| Selection, dragging and area handles | `Selectable` (an element's one placement, `emit`, into a `sink::Sink`), `SelectionGeometry`, `Draggable`, `Resizable`, `DecorationLayout` |
 | Secondary Y axes, subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
 | Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
 | Rich titles on pie, bar, boxplot and radar charts | `BoundedTitleOptions` on `chart_title` |
+
+## Chart classes
+
+A chart's per-element data enters in one of two ways, and that decides its
+class.
+
+- **DataLess charts** are defined by their SSOT alone. They have no
+  `ColumnSource`, no column in the renderer's pool and no streaming, by
+  definition: every element is a configured entity, and its value is one of
+  its attributes beside its name, colour and the rest. The radial chart
+  (`RadialChart`: pie, donut and the detail ring of a split) is the only
+  DataLess chart. A slice is named, coloured, exploded and labelled by the
+  host, its `value` is stored on it, and the chart is bounded by its nature
+  (`MAX_RADIAL_SLICES`). Its drawn label strings are SSOT strings too
+  (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
+  the renderer draws them and formats nothing.
+- **Column-backed charts** are the series kinds of `Config`: per-point data
+  enters only through the renderer's `ColumnSource` and lives in its column
+  pool. The categorical bar, box plot and radar charts are moving onto
+  columns as well and keep their values in their models until they do.
 
 Bounded charts (pie/donut, bar, boxplot and radar) carry their values in the
 model, not in columns, and take no stream sources. Their `validate` methods

@@ -25,6 +25,8 @@
 mod big_data;
 mod bounded;
 mod cartesian;
+/// The scene catalogue, shared with the renderer's decoration oracle.
+#[path = "../../../crates/renderer/tests/support/playground_scenes.rs"]
 mod scenes;
 mod widgets;
 

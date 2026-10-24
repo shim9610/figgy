@@ -1,9 +1,12 @@
 use super::*;
+use crate::data_render::{FLAT_BODY_ROUGHNESS, MaterialGpu};
 use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
+use model::tick::LinearGrid;
 
 pub(super) struct Layout {
     pub bars: Vec<Bar>,
@@ -60,18 +63,19 @@ pub(super) fn layout(
         .map_err(|_| invalid("categorical axis range cannot be represented"))?;
     let span = plan.max - plan.min;
     let norm = |v: f64| ((v / unit - plan.min) / span) as f32;
-    let tick_count = ((plan.max - plan.min) / plan.major_spacing).round() as usize;
+    // The axes' grid walk over the widened plan: ticks at `k · step`.
+    let grid = LinearGrid::new(plan.min, plan.max, plan.major_spacing, 100)
+        .ok_or_else(|| invalid("categorical axis range cannot be represented"))?;
     let mut ticks = Vec::new();
-    for i in 0..=tick_count {
-        let normalized = plan.min + i as f64 * plan.major_spacing;
+    for (_, normalized) in grid.iter() {
         let value = normalized * unit;
         if !value.is_finite() {
             return Err(invalid("categorical axis tick overflow"));
         }
         let label = if percent {
-            format!("{}%", crate::axis_render::plain_number(value))
+            format!("{}%", PlainNumberFormat::AUTO.format(value))
         } else {
-            crate::axis_render::plain_number(value)
+            PlainNumberFormat::AUTO.format(value)
         };
         ticks.push((((normalized - plan.min) / span) as f32, label));
     }
@@ -125,7 +129,7 @@ pub(super) fn layout(
     } else {
         24.0
     };
-    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale);
     let top = title.top;
     let axis_title = if horizontal {
         &c.value_title
@@ -282,13 +286,6 @@ pub(super) fn layout(
             }
         }
         if s.value != 0.0 && rect[2] > rect[0] && rect[3] > rect[1] {
-            let material = match style.material {
-                CategoryBarMaterial::Flat => 0.0,
-                CategoryBarMaterial::Matte => 1.0,
-                CategoryBarMaterial::SatinMetal => 2.0,
-                CategoryBarMaterial::Enamel => 3.0,
-                CategoryBarMaterial::Paper => 4.0,
-            };
             let emphasized =
                 c.hovered.as_ref() == Some(&s.target) || c.selected.as_ref() == Some(&s.target);
             // Stable grain seed depends on identity rather than array order.
@@ -318,17 +315,25 @@ pub(super) fn layout(
                 rect: rect.map(|v| v * scale),
                 radii,
                 color: [color.r, color.g, color.b, color.a],
-                material: [
-                    material,
+                material: MaterialGpu::pack(
+                    style.material,
+                    FLAT_BODY_ROUGHNESS,
                     style.texture_strength,
                     style.texture_scale,
                     style.gloss,
-                ],
+                    (seed % 4096) as f32,
+                    0.0,
+                    if emphasized {
+                        style.emphasis_brightness
+                    } else {
+                        0.0
+                    },
+                ),
                 outline: [
                     if style.outline { 1.0 } else { 0.0 },
                     style.outline_width * scale,
                     if horizontal { 1.0 } else { 0.0 },
-                    (seed % 4096) as f32,
+                    0.0,
                 ],
                 outline_color: [
                     style.outline_color.r,
@@ -336,16 +341,7 @@ pub(super) fn layout(
                     style.outline_color.b,
                     style.outline_color.a,
                 ],
-                effects: [
-                    if emphasized {
-                        style.emphasis_brightness
-                    } else {
-                        0.0
-                    },
-                    scale,
-                    shared as f32,
-                    0.0,
-                ],
+                effects: [0.0, scale, shared as f32, 0.0],
             });
             out.targets.push(s.target.clone());
         }
@@ -405,19 +401,15 @@ pub(super) fn layout(
         } else {
             c.text_color
         };
-        decorations.text(
-            DecorationId::DataLabel {
-                category_id: s.target.category_id.clone(),
-                series_id: s.target.series_id.clone(),
-            },
-            &mut front,
-            &c.font_family,
-            &label,
-            x,
-            y,
-            fs,
-            ink,
-        );
+        decorations
+            .on(
+                DecorationId::DataLabel {
+                    category_id: s.target.category_id.clone(),
+                    series_id: s.target.series_id.clone(),
+                },
+                &mut front,
+            )
+            .plain_text(&c.font_family, &label, x, y, fs, ink);
     }
     out.decorations = decorations.finish();
     if annotate {

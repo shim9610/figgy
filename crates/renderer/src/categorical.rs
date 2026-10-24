@@ -9,6 +9,15 @@ use crate::{RasterImage, RendererDevice};
 pub use model::categorical::*;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// The assembled categorical module.
+pub(crate) const CATEGORICAL_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/material.wgsl",
+    "data_render/common/bounded_shading.wgsl",
+    "data_render/common/srgb_output.wgsl",
+    "categorical.wgsl",
+);
+
 #[path = "categorical_layout.rs"]
 mod layout;
 
@@ -39,10 +48,12 @@ struct Bar {
     rect: [f32; 4],  // left, top, right, bottom in physical pixels
     radii: [f32; 4], // TL, TR, BR, BL
     color: [f32; 4],
-    material: [f32; 4], // material, strength, frequency, gloss
-    outline: [f32; 4],  // enabled, physical width, direction, seed
+    material: crate::data_render::MaterialGpu,
+    outline: [f32; 4], // enabled, physical width, direction, reserved (0)
     outline_color: [f32; 4],
-    effects: [f32; 4], // emphasis brightness, output scale, shared-edge mask, reserved
+    // reserved (0, emphasis moved to `material`), output scale, shared-edge
+    // mask, reserved (0)
+    effects: [f32; 4],
 }
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -54,12 +65,12 @@ const EMPTY_BAR: Bar = Bar {
     rect: [0.0; 4],
     radii: [0.0; 4],
     color: [0.0; 4],
-    material: [0.0; 4],
+    material: crate::data_render::MaterialGpu::EMPTY,
     outline: [0.0; 4],
     outline_color: [0.0; 4],
     effects: [0.0; 4],
 };
-const _: () = assert!(std::mem::size_of::<Bar>() == 112 && std::mem::size_of::<Globals>() == 32);
+const _: () = assert!(std::mem::size_of::<Bar>() == 128 && std::mem::size_of::<Globals>() == 32);
 fn distance(bar: &Bar, p: [f32; 2]) -> f32 {
     let center = [
         (bar.rect[0] + bar.rect[2]) * 0.5,
@@ -227,7 +238,7 @@ impl CategoricalRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            include_str!("categorical.wgsl"),
+            CATEGORICAL_SHADER.source,
             &[("categorical surfaces", "categorical surfaces")],
             format,
             1,
@@ -275,7 +286,9 @@ impl CategoricalRenderer {
                         ty: wgpu::BindingType::Buffer {
                             ty: wgpu::BufferBindingType::Storage { read_only: true },
                             has_dynamic_offset: false,
-                            min_binding_size: wgpu::BufferSize::new(112),
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<Bar>() as u64
+                            ),
                         },
                         count: None,
                     },
@@ -304,7 +317,7 @@ impl CategoricalRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("categorical surfaces"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("categorical.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(CATEGORICAL_SHADER.source.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(
@@ -482,7 +495,7 @@ impl CategoricalRenderer {
             } else {
                 u64::from(width) * u64::from(height) * 8
             } + 32
-                + count as u64 * 112,
+                + count as u64 * std::mem::size_of::<Bar>() as u64,
         )?;
         let l = layout::layout(chart, size, scale, reused.is_none())?;
         let globals = Globals {

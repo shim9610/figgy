@@ -35,6 +35,8 @@ chart.validate()?;
 - `Percent` 표기는 같은 범주의 시리즈 합계가 기준이다. 음수가 섞인 범주는 `—`로 표시한다.
 - 데이터 축은 0을 포함하는 **선형 자동 범위**다. 로그축·수동 범위·줌은 지원하지 않는다.
   기존 선형 눈금 계산기를 사용하며, 표시 가능한 눈금·라벨 공간은 `prepare`에서 검사한다.
+  눈금 값은 간격의 정수배이고(`model::tick::LinearGrid`), 눈금 라벨은 `PlainNumberFormat`의
+  자동 형식(`2.5`, `1000`, `1.23e6`)으로 적는다.
 
 `reorder_categories(&["b", "a"])`는 범주와 모든 값 배열을 함께 옮긴다. 인덱스만 직접 바꾸면
 값과 이름이 어긋날 수 있으므로 이 메서드를 권장한다. 선택과 개별 스타일은 ID를 참조하므로
@@ -51,13 +53,13 @@ chart.validate()?;
 
 ```rust,no_run
 use renderer::{CategoricalChart, CategoryBarTarget, CategoryBarOverride,
-    CategoryBarStyle, CategoryBarMaterial, CategoryBarLabels, CategoryBarLabelFormat, Color};
+    CategoryBarStyle, CategoryBarLabels, CategoryBarLabelFormat, Color, Material};
 # fn edit(chart: &mut CategoricalChart) {
 let target = CategoryBarTarget::new("a", "before");
 let mut edit = CategoryBarOverride::new(target.clone());
 edit.color = Some(Color::from_rgb8(30, 175, 165));
 edit.style = Some(CategoryBarStyle {
-    material: CategoryBarMaterial::SatinMetal,
+    material: Material::SatinMetal,
     outline: true,
     ..chart.style.clone()
 });
@@ -72,14 +74,14 @@ chart.selected = Some(target);
 
 | 옵션 | 기본값 | 범위·동작 |
 |---|---|---|
-| `material` | `Flat` | Flat, Matte, SatinMetal, Enamel, Paper |
+| `material` | `Flat` | Any [`Material`](RADIAL.md#materials) except Toon and Pearl; a bar is shaded like a flat pie top |
 | `corner_radius` | 5 | 논리 픽셀 0~32. 막대 두께·길이의 절반 이내로 제한 |
 | `outline` | false | 외곽선 켜기 |
 | `outline_width` | 1 | 논리 픽셀 0~8. 도형 안쪽으로 그림 |
 | `outline_color` | RGB(40,55,75) | RGBA 각 성분 0~1, 알파 허용 |
 | `texture_strength` | 0.2 | 0~1, 0이면 무늬 끄기 |
 | `texture_scale` | 1 | 0.1~8, 높일수록 무늬가 촘촘함 |
-| `gloss` | 0.45 | 0~1, 새틴·에나멜의 반사광 강도 |
+| `gloss` | 0.45 | 0~1; the sheen of SatinMetal and BrushedMetal (no visible effect on an Enamel bar, see [materials](RADIAL.md#materials)) |
 | `emphasis_brightness` | 0.08 | 0~0.5, 호버·선택 시 밝기 증가 |
 | `group_width` | 0.7 | 범주 칸에서 막대가 차지하는 비율, 0.1~0.95 |
 | `bar_gap` | 3 | 묶음 내 막대 사이 논리 픽셀, 0~24 |
@@ -147,7 +149,7 @@ WASM 생성에는 `CategoricalRenderer::new_async(gpu, format).await`를 사용�
 브라우저 파이프라인 컴파일을 기다린다. 출력에는 `export_rgba_async(...).await`를 쓴다. 동기판은 네이티브 전용이다. 결과는
 straight-alpha RGBA8이며 PNG는 기존 `encode_png`로 인코딩한다. 내보내기에는 현재 강조 상태가
 포함된다. 강조 없는 결과가 필요하면 내보낼 복사본의 `hovered`와 `selected`를 비운다.
-브라우저에서는 `crates/web` 예제 래퍼의 `FiggyBoundedChart`로 범주형 막대 문서를 표시·편집·내보낼 수
+브라우저에서는 브라우저용 제품인 `crates/web`의 `FiggyBoundedChart`로 범주형 막대 문서를 표시·편집·내보낼 수
 있다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
 ## 캐시와 소유권

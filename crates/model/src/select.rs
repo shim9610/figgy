@@ -1,28 +1,35 @@
-//! Selection policy — `Selectable` and the chart elements that implement it.
+//! Selection policy — `Selectable`, the geometry sinks and the chart
+//! elements.
 //!
-//! Selectable objects expose their interaction-policy pixel bounds (`bounds`); what
-//! selection *does* is fixed by the trait's default methods so it applies
-//! uniformly to every element: a blue highlight box around the bounds
-//! (`selection_box`) and point hit-testing (`contains`). The renderer draws
-//! the box with skia (`axis_render::draw_selection_boxes`); the model only
+//! Every element has one placement function, its [`Selectable::emit`], which
+//! hands the parts it draws to a [`Sink`]. What selection *does* is fixed by
+//! the three sinks of this module, which every element shares through the
+//! blanket [`SelectionGeometry`] trait: the bounds are the union of the
+//! emitted parts, the hit region is what the selection outlines, and the
+//! selection box is built from the same parts. No element can override them,
+//! so a drawn element, its hit region and its box cannot disagree. The
+//! renderer draws the box (`axis_render::draw_selection_box`); the model only
 //! states the policy.
 //!
-//! Placement formulas shared with the renderer consume glyph extents through
-//! the [`MeasureText`] contract. Tick labels and axis strokes come from the
-//! renderer's own layout ([`MeasureText::drawn_parts`]): tick generation,
-//! formatting and pruning belong to the renderer, and the model does not
-//! estimate them.
+//! The elements the model can place itself (titles, the legend, the colourbar
+//! strip and title, the data area) emit through [`emit_element`], which the
+//! renderer's raster also draws with. Tick labels and axis strokes need tick
+//! generation, formatting and pruning, which belong to the renderer, so their
+//! parts come from the renderer's own emit through
+//! [`MeasureText::emit`]; a measure that does not lay them out leaves them
+//! without bounds.
 
 use crate::color::Color;
-use crate::config::{AxisOptions, Config};
+use crate::config::{AxisOptions, ChartTitleOptions, Config};
 use crate::decoration::DecorationId;
 use crate::drag::{DragConfig, Draggable};
 use crate::layer::LayerRef;
 use crate::layout::{
-    DrawnPart, Element, NudgeReject, NudgeResult, RectF, Side, TitleBand, axis_title_placement,
-    chart_title_placement, colorbar_rect, colorbar_title_placement, legend_rect,
+    Element, LEGEND_BORDER_WIDTH, NudgeReject, NudgeResult, RectF, Side, axis_title_placement,
+    chart_title_placement_in, colorbar_title_placement, legend_rect, visible_colorbar_rect,
 };
-use crate::resize::Resizable;
+use crate::resize::{Resizable, ResizeHandle};
+use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, TextRef, union};
 use crate::text::MeasureText;
 
 /// Selection highlight color (blue).
@@ -36,6 +43,9 @@ pub const SELECTION_COLOR: Color = Color {
 pub const SELECTION_STROKE_WIDTH: f32 = 1.5;
 /// Gap between the element bounds and the highlight box, px.
 pub const SELECTION_PADDING: f32 = 2.0;
+/// Least half width of the box a stroke is outlined and grabbed with where
+/// an element hits on its parts (see [`segment_grab_half_width`]).
+pub const STROKE_GRAB_HALF_WIDTH: f32 = 3.0;
 
 /// What a selection highlight outlines.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -43,73 +53,90 @@ pub enum SelectionOutline {
     /// The box [`SelectionBox::rect`].
     #[default]
     Rect,
-    /// Each tick label of the axis on this side, boxed where the renderer
-    /// draws it, in place of `rect`, which still bounds them. Polar tick
-    /// labels ring the plot or line the ray, so one box around them would
-    /// cover the chart. The model does not lay out tick labels; a consumer
-    /// without that layout draws `rect`.
-    TickLabels(Side),
+    /// Each drawn part of the element, where it is drawn, in place of `rect`,
+    /// which still bounds them: a label block as its box, a stroke as the
+    /// thin oriented box around it, a triangle as itself. Polar tick labels
+    /// ring the plot or line the ray and an arrow is a diagonal, so one box
+    /// around them would cover the chart. The parts are the ones the
+    /// selection sink saw; nothing is laid out twice.
+    Parts(Vec<DrawnPart>),
 }
 
-/// The blue box drawn around a selected element. Produced by
-/// [`Selectable::selection_box`]; consumed by the renderer's skia pass.
+/// The blue box drawn around a selected element, in the chart frame. Built
+/// only by [`SelectionGeometry::selection_box`], from the element's emitted
+/// parts; the renderer's raster pass and host UI read it through its
+/// accessors and map it into their own frame and scale.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SelectionBox {
+    rect: RectF,
+    color: Color,
+    stroke_width: f32,
+    handles: Vec<RectF>,
+    outline: SelectionOutline,
+}
+
+impl SelectionBox {
     /// Box rect in chart-surface pixels (already padding-expanded).
-    pub rect: RectF,
-    pub color: Color,
-    pub stroke_width: f32,
+    pub fn rect(&self) -> RectF {
+        self.rect
+    }
+
+    pub fn color(&self) -> Color {
+        self.color
+    }
+
+    pub fn stroke_width(&self) -> f32 {
+        self.stroke_width
+    }
+
     /// Resize handle squares (empty for non-resizable elements). Drawn as
     /// filled squares on top of the box outline.
-    pub handles: Vec<RectF>,
-    /// What the highlight outlines: `rect`, or each tick label of an axis.
-    pub outline: SelectionOutline,
+    pub fn handles(&self) -> &[RectF] {
+        &self.handles
+    }
+
+    /// What the highlight outlines: `rect`, or each drawn part.
+    pub fn outline(&self) -> &SelectionOutline {
+        &self.outline
+    }
+
+    /// This box inside `area`: its rectangle intersected with it, for an
+    /// element its canvas clips. The handles and the part outlines are
+    /// kept.
+    pub fn clipped_to(mut self, area: RectF) -> Self {
+        let r = self.rect;
+        let (x0, y0) = (r.x.max(area.x), r.y.max(area.y));
+        let x1 = (r.x + r.width).min(area.x + area.width);
+        let y1 = (r.y + r.height).min(area.y + area.height);
+        self.rect = RectF {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0.0),
+            height: (y1 - y0).max(0.0),
+        };
+        self
+    }
 }
 
 /// An object the user can select on the chart.
 ///
-/// Implementations provide [`Self::bounds`] only. Selection behavior lives in
-/// the default methods so it is identical across elements; override them only
-/// to change the policy itself.
+/// Implementations provide [`Self::emit`], the element's one placement, and
+/// declare their capabilities. Its bounds, hit test and selection box are
+/// the sinks of [`SelectionGeometry`], which every `Selectable` gets and
+/// none can override.
 pub trait Selectable<C: DragConfig = Config> {
-    /// Interaction bounds of this element under `cfg`, or `None` when the
-    /// element is hidden, empty, or the layout is infeasible. Text-bearing
-    /// elements use `measure`; tick labels and axes are the parts `measure`
-    /// reports as drawn, and have no bounds under a measure that does not
-    /// lay them out.
-    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
+    /// Place every part this element draws under `cfg` into `sink`, in the
+    /// chart frame, and return `true`; return `false` when `measure` cannot
+    /// lay the element out (tick labels and axes under a measure that does
+    /// not place them). An element that is hidden, empty or infeasible
+    /// places nothing and returns `true`.
+    fn emit(&self, cfg: &C, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool;
 
-    /// Default selection policy: a blue box [`SELECTION_PADDING`] px outside
-    /// the bounds, stroked [`SELECTION_STROKE_WIDTH`] px in
-    /// [`SELECTION_COLOR`]. Resizable elements additionally carry the eight
-    /// resize handle squares.
-    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox> {
-        let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
-        let handles = match self.as_resizable() {
-            Some(_) => crate::resize::handle_rects(&rect)
-                .iter()
-                .map(|(_, r)| *r)
-                .collect(),
-            None => Vec::new(),
-        };
-        Some(SelectionBox {
-            rect,
-            color: SELECTION_COLOR,
-            stroke_width: SELECTION_STROKE_WIDTH,
-            handles,
-            outline: self.selection_outline(cfg),
-        })
-    }
-
-    /// What the highlight outlines; every element but polar tick labels
-    /// outlines its bounds.
-    fn selection_outline(&self, _cfg: &C) -> SelectionOutline {
-        SelectionOutline::Rect
-    }
-
-    /// Default hit test: point-in-bounds.
-    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.bounds(cfg, measure).is_some_and(|b| b.contains(x, y))
+    /// Whether the selection outlines each drawn part instead of one box
+    /// around them, and the element hits on its parts instead of inside the
+    /// box: polar tick labels and the polar ray, annotations.
+    fn outlines_parts(&self, _cfg: &C) -> bool {
+        false
     }
 
     /// Default registration: every `Selectable` can enter a [`HitMap`] the
@@ -145,6 +172,220 @@ pub trait Selectable<C: DragConfig = Config> {
     /// Custom host elements keep the default.
     fn element_id(&self) -> String {
         "custom".to_string()
+    }
+}
+
+/// The bounds, hit test and selection box of every [`Selectable`]: the three
+/// geometry sinks run over the element's [`Selectable::emit`].
+///
+/// Blanket-implemented for every `Selectable`, so no element can supply a
+/// second placement for any of the three.
+pub trait SelectionGeometry<C: DragConfig = Config> {
+    /// The union of the parts the element draws under `cfg`, or `None` when
+    /// it draws none or `measure` cannot lay it out.
+    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF>;
+
+    /// Whether `(x, y)` is inside what the selection outlines: the box
+    /// [`SELECTION_PADDING`] px around the bounds, or, for an element that
+    /// [`Selectable::outlines_parts`], the [`part_outline`] of one of its
+    /// parts.
+    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool;
+
+    /// The selection policy: a blue box [`SELECTION_PADDING`] px outside the
+    /// bounds, stroked [`SELECTION_STROKE_WIDTH`] px in [`SELECTION_COLOR`],
+    /// with the element's resize handles, outlining the box or each part.
+    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox>;
+}
+
+/// The extent of a drawn part for the bounds: what is drawn, without grab
+/// slack.
+fn part_extent(part: &DrawnPart) -> RectF {
+    part.extent()
+}
+
+/// The shape a per-part selection draws around one drawn part, in the
+/// part's frame, and the region the part is grabbed in: the one geometry of
+/// the hit test, the renderer's highlight and a host's outline. A text block
+/// or rectangle is its box grown by [`SELECTION_PADDING`]; a stroke is the
+/// box [`segment_grab_half_width`] either side of its line and the padding
+/// beyond its ends; a triangle is its [`padded_triangle`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum PartOutline {
+    Quad([[f32; 2]; 4]),
+    Triangle([[f32; 2]; 3]),
+}
+
+impl PartOutline {
+    /// The corners in drawing order; the polygon closes on the first.
+    pub fn corners(&self) -> &[[f32; 2]] {
+        match self {
+            PartOutline::Quad(c) => c,
+            PartOutline::Triangle(c) => c,
+        }
+    }
+
+    /// Whether `(x, y)` is inside the outline, its edge included.
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        let c = self.corners();
+        let side =
+            |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        let (mut positive, mut negative) = (false, false);
+        for i in 0..c.len() {
+            let d = side(c[i], c[(i + 1) % c.len()]);
+            positive |= d > 0.0;
+            negative |= d < 0.0;
+        }
+        !(positive && negative)
+    }
+}
+
+/// The [`PartOutline`] of `part`.
+pub fn part_outline(part: &DrawnPart) -> PartOutline {
+    match *part {
+        DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+            let r = r.expanded(SELECTION_PADDING);
+            PartOutline::Quad([
+                [r.x, r.y],
+                [r.x + r.width, r.y],
+                [r.x + r.width, r.y + r.height],
+                [r.x, r.y + r.height],
+            ])
+        }
+        DrawnPart::Segment { a, b, width } => {
+            let d = [b[0] - a[0], b[1] - a[1]];
+            let len = d[0].hypot(d[1]);
+            let (dir, n) = if len > 0.0 {
+                ([d[0] / len, d[1] / len], [-d[1] / len, d[0] / len])
+            } else {
+                ([1.0, 0.0], [0.0, 1.0])
+            };
+            let half = segment_grab_half_width(width);
+            let along = SELECTION_PADDING;
+            let p = |s: f32, t: f32| [a[0] + dir[0] * s + n[0] * t, a[1] + dir[1] * s + n[1] * t];
+            PartOutline::Quad([
+                p(-along, -half),
+                p(len + along, -half),
+                p(len + along, half),
+                p(-along, half),
+            ])
+        }
+        DrawnPart::Triangle(t) => PartOutline::Triangle(padded_triangle(t)),
+    }
+}
+
+/// Whether `(x, y)` is inside the outline of a drawn part.
+fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
+    part_outline(part).contains(x, y)
+}
+
+/// Half the width of the box a stroke `width` across is outlined and
+/// grabbed with: half the stroke plus [`SELECTION_PADDING`], at least
+/// [`STROKE_GRAB_HALF_WIDTH`].
+pub fn segment_grab_half_width(width: f32) -> f32 {
+    (width * 0.5 + SELECTION_PADDING).max(STROKE_GRAB_HALF_WIDTH)
+}
+
+/// The triangle `t` with every edge moved [`SELECTION_PADDING`] px outward:
+/// the outline of a triangle part. A degenerate triangle is returned as it
+/// is.
+pub fn padded_triangle(t: [[f32; 2]; 3]) -> [[f32; 2]; 3] {
+    let cx = (t[0][0] + t[1][0] + t[2][0]) / 3.0;
+    let cy = (t[0][1] + t[1][1] + t[2][1]) / 3.0;
+    // The unit normal of the edge `a`..`b` that points away from the centroid.
+    let outward = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len <= 0.0 {
+            return None;
+        }
+        let n = [-(b[1] - a[1]) / len, (b[0] - a[0]) / len];
+        let to_centroid = (cx - a[0]) * n[0] + (cy - a[1]) * n[1];
+        Some(if to_centroid > 0.0 { [-n[0], -n[1]] } else { n })
+    };
+    let mut out = t;
+    for i in 0..3 {
+        let (prev, v, next) = (t[(i + 2) % 3], t[i], t[(i + 1) % 3]);
+        let (Some(n1), Some(n2)) = (outward(prev, v), outward(v, next)) else {
+            return t;
+        };
+        let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+        if denom <= 1e-6 {
+            return t;
+        }
+        let k = SELECTION_PADDING / denom;
+        out[i] = [v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])];
+    }
+    out
+}
+
+/// The bounds sink: `Some(None)` when the element draws nothing, `None`
+/// when `measure` cannot lay it out.
+fn drawn_union<C: DragConfig>(
+    element: &(impl Selectable<C> + ?Sized),
+    cfg: &C,
+    measure: &dyn MeasureText,
+) -> Option<Option<RectF>> {
+    let mut bounds: Option<RectF> = None;
+    let laid_out = element.emit(
+        cfg,
+        measure,
+        &mut Parts(&mut |part| {
+            let r = part_extent(&part);
+            bounds = Some(bounds.map_or(r, |u| union(u, r)));
+        }),
+    );
+    laid_out.then_some(bounds)
+}
+
+impl<C: DragConfig, T: Selectable<C> + ?Sized> SelectionGeometry<C> for T {
+    fn bounds(&self, cfg: &C, measure: &dyn MeasureText) -> Option<RectF> {
+        drawn_union(self, cfg, measure).flatten()
+    }
+
+    fn contains(&self, cfg: &C, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
+        if self.outlines_parts(cfg) {
+            let mut hit = false;
+            self.emit(
+                cfg,
+                measure,
+                &mut Parts(&mut |part| hit |= part_contains(&part, x, y)),
+            );
+            hit
+        } else {
+            self.bounds(cfg, measure)
+                .is_some_and(|b| b.expanded(SELECTION_PADDING).contains(x, y))
+        }
+    }
+
+    fn selection_box(&self, cfg: &C, measure: &dyn MeasureText) -> Option<SelectionBox> {
+        let outline = if self.outlines_parts(cfg) {
+            let mut parts = Vec::new();
+            if !self.emit(cfg, measure, &mut Parts(&mut |part| parts.push(part))) {
+                return None;
+            }
+            SelectionOutline::Parts(parts)
+        } else {
+            SelectionOutline::Rect
+        };
+        let rect = match &outline {
+            // The parts are in hand: their union is the bounds.
+            SelectionOutline::Parts(parts) => parts
+                .iter()
+                .map(DrawnPart::extent)
+                .reduce(crate::sink::union)?,
+            SelectionOutline::Rect => self.bounds(cfg, measure)?,
+        }
+        .expanded(SELECTION_PADDING);
+        let mut handles = Vec::new();
+        if let Some(resizable) = self.as_resizable() {
+            resizable.resize_handles(cfg, measure, &mut |_, square| handles.push(square));
+        }
+        Some(SelectionBox {
+            rect,
+            color: SELECTION_COLOR,
+            stroke_width: SELECTION_STROKE_WIDTH,
+            handles,
+            outline,
+        })
     }
 }
 
@@ -209,7 +450,7 @@ impl<C: DragConfig> HitMap<C> {
     }
 
     /// Selection highlight for a registered element — the registered
-    /// element's [`Selectable::selection_box`] policy.
+    /// element's [`SelectionGeometry::selection_box`] policy.
     pub fn selection_box(
         &self,
         id: HitId,
@@ -389,9 +630,47 @@ impl SubplotElement {
         let result = edit(&mut chart);
         if result == NudgeResult::Moved {
             let stored = &mut cfg.subplots[self.subplot].config;
-            chart.active_layer = stored.active_layer;
-            chart.annotations = std::mem::take(&mut stored.annotations);
-            *stored = chart;
+            // Every field of the edited chart is named: a new one is stored
+            // from the edit unless it is one `subplot_config` overrides.
+            let Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_points,
+                picked_data,
+                colorbar,
+                draw_style,
+                polar,
+                overlays,
+                subplots,
+                // `subplot_config` resets these two; the stored ones stay.
+                active_layer: _,
+                annotations: _,
+            } = chart;
+            *stored = Config {
+                chart_area,
+                top_x,
+                bottom_x,
+                left_y,
+                right_y,
+                chart_title,
+                grid,
+                legend,
+                picked_points,
+                picked_data,
+                colorbar,
+                draw_style,
+                polar,
+                overlays,
+                subplots,
+                active_layer: stored.active_layer,
+                annotations: std::mem::take(&mut stored.annotations),
+            };
         }
         result
     }
@@ -402,9 +681,16 @@ impl Selectable for SubplotElement {
         format!("subplot_{}:{}", self.subplot, self.inner.element_id())
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        self.inner
-            .bounds(&cfg.subplot_config(self.subplot)?, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        match cfg.subplot_config(self.subplot) {
+            Some(chart) => self.inner.emit(&chart, measure, sink),
+            None => true,
+        }
+    }
+
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.subplot_config(self.subplot)
+            .is_some_and(|chart| self.inner.outlines_parts(&chart))
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -423,20 +709,33 @@ impl Draggable for SubplotElement {
             .map_or(Element::DataArea, |drag| drag.nudge_element())
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let Some(drag) = self.inner.as_draggable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        self.edit(cfg, |chart| drag.drag_by(chart, dx, dy))
+        self.edit(cfg, |chart| drag.drag_by(chart, measure, dx, dy))
     }
 
-    fn drag_from(&self, cfg: &mut Config, at: [f32; 2], dx: f32, dy: f32) -> NudgeResult {
+    fn drag_from(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        at: [f32; 2],
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         let Some(drag) = self.inner.as_draggable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
         // A subplot's chart keeps document coordinates, so the pointer
         // passes through unchanged.
-        self.edit(cfg, |chart| drag.drag_from(chart, at, dx, dy))
+        self.edit(cfg, |chart| drag.drag_from(chart, measure, at, dx, dy))
     }
 }
 
@@ -453,6 +752,7 @@ impl Resizable for SubplotElement {
     fn resize_by(
         &self,
         cfg: &mut Config,
+        measure: &dyn MeasureText,
         handle: crate::resize::ResizeHandle,
         dx: f32,
         dy: f32,
@@ -460,17 +760,22 @@ impl Resizable for SubplotElement {
         let Some(resize) = self.inner.as_resizable() else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        self.edit(cfg, |chart| resize.resize_by(chart, handle, dx, dy))
+        self.edit(cfg, |chart| {
+            resize.resize_by(chart, measure, handle, dx, dy)
+        })
     }
 
     fn resize_handles(
         &self,
         cfg: &Config,
         measure: &dyn MeasureText,
-    ) -> Option<[(crate::resize::ResizeHandle, RectF); 8]> {
-        self.inner
-            .as_resizable()?
-            .resize_handles(&cfg.subplot_config(self.subplot)?, measure)
+        each: &mut dyn FnMut(ResizeHandle, RectF),
+    ) {
+        if let (Some(resize), Some(chart)) =
+            (self.inner.as_resizable(), cfg.subplot_config(self.subplot))
+        {
+            resize.resize_handles(&chart, measure, each);
+        }
     }
 }
 
@@ -571,172 +876,254 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
     }
 }
 
-/// The config the renderer draws the base layer of a layered document with
-/// (the expanded base panel, or the document without its layers when it does
-/// not expand at this size, as the renderer's panel expansion does), or `None`
-/// for a single-layer document, which is drawn as it is.
-fn drawn_base_panel(cfg: &Config) -> Option<Config> {
+/// Run `f` on the config the renderer draws the base layer of `cfg` with: a
+/// single-layer document as it is; a layered one as its expanded base panel
+/// (the expansion's own copy of the SSOT configuration, borrowed here), or
+/// without its layers when it does not expand at this size, as the
+/// renderer's panel expansion does.
+pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
     if cfg.overlays.is_empty() && cfg.subplots.is_empty() {
-        return None;
+        return f(cfg);
     }
     match cfg.expand() {
-        Ok(expansion) => expansion
-            .panel(LayerRef::Base)
-            .map(|panel| panel.config.clone()),
+        Ok(expansion) => match expansion.panel(LayerRef::Base) {
+            Some(panel) => f(&panel.config),
+            None => f(cfg),
+        },
         Err(_) => {
             let mut panel = cfg.clone();
             panel.overlays.clear();
             panel.subplots.clear();
             panel.active_layer = LayerRef::Base;
-            Some(panel)
+            f(&panel)
         }
     }
 }
 
-/// The extent of a drawn part: a label's glyph block, or a segment's stroke
-/// with at least `min_half` either side.
-fn part_extent(part: &DrawnPart, min_half: f32) -> RectF {
-    match *part {
-        DrawnPart::Text(r) => r,
-        DrawnPart::Segment { a, b, width } => {
-            let half = (width * 0.5).max(min_half);
-            RectF {
-                x: a[0].min(b[0]) - half,
-                y: a[1].min(b[1]) - half,
-                width: (a[0] - b[0]).abs() + half * 2.0,
-                height: (a[1] - b[1]).abs() + half * 2.0,
-            }
+// The model's own placements: the elements it can lay out from the layout
+// functions and a text measure. The renderer draws them through the same
+// function.
+
+/// Place decoration `element` of `cfg` into `sink`, in `cfg`'s chart frame,
+/// and return whether it could be laid out: the one placement of the chart
+/// title, the axis titles, the legend, the colourbar strip and its title and
+/// the data area, which the renderer's raster draws with too. Tick labels,
+/// axis strokes and the colourbar's axis and labels are placed by `measure`
+/// ([`MeasureText::emit`]), which lays them out with the renderer's tick
+/// plan, formatting and pruning or returns `false`.
+///
+/// `cfg` is drawn as it is: a caller with a layered document passes the
+/// panel the layer is drawn with (the elements of this module do).
+pub fn emit_element(
+    cfg: &Config,
+    element: &Element,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) -> bool {
+    match element {
+        Element::ChartTitle => emit_chart_title(cfg, measure, sink),
+        Element::AxisTitle(side) => emit_axis_title(cfg, side, measure, sink),
+        Element::Legend => emit_legend(cfg, measure, sink),
+        Element::ColorBar => emit_colorbar_strip(cfg, sink),
+        Element::ColorBarTitle => emit_colorbar_title(cfg, measure, sink),
+        Element::DataArea => emit_data_area(cfg, sink),
+        Element::AxisLabel(_)
+        | Element::Axis(_)
+        | Element::ColorBarAxis
+        | Element::ColorBarLabel => {
+            return measure.emit(cfg, element, sink);
         }
+        // Resize targets: nothing of their own is drawn.
+        Element::DataAreaEdge(_) | Element::ColorBarEdge(_) => {}
+    }
+    true
+}
+
+fn emit_chart_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let ct = &cfg.chart_title;
+    emit_chart_title_in(
+        ct,
+        RectF::from_rect(&cfg.chart_area),
+        ct.top_margin,
+        measure,
+        sink,
+    );
+}
+
+/// The one placement of a chart title: `title` centred across `chart_area`
+/// and in the band `top_margin` high at its top, moved by the title's
+/// offsets. A Cartesian chart passes its chart area and the title's own
+/// band; a chart that lays out its own title band (the radial chart) passes
+/// its canvas and that band. Places nothing for a hidden or empty title.
+pub fn emit_chart_title_in(
+    title: &ChartTitleOptions,
+    chart_area: RectF,
+    top_margin: f32,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) {
+    let ct = title;
+    if !ct.visible || ct.text.segments.is_empty() {
+        return;
+    }
+    let m = measure.measure_rich(&ct.text);
+    let placement = chart_title_placement_in(chart_area, top_margin, (ct.offset_x, ct.offset_y), m);
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&ct.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: None,
+        },
+    );
+}
+
+/// The axis title on `side`. A polar chart draws no top or right axis, so
+/// their titles are not placed either.
+fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    if cfg.polar.is_some() && matches!(side, Side::Top | Side::Right) {
+        return;
+    }
+    let axis = axis_of(cfg, side);
+    let to = &axis.title_option;
+    if !to.visible || to.text.segments.is_empty() {
+        return;
+    }
+    let Ok(da) = cfg.data_area() else {
+        return;
+    };
+    let m = measure.measure_rich(&to.text);
+    let placement = axis_title_placement(
+        side.clone(),
+        &cfg.chart_area,
+        &da,
+        cfg.title_band(side),
+        (to.offset_x, to.offset_y),
+        m,
+    );
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&to.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: (placement.rotation_degrees != 0.0)
+                .then_some((placement.rotation_degrees, placement.rotation_center)),
+        },
+    );
+}
+
+/// The legend box in one corner of the data area: the box with its fill and
+/// border, then the content, whose first baseline sits `ascent` below the
+/// padded top-left corner.
+fn emit_legend(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let lg = &cfg.legend;
+    if !lg.visible || lg.content.segments.is_empty() {
+        return;
+    }
+    let Ok(da) = cfg.data_area() else {
+        return;
+    };
+    let m = measure.measure_rich(&lg.content);
+    let rect = legend_rect(&da, lg.corner, lg.padding, (lg.offset_x, lg.offset_y), m);
+    sink.rect(
+        Slot::Above,
+        rect,
+        Some(lg.bg_color),
+        Some(Border {
+            color: lg.border_color,
+            width: LEGEND_BORDER_WIDTH,
+            tag: "legend_box",
+        }),
+    );
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&lg.content),
+            origin: (rect.x + lg.padding, rect.y + lg.padding + m.ascent),
+            extents: m,
+            rotation: None,
+        },
+    );
+}
+
+/// The colourbar strip: the ramp and its border.
+fn emit_colorbar_strip(cfg: &Config, sink: &mut dyn Sink) {
+    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
+        return;
+    };
+    sink.ramp(Slot::Above, rect, bar);
+    if bar.border_width > 0.0 {
+        sink.rect(
+            Slot::Above,
+            rect,
+            None,
+            Some(Border {
+                color: bar.border_color,
+                width: bar.border_width,
+                tag: "colorbar_strip",
+            }),
+        );
     }
 }
 
-/// Whether `(x, y)` is on a drawn part: inside a label's block grown by
-/// [`SELECTION_PADDING`], as its outline is, or within half a segment's
-/// stroke and at least `min_half` of it.
-fn part_contains(part: &DrawnPart, min_half: f32, x: f32, y: f32) -> bool {
-    match *part {
-        DrawnPart::Text(r) => r.expanded(SELECTION_PADDING).contains(x, y),
-        DrawnPart::Segment { a, b, width } => {
-            let d = [b[0] - a[0], b[1] - a[1]];
-            let len2 = d[0] * d[0] + d[1] * d[1];
-            let t = if len2 > 0.0 {
-                (((x - a[0]) * d[0] + (y - a[1]) * d[1]) / len2).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            (x - a[0] - t * d[0]).hypot(y - a[1] - t * d[1]) <= (width * 0.5).max(min_half)
-        }
+/// The colourbar title, anchored on the painted strip so shortening,
+/// aligning, dragging or resizing the bar moves the title with it.
+fn emit_colorbar_title(cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) {
+    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
+        return;
+    };
+    let to = &bar.axis.title_option;
+    if !to.visible || to.text.segments.is_empty() {
+        return;
+    }
+    let m = measure.measure_rich(&to.text);
+    let placement = colorbar_title_placement(
+        bar.side.clone(),
+        &rect,
+        &bar.axis,
+        (to.offset_x, to.offset_y),
+        m,
+    );
+    sink.text(
+        Slot::Above,
+        &PlacedText {
+            text: TextRef::Rich(&to.text),
+            origin: placement.origin,
+            extents: m,
+            rotation: (placement.rotation_degrees != 0.0)
+                .then_some((placement.rotation_degrees, placement.rotation_center)),
+        },
+    );
+}
+
+/// The data area: a rectangle that paints nothing of its own.
+fn emit_data_area(cfg: &Config, sink: &mut dyn Sink) {
+    if let Ok(da) = cfg.data_area() {
+        sink.rect(Slot::Above, RectF::from_rect(&da.0), None, None);
     }
 }
-
-/// The union of the parts of `element` the renderer draws under `cfg`,
-/// laid out through `measure` ([`MeasureText::drawn_parts`]): `Some(None)`
-/// when it draws none, `None` when `measure` cannot lay them out.
-fn drawn_union(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    min_half: f32,
-) -> Option<Option<RectF>> {
-    let mut union: Option<RectF> = None;
-    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
-        let r = part_extent(&part, min_half);
-        union = Some(match union {
-            None => r,
-            Some(u) => {
-                let (x0, y0) = (u.x.min(r.x), u.y.min(r.y));
-                let x1 = (u.x + u.width).max(r.x + r.width);
-                let y1 = (u.y + u.height).max(r.y + r.height);
-                RectF {
-                    x: x0,
-                    y: y0,
-                    width: x1 - x0,
-                    height: y1 - y0,
-                }
-            }
-        });
-    });
-    laid_out.then_some(union)
-}
-
-/// Whether `(x, y)` falls on one of the drawn parts of `element`
-/// ([`part_contains`]), or `None` when `measure` cannot lay them out.
-fn drawn_part_hit(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    min_half: f32,
-    x: f32,
-    y: f32,
-) -> Option<bool> {
-    let mut hit = false;
-    let laid_out = measure.drawn_parts(cfg, element, &mut |part| {
-        hit |= part_contains(&part, min_half, x, y);
-    });
-    laid_out.then_some(hit)
-}
-
-/// Whether `(x, y)` falls inside the selection box around the drawn parts
-/// of `element`, or `None` when `measure` cannot lay them out. The hit
-/// region is the box the selection draws, so a click inside the box always
-/// selects the element.
-fn drawn_box_hit(
-    cfg: &Config,
-    measure: &dyn MeasureText,
-    element: &Element,
-    x: f32,
-    y: f32,
-) -> Option<bool> {
-    let union = drawn_union(cfg, measure, element, 0.0)?;
-    Some(union.is_some_and(|r| r.expanded(SELECTION_PADDING).contains(x, y)))
-}
-
-fn visible_colorbar_rect(cfg: &Config) -> Option<(&crate::config::ColorBarOptions, RectF)> {
-    let bar = cfg.colorbar.as_ref()?;
-    if !bar.visible {
-        return None;
-    }
-    let da = cfg.data_area().ok()?;
-    let rect = colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
-    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
-}
-
-/// Half the width of the hit strip along a polar ray, in logical pixels.
-const POLAR_RAY_HIT_HALF_WIDTH: f32 = 4.0;
 
 impl Selectable for AxisElement {
     fn element_id(&self) -> String {
         format!("axis_{}", side_str(&self.side))
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]):
-    /// a polar chart's angle axis is the outer ring, which is the data
-    /// boundary and not selectable, and its radius ray is grabbed at least
-    /// 4 px either side. `None` when nothing is
-    /// drawn or `measure` does not lay the axis out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
+    /// The line and ticks the renderer draws ([`MeasureText::emit`]): a
+    /// polar chart's angle axis is the outer ring, which is the data boundary
+    /// and not selectable, and its radius ray hits on each stroke.
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
         if cfg.polar.is_some() && self.side != Side::Left {
-            return None;
+            return true;
         }
-        let min_half = if cfg.polar.is_some() {
-            POLAR_RAY_HIT_HALF_WIDTH
-        } else {
-            0.0
-        };
-        drawn_union(cfg, measure, &Element::Axis(self.side.clone()), min_half).flatten()
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::Axis(self.side.clone()), measure, sink)
+        })
     }
 
-    /// The polar ray hits on each drawn stroke, a Cartesian axis inside the
-    /// selection box around its drawn line and ticks.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        let element = Element::Axis(self.side.clone());
-        if cfg.polar.is_some() {
-            self.side == Side::Left
-                && drawn_part_hit(cfg, measure, &element, POLAR_RAY_HIT_HALF_WIDTH, x, y)
-                    .unwrap_or(false)
-        } else {
-            drawn_box_hit(cfg, measure, &element, x, y).unwrap_or(false)
-        }
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.polar.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -749,34 +1136,17 @@ impl Selectable for AxisLabelElement {
         format!("tick_labels_{}", side_str(&self.side))
     }
 
-    /// The union of the labels the renderer draws
-    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
-    /// `measure` does not lay tick labels out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::AxisLabel(self.side.clone()), 0.0).flatten()
+    /// The labels the renderer draws ([`MeasureText::emit`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::AxisLabel(self.side.clone()), measure, sink)
+        })
     }
 
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
-    /// outline each label rather than the box around all of them.
-    fn selection_outline(&self, cfg: &Config) -> SelectionOutline {
-        match self.side {
-            Side::Bottom | Side::Left if cfg.polar.is_some() => {
-                SelectionOutline::TickLabels(self.side.clone())
-            }
-            _ => SelectionOutline::Rect,
-        }
-    }
-
-    /// Polar labels hit on each drawn label, where each is outlined;
-    /// Cartesian labels inside the one box around them.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        let labels = Element::AxisLabel(self.side.clone());
-        let drawn = if cfg.polar.is_some() {
-            drawn_part_hit(cfg, measure, &labels, 0.0, x, y)
-        } else {
-            drawn_box_hit(cfg, measure, &labels, x, y)
-        };
-        drawn.unwrap_or(false)
+    /// each label is outlined and hit where it is drawn.
+    fn outlines_parts(&self, cfg: &Config) -> bool {
+        cfg.polar.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -792,36 +1162,10 @@ impl Selectable for AxisTitleElement {
     /// Placed on the config the base layer is drawn with: in a layered
     /// document that is the expanded base panel, whose margins follow the
     /// widest axis band of the group.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        // A polar chart draws no top or right axis, so their titles have no
-        // hit region either.
-        if cfg.polar.is_some() && matches!(self.side, Side::Top | Side::Right) {
-            return None;
-        }
-        let panel = drawn_base_panel(cfg);
-        let cfg = panel.as_ref().unwrap_or(cfg);
-        let axis = axis_of(cfg, &self.side);
-        let to = &axis.title_option;
-        if !to.visible || to.text.segments.is_empty() {
-            return None;
-        }
-        let da = cfg.data_area().ok()?;
-        let m = measure.measure_rich(&to.text);
-        Some(
-            axis_title_placement(
-                self.side.clone(),
-                &cfg.chart_area,
-                &da,
-                TitleBand {
-                    out_margin: axis.out_margin,
-                    chart_title_margin: cfg.chart_title.top_margin,
-                    edge_inset: cfg.colorbar_band(&self.side),
-                },
-                (to.offset_x, to.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::AxisTitle(self.side.clone()), measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -834,21 +1178,10 @@ impl Selectable for ChartTitleElement {
         "chart_title".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let ct = &cfg.chart_title;
-        if !ct.visible || ct.text.segments.is_empty() {
-            return None;
-        }
-        let m = measure.measure_rich(&ct.text);
-        Some(
-            chart_title_placement(
-                &cfg.chart_area,
-                ct.top_margin,
-                (ct.offset_x, ct.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ChartTitle, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -861,8 +1194,10 @@ impl Selectable for DataAreaElement {
         "data_area".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        cfg.data_area().ok().map(|da| RectF::from_rect(&da.0))
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::DataArea, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -879,19 +1214,12 @@ impl Selectable for ColorBarElement {
         "colorbar".to_string()
     }
 
-    /// The strip rect — the same one the renderer paints, offsets included, so
-    /// the highlight box and the eight handles sit on the bar the user sees.
-    /// Ticks and labels are outside it, as they are for an axis.
-    fn bounds(&self, cfg: &Config, _measure: &dyn MeasureText) -> Option<RectF> {
-        visible_colorbar_rect(cfg).map(|(_, rect)| rect)
-    }
-
-    /// The strip with the outer half of its border, which is stroked centred
-    /// on the strip's edge.
-    fn contains(&self, cfg: &Config, _measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        visible_colorbar_rect(cfg).is_some_and(|(bar, rect)| {
-            rect.expanded(bar.border_width.max(0.0) * 0.5)
-                .contains(x, y)
+    /// The strip the renderer paints, offsets included, so the highlight box
+    /// and the eight handles sit on the bar the user sees. Ticks and labels
+    /// are outside it, as they are for an axis.
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBar, measure, sink)
         })
     }
 
@@ -909,15 +1237,11 @@ impl Selectable for ColorBarAxisElement {
         "colorbar_axis".to_string()
     }
 
-    /// The line and ticks the renderer draws ([`MeasureText::drawn_parts`]);
-    /// `None` when nothing is drawn or `measure` does not lay them out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::ColorBarAxis, 0.0).flatten()
-    }
-
-    /// Inside the selection box around the drawn line and ticks.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        drawn_box_hit(cfg, measure, &Element::ColorBarAxis, x, y).unwrap_or(false)
+    /// The line and ticks the renderer draws ([`MeasureText::emit`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarAxis, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -930,16 +1254,11 @@ impl Selectable for ColorBarLabelElement {
         "colorbar_tick_labels".to_string()
     }
 
-    /// The union of the labels the renderer draws
-    /// ([`MeasureText::drawn_parts`]); `None` when it draws none or
-    /// `measure` does not lay them out.
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        drawn_union(cfg, measure, &Element::ColorBarLabel, 0.0).flatten()
-    }
-
-    /// Inside the selection box around the drawn labels.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        drawn_box_hit(cfg, measure, &Element::ColorBarLabel, x, y).unwrap_or(false)
+    /// The labels the renderer draws ([`MeasureText::emit`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarLabel, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -952,23 +1271,10 @@ impl Selectable for ColorBarTitleElement {
         "colorbar_title".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let (bar, rect) = visible_colorbar_rect(cfg)?;
-        let title = &bar.axis.title_option;
-        if !title.visible || title.text.segments.is_empty() {
-            return None;
-        }
-        let m = measure.measure_rich(&title.text);
-        Some(
-            colorbar_title_placement(
-                bar.side.clone(),
-                &rect,
-                &bar.axis,
-                (title.offset_x, title.offset_y),
-                m,
-            )
-            .rect(m),
-        )
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ColorBarTitle, measure, sink)
+        })
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -984,29 +1290,9 @@ impl Selectable for LegendElement {
         "legend".to_string()
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let lg = &cfg.legend;
-        if !lg.visible || lg.content.segments.is_empty() {
-            return None;
-        }
-        let da = cfg.data_area().ok()?;
-
-        let m = measure.measure_rich(&lg.content);
-        Some(legend_rect(
-            &da,
-            lg.corner,
-            lg.padding,
-            (lg.offset_x, lg.offset_y),
-            m,
-        ))
-    }
-
-    /// The box with the outer half of its border, which is stroked centred
-    /// on the box edge.
-    fn contains(&self, cfg: &Config, measure: &dyn MeasureText, x: f32, y: f32) -> bool {
-        self.bounds(cfg, measure).is_some_and(|b| {
-            b.expanded(crate::layout::LEGEND_BORDER_WIDTH * 0.5)
-                .contains(x, y)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::Legend, measure, sink)
         })
     }
 
@@ -1015,7 +1301,7 @@ impl Selectable for LegendElement {
     }
 }
 
-// Overlay layer elements. Bounds come from the overlay's expanded panel; a
+// Overlay layer elements. Parts come from the overlay's expanded panel; a
 // drag is applied to that panel through the ordinary nudge path and only the
 // moved fields are copied back into the overlay's own options.
 
@@ -1041,17 +1327,33 @@ fn drag_overlay_axis_element(
     cfg: &mut Config,
     layer: usize,
     element: Element,
+    measure: &dyn MeasureText,
     dx: f32,
     dy: f32,
 ) -> NudgeResult {
     let Some(mut panel) = cfg.overlay_panel(layer) else {
         return NudgeResult::Rejected(NudgeReject::OutOfBounds);
     };
-    let result = panel.nudge(element, dx, dy);
+    let result = panel.nudge(element, measure, dx, dy);
     if result == NudgeResult::Moved {
         adopt_overlay_axis(&mut cfg.overlays[layer].y_axis, &panel.right_y);
     }
     result
+}
+
+/// Emit `inner` on the overlay panel of `layer`; nothing while the document
+/// has no such panel.
+fn emit_on_overlay_panel(
+    cfg: &Config,
+    layer: usize,
+    inner: &dyn Selectable,
+    measure: &dyn MeasureText,
+    sink: &mut dyn Sink,
+) -> bool {
+    match cfg.overlay_panel(layer) {
+        Some(panel) => inner.emit(&panel, measure, sink),
+        None => true,
+    }
 }
 
 impl Selectable for OverlayAxisElement {
@@ -1059,9 +1361,14 @@ impl Selectable for OverlayAxisElement {
         overlay_id(self.layer, DecorationId::Axis(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1074,8 +1381,14 @@ impl Draggable for OverlayAxisElement {
         Element::Axis(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1084,9 +1397,14 @@ impl Selectable for OverlayAxisLabelElement {
         overlay_id(self.layer, DecorationId::AxisLabel(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisLabelElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisLabelElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1099,8 +1417,14 @@ impl Draggable for OverlayAxisLabelElement {
         Element::AxisLabel(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1109,9 +1433,14 @@ impl Selectable for OverlayAxisTitleElement {
         overlay_id(self.layer, DecorationId::AxisTitle(Side::Right))
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        let panel = cfg.overlay_panel(self.layer)?;
-        AxisTitleElement { side: Side::Right }.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        emit_on_overlay_panel(
+            cfg,
+            self.layer,
+            &AxisTitleElement { side: Side::Right },
+            measure,
+            sink,
+        )
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1124,8 +1453,14 @@ impl Draggable for OverlayAxisTitleElement {
         Element::AxisTitle(Side::Right)
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
-        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), dx, dy)
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        drag_overlay_axis_element(cfg, self.layer, self.nudge_element(), measure, dx, dy)
     }
 }
 
@@ -1134,10 +1469,15 @@ impl Selectable for OverlayLegendElement {
         overlay_id(self.layer, DecorationId::Legend)
     }
 
-    fn bounds(&self, cfg: &Config, measure: &dyn MeasureText) -> Option<RectF> {
-        cfg.overlays.get(self.layer)?.legend.as_ref()?;
-        let panel = cfg.overlay_panel(self.layer)?;
-        LegendElement.bounds(&panel, measure)
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        if cfg
+            .overlays
+            .get(self.layer)
+            .is_none_or(|overlay| overlay.legend.is_none())
+        {
+            return true;
+        }
+        emit_on_overlay_panel(cfg, self.layer, &LegendElement, measure, sink)
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1150,7 +1490,13 @@ impl Draggable for OverlayLegendElement {
         Element::Legend
     }
 
-    fn drag_by(&self, cfg: &mut Config, dx: f32, dy: f32) -> NudgeResult {
+    fn drag_by(
+        &self,
+        cfg: &mut Config,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
         if cfg
             .overlays
             .get(self.layer)
@@ -1161,7 +1507,7 @@ impl Draggable for OverlayLegendElement {
         let Some(mut panel) = cfg.overlay_panel(self.layer) else {
             return NudgeResult::Rejected(NudgeReject::OutOfBounds);
         };
-        let result = panel.nudge(Element::Legend, dx, dy);
+        let result = panel.nudge(Element::Legend, measure, dx, dy);
         if result == NudgeResult::Moved
             && let Some(legend) = cfg.overlays[self.layer].legend.as_mut()
         {
@@ -1173,11 +1519,245 @@ impl Draggable for OverlayLegendElement {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    #[test]
+    fn part_outlines_are_what_is_grabbed() {
+        // A 1 px horizontal stroke from (10, 10) to (50, 10): grabbed within
+        // 3 px either side and 2 px beyond either end, as its box is drawn.
+        let (a, b) = ([10.0, 10.0], [50.0, 10.0]);
+        assert_eq!(segment_grab_half_width(1.0), STROKE_GRAB_HALF_WIDTH);
+        assert_eq!(segment_grab_half_width(6.0), 3.0 + SELECTION_PADDING);
+        let stroke = |a, b, width| part_outline(&DrawnPart::Segment { a, b, width });
+        let thin = stroke(a, b, 1.0);
+        assert!(thin.contains(30.0, 12.9));
+        assert!(!thin.contains(30.0, 13.1));
+        assert!(thin.contains(8.1, 10.0));
+        assert!(!thin.contains(7.9, 10.0));
+        assert!(thin.contains(51.9, 10.0));
+        assert!(!thin.contains(52.1, 10.0));
+        assert_eq!(
+            thin,
+            PartOutline::Quad([[8.0, 7.0], [52.0, 7.0], [52.0, 13.0], [8.0, 13.0]])
+        );
+        // A degenerate stroke is a dot grabbed within the same box.
+        let dot = stroke(a, a, 1.0);
+        assert!(dot.contains(12.0, 10.0));
+        assert!(!dot.contains(13.5, 10.0));
+        // A rectangle grows by the padding on every side.
+        let rect = RectF {
+            x: 10.0,
+            y: 10.0,
+            width: 20.0,
+            height: 5.0,
+        };
+        assert_eq!(
+            part_outline(&DrawnPart::Rect(rect)),
+            PartOutline::Quad([[8.0, 8.0], [32.0, 8.0], [32.0, 17.0], [8.0, 17.0]])
+        );
+
+        // A right triangle grows 2 px outward on every edge: the point 1 px
+        // outside the bottom edge is inside the padded triangle, 3 px is not.
+        let t = [[0.0, 0.0], [40.0, 0.0], [0.0, 30.0]];
+        let padded = part_outline(&DrawnPart::Triangle(t));
+        assert!(padded.contains(20.0, -1.0));
+        assert!(!padded.contains(20.0, -3.0));
+        let PartOutline::Triangle(corners) = padded else {
+            panic!("a triangle outlines a triangle");
+        };
+        assert!((corners[0][0] + SELECTION_PADDING).abs() < 1e-5);
+        assert!((corners[0][1] + SELECTION_PADDING).abs() < 1e-5);
+        for v in t {
+            assert!(padded.contains(v[0], v[1]));
+        }
+        assert_eq!(padded_triangle([a, a, b]), [a, a, b]);
+    }
+
     use super::*;
     use crate::default::default_config;
-    use crate::layout::{ChartArea, Rect};
+    use crate::layout::{
+        ChartArea, LABEL_GAP, Rect, axis_anchor, axis_offset, colorbar_rect, label_origin,
+        point_on_rect_side,
+    };
+    use crate::sink::StrokeStyle;
     use crate::text::{RichText, TextExtents, rich_segments_from_text};
+
+    /// A test measure that lays out what only a renderer can place: one tick
+    /// label per `Element::AxisLabel` / `Element::ColorBarLabel` and one
+    /// stroke per `Element::Axis` / `Element::ColorBarAxis`, where the
+    /// renderer draws them (the label at the middle of its side, just past
+    /// the ticks, moved by the axis' `line_offset` and label offsets; the
+    /// axis line on the data-area edge, moved by its `line_offset`). Polar
+    /// charts get four angle labels on the outer ring, one radius label
+    /// beside the ray and the ray itself. Text is measured as
+    /// [`FixedMeasure`] measures it.
+    pub(crate) struct LaysOut;
+
+    /// The extents of every placed tick label: three 8 px glyphs.
+    const LABEL_EXTENTS: TextExtents = TextExtents {
+        width: 24.0,
+        ascent: 10.0,
+        descent: 3.0,
+    };
+
+    fn place_label(sink: &mut dyn Sink, origin: (f32, f32)) {
+        sink.text(
+            Slot::Above,
+            &PlacedText {
+                text: TextRef::Plain {
+                    text: "0.5",
+                    family: "",
+                    size: 12.0,
+                    color: Color::BLACK,
+                },
+                origin,
+                extents: LABEL_EXTENTS,
+                rotation: None,
+            },
+        );
+    }
+
+    /// A label whose box is centred on `center`.
+    fn place_label_at(sink: &mut dyn Sink, center: [f32; 2]) {
+        place_label(
+            sink,
+            (
+                center[0] - LABEL_EXTENTS.width * 0.5,
+                center[1] + (LABEL_EXTENTS.ascent - LABEL_EXTENTS.descent) * 0.5,
+            ),
+        );
+    }
+
+    fn place_stroke(sink: &mut dyn Sink, a: [f32; 2], b: [f32; 2]) {
+        sink.stroke(
+            Slot::Above,
+            a,
+            b,
+            &StrokeStyle {
+                width: 1.0,
+                color: Color::BLACK,
+                dash: &[],
+                tag: "test_axis",
+            },
+        );
+    }
+
+    fn lay_out_polar(cfg: &Config, element: &Element, sink: &mut dyn Sink) {
+        let (Some(polar), Some(g)) = (cfg.polar.as_ref(), cfg.polar_geometry()) else {
+            return;
+        };
+        let c = g.center;
+        match element {
+            Element::AxisLabel(Side::Bottom) if cfg.bottom_x.label_style.label_visible => {
+                let reach = g.radius
+                    + LABEL_GAP
+                    + LABEL_EXTENTS.width * 0.5
+                    + crate::polar::PolarOptions::angle_label_offset(&cfg.bottom_x.label_style);
+                for k in 0..4 {
+                    let a = polar.zero_angle_degrees.to_radians()
+                        + f64::from(k) * 0.5 * std::f64::consts::PI;
+                    let dir = [a.cos() as f32, -(a.sin() as f32)];
+                    place_label_at(sink, [c[0] + dir[0] * reach, c[1] + dir[1] * reach]);
+                }
+            }
+            Element::AxisLabel(Side::Left) if cfg.left_y.label_style.label_visible => {
+                let (d, s) = (polar.ray_direction(), polar.ray_side());
+                let o = polar.radius_label_offset(&cfg.left_y.label_style);
+                let across = LABEL_GAP + LABEL_EXTENTS.width * 0.5;
+                let along = g.radius * 0.5;
+                place_label_at(
+                    sink,
+                    [
+                        c[0] + d[0] * along + s[0] * across + o[0],
+                        c[1] + d[1] * along + s[1] * across + o[1],
+                    ],
+                );
+            }
+            Element::Axis(Side::Left) => {
+                let d = polar.ray_direction();
+                place_stroke(
+                    sink,
+                    [c[0] + d[0] * g.inner_radius, c[1] + d[1] * g.inner_radius],
+                    [c[0] + d[0] * g.radius, c[1] + d[1] * g.radius],
+                );
+            }
+            _ => {}
+        }
+    }
+
+    impl MeasureText for LaysOut {
+        fn measure_rich(&self, rt: &RichText) -> TextExtents {
+            FixedMeasure.measure_rich(rt)
+        }
+
+        fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
+            match element {
+                Element::AxisLabel(side) | Element::Axis(side) => {
+                    if cfg.polar.is_some() {
+                        lay_out_polar(cfg, element, sink);
+                        return true;
+                    }
+                    let Ok(da) = cfg.data_area() else {
+                        return true;
+                    };
+                    let axis = axis_of(cfg, side);
+                    let (a, b) = axis_anchor(side.clone(), &RectF::from_rect(&da));
+                    let o = axis_offset(side.clone(), axis.line_offset);
+                    if let Element::Axis(_) = element {
+                        if axis.line_visible {
+                            place_stroke(sink, [a.0 + o.0, a.1 + o.1], [b.0 + o.0, b.1 + o.1]);
+                        }
+                    } else if axis.label_style.label_visible {
+                        let mid = ((a.0 + b.0) * 0.5 + o.0, (a.1 + b.1) * 0.5 + o.1);
+                        let offset = (
+                            axis.label_style.label_offset_x,
+                            axis.label_style.label_offset_y,
+                        );
+                        place_label(
+                            sink,
+                            label_origin(
+                                side.clone(),
+                                mid,
+                                axis.major_tick_length,
+                                offset,
+                                LABEL_EXTENTS,
+                            ),
+                        );
+                    }
+                    true
+                }
+                Element::ColorBarAxis | Element::ColorBarLabel => {
+                    let Some((bar, rect)) = visible_colorbar_rect(cfg) else {
+                        return true;
+                    };
+                    let side = bar.side.clone();
+                    let a = point_on_rect_side(0.0, &side, &rect);
+                    let b = point_on_rect_side(1.0, &side, &rect);
+                    let o = axis_offset(side.clone(), bar.axis.line_offset);
+                    if let Element::ColorBarAxis = element {
+                        place_stroke(sink, [a.0 + o.0, a.1 + o.1], [b.0 + o.0, b.1 + o.1]);
+                    } else if bar.axis.label_style.label_visible {
+                        let mid = ((a.0 + b.0) * 0.5 + o.0, (a.1 + b.1) * 0.5 + o.1);
+                        let offset = (
+                            bar.axis.label_style.label_offset_x,
+                            bar.axis.label_style.label_offset_y,
+                        );
+                        place_label(
+                            sink,
+                            label_origin(
+                                side,
+                                mid,
+                                bar.axis.major_tick_length,
+                                offset,
+                                LABEL_EXTENTS,
+                            ),
+                        );
+                    }
+                    true
+                }
+                _ => false,
+            }
+        }
+    }
 
     /// `element_id` gives every standard element a distinct, stable name —
     /// hosts key hover/context UI on these strings.
@@ -1215,7 +1795,7 @@ mod tests {
     /// Deterministic stub mirroring the renderer's line splitting: 8 px per
     /// segment on the widest line, 10 up / 3 down per line, `'\n'` segments
     /// start a new 13 px line below the first baseline.
-    struct FixedMeasure;
+    pub(crate) struct FixedMeasure;
     impl MeasureText for FixedMeasure {
         fn measure_rich(&self, rt: &RichText) -> TextExtents {
             let mut line_lens = vec![0usize];
@@ -1388,7 +1968,10 @@ mod tests {
 
         let before = cfg.clone();
         let drag = element.as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 10.0, -6.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, 10.0, -6.0),
+            NudgeResult::Moved
+        );
         let moved = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
         assert_eq!((moved.x, moved.y), (da.x + 10, da.y - 6));
         assert_eq!(cfg.data_area(), before.data_area());
@@ -1401,19 +1984,25 @@ mod tests {
             element
                 .selection_box(&cfg, &FixedMeasure)
                 .unwrap()
-                .handles
+                .handles()
                 .len(),
             8
         );
-        let handle = resize
-            .resize_handles(&cfg, &FixedMeasure)
-            .unwrap()
-            .into_iter()
-            .find(|(handle, _)| *handle == crate::resize::ResizeHandle::E)
-            .unwrap();
-        assert!(handle.1.x > moved.x as f32);
+        let mut east = None;
+        resize.resize_handles(&cfg, &FixedMeasure, &mut |handle, square| {
+            if handle == crate::resize::ResizeHandle::E {
+                east = Some(square);
+            }
+        });
+        assert!(east.unwrap().x > moved.x as f32);
         assert_eq!(
-            resize.resize_by(&mut cfg, crate::resize::ResizeHandle::E, -30.0, 0.0),
+            resize.resize_by(
+                &mut cfg,
+                &FixedMeasure,
+                crate::resize::ResizeHandle::E,
+                -30.0,
+                0.0
+            ),
             NudgeResult::Moved
         );
         let resized = cfg.subplot_config(0).unwrap().data_area().unwrap().0;
@@ -1422,7 +2011,10 @@ mod tests {
 
         let axis = map.find("subplot_0:axis_bottom").unwrap();
         let drag = map.get(axis).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, 0.0, 5.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, 0.0, 5.0),
+            NudgeResult::Moved
+        );
         assert_eq!(cfg.subplots[0].config.bottom_x.line_offset, 5.0);
         assert_eq!(cfg.bottom_x, before.bottom_x);
     }
@@ -1446,14 +2038,17 @@ mod tests {
             .unwrap();
         assert_eq!(hit, id, "the overlay legend is on top of the shared legend");
         let drag = map.get(id).unwrap().as_draggable().unwrap();
-        assert_eq!(drag.drag_by(&mut cfg, -5.0, 6.0), NudgeResult::Moved);
+        assert_eq!(
+            drag.drag_by(&mut cfg, &FixedMeasure, -5.0, 6.0),
+            NudgeResult::Moved
+        );
         let moved = cfg.overlays[0].legend.as_ref().unwrap();
         assert_eq!((moved.offset_x, moved.offset_y), (-5.0, 6.0));
         assert_eq!((cfg.legend.offset_x, cfg.legend.offset_y), (0.0, 0.0));
         cfg.overlays[0].legend = None;
         assert!(map.get(id).unwrap().bounds(&cfg, &FixedMeasure).is_none());
         assert_eq!(
-            drag.drag_by(&mut cfg, 1.0, 1.0),
+            drag.drag_by(&mut cfg, &FixedMeasure, 1.0, 1.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
     }
@@ -1509,9 +2104,10 @@ mod tests {
         let cfg = cfg_800x600();
         let b = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
         let sb = DataAreaElement.selection_box(&cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.rect, b.expanded(SELECTION_PADDING));
-        assert_eq!(sb.color, SELECTION_COLOR);
-        assert_eq!(sb.stroke_width, SELECTION_STROKE_WIDTH);
+        assert_eq!(sb.rect(), b.expanded(SELECTION_PADDING));
+        assert_eq!(sb.color(), SELECTION_COLOR);
+        assert_eq!(sb.stroke_width(), SELECTION_STROKE_WIDTH);
+        assert_eq!(sb.outline(), &SelectionOutline::Rect);
     }
 
     #[test]
@@ -1541,7 +2137,7 @@ mod tests {
             )
             .unwrap();
         let sb = map.selection_box(id, &cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.rect, tb.expanded(SELECTION_PADDING));
+        assert_eq!(sb.rect(), tb.expanded(SELECTION_PADDING));
 
         // Center of the data area → data area element.
         let db = DataAreaElement.bounds(&cfg, &FixedMeasure).unwrap();
@@ -1574,7 +2170,7 @@ mod tests {
         // Drag through the trait-object route hosts use.
         let drag = LegendElement.as_draggable().expect("legend is draggable");
         assert_eq!(
-            drag.drag_by(&mut cfg, 9.0, -5.0),
+            drag.drag_by(&mut cfg, &FixedMeasure, 9.0, -5.0),
             crate::layout::NudgeResult::Moved
         );
         let after = LegendElement.bounds(&cfg, &FixedMeasure).unwrap();
@@ -1586,25 +2182,28 @@ mod tests {
     fn data_area_selection_box_carries_resize_handles() {
         let cfg = cfg_800x600();
         let sb = DataAreaElement.selection_box(&cfg, &FixedMeasure).unwrap();
-        assert_eq!(sb.handles.len(), 8);
+        assert_eq!(sb.handles().len(), 8);
         // Non-resizable elements carry none.
         let mut cfg = cfg;
         cfg.chart_title.text = RichText::plain("title", Color::BLACK, 14.0, "");
         let sb2 = ChartTitleElement
             .selection_box(&cfg, &FixedMeasure)
             .unwrap();
-        assert!(sb2.handles.is_empty());
+        assert!(sb2.handles().is_empty());
     }
 
+    // Tick labels are placed by the measure: a measure that lays them out
+    // gives drawn labels bounds and hidden ones none, and a measure that
+    // cannot place them leaves them without bounds either way.
     #[test]
     fn hidden_axis_labels_have_no_bounds() {
         let mut cfg = cfg_800x600();
+        let labels = AxisLabelElement { side: Side::Left };
+        assert!(labels.bounds(&cfg, &LaysOut).is_some());
+        assert!(labels.bounds(&cfg, &FixedMeasure).is_none());
         cfg.left_y.label_style.label_visible = false;
-        assert!(
-            AxisLabelElement { side: Side::Left }
-                .bounds(&cfg, &FixedMeasure)
-                .is_none()
-        );
+        assert!(labels.bounds(&cfg, &LaysOut).is_none());
+        assert!(labels.bounds(&cfg, &FixedMeasure).is_none());
     }
 
     #[test]
@@ -1742,9 +2341,9 @@ mod tests {
         let box_ = ColorBarElement
             .selection_box(&cfg, &FixedMeasure)
             .expect("selection box");
-        assert_eq!(box_.handles.len(), 8);
+        assert_eq!(box_.handles().len(), 8);
         assert_eq!(
-            box_.rect,
+            box_.rect(),
             ColorBarElement
                 .bounds(&cfg, &FixedMeasure)
                 .expect("bounds")
@@ -1753,7 +2352,7 @@ mod tests {
 
         // Non-resizable chrome still has none, so the handles mean something.
         let title = ChartTitleElement.selection_box(&cfg, &FixedMeasure);
-        assert!(title.is_none_or(|b| b.handles.is_empty()));
+        assert!(title.is_none_or(|b| b.handles().is_empty()));
     }
 
     #[test]

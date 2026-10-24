@@ -38,12 +38,14 @@
 //! references of a subplot's series go to that subplot's panels, which split
 //! them by the same rule.
 
-use crate::config::{AxisOptions, Config, TickVisibility};
+use crate::config::{
+    AxisOptions, AxisScale, Category, ChartTitleOptions, ColorBarOptions, Config, TickVisibility,
+};
 use crate::default::{
     default_axis_options_x, default_axis_options_y, default_chart_title_options,
     default_colorbar_options, default_grid_options, default_legend,
 };
-use crate::layer::{AnnotationLayer, CellRef, LayerRef};
+use crate::layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer};
 use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
 
 /// One internal panel of an expanded document.
@@ -491,35 +493,87 @@ impl Config {
         group: &Margins,
         data_area: &DataArea,
     ) -> Result<Config, LayoutError> {
-        let overlay = &self.overlays[index];
-        let mut panel = self.clone();
-        panel.overlays.clear();
-        panel.subplots.clear();
-        panel.active_layer = LayerRef::Base;
-        panel.annotations = AnnotationLayer::default();
-        // The X range stays for the transform; the axes are drawn once, by
-        // the base panel.
-        panel.top_x = hidden_axis(&self.top_x, default_axis_options_x());
-        panel.bottom_x = hidden_axis(&self.bottom_x, default_axis_options_x());
+        // Every field of the parent is named: a new one is a decision here,
+        // carried into the overlay panel or left at its hidden default.
+        let Config {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            // The overlay's own axis takes the right side.
+            right_y: _,
+            chart_title,
+            // Grid and legend are drawn once, by the base panel.
+            grid: _,
+            legend: _,
+            picked_points,
+            picked_data,
+            colorbar,
+            draw_style,
+            polar,
+            overlays,
+            // A panel is a single chart; expansion ignores the active layer
+            // and the annotation layer is drawn with the base panel.
+            subplots: _,
+            active_layer: _,
+            annotations: _,
+        } = self;
+        let OverlayLayer {
+            y_axis,
+            // Which series the panel draws is decided by `layer_of_series`.
+            series: _,
+            legend: overlay_legend,
+        } = &overlays[index];
         // The hidden left axis carries the overlay's scale (the data
         // transform reads `left_y`) and the parent's left band, so the left
         // margin is unchanged.
-        let mut left = hidden_axis(&overlay.y_axis, default_axis_options_y());
-        left.out_margin = self.left_y.out_margin;
-        left.major_tick_length = self.left_y.major_tick_length;
-        panel.left_y = left;
-        panel.right_y = overlay.y_axis.clone();
+        let left = {
+            let AxisOptions {
+                scale: _,
+                min: _,
+                max: _,
+                major_spacing: _,
+                minor_count: _,
+                inverted: _,
+                label_style: _,
+                tick: _,
+                title_option: _,
+                out_margin,
+                line_offset: _,
+                line_visible: _,
+                line_color: _,
+                line_width: _,
+                line_style: _,
+                major_tick_length,
+                minor_tick_length: _,
+                // The hidden left axis maps the overlay's range.
+                categories: _,
+            } = left_y;
+            let mut left = hidden_axis(y_axis, default_axis_options_y());
+            left.out_margin = *out_margin;
+            left.major_tick_length = *major_tick_length;
+            left
+        };
         let mut grid = default_grid_options();
         grid.show_major_x = false;
         grid.show_major_y = false;
         grid.show_minor_x = false;
         grid.show_minor_y = false;
-        panel.grid = grid;
-        let mut title = default_chart_title_options();
-        title.visible = false;
-        title.top_margin = self.chart_title.top_margin;
-        panel.chart_title = title;
-        panel.legend = match &overlay.legend {
+        // The title is hidden and keeps only the parent's band height.
+        let title = {
+            let ChartTitleOptions {
+                text: _,
+                visible: _,
+                offset_x: _,
+                offset_y: _,
+                top_margin,
+            } = chart_title;
+            let mut title = default_chart_title_options();
+            title.visible = false;
+            title.top_margin = *top_margin;
+            title
+        };
+        let legend = match overlay_legend {
             Some(legend) => legend.clone(),
             None => {
                 let mut legend = default_legend();
@@ -529,16 +583,74 @@ impl Config {
         };
         // The colourbar is drawn once, by the base panel; the overlay panel
         // keeps only the z mapping its field series read.
-        panel.colorbar = self.colorbar.as_ref().map(|bar| {
+        let colorbar = colorbar.as_ref().map(|bar| {
+            let ColorBarOptions {
+                visible: _,
+                side: _,
+                thickness_px: _,
+                gap_px: _,
+                length_frac: _,
+                align: _,
+                offset_x: _,
+                offset_y: _,
+                colormap,
+                nan_color,
+                border_color: _,
+                border_width: _,
+                axis,
+            } = bar;
+            let AxisOptions {
+                scale,
+                min,
+                max,
+                major_spacing: _,
+                minor_count: _,
+                // The ramp does not depend on the direction of the z axis.
+                inverted: _,
+                label_style: _,
+                tick: _,
+                title_option: _,
+                out_margin: _,
+                line_offset: _,
+                line_visible: _,
+                line_color: _,
+                line_width: _,
+                line_style: _,
+                major_tick_length: _,
+                minor_tick_length: _,
+                // A colourbar axis is never categorical.
+                categories: _,
+            } = axis;
             let mut hidden = default_colorbar_options();
             hidden.visible = false;
-            hidden.axis.scale = bar.axis.scale.clone();
-            hidden.axis.min = bar.axis.min;
-            hidden.axis.max = bar.axis.max;
-            hidden.colormap = bar.colormap.clone();
-            hidden.nan_color = bar.nan_color;
+            hidden.axis.scale = scale.clone();
+            hidden.axis.min = *min;
+            hidden.axis.max = *max;
+            hidden.colormap = colormap.clone();
+            hidden.nan_color = *nan_color;
             hidden
         });
+        let mut panel = Config {
+            chart_area: chart_area.clone(),
+            // The X range stays for the transform; the axes are drawn once,
+            // by the base panel.
+            top_x: hidden_axis(top_x, default_axis_options_x()),
+            bottom_x: hidden_axis(bottom_x, default_axis_options_x()),
+            left_y: left,
+            right_y: y_axis.clone(),
+            chart_title: title,
+            grid,
+            legend,
+            picked_points: picked_points.clone(),
+            picked_data: picked_data.clone(),
+            colorbar,
+            draw_style: *draw_style,
+            polar: polar.clone(),
+            overlays: Vec::new(),
+            subplots: Vec::new(),
+            active_layer: LayerRef::Base,
+            annotations: AnnotationLayer::default(),
+        };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
         Ok(panel)
@@ -549,12 +661,35 @@ impl Config {
 /// (`major_spacing`, `minor_count`), so linked charts place the same ticks.
 /// Line, label and title style stay each chart's own.
 fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
-    to.scale = from.scale.clone();
-    to.min = from.min;
-    to.max = from.max;
-    to.inverted = from.inverted;
-    to.major_spacing = from.major_spacing;
-    to.minor_count = from.minor_count;
+    let AxisOptions {
+        scale,
+        min,
+        max,
+        major_spacing,
+        minor_count,
+        inverted,
+        // Style and band: each chart's own.
+        label_style: _,
+        tick: _,
+        title_option: _,
+        out_margin: _,
+        line_offset: _,
+        line_visible: _,
+        line_color: _,
+        line_width: _,
+        line_style: _,
+        major_tick_length: _,
+        minor_tick_length: _,
+        // The categories are the range of a categorical axis.
+        categories,
+    } = from;
+    to.scale = scale.clone();
+    to.min = *min;
+    to.max = *max;
+    to.inverted = *inverted;
+    to.major_spacing = *major_spacing;
+    to.minor_count = *minor_count;
+    to.categories.clone_from(categories);
 }
 
 /// Whether an axis keeps its range, scale and direction: what decides which
@@ -562,23 +697,103 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
 /// a range writer such as a view state re-derives it from an unchanged range;
 /// it travels with the edited range instead.
 fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
-    a.scale == b.scale && a.min == b.min && a.max == b.max && a.inverted == b.inverted
+    fn range(axis: &AxisOptions) -> (AxisScale, f64, f64, bool, Option<&[Category]>) {
+        let AxisOptions {
+            scale,
+            min,
+            max,
+            // Tick spacing travels with the edited range (see above).
+            major_spacing: _,
+            minor_count: _,
+            inverted,
+            // Style and band: not linked.
+            label_style: _,
+            tick: _,
+            title_option: _,
+            out_margin: _,
+            line_offset: _,
+            line_visible: _,
+            line_color: _,
+            line_width: _,
+            line_style: _,
+            major_tick_length: _,
+            minor_tick_length: _,
+            categories,
+        } = axis;
+        (scale.clone(), *min, *max, *inverted, categories.as_deref())
+    }
+    range(a) == range(b)
 }
 
 /// A hidden axis: `template` (canonical defaults) carrying only `axis`'s
 /// transform fields (scale, range, direction) and margin fields (outer margin,
 /// major tick length), with its line, ticks, labels and title off.
 fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
+    let AxisOptions {
+        scale,
+        // Through `data_range` below.
+        min: _,
+        max: _,
+        // A hidden axis draws no ticks, so its spacing is the template's.
+        major_spacing: _,
+        minor_count: _,
+        inverted,
+        // Style: the template's, with line, ticks, labels and title off.
+        label_style: _,
+        tick: _,
+        title_option: _,
+        out_margin,
+        line_offset: _,
+        line_visible: _,
+        line_color: _,
+        line_width: _,
+        line_style: _,
+        major_tick_length,
+        minor_tick_length: _,
+        // A hidden axis draws no labels: a categorical axis hands on its
+        // category range as a numeric one, without copying the categories.
+        categories: _,
+    } = axis;
+    let AxisOptions {
+        scale: _,
+        min: _,
+        max: _,
+        major_spacing,
+        minor_count,
+        inverted: _,
+        label_style,
+        tick: _,
+        title_option,
+        out_margin: _,
+        line_offset,
+        line_visible: _,
+        line_color,
+        line_width,
+        line_style,
+        major_tick_length: _,
+        minor_tick_length,
+        categories: _,
+    } = template;
+    let (min, max) = axis.data_range();
     AxisOptions {
-        scale: axis.scale.clone(),
-        min: axis.min,
-        max: axis.max,
-        inverted: axis.inverted,
-        out_margin: axis.out_margin,
-        major_tick_length: axis.major_tick_length,
-        line_visible: false,
+        scale: scale.clone(),
+        min,
+        max,
+        major_spacing,
+        minor_count,
+        inverted: *inverted,
+        label_style,
         tick: TickVisibility::None,
-        ..template
+        title_option,
+        out_margin: *out_margin,
+        line_offset,
+        line_visible: false,
+        line_color,
+        line_width,
+        line_style,
+        major_tick_length: *major_tick_length,
+        minor_tick_length,
+        categories: None,
     }
     .with_hidden_text()
 }
@@ -602,18 +817,39 @@ impl Config {
     /// them between its base and overlay panels. A document without a
     /// selection of a kind leaves the subplot's own.
     fn lend_subplot_picks(&self, subplot: &mut Config, index: usize) {
+        // Only the two selections are lent; every other field is the
+        // subplot's own.
+        let Config {
+            chart_area: _,
+            top_x: _,
+            bottom_x: _,
+            left_y: _,
+            right_y: _,
+            chart_title: _,
+            grid: _,
+            legend: _,
+            picked_points,
+            picked_data,
+            colorbar: _,
+            draw_style: _,
+            polar: _,
+            overlays: _,
+            subplots: _,
+            active_layer: _,
+            annotations: _,
+        } = self;
         let owned = |id: &str| {
             matches!(
                 self.layer_of_series(id),
                 LayerRef::Subplot(i) | LayerRef::SubplotOverlay(i, _) if i == index
             )
         };
-        if let Some(picked) = &self.picked_points {
+        if let Some(picked) = picked_points {
             let mut picked = picked.clone();
             picked.refs.retain(|reference| owned(&reference.series_id));
             subplot.picked_points = Some(picked);
         }
-        if let Some(picked) = &self.picked_data {
+        if let Some(picked) = picked_data {
             let mut picked = picked.clone();
             picked.refs.retain(|reference| owned(reference.series_id()));
             subplot.picked_data = Some(picked);
@@ -624,12 +860,33 @@ impl Config {
 /// Keep only the picked references of the series `layer` draws; the other
 /// layers' selections are drawn by their own panels.
 fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
-    if let Some(picked) = panel.picked_points.as_mut() {
+    // Only the two selections are filtered by layer; every other field is
+    // the panel's as built.
+    let Config {
+        chart_area: _,
+        top_x: _,
+        bottom_x: _,
+        left_y: _,
+        right_y: _,
+        chart_title: _,
+        grid: _,
+        legend: _,
+        picked_points,
+        picked_data,
+        colorbar: _,
+        draw_style: _,
+        polar: _,
+        overlays: _,
+        subplots: _,
+        active_layer: _,
+        annotations: _,
+    } = panel;
+    if let Some(picked) = picked_points.as_mut() {
         picked
             .refs
             .retain(|reference| parent.layer_of_series(&reference.series_id) == layer);
     }
-    if let Some(picked) = panel.picked_data.as_mut() {
+    if let Some(picked) = picked_data.as_mut() {
         picked
             .refs
             .retain(|reference| parent.layer_of_series(reference.series_id()) == layer);
@@ -1370,5 +1627,53 @@ mod tests {
         assert_eq!(cfg.subplots[1].config.chart_area.0.y, 247);
         let plain = default_config();
         assert_eq!(plain.document_area(), plain.chart_area.0);
+    }
+
+    fn categories(n: usize) -> Option<Vec<Category>> {
+        Some(
+            (0..n)
+                .map(|i| Category::new(format!("k{i}"), format!("Kind {i}")))
+                .collect(),
+        )
+    }
+
+    /// An overlay panel's hidden axes carry a categorical axis' range as a
+    /// numeric one, and the overlay's own categorical axis is drawn on the
+    /// panel's right side.
+    #[test]
+    fn overlay_panels_map_categorical_axes_by_their_range() {
+        let mut cfg = two_layer_config();
+        cfg.bottom_x.categories = categories(5);
+        cfg.overlays[0].y_axis.categories = categories(3);
+        let expansion = cfg.expand().unwrap();
+        let overlay = &expansion.panels[1].config;
+        assert_eq!(overlay.bottom_x.categories, None);
+        assert_eq!((overlay.bottom_x.min, overlay.bottom_x.max), (-0.5, 4.5));
+        assert_eq!(overlay.left_y.categories, None);
+        assert_eq!((overlay.left_y.min, overlay.left_y.max), (-0.5, 2.5));
+        assert_eq!(overlay.right_y.categories, categories(3));
+        assert_eq!(
+            expansion.panels[0].config.bottom_x.categories,
+            categories(5)
+        );
+    }
+
+    /// A linked axis follows its target's categories with the rest of its
+    /// range, and an edit of a member's categories moves the link group.
+    #[test]
+    fn linked_axes_follow_the_categories_of_their_target() {
+        let mut cfg = subplot_document();
+        cfg.bottom_x.categories = categories(4);
+        let linked = cfg.subplot_config(1).unwrap();
+        assert_eq!(linked.bottom_x.categories, categories(4));
+        let own = cfg.subplot_config(0).unwrap();
+        assert_eq!(own.bottom_x.categories, None);
+
+        let mut edited = cfg.clone();
+        edited.subplots[1].config.bottom_x.categories = categories(2);
+        let before = cfg.clone();
+        edited.sync_subplot_links(Some(&before));
+        assert_eq!(edited.bottom_x.categories, categories(2));
+        assert_eq!(edited.subplots[1].config.bottom_x.categories, categories(2));
     }
 }

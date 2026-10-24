@@ -536,7 +536,7 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
     let (device, queue) = test_gpu::request_device(&adapter, &Default::default());
     let source = format!(
         "{}\n{}",
-        include_str!("../src/data_render/field_columnar.wgsl"),
+        renderer::shader_assembly::module("field"),
         ENTRIES
     );
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {

@@ -47,7 +47,7 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` or `Logarithmic` (log10) |
 | `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; a manual non-positive or non-finite `min` is guarded to `1e-12` on renderer/axis paths, and a `max` that is non-positive, non-finite or not above `min` becomes one decade above `min`. Non-positive line/scatter coordinates are omitted on the corresponding logarithmic axis; line segments touching an omitted sample form gaps rather than connecting across it. The source data and other valid samples are preserved |
-| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …). When a linear spacing is non-finite, ≤ 0, too small to advance from the range ends, or would draw more than 1000 intervals across the range, the raster draws the automatic spacing for the range instead. A log step is floored to a whole number of decades and capped at 2147483647 (`i32::MAX`); a step below 1 or non-finite draws 1. Each substitution is reported by `ChartView::render_warnings` after the next refresh |
+| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …). When a linear spacing is non-finite, ≤ 0, too small to advance from the range ends, or would draw more than 1000 intervals across the range, the raster draws the automatic spacing for the range instead (`tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span, the spacing `Chart::set_x_range` writes). A log step is floored to a whole number of decades and capped at 2147483647 (`i32::MAX`); a step below 1 or non-finite draws 1. Each substitution is reported by `ChartView::render_warnings` after the next refresh |
 | `minor_count` | usize | Minors per major (linear). On a logarithmic axis the value is a switch: 0 hides the minors and any other value draws the eight sub-decade minors 2..9 of every decade (`Chart::set_x_range` / `set_y_range` write 8). A linear count over 99 draws 99 minors per major and is reported the same way |
 | `inverted` | bool | Reverses the visual direction of this axis. Tick/grid placement, data rendering, and picking all use the same reversed mapping; `min`/`max` remain the data-space bounds |
 | `label_style` | `LabelStyle` | Tick-label styling |
@@ -67,7 +67,7 @@ pub struct Config {
 | `label_visible` | bool | Tick-label visibility, combined with `visible` (both must be `true`). Turning either off keeps the axis line and ticks and leaves `out_margin` unchanged |
 | `label_font` | String | Font family. Empty string → bundled Liberation Sans. A family that is neither registered nor installed also falls back to it; `text_render::font_family_available(name)` tells hosts whether a name resolves. A character the face cannot draw falls back per character to registered fonts, the bundled Liberation Sans, then (native only) installed system fonts |
 | `label_offset_x / y` | f32 | Fine nudge offset (px). In polar mode the angle axis reads `y` along the spoke and ignores `x`; the radius axis reads `x` along the ray and `y` across it (see `PolarOptions`) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`) |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Plain`. `Timestamp` interprets numeric values as Unix epoch time on linear axes and can use calendar-aware ticks. `Degrees` is decimal with a degree sign; `Radians` writes multiples of π (`π/2`, `3π/4`, `0.4π`). `Plain(PlainNumberFormat { decimals, trim_zeros })` writes the value alone, ignoring scale, spacing and `significant_digits`: with `decimals: None` (`PlainNumberFormat::AUTO`) `0` for zero, `1.23e6` / `-5.00e-4` when \|v\| ≥ 1e6 or < 0.001, and otherwise six decimals with trailing zeros trimmed (`2.5`, `1000`); with `Some(d)` exactly `d` decimals, trailing fractional zeros trimmed when `trim_zeros` is set |
 | `significant_digits` | u8 | Requested numeric precision (1–15 for decimal/scientific labels). Linear decimal labels share a decimal count based on range magnitude, raised only as needed to distinguish the tick interval; logarithmic labels round each value. Does not change tick positions |
 
 Numeric labels that would overlap along an axis are drawn at a coarser label stride;
@@ -523,7 +523,8 @@ draws through the precise mapped scatter path, like a series with a style table.
   never inferred from the column — `PointSizeMap::fit_domain(min, max)` writes it
   from statistics the host already has, the way `auto_ticks` writes tick spacing —
   so appending a point never resizes the others. `PointSizeMap::radius_px(value)`
-  is the formula; the shader and the CPU picker compute the same radius.
+  is the formula; the draw shader and the GPU picker compute the same radius,
+  and the renderer's test-support CPU twin checks both against it.
 - Precedence per channel is sparse override > value map > style table slot >
   series base. Shape still comes from the table, overrides or base, so a
   categorical shape column combines with a continuous colour column. An override
@@ -840,7 +841,7 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10) |
 | `min, max` | f64 | 데이터 좌표 범위. 로그축에서는 양수 경계를 그대로 쓴다. 로그축의 수동 최솟값이 0 이하이거나 유한하지 않으면 `1e-12`로, 최댓값이 최솟값 이하이거나 유한하지 않으면 최솟값의 10배로 보정한다. 로그축에 대응하는 선·산점도 좌표가 0 이하이면 해당 점을 그리지 않는다. 그 점에 닿는 선분도 생략해 빈 구간으로 남기며, 원본 데이터와 나머지 유효한 점은 유지한다. |
-| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 범위 끝값에 더하거나 빼도 값이 바뀌지 않을 만큼 작거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 로그축 간격은 1 이상 2147483647(`i32::MAX`) 이하의 정수 중 그 값을 넘지 않는 가장 큰 수로 그리고, 1보다 작거나 유한하지 않으면 1로 그린다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
+| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 범위 끝값에 더하거나 빼도 값이 바뀌지 않을 만큼 작거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 자동 간격은 `tick::axis_major_spacing`이 범위 폭에서 고르는 0.2·0.5·1 × 10^k 간격이며, `Chart::set_x_range`가 쓰는 값과 같다. 로그축 간격은 1 이상 2147483647(`i32::MAX`) 이하의 정수 중 그 값을 넘지 않는 가장 큰 수로 그리고, 1보다 작거나 유한하지 않으면 1로 그린다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
 | `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 보조 눈금을 켜고 끄는 값으로만 쓴다. 0이면 숨기고, 1 이상이면 값과 관계없이 decade마다 2배~9배 위치 8곳에 그린다(`Chart::set_x_range` / `set_y_range`는 8을 쓴다). 선형축에서 99를 넘으면 주 눈금 사이에 99개만 그리고 같은 방식으로 알린다. |
 | `inverted` | bool | 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹이 같은 변환을 쓰며 `min` / `max`는 데이터 좌표 기준을 유지한다. |
 | `label_style` | `LabelStyle` | 눈금 라벨 스타일 |
@@ -860,7 +861,7 @@ pub struct Config {
 | `label_visible` | bool | 눈금 라벨 표시 여부. `visible`과 둘 다 `true`여야 라벨을 그리며, 어느 쪽을 꺼도 축선과 눈금은 그대로 그리고 `out_margin`도 바뀌지 않는다. |
 | `label_font` | String | 글꼴 이름. 빈 문자열이면 내장 Liberation Sans를 쓴다. 등록되지도 설치되지도 않은 이름도 이 글꼴로 대체되며, 호스트는 `text_render::font_family_available(name)`으로 이름이 해석되는지 확인할 수 있다. 이 글꼴에 없는 글자는 글자마다 등록 글꼴, 내장 Liberation Sans, 설치된 시스템 글꼴(네이티브 전용) 순으로 찾아 그린다. |
 | `label_offset_x / y` | f32 | 라벨 위치를 미세 조절하는 이동량(px). 극좌표 모드에서 각도 축은 `y`를 스포크 방향으로 읽고 `x`를 무시하며, 반지름 축은 `x`를 반직선 방향, `y`를 수직 방향으로 읽는다(`PolarOptions` 참고) |
-| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. |
+| `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Plain`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. `Plain(PlainNumberFormat { decimals, trim_zeros })`은 축 스케일·눈금 간격·`significant_digits`와 관계없이 값만으로 라벨을 정한다. `decimals: None`(`PlainNumberFormat::AUTO`)이면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6` / `-5.00e-4`처럼 지수 표기로 적고, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0을 지운다(`2.5`, `1000`). `Some(d)`이면 소수 `d`자리로 적고, `trim_zeros`가 켜져 있으면 소수 끝의 0을 지운다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
 축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘린다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
@@ -1176,7 +1177,7 @@ pub struct Config {
 마커를 그리는 모든 `DataRenderType`은 일반 값 컬럼 두 개를 점에 대응시킬 수 있다. 두 필드는 모두 선택 사항이며 생략하면 JSON에서 빠지므로, 두 필드가 없는 문서는 읽고 다시 써도 바이트 단위로 같다. 둘 중 하나라도 지정한 시리즈는 스타일 표를 쓴 시리즈처럼 정밀 매핑 산점도 경로로 그린다.
 
 - `point_color_map: Option<PointColorMap { column }>`은 `column`의 값으로 점마다 색을 정한다. 히트맵 셀과 똑같이 `Config.colorbar`를 거치므로 범위·스케일·색상표·`nan_color`는 색상 막대가 정하고 차트의 Z 스케일은 하나로 유지된다. 색상 막대가 없으면 임의의 범위를 쓰지 않고 시리즈를 거부한다. 유한하지 않은 값과 로그 색상 막대의 0 이하 값은 `nan_color`로 그린다. `Chart::auto_fit_colorbar_union(pool, ids, padding)`은 넘겨받은 컬럼 ID로 공유 범위를 맞추며 행렬 컬럼과 색 매핑 컬럼을 구분하지 않는다. 웹 `auto_fit_colorbar`는 차트의 행렬 컬럼, 점 색 매핑 컬럼, 벡터 색 매핑 컬럼을 모두 모아 맞춘다.
-- `point_size_map: Option<PointSizeMap { column, domain_min, domain_max, min_px, max_px, scale }>`은 `domain_min..domain_max`를 마커 반지름 `min_px..max_px`에 대응시킨다. 단위는 `point_size`와 같은 논리 픽셀이며 출력 배율도 똑같이 적용된다. 범위는 유한하고 `domain_min < domain_max`여야 하며, `min_px`와 `max_px`는 유한한 0 이상의 값이고 `min_px <= max_px`여야 한다. `scale`은 `SizeScale::Area`(기본값. 값이 마커 넓이에 비례하며 버블 크기를 읽는 일반적인 방식) 또는 `Radius`다. 범위 밖 값은 양 끝으로 고정하고, 유한하지 않은 값은 점을 숨기며 피킹에서도 뺀다. 범위는 컬럼에서 추측하지 않는다. `PointSizeMap::fit_domain(min, max)`는 `auto_ticks`가 눈금 간격을 쓰듯 호스트가 이미 가진 통계로 범위만 쓰므로, 점을 추가해도 다른 점의 크기가 바뀌지 않는다. 반지름 공식은 `PointSizeMap::radius_px(value)`이며 셰이더와 CPU 피커가 같은 값을 계산한다.
+- `point_size_map: Option<PointSizeMap { column, domain_min, domain_max, min_px, max_px, scale }>`은 `domain_min..domain_max`를 마커 반지름 `min_px..max_px`에 대응시킨다. 단위는 `point_size`와 같은 논리 픽셀이며 출력 배율도 똑같이 적용된다. 범위는 유한하고 `domain_min < domain_max`여야 하며, `min_px`와 `max_px`는 유한한 0 이상의 값이고 `min_px <= max_px`여야 한다. `scale`은 `SizeScale::Area`(기본값. 값이 마커 넓이에 비례하며 버블 크기를 읽는 일반적인 방식) 또는 `Radius`다. 범위 밖 값은 양 끝으로 고정하고, 유한하지 않은 값은 점을 숨기며 피킹에서도 뺀다. 범위는 컬럼에서 추측하지 않는다. `PointSizeMap::fit_domain(min, max)`는 `auto_ticks`가 눈금 간격을 쓰듯 호스트가 이미 가진 통계로 범위만 쓰므로, 점을 추가해도 다른 점의 크기가 바뀌지 않는다. 반지름 공식은 `PointSizeMap::radius_px(value)`이며 그리기 셰이더와 GPU 피커가 같은 값을 계산한다. 렌더러 테스트용 CPU 트윈이 두 셰이더를 이 공식과 비교한다.
 - 채널별 우선순위는 개별 설정 > 값 매핑 > 스타일 표 슬롯 > 시리즈 기본값이다. 모양은 계속 표·개별 설정·기본값에서 정하므로 범주형 모양 컬럼과 연속 색 컬럼을 함께 쓸 수 있다. `point_size`를 지정한 개별 설정은 숨겨진 점을 다시 보이게 한다.
 - 값 컬럼은 시리즈의 x/y 컬럼과 인덱스가 맞아야 하고 모든 점을 덮어야 하며, 더 짧으면 준비 단계에서 오류가 난다. 다른 시리즈 컬럼과 똑같이 다루므로 컬럼을 지우면 시리즈가 무효가 되고, 피킹(`Renderer::pick_chart`, 웹 `pick_point`), 선택 테두리, 웹 `selection_details`(`color_value` / `size_value`), PNG 출력이 모두 매핑된 색과 반지름을 따른다. 매핑에는 GPU 상주 컬럼이 필요하므로 스트리밍 소스는 거부한다. Sketch·Milkyway·Constellation 스타일은 스타일 표와 마찬가지로 매핑을 무시한다.
 

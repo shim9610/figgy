@@ -141,9 +141,9 @@ converts units, so pair each with the matching `angle_unit`. `top_x` and
 
 ## Picking and selection
 
-`pick_nearest_point` and the GPU pick path project through the same mapping
-as the shaders, so markers, chords and arc pieces are picked where they are
-drawn, and the CPU and GPU pickers agree. A marker outside the sector is not
+The GPU pick path (`pick_chart`, `pick_chart_data`) projects through the same
+mapping as the shaders, so markers, chords and arc pieces are picked where they
+are drawn; the CPU twin in the renderer's test support pins the two together. A marker outside the sector is not
 picked; a line's pieces are pickable where they draw. Hover, click selection
 and the browser wrapper's `FiggyChart.step_selection` work as on a
 rectangular chart.
@@ -257,8 +257,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 
 ### 피킹과 선택
 
-`pick_nearest_point`와 GPU 피킹은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
-화면에 그려진 자리에서 고르고, CPU와 GPU의 결과가 같다. 섹터 밖 마커는 고르지 않고, 선 조각은
+GPU 피킹(`pick_chart`, `pick_chart_data`)은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
+화면에 그려진 자리에서 고르고, 렌더러 테스트 지원의 CPU 트윈이 둘이 같음을 고정한다. 섹터 밖 마커는 고르지 않고, 선 조각은
 그려진 곳에서 고를 수 있다. 호버·클릭 선택과 브라우저 래퍼의 `FiggyChart.step_selection`은 직교
 차트와 같다.
 

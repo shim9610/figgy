@@ -1,6 +1,6 @@
 //! Direct renderer WebGPU tests: no Studio/figgy JS facade involved.
 #![cfg(target_arch = "wasm32")]
-use renderer::{Category, Color, RendererDevice, boxplot::*};
+use renderer::{Category, Color, Material, RendererDevice, boxplot::*};
 use std::sync::Arc;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
@@ -85,7 +85,7 @@ async fn boxplot_notches_materials_selection_cache_and_png_work_on_webgpu() {
         f.hit_test([(b[0] + b[2]) * 0.5, med_y]).unwrap().part,
         BoxPlotPart::Median
     );
-    c.style.material = BoxPlotMaterial::SatinMetal;
+    c.style.material = Material::SatinMetal;
     c.style.show_mean = true;
     c.hovered = Some(t);
     let changed = r.prepare(&c, (640, 440), 1.).unwrap();

@@ -1,14 +1,589 @@
 # Release history
 
 `figgy-renderer` and `figgy-model` are the Rust library packages. `figgy` in this
-history is the separate browser integration example in `crates/web`; its version
-does not imply a standalone JavaScript product or a deployment of the separate
-[figgyplot.com Studio](https://figgyplot.com/) application.
+history is the browser product in `crates/web` (the wasm-bindgen wrapper and the
+`<figgy-chart>` element), built from this repository with its own version; earlier
+entries call it the browser integration example. Its version does not imply a
+deployment of the separate [figgyplot.com Studio](https://figgyplot.com/) application.
 
 Publication statements in older source-release entries describe those releases
 at the time. The first crates.io publication is recorded below.
 
 [Usage and gallery](README.md) · [Backend verification](ci/STATUS.md)
+
+<a id="unreleased"></a>
+
+## Unreleased — renderer 0.19.0 / model 0.13.0 / figgy 0.16.0
+
+Collected on `integration/0.19`; the release entry replaces this section.
+Every breaking change below carries its migration. Serialized documents
+written by model 0.12 and earlier parse and re-serialize byte for byte; the
+two new keys (`"math"`, `{"Plain":{}}`) are additive.
+
+<a id="unreleased-model"></a>
+
+### Model (`figgy-model` 0.13.0)
+
+- **One placement per element, interchangeable sinks**
+  ([#38](https://github.com/shim9610/figgy/issues/38),
+  [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
+  element has one placement function, its `emit`, which hands the parts it
+  draws to a `Sink` (`model::sink`): the renderer's canvas sink paints them,
+  the model's sinks answer bounds, hit tests and selection boxes from the
+  same parts, and drag containment reads the same parts. There is no second
+  placement left for the 15 cases the inventory listed; the ones that needed
+  a shader change are done by the renderer entries below (histogram
+  selection outline, contour label box, radial inside-label lift, pick slot
+  keys, the picker's projection), and no `TODO(#38)` is left. The renderer
+  and browser sides are under [Renderer](#unreleased-renderer) and
+  [Browser product](#unreleased-web). Migration:
+  - `Selectable` requires `emit(&self, cfg, measure, sink) -> bool` instead of
+    `bounds`; `bounds`, `contains` and `selection_box` are provided by the
+    blanket trait `SelectionGeometry` (import it next to `Selectable`) and
+    cannot be overridden. `MeasureText::drawn_parts` is replaced by
+    `MeasureText::emit(cfg, element, sink)`; `DrawnPart` moved to
+    `model::sink` (still re-exported from `layout`) and gained `Rect` and
+    `Triangle`.
+  - `SelectionBox` has private fields: read `rect()`, `handles()`, `color()`,
+    `stroke_width()`, `outline()`; `SelectionOutline::TickLabels(side)` is
+    `SelectionOutline::Parts(Vec<DrawnPart>)`, which polar tick labels, the
+    polar ray and annotations use (an arrow's shaft is outlined as its thin
+    oriented box).
+  - `Config::nudge` / `nudge_from` / `nudge_x` / `nudge_y`, `Draggable::drag_by`
+    / `drag_from`, `Resizable::resize_by` and `DragConfig::nudge` / `nudge_at`
+    take a `&dyn MeasureText`. A move is contained on the drawn parts: it is
+    rejected unless one of the element's parts keeps its centre inside the
+    chart area, and when the measure cannot place the element or it draws
+    nothing. `Resizable::resize_handles` reports its handles through a
+    callback.
+  - `AnnotationElement.text_size` is `text: Option<MeasuredText>`;
+    `AnnotationShape`, `annotation_shapes`, `shapes`, `label_rect` and
+    `geometry_bounds` are gone (`emit_annotation` and
+    `AnnotationElement::emit` place the parts). An annotation's bounds are its
+    drawn parts without grab slack; it hits inside the outlines its selection
+    draws (`part_outline`: a stroke's box is half its width plus 2 px, at
+    least 3 px, either side (`segment_grab_half_width`) and 2 px beyond the
+    ends; a triangle grows 2 px outward (`padded_triangle`); a rectangle
+    2 px). `ARROW_LABEL_GAP` and `LINE_LABEL_INSET` (pixels) are gone: the
+    label gaps are `ARROW_LABEL_GAP_EM` and `LINE_LABEL_INSET_EM`, relative
+    to the label font, so they scale with the display scale.
+  - Every element hits inside its padded selection box (2 px outside its
+    bounds): the data area, the legend, the colourbar strip, the chart and
+    axis titles and every bounded chart decoration, like the axes and tick
+    labels did before. An element that outlines its parts hits inside each
+    part's outline (`select::part_outline`, the one shape of the hit test,
+    the canvas highlight and a host's outline): a text block or rectangle as
+    its box grown by 2 px, a stroke as the box `max(width / 2 + 2, 3)` px
+    either side of its line and 2 px beyond its ends (the plan said
+    `max(width / 2, 3)`; the polar ray is grabbed within 3 px, was 4), an
+    arrow head as its triangle grown 2 px outward. A text annotation is one
+    box.
+  - A layered document expands its base panel (`select::on_drawn_panel`,
+    the renderer's own expansion, SSOT configuration) for every placement
+    the model runs for a hit test or a drag step; a single-layer document
+    copies nothing.
+  - Removed: `LineInterpolation::piece_count`,
+    `PolarInterpolation::piece_count`, `layout::axis_visibility_extent` /
+    `axis_visibility_rect` / `rect_axis_visibility_rect`, which nothing in
+    the workspace called any more; an axis's or tick band's drawn box is its
+    element's `SelectionGeometry::bounds`. Added:
+    `model::sink` (`Sink`, `Slot`, `PlacedText`, `DrawnPart` and the types
+    they carry),
+    `select::PartOutline`, `part_outline`, `segment_grab_half_width`,
+    `padded_triangle`, `on_drawn_panel`, `layout::axis_fraction`,
+    `span_fraction`, `guarded_log_range` (moved from the renderer),
+    `visible_colorbar_rect`, `Config::title_band`.
+- **Character sets.** `RichSegment.greek: bool` becomes
+  `char_set: CharSet` (`Text`, `Greek`, `Math`), so a segment cannot be
+  Greek and math at once
+  ([#45](https://github.com/shim9610/figgy/issues/45)). The JSON is
+  unchanged for every existing document: `Text` writes `"greek": false`,
+  `Greek` writes `"greek": true`, and `Math` writes `"greek": false`
+  followed by the new `"math": true`, which is written only for `Math`.
+  Documents written by model 0.12 and earlier parse and re-serialize byte
+  for byte; a segment with both `"greek": true` and `"math": true` is
+  rejected with an error. `Math` draws the character as given, from the
+  text font, until the math font is chosen on #45. Model 0.12.1 and older
+  ignore `math` and read such a segment as text. The browser
+  product's `get_config` / `set_config`, `get_series` / `set_series`
+  and annotation calls carry the new key. Migration: write
+  `char_set: CharSet::Text` for `greek: false` (or start from
+  `RichSegment::plain`), `char_set: CharSet::Greek` for `greek: true`, and
+  `seg.char_set == CharSet::Greek` for reads of `seg.greek`; `CharSet` is
+  `model::text::CharSet` (`renderer::text::CharSet`), and
+  `CharSet::glyph_char` gives the character a set draws.
+- **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
+  decimals, trim_zeros })` writes a value alone, ignoring scale, spacing
+  and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is
+  the bounded value axes' tick form (`2.5`, `1000`, `1.23e6`), `Some(d)`
+  exactly `d` decimals, trailing zeros trimmed with `trim_zeros`. The
+  categorical, radial, box plot and radar data labels and the value-axis
+  tick labels of the categorical, box plot and radar charts use it, with
+  the same text. The JSON is additive (`{"Plain":{}}`, both fields omitted at
+  their defaults); model 0.12.1 and older reject it. Migration: a Rust
+  `match` over `LabelFormat` adds a `LabelFormat::Plain(_)` arm.
+- **One tick plan.** The Cartesian spacing rule (`Chart::set_x_range`,
+  `set_y_range` and the fits), `AxisOptions::compute_nice_ticks`, the tick
+  marks, labels and grid lines of Cartesian axes and the colourbar, the
+  radar rings, the box plot and categorical value ticks and the contour
+  levels of `ContourConfig::nice_levels` now share one spacing rule and
+  one walk in `model::tick` (`renderer::tick`)
+  ([#58](https://github.com/shim9610/figgy/issues/58) item 14). New public
+  items: `AXIS_LINEAR_TARGET` (10), `AXIS_LOG_TARGET` (7), `LooseRange`,
+  `nice_linear_step`, `nice_log_step`, `axis_major_spacing`, the walkers
+  `LinearGrid`, `LogDecades`, `LogMinors`, `major_ticks`, `minor_ticks` and
+  their iterator types, the guards `walkable_range`,
+  `range_in_spacing_units`, `spacing_advances_range`,
+  `automatic_linear_spacing`, `effective_major_spacing`,
+  `major_spacing_rejection`, `drawn_minor_count` and
+  `effective_log_decade_step`, and the walk limits. Migration:
+  `SpacingRejection` moves to `model::tick` and stays exported as
+  `renderer::SpacingRejection`. Output changes:
+  1. a linear spacing that `set_x_range` / `set_y_range` or a fit writes
+     can differ in its last bits (at most 2 ulp; `2·10^(k-1)` where it was
+     `0.2·10^k`), and a step below `f64::MIN_POSITIVE` can be rounded
+     differently. Tick labels are unchanged except Decimal labels of
+     values past 2^53, which print every integer digit, and of steps below
+     1e-15, where the 15-decimal cap already merges neighbouring labels;
+  2. a span above about 1e308 keeps its 1·2·5 step class instead of
+     falling back after the loose range overflowed (`compute_nice_ticks`
+     of `0..1.05e308` at target 5 steps `5e307`, not `2e307`;
+     `set_x_range` steps `2e307`, as below the overflow);
+  3. radar rings and box plot value ticks keep a ring or tick that
+     rounding put just past a range end, through the walk's 1e-9 step
+     slack (`value_range [0, 0.3]` with `ring_spacing 0.1` draws the 0.3
+     ring). Fitted ranges gain it most: in a seeded sample, 0.7 % of
+     fitted radar axes gain the outer ring and 7 % of fitted box plot axes
+     gain an end tick; fixed ranges rarely change;
+  4. categorical value ticks are `k · step` instead of `min + i · step`:
+     about one value in ten moves by an ulp, and a label changes only on a
+     rounding tie of the exponent form (28 of 525,313 in the sample);
+  5. the log decades of Cartesian axes, grid lines and the colourbar are
+     computed with `powf` instead of `powi`, as contour levels already
+     were: a decade value can move by up to 7 ulp at large exponents, and
+     an axis reaching subnormal decades gains the ticks `powi` lost;
+  6. `nice_levels` returns the level-limit error for ranges whose level
+     indices passed `i64` (the walk saturated and returned no levels), and
+     no levels for a step that moves neither range end at `f64` precision
+     (the walk repeated the few representable values).
+- **One material enum.** Bars, boxes and sectors take one `Material`
+  (`Flat`, `Matte`, `Ceramic`, `BrushedMetal`, `Paper`, `Wood`,
+  `SatinMetal`, `Toon`, `Enamel`, `Hatch`, `Pearl`), and a name has one
+  look in every family: one shader function draws all three
+  ([#46](https://github.com/shim9610/figgy/issues/46)).
+  - Bars and boxes are shaded like a flat pie top under the default light,
+    with uniform lighting and highlights. **The look of Matte, SatinMetal,
+    Enamel and Paper bars and of Matte and SatinMetal boxes changes**: no
+    vertical gradient (Matte) and no highlight band (SatinMetal, Enamel).
+    Boxes default to Matte, so a default box plot changes too. `gloss` has
+    no visible effect on an Enamel bar, and at 1x a `texture_scale` above
+    0.13 none on a metal bar.
+  - Bars and boxes gain `Ceramic`, `BrushedMetal`, `Wood` and `Hatch`
+    (boxes also `Enamel` and `Paper`). `Toon` and `Pearl` need a curved
+    surface: `Material::supported_on_flat_body` is false for them, and bar
+    and box validation rejects them ("material not supported by bars" /
+    "material not supported by boxes"). Sectors accept every material.
+  - Per-family defaults are unchanged (bars Flat, boxes Matte, sectors
+    Flat). Serialized documents are unchanged: the variant names are the
+    strings the three old enums wrote.
+  - Migration: `RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial`
+    are deprecated aliases of `Material`; replace the name, the variants are
+    the same. `BoxPlotMaterial::default()` is now `Flat` (the enum default);
+    `BoxPlotStyle::default()` still uses `Matte`. An exhaustive `match` on
+    `CategoryBarMaterial` or `BoxPlotMaterial` needs the new variants.
+- **The polar label band scales with the chart**
+  ([#47](https://github.com/shim9610/figgy/issues/47)). `Config::polar_geometry`
+  reserved a fixed 6 px beside the tick length and the label line (2 px
+  beside the tick length with the angle labels hidden), which
+  `Config::scaled` could not scale: a 2x
+  display or PNG export of a polar chart put the ring, its ticks and both
+  label sets 2.5 to 4 px (1x) off the 1x layout doubled. The clearance is now
+  a third of the angle-label font size (a ninth with the labels hidden), so
+  2x is the 1x layout doubled. **Behaviour change:** at the default 18 px
+  label font the layout is unchanged to the bit; a polar chart with another
+  `bottom_x.label_style.font_size` changes its ring radius at 1x by
+  `(18 - font_size) / 3` px (`(18 - font_size) / 9` px with the labels
+  hidden), for example 2 px larger at 12 px and 1 px smaller at 21 px. No API
+  or serialized field changes.
+
+- **The radial chart is the DataLess chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The model
+  documents two chart classes: a DataLess chart is defined by its SSOT alone,
+  with no `ColumnSource`, no column pool and no streaming, and the radial
+  chart is its only member; the series kinds of `Config` are the
+  column-backed class. No new type.
+- **Radial label strings in the SSOT.** `RadialSlice` gains
+  `text: Option<String>` (additive, omitted when absent): the drawn label, at
+  most two lines joined by `'\n'`, each at most 400 characters without
+  control characters. `RadialChart::format_labels()` writes every slice's and
+  detail child's text from the label format, `label_decimals`, `value_suffix`
+  and its circle's total at edit time; `normalize_labels()` fills only the
+  missing ones, so a document written before the field draws the strings it
+  drew; `labels_have_text()` says whether a frame can draw every shown label.
+  `label_lines` is the helper both use. Migration: an exhaustive
+  `RadialSlice` struct literal needs `text: None` (or use `RadialSlice::new`);
+  call `format_labels()` after building or editing slices, values, names or
+  label formats, and `normalize_labels()` on a loaded document, because the
+  renderer draws `text` and refuses a shown label without it (see
+  [Renderer](#unreleased-renderer)).
+- **Radial title through the shared chart title.** `RadialChart.chart_title`
+  is `Option<ChartTitleOptions>` instead of `Option<BoundedTitleOptions>`,
+  written and read as the same `{"visible", "text"}` object in the same
+  order, so documents keep their bytes. The position stays in
+  `decorations`: the offsets and `top_margin` read as 0 and
+  `RadialChart::validate` rejects other values. `resolved_title()` returns a
+  `ChartTitleOptions` built by the new
+  `ChartTitleOptions::from_legacy_plain(title, font, label_size, color)`.
+  `select::emit_chart_title_in(title, chart_area, top_margin, measure, sink)`
+  is the one title placement, split out of the Cartesian title (whose pixels
+  do not change), with `layout::chart_title_placement_in` its `RectF`
+  arithmetic. The rich-text limits of bounded titles and annotations are one
+  check, `RichText::within_limits()`. `CategoricalChart`, `BoxPlotChart` and
+  `RadarChart` keep `BoundedTitleOptions`. Migration: code that sets a radial
+  `chart_title` builds a `ChartTitleOptions` (zero offsets and band) where it
+  built a `BoundedTitleOptions`.
+- **`RadialChart` is a drag state.** `impl DragConfig for RadialChart`
+  (`Element = DecorationElement`): a decoration of the radial frame's
+  `HitMap<RadialChart>` moves in `decorations` by the bounded charts' rule.
+  `SelectionBox::clipped_to(area)` intersects a selection box with a canvas.
+  `RadialChart::step_selection(backwards)` is the radial step of the bounded
+  web wrapper's `step_selection`, moved into the model since it edits only
+  the SSOT; the wrapper calls it and its behaviour is unchanged.
+- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13c). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
+  categorical axis with `n` categories maps the data range
+  `[-0.5, n - 0.5]` with category `i` at `i`, a major tick at every
+  category, no minors and `categories[i].label` as tick text, thinned by the
+  numeric labels' stride rule when they crowd. `min`, `max`,
+  `major_spacing`, `minor_count` and the label format are ignored on it.
+  New items: `AxisOptions::category_count`, `data_range` (what the tick
+  walks, `axis_fraction`, the annotation space and the overlay and subplot
+  expansion read) and `validate_categories` (1 to 64 categories, unique
+  non-empty single-line ids, single-line labels of at most 80 characters,
+  `MAX_CATEGORY_TEXT_CHARS`, a linear scale, no inversion);
+  `PolarOptions::validate` rejects a categorical angle axis (it arrives
+  with the radar series kind) and radius axis. A linked subplot axis
+  follows its target's categories. `Category` moves to `model::config`
+  beside the axis; `categorical::Category` (and the crate-root path)
+  re-export it. The JSON key is additive (omitted when `None`); model 0.12.1
+  and older ignore it. Migration: an `AxisOptions { .. }` literal adds
+  `categories: None`, and an exhaustive destructuring adds `categories`.
+- **Axis anchors take the plot rectangle.** `layout::axis_anchor(side,
+  plot: &RectF)` replaces `axis_anchor(side, &DataArea)`, so a plot that is
+  not integer-aligned is anchored by the same code; an integer data area
+  gives the same endpoints bit for bit. Migration: pass
+  `&RectF::from_rect(&data_area)`.
+
+<a id="unreleased-renderer"></a>
+
+### Renderer (`figgy-renderer` 0.19.0)
+
+- **Error bars and line fills pick where they are drawn** (G10 of
+  [#37](https://github.com/shim9610/figgy/issues/37),
+  [#46](https://github.com/shim9610/figgy/issues/46) item 6). `pick_chart`
+  (`pick_point` in the WASM wrapper) now hits error-bar stems and caps on the
+  quads the error-bar shader draws — per-point widths of the precise style
+  map, the hashed corner wobble under Sketch, a Milkyway jet's beam and knot
+  envelope; Constellation draws no error bars — and a line's area fill where
+  the cursor lies inside it (distance zero, baseline or second series, every
+  step mode, polar). An error-bar hit names the bar's point and a fill hit
+  the filled segment's nearer endpoint by the line rule, so `PickedPoint` is
+  unchanged. On a tie a marker wins over its line, the line over its error
+  bars and every stroke or marker over a fill; among fills the later series
+  wins. A zero-alpha bar or fill picks nothing. The draw and the pick build
+  the geometry from the same new fragments (`common/errorbar_segment.wgsl`,
+  `common/area_piece.wgsl`); the draw is pixel-identical. Zero-size markers
+  already picked; a test now pins it. Streamed picks are unchanged (streaming
+  is not extended). G10 is closed except for band fills: a field drawn with
+  `FillMode::Bands` keeps deciding whether a cell paints by its opacity
+  alone, so a transparent ramp stop still picks. Its band position needs the
+  contour lookup metadata (binding 6), which the field pick cannot bind
+  within the storage-binding limit; moving it into the tail of `stops`
+  (binding 3) would change the frozen streaming field builders, so that
+  option was not taken. The point picker's
+  device-limit check now asks for the 7 storage buffers and 3 bind groups its
+  exact pass binds (it asked for 6 and 2). No public API or serialized field
+  changes.
+- **Selection and placement, renderer side**
+  ([#38](https://github.com/shim9610/figgy/issues/38); the model side is
+  under [Model](#unreleased-model)). Migration:
+  - `Renderer::refresh_axis_with_selection` takes the selected element's id
+    (`Selectable::element_id`, `Option<&str>`) instead of boxes;
+    `Renderer::selection_box(chart, id)` returns the box it draws.
+  - A host element registered in its own `HitMap` (its default `element_id`
+    is `"custom"`) or a map built for another layer is not highlighted by
+    `refresh_axis_with_selection`, which resolves ids on the active layer's
+    standard registration; a host draws such a highlight itself from the
+    element's `SelectionGeometry::selection_box` with
+    `axis_render::draw_selection_box(canvas, &box, origin, scale)`.
+    `Renderer::selection_box` and a refresh with a selected id build the
+    active layer's `HitMap` once per refresh to resolve the id (a `Vec` of
+    boxed elements and a `String` per compared id).
+  - Removed: `pick_nearest_point`, `PointPickOptions`, `PointColumnLookup`
+    (hosts pick through `pick_chart` / `pick_chart_data`; the CPU twins are
+    test support under the `cpu-twin` feature) and `errorbar_extent` (an
+    error-bar fit extent comes from the resident columns on the GPU:
+    `Renderer::ensure_errorbar_extent_engine`, then
+    `begin_errorbar_extent(value_id, lower_id, upper_id)`).
+  - `data_render::draw_chart_panel_with_bodies` moved to the compositor
+    (`renderer::composite`), which alone orders the slots below the data, the
+    data and above the data; `draw_chart_panel_columnar` is unchanged.
+- **Shader assembly.** Every WGSL module is spliced from its fragment files
+  at compile time by one macro, `wgsl_module!` (`shader_assembly.rs`), so a
+  block several shaders share lives in one file
+  ([#46](https://github.com/shim9610/figgy/issues/46)). No shader changes
+  what it computes. Migration: `data_render::vector::assemble` returns
+  `&'static str` (the module is a constant now, also exported as
+  `VECTOR_POINTS_SHADER` / `VECTOR_GRID_SHADER`, each a
+  `shader_assembly::Assembled` whose `source` is the WGSL and whose
+  `fragments` are the files it is spliced from); call `.to_string()` where
+  a `String` was used. `data_render::vector::fragments(input)` is gone: read
+  `VECTOR_POINTS_SHADER.fragments` / `VECTOR_GRID_SHADER.fragments` for the
+  file list (the fragment contents are no longer exported one by one).
+- **The picker runs the draw's projection.** The shared projection, sample
+  validity and step fragments take the transform as a parameter, so the GPU
+  picker splices the same `projection.wgsl`, `sample_validity.wgsl`,
+  `ramp.wgsl` and `line_step.wgsl` the draw shaders run instead of carrying
+  renamed copies; the bounded charts' sRGB `output` is one fragment too
+  (`srgb_output.wgsl`), and no shader carries a copy of a shared function
+  any more ([#46](https://github.com/shim9610/figgy/issues/46)). Each
+  module's source and fragment list come from one literal list
+  (`shader_assembly::Assembled`), and a test pins every pick module to the
+  shared fragments of the draw module it measures. Picks, pixels and the
+  pipeline layouts are unchanged.
+- **Pick slot keys.** A series' pick resources are keyed by the pick
+  descriptor itself, compared field by field, instead of by separate
+  signatures; pick style rows carry no colour, so a colour-only edit reuses
+  the series' pick slot. The scatter selection ring takes the draw's own
+  base radius in both of its branches
+  ([#46](https://github.com/shim9610/figgy/issues/46)). No public API,
+  serialized field or pixel changes.
+- **Histogram selection outline.** A selected bin's outline resolves the
+  bin's gap and width ratio with the bar draw's own resolver on the GPU
+  (`resolve_bar_style` in `bar_columnar.wgsl`) instead of a CPU copy of it
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 2). The selection
+  writes the series' bar `Style` with the highlight colour, the outline width
+  and the bin's global index in lanes a bar never reads, and a series drawn
+  through its bar style map is outlined by the new `vs_bar_selection_mapped`
+  entry over the same map. The outline covers the same pixels as before; one
+  bind group per selected bin is gone. Migration:
+  `data_render::ColumnBarSelectionLayer` drops `selection_bg` and
+  `selection_charge` and gains `style_map_bg: Option<&wgpu::BindGroup>`, the
+  series' bar style map exactly when the bar draw binds it.
+- **Contour labels.** The label atlas code lives in `data_render/contour.rs`
+  beside the contour draw ([#58](https://github.com/shim9610/figgy/issues/58)
+  item 14). The label quad and the contour stroke gap under it take their
+  frame (centre, reading direction, upright turn) from one WGSL fragment,
+  `common/contour_label_box.wgsl`
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 4). The gap keeps
+  its 0.5 px edge inside the quad's 2 px edge; no pixel changes. Migration:
+  the public module path `data_render::contour_label_atlas`, which exported
+  nothing, no longer exists; remove a `use` of it.
+- **Radial inside-label lift.** The vertical offset of a lifted sector's
+  inside label is computed once where the sector is built and passed to the
+  shader in `Sector.effects.w` (reserved zero before)
+  ([#46](https://github.com/shim9610/figgy/issues/46) item 5); the layout,
+  the hit map and the shader read the same value. No pixel changes.
+- **Script layout.** Superscript and subscript segments, including the
+  exponents of `LabelFormat::Power` tick labels, are sized and shifted by
+  one renderer function that the math `Scripts` node of #45 will share.
+  No pixel, metric or public API changes.
+- **Cache keys.** Two renderer caches compared less than their computation
+  read, found by the new per-field mutation tests
+  ([#46](https://github.com/shim9610/figgy/issues/46)):
+  - the resident bodies of a panel were kept after an edit of the tick-label
+    face (`bottom_x.label_style.label_font`), which the contour labels baked
+    into those bodies use;
+  - a fit commit token (`begin_fit_commit` / `commit_auto_fit_all_if_current`)
+    stayed valid across an edit of a `Data`-scaled vector's `factor`, a
+    histogram's `baseline` or `orientation`, the series membership of an
+    overlay or subplot, a subplot's links or an overlay or subplot axis range,
+    so a fit computed before such an edit could be committed on top of it.
+
+  The third, in the browser product, is under
+  [Browser product](#unreleased-web). No public API or serialized field
+  changes.
+- **Annotation revision.** `ChartRenderStamp::needs_annotation_raster_since`
+  now reports an annotation raster after a demo load whose items differ, a
+  column removal whose replacement config edits the items, and a font
+  registration (annotation text is drawn with the fonts). The frame was
+  already right in all three cases because the raster revision moved; only
+  the annotation revision stayed behind.
+- **Source layout.** `renderer.rs`, `data_render/mod.rs`,
+  `renderer/prepare.rs`, `axis_render.rs`, `gpu_pick.rs` and
+  `column_pool.rs` are split into one file per concern
+  ([#46](https://github.com/shim9610/figgy/issues/46)). Moves only: every
+  public path resolves as before, and no item changes its signature or
+  behaviour.
+- **Decorations draw above data on every layer**
+  ([#47](https://github.com/shim9610/figgy/issues/47)). A layered document
+  drew each panel whole, grid, data and decoration, before the next, so an
+  overlay panel's data covered the base panel's axes, tick labels, titles
+  and legend (the pressure markers of a twin-axes chart over its left axis)
+  and a subplot overlay's data its subplot's, while a single-layer chart
+  draws its decoration over its data. The compositor now draws the grid and
+  data of every panel in layer order, then the decoration of every panel in
+  layer order (`composite::FRAME_SLOTS`), on screen (`paint`,
+  `paint_prepared`) and in `export_document_*` alike; the selection boxes and
+  the annotation overlay stay above every decoration. **Behaviour change:**
+  overlay and subplot-overlay data no longer covers the base panel's axes and
+  labels. A single-layer chart draws the same pixels, and so does
+  `draw_chart_panel_columnar`. Several charts passed to one `paint` call are
+  ordered the same way: every chart's data before any chart's decoration,
+  which changes pixels only where the charts overlap. No API or serialized
+  field changes.
+
+- **Radial decorations on the shared sinks and hit map**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The radial
+  frame's title, plot area and slice labels are `Selectable<RadialChart>`
+  elements of a `HitMap<RadialChart>`: each places its parts from the chart
+  through one emit into the `model::sink` sinks, and the label raster draws
+  with the same emit, so hit regions, selection boxes, drag containment and
+  the drawn highlight come from one placement. An outside label's leader
+  line is a part of the label: it starts at the slice, follows the label's
+  offset from its elbow, and is hit and outlined with the text part by part
+  (the oracle's leader-line exclusion is gone). **Behaviour change:** the
+  selected outside label's highlight outlines each text line and the leader
+  line instead of one box around the text; a drag is contained on the text it
+  moves. `RadialFrame::decorations()` returns the `HitMap<RadialChart>`
+  instead of a `DecorationMap`; query it with the chart the frame was
+  prepared from. `decoration_at`, `decoration`, `decoration_id`,
+  `decoration_ids`, `decoration_bounds`, `decoration_selection_box`,
+  `drag_decoration`, `decoration_resize_handle` and `resize_decoration` wrap
+  the trait calls as the `DecorationMap` methods did, and
+  `BoundedAnnotationFrame::route_active_layer` routes the annotation layer
+  over them. The categorical, box plot and radar charts keep `DecorationMap`.
+  Migration: replace `frame.decorations().hit_test(p)` with
+  `frame.decoration_at(&chart, p)`, `map.element(hit).id` with
+  `frame.decoration_id(&chart, hit)`, and `map.drag_by(&mut chart.decorations,
+  hit, dx, dy)` with `frame.drag_decoration(&mut chart, hit, dx, dy)`.
+- **Radial title band.** The radial title is drawn through
+  `emit_chart_title_in`, centred in the chart's own title band across the
+  canvas. **Behaviour change:** a default title moves about 2 px down (it
+  was placed on a fixed baseline); the plot area does not move. A title wider
+  than the canvas is drawn clipped instead of refusing the frame with "title
+  does not fit"; its hit region, selection box and drag containment are its
+  drawn extent intersected with the canvas.
+- **Radial labels draw their SSOT text.** The radial layout draws
+  `RadialSlice::text` and formats no value. **Behaviour change:** `prepare`
+  refuses (`RadialError::Invalid`, naming `format_labels`) a chart where a
+  slice with a value shows a label without text. The outside-label stacking
+  keeps its order and arithmetic in fixed arrays of `MAX_RADIAL_SLICES`.
+- **Radial slices are picked on the GPU.** The sector layout and its
+  ray-march are the shader fragment `data_render/common/radial_sector.wgsl`,
+  spliced into the draw module and a new pick module (`radial_pick`); the
+  pick runs the draw's `hit_pixel` and occlusion rule over the frame's own
+  sector buffer. `RadialFrame::hit_test` and `hit_test_at_rest`, whose CPU
+  twin was product code, are replaced by `RadialFrame::pick(position)` and
+  `pick_at_rest(position)`, which submit the pick and return a
+  `RadialPickTicket`; `resolve().await` (natively `resolve_blocking()`) reads
+  the slice back, like the Cartesian pick ticket. The frame no longer keeps
+  its sectors on the CPU; the CPU twin is test support under the `cpu-twin`
+  feature. Migration: replace `frame.hit_test(p)` with
+  `frame.pick(p)?.resolve().await?` (`pick` takes `&Arc<RadialFrame>`).
+- **Radial frame key.** The frame cache is keyed by `FrameKey`, the chart's
+  fields that reach the frame named one by one, instead of a clone of the
+  chart; a mutation test classifies every field
+  ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
+  `label_format`, `label_decimals` or `value_suffix` without writing the
+  labels again reuses the frame, since nothing it draws changed.
+- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13c). The four Cartesian axes and the overlay Y axes may be
+  categorical (`AxisOptions::categories`). The category labels are the
+  side's `AxisLabel` element, placed by the numeric labels' placement in the
+  axis' label style, so hover, hit, selection, both drag offsets, the picked
+  highlight and the PNG export are the existing ones; the data transform,
+  the annotation space and the view state map the category range. The
+  renderer gate applies `validate_categories` and rejects a categorical
+  colourbar axis with `InvalidConfig`; a streamed series on a chart with a
+  categorical axis is rejected with `InvalidSeriesConfig`. The range
+  helpers (`set_*_range`, `auto_fit_*`, view states) leave a categorical
+  axis unchanged. With labels "0", "1", … a categorical axis draws pixel
+  for pixel what the numeric axis over the same range with a tick at every
+  integer draws.
+- **Axis walks on the plot rectangle.** The Cartesian axis, tick, tick
+  label and grid walks take the plot `RectF` instead of the integer data
+  area. Every existing document draws the same pixels.
+
+<a id="unreleased-web"></a>
+
+### Browser product (`figgy` 0.16.0)
+
+- **Asynchronous bounded picks.** `FiggyBoundedChart.pick`, `hover` and
+  `hit_decoration` return Promises, because a radial chart picks its slices
+  on the GPU ([#40](https://github.com/shim9610/figgy/issues/40) item 13b).
+  Migration: `await` them. A parsed radial document's slices without `text`
+  get the text their label format writes (`normalize_labels`); a set `text`
+  is drawn as it is, so remove or rewrite it after editing a value or format.
+- **Selection outlines.** `decoration_bounds(id)` returns `outline` (one
+  polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
+  instead of `labels` for an element that outlines its parts
+  ([#38](https://github.com/shim9610/figgy/issues/38)). Migration: read
+  `outline` where `labels` was read.
+- **Series extent key.** The series extent job identity had no vector
+  `factor`, so a factor edit reused the previous extent; the per-field
+  mutation test found it ([#46](https://github.com/shim9610/figgy/issues/46)).
+- The wrapper's inline `mod web` is split into files under `src/web/`
+  (moves only); no JavaScript export changes.
+
+### Tests and guards
+
+- **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13b). `radial_render` compares the GPU pick with the CPU twin over
+  tilt, depth, gaps, corners, explode, the hole, the detail circle and the
+  lift, lifted and at rest, and checks the at-rest pick; the shader mirrors
+  hold both radial modules' `Sector` and the pick query and result to their
+  Rust twins. The oracle's bounded branch and the bounded interaction tests
+  go through the radial frame's `HitMap<RadialChart>` (a test-support
+  adapter covers both hit-map APIs), and the selection-only check accepts a
+  selection that outlines its parts.
+- Released-document fixtures written by figgy-model 0.12.1 cover the radial,
+  categorical, box plot and radar charts at their default and edited
+  (`released_documents`, #40 item 13a).
+- **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
+  that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag
+  as a factor of a hand-written blend (`x + f * (y - x)`,
+  `(1.0 - f) * x + f * y`) and a `select` by a log flag. The flags it checks
+  (`scale_log`, `polar_angle.x`, `is_log` and `select(0.0, 1.0, …)` locals)
+  are listed in SHADER_COMMON §3.1
+  ([#47](https://github.com/shim9610/figgy/issues/47)).
+- **Duplicate guards** ([#46](https://github.com/shim9610/figgy/issues/46)).
+  `every_wgsl_function_is_defined_once_outside_the_allowlist` fails on a
+  WGSL function defined in more than one product shader, except the
+  per-variant bodies the assembler chooses between (`ASSEMBLED_ALTERNATIVES`);
+  `model_struct_hand_offs_name_every_field_outside_the_allowlist`
+  fails on a `..` rest pattern on a model type in product code; per-field
+  mutation tests walk every serialized leaf of a document and fail when a
+  cached output changes while its key does not (they found the cache-key
+  gaps above). `every_assembled_module_parses_and_validates`,
+  `wgsl_constants_equal_their_rust_constants` (the shared `u32` and `f32`
+  constants) and `mirrored_struct_layouts_match_their_rust_twins` replace
+  the copy-sync tests.
+- **Test suite** ([#47](https://github.com/shim9610/figgy/issues/47)). 20
+  duplicate tests are removed and 7 pairs merged, each keeping every check;
+  the draw-and-pick agreement tests probe the pixels of an edge band around
+  each primitive.
+- **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
+  dev-dependency for the mutation walker. `figgy-renderer` gains the
+  `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from
+  the docs), which its own tests enable through a dev-dependency on the
+  crate itself; a packaged crate builds its tests without it. No product
+  dependency changes.
+
+### Documentation
+
+- **Browser product status**
+  ([#57](https://github.com/shim9610/figgy/issues/57)). The documentation describes
+  `crates/web` (`figgy`: `FiggyChart`, `FiggyBoundedChart` and `<figgy-chart>`)
+  as figgy's browser product, maintained with the renderer, instead of an
+  integration example. The package keeps its own version and `publish = false`;
+  its publication target is still open. No API, serialized field or build
+  change.
+- `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
+  bindings, invariants, the flag table of §3.1) and names the file that
+  holds each block; it is no longer parsed by a test. The contributing
+  guide, the CI guide and the guides that named a split file point at the
+  file the item lives in now.
 
 <a id="release-0181"></a>
 

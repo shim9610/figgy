@@ -6,6 +6,11 @@ use crate::{RasterImage, RendererDevice};
 pub use model::radar::*;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
+
+/// The assembled radar module.
+pub(crate) const RADAR_SHADER: crate::shader_assembly::Assembled =
+    crate::shader_assembly::assembled!("data_render/common/srgb_output.wgsl", "radar.wgsl",);
+
 #[path = "radar_layout.rs"]
 mod layout;
 
@@ -269,7 +274,7 @@ impl RadarRenderer {
         #[cfg(target_arch = "wasm32")]
         crate::browser_compile::render(
             gpu.device(),
-            include_str!("radar.wgsl"),
+            RADAR_SHADER.source,
             &[("radar surfaces", "radar surfaces")],
             format,
             1,
@@ -346,7 +351,7 @@ impl RadarRenderer {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("radar surfaces"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("radar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(RADAR_SHADER.source.into()),
             },
         );
         let pipeline = crate::gpu_compile::render_pipeline(
@@ -973,13 +978,44 @@ fn annotation_key(chart: &RadarChart) -> RadarChart {
     let legend_colors: Vec<_> = c.series.iter().map(|s| s.color).collect();
     // The raster holds the rings and spokes; the series primitives are GPU
     // work and their style never changes the raster.
-    c.style = RadarStyle {
-        start_angle_degrees: c.style.start_angle_degrees,
-        clockwise: c.style.clockwise,
-        grid_shape: c.style.grid_shape,
-        spoke_color: c.style.spoke_color,
-        ring_color: c.style.ring_color,
-        ..RadarStyle::default()
+    c.style = {
+        let RadarStyle {
+            start_angle_degrees,
+            clockwise,
+            grid_shape,
+            spoke_color,
+            ring_color,
+            // Series appearance: GPU work, never on the raster.
+            line_width_px: _,
+            fill_opacity: _,
+            marker: _,
+            marker_size_px: _,
+            emphasis_brightness: _,
+        } = c.style;
+        let RadarStyle {
+            start_angle_degrees: _,
+            clockwise: _,
+            grid_shape: _,
+            spoke_color: _,
+            ring_color: _,
+            line_width_px,
+            fill_opacity,
+            marker,
+            marker_size_px,
+            emphasis_brightness,
+        } = RadarStyle::default();
+        RadarStyle {
+            start_angle_degrees,
+            clockwise,
+            grid_shape,
+            spoke_color,
+            ring_color,
+            line_width_px,
+            fill_opacity,
+            marker,
+            marker_size_px,
+            emphasis_brightness,
+        }
     };
     for (s, color) in c.series.iter_mut().zip(legend_colors) {
         s.style = None;

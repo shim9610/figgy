@@ -32,8 +32,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .find(|s| s.text == '2')
         .unwrap()
         .subscript = true;
-    let pie = RadialChart {
-        chart_title: Some(title.clone()),
+    let mut pie = RadialChart {
+        // The radial chart holds the shared chart title; the other three
+        // charts still hold the bounded one.
+        chart_title: Some(renderer::config::ChartTitleOptions {
+            text: title.text.clone(),
+            visible: title.visible,
+            ..renderer::config::ChartTitleOptions::from_legacy_plain("", "", 16., Color::BLACK)
+        }),
         font_size: 12.,
         slices: vec![
             RadialSlice::new("A", 30., color),
@@ -41,6 +47,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         ..Default::default()
     };
+    pie.format_labels();
     let bar = CategoricalChart {
         chart_title: Some(title.clone()),
         font_size: 12.,

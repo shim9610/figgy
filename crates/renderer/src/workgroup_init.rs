@@ -41,7 +41,7 @@ mod tests {
 
     const CASES: &[Case] = &[
         Case {
-            source: include_str!("gpu_errorbar.wgsl"),
+            source: crate::gpu_errorbar::ERRORBAR_FIT_SHADER.source,
             array: "shared_states",
             width: 64,
             poison: "SeriesState(AxisState(vec2<f32>(1.0), vec2<f32>(2.0), vec2<f32>(3.0)), AxisState(vec2<f32>(4.0), vec2<f32>(5.0), vec2<f32>(6.0)))",
@@ -55,14 +55,14 @@ mod tests {
             bits: "v.valid | v.series_order | v.point_index | v.primitive_kind | v.primitive_index | bitcast<u32>(v.distance_sq) | bitcast<u32>(v.distance_px) | v._pad",
         },
         Case {
-            source: include_str!("data_render/bar_columnar.wgsl"),
+            source: crate::data_render::BAR_SHADER.source,
             array: "data_pick_shared",
             width: 64,
             poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
             bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
         },
         Case {
-            source: include_str!("data_render/line_arc.wgsl"),
+            source: crate::data_render::line_arc::LINE_ARC_SHADER.source,
             array: "scan_shared",
             width: 256,
             poison: "23.0",

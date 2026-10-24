@@ -11,6 +11,26 @@ use web_sys::HtmlCanvasElement;
 fn js_err(e: impl std::fmt::Display) -> JsValue {
     JsValue::from_str(&e.to_string())
 }
+/// A radial pick request read back: the slice the GPU picked, if any.
+async fn picked(
+    ticket: Result<RadialPickTicket, RadialError>,
+) -> Result<Option<RadialTarget>, JsValue> {
+    ticket.map_err(js_err)?.resolve().await.map_err(js_err)
+}
+/// The slice under `point` of a radial frame, keeping the hovered slice
+/// while the pointer is in its unlifted footprint (hover hysteresis).
+async fn radial_at(
+    frame: &Arc<RadialFrame>,
+    point: [f32; 2],
+    hovered: Option<RadialTarget>,
+) -> Result<Option<RadialTarget>, JsValue> {
+    if let Some(hit) = picked(frame.pick(point)).await? {
+        return Ok(Some(hit));
+    }
+    Ok(picked(frame.pick_at_rest(point))
+        .await?
+        .filter(|t| Some(*t) == hovered))
+}
 #[derive(Clone, PartialEq)]
 enum DocumentChart {
     Radial(RadialChart),
@@ -132,13 +152,17 @@ impl DocumentChart {
             Self::Radar(c) => c.selected = None,
         }
     }
-    pub fn select_at(&mut self, frame: &DocumentFrame, point: [f32; 2], toggle: bool) {
+    /// Select the data under `point`. A radial chart picks on the GPU, so
+    /// this resolves asynchronously.
+    pub async fn select_at(
+        &mut self,
+        frame: &DocumentFrame,
+        point: [f32; 2],
+        toggle: bool,
+    ) -> Result<(), JsValue> {
         match (self, frame) {
             (Self::Radial(c), DocumentFrame::Radial(f)) => {
-                let hit = f.hit_test(point).or_else(|| {
-                    f.hit_test_at_rest(point)
-                        .filter(|t| Some(*t) == c.interaction.hovered)
-                });
+                let hit = radial_at(f, point, c.interaction.hovered).await?;
                 c.interaction.selected = if toggle && hit == c.interaction.selected {
                     None
                 } else {
@@ -171,16 +195,22 @@ impl DocumentChart {
             }
             _ => unreachable!(),
         }
+        Ok(())
     }
-    pub fn hover(&mut self, frame: &DocumentFrame, point: Option<[f32; 2]>, dt: f32) -> bool {
-        match (self, frame) {
+    /// Hover the data under `point`, or none. A radial chart picks on the
+    /// GPU, so this resolves asynchronously.
+    pub async fn hover(
+        &mut self,
+        frame: &DocumentFrame,
+        point: Option<[f32; 2]>,
+        dt: f32,
+    ) -> Result<bool, JsValue> {
+        Ok(match (self, frame) {
             (Self::Radial(c), DocumentFrame::Radial(f)) => {
-                let hit = point.and_then(|p| {
-                    f.hit_test(p).or_else(|| {
-                        f.hit_test_at_rest(p)
-                            .filter(|t| Some(*t) == c.interaction.hovered)
-                    })
-                });
+                let hit = match point {
+                    Some(p) => radial_at(f, p, c.interaction.hovered).await?,
+                    None => None,
+                };
                 c.interaction.animate_hover(hit, dt, 0.16)
             }
             (Self::Categorical(c), DocumentFrame::Categorical(f)) => {
@@ -202,7 +232,7 @@ impl DocumentChart {
                 changed
             }
             _ => unreachable!(),
-        }
+        })
     }
     pub fn step(&mut self, backwards: bool) {
         fn next<T: PartialEq + Clone>(items: Vec<T>, selected: &mut Option<T>, backwards: bool) {
@@ -222,26 +252,7 @@ impl DocumentChart {
             *selected = Some(items[i].clone());
         }
         match self {
-            Self::Radial(c) => {
-                let mut items = c
-                    .slices
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, s)| s.value > 0.)
-                    .map(|(i, _)| RadialTarget::main(i))
-                    .collect::<Vec<_>>();
-                if let Some(split) = &c.split {
-                    items.extend(
-                        split
-                            .children
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, s)| s.value > 0.)
-                            .map(|(i, _)| RadialTarget::detail(i)),
-                    );
-                }
-                next(items, &mut c.interaction.selected, backwards);
-            }
+            Self::Radial(c) => c.step_selection(backwards),
             Self::Categorical(c) => {
                 let items = c
                     .categories
@@ -415,12 +426,23 @@ impl DocumentRenderer {
     }
 }
 impl DocumentFrame {
-    pub fn decorations(&self) -> &renderer::decoration::DecorationMap {
+    /// The decoration map of a categorical, box plot or radar frame; the
+    /// radial frame answers through its `HitMap<RadialChart>` with the
+    /// chart instead.
+    pub fn decoration_map(&self) -> Option<&renderer::decoration::DecorationMap> {
         match self {
-            Self::Radial(f) => f.decorations(),
-            Self::Categorical(f) => f.decorations(),
-            Self::BoxPlot(f) => f.decorations(),
-            Self::Radar(f) => f.decorations(),
+            Self::Radial(_) => None,
+            Self::Categorical(f) => Some(f.decorations()),
+            Self::BoxPlot(f) => Some(f.decorations()),
+            Self::Radar(f) => Some(f.decorations()),
+        }
+    }
+    /// The hit-map entry of the decoration named `name` (its stable
+    /// element id).
+    fn decoration_named(&self, name: &str) -> Option<renderer::HitId> {
+        match self {
+            Self::Radial(f) => f.decorations().find(name),
+            _ => self.decoration_map()?.hit_map().find(name),
         }
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -431,19 +453,28 @@ impl DocumentFrame {
             Self::Radar(f) => f.draw(pass),
         }
     }
-    pub fn has_data(&self, p: [f32; 2]) -> bool {
-        match self {
-            Self::Radial(f) => f.hit_test(p).is_some() || f.hit_test_at_rest(p).is_some(),
+    /// Whether data is drawn under `p`; a radial frame picks on the GPU.
+    pub async fn has_data(&self, p: [f32; 2]) -> Result<bool, JsValue> {
+        Ok(match self {
+            Self::Radial(f) => {
+                picked(f.pick(p)).await?.is_some() || picked(f.pick_at_rest(p)).await?.is_some()
+            }
             Self::Categorical(f) => f.hit_test(p).is_some(),
             Self::BoxPlot(f) => f.hit_test(p).is_some(),
             Self::Radar(f) => f.hit_test(p).is_some(),
-        }
+        })
     }
 }
 
 fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
     Ok(match family {
-        "radial" => DocumentChart::Radial(serde_json::from_str(value).map_err(js_err)?),
+        "radial" => {
+            let mut chart: RadialChart = serde_json::from_str(value).map_err(js_err)?;
+            // A slice without its drawn text gets the one its label format
+            // writes; a text the document carries is drawn as it is.
+            chart.normalize_labels();
+            DocumentChart::Radial(chart)
+        }
         "categorical" => DocumentChart::Categorical(serde_json::from_str(value).map_err(js_err)?),
         "boxplot" => DocumentChart::BoxPlot(serde_json::from_str(value).map_err(js_err)?),
         "radar" => DocumentChart::Radar(serde_json::from_str(value).map_err(js_err)?),
@@ -627,35 +658,74 @@ impl FiggyBoundedChart {
     }
     /// Renderer-measured logical pixel bounds and resize handles.
     pub fn decorations(&self) -> Result<String, JsValue> {
-        let map = self.frame.decorations();
-        let values=map.entries().filter_map(|(id,e)|map.selection_box(id).map(|b|json!({"id":e.id.element_id(),"rect":[b.rect.x,b.rect.y,b.rect.width,b.rect.height],"handles":b.handles.iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()}))).collect::<Vec<_>>();
+        let entry = |id: &DecorationId, b: renderer::SelectionBox| {
+            let r = b.rect();
+            json!({"id":id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})
+        };
+        let values = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
+                .decoration_ids(c)
+                .filter_map(|(hit, id)| Some(entry(&id, f.decoration_selection_box(c, hit)?)))
+                .collect::<Vec<_>>(),
+            (frame, _) => {
+                let map = frame
+                    .decoration_map()
+                    .ok_or_else(|| js_err("chart and frame families differ"))?;
+                map.entries()
+                    .filter_map(|(id, e)| Some(entry(&e.id, map.selection_box(id)?)))
+                    .collect::<Vec<_>>()
+            }
+        };
         serde_json::to_string(&values).map_err(js_err)
     }
     /// The topmost decoration under a point, as its stable id. While the
     /// annotation layer is active (and shown) its drawn items sit on top of
     /// every decoration and answer as `"annotation_<n>"`; on the base layer
     /// they are not registered and clicks pass through them.
-    pub fn hit_decoration(&self, x: f32, y: f32, edit_area: bool) -> Option<String> {
-        let map = self.frame.decorations();
-        let id =
-            match self
+    ///
+    /// Asynchronous: over the plot area it asks whether data is drawn
+    /// there, which a radial chart answers with its GPU pick.
+    pub async fn hit_decoration(
+        &self,
+        x: f32,
+        y: f32,
+        edit_area: bool,
+    ) -> Result<Option<String>, JsValue> {
+        let layer = self.chart.active_layer();
+        let hit = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => self
                 .annotations
-                .hit_test_active_layer(self.chart.active_layer(), map, [x, y])?
-            {
-                LayerHit::Annotation { index, .. } => {
-                    return Some(DecorationId::Annotation(index).element_id());
-                }
-                LayerHit::Element(id) => id,
-            };
-        let e = map.element(id)?;
-        if e.id == renderer::DecorationId::DataArea
+                .route_active_layer(layer, [x, y], || f.decoration_at(c, [x, y])),
+            (frame, _) => match frame.decoration_map() {
+                Some(map) => self.annotations.hit_test_active_layer(layer, map, [x, y]),
+                None => None,
+            },
+        };
+        let id = match hit {
+            Some(LayerHit::Annotation { index, .. }) => {
+                return Ok(Some(DecorationId::Annotation(index).element_id()));
+            }
+            Some(LayerHit::Element(id)) => id,
+            None => return Ok(None),
+        };
+        let key = match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f.decoration_id(c, id),
+            (frame, _) => frame
+                .decoration_map()
+                .and_then(|map| map.element(id))
+                .map(|e| e.id.clone()),
+        };
+        let Some(key) = key else {
+            return Ok(None);
+        };
+        if key == renderer::DecorationId::DataArea
             && !edit_area
-            && self.chart.decorations().selected != Some(e.id.clone())
-            && self.frame.has_data([x, y])
+            && self.chart.decorations().selected != Some(key.clone())
+            && self.frame.has_data([x, y]).await?
         {
-            return None;
+            return Ok(None);
         }
-        Some(e.id.element_id())
+        Ok(Some(key.element_id()))
     }
     /// Select a decoration by the id `hit_decoration` reported, or none.
     /// An `"annotation_<n>"` id selects that drawn annotation
@@ -665,12 +735,16 @@ impl FiggyBoundedChart {
             Some(name) => Some(
                 self.drawn_annotation(&name)
                     .map(DecorationId::Annotation)
-                    .or_else(|| {
-                        self.frame
-                            .decorations()
+                    .or_else(|| match (&self.frame, &self.chart) {
+                        (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
+                            .decoration_ids(c)
+                            .find(|(_, id)| id.element_id() == name)
+                            .map(|(_, id)| id),
+                        (frame, _) => frame
+                            .decoration_map()?
                             .entries()
                             .find(|(_, e)| e.id.element_id() == name)
-                            .map(|(_, e)| e.id.clone())
+                            .map(|(_, e)| e.id.clone()),
                     })
                     .ok_or_else(|| js_err("unknown decoration"))?,
             ),
@@ -692,9 +766,14 @@ impl FiggyBoundedChart {
         if let Some(index) = self.drawn_annotation(target) {
             return self.annotation_handle(index as u32, x, y);
         }
-        let map = self.frame.decorations();
-        let (id, _) = map.entries().find(|(_, e)| e.id.element_id() == target)?;
-        map.hit_resize_handle(id, [x, y]).map(|h| format!("{h:?}"))
+        let id = self.frame.decoration_named(target)?;
+        match (&self.frame, &self.chart) {
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => {
+                f.decoration_resize_handle(c, id, [x, y])
+            }
+            (frame, _) => frame.decoration_map()?.hit_resize_handle(id, [x, y]),
+        }
+        .map(|h| format!("{h:?}"))
     }
     pub fn drag(
         &mut self,
@@ -710,20 +789,34 @@ impl FiggyBoundedChart {
             return self.drag_annotation(index as u32, dx, dy, handle);
         }
         use renderer::resize::ResizeHandle::*;
-        let map = self.frame.decorations();
-        let (id, _) = map
-            .entries()
-            .find(|(_, e)| e.id.element_id() == target)
+        let id = self
+            .frame
+            .decoration_named(target)
             .ok_or_else(|| js_err("unknown decoration"))?;
+        let handle = handle
+            .map(|name| {
+                [N, S, W, E, NW, NE, SW, SE]
+                    .into_iter()
+                    .find(|h| format!("{h:?}") == name)
+                    .ok_or_else(|| js_err("unknown resize handle"))
+            })
+            .transpose()?;
         let mut next = self.chart.clone();
-        let result = if let Some(name) = handle {
-            let h = [N, S, W, E, NW, NE, SW, SE]
-                .into_iter()
-                .find(|h| format!("{h:?}") == name)
-                .ok_or_else(|| js_err("unknown resize handle"))?;
-            map.resize_by(next.decorations_mut(), id, h, dx, dy)
-        } else {
-            map.drag_by(next.decorations_mut(), id, dx, dy)
+        let result = match (&self.frame, &mut next) {
+            // The radial decorations edit the chart they are placed from.
+            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => match handle {
+                Some(h) => f.resize_decoration(c, id, h, dx, dy),
+                None => f.drag_decoration(c, id, dx, dy),
+            },
+            (frame, next) => {
+                let map = frame
+                    .decoration_map()
+                    .ok_or_else(|| js_err("chart and frame families differ"))?;
+                match handle {
+                    Some(h) => map.resize_by(next.decorations_mut(), id, h, dx, dy),
+                    None => map.drag_by(next.decorations_mut(), id, dx, dy),
+                }
+            }
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
@@ -799,8 +892,8 @@ impl FiggyBoundedChart {
                     "id": item.id,
                     "element": e.id().element_id(),
                     "kind": crate::annotation_kind_name(&item.kind),
-                    "rect": [b.rect.x, b.rect.y, b.rect.width, b.rect.height],
-                    "handles": b.handles.iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
+                    "rect": [b.rect().x, b.rect().y, b.rect().width, b.rect().height],
+                    "handles": b.handles().iter().map(|r| vec![r.x, r.y, r.width, r.height]).collect::<Vec<_>>(),
                     "selected": selected == Some(e.index),
                 }))
             })
@@ -936,14 +1029,26 @@ impl FiggyBoundedChart {
     pub fn annotation_warnings(&self) -> Result<String, JsValue> {
         crate::annotation_warnings_json(self.annotations.render_warnings())
     }
-    pub fn pick(&mut self, x: f32, y: f32, toggle: bool) -> Result<String, JsValue> {
+    /// Select the data under a point (or toggle it off) and resolve to the
+    /// selection as JSON. Asynchronous: a radial chart picks on the GPU,
+    /// like `FiggyChart.pick_point`.
+    pub async fn pick(&mut self, x: f32, y: f32, toggle: bool) -> Result<String, JsValue> {
         self.chart.decorations_mut().selected = None;
-        self.chart.select_at(&self.frame, [x, y], toggle);
+        self.chart.select_at(&self.frame, [x, y], toggle).await?;
         serde_json::to_string(&self.chart.selected_json()).map_err(js_err)
     }
-    pub fn hover(&mut self, x: Option<f32>, y: Option<f32>, dt: f32) -> bool {
+    /// Hover the data under a point (`None` leaves the chart) and advance
+    /// the hover animation by `dt` seconds; resolves to whether the chart
+    /// changed. Asynchronous: a radial chart picks on the GPU.
+    pub async fn hover(
+        &mut self,
+        x: Option<f32>,
+        y: Option<f32>,
+        dt: f32,
+    ) -> Result<bool, JsValue> {
         self.chart
             .hover(&self.frame, x.zip(y).map(|(x, y)| [x, y]), dt.min(0.1))
+            .await
     }
     pub fn clear_selection(&mut self) {
         self.chart.clear_selection();

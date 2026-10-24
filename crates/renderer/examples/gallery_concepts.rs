@@ -17,7 +17,7 @@ mod gallery;
 mod styled;
 use gallery::{Result, column, line, scatter, series};
 use renderer::{
-    Color, ColorMap, Renderer, RendererDevice,
+    Color, ColorMap, Material, Renderer, RendererDevice,
     categorical::*,
     config::{DrawStyle, LegendEntryKind, SketchOptions},
     data_config::{
@@ -166,7 +166,7 @@ fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
         text_color: rgb(52, 57, 85),
         grid: false,
         style: CategoryBarStyle {
-            material: CategoryBarMaterial::Matte,
+            material: Material::Matte,
             corner_radius: 12.,
             texture_strength: 0.,
             ..Default::default()
@@ -196,7 +196,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         label_color: rgb(49, 43, 59),
         background: rgb(255, 248, 237),
         style: RadialStyle {
-            material: RadialMaterial::Toon,
+            material: Material::Toon,
             tilt_degrees: 45.,
             depth: 0.14,
             bevel: 0.,
@@ -216,6 +216,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         },
         ..Default::default()
     };
+    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
@@ -231,7 +232,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         RadialSlice::new("Cash", 12., rgb(218, 200, 146)),
     ];
     chart.style = RadialStyle {
-        material: RadialMaterial::Pearl,
+        material: Material::Pearl,
         tilt_degrees: 55.,
         depth: 0.19,
         bevel: 0.025,
@@ -245,6 +246,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         shadow: true,
         ..Default::default()
     };
+    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();

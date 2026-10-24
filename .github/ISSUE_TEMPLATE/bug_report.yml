@@ -13,7 +13,7 @@ body:
       options:
         - Native renderer
         - Chart model
-        - WASM integration example
+        - Browser product (crates/web)
         - Documentation or examples
         - Unsure
     validations:

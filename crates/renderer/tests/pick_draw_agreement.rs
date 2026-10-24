@@ -2,18 +2,23 @@
 //! pickable at distance zero (or within its anti-aliasing fringe), and no
 //! pixel picks at distance zero where nothing is painted.
 //!
-//! The GPU/CPU parity tests in `gpu_pick.rs` compare the picker with itself.
+//! The GPU/CPU parity tests in `gpu_pick/tests.rs` compare the picker with itself.
 //! These tests compare it with the renderer's own output instead: each case
 //! exports the chart through the public `export_panel_rgba` at 1x and 2x,
 //! exports it again without the series under test, and asks the GPU picker
-//! (`pick_chart` at the same display scale) about every pixel of a window
-//! around the primitive. A pixel counts as painted when it differs from the
-//! series-free export.
+//! (`pick_chart` at the same display scale) about the pixels of a window
+//! around the primitive that [`edge_band`] selects: every pixel near a
+//! painted edge and a sparse grid elsewhere. A pixel counts as painted when
+//! it differs from the series-free export.
 
+#[path = "support/edge_band.rs"]
+mod edge_band;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
 use std::sync::{Arc, OnceLock};
+
+use edge_band::edge_band;
 
 use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
@@ -175,6 +180,24 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
     }
 }
 
+/// A one-point circle series of base size `base` whose point 0 carries a
+/// sparse size override `size`.
+fn scatter_with_size_override(base: f32, size: f32) -> SeriesConfig {
+    let mut series = scatter("marker", ScatterShape::Circle, base, RED);
+    let DataRenderType::Scatter { scatter } = &mut series.render_type else {
+        unreachable!()
+    };
+    scatter.point_style_overrides =
+        Some(vec![renderer::data_config::DataScatterPointStyleOverride {
+            index: 0,
+            style: renderer::data_config::DataScatterPointStyleConfig {
+                point_size: Some(size),
+                ..Default::default()
+            },
+        }]);
+    series
+}
+
 pub fn upload_xy(renderer: &mut Renderer, xs: Vec<f64>, ys: Vec<f64>) {
     renderer
         .add_columns(&[
@@ -301,11 +324,12 @@ impl Probe {
 }
 
 /// Exports `series` and the chart without the series named `subject` at
-/// `scale`, then checks every pixel of `window` (export pixels, inclusive
-/// start, exclusive end; `None` takes the painted pixels' bounding box grown
-/// by four pixels): a painted pixel must pick `subject` within the fringe, a
-/// pixel picked at distance zero must be at least half covered. Returns the
-/// number of painted pixels, so a case cannot pass by drawing nothing.
+/// `scale`, then checks the [`edge_band`] pixels of `window` (export pixels,
+/// inclusive start, exclusive end; `None` takes the painted pixels' bounding
+/// box grown by four pixels): a painted pixel must pick `subject` within the
+/// fringe, a pixel picked at distance zero must be at least half covered.
+/// Returns the number of painted pixels in the window, so a case cannot pass
+/// by drawing nothing.
 pub fn assert_pick_matches_paint(
     renderer: &mut Renderer,
     chart: &Chart,
@@ -342,33 +366,30 @@ pub fn assert_pick_matches_paint_with(
         .export_panel_rgba(chart, &without_series, scale)
         .unwrap();
     let (x0, y0, x1, y1) = window.unwrap_or_else(|| ink_window(&with, &without, 4));
+    let window = (x0, y0, x1.min(with.width), y1.min(with.height));
+    let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
+    let painted = count_painted(window, is_painted);
     let probe = Probe::register(renderer, chart, series, scale);
-    let mut painted = 0usize;
     let mut failures = Vec::new();
-    for y in y0..y1.min(with.height) {
-        for x in x0..x1.min(with.width) {
-            let ink = difference(&with, &without, x, y);
-            let hit = probe
-                .pick(renderer, x, y, tolerance.fringe)
-                .filter(|hit| hit.series_id == subject);
-            let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
-                (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
-            });
-            if ink >= tolerance.painted {
-                painted += 1;
-                if hit.is_none() && !skipped {
-                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                }
-            }
-            if let Some(hit) = hit
-                && hit.distance_px == 0.0
-                && ink < tolerance.zero_ink
-            {
-                failures.push(format!(
-                    "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                    hit.point_index
-                ));
-            }
+    for (x, y) in edge_band(window, is_painted) {
+        let ink = difference(&with, &without, x, y);
+        let hit = probe
+            .pick(renderer, x, y, tolerance.fringe)
+            .filter(|hit| hit.series_id == subject);
+        let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
+            (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
+        });
+        if ink >= tolerance.painted && hit.is_none() && !skipped {
+            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+        }
+        if let Some(hit) = hit
+            && hit.distance_px == 0.0
+            && ink < tolerance.zero_ink
+        {
+            failures.push(format!(
+                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
+                hit.point_index
+            ));
         }
     }
     renderer.remove_chart(probe.id).unwrap();
@@ -402,6 +423,17 @@ pub fn ink_window(with: &RasterImage, without: &RasterImage, pad: u32) -> (u32, 
         (x1 + pad).min(with.width),
         (y1 + pad).min(with.height),
     )
+}
+
+/// The number of pixels of `window` for which `painted` holds.
+pub fn count_painted(
+    (x0, y0, x1, y1): (u32, u32, u32, u32),
+    painted: impl Fn(u32, u32) -> bool,
+) -> usize {
+    (y0..y1)
+        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+        .filter(|&(x, y)| painted(x, y))
+        .count()
 }
 
 /// A window of `half` export pixels around data point `(x, y)`.
@@ -474,23 +506,67 @@ fn every_marker_shape_picks_where_it_is_drawn() {
     }
 }
 
-/// G12: where two markers overlap, the one painted on top (the higher
-/// instance index) is the one picked.
+/// G10: a marker drawn at radius zero still paints (an outline is a dot of
+/// the stroke's half width, a filled shape its anti-aliased point) and picks
+/// where it paints, whichever way the radius reaches zero: the series size,
+/// a style-table slot or a size map's `min_px`. Every shape, at 1x and 2x;
+/// each case paints at least one pixel and every painted pixel picks the
+/// series.
 #[test]
-fn overlapping_markers_pick_the_marker_painted_on_top() {
+fn zero_size_markers_pick_their_drawn_dot() {
+    use renderer::data_config::{DataScatterPointStyleConfig, PointSizeMap, SizeScale};
     let mut renderer = renderer();
-    upload_xy(&mut renderer, vec![5.0, 5.0], vec![5.0, 5.0]);
+    upload_xy(&mut renderer, vec![5.0], vec![5.0]);
+    renderer
+        .add_columns(&[
+            ("style", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+            ("size", &col(vec![0.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
     let chart = bare_chart();
-    let series = [scatter("pair", ScatterShape::CircleFilled, 6.0, BLUE)];
-    let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
-    let (cx, cy) = data_to_px(&chart, 5.0, 5.0, 1.0);
-    let hit = probe
-        .pick(&mut renderer, cx as u32, cy as u32, 0.0)
-        .expect("overlap hit");
-    assert_eq!(
-        hit.point_index, 1,
-        "the second marker paints over the first"
-    );
+    for shape in ALL_SHAPES {
+        let size_zero = scatter("dot", shape.clone(), 0.0, RED);
+        let mut slot_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let mut map_zero = scatter("dot", shape.clone(), 7.0, RED);
+        let DataRenderType::Scatter { scatter: slot } = &mut slot_zero.render_type else {
+            unreachable!()
+        };
+        slot.point_style_index_column = Some("style".into());
+        slot.point_style_table = Some(vec![DataScatterPointStyleConfig {
+            point_color: None,
+            point_shape: None,
+            point_size: Some(0.0),
+        }]);
+        let DataRenderType::Scatter { scatter: map } = &mut map_zero.render_type else {
+            unreachable!()
+        };
+        map.point_size_map = Some(PointSizeMap {
+            column: "size".into(),
+            domain_min: 0.0,
+            domain_max: 1.0,
+            min_px: 0.0,
+            max_px: 9.0,
+            scale: SizeScale::Radius,
+        });
+        for (series, how) in [
+            (size_zero, "series size 0"),
+            (slot_zero, "style slot radius 0"),
+            (map_zero, "size map min_px 0"),
+        ] {
+            for scale in [1.0, 2.0] {
+                let series = [series.clone()];
+                let painted = assert_painted_pixels_pick(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "dot",
+                    scale,
+                    &format!("{shape:?} {how}"),
+                );
+                assert!(painted >= 1, "{shape:?} {how} at {scale}x painted nothing");
+            }
+        }
+    }
 }
 
 /// G12 across colours: two overlapping markers of one series, the painted
@@ -955,9 +1031,11 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
     );
 }
 
+#[cfg(feature = "cpu-twin")]
 struct F32Columns(Vec<(String, Vec<f32>)>);
 
-impl renderer::PointColumnLookup for F32Columns {
+#[cfg(feature = "cpu-twin")]
+impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
             .iter()
@@ -970,6 +1048,7 @@ impl renderer::PointColumnLookup for F32Columns {
 /// under every draw style: the styled marker distances, the sketch stroke's
 /// wobble on the arc prefix the CPU sums itself, the ribbon envelope and the
 /// dash phase.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions, SketchOptions};
@@ -1029,13 +1108,13 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
             for y in (y0 as u32..y1 as u32).step_by(3) {
                 for x in (x0 as u32..x1 as u32).step_by(3) {
                     let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                    let cpu = renderer::pick_nearest_point(
+                    let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                         chart.config(),
                         &series,
                         &columns,
                         x as f32 + 0.5,
                         y as f32 + 0.5,
-                        renderer::PointPickOptions {
+                        renderer::pick::cpu_twin::PointPickOptions {
                             max_distance_px: 3.0,
                         },
                     );
@@ -1068,6 +1147,7 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 fn arrows(
     id: &str,
     scale: renderer::data_config::VectorScale,
@@ -1103,6 +1183,7 @@ fn arrows(
 /// pivot, the scale mode and the head scaled down on a short arrow — and an
 /// arrow that is not drawn (a zero vector, one under the minimum length)
 /// picks nowhere, at 1x and 2x.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn point_vectors_pick_the_arrow_they_draw() {
     use renderer::data_config::{VectorPivot, VectorScale};
@@ -1173,13 +1254,13 @@ fn point_vectors_pick_the_arrow_they_draw() {
         for y in (y0 as u32..y1 as u32).step_by(3) {
             for x in (x0 as u32..x1 as u32).step_by(3) {
                 let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     chart.config(),
                     &series,
                     &columns,
                     x as f32 + 0.5,
                     y as f32 + 0.5,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 );
@@ -1269,30 +1350,26 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             let what = format!("{scale_mode:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 3);
+            let window = ink_window(&with, &without, 3);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= STRICT.painted;
+            let painted = count_painted(window, is_painted);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for y in y0..y1 {
-                for x in x0..x1 {
-                    let ink = difference(&with, &without, x, y);
-                    let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-                    let distance = match &hit {
-                        Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
-                            Some(*distance_px)
-                        }
-                        None => None,
-                        Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
-                    };
-                    if ink >= STRICT.painted {
-                        painted += 1;
-                        if distance.is_none() {
-                            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                        }
+            for (x, y) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, x, y);
+                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                let distance = match &hit {
+                    Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
+                        Some(*distance_px)
                     }
-                    if distance == Some(0.0) && ink < STRICT.zero_ink {
-                        failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
-                    }
+                    None => None,
+                    Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
+                };
+                if ink >= STRICT.painted && distance.is_none() {
+                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                }
+                if distance == Some(0.0) && ink < STRICT.zero_ink {
+                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
                 }
             }
             assert!(
@@ -1405,12 +1482,13 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         });
     };
     // `geometry`: the marker's coverage edge is its painted edge (else its
-    // farthest painted pixel counts); `tight`: the gap has an upper bound.
+    // farthest painted pixel counts); `slack`: the gap's upper bound past
+    // the wanted one, if any.
     let check = |renderer: &mut Renderer,
                  chart: &Chart,
                  series: &[SeriesConfig],
                  scale: f32,
-                 (geometry, tight): (bool, bool),
+                 (geometry, slack): (bool, Option<f64>),
                  what: &str| {
         let mut ringed = Chart::new(chart.config().clone());
         ring(&mut ringed);
@@ -1434,9 +1512,9 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             gap >= want - if geometry { 1.5 } else { 2.5 },
             "{what} at {scale}x: ring {ring_near:.2} only {gap:.2} px past the marker {marker_far:.2} (want {want})"
         );
-        if tight {
+        if let Some(slack) = slack {
             assert!(
-                gap <= want + 1.5,
+                gap <= want + slack,
                 "{what} at {scale}x: ring {ring_near:.2} {gap:.2} px past the marker {marker_far:.2} (want {want})"
             );
         }
@@ -1450,7 +1528,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                 &chart,
                 &series,
                 scale,
-                (true, true),
+                (true, Some(1.5)),
                 &format!("{shape:?}"),
             );
         }
@@ -1460,8 +1538,36 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             &chart,
             &zero,
             scale,
-            (true, true),
+            (true, Some(1.5)),
             "zero-size circle",
+        );
+        // A size override: Precise draws it through the style map, so the
+        // ring takes the mapped entry and rings the override's radius.
+        let overridden = [scatter_with_size_override(4.0, 12.0)];
+        check(
+            &mut renderer,
+            &chart,
+            &overridden,
+            scale,
+            (true, Some(1.5)),
+            "size override under Precise",
+        );
+        // Sketch ignores the overrides and draws the base radius, so the
+        // unmapped ring rings that radius: a ring at the override's 12 px
+        // would sit 8 px too far, past the wobble's 3 px amplitude.
+        const SKETCH_AMPLITUDE_PX: f32 = 3.0;
+        let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+            amplitude_px: SKETCH_AMPLITUDE_PX,
+            wavelength_px: 15.0,
+            seed: 3,
+        }));
+        check(
+            &mut renderer,
+            &sketch,
+            &overridden,
+            scale,
+            (true, Some(f64::from(SKETCH_AMPLITUDE_PX * scale) + 1.5)),
+            "size override under Sketch",
         );
 
         // A point vector's anchor rings at the glyph's half width (the head's
@@ -1529,7 +1635,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                     &chart,
                     &series,
                     scale,
-                    (geometry, false),
+                    (geometry, None),
                     &format!("{style:?} {shape:?}"),
                 );
             }
@@ -1589,34 +1695,28 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             let what = format!("{orientation:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for py in y0..y1 {
-                for px in x0..x1 {
-                    let ink = difference(&with, &without, px, py);
-                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                    let bin = match &hit {
-                        Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
-                            Some(*bin_index)
-                        }
-                        None => None,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    // A bar is axis-aligned, so painted and picked agree
-                    // pixel for pixel: more than half the samples covered
-                    // picks, fewer does not. An edge through the pixel's
-                    // centre covers exactly half and may go either way.
-                    if ink > 128 && bin.is_none() {
-                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                    }
-                    if ink < 128 && bin.is_some() {
-                        failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
-                    }
-                    if ink >= PAINTED {
-                        painted += 1;
-                    }
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                let bin = match &hit {
+                    Some(renderer::PickedData::HistogramBin { bin_index, .. }) => Some(*bin_index),
+                    None => None,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                // A bar is axis-aligned, so painted and picked agree pixel
+                // for pixel: more than half the samples covered picks, fewer
+                // does not. An edge through the pixel's centre covers
+                // exactly half and may go either way.
+                if ink > 128 && bin.is_none() {
+                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                }
+                if ink < 128 && bin.is_some() {
+                    failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
                 }
             }
             assert!(
@@ -1734,34 +1834,29 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
             let what = format!("{shading:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let (x0, y0, x1, y1) = window;
+            let clear_inside = ((x1 - x0) * (y1 - y0)) as usize - painted;
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut painted = 0usize;
-            let mut clear_inside = 0usize;
             let mut failures = Vec::new();
-            for py in (y0..y1).step_by(2) {
-                for px in (x0..x1).step_by(2) {
-                    let ink = difference(&with, &without, px, py);
-                    // Off the pixel centre, inside the pixel: the pick must
-                    // still answer the cell painted at the centre.
-                    let request = (px as f32 + 0.9, py as f32 + 0.1);
-                    let hit = probe.pick_data_at(&mut renderer, request, 0.0);
-                    let cell = match &hit {
-                        Some(renderer::PickedData::MatrixCell { .. }) => true,
-                        None => false,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    if ink >= PAINTED {
-                        painted += 1;
-                    } else {
-                        clear_inside += 1;
-                    }
-                    // A painted pixel picks; a pixel left exactly as it was
-                    // does not. (A ramp near its transparent end paints a
-                    // few levels of ink, and those pick too.)
-                    if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
-                        failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
-                    }
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                // Off the pixel centre, inside the pixel: the pick must
+                // still answer the cell painted at the centre.
+                let request = (px as f32 + 0.9, py as f32 + 0.1);
+                let hit = probe.pick_data_at(&mut renderer, request, 0.0);
+                let cell = match &hit {
+                    Some(renderer::PickedData::MatrixCell { .. }) => true,
+                    None => false,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                // A painted pixel picks; a pixel left exactly as it was
+                // does not. (A ramp near its transparent end paints a few
+                // levels of ink, and those pick too.)
+                if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
+                    failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
                 }
             }
             assert!(
@@ -1770,8 +1865,10 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 failures.len(),
                 &failures[..failures.len().min(12)]
             );
+            // Counted over every pixel of the window (the scan once probed
+            // every second pixel of every second row: a quarter of these).
             assert!(
-                painted > 200 && clear_inside > 50,
+                painted > 800 && clear_inside > 200,
                 "{what}: {painted} / {clear_inside}"
             );
             renderer.remove_chart(probe.id).unwrap();
@@ -2036,29 +2133,24 @@ fn contour_strokes_pick_where_they_paint() {
         let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
         let (x0, y0) = (x0.max(border), y0.max(border));
         let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
+        let window = (x0, y0, x1, y1);
+        let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+        let painted = count_painted(window, is_painted);
         let probe = Probe::register(&mut renderer, &chart, &series, scale);
-        let mut painted = 0usize;
         let mut failures = Vec::new();
-        for y in (y0..y1).step_by(2) {
-            for x in (x0..x1).step_by(2) {
-                let ink = difference(&with, &without, x, y);
-                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-                let distance = match &hit {
-                    Some(renderer::PickedData::ContourLevel { distance_px, .. }) => {
-                        Some(*distance_px)
-                    }
-                    None => None,
-                    Some(other) => panic!("({x}, {y}) picked {other:?}"),
-                };
-                if ink >= PAINTED {
-                    painted += 1;
-                    if distance.is_none() {
-                        failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                    }
-                }
-                if distance == Some(0.0) && ink < STRICT.zero_ink {
-                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
-                }
+        for (x, y) in edge_band(window, is_painted) {
+            let ink = difference(&with, &without, x, y);
+            let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+            let distance = match &hit {
+                Some(renderer::PickedData::ContourLevel { distance_px, .. }) => Some(*distance_px),
+                None => None,
+                Some(other) => panic!("({x}, {y}) picked {other:?}"),
+            };
+            if ink >= PAINTED && distance.is_none() {
+                failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+            }
+            if distance == Some(0.0) && ink < STRICT.zero_ink {
+                failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
             }
         }
         renderer.remove_chart(probe.id).unwrap();
@@ -2068,12 +2160,15 @@ fn contour_strokes_pick_where_they_paint() {
             failures.len(),
             &failures[..failures.len().min(12)]
         );
-        assert!(painted > 50, "at {scale}x: {painted}");
+        // Counted over every pixel of the window (the scan once probed
+        // every second pixel of every second row: a quarter of these).
+        assert!(painted > 200, "at {scale}x: {painted}");
     }
 }
 
 /// A data value's export pixel along one axis, in f64, linear or
 /// logarithmic: the reference both the CPU and the GPU must hit.
+#[cfg(feature = "cpu-twin")]
 fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length: f64) -> f64 {
     let t = match axis.scale {
         renderer::config::AxisScale::Linear => (value - axis.min) / (axis.max - axis.min),
@@ -2089,6 +2184,7 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
 /// of the f64 reference, on linear and logarithmic axes at every magnitude.
 /// Past 2^24 the GPU once lost the logarithm (a log flag blended with
 /// `mix`) while the CPU kept it.
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
     use renderer::config::AxisScale;
@@ -2189,13 +2285,13 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 )
                 .unwrap()
                 .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
-                let cpu = renderer::pick_nearest_point(
+                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
                     &cfg,
                     &series,
                     &columns,
                     at.0,
                     at.1,
-                    renderer::PointPickOptions {
+                    renderer::pick::cpu_twin::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 )
@@ -2219,4 +2315,467 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
         }
     }
     assert_eq!(checked, 3 * magnitudes.len() * fractions.len());
+}
+
+/// An error-bar style of stem width `width` with caps of half size `cap`
+/// and width `cap_width` in `color`, without per-point styles.
+pub fn errorbar_style(
+    color: Color,
+    width: f32,
+    cap: f32,
+    cap_width: f32,
+) -> renderer::data_config::DataErrorBarStyleConfig {
+    renderer::data_config::DataErrorBarStyleConfig {
+        error_bar_color: color,
+        error_bar_width: width,
+        error_bar_cap_size: cap,
+        cap_width,
+        error_bar_style_table: None,
+        error_bar_style_index_column: None,
+        error_bar_style_overrides: None,
+    }
+}
+
+/// A marker series `id` on the x / y columns whose error bars are `kind`:
+/// "x", "y", "xy" (symmetric, `ex` / `ey`) or "asym" (Y, `ey_lo` / `ey_hi`).
+pub fn errorbar_series(
+    id: &str,
+    kind: &str,
+    err_style: renderer::data_config::DataErrorBarStyleConfig,
+) -> SeriesConfig {
+    use renderer::data_config::ErrorRef;
+    let DataRenderType::Scatter { scatter } =
+        scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
+    else {
+        unreachable!()
+    };
+    let symmetric = |column: &str| ErrorRef::Symmetric {
+        column: column.into(),
+    };
+    let render_type = match kind {
+        "x" => DataRenderType::ScatterErrorbarX {
+            scatter,
+            err_x: symmetric("ex"),
+            err_style,
+        },
+        "y" => DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: symmetric("ey"),
+            err_style,
+        },
+        "xy" => DataRenderType::ScatterErrorbarXY {
+            scatter,
+            err_x: symmetric("ex"),
+            err_y: symmetric("ey"),
+            err_style,
+        },
+        "asym" => DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: ErrorRef::Asymmetric {
+                lower: "ey_lo".into(),
+                upper: "ey_hi".into(),
+            },
+            err_style,
+        },
+        other => panic!("no error-bar kind {other}"),
+    };
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type,
+    }
+}
+
+/// Three points with every error column the error-bar cases read.
+fn upload_errorbar_columns(renderer: &mut Renderer) {
+    upload_xy(renderer, vec![3.0, 5.0, 7.0], vec![4.0, 5.5, 6.5]);
+    renderer
+        .add_columns(&[
+            (
+                "ex",
+                &col(vec![0.8, 1.2, 0.6]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey",
+                &col(vec![1.5, 2.0, 1.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey_lo",
+                &col(vec![0.5, 2.5, 0.3]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "ey_hi",
+                &col(vec![2.0, 0.4, 1.8]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "bar_style",
+                &col(vec![1.0, 0.0, 1.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+}
+
+/// G10: an error bar picks its stems and caps exactly where the error-bar
+/// shader draws them, with the shared quads (`common/errorbar_segment.wgsl`):
+/// X, Y and XY bars, asymmetric errors, per-point widths of the precise
+/// style map, a log axis, Precise and Sketch (the hashed corner wobble), at
+/// 1x and 2x. A Milkyway jet picks within its beam and knot envelope: every
+/// painted pixel picks and nothing picks past the envelope. A transparent
+/// bar draws nothing and picks nothing.
+#[test]
+fn error_bars_pick_where_their_stems_and_caps_are_drawn() {
+    use renderer::config::{AxisScale, DrawStyle, MilkywayOptions, SketchOptions};
+    use renderer::data_config::{DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride};
+    let mut renderer = renderer();
+    upload_errorbar_columns(&mut renderer);
+    let plain = errorbar_style(RED, 2.0, 5.0, 1.5);
+    // Point 0 and 2 take slot 1, point 1 slot 0; point 2 also has an
+    // override of its cap.
+    let mut mapped = errorbar_style(RED, 1.5, 4.0, 1.0);
+    mapped.error_bar_style_index_column = Some("bar_style".into());
+    mapped.error_bar_style_table = Some(vec![
+        DataErrorBarPointStyleConfig {
+            error_bar_color: None,
+            error_bar_width: Some(4.0),
+            error_bar_cap_size: None,
+            cap_width: Some(3.0),
+        },
+        DataErrorBarPointStyleConfig {
+            error_bar_color: Some(BLUE),
+            error_bar_width: Some(1.0),
+            error_bar_cap_size: Some(7.0),
+            cap_width: None,
+        },
+    ]);
+    mapped.error_bar_style_overrides = Some(vec![DataErrorBarPointStyleOverride {
+        index: 2,
+        style: DataErrorBarPointStyleConfig {
+            error_bar_color: None,
+            error_bar_width: None,
+            error_bar_cap_size: Some(2.5),
+            cap_width: Some(2.0),
+        },
+    }]);
+    let precise = bare_chart();
+    let mut log = bare_chart();
+    log.config_mut().left_y.scale = AxisScale::Logarithmic;
+    log.set_y_range(1.0, 10.0);
+    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+        amplitude_px: 3.0,
+        wavelength_px: 12.0,
+        seed: 11,
+    }));
+    for scale in [1.0, 2.0] {
+        for (chart, style, what) in [
+            (&precise, &plain, "precise"),
+            (&precise, &mapped, "precise style map"),
+            (&log, &plain, "log y"),
+            (&sketch, &plain, "sketch"),
+        ] {
+            for kind in ["x", "y", "xy", "asym"] {
+                let series = [errorbar_series("bars", kind, style.clone())];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "bars",
+                    scale,
+                    None,
+                    &format!("{what} {kind} bars"),
+                    MSAA_EDGE,
+                );
+                assert!(painted > 40, "{what} {kind} at {scale}x: {painted}");
+            }
+        }
+
+        let options = MilkywayOptions::default();
+        let milkyway = styled_chart(DrawStyle::Milkyway(options));
+        let series = [errorbar_series("bars", "xy", plain.clone())];
+        let painted =
+            assert_painted_pixels_pick(&mut renderer, &milkyway, &series, "bars", scale, "jets");
+        assert!(painted > 100, "jets at {scale}x: {painted}");
+        // The envelope: a beam of 4 times the half stem (at least 1.2 px)
+        // either side of the stem, a knot disc of 1.7 times the cap (at
+        // least 3 px) around each bound. Point 1's Y stem runs from y 3.5
+        // to 7.5 at x 5.
+        let s = f64::from(scale);
+        let beam = (2.0 * s * 0.5).max(1.2) * 4.0;
+        let knot = (5.0 * s).max(3.0) * 1.7;
+        let (cx, cy) = data_to_px(&milkyway, 5.0, 6.5, scale);
+        let (_, top) = data_to_px(&milkyway, 5.0, 7.5, scale);
+        assert_nothing_picks_at(
+            &mut renderer,
+            &milkyway,
+            &series,
+            "bars",
+            scale,
+            &[
+                (cx - beam - 2.0, cy),
+                (cx + beam + 2.0, cy),
+                (cx, top - knot - 2.0),
+            ],
+            "beyond a jet's envelope",
+        );
+
+        // A transparent bar draws nothing: along point 1's Y stem, away
+        // from its marker, nothing picks.
+        let mut clear = plain.clone();
+        clear.error_bar_color = Color {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+            a: 0.0,
+        };
+        let series = [errorbar_series("bars", "y", clear)];
+        let (x, y) = data_to_px(&precise, 5.0, 6.8, scale);
+        assert_nothing_picks_at(
+            &mut renderer,
+            &precise,
+            &series,
+            "bars",
+            scale,
+            &[(x, y)],
+            "transparent bar",
+        );
+    }
+}
+
+/// A line series `id` on the x / y columns filled by `fill` in opaque
+/// green, with a 1.5 px stroke.
+pub fn filled_line(
+    id: &str,
+    fill: Option<renderer::data_config::LineFill>,
+    interpolation: renderer::data_config::LineInterpolation,
+    fill_color: Color,
+) -> SeriesConfig {
+    let mut series = line(
+        id,
+        1.5,
+        renderer::line::LineStylePreset::Solid,
+        interpolation,
+    );
+    let DataRenderType::Line { line } = &mut series.render_type else {
+        unreachable!()
+    };
+    line.fill = fill;
+    line.fill_color = Some(fill_color);
+    series
+}
+
+const GREEN: Color = Color {
+    r: 0.0,
+    g: 0.6,
+    b: 0.0,
+    a: 1.0,
+};
+
+/// A fill has no anti-aliasing: its trapezoids are covered by the export's
+/// multisampling only, and the fragment at the pixel centre colours every
+/// covered sample. Along a straight edge a pixel whose centre lies outside
+/// paints at most two of four samples (ink 128 for these opaque fills) and
+/// one whose centre lies inside at least two, so a zero-distance pick must
+/// find half the ink. At a corner of the region three samples can cover a
+/// pixel whose centre is outside (a polar fill's base polygon), so only a
+/// pixel covered by all four samples must pick.
+pub const FILL_EDGE: Tolerance = Tolerance {
+    painted: 192,
+    fringe: 2.0,
+    zero_ink: 96,
+    skip_near: None,
+};
+
+/// [`FILL_EDGE`] for a fill reaching another series: that series' stroke is
+/// drawn over the fill's lower edge, so a pixel there is partly the
+/// stroke's. Where the stroke is a rounding step out of reach the fill picks
+/// it at zero distance, with the ink the stroke leaves visible.
+pub const FILL_UNDER_STROKE: Tolerance = Tolerance {
+    painted: 192,
+    fringe: 2.0,
+    zero_ink: 40,
+    skip_near: None,
+};
+
+/// G10: a line's area fill picks exactly where its trapezoids paint
+/// (`common/area_piece.wgsl`), at distance zero: to a baseline, to another
+/// series, in every step mode and on a polar chart, at 1x and 2x. A
+/// transparent fill paints nothing and picks nothing.
+#[test]
+fn area_fills_pick_where_they_paint() {
+    use renderer::data_config::{LineFill, LineInterpolation};
+    let mut renderer = renderer();
+    upload_xy(
+        &mut renderer,
+        vec![2.0, 4.0, 5.5, 7.5],
+        vec![5.0, 7.0, 4.0, 6.5],
+    );
+    renderer
+        .add_columns(&[
+            (
+                "y2",
+                &col(vec![2.0, 3.0, 1.5, 2.5]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "angle",
+                &col(vec![20.0, 110.0, 200.0, 320.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "radius",
+                &col(vec![0.6, 0.9, 0.5, 0.8]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    // A stroke edge on a pixel centre would leave the tie with the fill
+    // there to rounding: 1.25 px keeps the edges off the centres at 1x and
+    // 2x.
+    let mut lower = line(
+        "lower",
+        1.25,
+        renderer::line::LineStylePreset::Solid,
+        LineInterpolation::Linear,
+    );
+    lower.y_column = "y2".into();
+    let chart = bare_chart();
+    for scale in [1.0, 2.0] {
+        for interpolation in [
+            LineInterpolation::Linear,
+            LineInterpolation::StepPre,
+            LineInterpolation::StepPost,
+            LineInterpolation::StepMid,
+        ] {
+            for (fill, what) in [
+                (LineFill::ToBaseline(1.0), "baseline"),
+                (LineFill::ToSeries("lower".into()), "to series"),
+            ] {
+                let mut lower = lower.clone();
+                let DataRenderType::Line { line } = &mut lower.render_type else {
+                    unreachable!()
+                };
+                line.interpolation = interpolation;
+                // The second series only where the fill reaches it.
+                let to_series = matches!(fill, LineFill::ToSeries(_));
+                let mut series = vec![filled_line("area", Some(fill), interpolation, GREEN)];
+                if to_series {
+                    series.push(lower);
+                }
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "area",
+                    scale,
+                    None,
+                    &format!("{what} {interpolation:?} fill"),
+                    if to_series {
+                        FILL_UNDER_STROKE
+                    } else {
+                        FILL_EDGE
+                    },
+                );
+                assert!(
+                    painted > 2000,
+                    "{what} {interpolation:?} at {scale}x: {painted}"
+                );
+            }
+        }
+
+        let mut options = renderer::polar::PolarOptions::default();
+        options.inner_radius_fraction = 0.2;
+        let polar = bare_polar_chart(options);
+        let mut polar_series = filled_line(
+            "area",
+            Some(LineFill::ToBaseline(0.0)),
+            LineInterpolation::Linear,
+            GREEN,
+        );
+        polar_series.x_column = "angle".into();
+        polar_series.y_column = "radius".into();
+        let painted = assert_pick_matches_paint_with(
+            &mut renderer,
+            &polar,
+            &[polar_series],
+            "area",
+            scale,
+            None,
+            "polar fill",
+            FILL_EDGE,
+        );
+        assert!(painted > 1000, "polar fill at {scale}x: {painted}");
+
+        let clear = Color {
+            r: 0.0,
+            g: 0.6,
+            b: 0.0,
+            a: 0.0,
+        };
+        let series = [filled_line(
+            "area",
+            Some(LineFill::ToBaseline(1.0)),
+            LineInterpolation::Linear,
+            clear,
+        )];
+        let inside = [
+            data_to_px(&chart, 4.0, 3.0, scale),
+            data_to_px(&chart, 6.0, 2.0, scale),
+        ];
+        assert_nothing_picks_at(
+            &mut renderer,
+            &chart,
+            &series,
+            "area",
+            scale,
+            &inside,
+            "transparent fill",
+        );
+    }
+}
+
+/// G10 tie-break: a marker over a fill picks the marker, though its series
+/// comes first (every fill is drawn before every series body); inside the
+/// fill away from the marker the fill picks, naming the nearer endpoint of
+/// the filled segment.
+#[test]
+fn a_marker_over_a_fill_picks_the_marker() {
+    use renderer::data_config::{LineFill, LineInterpolation};
+    let mut renderer = renderer();
+    upload_xy(&mut renderer, vec![2.0, 8.0], vec![8.0, 8.0]);
+    renderer
+        .add_columns(&[
+            ("dot_x", &col(vec![4.0]) as &dyn renderer::ColumnSource),
+            ("dot_y", &col(vec![4.0]) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let chart = bare_chart();
+    let mut dot = scatter("dot", ScatterShape::CircleFilled, 6.0, RED);
+    dot.x_column = "dot_x".into();
+    dot.y_column = "dot_y".into();
+    let area = filled_line(
+        "area",
+        Some(LineFill::ToBaseline(1.0)),
+        LineInterpolation::Linear,
+        GREEN,
+    );
+    let series = [dot, area];
+    for scale in [1.0, 2.0] {
+        let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let (mx, my) = data_to_px(&chart, 4.0, 4.0, scale);
+        let hit = probe
+            .pick(&mut renderer, mx as u32, my as u32, 0.0)
+            .expect("marker hit");
+        assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
+        for (x, index) in [(3.0, 0), (7.0, 1)] {
+            let (px, py) = data_to_px(&chart, x, 3.0, scale);
+            let hit = probe
+                .pick(&mut renderer, px as u32, py as u32, 0.0)
+                .expect("fill hit");
+            assert_eq!(
+                (hit.series_id.as_str(), hit.point_index, hit.distance_px),
+                ("area", index, 0.0),
+                "{scale}x at x {x}"
+            );
+        }
+        renderer.remove_chart(probe.id).unwrap();
+    }
 }

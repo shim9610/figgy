@@ -5,6 +5,8 @@ use crate::raster::{Canvas, Paint};
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
+use model::tick::LinearGrid;
 
 const TAU: f32 = std::f32::consts::TAU;
 /// Segments of a circular ring; a polygon ring has one per category.
@@ -79,10 +81,11 @@ fn value_axis(c: &RadarChart) -> Result<ValueAxis, RadarError> {
     if span / spacing > 100.0 {
         return Err(invalid("too many radar rings; widen ring_spacing"));
     }
-    let first = (min / spacing).ceil() as i64;
-    let last = (max / spacing).floor() as i64;
-    let rings: Vec<f64> = (first..=last)
-        .map(|k| k as f64 * spacing)
+    // The axes' grid walk; the centre is no ring.
+    let rings: Vec<f64> = LinearGrid::new(min, max, spacing, 100)
+        .into_iter()
+        .flat_map(|grid| grid.iter())
+        .map(|(_, v)| v)
         .filter(|v| *v > min + span * 1e-9)
         .collect();
     Ok(ValueAxis { min, max, rings })
@@ -130,7 +133,7 @@ pub(super) fn layout(
         .zip(&c.series)
         .map(|((row, x, width), series)| (*row, *x, *width, series.label.as_str(), series.color))
         .collect();
-    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale);
     let automatic_area = RectF {
         x: 16.0,
         y: title.top,
@@ -192,9 +195,10 @@ pub(super) fn layout(
             };
             back.draw_polyline(&points, &ring_paint);
         }
-        let spoke_paint = Paint::stroke(&c.style.spoke_color, scale);
         for i in 0..n {
-            back.draw_line(physical(center), physical(point(i, 1.0)), &spoke_paint);
+            decorations
+                .chrome(&mut back)
+                .line(center, point(i, 1.0), c.style.spoke_color);
         }
     }
     // Value labels along the first spoke, beside the rings they name.
@@ -213,21 +217,14 @@ pub(super) fn layout(
         for value in &axis.rings {
             let t = norm(*value).unwrap_or(1.0);
             let p = point(0, t);
-            let label = crate::axis_render::plain_number(*value);
+            let label = PlainNumberFormat::AUTO.format(*value);
             let tw = measure(c, &label, fs);
             let x = p[0] + nx * 6.0 - if nx < 0.0 { tw } else { 0.0 };
             let y = p[1] + ny * 6.0 + fs * 0.35;
             let (x, y) = decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
-            decorations.text(
-                DecorationId::AxisLabel(Side::Left),
-                &mut front,
-                &c.font_family,
-                &label,
-                x,
-                y,
-                fs,
-                c.text_color,
-            );
+            decorations
+                .on(DecorationId::AxisLabel(Side::Left), &mut front)
+                .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
         }
     }
     // Category labels outside the outer ring, aligned away from the centre.
@@ -241,18 +238,14 @@ pub(super) fn layout(
         let x = p[0] - tw * (1.0 - a.cos()) * 0.5;
         let y = p[1] + fs * 0.35 + a.sin() * fs * 0.45;
         let (x, y) = decorations.place_text(&mut labels, &c.font_family, &category.label, x, y, fs);
-        decorations.text(
-            DecorationId::SpokeLabel {
-                category_id: category.id.clone(),
-            },
-            &mut front,
-            &c.font_family,
-            &category.label,
-            x,
-            y,
-            fs,
-            c.text_color,
-        );
+        decorations
+            .on(
+                DecorationId::SpokeLabel {
+                    category_id: category.id.clone(),
+                },
+                &mut front,
+            )
+            .plain_text(&c.font_family, &category.label, x, y, fs, c.text_color);
     }
     crate::axis_render::draw_bounded_legend(
         &crate::axis_render::BoundedLegend {
@@ -431,19 +424,15 @@ pub(super) fn layout(
                 let y = p[1] + 9.0 * a.sin() + fs * 0.35;
                 let (x, y) =
                     decorations.place_text(&mut data_labels, &c.font_family, &label, x, y, fs);
-                decorations.text(
-                    DecorationId::DataLabel {
-                        category_id: c.categories[i].id.clone(),
-                        series_id: series.id.clone(),
-                    },
-                    &mut front,
-                    &c.font_family,
-                    &label,
-                    x,
-                    y,
-                    fs,
-                    c.text_color,
-                );
+                decorations
+                    .on(
+                        DecorationId::DataLabel {
+                            category_id: c.categories[i].id.clone(),
+                            series_id: series.id.clone(),
+                        },
+                        &mut front,
+                    )
+                    .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
             }
         }
     }
@@ -513,6 +502,17 @@ mod axis_tests {
         assert_eq!(axis.rings, vec![2.5, 5.0, 7.5, 10.0]);
         c.ring_spacing = Some(0.01);
         assert!(value_axis(&c).is_err(), "a thousand rings is refused");
+    }
+    /// The rings are the axes' grid walk, whose slack keeps a ring that
+    /// floating-point noise puts just past the range end: `0.3 / 0.1` is
+    /// `2.9999999999999996`, and the ring at `3 · 0.1` is still drawn.
+    #[test]
+    fn a_ring_on_the_range_end_survives_rounding() {
+        let mut c = chart(vec![0.1, 0.2, 0.3]);
+        c.value_range = Some([0.0, 0.3]);
+        c.ring_spacing = Some(0.1);
+        let axis = value_axis(&c).unwrap();
+        assert_eq!(axis.rings, vec![0.1, 0.2, 3.0 * 0.1]);
     }
     #[test]
     fn negative_values_extend_the_axis_below_zero() {

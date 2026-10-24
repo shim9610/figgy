@@ -14,7 +14,7 @@ backend, plus the first error or a before/after image. State whether the issue o
 streaming, selection, resizing or PNG export. A screenshot is helpful but does not
 replace a reproducer.
 
-The WASM wrapper is an integration example. For browser reports, include the
+The WASM wrapper in `crates/web` is figgy's browser product. For browser reports, include the
 browser version, wrapper revision and host call sequence. The independently
 developed figgyplot.com Studio is a separate application; identify which code
 reproduces the problem without assuming that either the host or renderer is at fault.
@@ -112,9 +112,12 @@ series, line fills and step lines do with `FiggyError::InvalidSeriesConfig`.
 Regression tests should exercise the renderer's public APIs. Distinguish renderer
 tests from host event wiring and deployed application checks.
 
-To change a shared WGSL definition, edit its block in
-[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md) first, then
-every synced shader and its CPU struct, and run
+Shared WGSL code lives in `crates/renderer/src/data_render/common/`, one fragment
+per block, which `wgsl_module!` (`crates/renderer/src/shader_assembly.rs`) splices into every module
+that uses it at compile time. To change it, edit the fragment, then the Rust
+struct or constant that mirrors a changed layout, and the contract in
+[SHADER_COMMON.md](crates/renderer/src/data_render/SHADER_COMMON.md) it
+implements; follow that guide's steps and run
 `cargo test --locked -p figgy-renderer --test shader_consistency`.
 
 Public, non-draft PRs run the three-OS package/rendering matrix and CodeQL. There

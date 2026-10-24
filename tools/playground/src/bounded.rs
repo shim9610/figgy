@@ -5,8 +5,12 @@
 //! annotation overlay) into an offscreen texture and egui shows it as an image.
 //! One generic host covers all four; `Family` adapts the per-family names.
 
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context, Poll, Waker};
 
+use renderer::HitId;
 use renderer::annotation::BoundedAnnotationFrame;
 use renderer::boxplot::*;
 use renderer::categorical::*;
@@ -16,13 +20,13 @@ use renderer::radar::*;
 use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
-    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Category, Color,
-    DecorationId, DecorationLayout, FrameBackground, LayerHit, LayerRef, RendererDevice,
-    ResizeHandle,
+    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Color, DecorationId,
+    DecorationLayout, FrameBackground, LayerHit, LayerRef, Material, RendererDevice, ResizeHandle,
 };
 
 use crate::HostCtx;
 use crate::scenes::SceneKind;
+use crate::scenes::bounded::{box_chart, categorical_chart, radar_chart, radial_chart};
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -72,8 +76,46 @@ pub trait Family: 'static {
 
     fn frame_size(f: &Self::Frame) -> (u32, u32);
     fn draw(f: &Self::Frame, pass: &mut wgpu::RenderPass<'_>);
-    fn hit(f: &Self::Frame, p: [f32; 2]) -> Option<Self::Target>;
-    fn decorations(f: &Self::Frame) -> &DecorationMap;
+    /// The data under `p`: answered at once, or by a GPU pick the host
+    /// polls on later frames (the radial chart).
+    fn pick(f: &Arc<Self::Frame>, p: [f32; 2]) -> Pick<Self::Target>;
+    /// The frame's `DecorationMap`; `None` for a chart whose decorations are
+    /// a `HitMap` of the chart (the radial chart), which overrides the
+    /// decoration methods below.
+    fn decoration_map(f: &Self::Frame) -> Option<&DecorationMap>;
+    fn decoration_at(f: &Self::Frame, _c: &Self::Chart, p: [f32; 2]) -> Option<HitId> {
+        Self::decoration_map(f)?.hit_test(p)
+    }
+    fn decoration_find(f: &Self::Frame, _c: &Self::Chart, id: &DecorationId) -> Option<HitId> {
+        let map = Self::decoration_map(f)?;
+        map.entries().find(|(_, e)| &e.id == id).map(|(hit, _)| hit)
+    }
+    fn decoration_key(f: &Self::Frame, _c: &Self::Chart, hit: HitId) -> Option<DecorationId> {
+        Self::decoration_map(f)?.element(hit).map(|e| e.id.clone())
+    }
+    fn decoration_handle(
+        f: &Self::Frame,
+        _c: &Self::Chart,
+        hit: HitId,
+        p: [f32; 2],
+    ) -> Option<ResizeHandle> {
+        Self::decoration_map(f)?.hit_resize_handle(hit, p)
+    }
+    fn move_decoration(
+        f: &Self::Frame,
+        c: &mut Self::Chart,
+        hit: HitId,
+        handle: Option<ResizeHandle>,
+        dx: f32,
+        dy: f32,
+    ) -> Option<NudgeResult> {
+        let map = Self::decoration_map(f)?;
+        let layout = Self::layout(c);
+        match handle {
+            Some(h) => map.resize_by(layout, hit, h, dx, dy),
+            None => map.drag_by(layout, hit, dx, dy),
+        }
+    }
 
     fn background(c: &Self::Chart) -> Color;
     fn layout(c: &mut Self::Chart) -> &mut DecorationLayout;
@@ -85,6 +127,32 @@ pub trait Family: 'static {
     /// Returns `true` while a hover animation still runs.
     fn hover(c: &mut Self::Chart, t: Option<Self::Target>, dt: f32) -> bool;
     fn inspector(ui: &mut egui::Ui, c: &mut Self::Chart);
+}
+
+/// A data pick: ready, or a GPU readback polled once per frame.
+pub enum Pick<T> {
+    Ready(Option<T>),
+    Pending(Pin<Box<dyn Future<Output = Option<T>>>>),
+}
+impl<T> Pick<T> {
+    /// The picked target once the answer is in; `None` while it is pending.
+    fn poll(&mut self) -> Option<Option<T>> {
+        match self {
+            Self::Ready(t) => Some(t.take()),
+            Self::Pending(f) => match f.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+                Poll::Ready(t) => Some(t),
+                Poll::Pending => None,
+            },
+        }
+    }
+}
+
+/// What a press waits for its data pick to decide.
+enum Press {
+    /// Select the data under the press, or nothing.
+    Data,
+    /// The plot area was hit: data under it wins until the area is selected.
+    AreaOrData,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -103,6 +171,11 @@ pub struct Host<F: Family> {
     layer: Option<Arc<BoundedAnnotationFrame>>,
     target: Option<(wgpu::Texture, egui::TextureId)>,
     drag: Drag,
+    /// The press waiting for its data pick.
+    press: Option<(Press, Pick<F::Target>)>,
+    /// The hover pick in flight, and the last answered hover.
+    hover_pick: Option<Pick<F::Target>>,
+    hovered: Option<F::Target>,
     size: (u32, u32),
     error: String,
 }
@@ -125,6 +198,9 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
             layer: None,
             target: None,
             drag: Drag::None,
+            press: None,
+            hover_pick: None,
+            hovered: None,
             size: (1, 1),
             error: String::new(),
         }))
@@ -219,7 +295,6 @@ impl<F: Family> Host<F> {
         let (Some(frame), Some(layer)) = (self.frame.clone(), self.layer.clone()) else {
             return;
         };
-        let map = F::decorations(&frame);
         let active = F::active_layer(&self.chart);
         // The selected annotation's own handles win first.
         if let Some(DecorationId::Annotation(index)) = F::layout(&mut self.chart).selected.clone()
@@ -231,36 +306,55 @@ impl<F: Family> Host<F> {
         }
         // Then the selected decoration's resize handles.
         if let Some(selected) = F::layout(&mut self.chart).selected.clone()
-            && let Some((id, _)) = map.entries().find(|(_, e)| e.id == selected)
-            && let Some(h) = map.hit_resize_handle(id, p)
+            && let Some(id) = F::decoration_find(&frame, &self.chart, &selected)
+            && let Some(h) = F::decoration_handle(&frame, &self.chart, id, p)
         {
             self.drag = Drag::Decoration(Some(h));
             return;
         }
-        match layer.hit_test_active_layer(active, map, p) {
+        match layer.route_active_layer(active, p, || F::decoration_at(&frame, &self.chart, p)) {
             Some(LayerHit::Annotation { index, .. }) => {
                 F::layout(&mut self.chart).selected = Some(DecorationId::Annotation(index));
                 self.drag = Drag::Annotation(None);
                 return;
             }
             Some(LayerHit::Element(id)) => {
-                let key = map.element(id).map(|e| e.id.clone());
+                let key = F::decoration_key(&frame, &self.chart, id);
                 // Data wins over the plot area until the area itself is selected.
                 let area_passthrough = key == Some(DecorationId::DataArea)
-                    && F::layout(&mut self.chart).selected != key
-                    && F::hit(&frame, p).is_some();
+                    && F::layout(&mut self.chart).selected != key;
                 if !area_passthrough {
                     F::layout(&mut self.chart).selected = key;
                     F::set_selected(&mut self.chart, None);
                     self.drag = Drag::Decoration(None);
                     return;
                 }
+                self.press = Some((Press::AreaOrData, F::pick(&frame, p)));
+                self.drag = Drag::None;
+                return;
             }
             None => {}
         }
-        F::layout(&mut self.chart).selected = None;
-        F::set_selected(&mut self.chart, F::hit(&frame, p));
+        self.press = Some((Press::Data, F::pick(&frame, p)));
         self.drag = Drag::None;
+    }
+
+    /// Apply the press once its data pick has answered.
+    fn poll_press(&mut self) {
+        let Some((press, pick)) = &mut self.press else {
+            return;
+        };
+        let Some(hit) = pick.poll() else { return };
+        let area = matches!(press, Press::AreaOrData) && hit.is_none();
+        self.press = None;
+        if area {
+            F::layout(&mut self.chart).selected = Some(DecorationId::DataArea);
+            F::set_selected(&mut self.chart, None);
+            self.drag = Drag::Decoration(None);
+        } else {
+            F::layout(&mut self.chart).selected = None;
+            F::set_selected(&mut self.chart, hit);
+        }
     }
 
     fn on_move(&mut self, dx: f32, dy: f32, scale: f32) {
@@ -286,15 +380,10 @@ impl<F: Family> Host<F> {
                 }
             }
             Drag::Decoration(handle) => {
-                let map = F::decorations(&frame);
-                let Some((id, _)) = map.entries().find(|(_, e)| e.id == selected) else {
+                let Some(id) = F::decoration_find(&frame, &self.chart, &selected) else {
                     return;
                 };
-                let layout = F::layout(&mut self.chart);
-                match handle {
-                    Some(h) => map.resize_by(layout, id, h, dx, dy),
-                    None => map.drag_by(layout, id, dx, dy),
-                }
+                F::move_decoration(&frame, &mut self.chart, id, handle, dx, dy)
             }
         };
         // Keep the last feasible model when the new layout no longer fits.
@@ -459,6 +548,12 @@ impl<F: Family> BoundedScene for Host<F> {
             )
         });
         let local = |p: egui::Pos2| [p.x - rect.left(), p.y - rect.top()];
+        // Picks requested on earlier frames answer first.
+        self.poll_press();
+        if let Some(hit) = self.hover_pick.as_mut().and_then(Pick::poll) {
+            self.hover_pick = None;
+            self.hovered = hit;
+        }
         if pressed && let Some(o) = origin.filter(|o| rect.contains(*o)) {
             self.on_press(local(o));
         }
@@ -468,9 +563,24 @@ impl<F: Family> BoundedScene for Host<F> {
         if released {
             self.drag = Drag::None;
         }
-        let hovered = pos
-            .filter(|p| rect.contains(*p) && self.drag == Drag::None)
-            .and_then(|p| self.frame.as_ref().and_then(|f| F::hit(f, local(p))));
+        match (
+            pos.filter(|p| rect.contains(*p) && self.drag == Drag::None),
+            &self.frame,
+        ) {
+            (Some(p), Some(frame)) => {
+                if self.hover_pick.is_none() {
+                    self.hover_pick = Some(F::pick(frame, local(p)));
+                }
+            }
+            _ => {
+                self.hover_pick = None;
+                self.hovered = None;
+            }
+        }
+        if self.press.is_some() || self.hover_pick.is_some() {
+            ui.ctx().request_repaint();
+        }
+        let hovered = self.hovered.clone();
         if F::hover(&mut self.chart, hovered.clone(), dt) {
             ui.ctx().request_repaint();
         }
@@ -500,6 +610,8 @@ impl<F: Family> BoundedScene for Host<F> {
         }
         self.frame = None;
         self.layer = None;
+        self.press = None;
+        self.hover_pick = None;
         F::end_frame(&self.renderer);
     }
 }
@@ -510,17 +622,30 @@ impl<F: Family> BoundedScene for Host<F> {
 
 pub struct RadialFamily;
 
-const RADIAL_MATERIALS: &[RadialMaterial] = &[
-    RadialMaterial::Flat,
-    RadialMaterial::Matte,
-    RadialMaterial::Ceramic,
-    RadialMaterial::SatinMetal,
-    RadialMaterial::Toon,
-    RadialMaterial::Enamel,
-    RadialMaterial::BrushedMetal,
-    RadialMaterial::Paper,
-    RadialMaterial::Hatch,
-    RadialMaterial::Pearl,
+const RADIAL_MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Toon,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
+    Material::Pearl,
+];
+// Every material but Toon and Pearl, which bars and boxes reject.
+const FLAT_BODY_MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
 ];
 const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::Name,
@@ -530,23 +655,6 @@ const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::NameValue,
     RadialLabelFormat::NameValuePercent,
 ];
-
-fn radial_chart() -> RadialChart {
-    let mut chart = RadialChart {
-        title: "Traffic sources".into(),
-        kind: RadialKind::Donut { inner_radius: 0.5 },
-        slices: vec![
-            RadialSlice::new("Search", 40.0, Color::from_rgb8(51, 132, 245)),
-            RadialSlice::new("Direct", 25.0, Color::from_rgb8(165, 216, 72)),
-            RadialSlice::new("Email", 15.0, Color::from_rgb8(80, 96, 121)),
-            RadialSlice::new("Social", 12.0, Color::from_rgb8(255, 151, 62)),
-            RadialSlice::new("Video", 8.0, Color::from_rgb8(48, 192, 230)),
-        ],
-        ..Default::default()
-    };
-    chart.style = RadialStyle::three_dimensional();
-    chart
-}
 
 impl Family for RadialFamily {
     type Chart = RadialChart;
@@ -594,11 +702,44 @@ impl Family for RadialFamily {
     fn draw(f: &RadialFrame, pass: &mut wgpu::RenderPass<'_>) {
         f.draw(pass);
     }
-    fn hit(f: &RadialFrame, p: [f32; 2]) -> Option<RadialTarget> {
-        f.hit_test(p)
+    fn pick(f: &Arc<RadialFrame>, p: [f32; 2]) -> Pick<RadialTarget> {
+        match f.pick(p) {
+            Ok(ticket) => Pick::Pending(Box::pin(async move { ticket.resolve().await.ok()? })),
+            Err(_) => Pick::Ready(None),
+        }
     }
-    fn decorations(f: &RadialFrame) -> &DecorationMap {
-        f.decorations()
+    fn decoration_map(_: &RadialFrame) -> Option<&DecorationMap> {
+        None
+    }
+    fn decoration_at(f: &RadialFrame, c: &RadialChart, p: [f32; 2]) -> Option<HitId> {
+        f.decoration_at(c, p)
+    }
+    fn decoration_find(f: &RadialFrame, _: &RadialChart, id: &DecorationId) -> Option<HitId> {
+        f.decoration(id)
+    }
+    fn decoration_key(f: &RadialFrame, c: &RadialChart, hit: HitId) -> Option<DecorationId> {
+        f.decoration_id(c, hit)
+    }
+    fn decoration_handle(
+        f: &RadialFrame,
+        c: &RadialChart,
+        hit: HitId,
+        p: [f32; 2],
+    ) -> Option<ResizeHandle> {
+        f.decoration_resize_handle(c, hit, p)
+    }
+    fn move_decoration(
+        f: &RadialFrame,
+        c: &mut RadialChart,
+        hit: HitId,
+        handle: Option<ResizeHandle>,
+        dx: f32,
+        dy: f32,
+    ) -> Option<NudgeResult> {
+        match handle {
+            Some(h) => f.resize_decoration(c, hit, h, dx, dy),
+            None => f.drag_decoration(c, hit, dx, dy),
+        }
     }
     fn background(c: &RadialChart) -> Color {
         c.background
@@ -688,6 +829,8 @@ impl Family for RadialFamily {
                 renderer::ColorCycle::Vivid.color(n),
             ));
         }
+        // The drawn label strings are written at edit time.
+        c.format_labels();
     }
 }
 
@@ -696,40 +839,6 @@ impl Family for RadialFamily {
 // ---------------------------------------------------------------------------
 
 pub struct CategoricalFamily;
-
-fn categorical_chart() -> CategoricalChart {
-    let mut chart = CategoricalChart {
-        title: "Quarterly revenue".into(),
-        categories: ["Q1", "Q2", "Q3", "Q4"]
-            .into_iter()
-            .map(|s| Category::new(s, s))
-            .collect(),
-        series: vec![
-            BarSeries::new(
-                "north",
-                "North",
-                [12., 18., 9., 15.].map(Some).into(),
-                Color::from_rgb8(85, 143, 211),
-            ),
-            BarSeries::new(
-                "south",
-                "South",
-                [18., 24., 14., 21.].map(Some).into(),
-                Color::from_rgb8(255, 166, 105),
-            ),
-            BarSeries::new(
-                "west",
-                "West",
-                [7., 11., 16., 13.].map(Some).into(),
-                Color::from_rgb8(110, 190, 120),
-            ),
-        ],
-        value_title: "Revenue (M$)".into(),
-        ..Default::default()
-    };
-    chart.style.material = CategoryBarMaterial::Matte;
-    chart
-}
 
 impl Family for CategoricalFamily {
     type Chart = CategoricalChart;
@@ -777,11 +886,11 @@ impl Family for CategoricalFamily {
     fn draw(f: &CategoricalFrame, pass: &mut wgpu::RenderPass<'_>) {
         f.draw(pass);
     }
-    fn hit(f: &CategoricalFrame, p: [f32; 2]) -> Option<CategoryBarTarget> {
-        f.hit_test(p)
+    fn pick(f: &Arc<CategoricalFrame>, p: [f32; 2]) -> Pick<CategoryBarTarget> {
+        Pick::Ready(f.hit_test(p))
     }
-    fn decorations(f: &CategoricalFrame) -> &DecorationMap {
-        f.decorations()
+    fn decoration_map(f: &CategoricalFrame) -> Option<&DecorationMap> {
+        Some(f.decorations())
     }
     fn background(c: &CategoricalChart) -> Color {
         c.background
@@ -860,18 +969,7 @@ impl Family for CategoricalFamily {
         });
         slider(ui, "group width", &mut c.group_width, 0.1..=0.95);
         slider(ui, "bar gap", &mut c.bar_gap, 0.0..=24.0);
-        choice(
-            ui,
-            "material",
-            &mut c.style.material,
-            &[
-                CategoryBarMaterial::Flat,
-                CategoryBarMaterial::Matte,
-                CategoryBarMaterial::SatinMetal,
-                CategoryBarMaterial::Enamel,
-                CategoryBarMaterial::Paper,
-            ],
-        );
+        choice(ui, "material", &mut c.style.material, FLAT_BODY_MATERIALS);
         slider(ui, "corners", &mut c.style.corner_radius, 0.0..=32.0);
         slider(ui, "gloss", &mut c.style.gloss, 0.0..=1.0);
         ui.separator();
@@ -886,59 +984,6 @@ impl Family for CategoricalFamily {
 // ---------------------------------------------------------------------------
 
 pub struct BoxFamily;
-
-fn summary(
-    low: f64,
-    q1: f64,
-    med: f64,
-    q3: f64,
-    high: f64,
-    outliers: &[f64],
-) -> Option<BoxSummary> {
-    let mut v = BoxSummary::new(low, q1, med, q3, high);
-    v.outliers = outliers.to_vec();
-    v.sample_count = Some(80);
-    v.median_ci = Some([med - 4.0, med + 4.0]);
-    v.mean = Some(med + 2.0);
-    Some(v)
-}
-
-fn box_chart() -> BoxPlotChart {
-    BoxPlotChart {
-        title: "Response by dose".into(),
-        categories: ["Control", "Low", "Mid", "High"]
-            .into_iter()
-            .map(|s| Category::new(s, s))
-            .collect(),
-        series: vec![
-            BoxPlotSeries::new(
-                "trial_a",
-                "Trial A",
-                vec![
-                    summary(12., 30., 42., 55., 78., &[90.]),
-                    summary(20., 42., 55., 68., 85., &[96., 4.]),
-                    summary(25., 45., 60., 70., 88., &[]),
-                    summary(8., 24., 36., 49., 67., &[82.]),
-                ],
-                Color::from_rgb8(65, 144, 208),
-            ),
-            BoxPlotSeries::new(
-                "trial_b",
-                "Trial B",
-                vec![
-                    summary(15., 28., 38., 50., 70., &[]),
-                    summary(22., 40., 50., 62., 80., &[93.]),
-                    summary(30., 50., 64., 74., 92., &[]),
-                    summary(12., 30., 40., 52., 72., &[2.]),
-                ],
-                Color::from_rgb8(230, 169, 64),
-            ),
-        ],
-        value_range: Some([0., 100.]),
-        value_title: "Response".into(),
-        ..Default::default()
-    }
-}
 
 impl Family for BoxFamily {
     type Chart = BoxPlotChart;
@@ -986,11 +1031,11 @@ impl Family for BoxFamily {
     fn draw(f: &BoxPlotFrame, pass: &mut wgpu::RenderPass<'_>) {
         f.draw(pass);
     }
-    fn hit(f: &BoxPlotFrame, p: [f32; 2]) -> Option<BoxPlotTarget> {
-        f.hit_test(p).map(|pick| pick.target)
+    fn pick(f: &Arc<BoxPlotFrame>, p: [f32; 2]) -> Pick<BoxPlotTarget> {
+        Pick::Ready(f.hit_test(p).map(|pick| pick.target))
     }
-    fn decorations(f: &BoxPlotFrame) -> &DecorationMap {
-        f.decorations()
+    fn decoration_map(f: &BoxPlotFrame) -> Option<&DecorationMap> {
+        Some(f.decorations())
     }
     fn background(c: &BoxPlotChart) -> Color {
         c.background
@@ -1043,16 +1088,7 @@ impl Family for BoxFamily {
             ui.checkbox(&mut c.legend, "legend");
         });
         let s = &mut c.style;
-        choice(
-            ui,
-            "material",
-            &mut s.material,
-            &[
-                BoxPlotMaterial::Flat,
-                BoxPlotMaterial::Matte,
-                BoxPlotMaterial::SatinMetal,
-            ],
-        );
+        choice(ui, "material", &mut s.material, FLAT_BODY_MATERIALS);
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.notched, "notched");
             ui.checkbox(&mut s.show_mean, "mean");
@@ -1076,39 +1112,6 @@ impl Family for BoxFamily {
 // ---------------------------------------------------------------------------
 
 pub struct RadarFamily;
-
-fn radar_chart() -> RadarChart {
-    RadarChart {
-        title: "Build quality".into(),
-        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
-            .into_iter()
-            .map(|s| Category::new(s.to_lowercase(), s))
-            .collect(),
-        series: vec![
-            RadarSeries::new(
-                "v1",
-                "Release 1",
-                vec![6., 8., 4., 5., 7., 6.5],
-                Color::from_rgb8(65, 144, 208),
-            ),
-            RadarSeries::new(
-                "v2",
-                "Release 2",
-                vec![8., 7., 6., 8., 9., 7.],
-                Color::from_rgb8(230, 120, 64),
-            ),
-            RadarSeries::new(
-                "v3",
-                "Release 3",
-                vec![9., 8.5, 8., 9., 9.5, 8.],
-                Color::from_rgb8(42, 168, 120),
-            ),
-        ],
-        value_range: Some([0., 10.]),
-        ring_spacing: Some(2.5),
-        ..Default::default()
-    }
-}
 
 impl Family for RadarFamily {
     type Chart = RadarChart;
@@ -1156,11 +1159,11 @@ impl Family for RadarFamily {
     fn draw(f: &RadarFrame, pass: &mut wgpu::RenderPass<'_>) {
         f.draw(pass);
     }
-    fn hit(f: &RadarFrame, p: [f32; 2]) -> Option<RadarTarget> {
-        f.hit_test(p).map(|pick| pick.target)
+    fn pick(f: &Arc<RadarFrame>, p: [f32; 2]) -> Pick<RadarTarget> {
+        Pick::Ready(f.hit_test(p).map(|pick| pick.target))
     }
-    fn decorations(f: &RadarFrame) -> &DecorationMap {
-        f.decorations()
+    fn decoration_map(f: &RadarFrame) -> Option<&DecorationMap> {
+        Some(f.decorations())
     }
     fn background(c: &RadarChart) -> Color {
         c.background

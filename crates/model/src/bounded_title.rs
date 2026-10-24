@@ -31,34 +31,64 @@ impl BoundedTitleOptions {
         self.visible && !self.text.segments.is_empty()
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        fn range(v: f32, lo: f32, hi: f32) -> bool {
-            v.is_finite() && (lo..=hi).contains(&v)
-        }
-        fn color(c: Color) -> bool {
-            [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0., 1.))
-        }
-        let t = &self.text;
-        if !range(t.font_size, 6., 160.)
-            || !color(t.color)
-            || t.font.chars().count() > 160
-            || t.font.chars().any(char::is_control)
-            || t.segments.len() > 512
-            || t.segments.iter().filter(|s| s.text == '\n').count() > 7
-            || t.segments.iter().any(|s| {
-                (s.text.is_control() && !matches!(s.text, '\n' | '\t'))
-                    || s.font_size.is_some_and(|v| !range(v, 6., 160.))
-                    || s.color.is_some_and(|v| !color(v))
-                    || s.field_em.is_some_and(|v| !range(v, 0., 32.))
-                    || s.rule_dash
-                        .as_ref()
-                        .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
-            })
-        {
+        if !self.text.within_limits() {
             return Err(
                 "invalid bounded title: size 6..160, at most 512 characters / 8 lines, finite styles",
             );
         }
         Ok(())
+    }
+}
+
+/// The wire form of a bounded chart's `chart_title` held as a
+/// [`ChartTitleOptions`](crate::config::ChartTitleOptions): the
+/// `{"visible", "text"}` object a [`BoundedTitleOptions`] writes, in that
+/// order, so documents keep their bytes. The chart keeps the title's position
+/// in its `decorations`, so the offsets and `top_margin` are not written and
+/// read as 0; the chart's validation rejects other values.
+#[cfg(feature = "serde")]
+pub(crate) mod bounded_title_wire {
+    use crate::config::ChartTitleOptions;
+    use crate::text::RichText;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize)]
+    struct WireRef<'a> {
+        visible: bool,
+        text: &'a RichText,
+    }
+
+    #[derive(Deserialize)]
+    struct Wire {
+        visible: bool,
+        text: RichText,
+    }
+
+    pub(crate) fn serialize<S: Serializer>(
+        title: &Option<ChartTitleOptions>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match title {
+            Some(title) => serializer.serialize_some(&WireRef {
+                visible: title.visible,
+                text: &title.text,
+            }),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<ChartTitleOptions>, D::Error> {
+        Ok(
+            Option::<Wire>::deserialize(deserializer)?.map(|wire| ChartTitleOptions {
+                text: wire.text,
+                visible: wire.visible,
+                offset_x: 0.0,
+                offset_y: 0.0,
+                top_margin: 0.0,
+            }),
+        )
     }
 }
 

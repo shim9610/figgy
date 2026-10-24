@@ -340,10 +340,11 @@ pub type SeriesRef = String;
 /// What a line series fills: the region between the line and a baseline or
 /// between the line and another series' line.
 ///
-/// The fill is a property of the line. It is not a hit target of its own —
-/// selecting the line selects its fill — and it is drawn before every series
-/// body, in series order, so another series' fill can never cover this
-/// series' line. Fills composite over each other in series order; there is no
+/// The fill is a property of the line. It picks as part of the line (a hit
+/// inside it names the filled segment's nearer sample, and it loses every tie
+/// to a stroke, marker or error bar), selecting the line selects its fill,
+/// and it is drawn before every series body, in series order, so another
+/// series' fill can never cover this series' line. Fills composite over each other in series order; there is no
 /// automatic sorting.
 ///
 /// A fill assumes an x-monotonic series. A series whose x runs back on itself
@@ -404,16 +405,6 @@ impl LineInterpolation {
     /// byte-identically.
     pub fn is_linear(&self) -> bool {
         matches!(self, Self::Linear)
-    }
-
-    /// Axis-aligned pieces one segment is drawn as: 1 for `Linear`, 2 for
-    /// `StepPre` / `StepPost`, 3 for `StepMid`.
-    pub fn piece_count(self) -> u32 {
-        match self {
-            Self::Linear => 1,
-            Self::StepPre | Self::StepPost => 2,
-            Self::StepMid => 3,
-        }
     }
 }
 
@@ -607,8 +598,9 @@ impl PointSizeMap {
     }
 
     /// The marker radius in logical pixels for `value`, or `None` when the
-    /// value is not finite (the point is hidden). The shader and CPU picking
-    /// both follow this formula.
+    /// value is not finite (the point is hidden). The draw and pick shaders
+    /// follow this formula (`size_map_radius`); the renderer's CPU twin, test
+    /// support, checks them against it.
     pub fn radius_px(&self, value: f64) -> Option<f32> {
         if !value.is_finite() {
             return None;
@@ -878,9 +870,10 @@ impl ContourConfig {
     /// wrong by one.
     ///
     /// The spacing is the axis machinery's own: `compute_nice_ticks` picks it,
-    /// and the walk anchors to absolute multiples of it, so the levels are round
-    /// numbers even when the range ends are not. A logarithmic colourbar gets
-    /// decades from the same call, with no separate rule here.
+    /// and the walk is the axes' [`crate::tick::LinearGrid`], anchored to
+    /// absolute multiples of it, so the levels are round numbers even when the
+    /// range ends are not. A logarithmic colourbar gets every step-th decade
+    /// from [`crate::tick::LogDecades`], with no separate rule here.
     pub fn nice_levels(axis: &AxisOptions, target_count: usize) -> Result<Vec<f64>, TickError> {
         // `compute_nice_ticks` widens min/max to nice bounds; a level outside the
         // colourbar's range has no colour, so only its spacing is used.
@@ -900,10 +893,21 @@ impl ContourConfig {
                 if !(step.is_finite() && step > 0.0) {
                     return Err(TickError::InvalidRange);
                 }
-                let first = ((axis.min / step) - 1e-9).ceil() as i64;
-                let last = ((axis.max / step) + 1e-9).floor() as i64;
-                for i in first..=last {
-                    let value = i as f64 * step;
+                // No interval cap: `MAX_CONTOUR_LEVELS` bounds the walk.
+                let Some(grid) = crate::tick::LinearGrid::new(axis.min, axis.max, step, usize::MAX)
+                else {
+                    // No multiple of the step lies inside, or the step is too
+                    // small to move the range ends at `f64` precision; then
+                    // the range holds more levels than the limit when it
+                    // holds more steps.
+                    let steps = axis.max / step - axis.min / step;
+                    return if steps > MAX_CONTOUR_LEVELS as f64 {
+                        Err(TickError::InvalidRange)
+                    } else {
+                        Ok(out)
+                    };
+                };
+                for (_, value) in grid.iter() {
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
                     }
@@ -924,28 +928,11 @@ impl ContourConfig {
                 {
                     return Err(TickError::InvalidRange);
                 }
-                let step = step as i32;
-                let start = start as i32;
-                let end = end as i32;
-                if start > end {
-                    return Ok(out);
-                }
-                let exponent_span = end.checked_sub(start).ok_or(TickError::InvalidRange)?;
-                let iteration_count = exponent_span
-                    .checked_div(step)
-                    .and_then(|count| count.checked_add(1))
-                    .and_then(|count| usize::try_from(count).ok())
+                let decades = crate::tick::LogDecades::new(start as i32, end as i32, step as i32)
                     .ok_or(TickError::InvalidRange)?;
-                let mut exponent = start;
-                for index in 0..iteration_count {
-                    // `powi` can overflow the reciprocal's intermediate power
-                    // for negative exponents, losing valid subnormal decades.
-                    let value = 10f64.powf(f64::from(exponent));
+                for (_, value) in decades {
                     if inside(value) {
                         push_contour_level(&mut out, value)?;
-                    }
-                    if index + 1 < iteration_count {
-                        exponent = exponent.checked_add(step).ok_or(TickError::InvalidRange)?;
                     }
                 }
             }
@@ -1912,12 +1899,8 @@ mod line_style_tests {
     }
 
     #[test]
-    fn step_modes_split_a_segment_into_axis_aligned_pieces() {
+    fn the_default_interpolation_is_linear() {
         assert!(LineInterpolation::default().is_linear());
-        assert_eq!(LineInterpolation::Linear.piece_count(), 1);
-        assert_eq!(LineInterpolation::StepPre.piece_count(), 2);
-        assert_eq!(LineInterpolation::StepPost.piece_count(), 2);
-        assert_eq!(LineInterpolation::StepMid.piece_count(), 3);
     }
 }
 
@@ -1978,18 +1961,6 @@ mod contour_level_tests {
         }
     }
 
-    /// Levels are round numbers on the spacing's own absolute grid, and they sit
-    /// **inside** the range — a level on the boundary coincides with the field's edge and
-    /// would leave the banded fill one band short.
-    #[test]
-    fn nice_levels_are_round_and_strictly_inside() {
-        let levels = ContourConfig::nice_levels(&axis(0.0, 100.0, AxisScale::Linear), 5).unwrap();
-        assert_eq!(levels, vec![20.0, 40.0, 60.0, 80.0]);
-        for level in &levels {
-            assert!(*level > 0.0 && *level < 100.0, "{level} is not inside");
-        }
-    }
-
     /// Asking for more levels gets more, and they stay inside. That is the whole
     /// "how dense" control: the count in, the level list out.
     #[test]
@@ -2014,14 +1985,6 @@ mod contour_level_tests {
         assert_eq!(levels.first(), Some(&1.0));
         assert_eq!(levels.last(), Some(&1024.0));
         assert!(levels.windows(2).all(|pair| pair[1] - pair[0] == 1.0));
-    }
-
-    #[test]
-    fn nice_levels_rejects_the_1025th_linear_level() {
-        assert_eq!(
-            ContourConfig::nice_levels(&axis(0.0, 1026.0, AxisScale::Linear), 2001),
-            Err(TickError::InvalidRange)
-        );
     }
 
     #[test]
@@ -2078,14 +2041,6 @@ mod contour_level_tests {
         assert_eq!(corrected, explicit_one);
     }
 
-    #[test]
-    fn a_valid_log_range_without_an_internal_decade_is_empty() {
-        assert_eq!(
-            ContourConfig::nice_levels(&axis(2.0, 9.0, AxisScale::Logarithmic), 5),
-            Ok(Vec::new())
-        );
-    }
-
     /// A degenerate range has no levels to pick, and says so rather than
     /// inventing one.
     #[test]
@@ -2096,7 +2051,10 @@ mod contour_level_tests {
 
     /// `set_nice_levels` writes the answer into the config — what is drawn stays
     /// exactly what the config holds. Existing per-level colours are left for the
-    /// draw's own fallback rather than discarded.
+    /// draw's own fallback rather than discarded. The levels are round numbers on
+    /// the spacing's own absolute grid, and they sit **inside** the range — a level
+    /// on the boundary coincides with the field's edge and would leave the banded
+    /// fill one band short.
     #[test]
     fn set_nice_levels_writes_the_levels_and_keeps_the_colours() {
         let mut cfg = contour();
@@ -2162,5 +2120,25 @@ mod contour_level_tests {
         for (level, color) in cfg.levels.iter().zip(colors) {
             assert_eq!(*color, bar.color_for_z(*level));
         }
+    }
+
+    /// Ranges the previous index walk got wrong, pinned for the shared grid:
+    /// indices past `i64` (it saturated into an empty list) now get the
+    /// level-limit error, and a step that moves neither range end at `f64`
+    /// precision (it repeated the few representable values) gets no levels.
+    #[test]
+    fn nice_levels_refuse_what_the_grid_cannot_walk() {
+        assert_eq!(
+            ContourConfig::nice_levels(&axis(1e-9, 3e-9, AxisScale::Linear), usize::MAX),
+            Err(TickError::InvalidRange)
+        );
+        assert_eq!(
+            ContourConfig::nice_levels(&axis(1e16, 1e16 + 4.0, AxisScale::Linear), 5),
+            Ok(Vec::new())
+        );
+        assert_eq!(
+            ContourConfig::nice_levels(&axis(1e16, 1e16 + 4.0, AxisScale::Linear), 2001),
+            Err(TickError::InvalidRange)
+        );
     }
 }

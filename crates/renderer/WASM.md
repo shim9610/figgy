@@ -1,12 +1,12 @@
 <a id="webassembly-빌드와-웹-io-가이드"></a>
 
-# WebAssembly 지원과 브라우저 통합 예제
+# WebAssembly 지원과 브라우저용 figgy
 
-Rust 렌더러의 WASM/WebGPU 지원과 `crates/web`의 예제 래퍼를 구분한다.
-아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 브라우저 통합 예제의 계약이다.
+Rust 렌더러의 WASM/WebGPU 지원과 figgy의 브라우저용 제품인 `crates/web` 래퍼를 구분한다.
+아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 이 래퍼의 계약이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
 `FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 원형·범주형 막대·박스플롯·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
-간단한 빌드·실행 방법은 [예제 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
+간단한 빌드·실행 방법은 [브라우저용 figgy 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
 The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
 
@@ -192,7 +192,7 @@ match frame_decision(
                 &mut view,
                 &display_chart,
                 rect,
-                &sel_boxes,
+                selected_id.as_deref(), // 선택된 요소 id, 예: Some("data_area")
             )?;
         } else if annotation_dirty {
             renderer.refresh_annotations(&mut view, &display_chart, rect, selected_annotation)?;
@@ -389,7 +389,7 @@ const png = await withKernelOperation((chart) => chart.export_png(2.0));
 // getter·편집·포인터 처리·크기 변경·해제도 `busy`를 확인해야 한다.
 ```
 
-예제 `<figgy-chart>` 래퍼는 비동기 커널 작업을 위해 연결 세대를 확인하는 게이트를 이미 갖고 있다. 경쟁하는 앱 호출은 `"figgy chart is busy"`로 거부하며, 일반적인 호출 대기열이 아니다. 래퍼를 쓸 때는 래퍼에 있는 메서드를 저수준 커널로 우회해 호출하지 않는다. 래퍼에 없는 메서드는 [`element.kernel`](#figgy-chart-kernel)로 호출한다. 연결 해제와 재연결을 지원하는 호스트는 [3.9절](#39-async-메서드와-객체-잠금-필독)의 수명 규칙도 따라야 한다.
+`<figgy-chart>` 래퍼는 비동기 커널 작업을 위해 연결 세대를 확인하는 게이트를 이미 갖고 있다. 경쟁하는 앱 호출은 `"figgy chart is busy"`로 거부하며, 일반적인 호출 대기열이 아니다. 래퍼를 쓸 때는 래퍼에 있는 메서드를 저수준 커널로 우회해 호출하지 않는다. 래퍼에 없는 메서드는 [`element.kernel`](#figgy-chart-kernel)로 호출한다. 연결 해제와 재연결을 지원하는 호스트는 [3.9절](#39-async-메서드와-객체-잠금-필독)의 수명 규칙도 따라야 한다.
 
 동기 출력 함수 `export_panel_png_bytes`는 웹 빌드에서 제외된다. 웹에서는 비동기 버전을 사용해야 한다.
 
@@ -460,7 +460,7 @@ chart.set_series(JSON.stringify(series));  // GPU 스타일 재빌드 포함
 
 ### 3.9 비동기 호출 중 객체 접근 제한
 
-`&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. 예제 웹 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
+`&mut self`를 빌리는 비동기 메서드가 실행 중일 때 같은 객체에 다시 접근하면 `"recursive use of an object"` 예외가 발생할 수 있다. wasm-bindgen은 호출을 대기열에 넣지 않는다. `<figgy-chart>` 래퍼는 작업 중인 객체에 대한 추가 호출을 거부한다. 저수준 커널을 직접 사용한다면 다음 규칙을 지켜야 한다.
 
 - rAF 루프는 WASM을 호출하기 전에 다음 `requestAnimationFrame(tick)`을 예약한다. 예외가 발생해도 루프가 끊어지지 않게 하기 위해서다.
 - 생성·연결, 두 전체 사전 준비 메서드, `prewarm_gpu_picking`, 출력(`export_png`, 스트림 출력의 `finish_stream_export` / `cancel_stream_operation_and_wait`), `first_frame_ready` / `warm_up`, `ensure_extent_engine`, 상주 `auto_fit_all`, `pick_point` / `pick_data`, `release_unused_gpu_memory`, `cancel_streaming_and_wait`가 실행되는 동안 연결 세대와 커널을 확인하는 `busy` 토큰을 유지한다. 저수준 `selection_details()`의 비동기 GPU 읽기 중에도 같은 접근 제한을 적용한다. 그동안 `frame()`·포인터·크기 변경·대리 호출은 생략하거나 거부한다. 상주 `auto_fit_all`은 완료 시 설정을 직접 바꾸므로 실행 중 `frame()`을 호출할 수 없다.
@@ -893,7 +893,11 @@ returned to the host. `frame()` alone only submits work.
 
 `set_document(documentJson, width, height)` validates and prepares the new
 document before replacing the whole document, and keeps the previous one on
-failure. Omitted fields are not kept: they take their defaults or fail to
+failure. A `radial` document's slices draw their `text`: `create` and
+`set_document` fill a missing one from the slice's label format (as
+`RadialChart::normalize_labels` does) and keep one that is set, so after
+editing a value or a format remove the affected `text` fields (or write the
+new strings) before sending the document back. Omitted fields are not kept: they take their defaults or fail to
 parse, so read `get_document()`, change the fields you need and send the
 complete document back.
 
@@ -902,10 +906,11 @@ The interactive editing and export methods are:
 - `decorations()` returns the measured decorations as JSON
   `[{ id, rect, handles }]`, with `rect` and each handle as
   `[x, y, width, height]`.
-- `hit_decoration(x, y, editArea)` returns the id of the topmost decoration
-  under the point, or `undefined`. With `editArea` false, a point over data
-  inside an unselected data area returns `undefined`, so the click can go to
-  `pick`.
+- `hit_decoration(x, y, editArea)` resolves to the id of the topmost
+  decoration under the point, or `undefined`. With `editArea` false, a point
+  over data inside an unselected data area resolves to `undefined`, so the
+  click can go to `pick`. It is asynchronous because a radial chart answers
+  "data here" with its GPU pick.
 - `select_decoration(id | null)` selects the decoration with that id, or none,
   and clears the data selection; an unknown id throws.
 - `resize_handle(id, x, y)` returns the compass name of that decoration's
@@ -914,11 +919,15 @@ The interactive editing and export methods are:
   is a compass name such as `"SE"` (`null` for a move), and returns whether it
   moved.
 - `pick(x, y, toggle)` selects the mark under the point, clears the decoration
-  selection and returns the data selection as JSON (`"null"` for none). With
-  `toggle` true, picking the selected mark again clears it.
-- `hover(x, y, dt)` returns whether another frame is needed; `dt` is the time
-  since the previous call in seconds, capped at 0.1. Pass `null` for both
+  selection and resolves to the data selection as JSON (`"null"` for none).
+  With `toggle` true, picking the selected mark again clears it.
+- `hover(x, y, dt)` resolves to whether another frame is needed; `dt` is the
+  time since the previous call in seconds, capped at 0.1. Pass `null` for both
   coordinates when the pointer leaves.
+- `pick`, `hover` and `hit_decoration` return Promises, like
+  `FiggyChart.pick_point`: a radial chart picks its slices on the GPU with the
+  draw's own sector ray-march and reads the answer back. Await each before the
+  next call on the object.
 - `step_selection(backwards)` takes one boolean, unlike the Cartesian two-axis
   navigation method.
 - `get_document()`, `clear_selection()`, `resize(width, height)`, `frame()` and
@@ -950,7 +959,7 @@ const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(rad
 // "categorical", "boxplot" and "radar" take the matching chart's JSON instead.
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
-const selected = JSON.parse(view.pick(...point, true)); // click toggles selection
+const selected = JSON.parse(await view.pick(...point, true)); // click toggles selection
 view.select_decoration("chart_title");
 view.drag("chart_title", 12, 6, null); // changes only this decoration's offset
 view.frame();
@@ -1017,10 +1026,14 @@ annotation methods keep working on every layer.
 
 ### Cartesian selection helpers (`FiggyChart`)
 
-`FiggyChart.decoration_bounds(id)` returns measured bounds
-and resize handles in physical canvas pixels. For polar angle or radius tick
-labels, whose selection outlines each drawn label, it also returns `labels`:
-one `[x, y, width, height]` box per drawn label, the boxes the canvas draws. `step_selection(dx, dy)` navigates
+`FiggyChart.decoration_bounds(id)` returns measured bounds (`rect`)
+and resize handles (`handles`) in physical canvas pixels. For an element whose
+selection outlines its drawn parts (polar angle and radius tick labels, the
+polar ray, annotations), it also returns `outline`: a list of polygons, one per
+drawn part, each a list of `[x, y]` corners in physical canvas pixels. They are
+exactly the shapes the canvas strokes around the selection: a text block or
+rectangle as its box padded by 2 logical px, a stroke as the thin oriented box
+around it, and an arrow head as its triangle grown outward. `step_selection(dx, dy)` navigates
 resident point, histogram or matrix selections using source indices, without
 copying arrays. For a point, `dx` moves the source index and `dy` switches
 between the series that draw points or lines; a selected point-vector arrow

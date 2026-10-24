@@ -1,9 +1,12 @@
 use super::*;
+use crate::data_render::{FLAT_BODY_ROUGHNESS, MaterialGpu};
 use crate::decoration::{DecorationMap, DecorationPainter, LabelPlacer};
 use crate::raster::Canvas;
 use crate::text_render::{FontPolicy, measure_plain_text};
 use model::DecorationId;
 use model::config::{AxisOptions, AxisScale};
+use model::format::PlainNumberFormat;
+use model::tick::LinearGrid;
 
 pub(super) struct Layout {
     pub bars: Vec<Bar>,
@@ -79,19 +82,18 @@ pub(super) fn layout(
     }
     // Distant clipped geometry is bounded before converting to f32.
     let norm = |v: f64| ((v / unit - plan.min) / span).clamp(-10000.0, 10000.0) as f32;
-    let start = (plan.min / plan.major_spacing).ceil() * plan.major_spacing;
-    let tick_count = ((plan.max - start) / plan.major_spacing).floor().max(0.0) as usize;
-    if tick_count > 100 {
+    // The axes' grid walk over the plan (a fixed range is not widened).
+    let grid = LinearGrid::new(plan.min, plan.max, plan.major_spacing, 100);
+    if grid.is_some_and(|grid| grid.last_index() - grid.first_index() > 100.0) {
         return Err(invalid("too many value ticks"));
     }
     let mut ticks = Vec::new();
-    for i in 0..=tick_count {
-        let normalized = start + i as f64 * plan.major_spacing;
+    for (_, normalized) in grid.iter().flat_map(|grid| grid.iter()) {
         let value = normalized * unit;
         if !value.is_finite() {
             return Err(invalid("boxplot axis tick overflow"));
         }
-        let label = crate::axis_render::plain_number(value);
+        let label = PlainNumberFormat::AUTO.format(value);
         if ticks.last().is_some_and(|t: &(f32, String)| t.1 == label) {
             return Err(invalid("value ticks need a wider range to remain distinct"));
         }
@@ -143,7 +145,7 @@ pub(super) fn layout(
     } else {
         24.0
     };
-    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale, false);
+    let title = crate::bounded_title::TitleLayout::new(c.resolved_title(), scale);
     let top = title.top;
     let axis_title = if horizontal {
         &c.value_title
@@ -272,23 +274,27 @@ pub(super) fn layout(
                 .fold(2166136261u32, |a, b| {
                     (a ^ u32::from(b)).wrapping_mul(16777619)
                 });
+            let emphasis = if emphasized {
+                st.emphasis_brightness
+            } else {
+                0.0
+            };
+            let seed = (seed % 4096) as f32;
+            // Whiskers, caps, the median, the mean and outliers are Flat; only
+            // the box takes the style's material.
             let base = Bar {
-                effects: [
-                    if emphasized {
-                        st.emphasis_brightness
-                    } else {
-                        0.0
-                    },
-                    scale,
+                material: MaterialGpu::pack(
+                    crate::Material::Flat,
+                    FLAT_BODY_ROUGHNESS,
                     0.0,
                     0.0,
-                ],
-                outline: [
                     0.0,
+                    seed,
                     0.0,
-                    if horizontal { 1.0 } else { 0.0 },
-                    (seed % 4096) as f32,
-                ],
+                    emphasis,
+                ),
+                effects: [0.0, scale, 0.0, 0.0],
+                outline: [0.0, 0.0, if horizontal { 1.0 } else { 0.0 }, 0.0],
                 ..EMPTY_BAR
             };
             let xy = |cross: f32, along: f32| {
@@ -376,21 +382,21 @@ pub(super) fn layout(
                         .min(thickness * 0.5)
                         .min((q1 - q3).abs() * 0.5); 4],
                     color: [color.r, color.g, color.b, color.a],
-                    material: [
-                        match st.material {
-                            BoxPlotMaterial::Flat => 0.0,
-                            BoxPlotMaterial::Matte => 1.0,
-                            BoxPlotMaterial::SatinMetal => 2.0,
-                        },
+                    material: MaterialGpu::pack(
+                        st.material,
+                        FLAT_BODY_ROUGHNESS,
                         st.texture_strength,
                         st.texture_scale,
                         st.gloss,
-                    ],
+                        seed,
+                        0.0,
+                        emphasis,
+                    ),
                     outline: [
                         if st.outline { 1.0 } else { 0.0 },
                         st.outline_width,
                         base.outline[2],
-                        base.outline[3],
+                        0.0,
                     ],
                     outline_color: [
                         st.outline_color.r,
@@ -501,19 +507,15 @@ pub(super) fn layout(
                     };
                     let (x, y) =
                         decorations.place_text(&mut labels, &c.font_family, &label, x, y, fs);
-                    decorations.text(
-                        DecorationId::DataLabel {
-                            category_id: target.category_id.clone(),
-                            series_id: target.series_id.clone(),
-                        },
-                        &mut front,
-                        &c.font_family,
-                        &label,
-                        x,
-                        y,
-                        fs,
-                        c.text_color,
-                    );
+                    decorations
+                        .on(
+                            DecorationId::DataLabel {
+                                category_id: target.category_id.clone(),
+                                series_id: target.series_id.clone(),
+                            },
+                            &mut front,
+                        )
+                        .plain_text(&c.font_family, &label, x, y, fs, c.text_color);
                 }
             }
         }

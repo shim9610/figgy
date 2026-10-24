@@ -1,8 +1,11 @@
 //! Exercise area editing through existing trait objects, not host geometry.
 use ::renderer::*;
 use std::sync::Arc;
+#[path = "bounded_decorations.rs"]
+mod decorations;
 #[path = "bounded_selection.rs"]
 mod selection;
+use decorations::Decorations;
 pub use selection::assert_selection_only;
 #[cfg(not(target_arch = "wasm32"))]
 pub use selection::assert_selection_with_rerasterized_label;
@@ -19,16 +22,16 @@ pub async fn check(gpu: RendererDevice) {
                     &original,
                     &r.prepare(&c, (800, 520), scale).unwrap()
                 ));
-                let map = original.decorations();
-                let (hit, element) = map
-                    .entries()
-                    .find(|(_, e)| e.id.element_id() == "data_area")
+                // The chart the frame was prepared from, which its
+                // decorations answer for while `c` is edited below.
+                let shown = c.clone();
+                let (hit, key) = original
+                    .entries(&shown)
+                    .into_iter()
+                    .find(|(_, e)| e.element_id() == "data_area")
                     .expect(concat!(stringify!($renderer), " omitted data area"));
-                let key = element.id.clone();
-                let bounds = map.bounds(hit).unwrap();
-                assert_eq!(map.selection_box(hit).unwrap().handles.len(), 8);
-                let target = map.hit_map().get(hit).unwrap();
-                let resizable = target.as_resizable().expect("area must expose Resizable");
+                let bounds = original.bounds(&shown, hit).unwrap();
+                assert_eq!(original.selection(&shown, hit).unwrap().handles().len(), 8);
                 let before = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
                 r.end_frame();
                 c.decorations.selected = Some(key.clone());
@@ -36,7 +39,7 @@ pub async fn check(gpu: RendererDevice) {
                 assert_selection_only(
                     &before,
                     &selected,
-                    &map.selection_box(hit).unwrap(),
+                    &original.selection(&shown, hit).unwrap(),
                     scale,
                     &format!("{} area at {scale}x", stringify!($renderer)),
                 );
@@ -51,30 +54,25 @@ pub async fn check(gpu: RendererDevice) {
                 r.end_frame();
                 let state = c.decorations.clone();
                 assert!(matches!(
-                    resizable.resize_by(
-                        &mut c.decorations,
-                        resize::ResizeHandle::NW,
-                        -10000.,
-                        -10000.
-                    ),
-                    layout::NudgeResult::Rejected(_)
+                    original.resize(&mut c, hit, resize::ResizeHandle::NW, -10000., -10000.),
+                    Some(layout::NudgeResult::Rejected(_))
                 ));
                 assert_eq!(
                     c.decorations, state,
                     "rejected corner resize partially changed state"
                 );
                 assert_eq!(
-                    resizable.resize_by(&mut c.decorations, resize::ResizeHandle::SE, -100., -80.),
-                    layout::NudgeResult::Moved
+                    original.resize(&mut c, hit, resize::ResizeHandle::SE, -100., -80.),
+                    Some(layout::NudgeResult::Moved)
                 );
                 c.decorations.selected = Some(key.clone());
                 let smaller = r.prepare(&c, (800, 520), scale).unwrap();
                 assert!(!Arc::ptr_eq(&original, &smaller));
-                let smap = smaller.decorations();
-                let sh = smap.entries().find(|(_, e)| e.id == key).unwrap().0;
-                let sb = smap.bounds(sh).unwrap();
-                let selection = smap.selection_box(sh).unwrap();
-                let rect = selection.rect;
+                let sshown = c.clone();
+                let sh = smaller.id_of(&sshown, &key);
+                let sb = smaller.bounds(&sshown, sh).unwrap();
+                let selection = smaller.selection(&sshown, sh).unwrap();
+                let rect = selection.rect();
                 let (left, top) = (rect.x, rect.y);
                 let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
                 let (cx, cy) = ((left + right) * 0.5, (top + bottom) * 0.5);
@@ -106,7 +104,7 @@ pub async fn check(gpu: RendererDevice) {
                             (anchor[1] + offset[1]) * scale,
                         ];
                         assert_eq!(
-                            smap.hit_resize_handle(sh, [pixel[0] / scale, pixel[1] / scale]),
+                            smaller.handle_at(&sshown, sh, [pixel[0] / scale, pixel[1] / scale]),
                             Some(expected),
                             "{context}: inside hit"
                         );
@@ -118,7 +116,8 @@ pub async fn check(gpu: RendererDevice) {
                         [0., half + 0.5],
                     ] {
                         assert_eq!(
-                            smap.hit_resize_handle(
+                            smaller.handle_at(
+                                &sshown,
                                 sh,
                                 [anchor[0] + offset[0], anchor[1] + offset[1]]
                             ),
@@ -126,20 +125,19 @@ pub async fn check(gpu: RendererDevice) {
                             "{context}: outside hit"
                         );
                     }
-                    let picked = smap
-                        .hit_resize_handle(sh, anchor)
+                    let picked = smaller
+                        .handle_at(&sshown, sh, anchor)
                         .expect("handle center must pick");
                     let mut trial = c.clone();
                     assert_eq!(
-                        smap.resize_by(&mut trial.decorations, sh, picked, delta[0], delta[1]),
+                        smaller.resize(&mut trial, sh, picked, delta[0], delta[1]),
                         Some(layout::NudgeResult::Moved),
                         "{context}"
                     );
                     let frame = r.prepare(&trial, (800, 520), scale).unwrap();
-                    let edited_map = frame.decorations();
-                    let edited_id = edited_map.entries().find(|(_, e)| e.id == key).unwrap().0;
+                    let edited_id = frame.id_of(&trial, &key);
                     assert_eq!(
-                        edited_map.bounds(edited_id).unwrap(),
+                        frame.bounds(&trial, edited_id).unwrap(),
                         layout::RectF {
                             x: sb.x + change[0],
                             y: sb.y + change[1],
@@ -149,13 +147,13 @@ pub async fn check(gpu: RendererDevice) {
                         "{context}: picked handle resized the wrong edges"
                     );
                     assert_eq!(
-                        smap.bounds(sh),
+                        smaller.bounds(&sshown, sh),
                         Some(sb),
                         "{context}: previous frame changed"
                     );
                 }
                 assert_eq!(
-                    smap.hit_resize_handle(sh, [cx, cy]),
+                    smaller.handle_at(&sshown, sh, [cx, cy]),
                     None,
                     "area interior is not a resize handle"
                 );
@@ -164,7 +162,7 @@ pub async fn check(gpu: RendererDevice) {
                     (bounds.x, bounds.y, bounds.width - 100., bounds.height - 80.)
                 );
                 assert_eq!(
-                    map.bounds(hit).unwrap(),
+                    original.bounds(&shown, hit).unwrap(),
                     bounds,
                     "old frame geometry changed"
                 );
@@ -173,17 +171,21 @@ pub async fn check(gpu: RendererDevice) {
                     (layout::Side::Left, 0., 80.),
                 ] {
                     let axis = DecorationId::Axis(side);
-                    if let Some((old_id, _)) = map.entries().find(|(_, e)| e.id == axis) {
-                        let new_id = smap.entries().find(|(_, e)| e.id == axis).unwrap().0;
-                        let old = map.bounds(old_id).unwrap();
-                        let new = smap.bounds(new_id).unwrap();
+                    if let Some((old_id, _)) = original
+                        .entries(&shown)
+                        .into_iter()
+                        .find(|(_, e)| *e == axis)
+                    {
+                        let new_id = smaller.id_of(&sshown, &axis);
+                        let old = original.bounds(&shown, old_id).unwrap();
+                        let new = smaller.bounds(&sshown, new_id).unwrap();
                         assert!((new.width - (old.width - width_delta)).abs() < 0.01);
                         assert!((new.height - (old.height - height_delta)).abs() < 0.01);
                     }
                 }
                 let resized = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
                 assert_ne!(before.rgba, resized.rgba, "area edit reused stale pixels");
-                for handle in smap.selection_box(sh).unwrap().handles {
+                for handle in smaller.selection(&sshown, sh).unwrap().handles() {
                     let mut blue = 0;
                     for y in (handle.y * scale).floor() as u32
                         ..((handle.y + handle.height) * scale).ceil() as u32
@@ -204,13 +206,12 @@ pub async fn check(gpu: RendererDevice) {
 
                 r.end_frame();
                 assert_eq!(
-                    smap.drag_by(&mut c.decorations, sh, 20., 15.),
+                    smaller.drag(&mut c, sh, 20., 15.),
                     Some(layout::NudgeResult::Moved)
                 );
                 let moved = r.prepare(&c, (800, 520), scale).unwrap();
-                let mmap = moved.decorations();
-                let mh = mmap.entries().find(|(_, e)| e.id == key).unwrap().0;
-                assert_eq!(mmap.bounds(mh).unwrap(), sb.translated(20., 15.));
+                let mh = moved.id_of(&c, &key);
+                assert_eq!(moved.bounds(&c, mh).unwrap(), sb.translated(20., 15.));
                 let image = r.export_rgba_async(&c, (800, 520), scale).await.unwrap();
                 assert_ne!(image.rgba, resized.rgba);
                 // Actual red data pixels, not selection boxes or labels, must
@@ -228,8 +229,8 @@ pub async fn check(gpu: RendererDevice) {
                         {
                             assert!(
                                 moved
-                                    .hit_test([(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale])
-                                    .is_some(),
+                                    .has_data([(x as f32 + 0.5) / scale, (y as f32 + 0.5) / scale])
+                                    .await,
                                 "visible data did not move with picking"
                             );
                             picked += 1;
@@ -275,15 +276,16 @@ pub async fn check(gpu: RendererDevice) {
         }};
     }
     let red = Color::from_rgb8(220, 70, 40);
-    check_chart!(
-        RadialRenderer,
-        RadialChart {
+    check_chart!(RadialRenderer, {
+        let mut chart = RadialChart {
             title: "Resize data area".into(),
             slices: vec![RadialSlice::new("A", 1., red)],
             labels: RadialLabels::Inside,
             ..Default::default()
-        }
-    );
+        };
+        chart.format_labels();
+        chart
+    });
     check_chart!(
         CategoricalRenderer,
         CategoricalChart {

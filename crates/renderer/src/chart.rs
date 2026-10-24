@@ -29,15 +29,20 @@ pub(crate) fn apply_axis_range(
     max: f64,
     log: bool,
 ) {
+    // A categorical axis keeps its category range: every range helper (the
+    // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
+    if axis.categories.is_some() {
+        return;
+    }
     axis.min = min;
     axis.max = max;
     if log {
-        axis.major_spacing = log_decade_step(min, max);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Logarithmic, min, max);
         axis.minor_count = 8;
         axis.label_style.format = LabelFormat::Power;
         axis.label_style.significant_digits = 1;
     } else {
-        axis.major_spacing = nice_spacing(max - min);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Linear, min, max);
         axis.minor_count = 4;
         if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
             axis.label_style.format = LabelFormat::Decimal;
@@ -51,54 +56,7 @@ fn fill_plain_segments(rt: &mut RichText, s: &str) {
     rt.segments = rich_segments_from_text(s);
 }
 
-/// Major spacing for a logarithmic axis, in decades.
-///
-/// `min`/`max` are in linear space; both shader and axis raster interpret
-/// `major_spacing` as "decades per major tick". Branches aim for 5–8 labels.
-pub(crate) fn log_decade_step(min: f64, max: f64) -> f64 {
-    if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= min {
-        return 1.0;
-    }
-    let log_min = min.log10().floor();
-    let log_max = max.log10().ceil();
-    let decades = (log_max - log_min).max(1.0);
-    if decades <= 6.0 {
-        1.0
-    } else if decades <= 12.0 {
-        2.0
-    } else {
-        (decades / 6.0).ceil()
-    }
-}
-
-/// Fallback lower bound for invalid manual log-axis ranges.
-pub(crate) const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
-
-/// Renderer-side guard for log-axis ranges.
-pub(crate) fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
-    let min = if min.is_finite() && min > 0.0 {
-        min
-    } else {
-        LOG_RANGE_FALLBACK_MIN
-    };
-    if max.is_finite() && max > min {
-        return (min, max);
-    }
-
-    let upper = min * 10.0;
-    if upper.is_finite() && upper > min {
-        return (min, upper);
-    }
-
-    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
-    // finite, ordered fallback by putting the synthetic decade below it.
-    let lower = min / 10.0;
-    if lower.is_finite() && lower > 0.0 && lower < min {
-        return (lower, min);
-    }
-
-    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
-}
+pub(crate) use crate::layout::guarded_log_range;
 
 /// Positive-preserving padding for a log-scale axis: pad by
 /// `padding_ratio · span` in log space on each side, then back to linear.
@@ -111,35 +69,6 @@ pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
     let span = lmax - lmin;
     let pad = span * padding_ratio.max(0.0);
     (10f64.powf(lmin - pad), 10f64.powf(lmax + pad))
-}
-
-/// "Nice" tick spacing for a given data span — aims for 5–10 major ticks
-/// using the 1·2·5 × 10^k sequence common in scientific plots.
-///
-/// Examples: span=72 → 10, span=8 → 1, span=0.7 → 0.1.
-pub(crate) fn nice_spacing(span: f64) -> f64 {
-    if !span.is_finite() || span <= 0.0 {
-        return 1.0;
-    }
-    let exp = span.log10().floor();
-    let base = 10f64.powf(exp);
-    if !base.is_finite() || base <= 0.0 {
-        return span;
-    }
-    let frac = span / base;
-    // frac is in [1, 10); the 1·2·5 branches keep tick count in 5..=10.
-    let spacing = if frac >= 5.0 {
-        base
-    } else if frac >= 2.0 {
-        0.5 * base
-    } else {
-        0.2 * base
-    };
-    if spacing.is_finite() && spacing > 0.0 {
-        spacing
-    } else {
-        span
-    }
 }
 
 /// One axis' fit input: the union of everything that must stay visible.
@@ -174,19 +103,6 @@ impl FitExtent {
         };
     }
 
-    /// Widen to also cover the single bound `v`.
-    fn include(&mut self, v: f64) {
-        if v < self.min {
-            self.min = v;
-        }
-        if v > self.max {
-            self.max = v;
-        }
-        if v > 0.0 && self.min_positive.is_none_or(|p| v < p) {
-            self.min_positive = Some(v);
-        }
-    }
-
     /// A fit is only meaningful over a finite, non-degenerate span — the
     /// same gate the column-union fitters have always applied.
     fn is_fittable(&self) -> bool {
@@ -213,6 +129,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // colourbar with a non-positive lower bound has no `t` for its lowest
     // colour, which is the same defect as a log x axis starting at zero.
     let colorbar_axis = config.colorbar.as_ref().map(|bar| &bar.axis);
+    if colorbar_axis.is_some_and(|axis| axis.categories.is_some()) {
+        return Err(FiggyError::InvalidConfig {
+            field: "colorbar.axis",
+            reason: "a colourbar axis cannot be categorical",
+        });
+    }
     for (field, axis) in [
         ("top_x", &config.top_x),
         ("bottom_x", &config.bottom_x),
@@ -222,6 +144,13 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     .into_iter()
     .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
     {
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig { field, reason })?;
+        // A categorical axis maps its category range; `min` / `max` are
+        // ignored there.
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field,
@@ -246,6 +175,14 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // must be unambiguous before a series is drawn on one panel.
     for overlay in &config.overlays {
         let axis = &overlay.y_axis;
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason,
+            })?;
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field: "overlays.y_axis",
@@ -357,40 +294,6 @@ pub(crate) fn apply_auto_fit_all(
         apply_axis_range(&mut config.left_y, min, max, log);
         apply_axis_range(&mut config.right_y, min, max, log);
     }
-}
-
-/// Pairwise fit extent of a value column with errorbar offsets, matching the
-/// GPU arithmetic exactly (`errorbar_columnar.wgsl`: `lo = v - err_lo`,
-/// `hi = v + err_hi`). This cannot be derived from per-column min/max — the
-/// widest bound is not necessarily at a value extreme — so it needs one pass
-/// over the actual pairs. Non-finite values are skipped (NaN-gap
-/// convention); a non-finite error entry contributes the bare value (the
-/// shader draws no bar there but the marker still shows). Offsets past the
-/// error columns' length default to 0, mirroring "no bar". Returns `None`
-/// when no finite value exists.
-pub fn errorbar_extent(vals: &[f32], err_lo: &[f32], err_hi: &[f32]) -> Option<FitExtent> {
-    let mut ext = FitExtent::EMPTY;
-    let mut any = false;
-    for (i, &v) in vals.iter().enumerate() {
-        let v = v as f64;
-        if !v.is_finite() {
-            continue;
-        }
-        let lo_off = err_lo
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        let hi_off = err_hi
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        ext.include(v - lo_off);
-        ext.include(v + hi_off);
-        any = true;
-    }
-    any.then_some(ext)
 }
 
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
@@ -554,12 +457,15 @@ impl Chart {
     /// [`Self::with_axis_range_change`] instead.
     ///
     /// Branches on the bottom axis's scale:
-    /// - **Linear**: `major_spacing = nice_spacing(max - min)` (1·2·5 sequence),
-    ///   `minor_count = 4`, `format = Decimal` (an existing timestamp format
-    ///   is retained), `sig_digits = 3`.
-    /// - **Logarithmic**: `major_spacing = log_decade_step(min, max)`
-    ///   (1 / 2 / N decades), `minor_count = 8` (2..9 within each decade),
-    ///   `format = Power` (10ⁿ superscript), `sig_digits = 1`.
+    /// - **Linear**: `major_spacing` is
+    ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
+    ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
+    ///   8 → 1, 0.7 → 0.1, 10 → 2). `minor_count = 4`, `format = Decimal`
+    ///   (an existing timestamp format is retained), `sig_digits = 3`.
+    /// - **Logarithmic**: `major_spacing` is the same function's decade step
+    ///   (1 up to 6 decades, 2 up to 12, then `ceil(decades / 6)`),
+    ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
+    ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
@@ -965,15 +871,10 @@ mod tests {
     }
 
     #[test]
-    fn chart_dirty_starts_true() {
-        let c = Chart::new(dummy_config());
-        assert!(c.data_dirty());
-        assert!(c.raster_dirty());
-    }
-
-    #[test]
     fn chart_consume_clears_dirty() {
         let mut c = Chart::new(dummy_config());
+        assert!(c.data_dirty());
+        assert!(c.raster_dirty());
         assert!(c.consume_data_dirty());
         assert!(!c.data_dirty());
         assert!(c.consume_raster_dirty());
@@ -1104,42 +1005,6 @@ mod tests {
         assert_eq!(b, 5.0);
     }
 
-    /// The widest bound is not at a value extreme — per-column min/max
-    /// composition would get this wrong (0−5 = −5), the pairwise pass right.
-    #[test]
-    fn errorbar_extent_is_pairwise_not_minmax_composed() {
-        let ext = errorbar_extent(&[0.0, 10.0], &[1.0, 5.0], &[1.0, 5.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.max, 15.0);
-    }
-
-    /// NaN values are gaps (skipped); NaN errors draw no bar, so they
-    /// contribute the bare value. Offsets past the error column's end
-    /// default to zero.
-    #[test]
-    fn errorbar_extent_nan_and_length_conventions() {
-        let nan = f32::NAN;
-        let ext = errorbar_extent(&[nan, 2.0, 4.0], &[100.0, nan], &[100.0, nan]).unwrap();
-        assert_eq!(ext.min, 2.0);
-        assert_eq!(ext.max, 4.0);
-
-        assert!(errorbar_extent(&[nan, nan], &[1.0, 1.0], &[1.0, 1.0]).is_none());
-    }
-
-    #[test]
-    fn errorbar_extent_asymmetric_and_min_positive() {
-        let ext = errorbar_extent(&[10.0], &[2.0], &[7.0]).unwrap();
-        assert_eq!(ext.min, 8.0);
-        assert_eq!(ext.max, 17.0);
-        assert_eq!(ext.min_positive, Some(8.0));
-
-        // Bound dips below zero: min_positive keeps the smallest positive
-        // bound for the log-axis safe floor.
-        let ext = errorbar_extent(&[1.0, 3.0], &[2.0, 1.0], &[0.0, 0.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.min_positive, Some(1.0));
-    }
-
     #[test]
     fn auto_fit_y_extent_linear_pads_both_sides() {
         let mut c = Chart::new(dummy_config());
@@ -1258,6 +1123,110 @@ mod tests {
                 "title margin {margin} must be refused at the renderer boundary"
             );
         }
+    }
+
+    fn categories(n: usize) -> Option<Vec<crate::config::Category>> {
+        Some(
+            (0..n)
+                .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
+                .collect(),
+        )
+    }
+
+    /// A categorical axis is held to its category rules on every axis the
+    /// renderer reads, its `min` / `max` are not checked, and the axes that
+    /// cannot be categorical yet say so.
+    #[test]
+    fn validate_renderer_config_holds_categorical_axes_to_their_rules() {
+        let with = |edit: &dyn Fn(&mut Config)| {
+            let mut cfg = dummy_config();
+            edit(&mut cfg);
+            validate_renderer_config(&cfg)
+        };
+        assert!(with(&|c| c.bottom_x.categories = categories(3)).is_ok());
+        // `min` / `max` are ignored on a categorical axis.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(2);
+                c.left_y.min = 5.0;
+                c.left_y.max = f64::NAN;
+            })
+            .is_ok()
+        );
+        for (field, edit) in [
+            (
+                "top_x",
+                (|c: &mut Config| c.top_x.categories = categories(0)) as fn(&mut Config),
+            ),
+            ("bottom_x", |c| {
+                c.bottom_x.categories = categories(2);
+                c.bottom_x.scale = AxisScale::Logarithmic;
+            }),
+            ("left_y", |c| {
+                c.left_y.categories = categories(2);
+                c.left_y.inverted = true;
+            }),
+            ("right_y", |c| {
+                c.right_y.categories = categories(2);
+                c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();
+            }),
+        ] {
+            assert!(
+                matches!(with(&edit), Err(FiggyError::InvalidConfig { field: f, .. }) if f == field),
+                "{field}"
+            );
+        }
+        let bar = with(&|c| {
+            let mut bar = crate::default::default_colorbar_options();
+            bar.axis.categories = categories(2);
+            c.colorbar = Some(bar);
+        });
+        assert!(matches!(
+            bar,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                reason: "a colourbar axis cannot be categorical"
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(0);
+            c.overlays.push(layer);
+        });
+        assert!(matches!(
+            overlay,
+            Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                ..
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(4);
+            c.overlays.push(layer);
+        });
+        assert!(overlay.is_ok(), "{overlay:?}");
+    }
+
+    /// The range helpers leave a categorical axis as it is.
+    #[test]
+    fn range_helpers_leave_a_categorical_axis_unchanged() {
+        let mut cfg = dummy_config();
+        cfg.bottom_x.categories = categories(3);
+        let before = cfg.bottom_x.clone();
+        let mut chart = Chart::new(cfg);
+        chart.set_x_range(-10.0, 10.0);
+        chart.auto_fit_x_extent(
+            &FitExtent {
+                min: 1.0,
+                max: 2.0,
+                min_positive: Some(1.0),
+            },
+            0.1,
+        );
+        assert_eq!(chart.config().bottom_x, before);
+        // The numeric top axis of the pair still follows.
+        assert_eq!(chart.config().top_x.min, 1.0 - 0.1);
     }
 
     // The colourbar's z axis goes through the same renderer-side gate as the

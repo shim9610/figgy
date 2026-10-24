@@ -1,4 +1,4 @@
-use crate::config::{AxisOptions, BarAlign, ColorBarOptions, Config, LegendCorner, TickVisibility};
+use crate::config::{AxisOptions, AxisScale, BarAlign, ColorBarOptions, Config, LegendCorner};
 use crate::text::{MeasureText, TextExtents};
 
 use super::{ChartArea, DataArea, RectF, Side};
@@ -11,13 +11,16 @@ pub const LEGEND_BORDER_WIDTH: f32 = 1.0;
 /// Inset between a legend box and its data-area corner, in pixels.
 pub const LEGEND_INSET: f32 = 6.0;
 
-/// Axis-line endpoints on pixel centers. Top/left use the first inside pixel;
-/// bottom/right use the last inside pixel.
-pub fn axis_anchor(side: Side, data_area: &DataArea) -> ((f32, f32), (f32, f32)) {
-    let x0 = data_area.x as f32 + 0.5;
-    let y0 = data_area.y as f32 + 0.5;
-    let x1 = (data_area.x + data_area.width) as f32 - 0.5;
-    let y1 = (data_area.y + data_area.height) as f32 - 0.5;
+/// Axis-line endpoints on pixel centers of the plot rectangle `plot`.
+/// Top/left use the first inside pixel; bottom/right use the last inside
+/// pixel. A data area's rectangle is `RectF::from_rect(&data_area)`, which
+/// is exact; a plot rectangle that is not integer-aligned takes the same
+/// half-pixel insets.
+pub fn axis_anchor(side: Side, plot: &RectF) -> ((f32, f32), (f32, f32)) {
+    let x0 = plot.x + 0.5;
+    let y0 = plot.y + 0.5;
+    let x1 = plot.x + plot.width - 0.5;
+    let y1 = plot.y + plot.height - 0.5;
     match side {
         Side::Top => ((x0, y0), (x1, y0)),
         Side::Bottom => ((x0, y1), (x1, y1)),
@@ -34,90 +37,116 @@ pub fn axis_offset(side: Side, line_offset: f32) -> (f32, f32) {
     }
 }
 
-/// Visible reach on the inward and outward sides of an axis line.
-pub fn axis_visibility_extent(axis: &AxisOptions) -> (f32, f32) {
-    let tick = axis.major_tick_length;
-    let (inward, outward) = match axis.tick {
-        TickVisibility::None => (0.0, 0.0),
-        TickVisibility::Outside => (0.0, tick),
-        TickVisibility::Inside => (tick, 0.0),
-        TickVisibility::Both => (tick, tick),
-    };
-    let half_line = if axis.line_visible {
-        axis.line_width.max(1.0) * 0.5
+/// The smallest positive range end a logarithmic axis falls back to.
+pub const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
+
+/// A logarithmic axis range the renderer, the ticks and the annotation space
+/// can take logarithms of: positive, finite and ordered, with a synthetic
+/// decade where the stored range gives none.
+pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
+    let min = if min.is_finite() && min > 0.0 {
+        min
     } else {
-        0.0
+        LOG_RANGE_FALLBACK_MIN
     };
-    (inward.max(half_line), outward.max(half_line))
+    if max.is_finite() && max > min {
+        return (min, max);
+    }
+
+    let upper = min * 10.0;
+    if upper.is_finite() && upper > min {
+        return (min, upper);
+    }
+
+    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
+    // finite, ordered fallback by putting the synthetic decade below it.
+    let lower = min / 10.0;
+    if lower.is_finite() && lower > 0.0 && lower < min {
+        return (lower, min);
+    }
+
+    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
 }
 
-/// Axis line/tick interaction bounds, including detached-axis translation.
-pub fn axis_visibility_rect(side: Side, data_area: &DataArea, axis: &AxisOptions) -> RectF {
-    let (inward, outward) = axis_visibility_extent(axis);
-    let rect = match side.clone() {
-        Side::Top => RectF {
-            x: data_area.x as f32,
-            y: data_area.y as f32 - outward,
-            width: data_area.width as f32,
-            height: inward + outward,
-        },
-        Side::Bottom => RectF {
-            x: data_area.x as f32,
-            y: (data_area.y + data_area.height) as f32 - inward,
-            width: data_area.width as f32,
-            height: inward + outward,
-        },
-        Side::Left => RectF {
-            x: data_area.x as f32 - outward,
-            y: data_area.y as f32,
-            width: inward + outward,
-            height: data_area.height as f32,
-        },
-        Side::Right => RectF {
-            x: (data_area.x + data_area.width) as f32 - inward,
-            y: data_area.y as f32,
-            width: inward + outward,
-            height: data_area.height as f32,
-        },
-    };
-    let (dx, dy) = axis_offset(side, axis.line_offset);
-    rect.translated(dx, dy)
+/// Where `value` falls along its axis, as a fraction of the axis' screen
+/// length measured from the axis' visual start, `inverted` included: the one
+/// value-to-fraction mapping of the axis chrome, the annotation space and the
+/// colourbar ticks.
+///
+/// **Not clamped**: a tick outside the range lands outside the axis, which is
+/// what puts a stale tick visibly off the end instead of piled at it. The
+/// colourbar's `ColorBarOptions::normalized_z` is the clamped z→colour twin.
+/// A non-finite value, or a non-positive one on a logarithmic axis, has no
+/// position and maps to the axis start.
+pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
+    let t = match axis.scale {
+        // A categorical axis is linear over its category range.
+        _ if axis.categories.is_some() => {
+            let (min, max) = axis.data_range();
+            span_fraction(value, min, max, false)
+        }
+        AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
+        AxisScale::Logarithmic => {
+            let (min, max) = guarded_log_range(axis.min, axis.max);
+            span_fraction(value, min, max, true)
+        }
+    }
+    .unwrap_or(0.0);
+    let t = if axis.inverted { 1.0 - t } else { t };
+    t as f32
 }
 
-/// Axis line/tick interaction bounds when the axis runs on one edge of an
-/// arbitrary rectangle. The colourbar uses this with its *painted strip*
-/// rectangle, so a shortened, aligned, or freely offset strip and its axis
-/// chrome cannot acquire different interaction geometry.
-pub fn rect_axis_visibility_rect(side: Side, rect: &RectF, axis: &AxisOptions) -> RectF {
-    let (inward, outward) = axis_visibility_extent(axis);
-    let bounds = match side.clone() {
-        Side::Top => RectF {
-            x: rect.x,
-            y: rect.y - outward,
-            width: rect.width,
-            height: inward + outward,
-        },
-        Side::Bottom => RectF {
-            x: rect.x,
-            y: rect.y + rect.height - inward,
-            width: rect.width,
-            height: inward + outward,
-        },
-        Side::Left => RectF {
-            x: rect.x - outward,
-            y: rect.y,
-            width: inward + outward,
-            height: rect.height,
-        },
-        Side::Right => RectF {
-            x: rect.x + rect.width - inward,
-            y: rect.y,
-            width: inward + outward,
-            height: rect.height,
-        },
+/// Where `value` falls between `min` and `max`, linearly or by decades: the
+/// formula under [`axis_fraction`] and the annotation space. `None` when the
+/// value has no position: a non-finite value, an empty or non-finite span,
+/// or a non-positive value or bound on a logarithmic span.
+pub fn span_fraction(value: f64, min: f64, max: f64, logarithmic: bool) -> Option<f64> {
+    if !value.is_finite() {
+        return None;
+    }
+    let (value, min, max) = if logarithmic {
+        if value <= 0.0 || min <= 0.0 || max <= 0.0 {
+            return None;
+        }
+        (value.log10(), min.log10(), max.log10())
+    } else {
+        (value, min, max)
     };
-    let (dx, dy) = axis_offset(side, axis.line_offset);
-    bounds.translated(dx, dy)
+    let span = max - min;
+    if !span.is_finite() || span == 0.0 {
+        return None;
+    }
+    Some((value - min) / span)
+}
+
+/// The colourbar and its strip rect when it is drawn: present, visible and
+/// not degenerate. The renderer draws the bar, its chrome and its title only
+/// then, and the strip, axis, label and title elements exist only then.
+pub fn visible_colorbar_rect(cfg: &Config) -> Option<(&ColorBarOptions, RectF)> {
+    let bar = cfg.colorbar.as_ref()?;
+    if !bar.visible {
+        return None;
+    }
+    let da = cfg.data_area().ok()?;
+    let rect = colorbar_rect(&cfg.chart_area, &da, cfg.chart_title.top_margin, bar);
+    (rect.width > 0.0 && rect.height > 0.0).then_some((bar, rect))
+}
+
+impl Config {
+    /// The margin geometry the axis title on `side` is placed inside.
+    pub fn title_band(&self, side: &Side) -> TitleBand {
+        let axis = match side {
+            Side::Top => &self.top_x,
+            Side::Bottom => &self.bottom_x,
+            Side::Left => &self.left_y,
+            Side::Right => &self.right_y,
+        };
+        TitleBand {
+            out_margin: axis.out_margin,
+            chart_title_margin: self.chart_title.top_margin,
+            edge_inset: self.colorbar_band(side),
+        }
+    }
 }
 
 /// Place a fraction on one side of a rectangle. Horizontal sides run
@@ -208,9 +237,21 @@ pub fn chart_title_placement(
     offset: (f32, f32),
     extents: TextExtents,
 ) -> TitlePlacement {
+    chart_title_placement_in(RectF::from_rect(chart_area), top_margin, offset, extents)
+}
+
+/// [`chart_title_placement`] in an `f32` rectangle: a chart that lays out
+/// its own title band (the radial chart) centres its title across its
+/// canvas with it.
+pub fn chart_title_placement_in(
+    chart_area: RectF,
+    top_margin: f32,
+    offset: (f32, f32),
+    extents: TextExtents,
+) -> TitlePlacement {
     let origin = (
-        chart_area.x as f32 + chart_area.width as f32 * 0.5 - extents.width * 0.5 + offset.0,
-        chart_area.y as f32 + (top_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
+        chart_area.x + chart_area.width * 0.5 - extents.width * 0.5 + offset.0,
+        chart_area.y + (top_margin - extents.height()) * 0.5 + extents.ascent + offset.1,
     );
     TitlePlacement {
         origin,
@@ -245,7 +286,7 @@ fn chart_title_band_padding() -> f32 {
 /// taller band would leave no valid data area in a chart that had one.
 ///
 /// This is the title helpers' half of the helper contract: `Chart::with_title`
-/// and the web example's `set_title` derive the band from the text they set.
+/// and the browser wrapper's `set_title` derive the band from the text they set.
 /// A `top_margin` injected directly through the SSoT is kept as given.
 /// Returns whether the band changed.
 pub fn fit_chart_title_margin(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
@@ -591,29 +632,69 @@ mod tests {
     }
 
     #[test]
-    fn axis_anchors_and_visibility_preserve_half_pixels() {
+    fn axis_anchors_preserve_half_pixels() {
         let (_, data) = areas();
+        let data = RectF::from_rect(&data);
         assert_eq!(axis_anchor(Side::Top, &data), ((50.5, 60.5), (249.5, 60.5)));
         assert_eq!(
             axis_anchor(Side::Right, &data),
             ((249.5, 60.5), (249.5, 159.5))
         );
+    }
 
-        let mut axis = default_config().left_y;
-        axis.tick = TickVisibility::Both;
-        axis.major_tick_length = 5.0;
-        axis.line_width = 1.0;
-        axis.line_offset = 2.0;
-        assert_eq!(axis_visibility_extent(&axis), (5.0, 5.0));
+    /// A plot rectangle that is not integer-aligned takes the same
+    /// half-pixel insets from its own edges.
+    #[test]
+    fn axis_anchors_of_a_fractional_plot_inset_its_own_edges() {
+        let plot = RectF {
+            x: 50.25,
+            y: 60.75,
+            width: 199.5,
+            height: 100.25,
+        };
         assert_eq!(
-            axis_visibility_rect(Side::Left, &data, &axis),
-            RectF {
-                x: 47.0,
-                y: 60.0,
-                width: 10.0,
-                height: 100.0,
-            }
+            axis_anchor(Side::Top, &plot),
+            ((50.75, 61.25), (249.25, 61.25))
         );
+        assert_eq!(
+            axis_anchor(Side::Bottom, &plot),
+            ((50.75, 160.5), (249.25, 160.5))
+        );
+        assert_eq!(
+            axis_anchor(Side::Left, &plot),
+            ((50.75, 61.25), (50.75, 160.5))
+        );
+        assert_eq!(
+            axis_anchor(Side::Right, &plot),
+            ((249.25, 61.25), (249.25, 160.5))
+        );
+    }
+
+    /// For every integer data area the plot rectangle's anchors are the
+    /// integer ones bit for bit.
+    #[test]
+    fn axis_anchors_of_an_integer_data_area_are_exact() {
+        for (x, y, width, height) in [
+            (0, 0, 1, 1),
+            (50, 60, 200, 100),
+            (80, 40, 1940, 1300),
+            (3, 7, 16_000_000, 9_000_000),
+        ] {
+            let x0 = x as f32 + 0.5;
+            let y0 = y as f32 + 0.5;
+            let x1 = (x + width) as f32 - 0.5;
+            let y1 = (y + height) as f32 - 0.5;
+            let plot = RectF::from_rect(&Rect {
+                x,
+                y,
+                width,
+                height,
+            });
+            assert_eq!(axis_anchor(Side::Top, &plot), ((x0, y0), (x1, y0)));
+            assert_eq!(axis_anchor(Side::Bottom, &plot), ((x0, y1), (x1, y1)));
+            assert_eq!(axis_anchor(Side::Left, &plot), ((x0, y0), (x0, y1)));
+            assert_eq!(axis_anchor(Side::Right, &plot), ((x1, y0), (x1, y1)));
+        }
     }
 
     #[test]
@@ -818,42 +899,6 @@ mod tests {
 
         let top = colorbar_title_placement(Side::Top, &strip, &axis, (0.0, 0.0), m).rect(m);
         assert_eq!(top.x + top.width * 0.5, strip.x + strip.width * 0.5);
-    }
-
-    #[test]
-    fn rect_axis_visibility_uses_tick_direction_and_line_offset() {
-        let strip = RectF {
-            x: 10.0,
-            y: 20.0,
-            width: 40.0,
-            height: 100.0,
-        };
-        let mut axis = crate::default::default_axis_options_colorbar();
-        axis.line_visible = false;
-        axis.major_tick_length = 5.0;
-        axis.line_offset = 3.0;
-
-        axis.tick = TickVisibility::Outside;
-        assert_eq!(
-            rect_axis_visibility_rect(Side::Right, &strip, &axis),
-            RectF {
-                x: 53.0,
-                y: 20.0,
-                width: 5.0,
-                height: 100.0,
-            }
-        );
-
-        axis.tick = TickVisibility::Inside;
-        assert_eq!(
-            rect_axis_visibility_rect(Side::Right, &strip, &axis),
-            RectF {
-                x: 48.0,
-                y: 20.0,
-                width: 5.0,
-                height: 100.0,
-            }
-        );
     }
 
     #[test]

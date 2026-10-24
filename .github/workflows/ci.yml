@@ -2,6 +2,10 @@ name: Rust packages
 "on":
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
+    # Only pull requests into master run the matrix. Work collected on an
+    # integration branch runs it once, on the final pull request, or on demand.
+    branches: [master]
+  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -20,7 +24,7 @@ env:
 jobs:
   packages:
     # Standard public runners only; draft PRs wait until ready for review.
-    if: github.event.repository.private == false && github.event.pull_request.draft == false
+    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     name: ${{ matrix.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90

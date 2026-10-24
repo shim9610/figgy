@@ -1270,7 +1270,11 @@ fn vector_series_scale_by_their_overlay_axis() {
         0.0,
         "overlay-scaled midpoint",
     );
-    assert_red(&img, tip, 0.0, 4.0, "overlay-scaled head");
+    // The anchor's x is a major tick of the base top axis, and decorations
+    // draw above every layer's data, so the tick's inward mark darkens the
+    // head's centre column; the head is probed beside it.
+    assert_red(&img, tip, 2.0, 6.0, "overlay-scaled head");
+    assert_red(&img, tip, -2.0, 6.0, "overlay-scaled head");
     assert_red(&img, tail, 0.0, -3.0, "shaft above the mid-panel anchor");
     // On the base axis the anchor would be the top edge and the whole arrow
     // clipped above it; the shaft starting mid-panel is the overlay's doing.

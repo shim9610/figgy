@@ -320,8 +320,8 @@ impl Renderer {
                         .descriptors
                         .iter()
                         .find(|descriptor| {
-                            descriptor.signature.series_id == series.series_id
-                                && descriptor.signature.source_id == series.source_id
+                            descriptor.series_id == series.series_id
+                                && descriptor.source_id == series.source_id
                         })
                         .ok_or(FiggyError::StaleStateToken {
                             reason: "packed view pick descriptor missing".into(),
@@ -784,9 +784,10 @@ impl Renderer {
             .as_ref()
             .unwrap();
         let plan = Arc::clone(&pick.plan);
-        let descriptor = plan.descriptors.iter().find(|desc| {
-            desc.signature.series_id == cfg.series_id && desc.signature.source_id == cfg.source_id
-        });
+        let descriptor = plan
+            .descriptors
+            .iter()
+            .find(|desc| desc.series_id == cfg.series_id && desc.source_id == cfg.source_id);
         let mut descriptor = descriptor.map(OwnedGpuPickSeriesDescriptor::descriptor);
         if let Some(desc) = &mut descriptor {
             match phase {
