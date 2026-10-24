@@ -57,11 +57,17 @@ impl AxisViewState {
             line_style: _,
             major_tick_length: _,
             minor_tick_length: _,
+            // The range of a categorical axis (`data_range`).
+            categories: _,
         } = axis;
+        let (min, max) = match axis.categories {
+            Some(_) => axis.data_range(),
+            None => (*min, *max),
+        };
         Self {
             scale: scale.clone(),
-            min: *min,
-            max: *max,
+            min,
+            max,
             inverted: *inverted,
         }
     }

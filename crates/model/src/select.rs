@@ -1700,7 +1700,7 @@ pub(crate) mod tests {
                         return true;
                     };
                     let axis = axis_of(cfg, side);
-                    let (a, b) = axis_anchor(side.clone(), &da);
+                    let (a, b) = axis_anchor(side.clone(), &RectF::from_rect(&da));
                     let o = axis_offset(side.clone(), axis.line_offset);
                     if let Element::Axis(_) = element {
                         if axis.line_visible {

@@ -119,7 +119,7 @@ field setters:
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
 | `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. |
-| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These and `set_x_range` / `set_y_range` leave a categorical axis (`categories` set) unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
 
@@ -161,6 +161,32 @@ including colorbar labels; unusually long labels still need explicit margin spac
 Calendar-based timestamp ticks follow their own layout policy. The renderer
 still validates a directly edited config when it registers, refreshes, prepares
 or exports the chart. After any edit, refresh the derived view as described below.
+
+A Cartesian axis becomes categorical when its `categories` is set: with `n`
+categories it maps the data range `[-0.5, n - 0.5]`, category `i` sits at
+x (or y) `i`, every category has a major tick (and a grid line when that
+axis' major grid is on), and the tick label is `categories[i].label` in the
+axis' `label_style`, thinned like numeric labels when neighbours crowd. Upload
+the data of a categorical axis as category indices `0..n`. `min`, `max`,
+`major_spacing`, `minor_count` and `label_style.format` are ignored there,
+and `set_x_range` / `set_y_range`, the `auto_fit_*` helpers and view states
+leave the axis unchanged. A categorical axis must be linear and not inverted,
+with 1 to 64 categories whose ids are unique; polar axes and the colourbar
+axis cannot be categorical yet, and streamed series are rejected on a chart
+with a categorical axis.
+
+```rust
+use renderer::config::Category;
+use renderer::default::default_config;
+
+let mut cfg = default_config();
+cfg.bottom_x.categories = Some(vec![
+    Category::new("north", "North"),
+    Category::new("south", "South"),
+]);
+assert_eq!(cfg.bottom_x.data_range(), (-0.5, 1.5));
+assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
+```
 
 ## Native edit, pick and export workflow
 

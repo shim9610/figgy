@@ -337,7 +337,8 @@ impl Config {
 /// positive is a renderer-side rule (`validate_renderer_config`), which is
 /// where the reason string lives.
 fn axis_dims_feasible(axis: &AxisOptions) -> Result<(), LayoutError> {
-    if axis.max <= axis.min {
+    let (min, max) = axis.data_range();
+    if max <= min {
         return Err(LayoutError::Infeasible);
     }
     if axis.out_margin < 0.0

@@ -46,6 +46,7 @@ pub enum SceneKind {
     Subplots,
     Annotations,
     Polar,
+    CategoryAxis,
     BigData,
     Radial,
     Categorical,
@@ -54,7 +55,7 @@ pub enum SceneKind {
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 16] = [
+    pub const ALL: [SceneKind; 17] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -66,6 +67,7 @@ impl SceneKind {
         SceneKind::Subplots,
         SceneKind::Annotations,
         SceneKind::Polar,
+        SceneKind::CategoryAxis,
         SceneKind::BigData,
         SceneKind::Radial,
         SceneKind::Categorical,
@@ -86,6 +88,7 @@ impl SceneKind {
             SceneKind::Subplots => "Subplots (linked X)",
             SceneKind::Annotations => "Annotations",
             SceneKind::Polar => "Polar (angle, radius)",
+            SceneKind::CategoryAxis => "Category axis",
             SceneKind::BigData => "Large data (resident)",
             SceneKind::Radial => "Radial (pie / donut)",
             SceneKind::Categorical => "Categorical bars",
@@ -120,6 +123,10 @@ impl SceneKind {
             SceneKind::Polar => {
                 "Config.polar: bottom_x is the angle in degrees, left_y the radius. A \
                  filled pattern and a marker rose with arc segments; pick the markers."
+            }
+            SceneKind::CategoryAxis => {
+                "AxisOptions.categories on X: a label per category, thinned when they \
+                 crowd (one is long). Drag the tick labels; pick the markers."
             }
             SceneKind::BigData => {
                 "Up to 100 million resident points as a line, markers or both, every one \
@@ -294,6 +301,7 @@ pub fn build(
         SceneKind::Subplots => subplots(r),
         SceneKind::Annotations => annotations(r),
         SceneKind::Polar => polar(r),
+        SceneKind::CategoryAxis => category_axis(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         _ => unreachable!("bounded scenes are built by `bounded::chart`"),
     }
@@ -935,6 +943,73 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             line: line_style(Color::from_rgb8(60, 160, 90), 2.5),
         },
     )];
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// A Cartesian chart whose X axis is categorical: seven departments, one
+/// with a long name so the labels are thinned at the document size, and
+/// values at the category positions `0..7`.
+fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    let names = [
+        ("sales", "Sales"),
+        ("support", "Support"),
+        ("rnd", "Research and development (all sites)"),
+        ("ops", "Operations"),
+        ("legal", "Legal"),
+        ("design", "Design"),
+        ("qa", "Quality"),
+    ];
+    let x: Vec<f64> = (0..names.len()).map(|i| i as f64).collect();
+    upload(r, "cat_x", x)?;
+    upload(
+        r,
+        "cat_budget",
+        (0..names.len())
+            .map(|i| 4.0 + 2.5 * (i as f64 * 0.9).sin() + 0.6 * noise(31, i))
+            .collect(),
+    )?;
+    upload(
+        r,
+        "cat_spent",
+        (0..names.len())
+            .map(|i| 3.5 + 2.0 * (i as f64 * 0.9 + 0.4).sin() + 0.8 * noise(32, i))
+            .collect(),
+    )?;
+    let mut config = base_config("Budget by department", "Department", "Budget (M€)");
+    let categories: Vec<Category> = names
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect();
+    config.bottom_x.categories = Some(categories.clone());
+    config.top_x.categories = Some(categories);
+    config.grid.show_major_x = true;
+    let mut chart = Chart::new(config);
+    chart.auto_fit_y_union(r.pool(), &["cat_budget", "cat_spent"], 0.15)?;
+    let blue = Color::from_rgb8(31, 119, 180);
+    let orange = Color::from_rgb8(255, 127, 14);
+    let series = vec![
+        series(
+            "budget",
+            "cat_x",
+            "cat_budget",
+            DataRenderType::ScatterLine {
+                scatter: scatter_style(blue, ScatterShape::CircleFilled, 9.0),
+                line: line_style(blue, 2.0),
+            },
+        ),
+        series(
+            "spent",
+            "cat_x",
+            "cat_spent",
+            DataRenderType::Scatter {
+                scatter: scatter_style(orange, ScatterShape::Diamond, 11.0),
+            },
+        ),
+    ];
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,

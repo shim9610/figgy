@@ -141,6 +141,114 @@ pub struct AxisOptions {
     // Tick mark lengths. `margins()` uses `major_tick_length`.
     pub major_tick_length: f32,
     pub minor_tick_length: f32,
+
+    /// The categories of a categorical axis, in axis order; `None` (the
+    /// default) is a numeric axis.
+    ///
+    /// A categorical axis with `n` categories maps the data range
+    /// `[-0.5, n - 0.5]`: category `i` sits at `i`, with a major tick at every
+    /// integer and no minor ticks, and its tick label is `categories[i].label`
+    /// in the axis' `label_style` (font, colour, offsets and visibility),
+    /// thinned to every 2nd, 5th, 10th... label when neighbours crowd, like
+    /// numeric labels. The grid draws its major lines at the category
+    /// positions when that axis' major grid is on.
+    ///
+    /// On a categorical axis `min`, `max`, `major_spacing` and `minor_count`
+    /// are ignored (they keep their values and their numeric meaning for when
+    /// `categories` is removed again), `label_style.format` and
+    /// `label_style.significant_digits` are ignored, the range helpers
+    /// (`Chart::set_x_range`, the `auto_fit_*` family, a view state) leave the
+    /// axis unchanged, and the renderer rejects a logarithmic `scale`, an
+    /// `inverted` axis, and lists outside [`AxisOptions::validate_categories`]'
+    /// limits. A polar chart's angle and radius axes and the colourbar axis
+    /// cannot be categorical yet.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub categories: Option<Vec<Category>>,
+}
+
+/// One category of a categorical axis ([`AxisOptions::categories`]): a stable
+/// `id` that names it in edits and selections, and the `label` its tick
+/// shows.
+///
+/// `crate::categorical::Category` is the same type, re-exported from its
+/// earlier home.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Category {
+    pub id: String,
+    pub label: String,
+}
+
+impl Category {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// The most characters a category id or label may have.
+pub const MAX_CATEGORY_TEXT_CHARS: usize = 80;
+
+/// Whether `text` is one line of at most [`MAX_CATEGORY_TEXT_CHARS`]
+/// characters.
+fn category_text_ok(text: &str) -> bool {
+    text.chars().count() <= MAX_CATEGORY_TEXT_CHARS && !text.chars().any(char::is_control)
+}
+
+impl AxisOptions {
+    /// The number of categories of a categorical axis, `None` for a numeric
+    /// one.
+    pub fn category_count(&self) -> Option<usize> {
+        self.categories.as_ref().map(Vec::len)
+    }
+
+    /// The range the axis maps: `[-0.5, n - 0.5]` on a categorical axis with
+    /// `n` categories, `min..max` on a numeric one.
+    pub fn data_range(&self) -> (f64, f64) {
+        match self.category_count() {
+            Some(n) => (-0.5, n as f64 - 0.5),
+            None => (self.min, self.max),
+        }
+    }
+
+    /// The rules a categorical axis is held to; a numeric axis always passes.
+    /// 1 to [`crate::categorical::MAX_CATEGORIES`] categories, ids non-empty
+    /// and unique, ids and labels single-line and at most
+    /// [`MAX_CATEGORY_TEXT_CHARS`] characters, a linear scale and no
+    /// inversion.
+    pub fn validate_categories(&self) -> Result<(), &'static str> {
+        let Some(categories) = &self.categories else {
+            return Ok(());
+        };
+        if categories.is_empty() || categories.len() > crate::categorical::MAX_CATEGORIES {
+            return Err("a categorical axis needs 1 to 64 categories");
+        }
+        for (index, category) in categories.iter().enumerate() {
+            if category.id.is_empty()
+                || !category_text_ok(&category.id)
+                || categories[..index].iter().any(|c| c.id == category.id)
+            {
+                return Err(
+                    "category ids must be unique, non-empty, single-line and at most 80 characters",
+                );
+            }
+            if !category_text_ok(&category.label) {
+                return Err("category labels must be single-line and at most 80 characters");
+            }
+        }
+        if self.scale == AxisScale::Logarithmic {
+            return Err("a categorical axis cannot be logarithmic");
+        }
+        if self.inverted {
+            return Err("a categorical axis cannot be inverted");
+        }
+        Ok(())
+    }
 }
 
 /// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
@@ -1035,6 +1143,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         line_style: _,
         major_tick_length,
         minor_tick_length,
+        // Configuration, not pixels.
+        categories: _,
     } = axis;
     let LabelStyle {
         visible: _,
@@ -1728,5 +1838,170 @@ mod draw_style_serde_tests {
         assert_eq!(json["draw_style"]["star_density"], 22.0);
         let back: Config = serde_json::from_value(json).expect("parse back");
         assert_eq!(back.draw_style, cfg.draw_style);
+    }
+}
+
+// The categorical axis (`AxisOptions::categories`): its limits, its range
+// and walk, and its additive wire form.
+#[cfg(test)]
+mod category_axis_tests {
+    use super::{AxisOptions, AxisScale, Category};
+    use crate::categorical::MAX_CATEGORIES;
+    use crate::default::{default_axis_options_x, default_config};
+    use crate::layout::axis_fraction;
+    use crate::tick::{major_ticks, minor_ticks};
+
+    fn categorical(n: usize) -> AxisOptions {
+        let mut axis = default_axis_options_x();
+        axis.categories = Some(
+            (0..n)
+                .map(|i| Category::new(format!("c{i}"), format!("Category {i}")))
+                .collect(),
+        );
+        axis
+    }
+
+    #[test]
+    fn the_old_category_path_is_the_same_type() {
+        let a: crate::categorical::Category = Category::new("a", "A");
+        let b: super::Category = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_numeric_axis_always_passes_and_maps_its_own_range() {
+        let mut axis = default_axis_options_x();
+        axis.min = 3.0;
+        axis.max = 7.0;
+        axis.scale = AxisScale::Logarithmic;
+        axis.inverted = true;
+        assert_eq!(axis.validate_categories(), Ok(()));
+        assert_eq!(axis.category_count(), None);
+        assert_eq!(axis.data_range(), (3.0, 7.0));
+    }
+
+    #[test]
+    fn category_counts_inside_the_limits_pass() {
+        for n in [1, 2, 7, MAX_CATEGORIES] {
+            assert_eq!(categorical(n).validate_categories(), Ok(()), "{n}");
+        }
+        for n in [0, MAX_CATEGORIES + 1] {
+            assert_eq!(
+                categorical(n).validate_categories(),
+                Err("a categorical axis needs 1 to 64 categories"),
+                "{n}"
+            );
+        }
+    }
+
+    #[test]
+    fn ids_must_be_unique_non_empty_single_line_and_short() {
+        let ids = "category ids must be unique, non-empty, single-line and at most 80 characters";
+        let labels = "category labels must be single-line and at most 80 characters";
+        let edit = |f: &dyn Fn(&mut Vec<Category>)| {
+            let mut axis = categorical(3);
+            f(axis.categories.as_mut().unwrap());
+            axis.validate_categories()
+        };
+        assert_eq!(edit(&|c| c[1].id.clear()), Err(ids));
+        assert_eq!(edit(&|c| c[2].id = "c0".into()), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "a\nb".into()), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "x".repeat(81)), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "x".repeat(80)), Ok(()));
+        assert_eq!(edit(&|c| c[1].label = "two\nlines".into()), Err(labels));
+        assert_eq!(edit(&|c| c[1].label = "é".repeat(81)), Err(labels));
+        assert_eq!(edit(&|c| c[1].label = "é".repeat(80)), Ok(()));
+        // An empty label is a category without tick text.
+        assert_eq!(edit(&|c| c[1].label.clear()), Ok(()));
+    }
+
+    #[test]
+    fn a_logarithmic_or_inverted_categorical_axis_is_rejected() {
+        let mut axis = categorical(3);
+        axis.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            axis.validate_categories(),
+            Err("a categorical axis cannot be logarithmic")
+        );
+        let mut axis = categorical(3);
+        axis.inverted = true;
+        assert_eq!(
+            axis.validate_categories(),
+            Err("a categorical axis cannot be inverted")
+        );
+    }
+
+    /// Category `i` at `i`, majors at every category, no minors, whatever
+    /// `min`, `max`, `major_spacing` and `minor_count` say.
+    #[test]
+    fn the_walk_of_a_categorical_axis_is_its_category_positions() {
+        let mut axis = categorical(7);
+        axis.min = 100.0;
+        axis.max = 50.0;
+        axis.major_spacing = 0.0;
+        axis.minor_count = 9;
+        assert_eq!(axis.data_range(), (-0.5, 6.5));
+        let majors: Vec<f64> = major_ticks(&axis).collect();
+        assert_eq!(majors, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(minor_ticks(&axis).count(), 0);
+        let single = categorical(1);
+        assert_eq!(major_ticks(&single).collect::<Vec<_>>(), vec![0.0]);
+        // An empty list (rejected by validation) walks nothing.
+        assert_eq!(major_ticks(&categorical(0)).count(), 0);
+        // The positions sit in the middle of equal slots.
+        for (i, expected) in [(0, 0.5 / 7.0), (3, 3.5 / 7.0), (6, 6.5 / 7.0)] {
+            let t = axis_fraction(f64::from(i), &axis);
+            assert!((t - expected as f32).abs() < 1e-6, "{i}: {t}");
+        }
+        assert_eq!(axis_fraction(-0.5, &axis), 0.0);
+        assert_eq!(axis_fraction(6.5, &axis), 1.0);
+    }
+
+    #[test]
+    fn removing_the_categories_restores_the_numeric_axis() {
+        let mut axis = categorical(4);
+        axis.min = 2.0;
+        axis.max = 4.0;
+        axis.major_spacing = 1.0;
+        axis.categories = None;
+        assert_eq!(major_ticks(&axis).collect::<Vec<_>>(), vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn scaling_keeps_the_categories() {
+        let mut cfg = default_config();
+        cfg.bottom_x = categorical(5);
+        let scaled = cfg.scaled(2.0);
+        assert_eq!(scaled.bottom_x.categories, cfg.bottom_x.categories);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn categories_are_additive_on_the_wire() {
+        let axis = default_axis_options_x();
+        let json = serde_json::to_value(&axis).expect("serialize");
+        assert!(json.get("categories").is_none(), "{json}");
+        let back: AxisOptions = serde_json::from_value(json).expect("parse");
+        assert_eq!(back, axis);
+
+        let axis = categorical(3);
+        let json = serde_json::to_value(&axis).expect("serialize");
+        assert_eq!(
+            json["categories"],
+            serde_json::json!([
+                {"id": "c0", "label": "Category 0"},
+                {"id": "c1", "label": "Category 1"},
+                {"id": "c2", "label": "Category 2"},
+            ])
+        );
+        let back: AxisOptions = serde_json::from_value(json).expect("parse");
+        assert_eq!(back, axis);
+
+        let mut cfg = default_config();
+        cfg.left_y = categorical(2);
+        let text = serde_json::to_string(&cfg).expect("serialize");
+        let back: super::Config = serde_json::from_str(&text).expect("parse");
+        assert_eq!(back, cfg);
+        assert_eq!(serde_json::to_string(&back).expect("serialize"), text);
     }
 }

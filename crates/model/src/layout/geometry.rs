@@ -11,13 +11,16 @@ pub const LEGEND_BORDER_WIDTH: f32 = 1.0;
 /// Inset between a legend box and its data-area corner, in pixels.
 pub const LEGEND_INSET: f32 = 6.0;
 
-/// Axis-line endpoints on pixel centers. Top/left use the first inside pixel;
-/// bottom/right use the last inside pixel.
-pub fn axis_anchor(side: Side, data_area: &DataArea) -> ((f32, f32), (f32, f32)) {
-    let x0 = data_area.x as f32 + 0.5;
-    let y0 = data_area.y as f32 + 0.5;
-    let x1 = (data_area.x + data_area.width) as f32 - 0.5;
-    let y1 = (data_area.y + data_area.height) as f32 - 0.5;
+/// Axis-line endpoints on pixel centers of the plot rectangle `plot`.
+/// Top/left use the first inside pixel; bottom/right use the last inside
+/// pixel. A data area's rectangle is `RectF::from_rect(&data_area)`, which
+/// is exact; a plot rectangle that is not integer-aligned takes the same
+/// half-pixel insets.
+pub fn axis_anchor(side: Side, plot: &RectF) -> ((f32, f32), (f32, f32)) {
+    let x0 = plot.x + 0.5;
+    let y0 = plot.y + 0.5;
+    let x1 = plot.x + plot.width - 0.5;
+    let y1 = plot.y + plot.height - 0.5;
     match side {
         Side::Top => ((x0, y0), (x1, y0)),
         Side::Bottom => ((x0, y1), (x1, y1)),
@@ -77,6 +80,11 @@ pub fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
 /// position and maps to the axis start.
 pub fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     let t = match axis.scale {
+        // A categorical axis is linear over its category range.
+        _ if axis.categories.is_some() => {
+            let (min, max) = axis.data_range();
+            span_fraction(value, min, max, false)
+        }
         AxisScale::Linear => span_fraction(value, axis.min, axis.max, false),
         AxisScale::Logarithmic => {
             let (min, max) = guarded_log_range(axis.min, axis.max);
@@ -626,11 +634,67 @@ mod tests {
     #[test]
     fn axis_anchors_preserve_half_pixels() {
         let (_, data) = areas();
+        let data = RectF::from_rect(&data);
         assert_eq!(axis_anchor(Side::Top, &data), ((50.5, 60.5), (249.5, 60.5)));
         assert_eq!(
             axis_anchor(Side::Right, &data),
             ((249.5, 60.5), (249.5, 159.5))
         );
+    }
+
+    /// A plot rectangle that is not integer-aligned takes the same
+    /// half-pixel insets from its own edges.
+    #[test]
+    fn axis_anchors_of_a_fractional_plot_inset_its_own_edges() {
+        let plot = RectF {
+            x: 50.25,
+            y: 60.75,
+            width: 199.5,
+            height: 100.25,
+        };
+        assert_eq!(
+            axis_anchor(Side::Top, &plot),
+            ((50.75, 61.25), (249.25, 61.25))
+        );
+        assert_eq!(
+            axis_anchor(Side::Bottom, &plot),
+            ((50.75, 160.5), (249.25, 160.5))
+        );
+        assert_eq!(
+            axis_anchor(Side::Left, &plot),
+            ((50.75, 61.25), (50.75, 160.5))
+        );
+        assert_eq!(
+            axis_anchor(Side::Right, &plot),
+            ((249.25, 61.25), (249.25, 160.5))
+        );
+    }
+
+    /// For every integer data area the plot rectangle's anchors are the
+    /// integer ones bit for bit.
+    #[test]
+    fn axis_anchors_of_an_integer_data_area_are_exact() {
+        for (x, y, width, height) in [
+            (0, 0, 1, 1),
+            (50, 60, 200, 100),
+            (80, 40, 1940, 1300),
+            (3, 7, 16_000_000, 9_000_000),
+        ] {
+            let x0 = x as f32 + 0.5;
+            let y0 = y as f32 + 0.5;
+            let x1 = (x + width) as f32 - 0.5;
+            let y1 = (y + height) as f32 - 0.5;
+            let plot = RectF::from_rect(&Rect {
+                x,
+                y,
+                width,
+                height,
+            });
+            assert_eq!(axis_anchor(Side::Top, &plot), ((x0, y0), (x1, y0)));
+            assert_eq!(axis_anchor(Side::Bottom, &plot), ((x0, y1), (x1, y1)));
+            assert_eq!(axis_anchor(Side::Left, &plot), ((x0, y0), (x0, y1)));
+            assert_eq!(axis_anchor(Side::Right, &plot), ((x1, y0), (x1, y1)));
+        }
     }
 
     #[test]

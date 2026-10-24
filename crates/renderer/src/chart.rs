@@ -29,6 +29,11 @@ pub(crate) fn apply_axis_range(
     max: f64,
     log: bool,
 ) {
+    // A categorical axis keeps its category range: every range helper (the
+    // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
+    if axis.categories.is_some() {
+        return;
+    }
     axis.min = min;
     axis.max = max;
     if log {
@@ -124,6 +129,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // colourbar with a non-positive lower bound has no `t` for its lowest
     // colour, which is the same defect as a log x axis starting at zero.
     let colorbar_axis = config.colorbar.as_ref().map(|bar| &bar.axis);
+    if colorbar_axis.is_some_and(|axis| axis.categories.is_some()) {
+        return Err(FiggyError::InvalidConfig {
+            field: "colorbar.axis",
+            reason: "a colourbar axis cannot be categorical",
+        });
+    }
     for (field, axis) in [
         ("top_x", &config.top_x),
         ("bottom_x", &config.bottom_x),
@@ -133,6 +144,13 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     .into_iter()
     .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
     {
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig { field, reason })?;
+        // A categorical axis maps its category range; `min` / `max` are
+        // ignored there.
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field,
@@ -157,6 +175,14 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // must be unambiguous before a series is drawn on one panel.
     for overlay in &config.overlays {
         let axis = &overlay.y_axis;
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason,
+            })?;
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field: "overlays.y_axis",
@@ -1097,6 +1123,110 @@ mod tests {
                 "title margin {margin} must be refused at the renderer boundary"
             );
         }
+    }
+
+    fn categories(n: usize) -> Option<Vec<crate::config::Category>> {
+        Some(
+            (0..n)
+                .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
+                .collect(),
+        )
+    }
+
+    /// A categorical axis is held to its category rules on every axis the
+    /// renderer reads, its `min` / `max` are not checked, and the axes that
+    /// cannot be categorical yet say so.
+    #[test]
+    fn validate_renderer_config_holds_categorical_axes_to_their_rules() {
+        let with = |edit: &dyn Fn(&mut Config)| {
+            let mut cfg = dummy_config();
+            edit(&mut cfg);
+            validate_renderer_config(&cfg)
+        };
+        assert!(with(&|c| c.bottom_x.categories = categories(3)).is_ok());
+        // `min` / `max` are ignored on a categorical axis.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(2);
+                c.left_y.min = 5.0;
+                c.left_y.max = f64::NAN;
+            })
+            .is_ok()
+        );
+        for (field, edit) in [
+            (
+                "top_x",
+                (|c: &mut Config| c.top_x.categories = categories(0)) as fn(&mut Config),
+            ),
+            ("bottom_x", |c| {
+                c.bottom_x.categories = categories(2);
+                c.bottom_x.scale = AxisScale::Logarithmic;
+            }),
+            ("left_y", |c| {
+                c.left_y.categories = categories(2);
+                c.left_y.inverted = true;
+            }),
+            ("right_y", |c| {
+                c.right_y.categories = categories(2);
+                c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();
+            }),
+        ] {
+            assert!(
+                matches!(with(&edit), Err(FiggyError::InvalidConfig { field: f, .. }) if f == field),
+                "{field}"
+            );
+        }
+        let bar = with(&|c| {
+            let mut bar = crate::default::default_colorbar_options();
+            bar.axis.categories = categories(2);
+            c.colorbar = Some(bar);
+        });
+        assert!(matches!(
+            bar,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                reason: "a colourbar axis cannot be categorical"
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(0);
+            c.overlays.push(layer);
+        });
+        assert!(matches!(
+            overlay,
+            Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                ..
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(4);
+            c.overlays.push(layer);
+        });
+        assert!(overlay.is_ok(), "{overlay:?}");
+    }
+
+    /// The range helpers leave a categorical axis as it is.
+    #[test]
+    fn range_helpers_leave_a_categorical_axis_unchanged() {
+        let mut cfg = dummy_config();
+        cfg.bottom_x.categories = categories(3);
+        let before = cfg.bottom_x.clone();
+        let mut chart = Chart::new(cfg);
+        chart.set_x_range(-10.0, 10.0);
+        chart.auto_fit_x_extent(
+            &FitExtent {
+                min: 1.0,
+                max: 2.0,
+                min_positive: Some(1.0),
+            },
+            0.1,
+        );
+        assert_eq!(chart.config().bottom_x, before);
+        // The numeric top axis of the pair still follows.
+        assert_eq!(chart.config().top_x.min, 1.0 - 0.1);
     }
 
     // The colourbar's z axis goes through the same renderer-side gate as the
