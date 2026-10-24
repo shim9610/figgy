@@ -393,6 +393,113 @@ impl FiggyChart {
         self.upsert_column_atomic(id, data.len(), ColumnUploadSource::HiLo(&column))
     }
 
+    /// Register or replace the box plot record `id` (the schema
+    /// `renderer::BOX_PLOT_RECORD`).
+    ///
+    /// `fields` is an object whose keys are field names and whose values are
+    /// `Float32Array`s or `Float64Array`s of one length, one row per box:
+    /// `median`, `q1`, `q3`, `whisker_low` and `whisker_high` are required;
+    /// `mean`, `sample_count`, `ci_low` and `ci_high` are optional and read as
+    /// NaN when absent. A missing box is a row of NaN. The arrays are read in
+    /// place and written straight into one batch upload; nothing is copied.
+    /// An unknown field, a missing required field or unequal lengths are
+    /// errors, and nothing is registered. Records are resident only: a
+    /// streamed id, or an id that is a column or a ragged column, is
+    /// rejected.
+    pub fn register_record(&mut self, id: &str, fields: JsValue) -> Result<(), JsValue> {
+        use renderer::{BOX_PLOT_RECORD, MAX_RECORD_FIELDS};
+        use wasm_bindgen::JsCast;
+
+        if self.columns.contains_key(id) {
+            return Err(js_err(format!(
+                "record '{id}': the id is a registered column"
+            )));
+        }
+        let object: &js_sys::Object = fields.dyn_ref().ok_or_else(|| {
+            js_err(format!(
+                "record '{id}': fields must be an object of typed arrays keyed by field name"
+            ))
+        })?;
+        for key in js_sys::Object::keys(object).iter() {
+            let name = key.as_string().unwrap_or_default();
+            if !BOX_PLOT_RECORD.iter().any(|(field, _)| *field == name) {
+                return Err(js_err(format!(
+                    "record '{id}': '{name}' is not a field of the box plot record"
+                )));
+            }
+        }
+        let mut columns: [Option<JsStreamColumn>; MAX_RECORD_FIELDS] = Default::default();
+        let mut names = [""; MAX_RECORD_FIELDS];
+        let mut count = 0usize;
+        for &(name, _) in BOX_PLOT_RECORD {
+            let value = js_sys::Reflect::get(object, &JsValue::from_str(name))?;
+            if value.is_undefined() || value.is_null() {
+                continue;
+            }
+            let column = JsStreamColumn::from_js(&value).map_err(|_| {
+                js_err(format!(
+                    "record '{id}': field '{name}' must be a Float32Array or Float64Array"
+                ))
+            })?;
+            columns[count] = Some(column);
+            names[count] = name;
+            count += 1;
+        }
+        let Some(placeholder) = columns[0].as_ref() else {
+            return Err(js_err(format!(
+                "record '{id}': a record needs at least one field"
+            )));
+        };
+        let placeholder = placeholder.column_source();
+        let sources: [(&str, &dyn ColumnSource); MAX_RECORD_FIELDS] = std::array::from_fn(|i| {
+            (
+                names[i],
+                columns[i]
+                    .as_ref()
+                    .map_or(placeholder, JsStreamColumn::column_source),
+            )
+        });
+        let source = renderer::RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &sources[..count],
+        };
+        self.renderer
+            .upsert_record(id, &source)
+            .map_err(column_registration_error)?;
+        Ok(())
+    }
+
+    /// Register or replace the ragged column `id`: `offsets.len() - 1`
+    /// groups, group `g` being `values[offsets[g]..offsets[g + 1]]`.
+    ///
+    /// `offsets` starts at 0, never decreases, holds integers and ends at
+    /// `values.len()`; anything else is an error and nothing is registered.
+    /// Both arrays upload as `(hi, lo)` pairs in one batch, through the same
+    /// borrowed adapters as `register_columns_f64`. Resident only, as
+    /// `register_record`.
+    pub fn register_ragged(
+        &mut self,
+        id: &str,
+        values: &[f64],
+        offsets: &[f64],
+    ) -> Result<(), JsValue> {
+        if self.columns.contains_key(id) {
+            return Err(js_err(format!(
+                "ragged column '{id}': the id is a registered column"
+            )));
+        }
+        let values = BorrowedSplitF64Column::new(values);
+        let offsets = BorrowedSplitF64Column::new(offsets);
+        let source = renderer::RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        };
+        self.renderer
+            .upsert_ragged(id, &source)
+            .map_err(column_registration_error)?;
+        Ok(())
+    }
+
     /// Unregister a column. Series referencing it are removed too so the
     /// chart can never point at freed data. Auto-managed legends remove
     /// the corresponding rows; freely edited legends preserve their text
