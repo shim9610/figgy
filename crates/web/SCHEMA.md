@@ -57,7 +57,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_points` / `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다.
 - **`Plain` 라벨 형식**은 `{ "Plain": {} }`처럼 쓰며, `decimals`는 `None`이면, `trim_zeros`는 `false`이면 생략한다. 값만으로 라벨을 정하므로 축 스케일·눈금 간격·`significant_digits`의 영향을 받지 않는다. `decimals`를 생략하면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6`처럼 지수 표기로, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0과 소수점을 지운다. `decimals`를 주면 그 자릿수로 적고, `trim_zeros`가 `true`이면 소수 끝의 0과 소수점을 지운다. figgy-model 0.12.1 이하는 이 값을 거부한다.
 - **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)만 그린다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
-- **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. bounded 차트는 `FiggyBoundedChart`가 그리는 `radial`·`categorical`·`boxplot`·`radar` 문서로, 컬럼 대신 문서 안에 값을 담는다. bounded 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
+- **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. bounded 차트는 `FiggyBoundedChart`가 그리는 `radial`·`boxplot`·`radar` 문서로, 컬럼 대신 문서 안에 값을 담는다. bounded 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
 - **활성 레이어 키** `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"`, `{ "Subplot": 0 }`, `{ "SubplotOverlay": [0, 0] }` 중 하나다. 데이터와 장식의 그림은 바꾸지 않고 히트 맵 등록과 선택 표시, `auto_fit_all`이 맞출 축에만 영향을 준다. 범위 밖의 `Overlay`·`Subplot` 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `set_active_layer(json)` / `active_layer()`가 이 키만 바꾸고 읽는다. 저수준 `FiggyChart`는 저장된 값을 JSON 문자열로, `<figgy-chart>`는 파싱한 값으로 돌려준다. `auto_fit_all(pad)`는 활성 레이어의 축만 맞춘다. `"Base"`와 `"Annotations"`는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이의 `y_axis`를 맞춘다. 각 축은 그 축에 그려지는 시리즈로 맞추므로 오버레이 시리즈는 자기 차트의 X 축에는 들어가고 `left_y`에는 들어가지 않는다. 링크된 축(`link_x`, `link_y`)은 X와 Y를 따로 따져 링크 묶음 전체의 시리즈로 맞추고 묶음 전체를 움직인다. 자세한 규칙은 [WASM 가이드의 범위 맞춤](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#5-빌드-산출물cratesweb--pkg)을 참고한다. `"Annotations"`이면 포인터 처리(`hit_test`, `on_press`, bounded 차트의 `hit_decoration`)가 주석 항목을 가장 먼저 검사해 `annotation_<n>`을 반환하고, 다른 값이면 클릭이 주석을 통과한다. bounded 차트에는 오버레이와 서브플롯이 없으므로 `Overlay`·`Subplot`·`SubplotOverlay` 값을 `"Base"`로 읽고 저장하며, 값이 바뀌면 `decorations.selected`를 지운다.
 - **주석 레이어 키** `annotations`는 `{ "visible": true, "items": [...] }`이며 빈 `items`는 생략한다. 각 항목은 `{ "id": "mean", "visible": true, "kind": { "ReferenceLine": { "axis": "Y", "value": 0.5, "style": { "color": {...}, "width": 1.5, "style": "Dash" }, "label": <RichText | null> } } }` 형태이고 `id`가 빈 문자열이거나 `visible`이 `true`면 그 키를 생략한다. `kind`는 `ReferenceLine` / `Span { axis, from, to, fill }` / `Text { anchor, text, box_style }` / `Arrow { from, to, style, text }` 중 하나이며, 앵커는 `{ "Data": { "x": 1.0, "y": 2.0 } }` 또는 `{ "Ratio": { "x": 0.5, "y": 0.5 } }`다. 값이나 앵커를 배치할 수 없는 항목은 오류 없이 건너뛰고, 저수준 `FiggyChart.annotation_warnings()`(bounded 차트는 `FiggyBoundedChart.annotation_warnings()`)가 `[{ "index": 0, "reason": "OutOfRange" }]` 형식의 JSON 문자열로 알린다. `reason`은 `NonFinite`(NaN·무한대), `NoValueAxis`(값 축이 없는 원형 차트나 극좌표 차트의 `Data` 앵커·축 값), `OutOfRange`(축 범위나 패널 밖, 로그축의 0 이하 값), `EmptyText`(빈 텍스트) 중 하나다. `FiggyChart`의 `annotation_warnings()`와 주석 조회 메서드(`annotations()`, `hit_annotation` 등)는 마지막으로 그린 프레임을 기준으로 하므로, `add_annotation` / `set_annotation` / `remove_annotation`으로 바꾼 항목은 다음 `frame()`이 그린 뒤에 반영된다. `FiggyBoundedChart`는 편집 호출 안에서 바로 반영한다. 자세한 내용은 [주석 레이어 메서드](../renderer/WASM.md#annotation-layer)를 참고한다.
 - **오버레이 키** `overlays`는 `OverlayLayer` 배열이며 비어 있으면 생략한다. 각 항목은 `{ "y_axis": AxisOptions, "series": ["id", ...], "legend": Legend }` 형태로, `series`는 비어 있으면, `legend`는 `null`이면 생략하고 `y_axis`는 항상 쓴다(빠지면 기본 Y 축 옵션으로 읽는다). 한 시리즈 id는 최대 한 오버레이에만 적을 수 있고, 적지 않은 시리즈는 기본 레이어에 속한다. 각 오버레이의 `y_axis`가 그 오버레이에 적은 시리즈의 Y 범위·스케일·방향을 정하고, X 축과 데이터 영역은 부모와 함께 쓴다. 스트리밍 소스 시리즈는 오버레이에 넣을 수 없다. 주석은 부모 축 기준으로 기본 레이어에 한 번 그린다.
@@ -135,7 +135,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -1029,6 +1029,68 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
   }
 }
 ```
+
+<a id="categorybars-render_type"></a>
+
+## `CategoryBars` render_type, `bar_groups` and `cross_at`
+
+A category bar series reads a positions column (`0, 1, …, n - 1`) and a
+values column of one value per category of the chart's categorical axis
+(`bottom_x` for vertical bars, `left_y` for horizontal ones; with
+`Horizontal`, `x_column` holds the values and `y_column` the positions). A
+`null` or NaN value is a missing bar. `style` and `labels` are always
+written; `overrides` is omitted when `None`, `labels.text` when empty.
+
+```json
+{
+  "series_id": "north",
+  "x_column": "categorical.positions",
+  "y_column": "categorical.values.north",
+  "render_type": {
+    "CategoryBars": {
+      "color": { "r": 0.33, "g": 0.56, "b": 0.83, "a": 1.0 },
+      "style": {
+        "material": "Matte",
+        "corner_radius": 5.0,
+        "outline": false,
+        "outline_width": 1.0,
+        "outline_color": { "r": 0.15686275, "g": 0.21568628, "b": 0.29411766, "a": 1.0 },
+        "texture_strength": 0.2,
+        "texture_scale": 1.0,
+        "gloss": 0.45,
+        "emphasis_brightness": 0.08
+      },
+      "labels": { "placement": "Auto", "decimals": 1, "value_suffix": "", "text": ["12", "18"] },
+      "label_format": "Value",
+      "overrides": [
+        { "target": { "category_id": "q2", "series_id": "north" },
+          "color": { "r": 0.84, "g": 0.15, "b": 0.16, "a": 1.0 },
+          "style": null, "labels": null, "label_format": null }
+      ]
+    }
+  }
+}
+```
+
+The chart's bar groups and the category axis crossing are additive keys of
+`get_config()`, omitted at `None`:
+
+```json
+{
+  "bar_groups": { "mode": "Stacked", "direction": "Vertical", "group_width": 0.7, "bar_gap": 3.0 },
+  "bottom_x": { "categories": [{ "id": "q1", "label": "Q1" }], "cross_at": 0.0 }
+}
+```
+
+`mode` is `"Grouped"`, `"Stacked"` or `"PercentStacked"`; `direction`
+`"Vertical"` or `"Horizontal"`. `group_width` is 0.1 to 0.95, `bar_gap`
+0 to 24 logical pixels. `cross_at` is a value of the perpendicular axis
+(`left_y` for the top and bottom axes, `bottom_x` for the left and right
+ones) and must be finite. A selected bar's `selection_details()` adds
+`category_id`, `category_label`, `value`, `direction` and `mode`, and
+`step_selection(dx, dy)` moves along the categories on the category axis'
+delta and across the series of the bar group on the other. Documents
+without these keys are read and written as before.
 
 ## `Vector` render_type의 전체 형식
 

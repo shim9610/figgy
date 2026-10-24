@@ -20,9 +20,12 @@ renderer = { package = "figgy-renderer", version = "0.18.1", features = ["serde"
 ```
 
 The generated module exports `FiggyChart` for Cartesian charts, including polar
-plots (`Config.polar`; see the [polar guide](../renderer/POLAR.md)), and
-`FiggyBoundedChart` for radial (including donuts), categorical, boxplot and
-radar charts. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
+plots (`Config.polar`; see the [polar guide](../renderer/POLAR.md)) and
+categorical bars, and `FiggyBoundedChart` for radial (including donuts),
+boxplot and radar charts. `FiggyChart.set_categorical_document(json)` opens a
+categorical bar document (`CategoricalChart` JSON, which `FiggyBoundedChart`
+took as the `"categorical"` family before) as category bars on a categorical
+axis. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
 using `FiggyBoundedChart` own their canvas events and scheduling; see the
 [bounded host API](../renderer/WASM.md#bounded-chart-host).
 
@@ -70,13 +73,16 @@ rejected GPU completion must be treated as initialization failure.
 
 A raw Cartesian host can inspect its current typed selection with
 `JSON.parse(await chart.selection_details())`. Histogram results include the
-selected bin's boundaries, stored value and orientation. Points report their
+selected bin's boundaries, stored value and orientation; a category bar
+reports its `category_id`, `category_label`, `value`, `direction` and `mode`.
+Points report their
 index and coordinates, plus `color_value` / `size_value` when the series has a
 point color or size map; matrix cells report their indices, coordinates and
 cell value; vector series report their `u` and `v` components in place of a
 value. Only the selected GPU samples are read back.
 `chart.step_selection(dx, dy)` moves the selection through resident data:
-points (point-vector arrows included), histogram bins and matrix cells
+points (point-vector arrows included), histogram bins, category bars (along
+the categories and across the series of the bar group) and matrix cells
 (grid-vector cells included). These two methods are raw `FiggyChart` exports,
 not custom-element forwarders. See the
 [selection contract](SCHEMA.md#resident-selection-details).

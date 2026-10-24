@@ -870,17 +870,41 @@ Raw `pick_point` fulfils with a JSON string or `undefined`, and the web wrapper'
 - `add_line_series`는 기존 ID이면 색을 유지하며 교체하고, 새 ID이면 색상 순서의 다음 색을 사용한다. 기존 ID에 빈 라벨을 전달해도 기존 범례 텍스트는 지우지 않는다. 비어 있지 않으면 해당 행의 텍스트만 바꾼다.
 - `free()`로 인스턴스를 해제하면 풀 버퍼·파이프라인·텍스처·surface의 참조를 정리한다. GC의 FinalizationRegistry도 정리를 지원하지만 실행 시점이 정해져 있지 않으므로 SPA에서 컴포넌트를 제거할 때는 `free()`를 직접 호출한다.
 
+<a id="categorical-documents"></a>
+
+### Categorical bar documents
+
+`FiggyChart.set_categorical_document(json)` opens a categorical bar
+document (`CategoricalChart` JSON, which `FiggyBoundedChart` took as the
+`"categorical"` family before this release) in the Cartesian wrapper. The
+document is validated and read by `Config::from_categorical`: its
+categories become the categorical axis of the bar direction, each of its
+series a `CategoryBars` series, and its values two kinds of registered
+columns, `categorical.positions` and `categorical.values.<series id>`, the
+value columns registered as one batch so the value axis can be fitted to a
+stacked group. The value axis is fitted and rounded to nice ticks; the
+chart keeps its chart area. Opening another document replaces the series
+and the columns of the previous one; every other column stays. From there
+on the chart is edited through the Cartesian API (`get_config` /
+`set_config`, `get_series` / `set_series`, the column registry), and bars
+are picked with `pick_data` like histogram bins.
+
+```js
+chart.set_categorical_document(JSON.stringify(categoricalDoc));
+await chart.first_frame_ready();
+```
+
 <a id="bounded-chart-host"></a>
 
 ## 8. Bounded chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial`, `categorical`, `boxplot`, and `radar` documents to browser hosts. It
-uses the same native renderer, decoration maps, slice/bar/box/polygon picking,
+`radial`, `boxplot`, and `radar` documents to browser hosts. It
+uses the same native renderer, decoration maps, slice/box/polygon picking,
 and drag/resize policies. The host owns pointer events, animation scheduling,
 and synchronization.
 `width` and `height` are the document's logical size: at least 160 by 160 for
-`radial`, 240 by 200 for `categorical` and `boxplot`, and 240 by 240 for
+`radial`, 240 by 200 for `boxplot`, and 240 by 240 for
 `radar`, which needs the room to place its rings and labels. The chart is drawn
 at the scale that fits this size into the canvas's pixel size (the smaller of
 the two ratios, clamped to 0.5 to 4). After the canvas size changes, pass its
@@ -956,7 +980,7 @@ import init, { FiggyBoundedChart } from "./pkg/figgy.js"; // figgy-chart.js does
 await init(); // load the WASM module before the first create
 // radialDoc is a validated RadialChart value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(radialDoc), 960, 600);
-// "categorical", "boxplot" and "radar" take the matching chart's JSON instead.
+// "boxplot" and "radar" take the matching chart's JSON instead.
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
 const selected = JSON.parse(await view.pick(...point, true)); // click toggles selection
@@ -1040,12 +1064,17 @@ between the series that draw points or lines; a selected point-vector arrow
 steps along its series' points like a scatter point. Histogram bin navigation
 follows the category direction: `dx` for vertical bars and `dy` for horizontal
 bars; the other delta switches between series of the same orientation. A
+category bar steps along its categories by the category axis' delta (`dx`
+for vertical bars, `dy` for horizontal ones) and across the series of its
+bar group by the other. A
 matrix cell, a grid-vector cell included, steps by `dx` along X and `dy` along
 Y. Indices clamp to the selected series.
 `await chart.selection_details()` returns a JSON string with selected resident
 GPU values (or `"null"` for no supported selection). Histogram fields are
 `identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and
-`orientation`; `identity` uses a flat `kind` tag. Points and matrix cells are
+`orientation`; a category bar reports `identity`, `series_id`, `index`,
+`category_id`, `category_label`, `value`, `direction` and `mode`; `identity`
+uses a flat `kind` tag. Points and matrix cells are
 also supported; a colour- or size-mapped point adds `color_value` / `size_value`,
 and a vector selection adds `u` / `v` (plus `color_value` with a colour map).
 `<figgy-chart>` has no forwarding methods for these or for the annotation

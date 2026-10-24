@@ -51,7 +51,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | --- | --- | --- |
 | Lines, scatter, error bars, histograms, heatmaps, contours | `Renderer` | Numeric columns and `SeriesConfig`; [native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) |
 | Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
-| Individual, grouped and stacked bars | `CategoricalRenderer` | `CategoricalChart` with category/series IDs; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
+| Individual, grouped and stacked bars | `Renderer` | `CategoryBars` series over a categorical axis, or a legacy `CategoricalChart` read by `Config::from_categorical`; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
 | Grouped/notched boxes and outliers | `BoxPlotRenderer` | `BoxPlotChart` with supplied statistics; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
 | Radar (spider) charts | `RadarRenderer` | `RadarChart` with one value per category and series; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
@@ -87,7 +87,7 @@ includes Cartesian refresh and bounded edit/export examples, and explains frame 
 units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles (in Korean) and titles,
 layers, subplots and annotations (in English). Runnable editors are
-`winit_simple`, `radial_editor`, `categorical_editor`, `boxplot_editor` and
+`winit_simple`, `radial_editor`, `boxplot_editor` and
 `radar_editor`; all but the first require `--features egui_demo`.
 
 Automatic Cartesian streaming fits the axes only on request: call

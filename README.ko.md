@@ -115,7 +115,7 @@
 | 보조 Y축·서브플롯·주석 | 오른쪽 보조 Y축, 한 문서 안의 차트 격자, 기준선·구간·텍스트·화살표 | [오버레이](crates/renderer/INTERACTION.md#overlay-layers) · [서브플롯](crates/renderer/INTERACTION.md#subplots) · [주석](crates/renderer/INTERACTION.md#annotation-layer) |
 | 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md#한국어-사용법) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
-| 범주형 막대 | `CategoricalChart` 범주와 시리즈 | [막대](crates/renderer/CATEGORICAL.md) |
+| 범주형 막대 | `CategoryBars` series over a categorical axis; legacy `CategoricalChart` documents through `Config::from_categorical` | [막대](crates/renderer/CATEGORICAL.md) |
 | 박스플롯 | `BoxPlotChart` 요약 통계 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |
 | 레이더 차트 | `RadarChart` 범주와 시리즈별 범주당 값 하나 | [레이더](crates/renderer/RADAR.md#한국어-사용법) |
 

@@ -509,13 +509,15 @@ error. See the [polar guide](POLAR.md) or run
 
 ### Categorical bars
 
-`CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
-`CategoricalChart` holds the category IDs, series and optional values itself; bar
-charts do not go through `ColumnSource`, the column pool or streaming.
-Per-bar colors, materials, rounding, outlines, label formats and selection are
-edited directly on that model.
-See the [categorical API guide](CATEGORICAL.md) (in Korean) or run
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`.
+The Cartesian `Renderer` draws grouped, stacked and 100% stacked bars in
+either direction as `DataRenderType::CategoryBars` series over a categorical
+axis, laid out by `Config.bar_groups`. Their positions and values are columns
+uploaded through `ColumnSource`; streamed sources are rejected. Per-bar
+colours, materials, rounding and outlines are per-bar overrides on the
+series, and a bar is picked and selected like a histogram bin.
+`Config::from_categorical` opens a legacy `CategoricalChart` document as such
+a chart. See the [bar guide](CATEGORICAL.md) or run
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
 
 ### Radial charts
 
@@ -975,11 +977,10 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 범주형 막대
 
-`CategoricalRenderer`는 가로·세로 묶음, 누적, 100% 누적 막대를 그린다. 범주·시리즈·값은
-`CategoricalChart` 모델에 직접 담으며 `ColumnSource`, 컬럼 풀, 스트리밍을 사용하지 않는다.
-막대별 색·재질·모서리·외곽선·표기와 선택 상태도 이 모델에서 편집한다.
-[API 사용법](CATEGORICAL.md)을 참고하거나
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`로 편집기를 실행한다.
+Categorical bars are `DataRenderType::CategoryBars` series of the Cartesian
+`Renderer` over a categorical axis; `Config::from_categorical` opens a legacy
+`CategoricalChart` document as such a chart. See the [bar guide](CATEGORICAL.md)
+or run `cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
 
 ### 원형 차트
 

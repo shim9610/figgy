@@ -33,6 +33,7 @@ pub struct Config {
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
+    pub bar_groups: Option<BarGroups>,       // how the CategoryBars series of a layer share a slot; None = the default
 }
 ```
 
@@ -57,6 +58,8 @@ pub struct Config {
 | `line_visible / line_color / line_width / line_style` | mixed | Axis line appearance; `line_visible` controls the axis line independently of `tick` and tick-label visibility. CPU raster strokes floor to 1 px, so sub-pixel widths do not disappear |
 | `line_offset` | f32 | Detached-axis offset: shifts the axis chrome (line/ticks/labels) perpendicular to itself while the data area stays put. Layout-neutral; the drag system's axis movement lands here |
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
+| `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)) |
+| `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
 
 ### `LabelStyle`
 | Field | Type | Meaning |
@@ -222,9 +225,10 @@ Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
 `AnnotationAxis` is `X` (horizontal on screen) or `Y` (vertical) in every
 family. Cartesian charts map them to `bottom_x` / `left_y`, the axes the data
 transform draws against, with the same linear and logarithmic rules as series
-(a non-positive value on a log axis has no position). Bar and box charts map
-them by their direction: `Vertical` bars put the category index on `X` and the
-value on `Y`, `Horizontal` bars the other way round. The category axis counts
+(a non-positive value on a log axis has no position); on a chart of category
+bars the categorical axis maps category indices. Box charts map
+them by their direction: `Vertical` boxes put the category index on `X` and the
+value on `Y`, `Horizontal` boxes the other way round. The category axis counts
 categories, the first centred at coordinate `0`, so `-0.5..0.5` is the first
 category's slot. Radial and radar charts have no value axes at all, and
 neither does a polar `Config` (`polar: Some`), so only `Ratio` anchors are
@@ -270,7 +274,7 @@ area, scaling the series it lists. `overlays` is empty (key absent in JSON) by
 default; a layered document is still one
 `Config`: the chart area, both X axes, the title, the grid, the merged legend,
 the colourbar and `draw_style` exist once, on the parent, and only the fields
-below exist per layer. Bounded charts (radial, categorical, box plot, radar) have
+below exist per layer. Bounded charts (radial, box plot, radar) have
 no overlays, and nonresident streaming rejects a document that has any.
 
 | Field | Type | Meaning |
@@ -458,6 +462,18 @@ Consequences:
   "smallest" are different facts. `axis.inverted` is not applied: it moves where
   a value is drawn, not which colour it has.
 
+### `BarGroups` (`Config::bar_groups`)
+| Field | Type | Meaning |
+|---|---|---|
+| `mode` | `CategoryBarMode` | `Grouped` (side by side in series order), `Stacked` (positive and negative values stack away from zero independently) or `PercentStacked` (shares of the category total, `0..=100`; negative values are rejected) |
+| `direction` | `CategoryBarDirection` | `Vertical`: categories on `bottom_x`, values on `left_y`; `Horizontal`: categories on `left_y`, values on `bottom_x` (base panel only) |
+| `group_width` | f32 | Share of a category slot the bars of the slot cover, `0.1..=0.95` (default 0.7) |
+| `bar_gap` | f32 | Logical pixels between grouped bars, `0..=24` (default 3) |
+
+The `CategoryBars` series of one layer (the base chart, an overlay, a
+subplot) form its bar group, at most 16 series and 512 bars. A subplot reads
+its own `bar_groups`; an overlay its chart's.
+
 ### `data_config` — declarative series schema (the active API)
 
 Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which `Renderer::paint` calls) matches on `render_type` and builds the layers that variant draws (line, scatter, errorbar, bar, field, contour or vector); colors, widths, and shapes come from the matching sub-style.
@@ -465,7 +481,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | Type | Fields | Role |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
-| `DataRenderType` | enum, 14 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
+| `DataRenderType` | enum, 15 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset. `point_color_map` colours each point by a value column through `Config.colorbar`; `point_size_map` sizes each point by a value column over an explicit domain. See [Point colour and size maps](#point-colour-and-size-maps) |
@@ -477,7 +493,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | Contour lines. `levels` is an explicit list in data units (at most 1024); `contour.set_nice_levels(&colorbar.axis, n)` writes about `n` round levels strictly inside the colourbar range (`ContourConfig::nice_levels` returns them without writing), and `contour.set_colormap_colors(&colorbar)` fills `per_level_color` from the ramp |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | Inline level labels. `spacing_px` must be finite and positive; empty `anchors` means automatic placement |
 
-**The 14 `DataRenderType` variants**:
+**The 15 `DataRenderType` variants**:
 
 | Variant | Sub-styles used | Meaning |
 |---|---|---|
@@ -493,6 +509,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `Contour { matrix, contour }` | contour | Contour lines only |
 | `HeatmapContour { matrix, fill, contour }` | fill + contour | Filled field with lines over it |
 | `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
+| `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, not drawn yet. See [Categorical bars](CATEGORICAL.md) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see
 [Histogram orientation](HISTOGRAM.md).

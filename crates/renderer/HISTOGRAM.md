@@ -2,8 +2,8 @@
 
 `DataRenderType::Histogram` draws vertical or horizontal bars, chosen by
 `DataBarStyleConfig::orientation`. It is a Cartesian series that reads bin
-edges and values from columns uploaded through `ColumnSource`, unlike
-[`CategoricalChart`](CATEGORICAL.md), which keeps its values in the model. The
+edges and values from columns uploaded through `ColumnSource`, as the
+[category bars](CATEGORICAL.md) read their positions and values. The
 host supplies bin edges and values. The renderer does not bin raw observations.
 
 | Orientation | `x_column` | `y_column` | X axis | Y axis |
