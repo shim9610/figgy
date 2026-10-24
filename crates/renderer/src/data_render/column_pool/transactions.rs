@@ -314,6 +314,8 @@ impl ColumnBatchCandidate<'_> {
             primary,
             capacity,
             slots,
+            records: _,
+            raggeds: _,
             free,
             generation,
             allocation_epochs,
@@ -458,6 +460,8 @@ impl ColumnBatchUpsert<'_> {
             primary,
             capacity: _,
             slots,
+            records: _,
+            raggeds: _,
             free,
             generation,
             allocation_epochs,
@@ -910,6 +914,8 @@ impl ColumnPool {
             primary,
             capacity: capacity_after,
             slots: planned_slots,
+            records: HashMap::new(),
+            raggeds: HashMap::new(),
             free: planned_free,
             generation: next_generation,
             allocation_epochs: planned_epochs,
@@ -941,6 +947,20 @@ impl ColumnPool {
         &'a mut self,
         columns: &[(&str, &dyn ColumnSource)],
         ctx: GpuAllocCtx<'_>,
+    ) -> Result<ColumnBatchInsert<'a>, AllocError> {
+        self.begin_add_columns_observed(columns, ctx, None)
+    }
+
+    /// [`Self::begin_add_columns`] with an observer of every written pair:
+    /// `observe(column, row, hi, lo)`, `column` being the index into
+    /// `columns`. Records and ragged columns measure their statistics through
+    /// it while the staging write happens. An observed batch is not a bar
+    /// group and measures no [`StackExtent`].
+    pub(super) fn begin_add_columns_observed<'a>(
+        &'a mut self,
+        columns: &[(&str, &dyn ColumnSource)],
+        ctx: GpuAllocCtx<'_>,
+        mut observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
     ) -> Result<ColumnBatchInsert<'a>, AllocError> {
         if columns.is_empty() {
             return Ok(ColumnBatchInsert {
@@ -1038,7 +1058,8 @@ impl ColumnPool {
         // A batch the size of a bar group measures its stacked extent while
         // it writes (`StackExtent`): row totals in fixed accumulators, fed by
         // the pair writer's observer, so no value is read back or kept.
-        let stacked = columns.len() <= model::categorical::MAX_BAR_SERIES
+        let stacked = observe.is_none()
+            && columns.len() <= model::categorical::MAX_BAR_SERIES
             && columns
                 .iter()
                 .all(|(_, source)| source.len() <= model::categorical::MAX_CATEGORIES);
@@ -1056,7 +1077,14 @@ impl ColumnPool {
                 let byte_size = column_region_bytes(source.len()).expect("sized in step 2");
                 let local = chunk.column_offsets[index - chunk.columns.start];
                 let dst = view.slice(local..local + raw_bytes as usize);
-                let stats = if stacked {
+                let stats = if let Some(observe) = observe.as_mut() {
+                    let mut per_column =
+                        |row: usize, hi: f32, lo: f32| (*observe)(index, row, hi, lo);
+                    write_scalar_source_as_pairs(
+                        source,
+                        ColumnPairWriter::new_observed(dst, &mut per_column),
+                    )
+                } else if stacked {
                     let mut observe = |row: usize, hi: f32, lo: f32| {
                         let value = hi as f64 + lo as f64;
                         if !value.is_finite() {
@@ -1541,6 +1569,8 @@ impl ColumnPool {
             primary,
             capacity: self.capacity,
             slots: planned_slots,
+            records: HashMap::new(),
+            raggeds: HashMap::new(),
             free: planned_free,
             generation: next_generation,
             allocation_epochs: planned_allocation_epochs,
@@ -2090,5 +2120,598 @@ impl ColumnPool {
                 allocation_epochs: old_allocation_epochs,
             }),
         })
+    }
+}
+
+/// Scalar statistics of one member column, measured from the encoded pairs
+/// in the write observer.
+#[derive(Clone, Copy)]
+struct ValueTally {
+    min: f64,
+    max: f64,
+    finite: u32,
+    nan: u32,
+}
+
+impl ValueTally {
+    const EMPTY: Self = Self {
+        min: f64::INFINITY,
+        max: f64::NEG_INFINITY,
+        finite: 0,
+        nan: 0,
+    };
+
+    fn record(&mut self, hi: f32, lo: f32) {
+        let value = hi as f64 + lo as f64;
+        if value.is_nan() {
+            self.nan = self.nan.saturating_add(1);
+        } else if value.is_finite() && (hi + lo).is_finite() {
+            self.finite = self.finite.saturating_add(1);
+            self.min = self.min.min(value);
+            self.max = self.max.max(value);
+        }
+    }
+}
+
+/// The offsets checks of a ragged column, measured in the write observer in
+/// one pass: no value is kept beyond the previous one.
+struct OffsetTally {
+    next_row: usize,
+    in_order: bool,
+    integral: bool,
+    non_decreasing: bool,
+    first: f64,
+    previous: f64,
+    max_group: f64,
+}
+
+impl OffsetTally {
+    fn record(&mut self, row: usize, hi: f32, lo: f32) {
+        let value = hi as f64 + lo as f64;
+        if row != self.next_row {
+            self.in_order = false;
+        }
+        self.next_row = row.saturating_add(1);
+        if !(value.is_finite() && value >= 0.0 && value.fract() == 0.0) {
+            self.integral = false;
+        }
+        if row == 0 {
+            self.first = value;
+        } else if value >= self.previous {
+            self.max_group = self.max_group.max(value - self.previous);
+        } else {
+            self.non_decreasing = false;
+        }
+        self.previous = value;
+    }
+}
+
+fn composite_error(id: &str, reason: impl Into<String>) -> crate::FiggyError {
+    crate::FiggyError::InvalidSeriesConfig {
+        series_id: id.to_owned(),
+        reason: reason.into(),
+    }
+}
+
+/// Remove `old` member columns inside a provisional member batch, let the
+/// caller prepare dependent state against the final pool, and publish both.
+/// Any failure drops the removal (restoring the old members) and then the
+/// batch (un-inserting the new ones): the new members were written to
+/// regions that were free before the batch, so the old bytes are untouched.
+fn finish_member_batch<T>(
+    batch: ColumnBatchInsert<'_>,
+    old: &[&str],
+    prepare: impl FnOnce(&ColumnPool) -> crate::Result<T>,
+) -> crate::Result<T> {
+    let removal = batch.pool.begin_remove_columns(old)?;
+    let value = prepare(&*removal.pool)?;
+    removal.commit();
+    batch.commit();
+    Ok(value)
+}
+
+impl ColumnPool {
+    /// The record `id`, when one is resident.
+    pub fn record(&self, id: &str) -> Option<RecordRef<'_>> {
+        self.records
+            .get(id)
+            .map(|slot| RecordRef { pool: self, slot })
+    }
+
+    /// The ragged column `id`, when one is resident.
+    pub fn ragged(&self, id: &str) -> Option<RaggedRef<'_>> {
+        self.raggeds
+            .get(id)
+            .map(|slot| RaggedRef { pool: self, slot })
+    }
+
+    /// The scalar statistics of the record `id`: its row count and, per
+    /// field, presence, finite range, finite count and NaN count.
+    pub fn record_stats(&self, id: &str) -> Option<RecordStats> {
+        self.records.get(id).map(|slot| slot.stats)
+    }
+
+    /// The scalar statistics of the ragged column `id`.
+    pub fn ragged_stats(&self, id: &str) -> Option<RaggedStats> {
+        self.raggeds.get(id).map(|slot| slot.stats)
+    }
+
+    fn check_composite_id(&self, id: &str, kind: &str) -> crate::Result<()> {
+        if id.is_empty() {
+            return Err(composite_error(
+                id,
+                format!("a {kind} id must not be empty"),
+            ));
+        }
+        if id.contains(MEMBER_SEPARATOR) {
+            return Err(composite_error(
+                id,
+                format!("a {kind} id must not contain U+001F, which separates member column ids"),
+            ));
+        }
+        if self.slots.contains_key(id) {
+            return Err(composite_error(
+                id,
+                format!(
+                    "the id is a column; columns, records and ragged columns share one id \
+                     space, so a {kind} needs an id of its own"
+                ),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The token that keeps a replacement's member ids distinct from the
+    /// members it replaces: the allocation epoch its first member will get.
+    fn member_token(&self) -> crate::Result<u64> {
+        Ok(self.checked_allocation_epoch_successor()?)
+    }
+
+    /// Insert or replace the record `id` (failure-atomic).
+    ///
+    /// The schema is checked by name (an unknown, repeated or missing
+    /// required field is an error), every field must have the same non-zero
+    /// length, and a record holds at most [`MAX_RECORD_FIELDS`] fields. The
+    /// fields upload as one batch transaction ([`Self::begin_add_columns`]):
+    /// one region, one staging buffer, one copy; the write observer measures
+    /// the [`RecordStats`] on the way. A replacement uploads the new fields
+    /// while the old ones are still live, so it needs room for both — the
+    /// batch's own ladder (first fit, then compaction and growth as the
+    /// policies allow) provides it — and frees the old fields when it
+    /// publishes. A failure leaves the previous record, its fields and the
+    /// allocator exactly as they were, apart from a relayout the batch needed
+    /// first, as for [`Self::add_columns`].
+    ///
+    /// Errors are [`crate::FiggyError::InvalidSeriesConfig`] naming `id` for
+    /// a source the record rules reject, and [`crate::FiggyError::Pool`] for
+    /// allocation failures.
+    pub fn upsert_record(
+        &mut self,
+        id: impl Into<RecordId>,
+        source: &RecordSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+    ) -> crate::Result<RecordId> {
+        let id = id.into();
+        self.upsert_record_with(id.clone(), source, ctx, |_, _| Ok(()))?;
+        Ok(id)
+    }
+
+    /// [`Self::upsert_record`], with `prepare(pool, relocated)` run against
+    /// the final provisional pool before anything is published; an error from
+    /// it abandons the upsert. `relocated` is whether the batch relaid the
+    /// pool out first.
+    pub(crate) fn upsert_record_with<T>(
+        &mut self,
+        id: RecordId,
+        source: &RecordSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+        prepare: impl FnOnce(&ColumnPool, bool) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        self.check_composite_id(&id, "record")?;
+        if self.raggeds.contains_key(&id) {
+            return Err(composite_error(
+                &id,
+                "the id is a ragged column; columns, records and ragged columns share one id space",
+            ));
+        }
+        let schema = source.schema;
+        if schema.len() > MAX_RECORD_FIELDS {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "the record schema has {} fields; a record holds at most \
+                     MAX_RECORD_FIELDS ({MAX_RECORD_FIELDS})",
+                    schema.len()
+                ),
+            ));
+        }
+        if source.fields.len() > MAX_RECORD_FIELDS {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "the record source has {} fields; a record holds at most \
+                     MAX_RECORD_FIELDS ({MAX_RECORD_FIELDS})",
+                    source.fields.len()
+                ),
+            ));
+        }
+
+        // Fields by schema slot.
+        let mut by_slot: [Option<&dyn ColumnSource>; MAX_RECORD_FIELDS] = [None; MAX_RECORD_FIELDS];
+        for (name, field) in source.fields {
+            let Some(slot) = schema.iter().position(|(known, _)| known == name) else {
+                return Err(composite_error(
+                    &id,
+                    format!("'{name}' is not a field of the record schema"),
+                ));
+            };
+            if by_slot[slot].is_some() {
+                return Err(composite_error(
+                    &id,
+                    format!("the record field '{name}' is given twice"),
+                ));
+            }
+            by_slot[slot] = Some(*field);
+        }
+        let mut len: Option<(usize, &str)> = None;
+        for (slot, (name, required)) in schema.iter().enumerate() {
+            let Some(field) = by_slot[slot] else {
+                if *required {
+                    return Err(composite_error(
+                        &id,
+                        format!("the required record field '{name}' is missing"),
+                    ));
+                }
+                continue;
+            };
+            match len {
+                None => len = Some((field.len(), *name)),
+                Some((rows, first)) if rows != field.len() => {
+                    return Err(composite_error(
+                        &id,
+                        format!(
+                            "the record field '{name}' has {} rows but '{first}' has {rows}; \
+                             every field of a record has the same length",
+                            field.len()
+                        ),
+                    ));
+                }
+                Some(_) => {}
+            }
+        }
+        let Some((len, _)) = len else {
+            return Err(composite_error(&id, "a record needs at least one field"));
+        };
+        if len == 0 {
+            return Err(composite_error(&id, "a record needs at least one row"));
+        }
+        let rows = u32::try_from(len).map_err(|_| {
+            composite_error(&id, format!("a record holds at most {} rows", u32::MAX))
+        })?;
+
+        // Member ids in schema order; `order[i]` is the schema slot of batch
+        // column `i`.
+        let token = self.member_token()?;
+        let mut members: [Option<ColumnId>; MAX_RECORD_FIELDS] = Default::default();
+        let mut order = [0usize; MAX_RECORD_FIELDS];
+        let mut count = 0usize;
+        for (slot, (name, _)) in schema.iter().enumerate() {
+            if by_slot[slot].is_some() {
+                members[slot] = Some(format!(
+                    "{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}{name}"
+                ));
+                order[count] = slot;
+                count += 1;
+            }
+        }
+        let placeholder = source.fields[0].1;
+        let columns: [(&str, &dyn ColumnSource); MAX_RECORD_FIELDS] = std::array::from_fn(|i| {
+            if i < count {
+                let slot = order[i];
+                (
+                    members[slot]
+                        .as_deref()
+                        .expect("a present field has a member id"),
+                    by_slot[slot].expect("a present field has a source"),
+                )
+            } else {
+                ("", placeholder)
+            }
+        });
+
+        let old: [Option<ColumnId>; MAX_RECORD_FIELDS] = self
+            .records
+            .get(&id)
+            .map_or_else(Default::default, |slot| slot.fields.clone());
+        let mut old_members = [""; MAX_RECORD_FIELDS];
+        let mut old_count = 0usize;
+        for member in old.iter().flatten() {
+            old_members[old_count] = member;
+            old_count += 1;
+        }
+
+        self.records
+            .try_reserve(1)
+            .map_err(|error| crate::FiggyError::StateAllocationFailed {
+                resource: "record registry",
+                reason: error.to_string(),
+            })?;
+        let layout_before = self.layout_generation;
+        let mut tallies = [ValueTally::EMPTY; MAX_RECORD_FIELDS];
+        let mut observe = |column: usize, _row: usize, hi: f32, lo: f32| {
+            tallies[column].record(hi, lo);
+        };
+        let observer: &mut dyn FnMut(usize, usize, f32, f32) = &mut observe;
+        let batch = self.begin_add_columns_observed(&columns[..count], ctx, Some(observer))?;
+        let relocated = batch.pool.layout_generation != layout_before;
+        let epoch = batch
+            .pool
+            .allocation_epoch(columns[0].0)
+            .expect("a provisional member has an allocation epoch");
+        let value = finish_member_batch(batch, &old_members[..old_count], |pool| {
+            prepare(pool, relocated)
+        })?;
+
+        let mut stats = RecordStats {
+            len: rows,
+            present: [false; MAX_RECORD_FIELDS],
+            min: [f64::INFINITY; MAX_RECORD_FIELDS],
+            max: [f64::NEG_INFINITY; MAX_RECORD_FIELDS],
+            finite: [0; MAX_RECORD_FIELDS],
+            nan: [0; MAX_RECORD_FIELDS],
+        };
+        for (tally, slot) in tallies.iter().zip(&order).take(count) {
+            stats.present[*slot] = true;
+            stats.min[*slot] = tally.min;
+            stats.max[*slot] = tally.max;
+            stats.finite[*slot] = tally.finite;
+            stats.nan[*slot] = tally.nan;
+        }
+        self.records.insert(
+            id,
+            RecordSlot {
+                schema,
+                fields: members,
+                len: rows,
+                epoch,
+                stats,
+            },
+        );
+        Ok(value)
+    }
+
+    /// Insert or replace the ragged column `id` (failure-atomic).
+    ///
+    /// The values and the offsets upload as one batch transaction; the write
+    /// observer measures the [`RaggedStats`] and checks the offsets in the
+    /// same pass: they start at 0, are finite integers, never decrease and
+    /// end at `values.len()`. An offsets column that fails a check is
+    /// rejected and the batch is abandoned before anything is published. A
+    /// replacement needs room for the new members while the old ones are
+    /// live, as [`Self::upsert_record`] describes.
+    pub fn upsert_ragged(
+        &mut self,
+        id: impl Into<RaggedId>,
+        source: &RaggedSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+    ) -> crate::Result<RaggedId> {
+        let id = id.into();
+        self.upsert_ragged_with(id.clone(), source, ctx, |_, _| Ok(()))?;
+        Ok(id)
+    }
+
+    /// [`Self::upsert_ragged`] with a `prepare` step, as
+    /// [`Self::upsert_record_with`].
+    pub(crate) fn upsert_ragged_with<T>(
+        &mut self,
+        id: RaggedId,
+        source: &RaggedSource<'_>,
+        ctx: GpuAllocCtx<'_>,
+        prepare: impl FnOnce(&ColumnPool, bool) -> crate::Result<T>,
+    ) -> crate::Result<T> {
+        self.check_composite_id(&id, "ragged column")?;
+        if self.records.contains_key(&id) {
+            return Err(composite_error(
+                &id,
+                "the id is a record; columns, records and ragged columns share one id space",
+            ));
+        }
+        let total = source.values.len();
+        if total == 0 {
+            return Err(composite_error(
+                &id,
+                "a ragged column needs at least one value; register none when every group is empty",
+            ));
+        }
+        if total > MAX_RAGGED_VALUES {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "a ragged column holds at most {MAX_RAGGED_VALUES} values (2^24, exact as \
+                     f32 offsets), got {total}"
+                ),
+            ));
+        }
+        let offsets_len = source.offsets.len();
+        if offsets_len < 2 {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "a ragged column needs one offset per group plus one, at least two, got \
+                     {offsets_len}"
+                ),
+            ));
+        }
+        let groups = u32::try_from(offsets_len - 1).map_err(|_| {
+            composite_error(
+                &id,
+                format!("a ragged column holds at most {} groups", u32::MAX),
+            )
+        })?;
+        let total32 = total as u32;
+
+        let token = self.member_token()?;
+        let values_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}values");
+        let offsets_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}offsets");
+        let columns: [(&str, &dyn ColumnSource); 2] = [
+            (values_id.as_str(), source.values),
+            (offsets_id.as_str(), source.offsets),
+        ];
+        let old = self
+            .raggeds
+            .get(&id)
+            .map(|slot| (slot.values.clone(), slot.offsets.clone()));
+        let old_members: [&str; 2] = old.as_ref().map_or(["", ""], |(values, offsets)| {
+            [values.as_str(), offsets.as_str()]
+        });
+        let old_count = if old.is_some() { 2 } else { 0 };
+
+        self.raggeds
+            .try_reserve(1)
+            .map_err(|error| crate::FiggyError::StateAllocationFailed {
+                resource: "ragged column registry",
+                reason: error.to_string(),
+            })?;
+        let layout_before = self.layout_generation;
+        let mut values = ValueTally::EMPTY;
+        let mut offsets = OffsetTally {
+            next_row: 0,
+            in_order: true,
+            integral: true,
+            non_decreasing: true,
+            first: f64::NAN,
+            previous: f64::NAN,
+            max_group: 0.0,
+        };
+        let mut observe = |column: usize, row: usize, hi: f32, lo: f32| {
+            if column == 0 {
+                values.record(hi, lo);
+            } else {
+                offsets.record(row, hi, lo);
+            }
+        };
+        let observer: &mut dyn FnMut(usize, usize, f32, f32) = &mut observe;
+        let batch = self.begin_add_columns_observed(&columns, ctx, Some(observer))?;
+        // Rejections below drop `batch`, which un-inserts both members; their
+        // bytes went to regions that were free, so nothing live changed.
+        if !offsets.in_order || offsets.next_row != offsets_len {
+            return Err(composite_error(
+                &id,
+                "the offsets source must write every offset once, in row order",
+            ));
+        }
+        if !offsets.integral {
+            return Err(composite_error(
+                &id,
+                "ragged offsets must be finite non-negative integers",
+            ));
+        }
+        if offsets.first != 0.0 {
+            return Err(composite_error(
+                &id,
+                format!("ragged offsets must start at 0, got {}", offsets.first),
+            ));
+        }
+        if !offsets.non_decreasing {
+            return Err(composite_error(
+                &id,
+                "ragged offsets must be non-decreasing: group g is values[offsets[g]..offsets[g + 1]]",
+            ));
+        }
+        if offsets.previous != total as f64 {
+            return Err(composite_error(
+                &id,
+                format!(
+                    "the last ragged offset is {} but there are {total} values",
+                    offsets.previous
+                ),
+            ));
+        }
+        let relocated = batch.pool.layout_generation != layout_before;
+        let epoch = batch
+            .pool
+            .allocation_epoch(&values_id)
+            .expect("a provisional member has an allocation epoch");
+        let value = finish_member_batch(batch, &old_members[..old_count], |pool| {
+            prepare(pool, relocated)
+        })?;
+
+        let stats = RaggedStats {
+            groups,
+            total: total32,
+            min: values.min,
+            max: values.max,
+            finite: values.finite,
+            nan: values.nan,
+            non_decreasing: offsets.non_decreasing,
+            max_group: offsets.max_group as u32,
+        };
+        self.raggeds.insert(
+            id,
+            RaggedSlot {
+                values: values_id,
+                offsets: offsets_id,
+                groups,
+                total: total32,
+                epoch,
+                stats,
+            },
+        );
+        Ok(value)
+    }
+
+    /// Delete the record `id` and free its member columns. `false` when no
+    /// such record is resident.
+    pub fn remove_record(&mut self, id: &str) -> crate::Result<bool> {
+        Ok(self.remove_record_with(id, |_| Ok(()))?.is_some())
+    }
+
+    /// [`Self::remove_record`] with `prepare` run against the provisional
+    /// pool before the removal is published. `None` when no such record is
+    /// resident.
+    pub(crate) fn remove_record_with<T>(
+        &mut self,
+        id: &str,
+        prepare: impl FnOnce(&ColumnPool) -> crate::Result<T>,
+    ) -> crate::Result<Option<T>> {
+        let Some(slot) = self.records.get(id) else {
+            return Ok(None);
+        };
+        let fields = slot.fields.clone();
+        let mut members = [""; MAX_RECORD_FIELDS];
+        let mut count = 0usize;
+        for member in fields.iter().flatten() {
+            members[count] = member;
+            count += 1;
+        }
+        let removal = self.begin_remove_columns(&members[..count])?;
+        let value = prepare(&*removal.pool)?;
+        removal.commit();
+        self.records.remove(id);
+        Ok(Some(value))
+    }
+
+    /// Delete the ragged column `id` and free its two member columns.
+    /// `false` when no such ragged column is resident.
+    pub fn remove_ragged(&mut self, id: &str) -> crate::Result<bool> {
+        Ok(self.remove_ragged_with(id, |_| Ok(()))?.is_some())
+    }
+
+    /// [`Self::remove_ragged`] with a `prepare` step, as
+    /// [`Self::remove_record_with`].
+    pub(crate) fn remove_ragged_with<T>(
+        &mut self,
+        id: &str,
+        prepare: impl FnOnce(&ColumnPool) -> crate::Result<T>,
+    ) -> crate::Result<Option<T>> {
+        let Some(slot) = self.raggeds.get(id) else {
+            return Ok(None);
+        };
+        let (values, offsets) = (slot.values.clone(), slot.offsets.clone());
+        let removal = self.begin_remove_columns(&[values.as_str(), offsets.as_str()])?;
+        let value = prepare(&*removal.pool)?;
+        removal.commit();
+        self.raggeds.remove(id);
+        Ok(Some(value))
     }
 }
