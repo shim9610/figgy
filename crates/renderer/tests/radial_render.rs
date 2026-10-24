@@ -573,6 +573,108 @@ fn radial_gpu_pick_agrees_with_the_cpu_twin() {
     );
 }
 
+/// The picked highlight of every slice a selection can step to (the main
+/// circle's slices with a value, then the detail circle's children) is drawn
+/// on that slice alone. Against the export without a selection, every
+/// changed pixel lies on the selected slice where it rests or where it is
+/// lifted (the CPU twin of the pick, within a pixel of antialiasing), and
+/// the GPU pick of the selected frame finds the slice there, at 1x and 2x.
+#[cfg(feature = "cpu-twin")]
+#[test]
+fn radial_selected_highlight_is_drawn_on_its_slice_alone() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let mut c = chart();
+    c.kind = RadialKind::Donut { inner_radius: 0.45 };
+    c.style = RadialStyle::three_dimensional();
+    c.style.tilt_degrees = 40.0;
+    c.style.hover_lift = 0.2;
+    // A lifted slice's floor shadow falls beside its footprint.
+    c.style.shadow = false;
+    c.slices = vec![
+        RadialSlice::new("A", 25.0, Color::from_rgb8(220, 60, 40)),
+        RadialSlice::new("Z", 0.0, Color::WHITE),
+        RadialSlice::new("B", 40.0, Color::from_rgb8(40, 80, 220)),
+        RadialSlice::new("C", 35.0, Color::from_rgb8(40, 170, 70)),
+    ];
+    c.split = Some(RadialSplit {
+        slice_index: 2,
+        kind: RadialKind::Pie,
+        children: vec![
+            RadialSlice::new("D", 30.0, Color::from_rgb8(200, 140, 20)),
+            RadialSlice::new("E", 10.0, Color::from_rgb8(130, 30, 190)),
+        ],
+    });
+    let targets = [
+        RadialTarget::main(0),
+        RadialTarget::main(2),
+        RadialTarget::main(3),
+        RadialTarget::detail(0),
+        RadialTarget::detail(1),
+    ];
+    let size = (400, 300);
+    for scale in [1.0f32, 2.0] {
+        c.interaction = Default::default();
+        let rest = r.export_rgba(&c, size, scale).unwrap();
+        drain(&r);
+        for target in targets {
+            c.interaction.selected = Some(target);
+            let frame = r.prepare(&c, size, scale).unwrap();
+            let image = r.export_rgba(&c, size, scale).unwrap();
+            assert_eq!((image.width, image.height), (rest.width, rest.height));
+            let on = |p: [f32; 2]| {
+                frame.cpu_twin_pick(p, false) == Some(target)
+                    || frame.cpu_twin_pick(p, true) == Some(target)
+            };
+            let step = 1.0 / scale;
+            let (mut changed, mut off, mut gpu_checked) = (0usize, Vec::new(), 0usize);
+            for (i, (a, b)) in rest
+                .rgba
+                .chunks_exact(4)
+                .zip(image.rgba.chunks_exact(4))
+                .enumerate()
+            {
+                if a.iter().zip(b).all(|(a, b)| a.abs_diff(*b) <= 8) {
+                    continue;
+                }
+                changed += 1;
+                let (x, y) = (i as u32 % image.width, i as u32 / image.width);
+                let p = [(x as f32 + 0.5) * step, (y as f32 + 0.5) * step];
+                let near = [-step, 0.0, step].iter().any(|dx| {
+                    [-step, 0.0, step]
+                        .iter()
+                        .any(|dy| on([p[0] + dx, p[1] + dy]))
+                });
+                if !near {
+                    off.push((x, y));
+                } else if gpu_checked < 8
+                    && i % 97 == 0
+                    && frame.cpu_twin_pick(p, false) == Some(target)
+                {
+                    assert_eq!(pick(&frame, p), Some(target), "GPU pick at {p:?}");
+                    gpu_checked += 1;
+                }
+            }
+            assert!(
+                changed > (200.0 * scale * scale) as usize,
+                "{target:?} at {scale}x: the highlight changed only {changed} pixels"
+            );
+            assert!(
+                off.is_empty(),
+                "{target:?} at {scale}x: {} of {changed} changed pixels lie off the slice, first {:?}",
+                off.len(),
+                &off[..off.len().min(8)]
+            );
+            assert!(
+                gpu_checked > 0,
+                "{target:?} at {scale}x: no GPU pick sampled"
+            );
+            drop(frame);
+            drain(&r);
+        }
+    }
+}
+
 #[test]
 fn radial_rounding_changes_geometry_and_outline_is_resolution_independent() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
