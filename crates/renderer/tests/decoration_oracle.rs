@@ -14,8 +14,16 @@
 //! - **I1** every drawn part lies inside its panel's chart area (a subplot's
 //!   parts also outside every other chart area); bounded charts: every
 //!   element's bounds inside the canvas.
+//! - **I2** every element's hit region is its drawn outline: every strong
+//!   ink pixel inside the region the selection outlines, the region near
+//!   the ink, `contains` agreeing with it, and the topmost region at every
+//!   ink pixel belonging to an element with ink there.
+//! - **I3** the drawn highlight is the model's selection box: the pixels it
+//!   changes lie on the box's outline and handles, and every edge is drawn.
 //! - **I7** the hit map of every layer holds exactly the elements the
-//!   layer's documented registration set names, in that order.
+//!   layer's documented registration set names, in that order; no ink
+//!   without an element, no element without ink; and the CPU decoration
+//!   raster is what the product exports.
 //!
 //! The Cartesian decoration ink needs no GPU: the CPU raster of each
 //! expanded panel (`try_raster_chart_layer_to_rgba` with
@@ -37,11 +45,20 @@ use std::fmt::Write as _;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
 
+use renderer::axis_render::{
+    AxisLayerKind, try_raster_chart_layer_to_rgba, try_raster_chart_layer_to_rgba_with_selection,
+};
 use renderer::layout::RectF;
+use renderer::legend::Legend;
+use renderer::select::{
+    PartOutline, SELECTION_COLOR, SELECTION_PADDING, part_outline, segment_grab_half_width,
+};
 use renderer::sink::Parts;
+use renderer::text::RichText;
 use renderer::{
-    Config, CpuTextMeasure, DrawnPart, HitId, HitMap, LayerRef, Renderer, RendererDevice,
-    SelectionGeometry,
+    Chart, Color, ColorMap, Config, CpuTextMeasure, DrawnPart, HitId, HitMap, LayerRef,
+    OverlayLayer, Renderer, RendererDevice, SelectionBox, SelectionGeometry, SelectionOutline,
+    SeriesConfig,
 };
 
 use scenes::SceneKind;
@@ -112,7 +129,7 @@ struct Row {
 
 /// A known divergence that is not fixed here: rows of `inv` for `element`
 /// of `layer` in `scene` pass, for the `reason` and the tracking `issue`
-/// given. `"*"` matches any layer or element.
+/// given. A `*` in a pattern stands for any run of characters.
 struct Exclusion {
     scene: &'static str,
     layer: &'static str,
@@ -125,9 +142,35 @@ struct Exclusion {
 impl Exclusion {
     fn matches(&self, row: &Row) -> bool {
         self.inv == row.inv
-            && self.scene == row.scene
-            && (self.layer == "*" || self.layer == row.layer)
-            && (self.element == "*" || self.element == row.element)
+            && glob(self.scene, row.scene)
+            && glob(self.layer, &row.layer)
+            && glob(self.element, &row.element)
+    }
+}
+
+/// Whether `text` matches `pattern`, where `*` stands for any run of
+/// characters.
+fn glob(pattern: &str, text: &str) -> bool {
+    match pattern.split_once('*') {
+        None => pattern == text,
+        Some((head, rest)) => {
+            let Some(mut tail) = text.strip_prefix(head) else {
+                return false;
+            };
+            if rest.is_empty() {
+                return true;
+            }
+            loop {
+                if glob(rest, tail) {
+                    return true;
+                }
+                let mut chars = tail.chars();
+                if chars.next().is_none() {
+                    return false;
+                }
+                tail = chars.as_str();
+            }
+        }
     }
 }
 
@@ -145,6 +188,8 @@ struct Report {
     summary: Vec<String>,
     /// Seconds per phase, in the order the phases ran.
     phases: Vec<(&'static str, f64)>,
+    /// Totals the summary prints: ink pixels, samples, rasters.
+    counts: BTreeMap<String, usize>,
 }
 
 impl Report {
@@ -174,6 +219,19 @@ impl Report {
 
     fn line(&mut self, line: String) {
         self.summary.push(line);
+    }
+
+    /// Add `n` to the total `what` of the scene family `at` belongs to.
+    fn count(&mut self, at: &At<'_>, what: &str, n: usize) {
+        let family = if at.layer == "bounded" {
+            "bounded"
+        } else {
+            "Cartesian"
+        };
+        *self
+            .counts
+            .entry(format!("{family} {what} at {}x", at.scale))
+            .or_default() += n;
     }
 
     /// Add the time since `start` to `phase`.
@@ -237,6 +295,9 @@ impl Report {
         let _ = writeln!(out, "decoration oracle");
         for line in &self.summary {
             let _ = writeln!(out, "  {line}");
+        }
+        for (what, n) in &self.counts {
+            let _ = writeln!(out, "  {what}: {n}");
         }
         let _ = writeln!(out, "invariant x element kind (checks / failed):");
         let kinds: std::collections::BTreeSet<&String> =
@@ -324,6 +385,16 @@ fn i1_every_drawn_part_is_inside_its_panel() {
 }
 
 #[test]
+fn i2_every_hit_region_is_the_drawn_outline() {
+    report().assert_clean(Inv::I2);
+}
+
+#[test]
+fn i3_every_drawn_highlight_is_the_model_box() {
+    report().assert_clean(Inv::I3);
+}
+
+#[test]
 fn i7_hit_map_entries_are_the_emitted_elements() {
     report().assert_clean(Inv::I7);
 }
@@ -390,7 +461,13 @@ fn sweep() -> Report {
             }
         };
         report.time("Cartesian scene builds", phase);
-        cases += cartesian_scene(&mut report, scene_name(kind), &scene.config);
+        cases += cartesian_scene(
+            &mut report,
+            &mut r,
+            scene_name(kind),
+            &scene.config,
+            &scene.series,
+        );
     }
     report.line(format!(
         "{} scenes: {cartesian} Cartesian, {bounded} bounded",
@@ -527,13 +604,12 @@ fn hit_index(id: HitId) -> usize {
 }
 
 /// One registered element of a layer case, measured once.
-#[allow(dead_code)] // read by the invariants that follow I1 and I7
 struct Measured {
     name: String,
     id: HitId,
     bounds: Option<RectF>,
     parts: Vec<DrawnPart>,
-    laid_out: bool,
+    selection: Option<SelectionBox>,
 }
 
 /// The chart area a registered element is drawn in: its subplot's for a
@@ -574,16 +650,42 @@ fn intersects(a: RectF, b: RectF, tolerance: f32) -> bool {
 }
 
 /// Sweep one Cartesian scene; returns its number of layer cases.
-fn cartesian_scene(report: &mut Report, scene: &'static str, config: &Config) -> usize {
+fn cartesian_scene(
+    report: &mut Report,
+    r: &mut Renderer,
+    scene: &'static str,
+    config: &Config,
+    series: &[SeriesConfig],
+) -> usize {
     let layers = layer_cases(config);
-    let phase = Instant::now();
+    let (palette_config, codes) = palette(config);
     for scale in SCALES {
         let doc = if scale == 1.0 {
-            config.clone()
+            palette_config.clone()
         } else {
-            config.scaled(scale)
+            palette_config.scaled(scale)
         };
+        let document = At {
+            scene,
+            layer: "document",
+            scale,
+        };
+        let phase = Instant::now();
+        let ink = match SceneInk::new(&doc, &codes) {
+            Ok(ink) => ink,
+            Err(e) => {
+                report.check(&document, "<raster>", Inv::I7, false, || e);
+                continue;
+            }
+        };
+        report.time("Cartesian palette rasters", phase);
+        let phase = Instant::now();
+        check_export(report, &document, r, &palette_config, series, &ink);
+        report.time("Cartesian exports", phase);
+        // Each element's bounds in the layer cases that register it.
+        let mut registered: BTreeMap<String, Option<RectF>> = BTreeMap::new();
         for &layer in &layers {
+            let phase = Instant::now();
             let mut cfg = doc.clone();
             let stored = cfg.set_active_layer(layer);
             let name = layer_name(layer);
@@ -595,17 +697,35 @@ fn cartesian_scene(report: &mut Report, scene: &'static str, config: &Config) ->
             report.check(&at, "<layer>", Inv::I7, stored == layer, || {
                 format!("set_active_layer stored {stored:?}")
             });
-            let measured = measure_layer(report, &at, &cfg, layer);
+            let (map, measured) = measure_layer(report, &at, &cfg, layer);
             check_i1(report, &at, &cfg, &measured);
+            for m in &measured {
+                registered.insert(m.name.clone(), m.bounds);
+            }
+            report.time("Cartesian geometry", phase);
+            let phase = Instant::now();
+            let masks: Vec<Mask> = measured.iter().map(|m| Mask::of(m, &ink)).collect();
+            check_i2(report, &at, &cfg, &map, &measured, &masks, &ink);
+            report.time("Cartesian hit regions (I2)", phase);
+            if scale == 1.0 {
+                let phase = Instant::now();
+                check_i3(report, &at, &measured, &ink);
+                report.time("Cartesian highlights (I3)", phase);
+            }
         }
+        check_owners(report, &document, &ink, &registered);
     }
-    report.time("Cartesian geometry", phase);
     layers.len()
 }
 
 /// Build the layer's hit map, check it against the documented registration
 /// set (I7) and measure every element.
-fn measure_layer(report: &mut Report, at: &At<'_>, cfg: &Config, layer: LayerRef) -> Vec<Measured> {
+fn measure_layer(
+    report: &mut Report,
+    at: &At<'_>,
+    cfg: &Config,
+    layer: LayerRef,
+) -> (HitMap, Vec<Measured>) {
     let map = HitMap::for_active_layer(cfg);
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
     let names = expected_names(layer);
@@ -642,15 +762,16 @@ fn measure_layer(report: &mut Report, at: &At<'_>, cfg: &Config, layer: LayerRef
         report.check(at, name, Inv::I7, laid_out, || {
             "the renderer's measure cannot lay it out".into()
         });
+        let selection = map.selection_box(id, cfg, &measure);
         measured.push(Measured {
             name: name.clone(),
             id,
             bounds,
             parts,
-            laid_out,
+            selection,
         });
     }
-    measured
+    (map, measured)
 }
 
 /// I1: every part an element draws lies inside its panel's chart area and,
@@ -692,4 +813,1207 @@ fn check_i1(report: &mut Report, at: &At<'_>, cfg: &Config, measured: &[Measured
             });
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// The palette raster
+// ---------------------------------------------------------------------------
+//
+// One CPU raster per panel shows every element at once: public SSOT colour
+// edits give each element an opaque code colour (its strokes, text, fills
+// and the colourbar ramp), which changes no layout, and each pixel's
+// un-premultiplied colour names the element that painted it. Overlapping
+// ink inside a panel decodes as a blend of two codes; the panels are
+// decoded separately, so the layers never blend.
+
+/// Pixels with less alpha are anti-aliasing fringe, too faint to name their
+/// owner.
+const INK_ALPHA: u8 = 64;
+/// Strong ink: the pixels the hit region must contain (#47: "every ink pixel
+/// hits", at the half-covered threshold `axis_hit_geometry` uses).
+const STRONG_ALPHA: u8 = 128;
+/// The largest channel distance between an un-premultiplied pixel and its
+/// code colour. Codes are 64 apart; un-premultiplying an 8-bit pixel at
+/// alpha 64 is off by at most 2.
+const CODE_TOLERANCE: i32 = 24;
+/// A box edge may lie this far outside the ink it bounds beyond the padding
+/// at 1x (`axis_hit_geometry`'s box rule: anti-aliasing plus glyph side
+/// bearings). The bearings grow with the text, so the slack scales with the
+/// output.
+const BOX_FIT: f32 = 3.5;
+/// The topmost region at an ink pixel may belong to another element whose
+/// own ink is this close: the selection padding by which every hit region
+/// extends past its ink, plus a pixel of anti-aliasing (the "policy plus
+/// 1 px" of #47's plan).
+const TOPMOST_REACH: i64 = 3;
+/// The hit region of a stroke reaches this far past its grab half width
+/// (anti-aliasing), as `axis_hit_geometry`'s stroke rule.
+const STROKE_FIT: f32 = 1.0;
+/// `contains` cross-check samples per element and layer case.
+const CONTAINS_SAMPLES: usize = 48;
+/// Owner value of a pixel no code explains.
+const UNOWNED: u16 = u16::MAX;
+
+/// One element's code colour.
+struct Code {
+    name: String,
+    /// The panel that draws the element.
+    panel: LayerRef,
+    rgb: [u8; 3],
+}
+
+/// Hands out code colours: a lattice of five levels per channel, in a
+/// stride order so consecutive codes differ in every channel, without the
+/// colours near the selection blue and the white of the resize handles.
+struct Painter {
+    colors: Vec<[u8; 3]>,
+    codes: Vec<Code>,
+}
+
+impl Painter {
+    fn new() -> Self {
+        const LEVELS: [u8; 5] = [0, 64, 128, 192, 255];
+        let blue = SELECTION_COLOR;
+        let selection = [blue.r, blue.g, blue.b].map(|c| (c * 255.0).round() as i32);
+        let far = |rgb: [u8; 3], other: [i32; 3]| {
+            (0..3)
+                .map(|k| (i32::from(rgb[k]) - other[k]).abs())
+                .max()
+                .unwrap_or(0)
+                >= 48
+        };
+        let colors = (0..125)
+            .map(|i| (i * 47) % 125)
+            .map(|k| [LEVELS[k / 25], LEVELS[(k / 5) % 5], LEVELS[k % 5]])
+            .filter(|rgb| far(*rgb, selection) && far(*rgb, [255, 255, 255]))
+            .collect();
+        Self {
+            colors,
+            codes: Vec::new(),
+        }
+    }
+
+    fn code(&mut self, name: String, panel: LayerRef) -> Color {
+        let rgb = self.colors[self.codes.len()];
+        self.codes.push(Code { name, panel, rgb });
+        Color::from_rgb8(rgb[0], rgb[1], rgb[2])
+    }
+
+    fn text(&mut self, text: &mut RichText, name: String, panel: LayerRef) {
+        let c = self.code(name, panel);
+        text.color = c;
+        for segment in &mut text.segments {
+            if segment.color.is_some() {
+                segment.color = Some(c);
+            }
+            if segment.rule_band.is_some() {
+                segment.rule_band = Some(c);
+            }
+        }
+    }
+
+    fn legend(&mut self, legend: &mut Legend, name: String, panel: LayerRef) {
+        self.text(&mut legend.content, name, panel);
+        let c = Color::from_rgb8(
+            self.codes.last().map_or(0, |c| c.rgb[0]),
+            self.codes.last().map_or(0, |c| c.rgb[1]),
+            self.codes.last().map_or(0, |c| c.rgb[2]),
+        );
+        legend.bg_color = c;
+        legend.border_color = c;
+    }
+
+    /// The elements of one chart: its four axes with their labels and
+    /// titles, the chart title, the legend and the colourbar chrome.
+    fn chart(&mut self, cfg: &mut Config, prefix: &str, panel: LayerRef) {
+        for (side, axis) in [
+            ("top", &mut cfg.top_x),
+            ("bottom", &mut cfg.bottom_x),
+            ("left", &mut cfg.left_y),
+            ("right", &mut cfg.right_y),
+        ] {
+            axis.line_color = self.code(format!("{prefix}axis_{side}"), panel);
+            axis.label_style.color = self.code(format!("{prefix}tick_labels_{side}"), panel);
+            self.text(
+                &mut axis.title_option.text,
+                format!("{prefix}axis_title_{side}"),
+                panel,
+            );
+        }
+        self.text(
+            &mut cfg.chart_title.text,
+            format!("{prefix}chart_title"),
+            panel,
+        );
+        self.legend(&mut cfg.legend, format!("{prefix}legend"), panel);
+        if let Some(bar) = cfg.colorbar.as_mut() {
+            let c = self.code(format!("{prefix}colorbar"), panel);
+            bar.colormap = ColorMap::Custom { stops: vec![c, c] };
+            bar.border_color = c;
+            bar.axis.line_color = self.code(format!("{prefix}colorbar_axis"), panel);
+            bar.axis.label_style.color = self.code(format!("{prefix}colorbar_tick_labels"), panel);
+            self.text(
+                &mut bar.axis.title_option.text,
+                format!("{prefix}colorbar_title"),
+                panel,
+            );
+        }
+    }
+
+    fn overlay(&mut self, overlay: &mut OverlayLayer, prefix: &str, panel: LayerRef) {
+        let axis = &mut overlay.y_axis;
+        axis.line_color = self.code(format!("{prefix}axis_right"), panel);
+        axis.label_style.color = self.code(format!("{prefix}tick_labels_right"), panel);
+        self.text(
+            &mut axis.title_option.text,
+            format!("{prefix}axis_title_right"),
+            panel,
+        );
+        if let Some(legend) = overlay.legend.as_mut() {
+            self.legend(legend, format!("{prefix}legend"), panel);
+        }
+    }
+}
+
+/// `config` with every decoration element in its own code colour, and the
+/// codes. Colours feed no layout, so every hit map, bound and selection box
+/// of the palette document is the scene's own.
+fn palette(config: &Config) -> (Config, Vec<Code>) {
+    let mut painter = Painter::new();
+    let mut cfg = config.clone();
+    painter.chart(&mut cfg, "", LayerRef::Base);
+    for (i, overlay) in cfg.overlays.iter_mut().enumerate() {
+        painter.overlay(overlay, &format!("overlay_{i}:"), LayerRef::Overlay(i));
+    }
+    for (i, subplot) in cfg.subplots.iter_mut().enumerate() {
+        let prefix = format!("subplot_{i}:");
+        painter.chart(&mut subplot.config, &prefix, LayerRef::Subplot(i));
+        for (j, overlay) in subplot.config.overlays.iter_mut().enumerate() {
+            painter.overlay(
+                overlay,
+                &format!("{prefix}overlay_{j}:"),
+                LayerRef::SubplotOverlay(i, j),
+            );
+        }
+    }
+    (cfg, painter.codes)
+}
+
+/// The panels the renderer draws a document as, base first: the document
+/// itself without layers, else its expansion, else (no data area at this
+/// size) its base panel alone; the renderer's own `expand_for_render`.
+fn render_panels(doc: &Config) -> Vec<(LayerRef, Config)> {
+    let alone = || {
+        let mut panel = doc.clone();
+        panel.overlays.clear();
+        panel.subplots.clear();
+        panel.active_layer = LayerRef::Base;
+        vec![(LayerRef::Base, panel)]
+    };
+    if doc.overlays.is_empty() && doc.subplots.is_empty() {
+        return alone();
+    }
+    match doc.expand() {
+        Ok(expansion) => expansion
+            .panels
+            .into_iter()
+            .map(|panel| (panel.layer, panel.config))
+            .collect(),
+        Err(_) => alone(),
+    }
+}
+
+/// One panel's decoration raster and the owner of each of its pixels.
+struct PanelInk {
+    layer: LayerRef,
+    config: Config,
+    /// The panel's chart area in the document image.
+    x0: usize,
+    y0: usize,
+    w: usize,
+    h: usize,
+    rgba: Vec<u8>,
+    /// Per pixel: 0 no ink, `code + 1`, or [`UNOWNED`].
+    owner: Vec<u16>,
+    /// The second code of a blend, 0 otherwise.
+    owner2: Vec<u16>,
+}
+
+/// The decoration ink of one document at one scale.
+struct SceneInk {
+    /// The document area's origin in the config frame.
+    origin: [f32; 2],
+    w: usize,
+    h: usize,
+    codes: Vec<([u8; 3], String, usize)>,
+    panels: Vec<PanelInk>,
+    /// Every pixel each code has ink in, alone or blended, as document pixel
+    /// indices.
+    by_code: Vec<Vec<u32>>,
+    /// Of those, the pixels the code owns outright.
+    exact: Vec<Vec<u32>>,
+}
+
+impl SceneInk {
+    fn new(doc: &Config, codes: &[Code]) -> Result<Self, String> {
+        let area = doc.document_area();
+        let (w, h) = (area.width as usize, area.height as usize);
+        let mut panels = Vec::new();
+        let mut table: Vec<([u8; 3], String, usize)> = Vec::with_capacity(codes.len());
+        let layers: Vec<(LayerRef, Config)> = render_panels(doc);
+        for code in codes {
+            let panel = layers
+                .iter()
+                .position(|(l, _)| *l == code.panel)
+                .unwrap_or(usize::MAX);
+            table.push((code.rgb, code.name.clone(), panel));
+        }
+        for (index, (layer, config)) in layers.into_iter().enumerate() {
+            let rgba = try_raster_chart_layer_to_rgba(&config, AxisLayerKind::Decoration)
+                .map_err(|e| format!("{layer:?} raster: {e}"))?;
+            let a = config.chart_area.0;
+            let (pw, ph) = (a.width as usize, a.height as usize);
+            let local: Vec<usize> = table
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, _, p))| *p == index)
+                .map(|(i, _)| i)
+                .collect();
+            let (owner, owner2) = decode(&rgba, pw, ph, &local, &table);
+            panels.push(PanelInk {
+                layer,
+                x0: (a.x - area.x) as usize,
+                y0: (a.y - area.y) as usize,
+                w: pw,
+                h: ph,
+                config,
+                rgba,
+                owner,
+                owner2,
+            });
+        }
+        let mut by_code = vec![Vec::new(); table.len()];
+        let mut exact = vec![Vec::new(); table.len()];
+        for p in &panels {
+            for (i, &o) in p.owner.iter().enumerate() {
+                if o == 0 || o == UNOWNED {
+                    continue;
+                }
+                let (x, y) = (p.x0 + i % p.w, p.y0 + i / p.w);
+                if x >= w || y >= h {
+                    continue;
+                }
+                let at = (y * w + x) as u32;
+                by_code[usize::from(o) - 1].push(at);
+                match p.owner2[i] {
+                    0 => exact[usize::from(o) - 1].push(at),
+                    o2 => by_code[usize::from(o2) - 1].push(at),
+                }
+            }
+        }
+        Ok(Self {
+            origin: [area.x as f32, area.y as f32],
+            w,
+            h,
+            codes: table,
+            panels,
+            by_code,
+            exact,
+        })
+    }
+
+    fn code_of(&self, name: &str) -> Option<usize> {
+        self.codes.iter().position(|(_, n, _)| n == name)
+    }
+
+    /// The config-frame centre of document pixel `(x, y)`.
+    fn point(&self, x: usize, y: usize) -> (f32, f32) {
+        (
+            x as f32 + 0.5 + self.origin[0],
+            y as f32 + 0.5 + self.origin[1],
+        )
+    }
+
+    /// The panel of `code` and the pixel `(x, y)` in it.
+    fn local(&self, code: usize, x: i64, y: i64) -> Option<(&PanelInk, usize)> {
+        let p = self.panels.get(self.codes[code].2)?;
+        let (lx, ly) = (x - p.x0 as i64, y - p.y0 as i64);
+        (lx >= 0 && ly >= 0 && (lx as usize) < p.w && (ly as usize) < p.h)
+            .then(|| (p, ly as usize * p.w + lx as usize))
+    }
+
+    /// Whether `code` has ink at document pixel `(x, y)`, alone or blended.
+    fn inked(&self, code: usize, x: i64, y: i64) -> bool {
+        let c = code as u16 + 1;
+        self.local(code, x, y)
+            .is_some_and(|(p, i)| p.owner[i] == c || p.owner2[i] == c)
+    }
+
+    /// Whether `code` has ink within `reach` pixels (a square) of `(x, y)`.
+    fn inked_near(&self, code: usize, x: i64, y: i64, reach: i64) -> bool {
+        (y - reach..=y + reach).any(|ny| (x - reach..=x + reach).any(|nx| self.inked(code, nx, ny)))
+    }
+
+    /// The alpha of document pixel index `i` in `code`'s panel.
+    fn alpha(&self, code: usize, i: u32) -> u8 {
+        let (x, y) = (i as usize % self.w, i as usize / self.w);
+        self.local(code, x as i64, y as i64)
+            .map_or(0, |(p, i)| p.rgba[i * 4 + 3])
+    }
+}
+
+fn unpremultiply(px: &[u8]) -> [i32; 3] {
+    let a = i32::from(px[3]).max(1);
+    [0, 1, 2].map(|k| (i32::from(px[k]) * 255 + a / 2) / a)
+}
+
+fn distance(a: [i32; 3], b: [u8; 3]) -> i32 {
+    (0..3)
+        .map(|k| (a[k] - i32::from(b[k])).abs())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The owner of every pixel of one panel raster: the code within
+/// [`CODE_TOLERANCE`], else a blend of two codes of the panel (one of them
+/// inked within two pixels), else [`UNOWNED`].
+fn decode(
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+    local: &[usize],
+    table: &[([u8; 3], String, usize)],
+) -> (Vec<u16>, Vec<u16>) {
+    let mut owner = vec![0u16; w * h];
+    let mut owner2 = vec![0u16; w * h];
+    let mut pending = Vec::new();
+    for i in 0..w * h {
+        let px = &rgba[i * 4..i * 4 + 4];
+        if px[3] < INK_ALPHA {
+            continue;
+        }
+        let u = unpremultiply(px);
+        let best = local.iter().map(|&c| (distance(u, table[c].0), c)).min();
+        match best {
+            Some((d, c)) if d <= CODE_TOLERANCE => owner[i] = c as u16 + 1,
+            _ => pending.push(i),
+        }
+    }
+    // A pixel where two other inks cross (a corner of two anti-aliased
+    // lines) can match a third code by chance. A code pixel with fewer than
+    // three pixels of the same code around it (5 x 5) stays exact only when
+    // no blend of its neighbours explains it.
+    let lone: Vec<usize> = (0..w * h)
+        .filter(|&i| {
+            let o = owner[i];
+            o != 0 && {
+                let (x, y) = ((i % w) as i64, (i / w) as i64);
+                let support = (y - 2..=y + 2)
+                    .flat_map(|ny| (x - 2..=x + 2).map(move |nx| (nx, ny)))
+                    .filter(|&(nx, ny)| {
+                        (nx, ny) != (x, y)
+                            && nx >= 0
+                            && ny >= 0
+                            && (nx as usize) < w
+                            && (ny as usize) < h
+                            && owner[ny as usize * w + nx as usize] == o
+                    })
+                    .count();
+                support < 3
+            }
+        })
+        .collect();
+    for &i in &lone {
+        let keep = owner[i];
+        owner[i] = 0;
+        let code = usize::from(keep) - 1;
+        if !resolve_blend(
+            rgba,
+            w,
+            h,
+            local,
+            table,
+            &mut owner,
+            &mut owner2,
+            i,
+            Some(code),
+        ) {
+            owner[i] = keep;
+        }
+    }
+    for i in pending {
+        if !resolve_blend(rgba, w, h, local, table, &mut owner, &mut owner2, i, None) {
+            owner[i] = UNOWNED;
+        }
+    }
+    (owner, owner2)
+}
+
+/// Explain pixel `i` as a blend of two codes of the panel, one of them
+/// inked within two pixels; returns whether one fits. For a pixel that
+/// matched code `lone` by chance, both codes must be inked nearby and
+/// neither may be `lone`.
+#[allow(clippy::too_many_arguments)]
+fn resolve_blend(
+    rgba: &[u8],
+    w: usize,
+    h: usize,
+    local: &[usize],
+    table: &[([u8; 3], String, usize)],
+    owner: &mut [u16],
+    owner2: &mut [u16],
+    i: usize,
+    lone: Option<usize>,
+) -> bool {
+    let u = unpremultiply(&rgba[i * 4..i * 4 + 4]);
+    let (x, y) = ((i % w) as i64, (i / w) as i64);
+    let mut near: Vec<usize> = Vec::new();
+    for ny in (y - 2).max(0)..=(y + 2).min(h as i64 - 1) {
+        for nx in (x - 2).max(0)..=(x + 2).min(w as i64 - 1) {
+            let j = ny as usize * w + nx as usize;
+            for o in [owner[j], owner2[j]] {
+                let code = usize::from(o).wrapping_sub(1);
+                if o != 0 && o != UNOWNED && Some(code) != lone && !near.contains(&code) {
+                    near.push(code);
+                }
+            }
+        }
+    }
+    // Two inks of the neighbourhood first; a pixel with no exact code may
+    // also blend a neighbour's code with any code of the panel.
+    let fit = |partners: &[usize]| {
+        let mut best: Option<(i32, usize, usize)> = None;
+        for &a in &near {
+            for &b in partners {
+                if a == b {
+                    continue;
+                }
+                let d = blend_distance(u, table[a].0, table[b].0);
+                if best.is_none_or(|(e, _, _)| d < e) {
+                    best = Some((d, a, b));
+                }
+            }
+        }
+        best.filter(|(d, _, _)| *d <= CODE_TOLERANCE)
+    };
+    let best = match fit(&near) {
+        Some(best) => Some(best),
+        None if lone.is_none() => fit(local),
+        None => None,
+    };
+    match best {
+        Some((_, a, b)) => {
+            owner[i] = a as u16 + 1;
+            owner2[i] = b as u16 + 1;
+            true
+        }
+        None => false,
+    }
+}
+
+/// The distance of `u` from the segment between codes `a` and `b`: the
+/// colour of `a` composited over `b` at some coverage.
+fn blend_distance(u: [i32; 3], a: [u8; 3], b: [u8; 3]) -> i32 {
+    let d = [0, 1, 2].map(|k| f32::from(a[k]) - f32::from(b[k]));
+    let v = [0, 1, 2].map(|k| u[k] as f32 - f32::from(b[k]));
+    let len = d.iter().map(|x| x * x).sum::<f32>();
+    if len == 0.0 {
+        return i32::MAX;
+    }
+    let t = ((0..3).map(|k| d[k] * v[k]).sum::<f32>() / len).clamp(0.0, 1.0);
+    (0..3)
+        .map(|k| (v[k] - t * d[k]).abs().round() as i32)
+        .max()
+        .unwrap_or(0)
+}
+
+// ---------------------------------------------------------------------------
+// Hit regions as pixel masks
+// ---------------------------------------------------------------------------
+
+/// The hit region of one element in document pixels: the region its
+/// selection outlines (`selection_box().outline()`: the padded box, or the
+/// union of its parts' `part_outline`s), sampled at pixel centres.
+struct Mask {
+    x0: i64,
+    y0: i64,
+    w: usize,
+    h: usize,
+    bits: Vec<bool>,
+}
+
+impl Mask {
+    fn empty() -> Self {
+        Self {
+            x0: 0,
+            y0: 0,
+            w: 0,
+            h: 0,
+            bits: Vec::new(),
+        }
+    }
+
+    fn of(m: &Measured, ink: &SceneInk) -> Self {
+        let Some(sb) = &m.selection else {
+            return Self::empty();
+        };
+        let (ox, oy) = (ink.origin[0], ink.origin[1]);
+        let outlines: Vec<PartOutline> = match sb.outline() {
+            SelectionOutline::Rect => Vec::new(),
+            SelectionOutline::Parts(parts) => parts.iter().map(part_outline).collect(),
+        };
+        let r = sb.rect();
+        let (mut x0, mut y0, mut x1, mut y1) = (r.x, r.y, r.x + r.width, r.y + r.height);
+        for o in &outlines {
+            for c in o.corners() {
+                x0 = x0.min(c[0]);
+                y0 = y0.min(c[1]);
+                x1 = x1.max(c[0]);
+                y1 = y1.max(c[1]);
+            }
+        }
+        let px0 = ((x0 - ox).floor() as i64 - 1).max(0);
+        let py0 = ((y0 - oy).floor() as i64 - 1).max(0);
+        let px1 = ((x1 - ox).ceil() as i64 + 1).min(ink.w as i64);
+        let py1 = ((y1 - oy).ceil() as i64 + 1).min(ink.h as i64);
+        if px1 <= px0 || py1 <= py0 {
+            return Self::empty();
+        }
+        let (w, h) = ((px1 - px0) as usize, (py1 - py0) as usize);
+        let mut bits = vec![false; w * h];
+        for y in 0..h {
+            for x in 0..w {
+                let (cx, cy) = ink.point(px0 as usize + x, py0 as usize + y);
+                bits[y * w + x] = if outlines.is_empty() {
+                    r.contains(cx, cy)
+                } else {
+                    outlines.iter().any(|o| o.contains(cx, cy))
+                };
+            }
+        }
+        Self {
+            x0: px0,
+            y0: py0,
+            w,
+            h,
+            bits,
+        }
+    }
+
+    fn get(&self, x: i64, y: i64) -> bool {
+        let (lx, ly) = (x - self.x0, y - self.y0);
+        lx >= 0
+            && ly >= 0
+            && (lx as usize) < self.w
+            && (ly as usize) < self.h
+            && self.bits[ly as usize * self.w + lx as usize]
+    }
+}
+
+/// The pixels of the document inside `r` (config frame), as a window
+/// `(x0, y0, x1, y1)` clamped to the image.
+fn window(ink: &SceneInk, r: RectF) -> (i64, i64, i64, i64) {
+    (
+        ((r.x - ink.origin[0]).floor() as i64).max(0),
+        ((r.y - ink.origin[1]).floor() as i64).max(0),
+        ((r.x + r.width - ink.origin[0]).ceil() as i64).min(ink.w as i64),
+        ((r.y + r.height - ink.origin[1]).ceil() as i64).min(ink.h as i64),
+    )
+}
+
+/// The ink extent of `pixels` (document indices) in the config frame:
+/// pixel edges, not centres.
+fn extent(ink: &SceneInk, pixels: impl Iterator<Item = u32>) -> Option<RectF> {
+    let mut b: Option<(usize, usize, usize, usize)> = None;
+    for i in pixels {
+        let (x, y) = (i as usize % ink.w, i as usize / ink.w);
+        b = Some(match b {
+            None => (x, y, x, y),
+            Some((x0, y0, x1, y1)) => (x0.min(x), y0.min(y), x1.max(x), y1.max(y)),
+        });
+    }
+    b.map(|(x0, y0, x1, y1)| RectF {
+        x: x0 as f32 + ink.origin[0],
+        y: y0 as f32 + ink.origin[1],
+        width: (x1 - x0 + 1) as f32,
+        height: (y1 - y0 + 1) as f32,
+    })
+}
+
+/// How far each edge of `outline` lies from the same edge of `ink`, the
+/// worst of the four, beyond the selection padding.
+fn box_misfit(outline: RectF, ink: RectF) -> f32 {
+    [
+        outline.x - ink.x,
+        outline.y - ink.y,
+        outline.x + outline.width - (ink.x + ink.width),
+        outline.y + outline.height - (ink.y + ink.height),
+    ]
+    .into_iter()
+    .map(|d| (d.abs() - SELECTION_PADDING).max(0.0))
+    .fold(0.0, f32::max)
+}
+
+// ---------------------------------------------------------------------------
+// I2: the hit region is the drawn outline
+// ---------------------------------------------------------------------------
+
+/// I2 for every element of one layer case: every strong ink pixel lies in
+/// the element's hit region; the region stays near the ink (a box within
+/// the padding plus [`BOX_FIT`] of the ink extent, a stroke's band within
+/// its grab half width plus [`STROKE_FIT`] of ink); `contains` agrees with
+/// the region on capped edge-band samples; and at every strong ink pixel
+/// the topmost region in registration order belongs to an element that has
+/// ink there.
+fn check_i2(
+    report: &mut Report,
+    at: &At<'_>,
+    cfg: &Config,
+    map: &HitMap,
+    measured: &[Measured],
+    masks: &[Mask],
+    ink: &SceneInk,
+) {
+    let measure = CpuTextMeasure::for_style(&cfg.draw_style);
+    let mut strong_total = 0usize;
+    let mut samples_total = 0usize;
+    for (index, (m, mask)) in measured.iter().zip(masks).enumerate() {
+        let Some(sb) = &m.selection else {
+            continue;
+        };
+        let element = map.get(m.id).expect("measured id");
+        // `contains` against the mask, on the edge band of the mask.
+        let pad = 3;
+        let win = (
+            (mask.x0 - pad).max(0) as u32,
+            (mask.y0 - pad).max(0) as u32,
+            ((mask.x0 + mask.w as i64 + pad).min(ink.w as i64)) as u32,
+            ((mask.y0 + mask.h as i64 + pad).min(ink.h as i64)) as u32,
+        );
+        let band = edge_band::edge_band(win, |x, y| mask.get(i64::from(x), i64::from(y)));
+        let stride = band.len().div_ceil(CONTAINS_SAMPLES).max(1);
+        let mut disagree = Vec::new();
+        for &(x, y) in band.iter().step_by(stride) {
+            samples_total += 1;
+            let (cx, cy) = ink.point(x as usize, y as usize);
+            if element.contains(cfg, &measure, cx, cy) != mask.get(i64::from(x), i64::from(y)) {
+                disagree.push((cx, cy));
+            }
+        }
+        report.check(at, &m.name, Inv::I2, disagree.is_empty(), || {
+            format!(
+                "contains disagrees with the outline at {} of {} samples, first {:?}",
+                disagree.len(),
+                band.len().div_ceil(stride),
+                disagree[0]
+            )
+        });
+        let Some(code) = ink.code_of(&m.name) else {
+            continue;
+        };
+        let pixels = &ink.by_code[code];
+        if pixels.is_empty() {
+            continue;
+        }
+        // Every strong ink pixel inside the region. A blend pixel is the
+        // overlap of two elements: its owner is ambiguous, so it is not
+        // strong ink of either.
+        let strong: Vec<u32> = ink.exact[code]
+            .iter()
+            .copied()
+            .filter(|&i| ink.alpha(code, i) >= STRONG_ALPHA)
+            .collect();
+        strong_total += strong.len();
+        let outside: Vec<u32> = strong
+            .iter()
+            .copied()
+            .filter(|&i| !mask.get(i64::from(i) % ink.w as i64, i64::from(i) / ink.w as i64))
+            .collect();
+        report.check(at, &m.name, Inv::I2, outside.is_empty(), || {
+            let i = outside[0] as usize;
+            format!(
+                "{} of {} strong ink pixels outside the hit region, first {:?}",
+                outside.len(),
+                strong.len(),
+                ink.point(i % ink.w, i / ink.w)
+            )
+        });
+        // The region near the ink.
+        match sb.outline() {
+            SelectionOutline::Rect => {
+                if let Some(e) = extent(ink, pixels.iter().copied()) {
+                    let misfit = box_misfit(sb.rect(), e);
+                    report.check(at, &m.name, Inv::I2, misfit <= BOX_FIT * at.scale, || {
+                        format!(
+                            "box {:?} is {misfit:.1} px past the padding from the ink extent {e:?}",
+                            sb.rect()
+                        )
+                    });
+                }
+            }
+            SelectionOutline::Parts(parts) => {
+                check_parts_near_ink(report, at, &m.name, parts, code, ink);
+            }
+        }
+        // The topmost region at each strong pixel has ink there.
+        let mut covered: Vec<(String, (f32, f32))> = Vec::new();
+        for &i in &strong {
+            let (x, y) = (i64::from(i) % ink.w as i64, i64::from(i) / ink.w as i64);
+            if !mask.get(x, y) {
+                continue;
+            }
+            for (t, (tm, tmask)) in measured.iter().zip(masks).enumerate().rev() {
+                if !tmask.get(x, y) {
+                    continue;
+                }
+                let has_ink = t == index
+                    || ink
+                        .code_of(&tm.name)
+                        .is_some_and(|c| ink.inked_near(c, x, y, TOPMOST_REACH));
+                if !has_ink {
+                    covered.push((tm.name.clone(), ink.point(x as usize, y as usize)));
+                }
+                break;
+            }
+        }
+        report.check(at, &m.name, Inv::I2, covered.is_empty(), || {
+            let mut by: BTreeMap<&str, usize> = BTreeMap::new();
+            for (n, _) in &covered {
+                *by.entry(n.as_str()).or_default() += 1;
+            }
+            format!(
+                "{} of {} strong ink pixels hit another element that has no ink there ({by:?}), first {:?}",
+                covered.len(),
+                strong.len(),
+                covered[0].1
+            )
+        });
+    }
+    report.count(at, "strong ink pixels", strong_total);
+    report.count(at, "contains samples", samples_total);
+}
+
+/// The parts rule of I2: a text block or rectangle part's outline fits the
+/// ink inside it as a box does, and every point of a stroke or triangle
+/// part's outline lies within its grab reach of ink.
+fn check_parts_near_ink(
+    report: &mut Report,
+    at: &At<'_>,
+    name: &str,
+    parts: &[DrawnPart],
+    code: usize,
+    ink: &SceneInk,
+) {
+    let mut empty = 0;
+    let mut misfits = Vec::new();
+    let mut far = Vec::new();
+    for part in parts {
+        let outline = part_outline(part);
+        match *part {
+            DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+                let o = r.expanded(SELECTION_PADDING);
+                let (x0, y0, x1, y1) = window(ink, o);
+                let inside =
+                    (y0..y1)
+                        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
+                        .filter(|&(x, y)| {
+                            let (cx, cy) = ink.point(x as usize, y as usize);
+                            o.contains(cx, cy) && ink.inked(code, x, y)
+                        });
+                match extent(
+                    ink,
+                    inside.map(|(x, y)| (y as usize * ink.w + x as usize) as u32),
+                ) {
+                    None => empty += 1,
+                    Some(e) => {
+                        let misfit = box_misfit(o, e);
+                        if misfit > BOX_FIT * at.scale {
+                            misfits.push((o, e, misfit));
+                        }
+                    }
+                }
+            }
+            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) => {
+                let reach = match *part {
+                    DrawnPart::Segment { width, .. } => segment_grab_half_width(width) + STROKE_FIT,
+                    _ => SELECTION_PADDING + STROKE_FIT,
+                };
+                let c = outline.corners();
+                let bounds = RectF {
+                    x: c.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min),
+                    y: c.iter().map(|p| p[1]).fold(f32::INFINITY, f32::min),
+                    width: 0.0,
+                    height: 0.0,
+                };
+                let right = c.iter().map(|p| p[0]).fold(f32::NEG_INFINITY, f32::max);
+                let bottom = c.iter().map(|p| p[1]).fold(f32::NEG_INFINITY, f32::max);
+                let bounds = RectF {
+                    width: right - bounds.x,
+                    height: bottom - bounds.y,
+                    ..bounds
+                };
+                let (x0, y0, x1, y1) = window(ink, bounds);
+                let r = reach.ceil() as i64;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        let (cx, cy) = ink.point(x as usize, y as usize);
+                        if !outline.contains(cx, cy) {
+                            continue;
+                        }
+                        let near = (y - r..=y + r)
+                            .any(|ny| (x - r..=x + r).any(|nx| ink.inked(code, nx, ny)));
+                        if !near {
+                            far.push((cx, cy));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    report.check(at, name, Inv::I2, empty == 0, || {
+        format!(
+            "{empty} of {} text or box parts have no ink inside their outline",
+            parts.len()
+        )
+    });
+    report.check(at, name, Inv::I2, misfits.is_empty(), || {
+        format!(
+            "{} parts' outlines do not fit their ink, first {:?} against {:?} ({:.1} px)",
+            misfits.len(),
+            misfits[0].0,
+            misfits[0].1,
+            misfits[0].2
+        )
+    });
+    report.check(at, name, Inv::I2, far.is_empty(), || {
+        format!(
+            "{} points of stroke outlines are farther than the grab reach from ink, first {:?}",
+            far.len(),
+            far[0]
+        )
+    });
+}
+
+// ---------------------------------------------------------------------------
+// I7: no orphan ink, no ghost element; the product draws the CPU raster
+// ---------------------------------------------------------------------------
+
+/// Orphan ink: pixels no code explains, and ink of an element that no layer
+/// registers or that has no bounds. A ghost: an element with bounds and no
+/// ink. The data area paints nothing by design and has no code.
+fn check_owners(
+    report: &mut Report,
+    at: &At<'_>,
+    ink: &SceneInk,
+    registered: &BTreeMap<String, Option<RectF>>,
+) {
+    for p in &ink.panels {
+        let unowned: Vec<usize> = (0..p.owner.len())
+            .filter(|&i| p.owner[i] == UNOWNED)
+            .collect();
+        let panel = layer_name(p.layer);
+        report.check(at, &format!("<unowned ink in the {panel} panel>"), Inv::I7, unowned.is_empty(), || {
+            let i = unowned[0];
+            let u = unpremultiply(&p.rgba[i * 4..i * 4 + 4]);
+            let nearest = ink
+                .codes
+                .iter()
+                .min_by_key(|(rgb, _, _)| distance(u, *rgb))
+                .map(|(_, n, _)| n.as_str())
+                .unwrap_or("-");
+            format!(
+                "{} pixels no element's code explains, first {:?} colour {u:?} alpha {} (nearest code: {nearest})",
+                unowned.len(),
+                ink.point(p.x0 + i % p.w, p.y0 + i / p.w),
+                p.rgba[i * 4 + 3]
+            )
+        });
+    }
+    for (code, (_, name, _)) in ink.codes.iter().enumerate() {
+        let pixels = &ink.by_code[code];
+        match registered.get(name) {
+            None => report.check(at, name, Inv::I7, pixels.is_empty(), || {
+                format!(
+                    "{} px of ink, but no layer registers the element",
+                    pixels.len()
+                )
+            }),
+            Some(None) => report.check(at, name, Inv::I7, pixels.is_empty(), || {
+                let i = pixels[0] as usize;
+                format!(
+                    "{} px of orphan ink: the element has no bounds, first {:?}",
+                    pixels.len(),
+                    ink.point(i % ink.w, i / ink.w)
+                )
+            }),
+            Some(Some(b)) => report.check(at, name, Inv::I7, !pixels.is_empty(), || {
+                format!("ghost: bounds {b:?} but no ink")
+            }),
+        }
+        report.count(at, "ink pixels", pixels.len());
+    }
+}
+
+/// The CPU composite of the panel rasters is what the product exports:
+/// every opaque decoration pixel of `ink` has the same colour in the
+/// renderer's `export_document_rgba` of the palette document (annotation
+/// layer hidden, so nothing is drawn over the decoration).
+fn check_export(
+    report: &mut Report,
+    at: &At<'_>,
+    r: &mut Renderer,
+    palette_1x: &Config,
+    series: &[SeriesConfig],
+    ink: &SceneInk,
+) {
+    // The export takes the unscaled document and the scale.
+    let mut doc = palette_1x.clone();
+    doc.annotations.visible = false;
+    let image = match r.export_document_rgba(&Chart::new(doc), series, at.scale) {
+        Ok(image) => image,
+        Err(e) => {
+            report.check(at, "<export>", Inv::I7, false, || {
+                format!("export failed: {e}")
+            });
+            return;
+        }
+    };
+    if (image.width as usize, image.height as usize) != (ink.w, ink.h) {
+        report.check(at, "<export>", Inv::I7, false, || {
+            format!(
+                "export is {}x{}, the document {}x{}",
+                image.width, image.height, ink.w, ink.h
+            )
+        });
+        return;
+    }
+    // Composite the panels as the renderer does: in order, premultiplied over.
+    let mut doc_rgba = vec![0u8; ink.w * ink.h * 4];
+    for p in &ink.panels {
+        for y in 0..p.h {
+            for x in 0..p.w {
+                let (dx, dy) = (p.x0 + x, p.y0 + y);
+                if dx >= ink.w || dy >= ink.h {
+                    continue;
+                }
+                let s = &p.rgba[(y * p.w + x) * 4..(y * p.w + x) * 4 + 4];
+                let d = &mut doc_rgba[(dy * ink.w + dx) * 4..(dy * ink.w + dx) * 4 + 4];
+                let inv = 255 - u32::from(s[3]);
+                for k in 0..4 {
+                    d[k] = (u32::from(s[k]) + (u32::from(d[k]) * inv + 127) / 255).min(255) as u8;
+                }
+            }
+        }
+    }
+    let mut differ = Vec::new();
+    for i in 0..ink.w * ink.h {
+        let d = &doc_rgba[i * 4..i * 4 + 4];
+        if d[3] < 255 {
+            continue;
+        }
+        let e = &image.rgba[i * 4..i * 4 + 4];
+        if (0..3).any(|k| d[k].abs_diff(e[k]) > 2) {
+            differ.push(i);
+        }
+    }
+    report.check(at, "<export>", Inv::I7, differ.is_empty(), || {
+        let i = differ[0];
+        format!(
+            "{} opaque decoration pixels differ from the export, first {:?}: raster {:?}, export {:?}",
+            differ.len(),
+            ink.point(i % ink.w, i / ink.w),
+            &doc_rgba[i * 4..i * 4 + 4],
+            &image.rgba[i * 4..i * 4 + 4]
+        )
+    });
+}
+
+// ---------------------------------------------------------------------------
+// I3: the drawn highlight is the model's box
+// ---------------------------------------------------------------------------
+
+/// I3 for one layer case at 1x: the selection boxes of the layer's
+/// elements, batched so no two boxes of a batch come near each other, are
+/// drawn by the decoration raster (`..._with_selection`, each box routed
+/// into the topmost panel holding its centre, as the renderer routes it);
+/// every pixel the highlight changes lies on a box outline or a resize
+/// handle (half the stroke plus a pixel of anti-aliasing), and every edge
+/// of every outline is drawn.
+fn check_i3(report: &mut Report, at: &At<'_>, measured: &[Measured], ink: &SceneInk) {
+    let boxes: Vec<(usize, &SelectionBox)> = measured
+        .iter()
+        .enumerate()
+        .filter_map(|(i, m)| m.selection.as_ref().map(|s| (i, s)))
+        .collect();
+    let reach = |sb: &SelectionBox| {
+        let mut r = sb.rect().expanded(sb.stroke_width() + 4.0);
+        for h in sb.handles() {
+            r = renderer::sink::union(r, h.expanded(sb.stroke_width() + 4.0));
+        }
+        r
+    };
+    let mut groups: Vec<Vec<usize>> = Vec::new();
+    for (k, (_, sb)) in boxes.iter().enumerate() {
+        let region = reach(sb);
+        match groups.iter_mut().find(|g| {
+            g.iter()
+                .all(|&j| !intersects(reach(boxes[j].1), region, 0.0))
+        }) {
+            Some(g) => g.push(k),
+            None => groups.push(vec![k]),
+        }
+    }
+    report.count(at, "selection rasters", 0);
+    for group in &groups {
+        let selection: Vec<SelectionBox> = group.iter().map(|&k| boxes[k].1.clone()).collect();
+        // Route each box into the topmost panel whose area holds its centre.
+        let mut routed: Vec<Vec<SelectionBox>> = vec![Vec::new(); ink.panels.len()];
+        for sb in &selection {
+            let (cx, cy) = sb.rect().center();
+            let index = ink
+                .panels
+                .iter()
+                .rposition(|p| RectF::from_rect(&p.config.chart_area.0).contains(cx, cy))
+                .unwrap_or(ink.panels.len() - 1);
+            routed[index].push(sb.clone());
+        }
+        let mut changed: Vec<(f32, f32)> = Vec::new();
+        for (p, boxes) in ink.panels.iter().zip(&routed) {
+            if boxes.is_empty() {
+                continue;
+            }
+            report.count(at, "selection rasters", 1);
+            let selected = match try_raster_chart_layer_to_rgba_with_selection(
+                &p.config,
+                AxisLayerKind::Decoration,
+                boxes,
+            ) {
+                Ok(rgba) => rgba,
+                Err(e) => {
+                    report.check(at, "<selection raster>", Inv::I3, false, || e.to_string());
+                    continue;
+                }
+            };
+            for i in 0..p.w * p.h {
+                if selected[i * 4..i * 4 + 4] != p.rgba[i * 4..i * 4 + 4] {
+                    changed.push(ink.point(p.x0 + i % p.w, p.y0 + i / p.w));
+                }
+            }
+        }
+        for &k in group {
+            let (index, sb) = boxes[k];
+            let name = &measured[index].name;
+            let halo = sb.stroke_width() * 0.5 + 1.0;
+            let own: Vec<(f32, f32)> = changed
+                .iter()
+                .copied()
+                .filter(|&(x, y)| reach(sb).contains(x, y))
+                .collect();
+            let stray: Vec<(f32, f32)> = own
+                .iter()
+                .copied()
+                .filter(|&(x, y)| !on_outline(sb, x, y, halo))
+                .collect();
+            report.check(at, name, Inv::I3, stray.is_empty(), || {
+                format!(
+                    "{} highlight pixels off the box outline and handles, first {:?}",
+                    stray.len(),
+                    stray[0]
+                )
+            });
+            let missing = missing_edges(sb, &own, halo);
+            report.check(at, name, Inv::I3, missing.is_empty(), || {
+                format!(
+                    "{} outline edges are not drawn, first {:?} ({} changed pixels near the box)",
+                    missing.len(),
+                    missing[0],
+                    own.len()
+                )
+            });
+        }
+        // A changed pixel near no box of the batch.
+        let unexplained: Vec<(f32, f32)> = changed
+            .iter()
+            .copied()
+            .filter(|&(x, y)| !group.iter().any(|&k| reach(boxes[k].1).contains(x, y)))
+            .collect();
+        report.check(at, "<highlight>", Inv::I3, unexplained.is_empty(), || {
+            format!(
+                "{} highlight pixels near no selected box, first {:?}",
+                unexplained.len(),
+                unexplained[0]
+            )
+        });
+    }
+}
+
+/// The outline edges of `sb`: the box's four sides, or each part outline's
+/// edges.
+fn outline_edges(sb: &SelectionBox) -> Vec<([f32; 2], [f32; 2])> {
+    match sb.outline() {
+        SelectionOutline::Rect => {
+            let r = sb.rect();
+            let (x0, y0, x1, y1) = (r.x, r.y, r.x + r.width, r.y + r.height);
+            vec![
+                ([x0, y0], [x1, y0]),
+                ([x1, y0], [x1, y1]),
+                ([x1, y1], [x0, y1]),
+                ([x0, y1], [x0, y0]),
+            ]
+        }
+        SelectionOutline::Parts(parts) => parts
+            .iter()
+            .flat_map(|p| {
+                let o = part_outline(p);
+                let c = o.corners().to_vec();
+                (0..c.len())
+                    .map(|i| (c[i], c[(i + 1) % c.len()]))
+                    .collect::<Vec<_>>()
+            })
+            .collect(),
+    }
+}
+
+fn segment_distance(p: (f32, f32), a: [f32; 2], b: [f32; 2]) -> f32 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let len = d[0] * d[0] + d[1] * d[1];
+    let t = if len > 0.0 {
+        (((p.0 - a[0]) * d[0] + (p.1 - a[1]) * d[1]) / len).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p.0 - a[0] - t * d[0]).hypot(p.1 - a[1] - t * d[1])
+}
+
+fn on_outline(sb: &SelectionBox, x: f32, y: f32, halo: f32) -> bool {
+    outline_edges(sb)
+        .iter()
+        .any(|&(a, b)| segment_distance((x, y), a, b) <= halo)
+        || sb.handles().iter().any(|h| h.expanded(halo).contains(x, y))
+}
+
+/// The edges of `sb`'s outline with no changed pixel along their middle
+/// 60 %. Edges shorter than 3 px are left to their neighbours.
+fn missing_edges(
+    sb: &SelectionBox,
+    changed: &[(f32, f32)],
+    halo: f32,
+) -> Vec<([f32; 2], [f32; 2])> {
+    outline_edges(sb)
+        .into_iter()
+        .filter(|&(a, b)| {
+            let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+            if len < 3.0 {
+                return false;
+            }
+            let lerp = |t: f32| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+            let (m0, m1) = (lerp(0.2), lerp(0.8));
+            let need = if len >= 10.0 { 4 } else { 1 };
+            changed
+                .iter()
+                .filter(|&&p| segment_distance(p, m0, m1) <= halo)
+                .count()
+                < need
+        })
+        .collect()
 }
