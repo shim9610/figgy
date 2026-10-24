@@ -9,16 +9,12 @@ use super::*;
 
 /// The grid, below the data: minor lines first so the majors paint over
 /// them, like the rectangular grid always did.
-pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
-    if config.polar.is_some() {
-        polar::emit_polar_grid(config, da, fp, sink);
-        return;
-    }
+pub(super) fn emit_grid(config: &Config, plot: &RectF, fp: FontPolicy, sink: &mut dyn Sink) {
     let g = &config.grid;
-    let x_top = da.y as f32;
-    let x_bot = (da.y + da.height) as f32;
-    let y_left = da.x as f32;
-    let y_right = (da.x + da.width) as f32;
+    let x_top = plot.y;
+    let x_bot = plot.y + plot.height;
+    let y_left = plot.x;
+    let y_right = plot.x + plot.width;
 
     let mut line = |a: (f32, f32),
                     b: (f32, f32),
@@ -41,11 +37,11 @@ pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &m
 
     // Draw minor first so major can paint over it.
     if g.show_minor_x {
-        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp)
+        for (i, v) in minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, fp)
             .into_iter()
             .enumerate()
         {
-            let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
+            let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, plot);
             let tag = format!("grid_minor_x_{i}");
             line(
                 (pos.0, x_top),
@@ -58,11 +54,11 @@ pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &m
         }
     }
     if g.show_minor_y {
-        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, da, fp)
+        for (i, v) in minor_tick_values_for_axis(&config.left_y, Side::Left, plot, fp)
             .into_iter()
             .enumerate()
         {
-            let pos = value_to_screen(v, &config.left_y, Side::Left, da);
+            let pos = value_to_screen(v, &config.left_y, Side::Left, plot);
             let tag = format!("grid_minor_y_{i}");
             line(
                 (y_left, pos.1),
@@ -76,11 +72,11 @@ pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &m
     }
 
     if g.show_major_x {
-        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp)
+        for (i, v) in major_tick_values_for_axis(&config.bottom_x, Side::Bottom, plot, fp)
             .into_iter()
             .enumerate()
         {
-            let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, da);
+            let pos = value_to_screen(v, &config.bottom_x, Side::Bottom, plot);
             let tag = format!("grid_major_x_{i}");
             line(
                 (pos.0, x_top),
@@ -93,11 +89,11 @@ pub(super) fn emit_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &m
         }
     }
     if g.show_major_y {
-        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, da, fp)
+        for (i, v) in major_tick_values_for_axis(&config.left_y, Side::Left, plot, fp)
             .into_iter()
             .enumerate()
         {
-            let pos = value_to_screen(v, &config.left_y, Side::Left, da);
+            let pos = value_to_screen(v, &config.left_y, Side::Left, plot);
             let tag = format!("grid_major_y_{i}");
             line(
                 (y_left, pos.1),

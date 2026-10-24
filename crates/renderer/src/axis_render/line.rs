@@ -11,12 +11,12 @@ use super::*;
 pub(super) fn emit_axis(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
-    emit_axis_strokes(axis, side.clone(), da, fp, sink);
-    emit_axis_tick_labels(axis, side, da, fp, sink);
+    emit_axis_strokes(axis, side.clone(), plot, fp, sink);
+    emit_axis_tick_labels(axis, side, plot, fp, sink);
 }
 
 /// The line and the major and minor ticks of `axis` on `side`
@@ -27,14 +27,14 @@ pub(super) fn emit_axis(
 pub(crate) fn emit_axis_strokes(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
     let (off_x, off_y) = axis_offset(side.clone(), axis.line_offset);
-    let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
+    let majors = major_tick_values_for_axis(axis, side.clone(), plot, fp);
     let dash = axis.line_style.pattern();
-    each_axis_stroke(axis, side.clone(), da, fp, &majors, |stroke, a, b| {
+    each_axis_stroke(axis, side.clone(), plot, fp, &majors, |stroke, a, b| {
         let tag = match stroke {
             AxisStroke::Line => format!("axis_{}", side_tag(&side)),
             AxisStroke::Tick(i) => format!("tick_{}_{i}", side_tag(&side)),
@@ -60,17 +60,17 @@ pub(crate) fn emit_axis_strokes(
 pub(crate) fn emit_axis_tick_labels(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
     if let Some(categories) = &axis.categories {
-        emit_category_tick_labels(axis, categories, side, da, fp, sink);
+        emit_category_tick_labels(axis, categories, side, plot, fp, sink);
         return;
     }
-    let majors = major_tick_values_for_axis(axis, side.clone(), da, fp);
+    let majors = major_tick_values_for_axis(axis, side.clone(), plot, fp);
     let offset = axis_offset(side.clone(), axis.line_offset);
-    each_axis_tick_label(axis, side.clone(), da, fp, &majors, |text, pos| {
+    each_axis_tick_label(axis, side.clone(), plot, fp, &majors, |text, pos| {
         place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink);
     });
 }
@@ -85,7 +85,7 @@ pub(crate) fn emit_category_tick_labels(
     axis: &AxisOptions,
     categories: &[crate::config::Category],
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     sink: &mut dyn Sink,
 ) {
@@ -95,7 +95,7 @@ pub(crate) fn emit_category_tick_labels(
         categories,
         side.clone(),
         fp,
-        |value| value_to_screen(value, axis, side.clone(), da),
+        |value| value_to_screen(value, axis, side.clone(), plot),
         |text, pos| place_tick_text(&text, pos, side.clone(), axis, fp, offset, sink),
     );
 }
@@ -105,22 +105,20 @@ pub(crate) fn axis_fraction(value: f64, axis: &AxisOptions) -> f32 {
     crate::layout::axis_fraction(value, axis)
 }
 
-pub(super) fn data_area_rect(da: &DataArea) -> RectF {
-    RectF {
-        x: da.x as f32,
-        y: da.y as f32,
-        width: da.width as f32,
-        height: da.height as f32,
-    }
+/// The plot rectangle of an integer data area: what the Cartesian axis,
+/// tick and grid walks take. Exact for every data area (its corners are
+/// integers far below 2^24).
+pub(crate) fn data_area_rect(da: &DataArea) -> RectF {
+    RectF::from_rect(da)
 }
 
 pub(crate) fn value_to_screen(
     value: f64,
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
 ) -> (f32, f32) {
-    point_on_rect_side(axis_fraction(value, axis), &side, &data_area_rect(da))
+    point_on_rect_side(axis_fraction(value, axis), &side, plot)
 }
 
 /// Which stroke of an axis a segment is: its line, or tick `i` in the
@@ -136,25 +134,25 @@ pub(crate) enum AxisStroke {
 pub(super) fn each_axis_stroke(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     majors: &[f64],
     mut each: impl FnMut(AxisStroke, (f32, f32), (f32, f32)),
 ) {
     if axis.line_visible {
-        let (p0, p1) = axis_anchor(side.clone(), da);
+        let (p0, p1) = axis_anchor(side.clone(), plot);
         each(AxisStroke::Line, p0, p1);
     }
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, side.clone(), da, fp);
+    let minors = minor_tick_values_for_axis(axis, side.clone(), plot, fp);
     let ticks = majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))
         .chain(minors.iter().map(|v| (*v, axis.minor_tick_length)));
     for (i, (value, length)) in ticks.enumerate() {
-        let pos = value_to_screen(value, axis, side.clone(), da);
+        let pos = value_to_screen(value, axis, side.clone(), plot);
         if let Some((a, b)) = tick_segment(pos, side.clone(), length, &axis.tick) {
             each(AxisStroke::Tick(i), a, b);
         }

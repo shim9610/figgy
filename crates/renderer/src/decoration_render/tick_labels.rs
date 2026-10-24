@@ -193,7 +193,7 @@ pub(super) struct PlainTickLabel {
 pub(super) fn visible_timestamp_labels(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     majors: &[f64],
 ) -> Vec<PlainTickLabel> {
@@ -201,7 +201,7 @@ pub(super) fn visible_timestamp_labels(
         return Vec::new();
     };
     let labels: Vec<PlainTickLabel> =
-        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), da, fp) {
+        if let Some(plan) = timestamp_tick_plan(axis, side.clone(), plot, fp) {
             plan.majors
                 .into_iter()
                 .map(|tick| PlainTickLabel {
@@ -225,20 +225,20 @@ pub(super) fn visible_timestamp_labels(
                 .collect()
         };
 
-    prune_overlapping_plain_labels(axis, side, da, fp, labels)
+    prune_overlapping_plain_labels(axis, side, plot, fp, labels)
 }
 
 pub(super) fn prune_overlapping_plain_labels(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     labels: Vec<PlainTickLabel>,
 ) -> Vec<PlainTickLabel> {
     let mut intervals: Vec<(f32, f32, PlainTickLabel)> = labels
         .into_iter()
         .map(|label| {
-            let pos = value_to_screen(label.value, axis, side.clone(), da);
+            let pos = value_to_screen(label.value, axis, side.clone(), plot);
             let (start, end) = plain_tick_label_interval(&label.text, pos, side.clone(), axis, fp);
             (start, end, label)
         })
@@ -375,7 +375,7 @@ pub(crate) fn emit_colorbar_tick_labels(
 pub(crate) fn each_axis_tick_label(
     axis: &AxisOptions,
     side: Side,
-    da: &DataArea,
+    plot: &RectF,
     fp: FontPolicy,
     majors: &[f64],
     mut each: impl FnMut(TickText<'_>, (f32, f32)),
@@ -390,19 +390,19 @@ pub(crate) fn each_axis_tick_label(
             categories,
             side.clone(),
             fp,
-            |value| value_to_screen(value, axis, side.clone(), da),
+            |value| value_to_screen(value, axis, side.clone(), plot),
             each,
         );
         return;
     }
     if let LabelFormat::Timestamp(_) = &ls.format {
-        for label in visible_timestamp_labels(axis, side.clone(), da, fp, majors) {
-            let pos = value_to_screen(label.value, axis, side.clone(), da);
+        for label in visible_timestamp_labels(axis, side.clone(), plot, fp, majors) {
+            let pos = value_to_screen(label.value, axis, side.clone(), plot);
             each(TickText::Plain(&label.text), pos);
         }
     } else {
         for label in visible_numeric_labels(axis, side.clone(), fp, majors, |value| {
-            value_to_screen(value, axis, side.clone(), da)
+            value_to_screen(value, axis, side.clone(), plot)
         }) {
             each(label.text.as_tick_text(), label.position);
         }

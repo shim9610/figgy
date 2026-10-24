@@ -243,17 +243,20 @@ pub fn draw_axes(canvas: &mut Canvas, config: &Config) {
 pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn Sink) {
     let Ok(da) = config.data_area() else { return };
     let measure = CpuTextMeasure::with_policy(fp);
-    emit_grid(config, &da, fp, sink);
+    // The Cartesian walks take the plot rectangle.
+    let plot = data_area_rect(&da);
 
     if config.polar.is_some() {
+        polar::emit_polar_grid(config, &da, fp, sink);
         // The angle axis is the outer ring, the radius axis the labelled
         // ray; the top and right axes are not drawn.
         polar::emit_polar_axes(config, &da, fp, sink);
     } else {
-        emit_axis(&config.top_x, Side::Top, &da, fp, sink);
-        emit_axis(&config.bottom_x, Side::Bottom, &da, fp, sink);
-        emit_axis(&config.left_y, Side::Left, &da, fp, sink);
-        emit_axis(&config.right_y, Side::Right, &da, fp, sink);
+        emit_grid(config, &plot, fp, sink);
+        emit_axis(&config.top_x, Side::Top, &plot, fp, sink);
+        emit_axis(&config.bottom_x, Side::Bottom, &plot, fp, sink);
+        emit_axis(&config.left_y, Side::Left, &plot, fp, sink);
+        emit_axis(&config.right_y, Side::Right, &plot, fp, sink);
     }
 
     emit_colorbar(config, &da, fp, &measure, sink);
@@ -305,10 +308,10 @@ pub(crate) fn emit_part_of(
             }
         }
         Element::AxisLabel(side) => {
-            emit_axis_tick_labels(axis_of(side), side.clone(), &da, fp, sink);
+            emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
         }
         Element::Axis(side) => {
-            emit_axis_strokes(axis_of(side), side.clone(), &da, fp, sink);
+            emit_axis_strokes(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
         }
         Element::ColorBarLabel => {
             if let Some((bar, rect)) = drawn_colorbar(config, &da) {

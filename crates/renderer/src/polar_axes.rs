@@ -163,7 +163,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_minor_x {
         spokes(
             sink,
-            minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp),
+            minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
             &g.minor_x_color,
             g.minor_x_width,
             &g.minor_x_style,
@@ -173,7 +173,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_minor_y {
         rings(
             sink,
-            minor_tick_values_for_axis(&config.left_y, Side::Left, da, fp),
+            minor_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
             &g.minor_y_color,
             g.minor_y_width,
             &g.minor_y_style,
@@ -183,7 +183,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_major_x {
         spokes(
             sink,
-            major_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp),
+            major_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
             &g.major_x_color,
             g.major_x_width,
             &g.major_x_style,
@@ -193,7 +193,7 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
     if g.show_major_y {
         rings(
             sink,
-            major_tick_values_for_axis(&config.left_y, Side::Left, da, fp),
+            major_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
             &g.major_y_color,
             g.major_y_width,
             &g.major_y_style,
@@ -309,8 +309,8 @@ fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dy
             },
         );
     }
-    let majors = major_tick_values_for_axis(axis, Side::Bottom, da, fp);
-    let minors = minor_tick_values_for_axis(axis, Side::Bottom, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
+    let minors = minor_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
     if axis.tick != TickVisibility::None {
         for (i, (value, length)) in majors
             .iter()
@@ -362,7 +362,7 @@ pub(super) fn emit_polar_angle_labels(
         return;
     };
     let axis = &config.bottom_x;
-    let majors = major_tick_values_for_axis(axis, Side::Bottom, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
     let (_, sweep) = sweep(polar, axis);
     let ls = &axis.label_style;
     each_angle_label(
@@ -390,7 +390,7 @@ pub(super) fn emit_polar_radius_strokes(
         return;
     };
     let axis = &config.left_y;
-    let majors = major_tick_values_for_axis(axis, Side::Left, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
     let dash = axis.line_style.pattern();
     each_radius_axis_stroke(polar, &geometry, axis, da, fp, &majors, |tick, a, b| {
         let tag = match tick {
@@ -422,7 +422,7 @@ pub(super) fn emit_polar_radius_labels(
         return;
     };
     let axis = &config.left_y;
-    let majors = major_tick_values_for_axis(axis, Side::Left, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
     let ls = &axis.label_style;
     each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
         place_centered(sink, text, center, m, ls);
@@ -573,7 +573,7 @@ fn each_radius_axis_stroke(
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, Side::Left, da, fp);
+    let minors = minor_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
     for (i, (value, length)) in majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))

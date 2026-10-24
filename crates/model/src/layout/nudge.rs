@@ -423,7 +423,7 @@ impl Config {
         let new_offset = axis_ref(self, &side).line_offset + d;
 
         // The shifted axis line must stay inside the chart area.
-        let (anchor, _) = axis_anchor(side.clone(), &da);
+        let (anchor, _) = axis_anchor(side.clone(), &RectF::from_rect(&da));
         let line_pos = match side {
             Side::Left | Side::Right => anchor.0 + new_offset,
             Side::Top | Side::Bottom => anchor.1 + new_offset,

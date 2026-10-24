@@ -274,7 +274,7 @@ fn log_tick_walkers_guard_manual_ranges() {
         width: 100,
         height: 50,
     });
-    let (x, _) = value_to_screen(1.0, &axis, Side::Bottom, &da);
+    let (x, _) = value_to_screen(1.0, &axis, Side::Bottom, &data_area_rect(&da));
     assert!(x.is_finite() && x > 10.0 && x < 110.0, "x={x}");
 
     axis.min = 1.0e-15;
@@ -511,7 +511,7 @@ fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     cfg.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
     let da = cfg.data_area().unwrap();
     let fp = FontPolicy::for_style(&cfg.draw_style);
-    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &da, fp).is_some());
+    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &data_area_rect(&da), fp).is_some());
     assert!(tick_warnings(&cfg).is_empty(), "{:?}", tick_warnings(&cfg));
 
     // The numeric policy walks both settings, so both are reported.
@@ -532,7 +532,7 @@ fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     cfg.bottom_x.max = 3.0e13;
     cfg.bottom_x.minor_count = 4;
     cfg.bottom_x.major_spacing = 0.0;
-    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &da, fp).is_none());
+    assert!(timestamp_tick_plan(&cfg.bottom_x, Side::Bottom, &data_area_rect(&da), fp).is_none());
     let used = effective_major_spacing(&cfg.bottom_x);
     assert_eq!(
         tick_warnings(&cfg),
@@ -735,7 +735,7 @@ fn numeric_labels_do_not_collide_on_small_scaled_or_inverted_axes() {
                     let majors = major_tick_values(&axis);
                     let labels =
                         visible_numeric_labels(&axis, side.clone(), fp, &majors, |value| {
-                            value_to_screen(value, &axis, side.clone(), &da)
+                            value_to_screen(value, &axis, side.clone(), &data_area_rect(&da))
                         });
                     assert!(
                         labels.len() >= 2 && labels.len() < majors.len(),
@@ -805,7 +805,7 @@ fn numeric_label_density_recovers_on_resize_zoom_and_font_changes() {
             Side::Bottom,
             FontPolicy::Standard,
             &major_tick_values(axis),
-            |value| value_to_screen(value, axis, Side::Bottom, &da),
+            |value| value_to_screen(value, axis, Side::Bottom, &data_area_rect(&da)),
         )
     };
     let crowded = labels(&axis, 220);
@@ -1014,7 +1014,7 @@ fn fitted_numeric_labels_fit_default_title_and_colorbar_bands() {
         .rect(metrics);
         let labels =
             visible_numeric_labels(axis, Side::Left, fp, &major_tick_values(axis), |value| {
-                value_to_screen(value, axis, Side::Left, &da)
+                value_to_screen(value, axis, Side::Left, &data_area_rect(&da))
             });
         let bounds = |label: &NumericTickLabel, axis: &AxisOptions, side| {
             let NumericTickText::Plain(text) = &label.text else {
@@ -1999,11 +1999,17 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
         // Ignored on a categorical axis.
         axis.label_style.format = LabelFormat::Scientific;
         let mut log = TextLog::default();
-        emit_axis_tick_labels(&axis, side.clone(), &da, FontPolicy::Standard, &mut log);
+        emit_axis_tick_labels(
+            &axis,
+            side.clone(),
+            &data_area_rect(&da),
+            FontPolicy::Standard,
+            &mut log,
+        );
         let texts: Vec<&str> = log.0.iter().map(|(t, _)| t.as_str()).collect();
         assert_eq!(texts, names, "{side:?}");
         for (i, (_, rect)) in log.0.iter().enumerate() {
-            let tick = value_to_screen(i as f64, &axis, side.clone(), &da);
+            let tick = value_to_screen(i as f64, &axis, side.clone(), &data_area_rect(&da));
             let (centre, along) = match side {
                 Side::Top | Side::Bottom => (rect.x + rect.width * 0.5, tick.0),
                 Side::Left | Side::Right => (rect.y + rect.height * 0.5, tick.1),
@@ -2014,7 +2020,7 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
             );
         }
         // The category positions are the slot centres.
-        let first = value_to_screen(0.0, &axis, side.clone(), &da);
+        let first = value_to_screen(0.0, &axis, side.clone(), &data_area_rect(&da));
         let slot = match side {
             Side::Top | Side::Bottom => 700.0 / 7.0,
             Side::Left | Side::Right => 420.0 / 7.0,
@@ -2028,7 +2034,13 @@ fn category_labels_sit_on_their_ticks_in_category_order() {
         // Hidden labels emit nothing.
         axis.label_style.label_visible = false;
         let mut hidden = TextLog::default();
-        emit_axis_tick_labels(&axis, side.clone(), &da, FontPolicy::Standard, &mut hidden);
+        emit_axis_tick_labels(
+            &axis,
+            side.clone(),
+            &data_area_rect(&da),
+            FontPolicy::Standard,
+            &mut hidden,
+        );
         assert!(hidden.0.is_empty());
     }
 }
@@ -2051,13 +2063,13 @@ fn crowded_category_labels_are_thinned_by_the_numeric_stride_rule() {
         "Down",
         "Centre",
     ];
-    let narrow = DataArea(crate::layout::Rect {
+    let narrow = RectF::from_rect(&crate::layout::Rect {
         x: 60,
         y: 20,
         width: 260,
         height: 160,
     });
-    let wide = DataArea(crate::layout::Rect {
+    let wide = RectF::from_rect(&crate::layout::Rect {
         x: 60,
         y: 20,
         width: 4000,
@@ -2119,20 +2131,38 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
     cfg.bottom_x.minor_count = 4;
     cfg.bottom_x.tick = TickVisibility::Outside;
     let da = cfg.data_area().unwrap();
-    let majors = major_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &da, FontPolicy::Standard);
+    let majors = major_tick_values_for_axis(
+        &cfg.bottom_x,
+        Side::Bottom,
+        &data_area_rect(&da),
+        FontPolicy::Standard,
+    );
     assert_eq!(majors, vec![0.0, 1.0, 2.0, 3.0]);
     assert!(
-        minor_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &da, FontPolicy::Standard)
-            .is_empty()
+        minor_tick_values_for_axis(
+            &cfg.bottom_x,
+            Side::Bottom,
+            &data_area_rect(&da),
+            FontPolicy::Standard
+        )
+        .is_empty()
     );
     let expected: Vec<f32> = (0..4)
-        .map(|i| value_to_screen(f64::from(i), &cfg.bottom_x, Side::Bottom, &da).0)
+        .map(|i| {
+            value_to_screen(
+                f64::from(i),
+                &cfg.bottom_x,
+                Side::Bottom,
+                &data_area_rect(&da),
+            )
+            .0
+        })
         .collect();
     let mut ticks = Vec::new();
     each_axis_stroke(
         &cfg.bottom_x,
         Side::Bottom,
-        &da,
+        &data_area_rect(&da),
         FontPolicy::Standard,
         &majors,
         |stroke, a, _| {
@@ -2163,7 +2193,7 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
     cfg.grid.show_major_x = true;
     cfg.grid.show_minor_x = true;
     let mut grid = GridLog(Vec::new());
-    emit_grid(&cfg, &da, FontPolicy::Standard, &mut grid);
+    emit_grid(&cfg, &data_area_rect(&da), FontPolicy::Standard, &mut grid);
     let major_x: Vec<f32> = grid
         .0
         .iter()
@@ -2177,4 +2207,71 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
             .iter()
             .any(|(tag, _)| tag.starts_with("grid_minor_x_"))
     );
+}
+
+/// The axis, tick and grid walks take the plot rectangle: on a plot that is
+/// not integer-aligned the axis line keeps its half-pixel insets from the
+/// rectangle's own edges, the ticks and labels sit at the fractions of its
+/// span and the grid lines run between its edges; on the rectangle of an
+/// integer data area every position is the integer walk's bit for bit.
+#[test]
+fn the_axis_walks_take_a_fractional_plot_rectangle() {
+    let mut cfg = default_config();
+    cfg.bottom_x = category_axis(&["a", "b", "c", "d"]);
+    let plot = RectF {
+        x: 80.25,
+        y: 40.5,
+        width: 600.5,
+        height: 300.25,
+    };
+    let fp = FontPolicy::Standard;
+    let majors = major_tick_values_for_axis(&cfg.bottom_x, Side::Bottom, &plot, fp);
+    let mut line = None;
+    let mut ticks = Vec::new();
+    each_axis_stroke(
+        &cfg.bottom_x,
+        Side::Bottom,
+        &plot,
+        fp,
+        &majors,
+        |stroke, a, b| match stroke {
+            AxisStroke::Line => line = Some((a, b)),
+            AxisStroke::Tick(_) => ticks.push(a),
+        },
+    );
+    assert_eq!(line, Some(((80.75, 340.25), (680.25, 340.25))));
+    for (i, tick) in ticks.iter().enumerate() {
+        let x = plot.x + plot.width * (i as f32 + 0.5) / 4.0;
+        assert!(
+            (tick.0 - x).abs() < 1e-3 && tick.1 == plot.y + plot.height,
+            "{i}: {tick:?}"
+        );
+    }
+    let mut log = TextLog::default();
+    emit_axis_tick_labels(&cfg.bottom_x, Side::Bottom, &plot, fp, &mut log);
+    assert_eq!(log.0.len(), 4);
+    for ((_, rect), tick) in log.0.iter().zip(&ticks) {
+        assert!((rect.x + rect.width * 0.5 - tick.0).abs() < 1e-3);
+        assert!(rect.y > plot.y + plot.height);
+    }
+
+    let da = cfg.data_area().unwrap();
+    let exact = data_area_rect(&da);
+    for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+        let integer = (
+            (da.x as f32 + 0.5, da.y as f32 + 0.5),
+            (
+                (da.x + da.width) as f32 - 0.5,
+                (da.y + da.height) as f32 - 0.5,
+            ),
+        );
+        let (a, b) = axis_anchor(side.clone(), &exact);
+        let expected = match side {
+            Side::Top => (integer.0, (integer.1.0, integer.0.1)),
+            Side::Bottom => ((integer.0.0, integer.1.1), integer.1),
+            Side::Left => (integer.0, (integer.0.0, integer.1.1)),
+            Side::Right => ((integer.1.0, integer.0.1), integer.1),
+        };
+        assert_eq!((a, b), expected, "{side:?}");
+    }
 }
