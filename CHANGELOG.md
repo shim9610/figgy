@@ -735,11 +735,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
     and the category axes) and the overlay and subplot panels are the
     histogram's. The value-axis fit (`Chart::auto_fit_layer_union`,
     `category_bar_value_extent`) covers zero and each column's range for
-    grouped bars, `0..100` for percent bars, and for stacked bars the
-    `StackExtent` the pool measured while one `add_columns` batch of exactly
-    the group's value columns was written (`ColumnPool::stack_extent`;
-    per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
-    is an error that says so. Value labels are drawn from `labels.text` (#40
+    grouped bars, `0..100` for percent bars, and for stacked bars
+    `[Σ min(0, min_i), Σ max(0, max_i)]` over the value columns' own
+    statistics, an upper bound when the series peak in different
+    categories. Value labels are drawn from `labels.text` (#40
     item 13h, below).
     `bar_groups.bar_gap` is logical pixels, scaled with the display config
     (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
@@ -1188,10 +1187,8 @@ entries above describe the changes.
   rejects an unordered document, so a document drawn through the reader
   draws as before; a host that uploads its own records checks the order
   itself.
-- **Stacked bar fit.** The value-axis fit of a `Stacked` bar group reads
-  the `StackExtent` the pool measures while one `add_columns` batch writes
-  exactly the group's value columns: upload them together, or the fit
-  returns an error that says so.
+- **Stacked bar fit.** A `Stacked` bar group's value-axis fit comes from
+  the per-column statistics, so its columns may be uploaded in any batches.
 - **Decoration oracle exclusions.** Item 13 adds three rows to the decoration
   oracle's exclusions: I5 of the box plot scene's `axis_title_left` and I5
   of the radar scene's `tick_labels_left`, both sub-pixel glyph snapping
@@ -1249,8 +1246,9 @@ entries above describe the changes.
     item 13d). `category_bars_render` checks every mode in both directions at
     1x and 2x against the bars' expected extents, signed and missing stacks,
     overrides and materials, the selection outline of an overridden bar, the
-    value-axis fit over the stack extent and its refusal without a measured
-    stack, the axis crossing, an overlay's and a subplot's own bar groups
+    value-axis fit from the per-column statistics (the sum rule, its bound
+    when the series peak in different categories, one batch or several),
+    the axis crossing, an overlay's and a subplot's own bar groups
     drawn and picked on their layers, and a released document drawn through
     the reader; `pick_draw_agreement` holds the bar pick to the painted bar;
     `released_documents` converts every released categorical document and

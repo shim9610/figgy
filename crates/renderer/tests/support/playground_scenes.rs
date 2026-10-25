@@ -1534,8 +1534,8 @@ pub fn categorical_document() -> renderer::CategoricalChart {
 /// The categorical scene: [`categorical_document`] opened through
 /// `Config::from_categorical` as a Cartesian chart of category bars. The
 /// uploads borrow the document's values: the positions first, then the
-/// value columns as one batch, so the pool measures their stack. The value
-/// axis is fitted to the bars and keeps the document's label format.
+/// value columns as one batch. The value axis is fitted to the bars and
+/// keeps the document's label format.
 fn categorical(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let document = categorical_document();
     let (mut config, series, uploads) = Config::from_categorical(&document);

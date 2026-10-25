@@ -364,10 +364,9 @@ impl Config {
     /// writes from the document's values.
     ///
     /// The uploads are the positions column first, then the value columns
-    /// in series order; upload the value columns together
-    /// (`Renderer::add_columns`), which is what measures a stacked group's
-    /// extent for the value-axis fit. The value axis range is the host's to
-    /// fit; it starts at the default placeholder.
+    /// in series order, in any batches: the value-axis fit reads only each
+    /// column's statistics. The value axis range is the host's to fit; it
+    /// starts at the default placeholder.
     ///
     /// Field map: `value_title` and `category_title` are the axis titles
     /// (in `font_family`, `font_size` and `text_color`, hidden when empty);
