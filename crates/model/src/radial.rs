@@ -663,6 +663,7 @@ impl RadialChart {
         self.decorations.validate()?;
         self.annotations.validate()?;
         let title = self.resolved_title();
+        title.text.validate_math().map_err(|e| e.as_str())?;
         if !title.text.within_limits() {
             return Err(
                 "invalid radial title: size 6..160, at most 512 characters / 8 lines, finite styles",
