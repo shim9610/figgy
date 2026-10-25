@@ -8,7 +8,7 @@
 //! glyph stack and registers one [`AnnotationElement`] per drawn item in a
 //! `HitMap<AnnotationLayer>`. Selection, dragging and the per-item handles
 //! then ride the shared `Selectable` / `Draggable` / `Resizable` contracts,
-//! exactly as bounded chart decorations do through `DecorationLayout`.
+//! exactly as the radial chart's decorations do through `DecorationLayout`.
 //!
 //! Drags write anchors back through the same space, so the stored document
 //! keeps data coordinates where the user placed them: a data-anchored item
@@ -30,9 +30,9 @@ pub const MAX_ANNOTATIONS: usize = 1024;
 
 /// A document axis. `X` is horizontal on screen and `Y` vertical in every
 /// chart family: rectangular Cartesian charts map them to `bottom_x` /
-/// `left_y`, bounded bar and box charts to the category index axis and the
-/// value axis according to their direction, and pie, donut, radar and polar
-/// charts have neither.
+/// `left_y` (on a chart of category bars or boxes the categorical axis maps
+/// category indices), and pie, donut and polar charts (radar charts
+/// included) have neither.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AnnotationAxis {
@@ -476,7 +476,7 @@ impl AxisSpace {
 
 /// The anchor ↔ pixel conversion of one chart frame: the only thing the
 /// annotation layer needs from a chart family. Pixels are logical,
-/// chart-local for bounded charts and in the chart area's frame for
+/// chart-local for the radial chart and in the chart area's frame for
 /// Cartesian charts, so hit maps and drag deltas use the same units as the
 /// rest of the interaction contracts.
 pub trait AnnotationSpace {

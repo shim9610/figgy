@@ -15,6 +15,8 @@
 //! - `05-selection.png`: a selected vertex, highlighted by the picked ring.
 //!
 //! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 use renderer::{
     Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, data_render,
     encode_png, radar::*,

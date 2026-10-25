@@ -664,7 +664,6 @@ impl RadialDecoration {
             id: self.id.clone(),
             base_bounds: base,
             canvas_size: self.size,
-            followers: Vec::new(),
         })
     }
 }
@@ -712,7 +711,6 @@ impl Draggable<RadialChart> for RadialDecoration {
             id: self.id.clone(),
             base_bounds: self.automatic,
             canvas_size: self.size,
-            followers: Vec::new(),
         }
     }
     fn drag_by(

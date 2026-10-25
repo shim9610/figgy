@@ -137,8 +137,10 @@ pub use radial::{
 #[allow(deprecated)]
 pub use radial::RadialMaterial;
 
+#[allow(deprecated)]
 pub use model::categorical::*;
 
+#[allow(deprecated)]
 pub use model::boxplot::*;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for
 /// `Config.polar`, the angle unit and segment interpolation it reads, and the
@@ -154,8 +156,10 @@ pub use model::polar::{
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {
     #![doc = include_str!("../RADAR.md")]
+    #[allow(deprecated)]
     pub use model::radar::*;
 }
+#[allow(deprecated)]
 pub use model::radar::*;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

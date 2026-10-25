@@ -8,6 +8,8 @@
 //! here is covered without a test of its own. It uses only the renderer's
 //! public API.
 #![allow(dead_code)]
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 use renderer::config::{Config, append_legend_entry, series_symbol_segments};
 use renderer::data::Column;

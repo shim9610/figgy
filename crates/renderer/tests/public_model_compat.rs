@@ -1,5 +1,7 @@
 //! Consumers can opt into serde through the renderer without importing model.
 #![cfg(feature = "serde")]
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 #[test]
 fn renderer_serde_feature_covers_reexported_chart_models() {

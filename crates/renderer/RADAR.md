@@ -176,6 +176,7 @@ warning.
 ## Opening a legacy document
 
 ```rust,no_run
+# #![allow(deprecated)]
 use renderer::radar::RadarChart;
 use renderer::{Chart, LayerRef, Renderer, config::Config};
 # fn open(r: &mut Renderer, document: &RadarChart) -> Result<(), Box<dyn std::error::Error>> {

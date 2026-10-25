@@ -27,7 +27,7 @@ impl ChartTitleOptions {
     /// A plain title in one style: the characters of `title` in `font`,
     /// `label_size * 1.5` high, in `color`, left-aligned, visible, with no
     /// offset and no band of its own (`top_margin` 0). This is the rich
-    /// title a bounded chart's legacy plain `title` stands for; once
+    /// title the radial chart's legacy plain `title` stands for; once
     /// installed as its `chart_title` it is authoritative and the legacy
     /// string is ignored.
     pub fn from_legacy_plain(title: &str, font: &str, label_size: f32, color: Color) -> Self {
@@ -1519,8 +1519,9 @@ mod draw_style_serde_tests {
     // `annotations` and `overlays` are absent at their defaults (so every
     // document written before them is byte-identical), parse to the defaults
     // when missing, and round-trip when set. `active_layer` and `annotations`
-    // also exist on every bounded chart struct.
+    // also exist on the radial chart and the legacy documents.
     #[test]
+    #[allow(deprecated)]
     fn layer_fields_default_and_are_omitted_from_json() {
         use crate::{AnnotationLayer, LayerRef};
         let json = default_config_json();

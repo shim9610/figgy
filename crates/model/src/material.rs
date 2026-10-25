@@ -1,6 +1,6 @@
 //! The surface material of a bar, a box or a sector.
 //!
-//! One enum serves every bounded chart family, and a name has one look: a
+//! One enum serves category bars, boxes and the radial chart, and a name has one look: a
 //! bar, a box and a flat (zero depth, zero tilt) pie top drawn with the same
 //! material and parameters are shaded by the same function. A bar or a box is
 //! a flat body: its normal is constant, so the looks that only respond to a

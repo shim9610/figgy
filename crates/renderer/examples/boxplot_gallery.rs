@@ -4,6 +4,8 @@
 //! the Cartesian renderer at 960 x 640 without post-render scaling. Every
 //! case labels each box with its median (`BoxPlotLabels::Median`, written
 //! into `labels.text` by the reader).
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
     RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, data_render,

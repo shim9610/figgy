@@ -3,6 +3,8 @@
 //! exact bytes the release wrote. `tests/fixtures/released/README.md` says
 //! which releases wrote the fixtures and how. No GPU is needed.
 #![cfg(feature = "serde")]
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 use renderer::config::DrawStyle;
 use renderer::{BoxPlotChart, CategoricalChart, Config, RadarChart, RadialChart, SeriesConfig};

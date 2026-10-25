@@ -5,7 +5,7 @@
 //! [`axis_major_spacing`] with [`AXIS_LINEAR_TARGET`] and
 //! [`AXIS_LOG_TARGET`]; [`AxisOptions::compute_nice_ticks`] calls it with the
 //! caller's target and also widens the range to whole steps, which is what
-//! the bounded chart families and contour levels use.
+//! the legacy document readers' fixed value axes and contour levels use.
 
 use crate::config::{AxisOptions, AxisScale, Config};
 use crate::layout::guarded_log_range;
@@ -40,7 +40,7 @@ pub const AXIS_LOG_TARGET: usize = 7;
 pub enum LooseRange {
     /// The smallest of 1, 2, 5 and 10 × 10^k at least the span (Heckbert's
     /// closed classes). [`AxisOptions::compute_nice_ticks`] uses it, and
-    /// with it the bounded chart families and contour levels.
+    /// with it the legacy document readers and contour levels.
     AtLeast,
     /// The smallest of 2, 5 and 10 × 10^k strictly above the span's leading
     /// digit class: a span of exactly 1, 2 or 5 × 10^k rounds up to the next

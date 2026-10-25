@@ -13,6 +13,8 @@
 //! Expected positions come from the chart's own `polar_geometry` and
 //! `polar_angle_map`, the circle and the angle mapping the renderer draws
 //! with.
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 #[path = "support/gpu.rs"]
 mod test_gpu;

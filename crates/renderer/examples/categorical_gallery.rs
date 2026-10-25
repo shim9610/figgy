@@ -2,6 +2,8 @@
 //! `CategoricalChart` is opened with `Config::from_categorical`, its columns
 //! uploaded from the borrowed values, and exported by the Cartesian renderer
 //! at 900 x 620 without post-render scaling.
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 use renderer::{
     Chart, Color, ColumnSource, LayerRef, Material, Renderer, RendererDevice, categorical::*,
     config::Config, data_render, encode_png,

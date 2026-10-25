@@ -1,5 +1,8 @@
-//! Editable decoration positions for bounded charts. The same `HitMap`,
-//! `Selectable`, `Draggable` and `SelectionBox` policy as Cartesian charts applies.
+//! Editable decoration positions of the radial chart, and the decoration
+//! state the legacy categorical, box plot and radar documents carry for
+//! their readers. Decoration identities ([`DecorationId`]) name the elements
+//! of every chart. The same `HitMap`, `Selectable`, `Draggable` and
+//! `SelectionBox` policy as Cartesian charts applies.
 use crate::{
     drag::{DragConfig, Draggable},
     layout::{NudgeReject, NudgeResult, RectF, Side},
@@ -179,8 +182,6 @@ pub struct DecorationElement {
     pub id: DecorationId,
     pub base_bounds: RectF,
     pub canvas_size: (u32, u32),
-    /// Parts that move together with this target (e.g. a detached axis's labels).
-    pub followers: Vec<(DecorationId, RectF)>,
 }
 impl Selectable<DecorationLayout> for DecorationElement {
     /// The renderer-measured bounds, moved by the stored offset: the data
@@ -321,12 +322,7 @@ impl DragConfig for DecorationLayout {
                 && r.x + r.width <= element.canvas_size.0 as f32
                 && r.y + r.height <= element.canvas_size.1 as f32
         };
-        if !inside(element.base_bounds, self.effective_offset(&element.id))
-            || element
-                .followers
-                .iter()
-                .any(|(id, rect)| !inside(*rect, self.effective_offset(id)))
-        {
+        if !inside(element.base_bounds, self.effective_offset(&element.id)) {
             return reject;
         }
         let old = self.offset(&element.id);
@@ -413,7 +409,6 @@ mod tests {
                 height: 160.,
             },
             canvas_size: (300, 200),
-            followers: vec![],
         };
         let original = RectF {
             x: 50.,
@@ -484,7 +479,6 @@ mod tests {
                 height: 20.,
             },
             canvas_size: (300, 200),
-            followers: vec![],
         }
     }
     #[test]
@@ -494,19 +488,10 @@ mod tests {
         assert!(empty.is_empty() && default.is_empty());
     }
     #[test]
-    fn drag_rejects_nonfinite_outside_and_axis_follower_overflow_atomically() {
+    fn drag_rejects_nonfinite_and_outside_moves_atomically() {
         let mut state = DecorationLayout::default();
-        let mut axis = element(DecorationId::Axis(Side::Left));
-        axis.followers.push((
-            DecorationId::AxisLabel(Side::Left),
-            RectF {
-                x: 1.,
-                y: 20.,
-                width: 20.,
-                height: 30.,
-            },
-        ));
-        for delta in [[f32::NAN, 0.], [0., f32::INFINITY], [-2., 0.], [1000., 0.]] {
+        let axis = element(DecorationId::Axis(Side::Left));
+        for delta in [[f32::NAN, 0.], [0., f32::INFINITY], [-21., 0.], [1000., 0.]] {
             assert!(matches!(
                 axis.drag_by(&mut state, &NoMeasure, delta[0], delta[1]),
                 NudgeResult::Rejected(_)
@@ -543,6 +528,7 @@ mod tests {
     }
     #[cfg(feature = "serde")]
     #[test]
+    #[allow(deprecated)]
     fn old_documents_default_positions_and_all_models_preserve_edits() {
         for mut value in [
             serde_json::to_value(crate::RadialChart::default()).unwrap(),

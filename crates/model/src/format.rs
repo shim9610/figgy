@@ -27,7 +27,7 @@ pub enum LabelFormat {
 /// How [`LabelFormat::Plain`] writes a number.
 ///
 /// The automatic form ([`Self::AUTO`], `decimals: None`) is the label form of
-/// the bounded chart families' value axes: `0` for zero, `{:.2e}` (`1.23e6`,
+/// the legacy documents' value axes: `0` for zero, `{:.2e}` (`1.23e6`,
 /// `-5.00e-4`, `inf`) when `|v| >= 1e6` or `|v| < 0.001`, and otherwise six
 /// decimals with trailing zeros and then the point trimmed (`2.5`, `-0.125`,
 /// `1000`). It never prints thousands separators, and the exponent switch
@@ -60,7 +60,7 @@ impl PlainNumberFormat {
     };
 
     /// Exactly `decimals` decimals, saturated to the `u8` field: the label
-    /// form of the bounded families' `label_decimals`.
+    /// form of the value labels' `decimals`.
     pub(crate) fn fixed(decimals: usize, trim_zeros: bool) -> Self {
         Self {
             decimals: Some(u8::try_from(decimals).unwrap_or(u8::MAX)),

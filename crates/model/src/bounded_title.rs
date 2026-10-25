@@ -1,4 +1,6 @@
-//! Independent bounded-chart title. DecorationLayout owns its position.
+//! The rich title of the legacy categorical, box plot and radar documents
+//! (`BoundedTitleOptions`), and the wire form of the radial chart's title.
+//! The chart's `DecorationLayout` owns the title's position.
 use crate::{
     Color,
     text::{RichSegment, RichText},
@@ -40,7 +42,7 @@ impl BoundedTitleOptions {
     }
 }
 
-/// The wire form of a bounded chart's `chart_title` held as a
+/// The wire form of the radial chart's `chart_title`, held as a
 /// [`ChartTitleOptions`](crate::config::ChartTitleOptions): the
 /// `{"visible", "text"}` object a [`BoundedTitleOptions`] writes, in that
 /// order, so documents keep their bytes. The chart keeps the title's position
@@ -116,7 +118,7 @@ mod tests {
     }
     #[cfg(feature = "serde")]
     #[test]
-    fn all_legacy_families_freeze_title_style_and_round_trip() {
+    fn the_radial_title_freezes_its_style_and_round_trips() {
         macro_rules! check {
             ($chart:ty, $color:ident) => {{
                 let mut chart = <$chart>::default();
@@ -140,8 +142,5 @@ mod tests {
             }};
         }
         check!(crate::RadialChart, label_color);
-        check!(crate::CategoricalChart, text_color);
-        check!(crate::BoxPlotChart, text_color);
-        check!(crate::RadarChart, text_color);
     }
 }
