@@ -299,5 +299,5 @@ Linux/Vulkan과 Windows/DX12에서 네이티브 렌더링·픽셀 검사를 수�
 ## 라이선스
 
 코드: [MIT](LICENSE-MIT) 또는 [Apache-2.0](LICENSE-APACHE).
-내장 글꼴에는 각 OFL 고지가 적용됩니다.
-[Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt) · [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt).
+내장 글꼴에는 각 OFL·GUST 고지가 적용됩니다.
+[Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt) · [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt)(SIL OFL 1.1) · [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt)(GUST Font License, 수식용 글꼴).
