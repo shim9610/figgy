@@ -90,7 +90,8 @@ pub(super) fn minor_tick_values(axis: &AxisOptions) -> Vec<f64> {
 // it without bound. `tick_warnings` reports those substitutions by asking the
 // walkers' own guards (`major_spacing_rejection`, `drawn_minor_count`,
 // `effective_log_decade_step`) and the draw path's own gates
-// (`timestamp_tick_plan`, `drawn_colorbar`) rather than restating them.
+// (`timestamp_tick_plan`, `drawn_colorbar`, the adaptive log policy) rather
+// than restating them.
 
 /// The tick settings the axis raster of `config` replaces with ones it can
 /// draw. Empty when every setting is drawn as written, and when the raster
@@ -166,6 +167,11 @@ pub(super) fn push_walker_warnings(
             }
         }
         AxisScale::Logarithmic => {
+            // The adaptive ladder plans the majors from the range and does
+            // not walk `major_spacing`, so there is nothing to substitute.
+            if axis.log_ticks == LogTickPolicy::Adaptive {
+                return;
+            }
             // Log minors are 2a..9a in every decade whatever the count; only
             // the decade step of the majors is substituted.
             let used = f64::from(effective_log_decade_step(axis));

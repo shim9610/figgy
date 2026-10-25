@@ -500,6 +500,46 @@ fn a_log_decade_step_that_is_not_whole_warns_with_the_step_drawn() {
     assert!(tick_warnings(&cfg).is_empty());
 }
 
+/// The adaptive log ladder plans its majors from the range and ignores
+/// `major_spacing`, like calendar ticks ignore it: no
+/// `LogDecadeStepAdjusted` for any written step, on a chart axis or the
+/// colourbar's, while the default policy still reports it (#42).
+#[test]
+fn an_adaptive_log_axis_raises_no_decade_step_warning() {
+    let mut cfg = default_config();
+    let mut bar = crate::default::default_colorbar_options();
+    for axis in [&mut cfg.left_y, &mut bar.axis] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.min = 1.0e4;
+        axis.max = 8.0e4;
+        axis.log_ticks = LogTickPolicy::Adaptive;
+    }
+    cfg.colorbar = Some(bar);
+    for requested in [2.5, 0.5, 0.0, -3.0, f64::INFINITY, f64::NAN, 1.0e12, 1.0] {
+        cfg.left_y.major_spacing = requested;
+        cfg.colorbar.as_mut().unwrap().axis.major_spacing = requested;
+        assert!(
+            tick_warnings(&cfg).is_empty(),
+            "{requested:?}: {:?}",
+            tick_warnings(&cfg)
+        );
+        assert_eq!(
+            major_tick_values(&cfg.left_y),
+            [1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4]
+        );
+    }
+    cfg.left_y.major_spacing = 2.5;
+    cfg.left_y.log_ticks = LogTickPolicy::Decades;
+    assert_eq!(
+        tick_warnings(&cfg),
+        [RenderWarning::LogDecadeStepAdjusted {
+            axis: WarningAxis::LeftY,
+            requested: 2.5,
+            used: 2.0,
+        }]
+    );
+}
+
 #[test]
 fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     use crate::format::{TimestampLabelFormat, TimestampTickPolicy};

@@ -8,7 +8,7 @@
 use crate::raster::Canvas;
 
 use crate::color::Color;
-use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, TickVisibility};
+use crate::config::{AxisOptions, AxisScale, Config, LabelStyle, LogTickPolicy, TickVisibility};
 use crate::format::LabelFormat;
 use crate::layout::{
     DataArea, Element, RectF, Side, axis_anchor, axis_offset, label_rect, point_on_rect_side,
