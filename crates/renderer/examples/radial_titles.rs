@@ -1,5 +1,5 @@
 //! An independent rich title on a pie chart.
-//! cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles
+//! cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles
 use renderer::{
     BoundedTitleOptions, Color, RadialChart, RadialRenderer, RadialSlice, RendererDevice,
     TextAlign,
@@ -12,7 +12,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let output = std::env::args_os()
         .nth(1)
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("target/bounded-titles"));
+        .unwrap_or_else(|| PathBuf::from("target/radial-titles"));
     std::fs::create_dir_all(&output)?;
     let instance = create_instance();
     let adapter = request_adapter(&instance)?;

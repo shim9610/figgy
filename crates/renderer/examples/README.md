@@ -53,11 +53,21 @@ file name. To refresh an image, run the example's command from
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-twin-axes.png" width="160" alt="Twin Y axes"> | `gallery-twin-axes.png` | [overlay_axes.rs](overlay_axes.rs), `twin_axes` | An overlay layer with its own right Y axis, exported as a document |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-subplots.png" width="160" alt="Small multiples"> | `gallery-subplots.png` | [subplots.rs](subplots.rs), `small_multiples` | A 2 × 2 grid: the parent and three subplots linked to its X axis, each with its own Y range |
 
-### Bounded charts
+### Radial chart
 
 | Image | Asset | Drawn by | Shows |
 |---|---|---|---|
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-donut.png" width="160" alt="Ceramic donut"> | `gallery-donut.png` | [radial_gallery.rs](radial_gallery.rs), case `ceramic` | Named values, rounded edges, an oblique view |
+
+### Category bars, box plots and radar series
+
+These three examples open legacy documents through the deprecated readers
+(`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`),
+upload the borrowed columns and export the Cartesian or polar chart they read
+into. The readers are removed in the next milestone.
+
+| Image | Asset | Drawn by | Shows |
+|---|---|---|---|
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-categorical.png" width="160" alt="Grouped bars"> | `gallery-categorical.png` | [categorical_gallery.rs](categorical_gallery.rs), case `grouped-matte` | Two series across four categories, a value label past every bar |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-boxplot.png" width="160" alt="Box plot"> | `gallery-boxplot.png` | [boxplot_gallery.rs](boxplot_gallery.rs), case `01-classic-matte` | Supplied five-number summaries and outliers, the median above every box |
 | <img src="https://raw.githubusercontent.com/shim9610/figgy/master/crates/renderer/assets/gallery-radar.png" width="160" alt="Radar chart"> | `gallery-radar.png` | [radar_gallery.rs](radar_gallery.rs), case `01-spider-web` | Two series over six categories on a polygon grid |
@@ -104,10 +114,10 @@ in [gallery_concepts.rs](gallery_concepts.rs) holds its data and styling.
 | [subplots.rs](subplots.rs) | `gallery-subplots.png`, and `mixed-axes.png` from `mixed_axes`: one linked axis, a different X column, and a twin Y axis inside a subplot | `cargo run --locked -p figgy-renderer --example subplots -- target/subplots` |
 | [gallery_concepts.rs](gallery_concepts.rs) | The six `concept-*.png` images | `cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts` |
 | [radial_gallery.rs](radial_gallery.rs) | One PNG per material (`matte`, `ceramic`, `satin-metal`, `toon`, `enamel`, `brushed-metal`, `paper`, `plywood`, `hatch`, `pearl`), plus `outlined-raised-pie`, `corners-sharp`, `corners-rounded`, `individual-edit`, `pie-of-pie` and the hover frames `hover-00` to `hover-19` | `cargo run --locked -p figgy-renderer --example radial_gallery -- target/radial-gallery` |
-| [categorical_gallery.rs](categorical_gallery.rs) | `grouped-matte`, `horizontal-satin`, `stacked-enamel`, `percent-outline`, `signed-stacked`: categorical documents opened as Cartesian category bars | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
-| [boxplot_gallery.rs](boxplot_gallery.rs) | `01-classic-matte`, `02-satin`, `03-horizontal`, `04-grouped-notch`, `05-mean-selection`: box plot documents opened as Cartesian box plot series | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
-| [radar_gallery.rs](radar_gallery.rs) | `01-spider-web`, `02-circle-values`, `03-fixed-axis`, `04-four-series`, `05-selection`: radar documents opened as polar radar series | `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery` |
-| [bounded_titles.rs](bounded_titles.rs) | `pie.png`: a rich title on the radial chart | `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles` |
+| [categorical_gallery.rs](categorical_gallery.rs) | `grouped-matte`, `horizontal-satin`, `stacked-enamel`, `percent-outline`, `signed-stacked`: categorical documents opened as Cartesian category bars by `Config::from_categorical` | `cargo run --locked -p figgy-renderer --example categorical_gallery -- target/categorical-gallery` |
+| [boxplot_gallery.rs](boxplot_gallery.rs) | `01-classic-matte`, `02-satin`, `03-horizontal`, `04-grouped-notch`, `05-mean-selection`: box plot documents opened as Cartesian box plot series by `Config::from_boxplot` | `cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery` |
+| [radar_gallery.rs](radar_gallery.rs) | `01-spider-web`, `02-circle-values`, `03-fixed-axis`, `04-four-series`, `05-selection`: radar documents opened as polar radar series by `Config::from_radar` | `cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery` |
+| [radial_titles.rs](radial_titles.rs) | `pie.png`: a rich title on the radial chart | `cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles` |
 | [precise_sketch_preview.rs](precise_sketch_preview.rs) | `style-growth-response-precise.png`, `style-growth-response-sketch.png` | `cargo run --locked -p figgy-renderer --example precise_sketch_preview -- target/precise-sketch` |
 | [milkyway_line_preview.rs](milkyway_line_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example milkyway_line_preview -- target/milkyway-preview.png` |
 | [constellation_preview.rs](constellation_preview.rs) | One PNG at the given path | `cargo run --locked -p figgy-renderer --example constellation_preview -- target/constellation-preview.png` |
@@ -174,7 +184,8 @@ images are not in the README.
 - **데이터 경로**: 선·오차 막대·히스토그램·행렬·극좌표·벡터장 예제는 컬럼을 등록한다.
   범주형 막대 예제는 `Config::from_categorical`로, 박스플롯 예제는 `Config::from_boxplot`으로
   문서를 읽어 컬럼·레코드를 등록하고, 레이더 예제는 `Config::from_radar`로 문서를 읽어 컬럼을
-  등록한다. 원형 예제는 차트의 소량 데이터 모델을 직접 만든다.
+  등록한다. 세 문서 리더는 이번 릴리스에서 사용 중단(deprecated)되며 다음 마일스톤에서
+  제거된다. 원형 예제는 차트의 소량 데이터 모델을 직접 만든다.
   박스플롯의 사분위수 등 통계값은 호출자가 제공한다.
 - **창 예제와 도구**: 편집 예제는 실제 창을 열어 선택·이동·영역 조정을 보여준다.
   `constellation_demo`, `sketch_demo`, `raster_bench`는 렌더러를 바꿀 때 출력과 비용을
