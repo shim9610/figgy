@@ -600,9 +600,13 @@ struct GlyphMask {
     data: Box<[u8]>,
 }
 
-type MetricsKey = (swash::CacheKey, u32, char);
+/// Metrics key: the face, the size's bits and the glyph id. Keyed by glyph
+/// id rather than character, so a glyph no character maps to (a size
+/// variant, a stretchy piece, a script alternate) shares the caches; the
+/// character entry points map through the face's charmap first.
+type MetricsKey = (swash::CacheKey, u32, u16);
 /// Mask key: metrics key + horizontal subpixel bin (quarter-pixel phases).
-type MaskKey = (swash::CacheKey, u32, char, u8);
+type MaskKey = (swash::CacheKey, u32, u16, u8);
 
 thread_local! {
     static SCALE_CTX: RefCell<ScaleContext> = RefCell::new(ScaleContext::new());
@@ -649,11 +653,15 @@ fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
 }
 
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
-    let key = (font.key, size.to_bits(), ch);
+    glyph_extents_id(font, size, font.charmap().map(ch))
+}
+
+/// [`glyph_extents`] of glyph id `glyph` of `font`.
+fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExtents {
+    let key = (font.key, size.to_bits(), glyph);
     if let Some(hit) = METRICS_CACHE.with(|c| c.borrow().get(&key).copied()) {
         return hit;
     }
-    let glyph = font.charmap().map(ch);
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
     let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
@@ -684,18 +692,17 @@ fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
 /// and hand it to `use_mask`. AA happens exactly once, here in swash — the
 /// subpixel offset is baked into the rasterization instead of resampling the
 /// finished mask, which is what kept text crisp under skia.
-fn with_glyph_mask(
+fn with_glyph_mask_id(
     font: FontRef<'static>,
     size: f32,
-    ch: char,
+    glyph: u16,
     xbin: u8,
     use_mask: impl FnOnce(&GlyphMask),
 ) {
-    let key = (font.key, size.to_bits(), ch, xbin);
+    let key = (font.key, size.to_bits(), glyph, xbin);
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = cache.entry(key).or_insert_with(|| {
-            let glyph = font.charmap().map(ch);
             SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
                 let mut scaler = cx
@@ -730,8 +737,8 @@ fn with_glyph_mask(
     });
 }
 
-/// Rasterize one glyph and blit it with `color` at (`pen_x`, `baseline`).
-/// Returns the advance.
+/// Rasterize one character and blit it with `color` at (`pen_x`,
+/// `baseline`). Returns the advance.
 fn draw_char(
     canvas: &mut Canvas,
     font: FontRef<'static>,
@@ -741,8 +748,22 @@ fn draw_char(
     baseline: f32,
     color: &Color,
 ) -> f32 {
-    let advance = glyph_extents(font, size, ch).advance;
+    let glyph = font.charmap().map(ch);
+    draw_glyph(canvas, font, size, glyph, pen_x, baseline, color);
+    glyph_extents_id(font, size, glyph).advance
+}
 
+/// Rasterize glyph id `glyph` of `font` and blit it with `color` at
+/// (`pen_x`, `baseline`).
+fn draw_glyph(
+    canvas: &mut Canvas,
+    font: FontRef<'static>,
+    size: f32,
+    glyph: u16,
+    pen_x: f32,
+    baseline: f32,
+    color: &Color,
+) {
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
         // into the rasterizer, and blit without any filtering.
@@ -757,7 +778,7 @@ fn draw_char(
                 xbin = 0;
                 ix += 1;
             }
-            with_glyph_mask(font, size, ch, xbin, |m| {
+            with_glyph_mask_id(font, size, glyph, xbin, |m| {
                 canvas.blit_mask_orthogonal(
                     ix + m.left,
                     gy - m.top,
@@ -772,7 +793,7 @@ fn draw_char(
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
         None => {
-            with_glyph_mask(font, size, ch, 0, |m| {
+            with_glyph_mask_id(font, size, glyph, 0, |m| {
                 canvas.draw_mask(
                     pen_x + m.left as f32,
                     baseline - m.top as f32,
@@ -784,7 +805,6 @@ fn draw_char(
             });
         }
     }
-    advance
 }
 
 // Rendering coefficients.
@@ -850,7 +870,12 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
 
     let cell_metrics: Vec<Vec<TextMetrics>> = line_cells
         .iter()
-        .map(|cells| cells.iter().map(|c| measure_line(c, rt, policy)).collect())
+        .map(|cells| {
+            cells
+                .iter()
+                .map(|c| place_cell(&mut MeasureSink, c, rt, (0.0, 0.0), policy))
+                .collect()
+        })
         .collect();
 
     let n_cols = line_cells.iter().map(|c| c.len()).max().unwrap_or(1);
@@ -889,9 +914,97 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
     }
 }
 
-/// Envelope of one line. Empty lines fall back to a font-size-derived height
-/// so blank lines still advance the baseline.
-fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> TextMetrics {
+/// Width of the whole block: its widest line. Measurement reports it, and
+/// drawing aligns every line inside it, so the two cannot disagree.
+fn block_width(line_metrics: &[TextMetrics]) -> f32 {
+    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
+}
+
+/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
+/// descender-less lines collapse together, so clamp to a nominal line height
+/// derived from the font size. Shared by draw + measure.
+fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
+    (prev.descent + this.ascent).max(rt.font_size * 1.15)
+}
+
+/// Where the glyphs and rules of a laid-out cell go. The canvas sink paints
+/// them; the measuring sink drops them, so measurement and drawing run the
+/// same placement ([`place_cell`]) and cannot disagree. A glyph is named by
+/// its face and glyph id, so size variants, stretchy pieces and script
+/// alternates, which no character maps to, place like any other glyph.
+pub(crate) trait GlyphSink {
+    /// Whether the sink paints. The measuring sink does not, and placement
+    /// skips work that only produces pixels (dash patterns, the second pass
+    /// of a math node).
+    fn paints(&self) -> bool;
+    /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        pen: (f32, f32),
+        color: &Color,
+    );
+    /// A filled rectangle: rules, dashes, bands, underlines, fraction bars.
+    fn rect(&mut self, rect: RectF, color: &Color);
+}
+
+/// The sink of [`measure_rich_text`]: places nothing.
+struct MeasureSink;
+
+impl GlyphSink for MeasureSink {
+    fn paints(&self) -> bool {
+        false
+    }
+    fn glyph(&mut self, _: FontRef<'static>, _: u16, _: f32, _: (f32, f32), _: &Color) {}
+    fn rect(&mut self, _: RectF, _: &Color) {}
+}
+
+/// The sink of [`draw_rich_text`]: paints onto the canvas.
+struct CanvasSink<'a>(&'a mut Canvas);
+
+impl GlyphSink for CanvasSink<'_> {
+    fn paints(&self) -> bool {
+        true
+    }
+    fn glyph(
+        &mut self,
+        font: FontRef<'static>,
+        glyph: u16,
+        size: f32,
+        pen: (f32, f32),
+        color: &Color,
+    ) {
+        draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color);
+    }
+    fn rect(&mut self, r: RectF, color: &Color) {
+        self.0.draw_rect(
+            r.x,
+            r.y,
+            r.width,
+            r.height,
+            &crate::raster::Paint::fill(color),
+        );
+    }
+}
+
+/// Place one cell (a line, or a tab-column cell of it) with its first pen
+/// at `origin` (left, baseline) into `sink`, and return its envelope: the
+/// one placement measurement and drawing share. Empty cells fall back to a
+/// font-size-derived height so blank lines still advance the baseline.
+///
+/// The envelope is the ink extent of every glyph, rule and underline
+/// relative to the baseline, and the width the sum of the advances; the pen
+/// advances the same way, gap before a script, then the glyph.
+fn place_cell(
+    sink: &mut dyn GlyphSink,
+    segments: &[RichSegment],
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) -> TextMetrics {
+    let (mut pen_x, baseline) = origin;
     let mut total_w = 0.0f32;
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
@@ -901,35 +1014,73 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
         let script = script_placement(ScriptPosition::of(seg), base);
         let size = script.size;
         let y_offset = script.shift;
+        let color = seg.color.unwrap_or(rt.color);
+        let y = baseline + y_offset;
 
-        let (advance, seg_top, mut seg_bottom) = if seg.rule {
+        // `advance` is the envelope's share of the width; `pen_advance` what
+        // the pen moves after the script gap (identical sums, kept in the
+        // order each was always added in).
+        let (advance, pen_advance, seg_top, mut seg_bottom) = if seg.rule {
             // Drawn rule: a bar centered on the symbol axis. Width is the
             // fixed field; vertical extent is the bar thickness only.
             let field = seg.field_em.unwrap_or(1.0) * base;
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let center = y_offset - base * RULE_Y_RATIO;
-            (field, center - t * 0.5, center + t * 0.5)
+            if sink.paints() {
+                place_rule(sink, seg, (pen_x, y), field, t, base, &color);
+            }
+            (field, field, center - t * 0.5, center + t * 0.5)
         } else {
             let ch = seg.char_set.glyph_char(seg.text);
             let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-            let g = glyph_extents(font, size, ch);
+            let glyph = font.charmap().map(ch);
+            let g = glyph_extents_id(font, size, glyph);
+            let pen_advance = match seg.field_em {
+                Some(f) => {
+                    // Center the glyph ink inside the fixed field.
+                    let field = f * base;
+                    let inset = (field - g.advance) * 0.5;
+                    sink.glyph(font, glyph, size, (pen_x + inset, y), &color);
+                    field
+                }
+                None => {
+                    pen_x += script.kern_before;
+                    sink.glyph(font, glyph, size, (pen_x, y), &color);
+                    g.advance
+                }
+            };
             // A fixed field replaces both the kern and the glyph advance.
             let adv = match seg.field_em {
                 Some(f) => f * base,
                 None => script.advance(g.advance),
             };
-            (adv, y_offset + g.ink_top, y_offset + g.ink_bottom)
+            (
+                adv,
+                pen_advance,
+                y_offset + g.ink_top,
+                y_offset + g.ink_bottom,
+            )
         };
 
         if seg.underline {
             let underline_top = y_offset + size * UNDERLINE_Y_OFFSET_RATIO;
             let underline_thickness = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
             seg_bottom = seg_bottom.max(underline_top + underline_thickness);
+            sink.rect(
+                RectF {
+                    x: pen_x,
+                    y: y + size * UNDERLINE_Y_OFFSET_RATIO,
+                    width: pen_advance,
+                    height: underline_thickness,
+                },
+                &color,
+            );
         }
 
         max_ascent = max_ascent.max(-seg_top);
         max_descent = max_descent.max(seg_bottom);
         total_w += advance;
+        pen_x += pen_advance;
     }
 
     if segments.is_empty() || (max_ascent == 0.0 && max_descent == 0.0) {
@@ -944,100 +1095,55 @@ fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> 
     }
 }
 
-/// Width of the whole block: its widest line. Measurement reports it, and
-/// drawing aligns every line inside it, so the two cannot disagree.
-fn block_width(line_metrics: &[TextMetrics]) -> f32 {
-    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
-}
-
-/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
-/// descender-less lines collapse together, so clamp to a nominal line height
-/// derived from the font size. Shared by draw + measure.
-fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
-    (prev.descent + this.ascent).max(rt.font_size * 1.15)
-}
-
-fn draw_line_segments(
-    canvas: &mut Canvas,
-    segments: &[RichSegment],
-    rt: &RichText,
-    origin: (f32, f32),
-    policy: FontPolicy,
+/// A rule segment filling its fixed `field` with its pen at `pen`
+/// (left, baseline): the band under it, then the solid or dashed bar of
+/// thickness `t`, centered on the symbol axis — the exact-length line stroke
+/// of legend marks.
+fn place_rule(
+    sink: &mut dyn GlyphSink,
+    seg: &RichSegment,
+    pen: (f32, f32),
+    field: f32,
+    t: f32,
+    base: f32,
+    color: &Color,
 ) {
-    let (mut pen_x, baseline) = origin;
-    for seg in segments {
-        let base = segment_base_size(seg, rt);
-        let script = script_placement(ScriptPosition::of(seg), base);
-        let size = script.size;
-        let color = seg.color.unwrap_or(rt.color);
-        let y = baseline + script.shift;
-
-        let advance = if seg.rule {
-            // Drawn rule filling its fixed field, centered on the symbol
-            // axis — the exact-length line stroke of legend marks.
-            let field = seg.field_em.unwrap_or(1.0) * base;
-            let t = (base * RULE_THICKNESS_RATIO).max(1.0);
-            let ry = y - base * RULE_Y_RATIO - t * 0.5;
-            // The band goes under the rule first, so a dashed rule's gaps
-            // show the band and a solid rule covers its top edge.
-            if let Some(band) = &seg.rule_band {
-                let top = y - base * RULE_Y_RATIO;
-                let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
-                canvas.draw_rect(
-                    pen_x,
-                    top,
-                    field,
-                    (bottom - top).max(1.0),
-                    &crate::raster::Paint::fill(band),
-                );
-            }
-            if let Some(pattern) = &seg.rule_dash {
-                draw_dashed_rule(
-                    canvas,
-                    RectF {
-                        x: pen_x,
-                        y: ry,
-                        width: field,
-                        height: t,
-                    },
-                    &color,
-                    pattern,
-                    base,
-                );
-            } else {
-                canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
-            }
-            field
-        } else {
-            let ch = seg.char_set.glyph_char(seg.text);
-            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-            match seg.field_em {
-                Some(f) => {
-                    // Center the glyph ink inside the fixed field.
-                    let field = f * base;
-                    let g = glyph_extents(font, size, ch);
-                    let inset = (field - g.advance) * 0.5;
-                    draw_char(canvas, font, size, ch, pen_x + inset, y, &color);
-                    field
-                }
-                None => {
-                    pen_x += script.kern_before;
-                    draw_char(canvas, font, size, ch, pen_x, y, &color)
-                }
-            }
-        };
-
-        if seg.underline {
-            let uy = y + size * UNDERLINE_Y_OFFSET_RATIO;
-            let uh = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
-            canvas.draw_rect(pen_x, uy, advance, uh, &crate::raster::Paint::fill(&color));
-        }
-
-        pen_x += advance;
+    let (pen_x, y) = pen;
+    let ry = y - base * RULE_Y_RATIO - t * 0.5;
+    // The band goes under the rule first, so a dashed rule's gaps show the
+    // band and a solid rule covers its top edge.
+    if let Some(band) = &seg.rule_band {
+        let top = y - base * RULE_Y_RATIO;
+        let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
+        sink.rect(
+            RectF {
+                x: pen_x,
+                y: top,
+                width: field,
+                height: (bottom - top).max(1.0),
+            },
+            band,
+        );
+    }
+    let bar = RectF {
+        x: pen_x,
+        y: ry,
+        width: field,
+        height: t,
+    };
+    match &seg.rule_dash {
+        Some(pattern) => place_dashed_rule(sink, bar, color, pattern, base),
+        None => sink.rect(bar, color),
     }
 }
 
-fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[f32], base: f32) {
+fn place_dashed_rule(
+    sink: &mut dyn GlyphSink,
+    rect: RectF,
+    color: &Color,
+    dash_em: &[f32],
+    base: f32,
+) {
     let pattern: Vec<f32> = dash_em
         .iter()
         .filter_map(|v| {
@@ -1046,13 +1152,7 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
         })
         .collect();
     if pattern.is_empty() {
-        canvas.draw_rect(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            &crate::raster::Paint::fill(color),
-        );
+        sink.rect(rect, color);
         return;
     }
 
@@ -1062,12 +1162,14 @@ fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[
     while offset < rect.width {
         let len = pattern[pattern_i % pattern.len()].min(rect.width - offset);
         if ink {
-            canvas.draw_rect(
-                rect.x + offset,
-                rect.y,
-                len,
-                rect.height,
-                &crate::raster::Paint::fill(color),
+            sink.rect(
+                RectF {
+                    x: rect.x + offset,
+                    y: rect.y,
+                    width: len,
+                    height: rect.height,
+                },
+                color,
             );
         }
         offset += len;
@@ -1180,8 +1282,8 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
         }
         let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
-            draw_line_segments(
-                canvas,
+            place_cell(
+                &mut CanvasSink(canvas),
                 cell,
                 rt,
                 (line_x + doc.col_starts[k], baseline),
@@ -1506,7 +1608,9 @@ mod tests {
             for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
                 let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
                 let mut seen = None;
-                with_glyph_mask(font, size, ch, 0, |m| seen = Some((m.width, m.height)));
+                with_glyph_mask_id(font, size, font.charmap().map(ch), 0, |m| {
+                    seen = Some((m.width, m.height))
+                });
                 let (w, h) = seen.expect("basic Latin glyph must rasterize");
                 let rel_h = h as f32 / size;
                 let rel_w = w as f32 / size;
@@ -2076,7 +2180,13 @@ mod tests {
                 }
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
-                    draw_line_segments(canvas, cell, rt, cell_origin, FontPolicy::Standard);
+                    place_cell(
+                        &mut CanvasSink(canvas),
+                        cell,
+                        rt,
+                        cell_origin,
+                        FontPolicy::Standard,
+                    );
                 }
             }
         }
