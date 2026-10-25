@@ -934,7 +934,8 @@ fn the_selected_label_is_outlined_by_its_frame() {
 }
 
 /// A bar series on an overlay or a subplot carries its labels: they draw
-/// in its own panel, over its own bars, at 1x and 2x, and pick there.
+/// in its own panel, over its own bars, at 1x and 2x, and pick there on
+/// its layer.
 #[test]
 fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
     let mut r = renderer();
@@ -1035,6 +1036,19 @@ fn overlay_and_subplot_bar_series_draw_their_labels_in_their_panels() {
         match pick(&mut r, centre(first)) {
             Some(PickedData::ValueLabel { series_id, .. }) => assert_eq!(series_id, "two"),
             other => panic!("{scale}x: the overlay's label picked {other:?}"),
+        }
+        // The subplot's label picks in the subplot's panel.
+        r.set_active_layer(id, renderer::LayerRef::Subplot(0))
+            .unwrap();
+        let sub_first = bbox(&img, (first_slot.0, h / 2, first_slot.2, h), is_label)
+            .expect("the subplot's first label");
+        match pick(&mut r, centre(sub_first)) {
+            Some(PickedData::ValueLabel {
+                series_id,
+                category_index,
+                ..
+            }) => assert_eq!((series_id.as_str(), category_index), ("sub", 0)),
+            other => panic!("{scale}x: the subplot's label picked {other:?}"),
         }
         r.remove_chart(id).unwrap();
     }
