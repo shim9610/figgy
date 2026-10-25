@@ -350,6 +350,7 @@ impl AnnotationLineStyle {
 /// The rich text limits of [`RichText::within_limits`], shared with chart
 /// titles.
 fn validate_rich_text(t: &RichText) -> Result<(), &'static str> {
+    t.validate_math().map_err(|e| e.as_str())?;
     if !t.within_limits() {
         return Err(
             "invalid annotation text: size 6..160, at most 512 characters / 8 lines, finite styles",

@@ -131,7 +131,9 @@ full native integration examples.
 ## License and verification
 
 Code is licensed under MIT OR Apache-2.0. Bundled fonts retain their respective
-OFL notices in `fonts/`. The package includes source, shaders, fonts, guides,
+OFL and GUST notices in `fonts/`: Liberation Sans and Comic Neue under the SIL
+OFL 1.1, and New Computer Modern Math, the math face, under the GUST Font
+License (shipped unmodified). The package includes source, shaders, fonts, guides,
 runnable examples, tests and test fixtures. Gallery PNG/GIF assets and the unsupported
 iced integration source stay in the Git repository and are not installed with
 the crate. Architecture illustrations link to a fixed public source revision.

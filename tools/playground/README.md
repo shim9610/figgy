@@ -50,6 +50,11 @@ The tabs at the top switch scenes.
   angle axis).
 - **Radial**: the pie and donut chart (the DataLess chart, its own renderer).
 
+The lines scene's title and Y title, the twin-axes overlay title, a subplot
+title, an annotation and the radar title are formulas written with
+`RichText::from_tex` (#45), so selecting, dragging and exporting math text can
+be tried in every layer kind.
+
 ## Pointer
 
 - **Left press**: select an axis, labels, title, legend, data area, colourbar

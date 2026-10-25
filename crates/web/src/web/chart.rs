@@ -136,6 +136,25 @@ pub fn draw_style_param_specs(mode: &str) -> Result<String, JsValue> {
     serde_json::to_string(specs).map_err(js_err)
 }
 
+/// A rich text from TeX (`RichText::from_tex`, #45): text with `$…$` or
+/// `\(…\)` math spans, as the JSON of a `RichText` for any title, axis
+/// title, legend, label or annotation text of `set_config` / `set_series`.
+/// Errors name the TeX byte range.
+///
+/// JS: `cfg.chart_title.text = JSON.parse(rich_text_from_tex("$E = mc^2$", 16, "", 0, 0, 0, 1));`
+#[wasm_bindgen]
+pub fn rich_text_from_tex(
+    tex: &str,
+    font_size: f32,
+    font: &str,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+) -> Result<String, JsValue> {
+    crate::rich_text_json_from_tex(tex, font_size, font, [r, g, b, a]).map_err(js_err)
+}
+
 /// Every valid `draw_style` mode tag, as a JSON string array.
 #[wasm_bindgen]
 pub fn draw_style_modes() -> Result<String, JsValue> {

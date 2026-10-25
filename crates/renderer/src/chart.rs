@@ -227,6 +227,39 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
     })?;
+    // A malformed math segment tree in a title, axis title or legend is
+    // rejected like any other config field (a JSON document already fails
+    // to parse); annotation texts are checked with the annotations below.
+    let axes = [
+        ("top_x", &config.top_x),
+        ("bottom_x", &config.bottom_x),
+        ("left_y", &config.left_y),
+        ("right_y", &config.right_y),
+    ];
+    let texts = [
+        ("chart_title", &config.chart_title.text),
+        ("legend", &config.legend.content),
+    ]
+    .into_iter()
+    .chain(axes.map(|(field, axis)| (field, &axis.title_option.text)))
+    .chain(colorbar_axis.map(|axis| ("colorbar.axis", &axis.title_option.text)))
+    .chain(config.overlays.iter().flat_map(|overlay| {
+        [("overlays.y_axis", &overlay.y_axis.title_option.text)]
+            .into_iter()
+            .chain(
+                overlay
+                    .legend
+                    .as_ref()
+                    .map(|l| ("overlays.legend", &l.content)),
+            )
+    }));
+    for (field, text) in texts {
+        text.validate_math()
+            .map_err(|e| FiggyError::InvalidConfig {
+                field,
+                reason: e.as_str(),
+            })?;
+    }
     // Malformed annotation styles are rejected like any other config field;
     // non-finite values and anchors are not malformed, the raster skips them.
     config
@@ -1282,6 +1315,82 @@ mod tests {
             0.1,
         );
         assert_eq!(chart.config(), &config);
+    }
+
+    // A malformed math segment tree is refused at the renderer boundary in
+    // every text a `Config` draws outside the annotations (which their own
+    // validation checks), with the field that holds it.
+    #[test]
+    fn validate_renderer_config_refuses_a_malformed_math_tree() {
+        use crate::text::{MathKind, MathNode, MathSlot, RichSegment};
+        let mut cfg = dummy_config();
+        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        cfg.overlays.push(crate::OverlayLayer {
+            legend: Some(cfg.legend.clone()),
+            ..Default::default()
+        });
+        assert!(validate_renderer_config(&cfg).is_ok());
+        // A slot child of a node that is not open.
+        let broken = vec![
+            RichSegment {
+                math_node: Some(MathNode {
+                    id: 0,
+                    kind: MathKind::Math(crate::text::MathStyle::Text),
+                }),
+                ..RichSegment::plain('\u{200B}')
+            },
+            RichSegment {
+                math_parent: Some(MathSlot { id: 3, slot: 0 }),
+                ..RichSegment::plain('x')
+            },
+        ];
+        type Pick = fn(&mut Config) -> &mut crate::text::RichText;
+        let fields: [(&str, Pick); 9] = [
+            ("chart_title", |c| &mut c.chart_title.text),
+            ("legend", |c| &mut c.legend.content),
+            ("top_x", |c| &mut c.top_x.title_option.text),
+            ("bottom_x", |c| &mut c.bottom_x.title_option.text),
+            ("left_y", |c| &mut c.left_y.title_option.text),
+            ("right_y", |c| &mut c.right_y.title_option.text),
+            ("colorbar.axis", |c| {
+                &mut c.colorbar.as_mut().unwrap().axis.title_option.text
+            }),
+            ("overlays.y_axis", |c| {
+                &mut c.overlays[0].y_axis.title_option.text
+            }),
+            ("overlays.legend", |c| {
+                &mut c.overlays[0].legend.as_mut().unwrap().content
+            }),
+        ];
+        for (field, pick) in fields {
+            let mut c = cfg.clone();
+            pick(&mut c).segments = broken.clone();
+            match validate_renderer_config(&c) {
+                Err(FiggyError::InvalidConfig { field: f, reason }) => {
+                    assert_eq!(f, field);
+                    assert_eq!(reason, crate::text::MathErrorKind::UnknownParent.as_str());
+                }
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        let mut c = cfg.clone();
+        c.annotations.items.push(crate::annotation::Annotation::new(
+            crate::annotation::AnnotationKind::Text {
+                anchor: crate::annotation::Anchor::Ratio { x: 0.5, y: 0.5 },
+                text: crate::text::RichText {
+                    segments: broken,
+                    ..crate::text::RichText::plain("", Color::BLACK, 12.0, "")
+                },
+                box_style: None,
+            },
+        ));
+        assert!(matches!(
+            validate_renderer_config(&c),
+            Err(FiggyError::InvalidConfig {
+                field: "annotations",
+                ..
+            })
+        ));
     }
 
     // Issue #6: every renderer edit entry point (`register_chart`,

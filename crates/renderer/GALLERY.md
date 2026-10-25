@@ -96,6 +96,34 @@ uses only the public Cartesian, categorical and radial APIs. See
 The PNGs are the native export, written without resizing or post-processing. The export clear color supplies the Cartesian background, the
 category bars of `revenue` included; the radial charts use their model's `background` field.
 
+## Math in text
+
+[`math_gallery.rs`](examples/math_gallery.rs) writes every construction of the
+math layout (#45) as annotation texts of an empty 1200 × 1600 chart, each formula
+with its TeX source beneath it in plain text: fractions and nested fractions,
+binomials, radicals with and without an index, big operators with side limits
+and with `\limits`, integrals, operator names, `\left`/`\middle`/`\right` and
+`\big` … `\Bigg` delimiters, fixed and wide accents, over and under lines,
+braces, labels and extensible arrows, scripts and primes, Greek, `\mathbf`,
+`\mathbb`, `\mathcal` and `\text`. Every formula is written with
+`RichText::from_tex` and laid out from the bundled New Computer Modern Math. A
+formula in `$…$` starts in text style, so `\sum` takes side limits unless
+`\limits` asks for them above and below; `$$…$$` (or a leading `\displaystyle`)
+starts it in display style, with the display operator, limits above and below
+and display fractions: the gallery shows the same sum both ways. The chart title
+is a formula too.
+
+| Output | Shows | Size |
+|---|---|---|
+| `math-gallery.png` | The gallery in the precise draw style | 1200 × 1600 |
+| `math-gallery@2x.png` | The same export at scale 2 | 2400 × 3200 |
+| `math-gallery-sketch.png` | The sketch draw style: text in the handwritten face, math still in the math face | 1200 × 1600 |
+| `math-gallery-sketch@2x.png` | The sketch gallery at scale 2 | 2400 × 3200 |
+
+```bash
+cargo run --locked -p figgy-renderer --example math_gallery -- target/math-gallery
+```
+
 ## Generate PNGs and animation frames
 
 Run from the workspace root, using the pinned Rust 1.99.0 toolchain and committed
@@ -257,6 +285,8 @@ After inspection, copy the output to `assets/style-growth-response-constellation
 갤러리를 갱신할 때는 출력 오류 여부, 불투명 배경과 유효한 색상 픽셀, 축 제목·눈금·범례·색상 막대 배치를 확인한다. GIF도 디코딩해 프레임 수, 프레임 간 변화, 반복 설정을 검사한다. 나머지 정지 이미지는 `line`, `radial_gallery`, `categorical_gallery`, `boxplot_gallery`, `radar_gallery`, `polar_plot`, `vector_field`, `value_maps`, `area_step`, `overlay_axes`, `subplots`, `gallery_concepts`, `precise_sketch_preview`, `milkyway_line_preview`, `constellation_preview` 예제로 만든다. 출력 파일은 각 표와 절에 적힌 이름으로 `assets/`에 복사하고, 중간 프레임은 소스 관리에 넣지 않는다.
 
 은하수 미리보기는 두 곡선을 `Line`으로 등록하므로 곡선을 따라 별과 성운 띠만 그린다. 산점도 기호가 없어 행성이 나타나지 않고, 오차 막대가 없어 제트도 나타나지 않는다. `planet_rim = 0`은 행성을 없애는 설정이 아니다. 예제의 옵션 값은 이 미리보기에만 적용되며 렌더러 기본값은 바꾸지 않는다.
+
+수식 갤러리(`math_gallery.rs`)는 `RichText::from_tex`로 쓴 모든 수식 구성(분수, 근호, 큰 연산자와 극한, 구분 기호, 악센트, 위아래 괄호와 화살표, 첨자, 그리스 문자)을 1200 × 1600 차트의 주석 텍스트로 그리고, 각 수식 아래에 TeX 원문을 적는다. 출력은 `math-gallery.png`, `math-gallery@2x.png`, 스케치 스타일의 `math-gallery-sketch.png`, `math-gallery-sketch@2x.png`이다. 스케치 스타일에서도 수식은 내장 수식 글꼴로 그린다.
 
 가로 히스토그램 PNG는 방향 설정을 보여주는 추가 예제다. 컬럼 연결과 축 설정, 기존 차트의 방향 변경은 [히스토그램 사용법](HISTOGRAM.md)을 참고한다.
 

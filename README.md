@@ -389,5 +389,7 @@ requests. Report suspected vulnerabilities privately using [SECURITY.md](SECURIT
 ## License
 
 Code: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
-Bundled fonts retain their OFL notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
-and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt).
+Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
+and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
+[New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
+the face formulas in rich text are drawn with.

@@ -33,6 +33,7 @@ impl BoundedTitleOptions {
         self.visible && !self.text.segments.is_empty()
     }
     pub fn validate(&self) -> Result<(), &'static str> {
+        self.text.validate_math().map_err(|e| e.as_str())?;
         if !self.text.within_limits() {
             return Err(
                 "invalid bounded title: size 6..160, at most 512 characters / 8 lines, finite styles",

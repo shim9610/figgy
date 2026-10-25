@@ -18,7 +18,8 @@ at the time. The first crates.io publication is recorded below.
 Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
-new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups`,
+new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
+`categories`, `cross_at`, `bar_groups`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection and
 the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
@@ -105,8 +106,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   followed by the new `"math": true`, which is written only for `Math`.
   Documents written by model 0.12 and earlier parse and re-serialize byte
   for byte; a segment with both `"greek": true` and `"math": true` is
-  rejected with an error. `Math` draws the character as given, from the
-  text font, until the math font is chosen on #45. Model 0.12.1 and older
+  rejected with an error. `Math` draws the character as given from the
+  bundled math face (see the math layout below). Model 0.12.1 and older
   ignore `math` and read such a segment as text. The browser
   product's `get_config` / `set_config`, `get_series` / `set_series`
   and annotation calls carry the new key. Migration: write
@@ -115,6 +116,44 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `seg.char_set == CharSet::Greek` for reads of `seg.greek`; `CharSet` is
   `model::text::CharSet` (`renderer::text::CharSet`), and
   `CharSet::glyph_char` gives the character a set draws.
+- **Math nodes and `RichText::from_tex`**
+  ([#45](https://github.com/shim9610/figgy/issues/45), #58 item 19). A
+  formula is a tree over the flat segment list, encoded by two additive
+  `RichSegment` fields: `math_node: Option<MathNode { id, kind }>` on a
+  segment that governs a layout and `math_parent: Option<MathSlot { id,
+  slot }>` on every segment inside one. A node comes first and its
+  descendants follow it contiguously, slot by slot. `MathKind` is
+  `Math(MathStyle)` (a root: math mode, `MathStyle::Text` by default or
+  `MathStyle::Display`, written `{"Math":"Text"}` / `{"Math":"Display"}`),
+  `Frac` / `Binom` (`FracStyle::{Auto, Display,
+  Text}`), `Sqrt`, `Scripts` (also a text-mode root), `BigOp` / `OpName`
+  (`Limits::{Auto, Limits, NoLimits}`), `Delim { open, close }`, `Middle`,
+  `Sized { level, class }`, `Accent` (`AccentKind::{Fixed, Wide}`) and
+  `Over` / `Under` (`OverUnder::{Line, Brace, Arrow, Set}`), all in
+  `model::text::math` and re-exported from `model::text`. `MathCursor`
+  walks a tree with a fixed stack of `MAX_MATH_DEPTH = 16` open nodes and
+  `RichText::validate_math` reports a `MathError { at, kind }` for twelve
+  kinds (duplicate or out-of-order ids, an unknown or closed parent, a slot
+  out of range or order, nesting past 16, a node outside `Math`, nested
+  `Math`, `Middle` outside `Delim`, a break inside math, a script flag
+  inside a node, a bad delimiter). Ids increase within a cell and are
+  unique only there, so two legend labels that each start at id 0 stay
+  valid. `math_class` (Unicode `MathClass.txt`) and `math_alphanumeric`
+  (the bold, italic and bold-italic alphabets) are the tables the layout
+  reads. `RichText::from_tex(tex, color, font_size, font)` and
+  `rich_segments_from_tex` convert text with `$…$` / `\(…\)` math spans
+  (text style) and `$$…$$` spans (display style; a leading `\displaystyle`
+  or `\textstyle` sets a span's style) in the TeX subset of #45 (`model::text::tex`; errors are `TexError { at,
+  kind }` with the byte range); the source is not stored. A negative
+  `field_em` (`\!`) is allowed on a space inside `Math` only. The JSON is
+  additive: both keys are written last and only when set, so every older
+  document re-serializes byte for byte, and `RichText` deserializes through
+  a mirror that rejects a malformed tree at parse. Annotation texts,
+  bounded titles and the radial title validate the tree. Model 0.12.1 and
+  older ignore both keys and draw a formula's characters flat. Migration:
+  a `RichSegment` struct literal that lists every field adds
+  `math_node: None, math_parent: None`; literals built with
+  `..RichSegment::plain(c)` need no change.
 - **Plain number labels.** `LabelFormat::Plain(PlainNumberFormat {
   decimals, trim_zeros })` writes a value alone, ignoring scale, spacing
   and significant digits: `decimals: None` (`PlainNumberFormat::AUTO`) is
@@ -487,6 +526,47 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Math layout from the OpenType MATH table**
+  ([#45](https://github.com/shim9610/figgy/issues/45), #58 item 19). A
+  `Math` node in any rich text (titles, axis titles, legend labels,
+  annotation and colourbar texts, series labels) is laid out by
+  `text_render/math_layout.rs` from the MATH table of the math face:
+  scripts, fractions and binomials, radicals with an index, big operators
+  (the display variant in display style, limits by `Limits`), operator
+  names, stretchy `\left`/`\middle`/`\right` and fixed `\big`…`\Bigg`
+  delimiters (size variants, then glyph assemblies), fixed and wide accents,
+  and over/under rules, braces, arrows and labels, with TeX's inter-atom
+  spacing. A formula starts in its root's style: text by default, or
+  display (`$$…$$`), where `\sum` takes its display variant and its limits
+  above and below and fractions their display gaps; script styles use the face's
+  `ssty` alternates. Measurement and drawing are one placement through an
+  internal glyph sink, so a formula's measured extents (and with them its
+  bounds, hit test, selection box, drag and title band) are its ink.
+  Math glyphs come from the math face in every draw style; `\text{}` keeps
+  the text chain (Comic Neue in sketch mode). A cell whose tree does not
+  validate draws flat. `CharSet::Math` characters outside math draw from
+  the math face too. A `RichText.font` that resolves to a face with a MATH
+  table is used as the math face. `validate_renderer_config` refuses a
+  malformed tree in a title, axis title or legend
+  (`FiggyError::InvalidConfig`), and series registration one in a label
+  (`InvalidSeriesConfig`).
+- **Bundled math font.** New Computer Modern Math
+  (`fonts/NewCMMath-Regular.otf`, 1,306,268 bytes, about 839 KB gzip in the
+  wasm bundle) ships unmodified under the GUST Font License, its text in
+  `fonts/LICENSE-NewCMMath.txt` with the LPPL it refers to. Other math faces
+  can be registered with `register_font_bytes` and named in
+  `RichText.font`.
+- **New dependency.** `ttf-parser 0.25` (`default-features = false`,
+  features `std` and `opentype-layout`) reads the MATH table and the GSUB
+  `ssty` alternates; the lockfile already held it through winit.
+- **Power tick labels** write the exponent as a text-mode `Scripts` node
+  (D3 of #45) instead of superscript segments. It lays out through the same
+  `script_placement`, so the labels' pixels, bounds and parts are unchanged.
+- **One cell placement.** `measure_rich_text` and `draw_rich_text` share
+  one internal placement of a cell's glyphs, rules, dashes, bands and
+  underlines, and the glyph caches are keyed by glyph id instead of
+  character. Every pixel and extent is unchanged.
 
 - **Error bars and line fills pick where they are drawn** (G10 of
   [#37](https://github.com/shim9610/figgy/issues/37),
@@ -1000,6 +1080,14 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Math text.** `rich_text_from_tex(tex, font_size, font, r, g, b, a)`
+  returns the JSON of `RichText::from_tex` for any rich text field of
+  `set_config` or `set_series` ([#45](https://github.com/shim9610/figgy/issues/45)).
+  `get_config` / `set_config` and `get_series` / `set_series` carry
+  `math_node` and `math_parent`; a malformed tree fails at parse, before
+  the chart changes. The bundled math face is part of the wasm binary, so
+  no font needs to be registered for formulas.
+
 - **Selection outlines.** `decoration_bounds(id)` returns `outline` (one
   polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
   instead of `labels` for an element that outlines its parts
@@ -1201,6 +1289,17 @@ entries above describe the changes.
   gone (13b), and the radial scene has no exclusion.
 
 ### Tests and guards
+
+- **Math text** ([#45](https://github.com/shim9610/figgy/issues/45)).
+  `tests/math_text.rs` checks a formula as chart title, axis title (rotated
+  too), legend label and colourbar title at 1x, 2x and 3x: ink inside the
+  bounds, the hit test, the selection box and a drag. The catalogue scenes
+  carry math titles, an overlay title, a subplot title, an annotation and a
+  radar title, so the decoration oracle checks math on every invariant.
+  `decoration_sinks_guard` lists `text_render/math_layout.rs`;
+  `ssot_invalidation_tests` covers a node's kind, a child's slot and text
+  and a valid id renumbering; the model tests cover every error kind, the
+  pinned wire form of every kind and the TeX subset.
 
 - **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
   that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag

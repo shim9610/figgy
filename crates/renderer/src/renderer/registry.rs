@@ -1420,6 +1420,12 @@ pub(super) fn validate_renderer_series(
             });
         }
 
+        if let Some(Err(e)) = item.label.as_ref().map(|label| label.validate_math()) {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: format!("label: {e}"),
+            });
+        }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {
             // A box plot reads a record and a ragged column, not columns.

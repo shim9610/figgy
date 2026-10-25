@@ -248,6 +248,22 @@ pub fn base_config(title: &str, x_title: &str, y_title: &str) -> Config {
         .clone()
 }
 
+/// `text` written as TeX (`RichText::from_tex`, #45) in the style of
+/// `like`: its colour, size and font.
+pub fn math_text(text: &str, like: &RichText) -> RichText {
+    RichText::from_tex(text, like.color, like.font_size, like.font.clone())
+        .unwrap_or_else(|e| panic!("{text}: {e}"))
+}
+
+/// Set the chart title of `config` to the formula `text` and grow the title
+/// band to fit it, as `Chart::with_title` does for plain text.
+pub fn with_math_title(mut config: Config, text: &str) -> Config {
+    config.chart_title.text = math_text(text, &config.chart_title.text);
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    renderer::layout::fit_chart_title_margin(&mut config, &measure);
+    config
+}
+
 /// Rebuild the parent legend from the series the parent draws (those no
 /// subplot claims), and each visible subplot legend from its own series.
 pub fn rebuild_legends(config: &mut Config, series: &[SeriesConfig]) {
@@ -402,7 +418,15 @@ fn lines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             DataRenderType::Line { line: step },
         ),
     ];
-    let mut chart = Chart::new(base_config("Lines, areas and steps", "x", "y"));
+    let mut config = with_math_title(
+        base_config("", "x", "y"),
+        r"Lines, areas and steps: $y = \sin x$, $\int_0^{x} \cos t\,dt$, $\sqrt{x^2+y^2}$",
+    );
+    config.left_y.title_option.text = math_text(
+        r"$y(x) = \frac{\Delta s}{\Delta t}$",
+        &config.left_y.title_option.text,
+    );
+    let mut chart = Chart::new(config);
     chart.set_x_range(0.0, 10.0);
     chart.set_y_range(-2.2, 2.4);
     Ok(CartesianScene {
@@ -1073,7 +1097,9 @@ fn twin_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     };
     overlay.y_axis.out_margin = 110.0;
     overlay.y_axis.title_option.visible = true;
-    overlay.y_axis.title_option.text = RichText::plain("Pressure (hPa)", rust, 18.0, "");
+    overlay.y_axis.title_option.text =
+        RichText::from_tex(r"Pressure $p_{\mathrm{atm}}$ (hPa)", rust, 18.0, "")
+            .expect("valid TeX");
     overlay.y_axis.label_style.color = rust;
     overlay.y_axis.line_color = rust;
     config.overlays.push(overlay);
@@ -1129,7 +1155,10 @@ fn subplots(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let green = Color::from_rgb8(40, 140, 90);
     let mut config = cell(0, 0, "Temperature", "Hour", "°C");
     let mut pressure = sub(
-        cell(w, 0, "Pressure (X linked)", "Hour", "hPa"),
+        with_math_title(
+            cell(w, 0, "", "Hour", "hPa"),
+            r"Pressure $\frac{dp}{dt} \approx 0$ (X linked)",
+        ),
         &["pressure"],
     );
     pressure.link_x = Some(CellRef::Parent);
@@ -1247,7 +1276,13 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         }),
         Annotation::new(AnnotationKind::Text {
             anchor: Anchor::Ratio { x: 0.55, y: 0.35 },
-            text: RichText::plain("drag me", Color::BLACK, 16.0, ""),
+            text: RichText::from_tex(
+                r"drag me: $V = V_0\left(1 - e^{-t/\tau}\right)$",
+                Color::BLACK,
+                16.0,
+                "",
+            )
+            .expect("valid TeX"),
             box_style: Some(Default::default()),
         }),
         Annotation::new(AnnotationKind::Arrow {
@@ -1731,6 +1766,7 @@ fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         width: DOC_W,
         height: DOC_H,
     });
+    let config = with_math_title(config, r"Build quality $\bar{q} = \frac{1}{n}\sum_{k} q_k$");
     for upload in &uploads {
         if r.handle_for(&upload.column).is_err() {
             r.add_column(upload.column.clone(), &upload.values)?;
