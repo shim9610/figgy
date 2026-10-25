@@ -1815,6 +1815,7 @@ impl Renderer {
                 let scratch = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
+                    .and_then(ScratchEntry::contour)
                     .expect("contour scratch was just ensured");
                 (
                     scratch.field_bg.clone(),

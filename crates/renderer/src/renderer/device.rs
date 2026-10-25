@@ -1925,7 +1925,6 @@ impl Renderer {
             vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
-            value_label_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,
@@ -2072,7 +2071,6 @@ impl Renderer {
             vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
-            value_label_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,

@@ -279,14 +279,10 @@ pub struct Renderer {
     /// B.4.9 this holds the same tables a field's scratch does — the isolines are
     /// drawn from the grid by `fs_contour`, so there are no traced segments to
     /// cache — plus the immutable label atlas and its placement-slot pool when
-    /// the series has labels.
-    contour_cache: HashMap<String, ContourScratchEntry>,
-    /// Per-series value label atlas, keyed by `series_id`: the baked strings
-    /// of a category bar, box plot or radar series' value labels, rebuilt
-    /// only when its [`ValueLabelSignature`] (the strings, the face, the
-    /// font size at the render scale, the colour, the font generation)
-    /// changes.
-    value_label_cache: HashMap<String, ValueLabelScratch>,
+    /// the series has labels. A category bar, box plot or radar series with
+    /// value labels holds its baked label atlas here too
+    /// (`ScratchEntry::ValueLabels`), keyed as a contour's atlas is.
+    contour_cache: HashMap<String, ScratchEntry>,
     /// Per-field-series group-2 state, keyed by `series_id`. Rebuilt only when
     /// its [`FieldSignature`] changes; a live token holds its own refcounted
     /// clone of the bind group, so replacement disturbs nothing it can draw.

@@ -4,26 +4,16 @@
 
 use super::*;
 
-/// Per-series value label atlas cache limit, mirroring
-/// `CONTOUR_SCRATCH_CACHE_LIMIT`.
-pub(in crate::renderer) const VALUE_LABEL_CACHE_LIMIT: usize = 256;
-
-/// What a series' value label atlas was baked from.
-///
-/// [`data_render::ContourLabelAtlasInput`] is everything the bake reads:
-/// the strings (SSOT `labels.text`), the face, the font size at the render
-/// scale, the colour, the font policy and the (absent) background. The font
-/// generation invalidates an atlas when a host registers a font. The
-/// compare covers every input of the bake by construction.
-#[derive(Debug, PartialEq)]
-pub(in crate::renderer) struct ValueLabelSignature {
-    pub(in crate::renderer) atlas: data_render::ContourLabelAtlasInput,
-    pub(in crate::renderer) font_generation: u64,
-}
-
-/// One series' cached value label atlas.
+/// One series' value label atlas in the scratch cache
+/// ([`ScratchEntry::ValueLabels`]), keyed as a contour's label atlas is: by
+/// the [`data_render::ContourLabelAtlasInput`] it was baked from (the SSOT
+/// strings, the face, the font size at the render scale, the colour, the
+/// font policy and the absent background: everything the bake reads, so
+/// the compare covers the bake by construction) and the font generation,
+/// which invalidates an atlas when a host registers a font.
 pub(in crate::renderer) struct ValueLabelScratch {
-    pub(in crate::renderer) signature: ValueLabelSignature,
+    pub(in crate::renderer) atlas_input: data_render::ContourLabelAtlasInput,
+    pub(in crate::renderer) font_generation: u64,
     /// `None` when the strings measure to nothing.
     pub(in crate::renderer) atlas: Option<Arc<data_render::ValueLabelAtlas>>,
 }
@@ -132,12 +122,12 @@ pub(in crate::renderer) fn selected_value_label(
     })
 }
 
-/// What series `cfg`'s labels bake to under the panel `config`, or `None`
-/// when the series draws no value labels.
-pub(in crate::renderer) fn value_label_signature(
+/// What series `cfg`'s labels bake from under the panel `config`, or
+/// `None` when the series draws no value labels.
+pub(in crate::renderer) fn value_label_atlas_input(
     config: &Config,
     cfg: &SeriesConfig,
-) -> Option<ValueLabelSignature> {
+) -> Option<data_render::ContourLabelAtlasInput> {
     let selected = series_selected(config, cfg);
     let (_, text) = data_render::value_label_kind(&cfg.render_type, selected)?;
     let axis = value_label_axis(config, &cfg.render_type);
@@ -147,12 +137,7 @@ pub(in crate::renderer) fn value_label_signature(
     let count = text.len().min(data_render::VALUE_LABEL_CAPACITY);
     // The SSOT strings themselves are the key, as a contour's are.
     let texts = text[..count].to_vec();
-    data_render::ContourLabelAtlasInput::for_value_labels(config, axis, texts, color).map(|atlas| {
-        ValueLabelSignature {
-            atlas,
-            font_generation: crate::text_render::font_generation(),
-        }
-    })
+    data_render::ContourLabelAtlasInput::for_value_labels(config, axis, texts, color)
 }
 
 impl PrepareContext<'_> {
@@ -163,22 +148,23 @@ impl PrepareContext<'_> {
         config: &Config,
         cfg: &SeriesConfig,
     ) -> Result<Option<Arc<data_render::ValueLabelAtlas>>> {
-        let Some(signature) = value_label_signature(config, cfg) else {
+        let Some(atlas_input) = value_label_atlas_input(config, cfg) else {
             return Ok(None);
         };
-        if let Some(scratch) = self.value_label_cache.get(cfg.series_id.as_str())
-            && scratch.signature == signature
+        let font_generation = crate::text_render::font_generation();
+        if let Some(ScratchEntry::ValueLabels(scratch)) =
+            self.contour_cache.get(cfg.series_id.as_str())
+            && scratch.atlas_input == atlas_input
+            && scratch.font_generation == font_generation
         {
             return Ok(scratch.atlas.clone());
         }
-        let baked = axis_render::bake_contour_label_atlas(
-            &signature.atlas,
-            self.caps.max_texture_dimension_2d,
-        )
-        .map_err(|error| FiggyError::InvalidSeriesConfig {
-            series_id: cfg.series_id.clone(),
-            reason: format!("value labels: {error}"),
-        })?;
+        let baked =
+            axis_render::bake_contour_label_atlas(&atlas_input, self.caps.max_texture_dimension_2d)
+                .map_err(|error| FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: format!("value labels: {error}"),
+                })?;
         let atlas = match baked {
             Some(baked) => Some(Arc::new(data_render::ValueLabelAtlas::upload(
                 self.device,
@@ -189,23 +175,25 @@ impl PrepareContext<'_> {
             )?)),
             None => None,
         };
+        // The contour scratch cache: one map, one eviction rule, one limit.
         evict_if_full(
-            &mut self.value_label_cache,
+            &mut self.contour_cache,
             cfg.series_id.as_str(),
-            VALUE_LABEL_CACHE_LIMIT,
+            CONTOUR_SCRATCH_CACHE_LIMIT,
         );
-        self.value_label_cache.try_reserve(1).map_err(|error| {
-            FiggyError::StateAllocationFailed {
-                resource: "value label cache",
+        self.contour_cache
+            .try_reserve(1)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "contour scratch cache",
                 reason: error.to_string(),
-            }
-        })?;
-        self.value_label_cache.insert(
+            })?;
+        self.contour_cache.insert(
             cfg.series_id.clone(),
-            ValueLabelScratch {
-                signature,
+            ScratchEntry::ValueLabels(ValueLabelScratch {
+                atlas_input,
+                font_generation,
                 atlas: atlas.clone(),
-            },
+            }),
         );
         Ok(atlas)
     }
@@ -330,9 +318,9 @@ mod tests {
     fn the_value_label_atlas_key_names_every_bake_input() {
         let config = chart();
         let series = bars(CategoryBarLabels::Outside, Color::from_rgb8(250, 220, 40));
-        let key = |c: &Config, s: &SeriesConfig| value_label_signature(c, s).expect("labels");
+        let key = |c: &Config, s: &SeriesConfig| value_label_atlas_input(c, s).expect("labels");
         let base = key(&config, &series);
-        assert_eq!(base.atlas.texts, ["1.5", "2"]);
+        assert_eq!(base.texts, ["1.5", "2"]);
 
         let mut changed = series.clone();
         text_mut(&mut changed)[1] = "20".into();
@@ -377,11 +365,11 @@ mod tests {
         c.bottom_x.label_style.font_size += 3.0;
         assert_eq!(key(&c, &series), base, "the category axis' face");
         assert_eq!(
-            value_label_signature(&config, &bars(CategoryBarLabels::None, Color::BLACK)),
+            value_label_atlas_input(&config, &bars(CategoryBarLabels::None, Color::BLACK)),
             None
         );
         let mut empty = series.clone();
         text_mut(&mut empty).iter_mut().for_each(String::clear);
-        assert_eq!(value_label_signature(&config, &empty), None);
+        assert_eq!(value_label_atlas_input(&config, &empty), None);
     }
 }

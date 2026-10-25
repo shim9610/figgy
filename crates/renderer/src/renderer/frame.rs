@@ -2141,7 +2141,6 @@ impl Renderer {
                 value_map_cache: &mut self.value_map_cache,
                 vector_cache: &mut self.vector_cache,
                 contour_cache: &mut self.contour_cache,
-                value_label_cache: &mut self.value_label_cache,
                 arc_cache: &mut self.arc_cache,
                 texture_bgl: &self.texture_bgl,
                 target_sample_count: self.target_sample_count,

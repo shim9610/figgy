@@ -57,8 +57,7 @@ pub(super) struct PrepareContext<'a> {
     pub(super) field_cache: &'a mut HashMap<String, FieldScratch>,
     pub(super) value_map_cache: &'a mut HashMap<String, ValueMapScratch>,
     pub(super) vector_cache: &'a mut HashMap<String, VectorScratch>,
-    pub(super) contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
-    pub(super) value_label_cache: &'a mut HashMap<String, ValueLabelScratch>,
+    pub(super) contour_cache: &'a mut HashMap<String, ScratchEntry>,
     pub(super) arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
     pub(super) texture_bgl: &'a wgpu::BindGroupLayout,
     pub(super) target_sample_count: u32,
@@ -344,7 +343,10 @@ impl PrepareContext<'_> {
             [
                 self.field_cache.get(id).map(|scratch| &*scratch.sources),
                 self.vector_cache.get(id).map(|scratch| &*scratch.sources),
-                self.contour_cache.get(id).map(|entry| &*entry.sources),
+                self.contour_cache
+                    .get(id)
+                    .and_then(ScratchEntry::contour)
+                    .map(|entry| &*entry.sources),
             ]
             .into_iter()
             .flatten()

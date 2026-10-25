@@ -957,8 +957,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   contour labels' builder (`bake_contour_label_atlas`: the one text stack,
   `FontPolicy`), in the value axis' tick label face and size at the render
   scale and its colour (the radius axis' for a radar series; white inside
-  a dark bar), cached per series by the
-  strings, the face, the size, the colour and the font generation, and
+  a dark bar), cached per series in the contour labels' scratch cache
+  (its entry is now `ScratchEntry::Contour` or `ScratchEntry::ValueLabels`,
+  one map with one eviction rule) under the atlas input (the strings, the
+  face, the size, the colour) and the font generation, and
   placed on every draw from the pool by the bar module's value label
   entries: at the bar end (outside, inside, or `Auto`: outside grouped
   bars, inside stack segments that fit), past the top of the box (its high
