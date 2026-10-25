@@ -5,10 +5,10 @@
 Rust 렌더러의 WASM/WebGPU 지원과 figgy의 브라우저용 제품인 `crates/web` 래퍼를 구분한다.
 아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 이 래퍼의 계약이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
-`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트·박스플롯·레이더 차트도 `FiggyChart`가 그리며(`set_categorical_document`, `set_boxplot_document`, `set_radar_document`), 원형 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
+`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트·박스플롯·레이더 차트도 `FiggyChart`가 그리며(`set_categorical_document`, `set_boxplot_document`, `set_radar_document`), 원형 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Radial chart host](#bounded-chart-host) 참고).
 간단한 빌드·실행 방법은 [브라우저용 figgy 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
-The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
+The [streaming contract](#streaming-contract) and the [radial chart host](#bounded-chart-host) sections of this guide are in English.
 
 이 문서는 브라우저 패키지 `figgy` 0.15.1과 `figgy-renderer` 0.18.1 / `figgy-model` 0.12.1을 기준으로 한다. `figgy`는 crates.io에 배포하지 않으므로 이 저장소에서 빌드한다. Rust 호스트는 crates.io의 렌더러를 의존성으로 지정한다. 웹 래퍼처럼 설정을 JSON으로 주고받으려면 `serde` 기능을 켠다.
 
@@ -980,13 +980,16 @@ await chart.first_frame_ready();
 
 <a id="bounded-chart-host"></a>
 
-## 8. Bounded chart host
+## 8. Radial chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial` documents to browser hosts. A `"radar"` family is rejected with an
-error naming `FiggyChart.set_radar_document`, which opens radar documents as
-polar charts ([Radar documents](#radar-documents)). It
-uses the same native renderer, decoration maps, slice picking,
+`radial` documents, the DataLess radial chart, to browser hosts. The class
+keeps its name and `family` stays `"radial"`. For this release the
+`"categorical"`, `"boxplot"` and `"radar"` families are rejected with an error
+naming the `FiggyChart` method that opens those documents
+(`set_categorical_document`, `set_boxplot_document`, `set_radar_document`; see
+[Radar documents](#radar-documents) and the sections above it). It
+uses the same native renderer, decoration hit map, slice picking,
 and drag/resize policies. The host owns pointer events, animation scheduling,
 and synchronization.
 `width` and `height` are the document's logical size: at least 160 by 160.
@@ -1098,11 +1101,10 @@ animation-frame loop, so read them after the next animation frame.
 `FiggyBoundedChart` prepares the frame and its annotation map inside each
 editing call, so its methods report the new state as soon as the call returns.
 
-A bounded chart whose shown
-annotation layer has a visible `Span` is drawn with the frame's `HostClear`
-background and the chart background as the clear colour, so the span shows
-below the chart's marks; charts without one draw an opaque frame over a white
-clear.
+The radial chart has no value axes: a `Span`, a reference line and a
+`Data` anchor are skipped and listed by `annotation_warnings()`, and the frame
+paints its opaque background over a white clear with the annotations above
+it.
 
 The pointer methods follow the active layer. `FiggyBoundedChart` has
 `set_active_layer(json)` / `active_layer()` (`"Base"` or `"Annotations"`; an
@@ -1140,7 +1142,9 @@ category bar steps along its categories by the category axis' delta (`dx`
 for vertical bars, `dy` for horizontal ones) and across the series of its
 bar group by the other. A
 matrix cell, a grid-vector cell included, steps by `dx` along X and `dy` along
-Y. Indices clamp to the selected series.
+Y. Indices clamp to the selected series. The rule is the model's
+`Config::step_selection(series, dx, dy, column_len)`, which native hosts call
+with their own column lengths.
 `await chart.selection_details()` returns a JSON string with selected resident
 GPU values (or `"null"` for no supported selection). Histogram fields are
 `identity`, `series_id`, `index`, `bin_start`, `bin_end`, `value`, and

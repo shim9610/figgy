@@ -8,7 +8,9 @@ by the host and uploaded through `ColumnSource`: a **record** of box
 statistics per series and, when the series has outliers, a **ragged column**
 of them. Streamed sources are rejected. `BoxPlotChart` is the document format
 of the releases up to 0.12; `Config::from_boxplot` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)).
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
+deprecated document reader for this release and is removed in the next
+milestone.
 
 ## Series and uploads
 
@@ -297,8 +299,7 @@ a CI that contains the median (it may extend beyond the body); an explicit CI
 for every box of a notched series; positive counts. `None` is a missing box
 that leaves its group slot empty. Limits: 1–64 categories, 1–16 series, at
 most 512 boxes including missing ones, at most 128 outliers per box and 4096
-in all. `reorder_categories` moves the categories and every aligned summary
-together.
+in all.
 
 ## Examples and tests
 
@@ -322,6 +323,7 @@ document in `FiggyChart`.
 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼의 ID다. 레코드와 가변 길이 컬럼은
 `Renderer::upsert_record`, `upsert_ragged`로 올리며 스트리밍 소스는 거부한다.
 `BoxPlotChart`는 0.12까지의 문서 형식이고, `Config::from_boxplot`이 이 문서를 박스플롯 차트로 읽는다.
+`BoxPlotChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
 
 박스플롯은 집계한 통계값을 받는다. 문서에서는 `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
 수염 상한)`으로 만들고, 평균·표본 수·이상치·중앙값 신뢰구간은 필요할 때 추가한다.

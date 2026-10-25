@@ -50,7 +50,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Charts | Entry point | Input and guide |
 | --- | --- | --- |
 | Lines, scatter, error bars, histograms, heatmaps, contours | `Renderer` | Numeric columns and `SeriesConfig`; [native usage](https://github.com/shim9610/figgy/blob/master/crates/renderer/USAGE.md) |
-| Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
+| Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with its slice values in the model; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
 | Individual, grouped and stacked bars | `Renderer` | `CategoryBars` series over a categorical axis, or a legacy `CategoricalChart` read by `Config::from_categorical`; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
 | Grouped/notched boxes and outliers | `Renderer` | `BoxPlot` series over a categorical axis, reading a record of supplied statistics and a ragged outlier column, or a legacy `BoxPlotChart` read by `Config::from_boxplot`; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
@@ -58,11 +58,13 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 
 The renderer re-exports model types: most applications do not need a separate
 `figgy-model` dependency. Pies and donuts are the
-bounded chart: it draws one validated model with at most 64 slices,
+DataLess chart: it draws one validated model with at most 64 slices,
 takes no column sources or streamed data, and computes no
 statistics from raw samples. Categorical bars and box plots are `Renderer`
 series over a categorical axis, and radar series over the categorical angle
-axis of a polar chart. Both renderers can share a
+axis of a polar chart; the legacy `CategoricalChart`, `BoxPlotChart` and
+`RadarChart` documents are deprecated readers for this release, removed in the
+next milestone. Both renderers can share a
 `RendererDevice`; each maintains its own resource budget. Vector fields, point
 colour and size maps, area fills, step lines, overlay axes and subplots are
 `Renderer` features declared in `SeriesConfig` and `Config`; see the
@@ -74,8 +76,8 @@ allocation paths, not total device VRAM; see the
 
 Prepare and draw the current model, pick against the displayed frame, then edit
 the model. For Cartesian charts, refresh changed axes/decorations and recreate
-affected caller-owned `ChartStyle` values before preparing again. Bounded chart
-renderers update their derived resources in `prepare`.
+affected caller-owned `ChartStyle` values before preparing again. The radial
+renderer updates its derived resources in `prepare`.
 Export that same model to preserve selection, moved
 labels and the drawing area. Data picking and decoration hit maps are separate;
 use the renderer's measured bounds when selecting titles, labels, axes or handles.
@@ -85,7 +87,7 @@ the data and the other items above every decoration; see the
 [interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 The [API workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/API.md#native-edit-pick-and-export-workflow)
-includes Cartesian refresh and bounded edit/export examples, and explains frame lifetime and coordinate
+includes Cartesian refresh and radial edit/export examples, and explains frame lifetime and coordinate
 units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles (in Korean) and titles,
 layers, subplots and annotations (in English). Runnable editors are

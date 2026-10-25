@@ -355,7 +355,7 @@ renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
 own, separate from the Rust library's API. The `FiggyChart` export and
 `<figgy-chart>` element cover Cartesian charts, categorical bars and box
 plots included, and polar charts, radar charts included
-(`set_radar_document`); `FiggyBoundedChart`
+(`set_radar_document`); `FiggyBoundedChart`, the radial chart host,
 covers pies and donuts, and the host
 handles their canvas events. The wrapper is the Cargo package `figgy`, built from
 this repository (`publish = false`); the `figgy` crate on crates.io and the
