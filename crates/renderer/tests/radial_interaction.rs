@@ -17,9 +17,9 @@ fn gpu() -> RendererDevice {
     })
     .clone()
 }
-#[path = "support/bounded_decorations.rs"]
-mod bounded_decorations;
-use bounded_decorations::Decorations;
+#[path = "support/radial_decorations.rs"]
+mod radial_decorations;
+use radial_decorations::Decorations;
 /// Equal up to the rounding of placing a moved element again: a radial
 /// decoration is placed from its offset, not translated as a box.
 fn near(a: Option<RectF>, b: Option<RectF>) -> bool {
@@ -214,7 +214,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
             );
             let context = format!("inside radial label, hovered={hovered}, scale={scale}");
             if hovered {
-                bounded_area::assert_selection_with_rerasterized_label(
+                radial_area::assert_selection_with_rerasterized_label(
                     &unselected,
                     &selected,
                     &selection,
@@ -223,7 +223,7 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
                     &context,
                 );
             } else {
-                bounded_area::assert_selection_only(
+                radial_area::assert_selection_only(
                     &unselected,
                     &selected,
                     &selection,
@@ -279,16 +279,16 @@ fn inside_radial_labels_pick_at_lifted_position_and_drag_without_jump() {
     r.end_frame();
 }
 
-#[path = "support/bounded_area.rs"]
-mod bounded_area;
+#[path = "support/radial_area.rs"]
+mod radial_area;
 #[test]
-fn bounded_area_select_resize_move_pick_and_export() {
+fn radial_area_select_resize_move_pick_and_export() {
     let _guard = LOCK.lock().unwrap();
-    pollster::block_on(bounded_area::check(gpu()));
+    pollster::block_on(radial_area::check(gpu()));
 }
 
 #[test]
-fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
+fn every_radial_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     let _guard = LOCK.lock().unwrap();
     // `$charts` are the variants of one family. The first runs the whole
     // contract at 1x and 2x;
@@ -333,7 +333,7 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
                                 );
                             }
                             let selected = r.export_rgba(&c, (800, 600), scale).unwrap();
-                            bounded_area::assert_selection_only(
+                            radial_area::assert_selection_only(
                                 &before,
                                 &selected,
                                 &selection,

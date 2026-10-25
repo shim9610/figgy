@@ -1,11 +1,11 @@
 //! A crowded first frame must remain renderable and editable through the shared API.
 #![cfg(not(target_arch = "wasm32"))]
-#[path = "support/bounded_decorations.rs"]
-mod bounded_decorations;
+#[path = "support/radial_decorations.rs"]
+mod radial_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{layout::NudgeResult, *};
-use bounded_decorations::Decorations;
+use radial_decorations::Decorations;
 use std::sync::Arc;
 
 fn gpu() -> RendererDevice {

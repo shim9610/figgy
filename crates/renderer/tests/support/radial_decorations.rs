@@ -1,6 +1,6 @@
-//! The decoration queries the bounded chart tests share over the bounded
-//! chart's hit-map API: the radial frame's `HitMap<RadialChart>`, whose
-//! elements place their parts from the chart they are asked about.
+//! The decoration queries the radial chart tests share over the radial
+//! frame's hit-map API: its `HitMap<RadialChart>`, whose elements place
+//! their parts from the chart they are asked about.
 #![allow(dead_code)]
 use ::renderer::{
     BoundedAnnotationFrame, CpuTextMeasure, DecorationId, DecorationLayout, HitId, LayerHit,
@@ -32,8 +32,6 @@ pub trait Decorations {
     /// otherwise.
     fn text_bounds(&self, chart: &Self::Chart, hit: HitId) -> Option<RectF>;
     fn selection(&self, chart: &Self::Chart, hit: HitId) -> Option<SelectionBox>;
-    /// The followers a move takes along.
-    fn followers(&self, chart: &Self::Chart, hit: HitId) -> Vec<DecorationId>;
     fn drag(&self, chart: &mut Self::Chart, hit: HitId, dx: f32, dy: f32) -> Option<NudgeResult>;
     fn resize(
         &self,
@@ -115,9 +113,6 @@ impl Decorations for RadialFrame {
     }
     fn selection(&self, chart: &RadialChart, hit: HitId) -> Option<SelectionBox> {
         self.decoration_selection_box(chart, hit)
-    }
-    fn followers(&self, _: &RadialChart, _: HitId) -> Vec<DecorationId> {
-        Vec::new()
     }
     fn drag(&self, chart: &mut RadialChart, hit: HitId, dx: f32, dy: f32) -> Option<NudgeResult> {
         self.drag_decoration(chart, hit, dx, dy)

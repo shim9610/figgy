@@ -12,7 +12,7 @@
 //! The invariants:
 //!
 //! - **I1** every drawn part lies inside its panel's chart area (a subplot's
-//!   parts also outside every other chart area); bounded charts: every
+//!   parts also outside every other chart area); the radial chart: every
 //!   element's bounds inside the canvas.
 //! - **I2** every element's hit region is its drawn outline: every strong
 //!   ink pixel inside the region the selection outlines, the region near
@@ -40,27 +40,28 @@
 //! product's exports, and its highlight painted through the chart view as
 //! on screen.
 //!
-//! The bounded family (radial) runs the same invariants on its hit map
-//! (the radial frame's `HitMap<RadialChart>`, whose elements place their
-//! parts from the chart, an outside label's leader line among them), with
-//! each element's ink measured by drag differential and the highlight
-//! through `bounded_selection::assert_selection_only`. The radar scene is a
-//! polar chart and sweeps as one, with the polar scene's exclusions.
+//! The radial chart, the DataLess chart, runs the same invariants on its
+//! hit map (the radial frame's `HitMap<RadialChart>`, whose elements place
+//! their parts from the chart, an outside label's leader line among them),
+//! with each element's ink measured by drag differential on its GPU exports
+//! and the highlight through `selection_only::assert_selection_only`. The
+//! category bar and box plot scenes are Cartesian scenes and the radar
+//! scene is a polar one; they sweep as such.
 //!
 //! The Cartesian decoration ink needs no GPU: the CPU raster of each
 //! expanded panel (`try_raster_chart_layer_to_rgba` with
 //! `AxisLayerKind::Decoration`) runs the placement pass the renderer
 //! uploads, and a 2x display or export is `Config::scaled(2.0)`. The GPU
-//! builds the scenes (column uploads, `auto_fit_*`) and renders the bounded
-//! families and the annotation layer.
+//! builds the scenes (column uploads, `auto_fit_*`) and renders the radial
+//! chart and the annotation layer.
 #![cfg(not(target_arch = "wasm32"))]
 
-#[path = "support/bounded_decorations.rs"]
-mod bounded_decorations;
+#[path = "support/radial_decorations.rs"]
+mod radial_decorations;
 #[allow(dead_code)]
-#[path = "support/bounded_selection.rs"]
-mod bounded_selection;
-use bounded_decorations::Decorations;
+#[path = "support/selection_only.rs"]
+mod selection_only;
+use radial_decorations::Decorations;
 #[path = "support/edge_band.rs"]
 mod edge_band;
 #[path = "support/playground_scenes.rs"]
@@ -472,7 +473,7 @@ impl Report {
     /// Add `n` to the total `what` of the scene family `at` belongs to.
     fn count(&mut self, at: &At<'_>, what: &str, n: usize) {
         let family = if at.scene == "Radial" {
-            "bounded"
+            "radial"
         } else {
             "Cartesian"
         };
@@ -705,12 +706,12 @@ fn sweep() -> Report {
         .expect("renderer");
     report.time("GPU setup", start);
     let mut cartesian = 0;
-    let mut bounded = 0;
+    let mut radial = 0;
     let mut cases = 0;
     for kind in SceneKind::ALL {
-        if kind.is_bounded() {
-            bounded += 1;
-            bounded_scene(&mut report, &gpu, kind);
+        if kind.is_radial() {
+            radial += 1;
+            radial_scene(&mut report, &gpu, kind);
             continue;
         }
         cartesian += 1;
@@ -739,7 +740,7 @@ fn sweep() -> Report {
         );
     }
     report.line(format!(
-        "{} scenes: {cartesian} Cartesian, {bounded} bounded",
+        "{} scenes: {cartesian} Cartesian, {radial} radial",
         SceneKind::ALL.len()
     ));
     report.line(format!(
@@ -2820,93 +2821,65 @@ fn check_i6(
 }
 
 // ---------------------------------------------------------------------------
-// Bounded families
+// The radial chart
 // ---------------------------------------------------------------------------
 //
-// A bounded chart (radial) draws its decorations into its own GPU frame:
-// the radial frame registers each in its `HitMap<RadialChart>`, placed from
-// the chart by the one emit its raster draws with, so an outside label is its text and its leader line, outlined
-// and hit part by part. Ink is measured by drag differential: an element
-// dragged beyond its own extent leaves its old place and shows at its new
-// one, and every pixel that changes must lie in what the element's and its
-// followers' selections outline, old or new.
+// The radial chart draws its decorations into its own GPU frame: the radial
+// frame registers each in its `HitMap<RadialChart>`, placed from the chart
+// by the one emit its raster draws with, so an outside label is its text and
+// its leader line, outlined and hit part by part. Ink is measured by drag
+// differential: an element dragged beyond its own extent leaves its old
+// place and shows at its new one, and every pixel that changes must lie in
+// what the element's selection outlines, old or new.
 
-/// The logical canvas of every bounded scene.
-const BOUNDED_SIZE: (u32, u32) = (800, 600);
-/// A channel difference above this is a changed pixel of a bounded export;
+/// The logical canvas of the radial scene.
+const RADIAL_SIZE: (u32, u32) = (800, 600);
+/// A channel difference above this is a changed pixel of a radial export;
 /// at or above [`STRONG_DIFF`] it is strong ink.
 const CHANGED_DIFF: u8 = 32;
 const STRONG_DIFF: u8 = 128;
 /// A box-filtered 2x export may differ from the 1x export by more than
 /// [`SCALE_DIFF`] at this share of its pixels (`scale_consistency`).
-const BOUNDED_SCALE_SHARE: f64 = 0.004;
+const RADIAL_SCALE_SHARE: f64 = 0.004;
 
-/// One bounded family's renderer, behind one face for the sweep. Its frame
-/// answers the decoration queries of `bounded_decorations::Decorations`:
-/// the radial frame through its `HitMap<RadialChart>`.
-trait Bounded {
-    type Chart: Clone + PartialEq;
-    type Frame: Decorations<Chart = Self::Chart>;
-    fn prepare(&mut self, c: &Self::Chart, scale: f32) -> Result<Arc<Self::Frame>, String>;
-    fn export(&mut self, c: &Self::Chart, scale: f32) -> Result<RasterImage, String>;
-}
+/// The radial renderer of the sweep, at the scene's canvas. Its frame
+/// answers the decoration queries of `radial_decorations::Decorations`
+/// through its `HitMap<RadialChart>`.
+struct Radial(RadialRenderer);
 
-macro_rules! bounded_family {
-    ($family:ident, $renderer:ty, $chart:ty, $frame:ty) => {
-        struct $family($renderer);
-        impl Bounded for $family {
-            type Chart = $chart;
-            type Frame = $frame;
-            fn prepare(&mut self, c: &$chart, scale: f32) -> Result<Arc<$frame>, String> {
-                self.0
-                    .prepare(c, BOUNDED_SIZE, scale)
-                    .map_err(|e| e.to_string())
-            }
-            fn export(&mut self, c: &$chart, scale: f32) -> Result<RasterImage, String> {
-                let image = self
-                    .0
-                    .export_rgba(c, BOUNDED_SIZE, scale)
-                    .map_err(|e| e.to_string());
-                self.0.end_frame();
-                image
-            }
-        }
-    };
-}
-
-bounded_family!(RadialFamily, RadialRenderer, RadialChart, RadialFrame);
-
-fn layout_of<B: Bounded>(c: &mut B::Chart) -> &mut DecorationLayout {
-    <B::Frame as Decorations>::layout(c)
-}
-
-fn bounded_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
-    let format = wgpu::TextureFormat::Rgba8Unorm;
-    let scene = scene_name(kind);
-    let failed = |report: &mut Report, e: String| {
-        let at = At {
-            scene,
-            layer: "base",
-            scale: 1.0,
-        };
-        report.check(&at, "<renderer>", Inv::I7, false, || e);
-    };
-    match kind {
-        SceneKind::Radial => match RadialRenderer::new(gpu.clone(), format) {
-            Ok(r) => sweep_bounded(
-                report,
-                scene,
-                RadialFamily(r),
-                scenes::bounded::radial_chart(),
-            ),
-            Err(e) => failed(report, e.to_string()),
-        },
-        _ => {}
+impl Radial {
+    fn prepare(&mut self, c: &RadialChart, scale: f32) -> Result<Arc<RadialFrame>, String> {
+        self.0
+            .prepare(c, RADIAL_SIZE, scale)
+            .map_err(|e| e.to_string())
+    }
+    fn export(&mut self, c: &RadialChart, scale: f32) -> Result<RasterImage, String> {
+        let image = self
+            .0
+            .export_rgba(c, RADIAL_SIZE, scale)
+            .map_err(|e| e.to_string());
+        self.0.end_frame();
+        image
     }
 }
 
-/// One element of a bounded frame.
-struct BoundedEntry {
+fn radial_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
+    let scene = scene_name(kind);
+    match RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm) {
+        Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::radial_chart()),
+        Err(e) => {
+            let at = At {
+                scene,
+                layer: "base",
+                scale: 1.0,
+            };
+            report.check(&at, "<renderer>", Inv::I7, false, || e.to_string());
+        }
+    }
+}
+
+/// One element of a radial frame.
+struct RadialEntry {
     id: HitId,
     key: DecorationId,
     name: String,
@@ -2915,25 +2888,23 @@ struct BoundedEntry {
     /// leader line keeps its start on the slice; its bounds otherwise.
     text: Option<RectF>,
     selection: Option<SelectionBox>,
-    followers: Vec<DecorationId>,
 }
 
-fn bounded_entries<F: Decorations>(f: &F, c: &F::Chart) -> Vec<BoundedEntry> {
+fn radial_entries(f: &RadialFrame, c: &RadialChart) -> Vec<RadialEntry> {
     f.entries(c)
         .into_iter()
-        .map(|(id, key)| BoundedEntry {
+        .map(|(id, key)| RadialEntry {
             id,
             name: key.element_id(),
             bounds: f.bounds(c, id),
             text: f.text_bounds(c, id),
             selection: f.selection(c, id),
-            followers: f.followers(c, id),
             key,
         })
         .collect()
 }
 
-fn entry_of<'a>(entries: &'a [BoundedEntry], key: &DecorationId) -> Option<&'a BoundedEntry> {
+fn entry_of<'a>(entries: &'a [RadialEntry], key: &DecorationId) -> Option<&'a RadialEntry> {
     entries.iter().find(|e| e.key == *key)
 }
 
@@ -2978,8 +2949,8 @@ fn pixel_diff(a: &RasterImage, b: &RasterImage, i: usize) -> u8 {
         .unwrap_or(0)
 }
 
-fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B, chart: B::Chart) {
-    let mut per_scale: Vec<(Vec<BoundedEntry>, RasterImage)> = Vec::new();
+fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: RadialChart) {
+    let mut per_scale: Vec<(Vec<RadialEntry>, RasterImage)> = Vec::new();
     for scale in SCALES {
         let at = At {
             scene,
@@ -2988,7 +2959,7 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
         };
         let phase = Instant::now();
         let mut c = chart.clone();
-        *layout_of::<B>(&mut c) = DecorationLayout::default();
+        c.decorations = DecorationLayout::default();
         let (frame, base) = match (r.prepare(&c, scale), r.export(&c, scale)) {
             (Ok(f), Ok(b)) => (f, b),
             (Err(e), _) | (_, Err(e)) => {
@@ -2996,8 +2967,8 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
                 continue;
             }
         };
-        let entries = bounded_entries(&*frame, &c);
-        report.count(&at, "bounded elements", entries.len());
+        let entries = radial_entries(&frame, &c);
+        report.count(&at, "radial elements", entries.len());
         // I7: the hit map holds exactly the frame's entries.
         report.check(&at, "<map>", Inv::I7, frame.len() == entries.len(), || {
             format!(
@@ -3016,23 +2987,23 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
                 let canvas = RectF {
                     x: 0.0,
                     y: 0.0,
-                    width: BOUNDED_SIZE.0 as f32,
-                    height: BOUNDED_SIZE.1 as f32,
+                    width: RADIAL_SIZE.0 as f32,
+                    height: RADIAL_SIZE.1 as f32,
                 };
                 report.check(&at, &e.name, Inv::I1, inside(canvas, b), || {
-                    format!("bounds {b:?} leave the {BOUNDED_SIZE:?} canvas")
+                    format!("bounds {b:?} leave the {RADIAL_SIZE:?} canvas")
                 });
             }
         }
-        check_bounded_i4(report, &at, &entries);
+        check_radial_i4(report, &at, &entries);
         if scale == 1.0 {
-            bounded_ink(report, &at, &mut r, &c, &*frame, &entries, &base);
-            report.time("bounded ink and drags (I2, I6, I7)", phase);
+            radial_ink(report, &at, &mut r, &c, &frame, &entries, &base);
+            report.time("radial ink and drags (I2, I6, I7)", phase);
             let phase = Instant::now();
-            bounded_selection(report, &at, &mut r, &c, &entries, &base);
-            report.time("bounded highlights (I3)", phase);
+            radial_selection(report, &at, &mut r, &c, &entries, &base);
+            report.time("radial highlights (I3)", phase);
         } else {
-            report.time("bounded 2x", phase);
+            report.time("radial 2x", phase);
         }
         per_scale.push((entries, base));
     }
@@ -3092,7 +3063,7 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
             }
         }
         let share = differ as f64 / (w * h) as f64;
-        report.check(&at, "<export>", Inv::I5, share < BOUNDED_SCALE_SHARE, || {
+        report.check(&at, "<export>", Inv::I5, share < RADIAL_SCALE_SHARE, || {
             format!(
                 "{differ} pixels ({:.2} %) of the 2x export box-filtered differ by more than {SCALE_DIFF} from 1x",
                 share * 100.0
@@ -3101,58 +3072,39 @@ fn sweep_bounded<B: Bounded>(report: &mut Report, scene: &'static str, mut r: B,
     }
 }
 
-/// I4 for a bounded frame, on the element bounds: the chart title against
-/// every other element, the legend against the bottom labels and title,
-/// the spoke labels pairwise and the radar value labels against them.
-fn check_bounded_i4(report: &mut Report, at: &At<'_>, entries: &[BoundedEntry]) {
-    let is = |e: &BoundedEntry, f: fn(&DecorationId) -> bool| f(&e.key);
-    let mut pairs: Vec<(&BoundedEntry, &BoundedEntry)> = Vec::new();
+/// I4 for a radial frame, on the element bounds: the chart title against
+/// every element but the plot area (the slice labels place themselves
+/// apart, and the radial chart has no legend or axes).
+fn check_radial_i4(report: &mut Report, at: &At<'_>, entries: &[RadialEntry]) {
     for (i, a) in entries.iter().enumerate() {
         for b in &entries[i + 1..] {
-            let title = |k: &DecorationId| *k == DecorationId::ChartTitle;
-            let legend = |k: &DecorationId| *k == DecorationId::Legend;
-            let bottom = |k: &DecorationId| {
-                matches!(
-                    k,
-                    DecorationId::AxisLabel(Side::Bottom) | DecorationId::AxisTitle(Side::Bottom)
-                )
-            };
-            let spoke = |k: &DecorationId| matches!(k, DecorationId::SpokeLabel { .. });
-            let value = |k: &DecorationId| matches!(k, DecorationId::DataLabel { .. });
-            let data_area = |k: &DecorationId| *k == DecorationId::DataArea;
-            let pair = (is(a, title) || is(b, title)) && !is(a, data_area) && !is(b, data_area)
-                || (is(a, legend) && is(b, bottom))
-                || (is(b, legend) && is(a, bottom))
-                || (is(a, spoke) && is(b, spoke))
-                || (is(a, spoke) && is(b, value))
-                || (is(a, value) && is(b, spoke));
-            if pair {
-                pairs.push((a, b));
+            let title = |e: &RadialEntry| e.key == DecorationId::ChartTitle;
+            let data_area = |e: &RadialEntry| e.key == DecorationId::DataArea;
+            if !(title(a) || title(b)) || data_area(a) || data_area(b) {
+                continue;
             }
+            let (Some(ra), Some(rb)) = (a.bounds, b.bounds) else {
+                continue;
+            };
+            report.check(
+                at,
+                &format!("{} x {}", a.name, b.name),
+                Inv::I4,
+                !intersects(ra, rb, OVERLAP_TOLERANCE),
+                || format!("{ra:?} and {rb:?} overlap"),
+            );
         }
-    }
-    for (a, b) in pairs {
-        let (Some(ra), Some(rb)) = (a.bounds, b.bounds) else {
-            continue;
-        };
-        report.check(
-            at,
-            &format!("{} x {}", a.name, b.name),
-            Inv::I4,
-            !intersects(ra, rb, OVERLAP_TOLERANCE),
-            || format!("{ra:?} and {rb:?} overlap"),
-        );
     }
 }
 
-/// I2, I6 and I7 (ghosts) of a bounded frame at 1x, by drag differential.
-fn bounded_ink<B: Bounded>(
+/// I2, I6 and I7 (ghosts) of a radial frame at 1x, by drag differential.
+fn radial_ink(
     report: &mut Report,
     at: &At<'_>,
-    r: &mut B,
-    c: &B::Chart,
-    frame: &B::Frame,
-    entries: &[BoundedEntry],
+    r: &mut Radial,
+    c: &RadialChart,
+    frame: &RadialFrame,
+    entries: &[RadialEntry],
     base: &RasterImage,
 ) {
     let (w, h) = (base.width as usize, base.height as usize);
@@ -3223,16 +3175,12 @@ fn bounded_ink<B: Bounded>(
             }
         };
         report.count(at, "differential exports", 1);
-        let after = bounded_entries(&*frame2, &moved);
-        // Where the element and its followers may change pixels: what their
-        // selections outline before and after.
+        let after = radial_entries(&frame2, &moved);
+        // Where the element may change pixels: what its selection outlines
+        // before and after.
         let mut allowed: Vec<&SelectionBox> = vec![sb];
         let new_box = entry_of(&after, &e.key).and_then(|n| n.selection.as_ref());
         allowed.extend(new_box);
-        for f in &e.followers {
-            allowed.extend(entry_of(entries, f).and_then(|o| o.selection.as_ref()));
-            allowed.extend(entry_of(&after, f).and_then(|o| o.selection.as_ref()));
-        }
         let mut stray = Vec::new();
         let mut old_ink = Vec::new();
         let mut new_ink = 0usize;
@@ -3266,7 +3214,7 @@ fn bounded_ink<B: Bounded>(
         }
         report.check(at, &e.name, Inv::I2, stray.is_empty(), || {
             format!(
-                "dragging it by ({dx:.0}, {dy:.0}) changes {} pixels outside its and its followers' hit regions, first {:?}",
+                "dragging it by ({dx:.0}, {dy:.0}) changes {} pixels outside its hit regions, first {:?}",
                 stray.len(),
                 stray[0]
             )
@@ -3384,8 +3332,8 @@ fn bounded_ink<B: Bounded>(
             )
         });
     }
-    // I6: a small drag moves it and its followers, the moved element still
-    // picks, a drag off the canvas is refused without a change.
+    // I6: a small drag moves it, the moved element still picks, a drag off
+    // the canvas is refused without a change.
     for e in entries {
         let Some(b) = e.bounds else {
             continue;
@@ -3415,7 +3363,7 @@ fn bounded_ink<B: Bounded>(
             let Ok(frame) = r.prepare(&moved, 1.0) else {
                 continue;
             };
-            let Some(entry) = bounded_entries(&*frame, &moved)
+            let Some(entry) = radial_entries(&frame, &moved)
                 .into_iter()
                 .find(|n| n.key == e.key)
             else {
@@ -3455,7 +3403,7 @@ fn bounded_ink<B: Bounded>(
                 continue;
             }
         };
-        let after = bounded_entries(&*frame, &moved);
+        let after = radial_entries(&frame, &moved);
         let Some(n) = entry_of(&after, &e.key) else {
             report.check(at, &e.name, Inv::I6, false, || "gone after the drag".into());
             continue;
@@ -3464,23 +3412,6 @@ fn bounded_ink<B: Bounded>(
         report.check(at, &e.name, Inv::I6, near_rect(n.text, Some(want)), || {
             format!("{:?} after the drag, {want:?} expected", n.text)
         });
-        for f in &e.followers {
-            let (before, after) = (
-                entry_of(entries, f).and_then(|o| o.bounds),
-                entry_of(&after, f).and_then(|o| o.bounds),
-            );
-            report.check(
-                at,
-                &e.name,
-                Inv::I6,
-                near_rect(after, before.map(|r| r.translated(dx, dy))),
-                || {
-                    format!(
-                        "follower {f:?} at {after:?}, {before:?} moved by ({dx}, {dy}) expected"
-                    )
-                },
-            );
-        }
         // The moved element picks somewhere on what moved.
         let picks = n.text.is_some_and(|nb| {
             std::iter::once((4, 4))
@@ -3499,15 +3430,15 @@ fn bounded_ink<B: Bounded>(
     }
 }
 
-/// I3 of a bounded frame at 1x: selecting each element changes only its
-/// outline and handles (`bounded_selection::assert_selection_only`, which
+/// I3 of a radial frame at 1x: selecting each element changes only its
+/// outline and handles (`selection_only::assert_selection_only`, which
 /// takes a box or the outlines of its parts).
-fn bounded_selection<B: Bounded>(
+fn radial_selection(
     report: &mut Report,
     at: &At<'_>,
-    r: &mut B,
-    c: &B::Chart,
-    entries: &[BoundedEntry],
+    r: &mut Radial,
+    c: &RadialChart,
+    entries: &[RadialEntry],
     base: &RasterImage,
 ) {
     for e in entries {
@@ -3515,7 +3446,7 @@ fn bounded_selection<B: Bounded>(
             continue;
         };
         let mut selected = c.clone();
-        layout_of::<B>(&mut selected).selected = Some(e.key.clone());
+        selected.decorations.selected = Some(e.key.clone());
         let image = match r.export(&selected, 1.0) {
             Ok(i) => i,
             Err(e2) => {
@@ -3528,7 +3459,7 @@ fn bounded_selection<B: Bounded>(
         let hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(|_| {}));
         let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            bounded_selection::assert_selection_only(base, &image, sb, 1.0, &context)
+            selection_only::assert_selection_only(base, &image, sb, 1.0, &context)
         }));
         std::panic::set_hook(hook);
         report.check(at, &e.name, Inv::I3, outcome.is_ok(), || {

@@ -1,6 +1,6 @@
 //! The playground's scene catalogue: synthetic data and the starting model
-//! of every scene, Cartesian and polar (`Config` and series) and bounded
-//! (the radial chart in [`bounded`]).
+//! of every scene, Cartesian and polar (`Config` and series) and the
+//! DataLess radial chart (in [`radial`]).
 //!
 //! The file lives with the renderer's tests so the decoration oracle
 //! (`tests/decoration_oracle.rs`) sweeps exactly the scenes the playground
@@ -153,7 +153,8 @@ impl SceneKind {
         }
     }
 
-    pub fn is_bounded(self) -> bool {
+    /// Whether the scene is the radial chart, which its own renderer draws.
+    pub fn is_radial(self) -> bool {
         matches!(self, SceneKind::Radial)
     }
 }
@@ -317,7 +318,7 @@ pub fn build(
         SceneKind::BoxPlot => box_plot(r),
         SceneKind::Radar => radar(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
-        _ => unreachable!("bounded scenes are built by `bounded::chart`"),
+        SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
 }
 
@@ -1739,12 +1740,12 @@ fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 }
 
 // ---------------------------------------------------------------------------
-// Bounded scenes
+// The radial scene
 // ---------------------------------------------------------------------------
 
-/// The starting model of the bounded scene; the playground's `bounded.rs`
+/// The starting model of the radial scene; the playground's `radial.rs`
 /// hosts it.
-pub mod bounded {
+pub mod radial {
     use renderer::Color;
     use renderer::radial::*;
 
