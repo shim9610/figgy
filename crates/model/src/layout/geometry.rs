@@ -1,7 +1,9 @@
+use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, BarAlign, ColorBarOptions, Config, LegendCorner};
+use crate::sink::{Border, DrawnPart, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::text::{MeasureText, TextExtents};
 
-use super::{ChartArea, DataArea, RectF, Side};
+use super::{ChartArea, DataArea, Element, RectF, Side};
 
 /// Minimum gap between a tick end and its label, in pixels.
 pub const LABEL_GAP: f32 = 4.0;
@@ -640,10 +642,221 @@ fn align_offset(available: f32, length: f32, align: &BarAlign) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// auto_layout measurement (#44)
+// ---------------------------------------------------------------------------
+
+/// Clearance `auto_layout` keeps between an axis title and its tick
+/// labels, and between either and the edges of their band: the label gap.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+const AUTO_LAYOUT_CLEARANCE: f32 = LABEL_GAP;
+
+/// What `auto_layout` reads from the parts of one emitted element: the
+/// union of their extents, and of its text blocks the most digits one
+/// prints and the widest one. Kept as numbers, so measuring stores no part.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Probe {
+    bounds: Option<RectF>,
+    digits: usize,
+    widest: f32,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+impl Probe {
+    /// Emit `element` of `cfg` into a fresh probe.
+    fn of(cfg: &Config, element: &Element, measure: &dyn MeasureText) -> Self {
+        let mut probe = Self::default();
+        crate::select::emit_element(cfg, element, measure, &mut probe);
+        probe
+    }
+
+    /// The probe of `self` and `other` together.
+    fn with(self, other: Self) -> Self {
+        Self {
+            bounds: match (self.bounds, other.bounds) {
+                (Some(a), Some(b)) => Some(crate::sink::union(a, b)),
+                (a, b) => a.or(b),
+            },
+            digits: self.digits.max(other.digits),
+            widest: self.widest.max(other.widest),
+        }
+    }
+
+    fn add(&mut self, r: RectF) {
+        if [r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) {
+            self.bounds = Some(self.bounds.map_or(r, |u| crate::sink::union(u, r)));
+        }
+    }
+}
+
+impl Sink for Probe {
+    fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
+        self.add(text.rect());
+        let digits = match text.text {
+            TextRef::Plain { text, .. } => text.chars().filter(char::is_ascii_digit).count(),
+            TextRef::Rich(rich) => rich
+                .segments
+                .iter()
+                .filter(|s| s.text.is_ascii_digit())
+                .count(),
+        };
+        self.digits = self.digits.max(digits);
+        if text.extents.width.is_finite() {
+            self.widest = self.widest.max(text.extents.width);
+        }
+    }
+
+    fn stroke(&mut self, _slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
+        self.add(
+            DrawnPart::Segment {
+                a,
+                b,
+                width: style.width,
+            }
+            .extent(),
+        );
+    }
+
+    fn rect(
+        &mut self,
+        _slot: Slot,
+        rect: RectF,
+        _fill: Option<Color>,
+        _border: Option<Border<'_>>,
+    ) {
+        self.add(rect);
+    }
+
+    fn triangle(&mut self, _slot: Slot, points: [[f32; 2]; 3], _color: Color) {
+        self.add(DrawnPart::Triangle(points).extent());
+    }
+
+    fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {
+        self.add(rect);
+    }
+}
+
+/// Where `r` lies across the band on `side` whose inner edge is `inner`:
+/// its near and far distance from that edge, outward positive. The band
+/// runs from the data area (or the colourbar strip) toward the chart edge.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+fn band_span(side: &Side, inner: f32, r: RectF) -> (f32, f32) {
+    match side {
+        Side::Left => (inner - (r.x + r.width), inner - r.x),
+        Side::Right => (r.x - inner, r.x + r.width - inner),
+        Side::Top => (inner - (r.y + r.height), inner - r.y),
+        Side::Bottom => (r.y - inner, r.y + r.height - inner),
+    }
+}
+
+/// The inner edge of a band on `side` of `rect`: `rect`'s edge on that side
+/// moved `tick` outward.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+fn band_inner_edge(side: &Side, rect: RectF, tick: f32) -> f32 {
+    match side {
+        Side::Left => rect.x - tick,
+        Side::Right => rect.x + rect.width + tick,
+        Side::Top => rect.y - tick,
+        Side::Bottom => rect.y + rect.height + tick,
+    }
+}
+
+/// The +1 or -1 that turns an axis title's `offset_y`, the offset across
+/// its band in the title's rotated frame
+/// ([`axis_title_offset_to_screen`]), into a distance outward from the
+/// data area.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+fn outward_sign(side: &Side) -> f32 {
+    match side {
+        Side::Bottom => 1.0,
+        Side::Top | Side::Left | Side::Right => -1.0,
+    }
+}
+
+/// One band as measured: how far its labels reach past the inner edge, and
+/// the near and far distance of its title, both outward from that edge.
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct BandMeasure {
+    reach: Option<f32>,
+    title: Option<(f32, f32)>,
+}
+
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "auto_layout uses it from the next commit")
+)]
+impl BandMeasure {
+    fn of(side: &Side, inner: f32, labels: &Probe, title: &Probe) -> Self {
+        Self {
+            reach: labels.bounds.map(|r| band_span(side, inner, r).1.max(0.0)),
+            title: title.bounds.map(|r| band_span(side, inner, r)),
+        }
+    }
+
+    /// The band the labels and a centred title need: the title's thickness
+    /// plus twice the labels' reach and the clearance, so the centred title
+    /// clears the labels by the clearance; the reach and the clearance alone
+    /// without a title. `None` for a band with neither.
+    fn required(&self) -> Option<f32> {
+        let reach = self.reach.unwrap_or(0.0);
+        match self.title {
+            Some((near, far)) => Some(far - near + 2.0 * (reach + AUTO_LAYOUT_CLEARANCE)),
+            None => self.reach.map(|r| r + AUTO_LAYOUT_CLEARANCE),
+        }
+    }
+
+    /// The outward title offset, within the band `band` wide, at which the
+    /// title clears the labels and stays inside the band by the clearance,
+    /// for a title now offset outward by `offset`; `None` when `offset`
+    /// already does, or no offset can. A new offset is a whole pixel on the
+    /// safe side.
+    fn clamped_offset(&self, band: f32, offset: f32) -> Option<f32> {
+        let (near, far) = self.title?;
+        let thickness = far - near;
+        let reach = self.reach.unwrap_or(0.0);
+        let low = reach + AUTO_LAYOUT_CLEARANCE + thickness * 0.5 - band * 0.5;
+        let high = band * 0.5 - thickness * 0.5 - AUTO_LAYOUT_CLEARANCE;
+        if !(low.ceil() <= high.floor()) {
+            return None;
+        }
+        if offset < low {
+            Some(low.ceil())
+        } else if offset > high {
+            Some(high.floor())
+        } else {
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::default::default_config;
+    use crate::format::LabelFormat;
     use crate::layout::Rect;
 
     /// `cross_at` is a value of the perpendicular axis: the bottom axis line
@@ -1208,5 +1421,190 @@ mod tests {
         for side in [Side::Top, Side::Bottom, Side::Left] {
             assert_eq!(cfg.colorbar_band(&side), 0.0);
         }
+    }
+
+    // auto_layout measurement (#44).
+
+    /// Every glyph 8 px wide, 10 px up and 3 px down: the axis titles and
+    /// the chart title.
+    const GLYPH: f32 = 8.0;
+
+    /// A measure that lays out three tick labels per visible axis, at both
+    /// ends and the middle of the data-area edge, as the renderer places
+    /// them (`label_origin`, offsets and `line_offset` included), and the
+    /// colourbar's three labels along the strip. A `Decimal` or `Plain`
+    /// label prints `decimal`, any other format `3×10`.
+    struct Labels {
+        decimal: &'static str,
+    }
+
+    impl Labels {
+        fn text(&self, axis: &AxisOptions) -> &'static str {
+            match axis.label_style.format {
+                LabelFormat::Decimal | LabelFormat::Plain(_) => self.decimal,
+                _ => "3×10",
+            }
+        }
+
+        fn place(&self, axis: &AxisOptions, side: Side, at: [(f32, f32); 3], sink: &mut dyn Sink) {
+            if !(axis.label_style.visible && axis.label_style.label_visible) {
+                return;
+            }
+            let text = self.text(axis);
+            let extents = TextExtents {
+                width: text.chars().count() as f32 * GLYPH,
+                ascent: 10.0,
+                descent: 3.0,
+            };
+            let o = axis_offset(side.clone(), axis.line_offset);
+            for p in at {
+                let origin = label_origin(
+                    side.clone(),
+                    (p.0 + o.0, p.1 + o.1),
+                    axis.major_tick_length,
+                    (
+                        axis.label_style.label_offset_x,
+                        axis.label_style.label_offset_y,
+                    ),
+                    extents,
+                );
+                sink.text(
+                    Slot::Above,
+                    &PlacedText {
+                        text: TextRef::Plain {
+                            text,
+                            family: "",
+                            size: axis.label_style.font_size,
+                            color: Color::BLACK,
+                        },
+                        origin,
+                        extents,
+                        rotation: None,
+                    },
+                );
+            }
+        }
+    }
+
+    fn ends_and_middle(side: &Side, rect: &RectF) -> [(f32, f32); 3] {
+        [0.0, 0.5, 1.0].map(|t| point_on_rect_side(t, side, rect))
+    }
+
+    impl MeasureText for Labels {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * GLYPH,
+                ascent: 10.0,
+                descent: 3.0,
+            }
+        }
+
+        fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
+            let Ok(da) = cfg.data_area() else {
+                return true;
+            };
+            let plot = RectF::from_rect(&da);
+            match element {
+                Element::AxisLabel(side) => {
+                    let axis = super::super::axis_ref(cfg, side);
+                    self.place(axis, side.clone(), ends_and_middle(side, &plot), sink);
+                }
+                Element::ColorBarLabel => {
+                    if let Some((bar, strip)) = visible_colorbar_rect(cfg) {
+                        let at = ends_and_middle(&bar.side, &strip);
+                        self.place(&bar.axis, bar.side.clone(), at, sink);
+                    }
+                }
+                _ => {}
+            }
+            true
+        }
+    }
+
+    // A band is measured outward from its inner edge on every side: the
+    // near and the far distance of a rect 10..20 px out.
+    #[test]
+    fn band_span_measures_outward_from_the_inner_edge() {
+        let r = |x, y| RectF {
+            x,
+            y,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert_eq!(band_span(&Side::Left, 100.0, r(80.0, 0.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Right, 100.0, r(110.0, 0.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Top, 100.0, r(0.0, 80.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Bottom, 100.0, r(0.0, 110.0)), (10.0, 20.0));
+        let plot = r(50.0, 50.0);
+        assert_eq!(band_inner_edge(&Side::Left, plot, 5.0), 45.0);
+        assert_eq!(band_inner_edge(&Side::Right, plot, 5.0), 65.0);
+        assert_eq!(band_inner_edge(&Side::Top, plot, 5.0), 45.0);
+        assert_eq!(band_inner_edge(&Side::Bottom, plot, 5.0), 65.0);
+        // `offset_y` moves a title outward on the bottom, inward elsewhere.
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let (dx, dy) = axis_title_offset_to_screen(side.clone(), (0.0, 1.0));
+            let outward = match side {
+                Side::Left => -dx,
+                Side::Right => dx,
+                Side::Top => -dy,
+                Side::Bottom => dy,
+            };
+            assert_eq!(outward, outward_sign(&side), "{side:?}");
+        }
+    }
+
+    // A probe keeps the union of the parts, the most digits a label prints
+    // and the widest label: the three `0.00300` labels of the left axis.
+    #[test]
+    fn a_probe_reads_the_drawn_labels_without_storing_them() {
+        let cfg = default_config();
+        let measure = Labels { decimal: "0.00300" };
+        let probe = Probe::of(&cfg, &Element::AxisLabel(Side::Left), &measure);
+        assert_eq!(probe.digits, 6);
+        assert_eq!(probe.widest, 56.0);
+        let da = cfg.data_area().unwrap();
+        let bounds = probe.bounds.expect("drawn labels");
+        assert_eq!(bounds.x, da.x as f32 - 5.0 - LABEL_GAP - 56.0);
+        assert_eq!(bounds.width, 56.0);
+        assert!(bounds.height > da.height as f32);
+        let hidden = Probe::of(&cfg, &Element::AxisLabel(Side::Top), &measure);
+        assert_eq!(hidden, Probe::default());
+        assert_eq!(probe.with(hidden), probe);
+
+        // Measured from the band's inner edge, the tick beyond the data
+        // area: the labels reach the gap and 56 px, the 13 px title sits centred in the 110 px band.
+        let mut titled = default_config();
+        titled.left_y.title_option.text.segments = crate::text::rich_segments_from_text("y");
+        let title = Probe::of(&titled, &Element::AxisTitle(Side::Left), &measure);
+        let inner = band_inner_edge(&Side::Left, RectF::from_rect(&da), 5.0);
+        let band = BandMeasure::of(&Side::Left, inner, &probe, &title);
+        assert_eq!(band.reach, Some(LABEL_GAP + 56.0));
+        assert_eq!(band.title, Some((55.0 - 6.5, 55.0 + 6.5)));
+    }
+
+    // A centred title clears labels reaching `R` in a band of
+    // `t + 2 (R + gap)`; an offset title is clamped to the whole pixels at
+    // which it clears them and stays inside the band.
+    #[test]
+    fn a_band_needs_room_for_its_labels_and_a_centred_title() {
+        let both = BandMeasure {
+            reach: Some(30.0),
+            title: Some((40.0, 53.0)),
+        };
+        assert_eq!(both.required(), Some(13.0 + 2.0 * (30.0 + LABEL_GAP)));
+        let labels = BandMeasure {
+            reach: Some(30.0),
+            title: None,
+        };
+        assert_eq!(labels.required(), Some(30.0 + LABEL_GAP));
+        assert_eq!(BandMeasure::default().required(), None);
+        // In a 110 px band the title may move from 30 + 4 + 6.5 - 55 =
+        // -14.5 (inward) to 55 - 6.5 - 4 = 44.5 (outward).
+        assert_eq!(both.clamped_offset(110.0, 0.0), None);
+        assert_eq!(both.clamped_offset(110.0, -14.5), None);
+        assert_eq!(both.clamped_offset(110.0, -20.0), Some(-14.0));
+        assert_eq!(both.clamped_offset(110.0, 50.0), Some(44.0));
+        assert_eq!(labels.clamped_offset(110.0, -20.0), None, "no title");
+        assert_eq!(both.clamped_offset(40.0, -20.0), None, "no room at all");
     }
 }
