@@ -19,7 +19,8 @@ Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups`,
-`grid_shape`, the radar series style's `fill_opacity` and
+`grid_shape`, the radar series style's `fill_opacity`, the value labels'
+`offsets`, the `value_label` selection and
 the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 <a id="unreleased-model"></a>
@@ -299,9 +300,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   group and `MAX_CATEGORY_BARS` bars, distinct value columns, no polar
   chart, horizontal groups on the base panel only), `Config::bar_groups_of`
   and `format_labels`, which writes `labels.text` from the host's values at
-  edit time. Value labels are configuration only in this release: the text
-  is written and validated, and the renderer does not draw it yet (#40
-  item 13h). `AxisOptions` gains `cross_at: Option<f64>`: the value of the
+  edit time. The renderer draws the text it is given and never formats a
+  value (value labels, #40 item 13h, below). `AxisOptions` gains `cross_at: Option<f64>`: the value of the
   perpendicular axis the axis line crosses at (`layout::axis_cross`;
   `axis_anchor(side, plot, cross)` takes it); only the line moves, the
   labels and the title stay at the plot edge. The overlay panels of
@@ -360,8 +360,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `format_box_plot_labels`, which writes `labels.text` from the host's
   medians and counts at edit time: the renderer has no per-box statistics
   to write it from, so a host that uploads its own records writes it.
-  Value labels are configuration only in this release; the renderer
-  validates the text and does not draw it yet (#40 item 13h). Every new key
+  The renderer draws the text it is given (value labels, #40 item 13h,
+  below). Every new key
   is additive and omitted at its default; model 0.12.1 and older documents
   parse and re-serialize byte for byte. Migration: an exhaustive match on
   `DataRenderType` adds `BoxPlot`.
@@ -424,8 +424,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `validate_radar_series`, `Config::validate_radar` (a polar chart with a
   categorical angle axis and `Chord` interpolation, at most 16 radar series
   per layer) and `format_radar_labels`, which writes `labels.text` at edit
-  time. Value labels are configuration only in this release; the renderer
-  validates the text and does not draw it yet (#40 item 13h). Every new key
+  time. The renderer draws the text it is given (value labels, #40 item
+  13h, below). Every new key
   is additive and omitted at its default; model 0.12.1 and older documents
   parse and re-serialize byte for byte. Migration: an exhaustive match on
   `DataRenderType` adds `Radar`; a Rust literal of `RadarSeriesStyle` that
@@ -459,6 +459,27 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   read and kept in the document but not drawn: the former renderer
   brightened the hovered or selected series, and a picked vertex now takes
   the polar chart's picked ring instead.
+- **Value label offsets, the label hit id and the label selection**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). The value
+  labels of `CategoryBars`, `BoxPlot` and `Radar` series are drawn (see
+  [Renderer](#unreleased-renderer)); their strings stay `labels.text`, written
+  at edit time. `CategoryBarSeriesLabels`, `BoxPlotSeriesLabels` and
+  `RadarSeriesLabels` gain `offsets: Vec<[f32; 2]>`: the drag offset of each
+  label in logical pixels (x right, y down), one per category, empty (and
+  omitted from JSON) until a label is dragged; validation takes it empty or
+  one finite offset per category of at most `MAX_VALUE_LABEL_OFFSET` (4096)
+  px along either axis. `SeriesConfig::drag_value_label(index, categories,
+  dx, dy)` writes it (the first drag fills one zero offset per category;
+  a move past the bound, a non-finite delta or an index past the categories
+  is rejected unchanged), with `value_label_offsets`, `value_label_offset`
+  and `value_label_text`. `value_label_id(series_id, index)` /
+  `parse_value_label_id` name a label `"series:<series_id>:label:<index>"`
+  for hosts. `PickedDataRef::ValueLabel { source_id, series_id,
+  category_index }` is a selected label (`{"kind":"value_label", …}` in
+  `picked_data`). The readers carry a legacy document's `DataLabel` offsets
+  into `labels.offsets`. Migration: struct literals of the three label types
+  add `offsets: Vec::new()` (or use `..Default::default()`); exhaustive
+  `PickedDataRef` matches add `ValueLabel`.
 
 <a id="unreleased-renderer"></a>
 
@@ -712,7 +733,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `StackExtent` the pool measured while one `add_columns` batch of exactly
   the group's value columns was written (`ColumnPool::stack_extent`;
   per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
-  is an error that says so. Value labels are not drawn yet (#40 item 13h).
+  is an error that says so. Value labels are drawn from `labels.text` (#40
+  item 13h, below).
   `bar_groups.bar_gap` is logical pixels, scaled with the display config
   (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
   is the 1x layout doubled (`category_bars_render` and `box_plot_render`
@@ -738,8 +760,9 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `decorations.data_area` is not carried), the legend is the Cartesian
   legend box in its corner instead of the row below the chart (the bottom
   row legend is gone), the export clear colour replaces the document's
-  `background`, and value labels are
-  not drawn yet. The bars themselves shade as before: the dominant bar
+  `background`, and value labels are drawn through the contour label
+  module (#40 item 13h, below; the changed-pixel counts here were measured
+  before they were). The bars themselves shade as before: the dominant bar
   colours of the former renderer's and the new exports of the same
   documents are equal for Flat, Enamel and Paper and within 1/255 for
   SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
@@ -845,7 +868,9 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   gallery) replaces the document's `background`, a selected box draws the
   Cartesian inside outline, an unfilled outlier is the marker's 1.5 px ring
   (formerly at most 1.2 logical px inside the marker), and value labels are
-  not drawn yet. The boxes themselves shade as before: the dominant box
+  drawn through the contour label module (#40 item 13h, below; the
+  changed-pixel counts here were measured before they were). The boxes
+  themselves shade as before: the dominant box
   colours of the former renderer's and the new exports of the same
   documents are equal. Changed pixels of whole 960 × 640 exports of the
   five `boxplot_gallery` cases against the former renderer, composited
@@ -911,8 +936,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   legend box, the export clear colour replaces the document's
   `background`, the ring labels are the radius tick labels on the ray, a
   picked vertex draws the picked ring instead of the brightened series,
-  the ring labels include the centre's `0`, and value labels are not drawn
-  yet. The polygons, fills and markers themselves keep their places.
+  the ring labels include the centre's `0`, and value labels are drawn
+  through the contour label module (#40 item 13h, below; the changed-pixel
+  counts here were measured before they were). The polygons, fills and
+  markers themselves keep their places.
   Changed pixels of whole 960 × 640 exports of the five `radar_gallery`
   cases against the former renderer, composited over white (raw RGBA,
   the clear colour differing, is 100 % in each): spider web 67 747
@@ -923,6 +950,42 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   94 450 (19.7 %), 92 855 with a channel difference above 8; at 2x
   371 662 and 365 452. None is pixel identical; every difference is the
   chrome above.
+- **Value labels through the contour label module**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). Category
+  bar, box plot and radar series draw their value labels again: each
+  series' `labels.text` strings are baked into one label atlas by the
+  contour labels' builder (`bake_contour_label_atlas`: the one text stack,
+  `FontPolicy`), in the value axis' tick label face and size at the render
+  scale and its colour (the radius axis' for a radar series; white inside
+  a dark bar), cached per series by the
+  strings, the face, the size, the colour and the font generation, and
+  placed on every draw from the pool by the bar module's value label
+  entries: at the bar end (outside, inside, or `Auto`: outside grouped
+  bars, inside stack segments that fit), past the top of the box (its high
+  whisker, mean, notch and outliers), or outside the radar vertex along its
+  spoke, as the former charts placed them, moved by `labels.offsets` and
+  sampled texel for texel (an upright label's quad reaches the atlas
+  cell's gutter, so it needs no clamp; the contour labels keep theirs).
+  A radar series' `Emphasized` labels draw while it has a selected vertex
+  or label. The contour label's quad placement is the shared
+  fragment `common/label_quad.wgsl`; the value labels are
+  `common/value_label.wgsl` in the bar module, after the category bar and
+  box plot input fragments. An empty string draws nothing; labels never
+  displace each other (the former `LabelPlacer` is gone: thinning the
+  category axis is the only thinning). Labels are drawn after every
+  series' picked highlights of their panel, clipped to the data area.
+- A label is a typed pick target: `pick_chart_data` answers
+  `PickedData::ValueLabel { source_id, series_id, category_index,
+  distance_px }` within the pick distance of its selection box, with a
+  paint order after every series of the panel, so it wins every tie
+  against the data under it (`pick_value_labels`, candidate kind 4). A
+  selected label (`PickedDataRef::ValueLabel`) draws its selection box
+  around its frame, the decorations' selection policy (`SELECTION_PADDING`,
+  `SELECTION_STROKE_WIDTH`, `SELECTION_COLOR`). PNG export bakes the atlas
+  at the export scale; labels of overlay and subplot series draw and pick
+  in their panels. Migration: exhaustive `PickedData` matches add
+  `ValueLabel`; `data_render::SeriesLayers` literals add `value_labels:
+  None`.
 
 <a id="unreleased-web"></a>
 
@@ -997,6 +1060,17 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `FiggyBoundedChart.create(canvas, "radar", json, w, h)` with a
   `FiggyChart` and `set_radar_document(json)`; vertices are picked with
   `pick_data` and selected through `picked_data`.
+- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+  13h). `pick_data` reports a label as `{ kind: "value_label", source_id,
+  series_id, category_index, label_id, distance_px }`, and `pick_point` on
+  a chart that draws value labels reports a label under the pointer before
+  any point, as `{ source_id, series_id, point_index, distance_px,
+  label_id }` with the category as `point_index`.
+  `FiggyChart.press_value_label(label_id)` (and the element's
+  `press_value_label`) selects the label and starts its drag; `on_move`
+  writes the series' `labels.offsets` and `on_release` ends it.
+  `step_selection` does not step a label; `selection_details()` reports its
+  `category_id`, `category_label`, `text`, `offset` and `label_id`.
 
 ### Tests and guards
 
@@ -1104,6 +1178,20 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   the docs), which its own tests enable through a dev-dependency on the
   crate itself; a packaged crate builds its tests without it. No product
   dependency changes.
+- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+  13h). `value_labels_render` checks, at 1x and 2x, that bar, box and radar
+  labels sit where the former charts placed them (within `2 * scale + 1`
+  px), that the drawn label is the SSOT string's own raster texel for
+  texel, that an empty string draws nothing, that a drag moves the label
+  by its offset alone, that the selected label's box is its frame, that
+  overlay and subplot series draw their labels in their panels, and the
+  typed pick of a label. `pick_draw_agreement` gains
+  `value_labels_pick_where_they_paint`; the atlas key is mutation tested
+  (`the_value_label_atlas_key_names_every_bake_input`); the model tests
+  cover the offsets' validation, drag and round trip and the label id; the
+  browser tests cover the label hit's JSON and a label's pick, selection
+  and drag (`a_value_label_picks_selects_and_drags`). The playground scenes
+  of the box plot and radar charts show their labels.
 
 ### Documentation
 
@@ -1155,6 +1243,13 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   holds each block; it is no longer parsed by a test. The contributing
   guide, the CI guide and the guides that named a split file point at the
   file the item lives in now.
+- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+  13h). `INTERACTION.md` (Value labels), `API.md`, `WASM.md`, `CONFIG.md`,
+  `CATEGORICAL.md`, `BOXPLOT.md`, `RADAR.md`, `GALLERY.md`,
+  `examples/README.md`, `crates/web/README.md`, `crates/web/SCHEMA.md` and
+  `SHADER_COMMON.md` (§5.16 Label quad, §5.17 Value labels) describe the
+  drawn labels, their pick, selection and drag. The categorical, box plot
+  and radar gallery images are regenerated with their labels.
 
 <a id="release-0181"></a>
 

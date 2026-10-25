@@ -150,7 +150,14 @@ categories with `dx` and across the radar series with `dy`, and
 `Values` or `Emphasized`), the decimals, the suffix and `text`, one drawn
 string per category. The renderer never formats a value: `text` is written
 at edit time by `data_config::format_radar_labels` or by a document reader.
-The renderer validates the labels and does not draw them yet.
+The renderer draws each string outside its vertex along the spoke, `9` px
+from it, as the former radar chart placed it, in the radius axis' tick label
+face: always with `Values`, and with `Emphasized` only while the series has a
+selected vertex or label. An empty string draws nothing, and labels never
+displace each other. A label is a typed pick target
+(`PickedData::ValueLabel`), its selection box is its frame, and a drag writes
+`labels.offsets` (logical pixels, one per category); see Value labels in the
+[interaction guide](INTERACTION.md).
 
 ## Decorations and annotations
 
@@ -216,8 +223,8 @@ indices (`radar.positions`) first, then one value column per series
   names a vertex), `style.emphasis_brightness` (the former renderer
   brightened the hovered or selected series; a picked vertex takes the
   picked ring instead), `background` (the host's clear colour), an explicit
-  `decorations.data_area`, the spoke label and data label offsets, and the
-  decoration selection.
+  `decorations.data_area`, the spoke label offsets and the decoration
+  selection. The data label offsets become the series' `labels.offsets`.
 
 `FiggyChart.set_radar_document(json)` opens a document in the browser; the
 bounded wrapper's `"radar"` family is an error naming it.
@@ -274,8 +281,11 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 
 `labels: RadarSeriesLabels`는 위치(`RadarLabels::None`, `Values`, `Emphasized`), 소수 자릿수,
 접미사, 범주마다 하나인 문자열 `text`를 담는다. 렌더러는 값을 포맷하지 않으며, `text`는 편집할
-때 `data_config::format_radar_labels`나 문서 판독기가 적는다. 라벨은 검증만 하고 아직 그리지
-않는다.
+때 `data_config::format_radar_labels`나 문서 판독기가 적는다. 렌더러는 각 문자열을 꼭짓점에서
+바큇살 바깥쪽으로 9px 떨어진 곳에 반지름 축 눈금 라벨 글꼴로 그린다. `Values`는 항상,
+`Emphasized`는 시리즈에 선택한 꼭짓점이나 라벨이 있을 때만 그린다. 빈 문자열은 그리지 않고
+라벨끼리 밀어내지 않는다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
+테두리이며, 끌면 `labels.offsets`(범주마다 하나, 논리 픽셀)에 기록한다.
 
 제목, 범례, 범주 라벨(각도 축 눈금 라벨, 스포크를 따라 이동), 고리 라벨과 반지름 선(중심을
 돌며 회전), 그리기 영역은 극좌표 차트의 장식 요소이며 선택·이동·크기 조절 규칙은
@@ -297,6 +307,6 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
 꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로 옮긴다. 호버, 시리즈 전체
 선택, 차트 스타일의 `emphasis_brightness`(이전 렌더러가 강조한 시리즈를 밝히던 값으로, 이제 고른
-꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크·데이터 라벨 이동량은 옮기지 않는다. 브라우저에서는
+꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크 라벨 이동량은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
 `FiggyChart.set_radar_document(json)`로 문서를 열며, bounded 래퍼의 `"radar"` 계열은 이 메서드를
 안내하는 오류를 낸다.

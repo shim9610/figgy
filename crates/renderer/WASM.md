@@ -529,7 +529,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 범례 | `set_series_label(id, label)`로 텍스트를 바꾼다. 줄바꿈과 유니코드 첨자를 지원하며 빈 문자열이면 해당 행을 지운다. `set_series` / `apply_color_cycle`은 인식 가능한 자동 기호만 갱신하고 사용자 텍스트는 보존한다. 전체 재생성은 `reset_legend_from_series_labels()`를 호출한다. 직접 편집할 때는 `legend.content`의 줄바꿈·탭·고정 너비 기호·구간별 색을 사용한다. 기호의 `field_em`은 2.0em이며 선은 `rule:true`, 점선 패턴은 `rule_dash`로 지정한다. `content.font` / `font_size`와 구간별 설정은 그리기 시 적용한다. |
 | 위치 판정 | `hit_test(x, y)`는 요소 ID 또는 `null`을 반환한다. 데이터 영역·축·눈금 라벨·제목·색상 막대와 그 세부 요소를 구분한다. 선택 상태 자체는 바꾸지 않는다. 위치는 렌더러의 레이아웃에서 계산하므로 호스트가 별도로 상자를 관리할 필요가 없다. 등록 요소는 활성 레이어를 따른다. 오버레이가 활성이면 `overlay_<n>:axis_right`, `overlay_<n>:tick_labels_right`, `overlay_<n>:axis_title_right`, `overlay_<n>:legend`가 답하고 기본 Y 축은 답하지 않는다. `"Annotations"`가 활성이고 주석 층이 보이면 그려진 주석 항목이 공유 요소 위에서 `annotation_<n>`으로 답하고, 다른 레이어에서는 클릭이 주석을 통과한다. 저수준 `FiggyChart.decoration_bounds(id)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 `annotation_<n>`도 받아 그 항목의 선택 상자를 돌려준다. 서브플롯(`{ "Subplot": i }`)이나 그 오버레이(`{ "SubplotOverlay": [i, j] }`)가 활성이면 그 서브플롯 차트의 요소가 `subplot_<i>:` 접두사를 붙인 id(`subplot_0:data_area`, `subplot_0:axis_left`, `subplot_0:overlay_0:axis_right` 등)로 답하고 부모 요소는 답하지 않는다. 드래그·리사이즈는 그 서브플롯의 `config`에 기록된다. |
 | 레이어 | `set_active_layer(json)`은 `"Base"`, `{ "Overlay": n }`, `"Annotations"`, `{ "Subplot": i }`, `{ "SubplotOverlay": [i, j] }` JSON으로 상호작용 대상 레이어를 정하고 히트 맵을 그 레이어로 다시 만든다. 레이어가 바뀌면 요소 선택과 주석 선택을 지운다(데이터 선택은 유지). 범위 밖 오버레이·서브플롯 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `<figgy-chart>`의 `set_active_layer`는 저장된 레이어를, `active_layer()`는 현재 레이어를 파싱한 값(`"Base"`, `{ Overlay: 0 }` 등)으로 돌려준다. 저수준 `FiggyChart`의 두 메서드는 같은 값을 JSON 문자열로 돌려준다. 활성 레이어는 `auto_fit_all`이 맞출 축도 정한다(「범위 맞춤」 참고). `auto_fit_overlay_y(layer, col, pad)`는 `auto_fit_y`와 같은 규칙으로 오버레이 `layer`의 Y 축을 맞추며, 범위 밖 인덱스는 오류다. 저수준 `FiggyChart.auto_fit_subplot(i, "x" | "y", [cols], pad)`(`<figgy-chart>`에서는 `element.kernel`로 호출)는 서브플롯 축을 맞추며, 링크된 축이면 링크 묶음 전체가 움직인다. 범위 밖 서브플롯 인덱스나 `"x"` / `"y"`가 아닌 축 이름은 오류다. 오버레이와 서브플롯 자체(`overlays`, `subplots` 배열)는 `get_config` / `set_config`로 편집한다. 링크된 축을 바꾸면 같은 호출 안에서 묶음 전체가 움직인다. 그려지는 픽셀은 활성 레이어에 의존하지 않는다. |
-| 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. |
+| 데이터 피킹 | `pick_point(x, y, max_distance_px)`는 `Promise<{ source_id: string \| null, series_id, point_index, distance_px } \| null>`을 반환한다. 점은 스타일을 반영한 기호 크기, 선은 선분과의 거리로 판정하고 가까운 끝점을 고른다. 오차 막대 몸통·끝선은 대상이 아니다. 좌표는 반환된 인덱스로 원본 컬럼에서 조회한다. 값 라벨(범주형 막대·박스플롯·레이더)을 그리는 차트에서는 포인터 아래의 라벨이 점보다 먼저 답하며, 이때 `point_index`는 범주 행이고 `label_id`(`"series:<시리즈 ID>:label:<행>"`)가 붙는다. `pick_data`는 같은 라벨을 `{ kind: "value_label", series_id, category_index, label_id, distance_px }`로 돌려준다. |
 | 전체 사전 준비 | `prewarm_all_with_progress(callback)`은 상주 렌더링·스타일·경로 길이·범위·피킹·등고선용 캐시를 생성하고 `{ scope, stage, phase }`를 알린다. `prewarm_all()`은 콜백 없이 같은 작업을 한다. 둘 다 연결 세대를 확인하는 작업 직렬화 장치를 사용한다. `warm_up()`은 첫 프레임 대기용 호환 메서드다. |
 | 피킹 준비 | `prewarm_gpu_picking()`으로 미리 준비하거나 재시도할 수 있다. 저수준 API와 래퍼 모두 렌더러의 같은 파이프라인과 차트 캐시를 사용한다. |
 | 범위 맞춤 | `auto_fit_all(pad)`는 활성 레이어의 축만 맞추며, 각 축은 그 축에 그려지는 시리즈(`Config::layer_of_series`)로 맞춘다. `"Base"`와 `"Annotations"`(주석은 기본 축에 그린다)는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이의 Y 축만 맞춘다. 오버레이는 자기 차트의 X 축을 함께 쓰고 Y 축은 따로 가지므로, 오버레이 시리즈는 그 차트의 X 축 범위에는 들어가고 `left_y` 범위에는 들어가지 않는다. 링크된 축(`link_x`, `link_y`)은 링크 묶음이 함께 쓰는 하나의 축이다. 그래서 묶음에 속한 모든 차트(루트가 부모이면 부모 포함)의 시리즈로 범위를 정하고, 어느 차트가 활성이든 묶음 전체가 그 범위로 움직인다. X 링크와 Y 링크는 따로 따진다. 예를 들어 서브플롯 1의 `link_y`만 서브플롯 0을 가리키면, 둘 중 어느 쪽을 맞춰도 Y 축은 두 서브플롯 시리즈를 합친 범위가 되고 X 축은 각자 자기 시리즈로 맞춘다. 링크되지 않은 축은 자기 차트의 시리즈로만 맞춘다. 모든 레이어를 맞추려면 레이어마다 `set_active_layer`로 바꾼 뒤 `auto_fit_all`을 호출하거나, 컬럼을 지정해 `auto_fit_overlay_y` / `auto_fit_subplot`을 호출한다. 범위는 대상 시리즈의 원본 도형을 모두 포함하며 비율 여백을 더한다(0은 여백 없음, 0.05는 5%). 상주 선·점·오차 막대·행렬·벡터는 GPU로 범위를 계산하며 히스토그램은 경계·빈도 메타데이터와 기준선을 사용한다. 상주 경로는 GPU 결과를 읽어 설정에 반영할 때까지 다른 커널 호출을 막는다. 스트리밍 문서에는 오버레이와 서브플롯이 없으므로 스트리밍 경로는 모든 시리즈로 기본 축을 맞춘다. 래퍼의 스트리밍 경로는 일반 busy 토큰 없이 축 반영과 렌더링 완료를 기다린다. 저수준 스트리밍 호출은 요청만 등록하므로 호스트가 작업을 계속 실행해야 한다. 범위 끝은 반올림하지 않는다. 눈금은 범위 안에서 읽기 좋은 값으로 배치한다. `auto_fit_colorbar(pad)`는 색상 막대가 매핑하는 모든 컬럼(행렬 값, 산점도 `point_color_map`, 점 벡터의 색상 컬럼과 격자 벡터 색상 격자의 모든 컬럼)의 통계로 색상 막대를 맞춘다. 색상 막대가 없는 차트는 바꾸지 않는다. `auto_fit_x/y(col, pad)`는 단일 컬럼 통계를 사용하며 오차 막대를 반영하지 않는다. `load_demo()`는 데모를 불러온다. |
@@ -537,7 +537,7 @@ cd crates/web && python3 -m http.server 8137   # wasm은 file://로 열 수 없�
 | 피킹 기준 | 최종 장식 픽셀 대신 원본 점·선분을 기준으로 한다. 산점도는 지정한 기호 반지름을, 선은 인접 원본 점 사이의 직선을 사용한다. 점선의 공백, 사각 끝 모양, 스케치의 흔들림은 판정 경로에 영향을 주지 않는다. |
 | 설정 읽기·쓰기 | `get_config()` / `set_config(json)`, `get_series()` / `set_series(json)`. `set_colorbar_axis(json)`은 색상 막대의 전체 `AxisOptions`를 교체한다. |
 | 프리셋 | `apply_axis_preset(AxisPreset)`, `apply_color_cycle(ColorCycle)`, `color_cycle_css(cycle)`. |
-| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. |
+| 포인터 입력 | 웹 래퍼가 포인터 이벤트를 처리한다. 직접 전달할 때는 `on_press(x, y)`, `on_move(dx, dy)`, `on_release()`, `has_selection()`을 사용한다. 이 경로는 활성 레이어를 따른다. `"Annotations"`가 활성이면 선택된 주석의 핸들이 먼저 답하고, 그다음 위치의 주석 항목을 선택해(요소 선택은 지움) `on_move`로 끌며, 주석이 없는 곳을 누르면 아래 공유 요소로 넘어가고 주석 선택을 지운다. `has_selection()`은 요소나 주석이 선택돼 있으면 `true`다. 값 라벨은 CPU 히트 맵에 없으므로, 피킹이 돌려준 `label_id`로 `press_value_label(label_id)`를 호출해 선택하고 끌기를 시작한다. 이후 `on_move`가 그 시리즈의 `labels.offsets`를 바꾸고 `on_release`가 끝낸다. `on_press`의 반환값과 `has_selection()`의 차이는 [3.4절](#34-이벤트-입력--포인터를-모델-정책으로-그대로-전달)을 참고한다. |
 | 선택 표시 | `set_picked_points(json)`은 `PickedPointsConfig` 또는 `null` JSON 문자열로 `Config.picked_points`만 교체한다. `set_picked_data(json)`는 점·막대·셀·등고선 선택을 같은 방식으로 바꾼다. `null`은 표시를 지운다. |
 | 배경 | `set_clear_color(r, g, b, a)`는 선형 RGBA를 성분별 0~1로 제한하고 다시 그리기를 요청한다. 화면 상태만 바꾸므로 Config JSON이나 축 이미지는 갱신하지 않는다. |
 | 출력 | `export_png(scale)`은 PNG의 `Uint8Array`를 비동기로 반환한다. 문서 출력이므로 오버레이 레이어와 서브플롯도 함께 그린다. |
@@ -901,7 +901,11 @@ chart keeps its chart area. Opening another document replaces the series
 and the columns of the previous one; every other column stays. From there
 on the chart is edited through the Cartesian API (`get_config` /
 `set_config`, `get_series` / `set_series`, the column registry), and bars
-are picked with `pick_data` like histogram bins.
+are picked with `pick_data` like histogram bins. The bars' value labels
+(`labels.text`, written by the reader) are drawn at the bar ends; a label
+is picked by `pick_data` (`kind: "value_label"`) and `pick_point`, both with
+its `label_id`, and dragged with `press_value_label(label_id)`, `on_move`
+and `on_release`, which write the series' `labels.offsets`.
 
 ```js
 chart.set_categorical_document(JSON.stringify(categoricalDoc));
@@ -935,7 +939,8 @@ median, mean, outliers) is picked with `pick_data` as the box's
 `sample_count`, `ci_low`, `ci_high`; a missing one is `null`), read back
 from the record. `step_selection(dx, dy)` walks the categories and the
 series of the box group (boxes, not outliers). The value labels the
-document configures are written into `labels.text` and not drawn yet.
+document configures are written into `labels.text` and drawn past the top
+of each box; they pick and drag as the bars' do.
 
 ```js
 chart.set_boxplot_document(JSON.stringify(boxPlotDoc));
@@ -965,7 +970,8 @@ chart is edited through the Cartesian API. A vertex is picked with
 the fill pick the series too), `selection_details()` adds the vertex's
 `category_id` and `category_label`, and `step_selection(dx, dy)` steps the
 vertices of the series and across the radar series. The value labels the
-document configures are written into `labels.text` and not drawn yet.
+document configures are written into `labels.text` and drawn outside each
+vertex along its spoke; they pick and drag as the bars' do.
 
 ```js
 chart.set_radar_document(JSON.stringify(radarDoc));

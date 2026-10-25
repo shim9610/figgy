@@ -104,8 +104,13 @@ chart.selected = Some(target);
 - 범주·시리즈 이름과 ID는 제어 문자 없이 80자까지, 제목·축 제목은 160자까지다.
 
 리더는 이 설정을 시리즈의 `labels`(`CategoryBarSeriesLabels`)와 `label_format`으로 옮기고,
-`format_labels`가 막대마다 표시할 문자열을 `labels.text`에 기록한다. 렌더러는 이 문자열을 검증하지만
-아직 그리지 않는다. 값 라벨은 #40 항목 13h에서 그린다.
+`format_labels`가 막대마다 표시할 문자열을 `labels.text`에 기록한다. 렌더러는 값을 서식화하지 않고 이
+문자열을 막대 끝에 그린다. 바깥 라벨은 막대 끝에서 6px 떨어진 곳에, 안쪽 라벨은 막대 가운데에 놓으며,
+`Auto`는 묶음 막대는 바깥, 누적 막대는 들어가는 조각만 안쪽에 그린다. 어두운 막대 안쪽의 글자는 흰색,
+그 밖에는 값 축 눈금 라벨의 글꼴·크기·색을 쓴다. 빈 문자열은 그리지 않고, 라벨끼리 밀어내지 않는다.
+라벨은 `pick_chart_data`가 `PickedData::ValueLabel`로 고르며, 드래그하면 시리즈의 `labels.offsets`에
+이동량이 기록된다. 원래 문서의 `DataLabel` 이동량도 `labels.offsets`로 옮긴다
+([상호작용 가이드](INTERACTION.md)의 Value labels 참고).
 
 ## 직교 좌표 차트로 열기
 
