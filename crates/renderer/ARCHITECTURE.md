@@ -2,13 +2,13 @@
 
 Native rendering, data ownership, GPU memory and frame invalidation of the
 Cartesian `Renderer`, which also draws categorical bars
-([CATEGORICAL.md](CATEGORICAL.md)) and box plots ([BOXPLOT.md](BOXPLOT.md)).
-The bounded chart families (`RadialRenderer`, `RadarRenderer`) are separate
-renderers: each returns immutable prepared frames, keeps its own GPU ledger
+([CATEGORICAL.md](CATEGORICAL.md)), box plots ([BOXPLOT.md](BOXPLOT.md)) and
+radar charts as polar radar series ([RADAR.md](RADAR.md)).
+The bounded radial chart (`RadialRenderer`) is a separate renderer: it
+returns immutable prepared frames, keeps its own GPU ledger
 (`gpu_memory_usage()`) and budget (`set_memory_budget(bytes)`), and uses no
 column pool, auto-fit jobs or streaming. A host that reports total GPU memory
-adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md) and
-[RADAR.md](RADAR.md).
+adds every renderer's `gpu_memory_usage()`. See [RADIAL.md](RADIAL.md).
 For runnable examples, start with the [README](https://github.com/shim9610/figgy/blob/master/README.md).
 
 | Component | Role |
@@ -49,7 +49,7 @@ Low-level native hosts may still supply `ChartDrawItem` directly. In both paths,
 ### Rendering contracts
 
 The overview separates the column-based `Renderer` path from the chart-specific
-radial and radar renderers. Their immutable frames do not
+radial renderer. Its immutable frames do not
 share the `PreparedFrame` or column-pool/streaming contract. The radial chart is
 the DataLess chart: it is defined by its SSOT alone, with no `ColumnSource`,
 pool or streaming; its decorations place their parts from the chart into the
@@ -462,7 +462,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 ---
 
-아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대와 박스플롯도 직교 좌표 `Renderer`가 그리며, 원형·레이더 차트는 별도 렌더러(`RadialRenderer`, `RadarRenderer`)가 그린다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 각 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md), [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
+아래 구조 설명은 직교 좌표 `Renderer`의 네이티브 렌더링, 데이터 소유권, GPU 메모리와 프레임 갱신 판단에 해당한다. 범주형 막대·박스플롯과 레이더 차트(극좌표 레이더 시리즈)도 직교 좌표 `Renderer`가 그리며, 원형 차트는 별도 렌더러(`RadialRenderer`)가 그린다. 원형 차트는 DataLess 차트로, 단일 원본(SSOT)만으로 정의되며 `ColumnSource`·컬럼 풀·스트리밍이 없다. 장식 요소는 차트에서 공통 싱크로 부품을 배치하고, 조각은 프레임의 조각 버퍼에서 그리기와 같은 광선 추적으로 GPU에서 고른다. 이 렌더러는 변경할 수 없는 준비 프레임을 반환하고 자체 GPU 집계(`gpu_memory_usage()`)와 예산(`set_memory_budget(bytes)`)을 관리하며, 컬럼 풀·자동 범위 맞춤 작업·스트리밍을 사용하지 않는다. 전체 GPU 메모리를 보고하는 호스트는 모든 렌더러의 `gpu_memory_usage()`를 더한다. 자세한 내용은 [RADIAL.md](RADIAL.md)와 [RADAR.md](RADAR.md)를 참고한다. 실행 가능한 예제는 [README](https://github.com/shim9610/figgy/blob/master/README.ko.md)에서 시작한다.
 
 아래의 브라우저 수명 주기 설명은 브라우저용 제품인 `crates/web` 래퍼의 동작이며, 모든 렌더러를 JavaScript API로 제공한다는 뜻은 아니다([브라우저용 제품 범위](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)).
 
@@ -492,7 +492,7 @@ area, while `export_panel_*` keeps the parent's area.
 
 ### 렌더링 계약
 
-전체 구조도는 컬럼 기반 `Renderer`와 도넛·범주형·박스플롯·레이더의 전용 렌더러 경로를 구분한다. 전용 차트의 불변 프레임은 일반 `PreparedFrame`이나 컬럼풀·스트리밍 계약을 공유하지 않는다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
+전체 구조도는 컬럼 기반 `Renderer`와 도넛의 전용 렌더러 경로를 구분한다. 전용 차트의 불변 프레임은 일반 `PreparedFrame`이나 컬럼풀·스트리밍 계약을 공유하지 않는다. 화면 표시와 이미지 출력은 별도 경로이며, 이미지는 요청한 크기로 다시 렌더링한다. 아래 표는 그림의 번호 대신 주제별 계약을 요약한다.
 
 | 주제 | 데이터 흐름과 소유권 |
 |---|---|

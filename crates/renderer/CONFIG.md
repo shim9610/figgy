@@ -144,6 +144,16 @@ area that leaves one band of angle labels inside it (`Config::polar_geometry`).
 | `inner_radius_fraction: f32` | The hole at the centre as a fraction of the outer radius, `0.0..=0.9`; `left_y.min` maps to this ring |
 | `interpolation: PolarInterpolation` | `Chord` (default): a segment between two samples is straight on screen. `Arc { pieces }` (1–64): the segment is `pieces` chords between points interpolated linearly in (angle, radius), so a constant radius follows its ring; dashes and picking walk the same pieces |
 | `radial_label_angle_degrees: f64` | The screen direction of the ray the radius axis line and its tick labels sit on, default 90 (up). Dragging the ray turns it |
+| `grid_shape: Option<GridShape>` | How the rings join: `Circle` (default, `None`, key absent in JSON) draws circles; `Polygon` joins each ring and the outer ring with chords at the categories of a categorical angle axis (the radar spider web) and needs one |
+
+**Categorical angle axis.** With `bottom_x.categories` set, the angle axis
+is categorical: category `i` of `n` sits at `i / n` of the turn (or of
+`sector`) from `zero_angle_degrees`, in the `clockwise` direction, so the
+angle column holds the category positions `0..n`. The spokes sit at the
+categories and carry `categories[i].label`; the rings sit at the radius
+majors; no minor angle ticks are drawn. The radius axis stays numeric. This
+is the axis radar series (`DataRenderType::Radar`) need, see
+[RADAR.md](RADAR.md).
 
 The grid draws `*_y` fields as rings at the radius ticks and `*_x` fields as
 spokes at the angle ticks. The angle axis is the outer ring with its ticks
@@ -165,7 +175,8 @@ is the centre only when `inner_radius_fraction` is 0.
 Validation (`Config::validate_polar`, reported as `InvalidConfig { field:
 "polar" }`): finite angles, `inner_radius_fraction` in range, a sector with
 `start < end` of at most one turn, arc pieces in `1..=64`, a linear and
-non-inverted angle axis (use `clockwise`), and no `overlays`. Series that have
+non-inverted angle axis (use `clockwise`), a categorical angle axis for a
+`Polygon` grid, and no `overlays`. Series that have
 no polar form are rejected with `InvalidSeriesConfig`: histograms, heatmaps,
 contours, error bars and vectors; `Arc` needs a linearly interpolated line.
 Streamed sources are rejected. Annotations are placed by ratio only:
@@ -230,9 +241,9 @@ bars the categorical axis maps category indices. Box charts map
 them by their direction: `Vertical` boxes put the category index on `X` and the
 value on `Y`, `Horizontal` boxes the other way round. The category axis counts
 categories, the first centred at coordinate `0`, so `-0.5..0.5` is the first
-category's slot. Radial and radar charts have no value axes at all, and
-neither does a polar `Config` (`polar: Some`), so only `Ratio` anchors are
-placed there.
+category's slot. Radial charts have no value axes at all, and neither does
+a polar `Config` (`polar: Some`, radar charts included), so only `Ratio`
+anchors are placed there.
 
 `Anchor` is either `{"Data": {"x": f64, "y": f64}}`, a coordinate on the two
 document axes that follows zoom and range changes, or
@@ -261,8 +272,8 @@ arrow heads `0..256`, texts within the rich-text limits (font size 6..160, 512
 segments, eight lines). Non-finite values and anchors are **not** errors: the
 raster skips the item, keeps it in the document and reports
 `RenderWarning::AnnotationSkipped { index, reason }` with `NonFinite`,
-`NoValueAxis` (a data anchor, reference line or span on a radial, radar or
-polar chart), `OutOfRange` (no position on its axis or outside the panel) or
+`NoValueAxis` (a data anchor, reference line or span on a radial or
+polar chart, radar charts included), `OutOfRange` (no position on its axis or outside the panel) or
 `EmptyText`. Annotations never
 take part in the data-area margin computation (a new text box does not shrink
 the plot) and the automatic label placer never nudges them.
@@ -274,7 +285,7 @@ area, scaling the series it lists. `overlays` is empty (key absent in JSON) by
 default; a layered document is still one
 `Config`: the chart area, both X axes, the title, the grid, the merged legend,
 the colourbar and `draw_style` exist once, on the parent, and only the fields
-below exist per layer. Bounded charts (radial, radar) have
+below exist per layer. The bounded radial chart has
 no overlays, and nonresident streaming rejects a document that has any.
 
 | Field | Type | Meaning |
@@ -514,6 +525,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, not drawn yet. See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), not drawn yet. Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
+| `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size, `emphasis_brightness`); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, not drawn yet. Needs `Config.polar` with `Chord` interpolation, at most 16 radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see
 [Histogram orientation](HISTOGRAM.md).
@@ -938,6 +950,13 @@ pub struct Config {
 | `inner_radius_fraction: f32` | 바깥 반지름에 대한 중앙 구멍 비율, `0.0..=0.9`. `left_y.min`이 이 고리에 놓인다 |
 | `interpolation: PolarInterpolation` | `Chord`(기본): 두 표본 사이 세그먼트는 화면에서 직선. `Arc { pieces }`(1~64): (각도, 반지름)에서 선형 보간한 점들을 잇는 `pieces`개의 현으로, 반지름이 일정하면 고리를 따른다. 대시와 피킹도 같은 조각을 따라간다 |
 | `radial_label_angle_degrees: f64` | 반지름 축 선과 눈금 라벨이 놓이는 반직선의 화면 방향(도). 기본 90(위). 반직선을 드래그하면 바뀐다 |
+| `grid_shape: Option<GridShape>` | 고리를 잇는 모양. `Circle`(기본, `None`, JSON에서 키 생략)은 원을 그리고, `Polygon`은 범주형 각도 축의 범주마다 현으로 각 고리와 바깥 고리를 잇는다(레이더의 거미줄 격자). 범주형 각도 축이 필요하다 |
+
+**범주형 각도 축.** `bottom_x.categories`가 있으면 각도 축은 범주형이다. `n`개 중 `i`번째 범주는
+`zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴(또는 `sector`)의 `i / n` 자리에 놓이므로
+각도 컬럼에는 범주 위치 `0..n`을 담는다. 스포크는 범주마다 하나씩 `categories[i].label`을 달고,
+고리는 반지름 주 눈금에 놓이며, 각도 보조 눈금은 그리지 않는다. 반지름 축은 숫자 축 그대로다.
+레이더 시리즈(`DataRenderType::Radar`)가 이 축을 쓴다([RADAR.md](RADAR.md) 참고).
 
 격자는 `*_y` 필드를 반지름 눈금의 고리로, `*_x` 필드를 각도 눈금의 스포크로 그린다. 각도 축은
 바깥 고리이며 눈금은 바깥쪽을 향하고 라벨은 둘레에 놓인다. 전체 원에서는 두 눈금이 겹치는
@@ -951,7 +970,7 @@ pub struct Config {
 
 검증(`Config::validate_polar`, `InvalidConfig { field: "polar" }`로 보고): 유한한 각도,
 범위 안의 `inner_radius_fraction`, `start < end`이고 한 바퀴 이하인 섹터, `1..=64`의 호 조각 수,
-선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), 그리고 `overlays` 없음. 극좌표 형태가 없는
+선형이며 뒤집지 않은 각도 축(`clockwise`를 쓴다), `Polygon` 격자일 때 범주형 각도 축, 그리고 `overlays` 없음. 극좌표 형태가 없는
 시리즈는 `InvalidSeriesConfig`로 거부한다: 히스토그램, 히트맵, 등고선, 오차 막대, 벡터. `Arc`는
 선형 보간 선이 필요하다. 스트리밍 소스는 거부한다. 주석은 비율 앵커로만 놓으며, 기준선
 (`ReferenceLine`)·구간(`Span`)·데이터 앵커는 건너뛴 것으로 보고한다(`NoValueAxis`). 서브플롯은
@@ -1001,7 +1020,7 @@ pub struct Config {
 데이터 변환이 쓰는 `bottom_x` / `left_y`에 대응하며 시리즈와 같은 선형·로그 규칙을 따른다
 (로그축의 0 이하 값은 위치가 없다). 막대·박스 차트는 방향에 따라 대응한다. `Vertical`이면 `X`가
 범주 인덱스, `Y`가 값 축이고 `Horizontal`이면 반대다. 범주 축은 범주를 세며 첫 범주의 중심이
-좌표 `0`이므로 `-0.5..0.5`가 첫 범주의 슬롯이다. 원형·레이더 차트와 극좌표 `Config`(`polar: Some`)에는
+좌표 `0`이므로 `-0.5..0.5`가 첫 범주의 슬롯이다. 원형 차트와 극좌표 `Config`(`polar: Some`, 레이더 차트 포함)에는
 분리된 값 축이 없으므로 `Ratio` 앵커만 놓을 수 있고, 데이터 앵커와 `ReferenceLine`·`Span`은 건너뛴 것으로
 보고한다(`NoValueAxis`).
 
@@ -1026,7 +1045,7 @@ pub struct Config {
 `id`, `0..1`의 유한한 색, 선 굵기·상자 테두리 굵기·상자 여백 `0..64`, 화살표 머리 `0..256`, bounded
 차트 제목과 같은 리치 텍스트 제한(글자 크기 6..160, 512 세그먼트, 8줄)을 본다. 유한하지 않은 값과 앵커는 오류가 **아니다**. 래스터가 그 항목을
 건너뛰고 문서에는 그대로 두며 `RenderWarning::AnnotationSkipped { index, reason }`으로
-알린다. 이유는 `NonFinite`, `NoValueAxis`(원형·레이더·극좌표 차트의 데이터 앵커, 기준선, 구간), `OutOfRange`(축
+알린다. 이유는 `NonFinite`, `NoValueAxis`(원형·극좌표·레이더 차트의 데이터 앵커, 기준선, 구간), `OutOfRange`(축
 범위나 패널 밖), `EmptyText` 중 하나다. 주석은 데이터 영역 여백 계산에 참여하지 않으며(텍스트
 상자를 추가해도 플롯이 줄지 않는다) 자동 라벨 배치기가 밀어내지도 않는다.
 
@@ -1035,8 +1054,8 @@ pub struct Config {
 오버레이 레이어는 공유 데이터 영역의 오른쪽에 그리는 두 번째 Y 축이며, 자기가 나열한 시리즈를
 그 축으로 스케일한다. `overlays`의 기본값은 빈 목록이며 그때 JSON에서 키를 생략한다.
 레이어가 있어도 문서는 하나의 `Config`다. 차트 영역, 두 X 축, 제목, 그리드, 합친 범례,
-색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만 레이어마다 있다. bounded 차트
-(원형·레이더)에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
+색상 막대, `draw_style`은 부모에 한 번만 있고 아래 필드만 레이어마다 있다. bounded 차트인
+원형 차트에는 오버레이가 없고, 비상주 스트리밍은 오버레이가 있는 문서를 거부한다.
 
 | 필드 | 타입 | 의미 |
 |---|---|---|
@@ -1205,6 +1224,7 @@ pub struct Config {
 | `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 아직 그리지 않는다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 아직 그리지 않는다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |
+| `Radar { color, style, labels }` | radar | 극좌표 차트의 범주형 각도 축에서 범주마다 값 하나를 지나는 닫힌 외곽선. `x_column`은 위치 컬럼 `0..n`, `y_column`은 값이다(NaN이면 그 자리에서 외곽선과 채움이 끊긴다). 마지막 범주와 첫 범주를 닫는 세그먼트로 잇는다. `style`은 `RadarSeriesStyle`(선 굵기, 채움 색이나 `fill_opacity`, 꼭짓점 표식과 크기, `emphasis_brightness`)이며, 전체 원에서는 안쪽 고리까지 채우고 표식은 산점도 경로로 그린다. `labels.text`는 `format_radar_labels`가 기록한 값 라벨 문자열이며 아직 그리지 않는다. `Chord` 보간의 `Config.polar`가 필요하고 레이어마다 레이더 시리즈는 16개까지이며 스트리밍 소스는 거부한다. [레이더 차트](RADAR.md) 참고 |
 
 세로·가로 설정과 기존 차트의 방향 변경 예제는 [히스토그램 사용법](HISTOGRAM.md)에 있다.
 

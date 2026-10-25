@@ -182,14 +182,15 @@ page. The case outputs of `radial_gallery`, `categorical_gallery`,
 `boxplot_gallery`, `radar_gallery` and `polar_plot` are renamed, for example
 `target/radial-gallery/ceramic.png` → `assets/gallery-donut.png`; the feature
 examples and `gallery_concepts` already write their final names. The
-bounded examples use `RadialRenderer` and `RadarRenderer`,
-respectively; their small-data models do not use the Cartesian column pool.
-`categorical_gallery` and `boxplot_gallery` open their documents with
-`Config::from_categorical` and `Config::from_boxplot` and draw them with the
-Cartesian `Renderer`. `gallery-categorical.png` and `gallery-boxplot.png` were
-drawn by the former bounded renderers, with value labels, which the Cartesian
-category bars and box plots do not draw yet (#40 item 13h); they are replaced
-when they do.
+radial example uses `RadialRenderer`; its small-data model does not use the
+Cartesian column pool. `categorical_gallery`, `boxplot_gallery` and
+`radar_gallery` open their documents with `Config::from_categorical`,
+`Config::from_boxplot` and `Config::from_radar` and draw them with the
+Cartesian `Renderer`. `gallery-categorical.png`, `gallery-boxplot.png`,
+`gallery-radar.png` and `gallery-radar-circle.png` were drawn by the former
+bounded renderers, with value labels, which the Cartesian category bars, box
+plots and radar series do not draw yet (#40 item 13h); they are replaced when
+they do.
 
 ## Precise and hand-drawn Sketch previews
 

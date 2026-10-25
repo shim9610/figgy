@@ -110,8 +110,8 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Polar plots | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
 | Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical` | [Bars](crates/renderer/CATEGORICAL.md) |
 | Box plots | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`); legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
+| Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
-| Radar charts | `RadarChart` categories and one value per category per series | [Radar](crates/renderer/RADAR.md) |
 
 Every row above pies and donuts is a column-backed chart: its data enters
 through `ColumnSource` into one GPU column pool, and these charts share one
@@ -120,9 +120,9 @@ charts, except that a polar chart takes no overlay axes. Streamed, non-resident
 sources draw lines, scatter, error bars, histograms and heatmaps in a
 single-panel document. Contours, fills and step lines, vector fields, colour and
 size maps, polar plots, and documents with overlays or subplots reject streamed
-sources with an explicit error, and so do categorical bars and box plots. Pies
-and donuts and radar charts keep their categories and values in their own small model, with no
-`ColumnSource`, and each has its own renderer. The annotation layer works on
+sources with an explicit error, and so do categorical bars, box plots and
+radar series. Pies and donuts keep their values in their own small model, with
+no `ColumnSource`, and have their own renderer. The annotation layer works on
 both kinds.
 
 ## Quick start
@@ -272,12 +272,14 @@ chart.config_mut().bottom_x.major_spacing = 30.0; // spokes every 30°
 chart.config_mut().bottom_x.label_style.format = LabelFormat::Degrees; // "30°"
 ```
 
-A radar chart keeps its categories and values in a `RadarChart` model, with no
-columns to upload, and has its own renderer:
+A radar chart is a polar chart whose angle axis is categorical, drawn with
+`DataRenderType::Radar` series. A `RadarChart` document opens through
+`Config::from_radar`, which returns the chart, its series and the columns to
+upload, borrowed from the document:
 
 ```rust,ignore
-use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
-use renderer::{Category, Color, encode_png};
+use renderer::radar::{RadarChart, RadarSeries};
+use renderer::{Category, Chart, Color, config::Config, encode_png};
 
 let mut chart = RadarChart::default();
 chart.categories = ["Speed", "Safety", "Size", "Docs", "Tests"]
@@ -288,12 +290,16 @@ chart.series = vec![
     RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
     RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
 ];
-// `gpu` is a `RendererDevice`. In the quick start, bind it with
-// `let gpu = RendererDevice::new(...)` and pass `gpu.clone()` to `Renderer::try_new`.
-let mut radar = RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
-let image = radar.export_rgba(&chart, (720, 520), 1.0)?;
+chart.value_range = Some([0.0, 10.0]);
+chart.validate()?;
+// `renderer` is the quick start's `Renderer`.
+let (mut config, series, uploads) = Config::from_radar(&chart);
+config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y: 0, width: 720, height: 520 });
+for upload in &uploads {
+    renderer.add_column(upload.column.clone(), &upload.values)?;
+}
+let image = renderer.export_panel_rgba(&Chart::new(config), &series, 1.0)?;
 std::fs::write("radar.png", encode_png(&image)?)?;
-// In a render pass instead: radar.prepare(&chart, (720, 520), 1.0)?.draw(&mut pass);
 ```
 
 The complete programs are [polar_plot.rs](crates/renderer/examples/polar_plot.rs)
@@ -332,7 +338,7 @@ animations and interactive examples.
 |---|---|
 | Draw in a native window | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | Embed in egui | [egui_embed.rs](crates/renderer/examples/egui_embed.rs), run with `--features egui_demo` |
-| Edit pies, donuts or radar charts | [Native editors](crates/renderer/examples/README.md#interactive-examples) |
+| Edit pies or donuts | [Native editors](crates/renderer/examples/README.md#interactive-examples) |
 | Connect picking, dragging and plot-area resizing | [Interaction guide](crates/renderer/INTERACTION.md) |
 | Render data that does not fit in GPU memory | [Streaming and residency](crates/renderer/ARCHITECTURE.md#exact-streaming-and-residency) |
 
@@ -348,8 +354,9 @@ canvas, events and async calls. It is maintained with the renderer, and every
 renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
 own, separate from the Rust library's API. The `FiggyChart` export and
 `<figgy-chart>` element cover Cartesian charts, categorical bars and box
-plots included, and polar charts; `FiggyBoundedChart`
-covers pies, donuts and radar charts, and the host
+plots included, and polar charts, radar charts included
+(`set_radar_document`); `FiggyBoundedChart`
+covers pies and donuts, and the host
 handles their canvas events. The wrapper is the Cargo package `figgy`, built from
 this repository (`publish = false`); the `figgy` crate on crates.io and the
 `figgy` package on npm are unrelated projects.
