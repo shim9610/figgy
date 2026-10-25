@@ -2918,6 +2918,269 @@ pub enum ScatterShape {
     StarFilled,
 }
 
+impl DataRenderType {
+    /// Whether a series of this kind draws one selectable point per source
+    /// index, the selection [`crate::config::Config::step_selection`] steps
+    /// a [`PickedDataRef::Point`](crate::config::PickedDataRef::Point)
+    /// across: every kind with a line or markers, a radar series (its
+    /// vertices) and a point vector (its anchors, which pick and highlight
+    /// like markers).
+    fn steps_points(&self) -> bool {
+        match self {
+            DataRenderType::Scatter { .. }
+            | DataRenderType::Line { .. }
+            | DataRenderType::ScatterLine { .. }
+            | DataRenderType::ScatterErrorbarX { .. }
+            | DataRenderType::ScatterErrorbarY { .. }
+            | DataRenderType::ScatterErrorbarXY { .. }
+            | DataRenderType::LineScatterErrorbarX { .. }
+            | DataRenderType::LineScatterErrorbarY { .. }
+            | DataRenderType::LineScatterErrorbarXY { .. }
+            | DataRenderType::Radar { .. } => true,
+            DataRenderType::Vector { components, .. } => {
+                matches!(components, VectorComponents::Points { .. })
+            }
+            DataRenderType::Histogram { .. }
+            | DataRenderType::Heatmap { .. }
+            | DataRenderType::Contour { .. }
+            | DataRenderType::HeatmapContour { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. } => false,
+        }
+    }
+}
+
+impl crate::config::Config {
+    /// Move the first typed data selection (`picked_data.refs[0]`) by
+    /// source indices, over the series list `series` the chart draws, and
+    /// return whether it moved. `column_len` gives the length of a
+    /// registered column (`None` for a column that is not registered,
+    /// which counts as empty). Indices clamp to the selected series; nothing
+    /// wraps.
+    ///
+    /// - A point (of a series that draws points: lines, markers, radar
+    ///   vertices and point vectors) moves along its series by `dx`, and
+    ///   `dy` moves to another point-drawing series, in series order. A
+    ///   point vector counts only the points where its `u` and `v` columns
+    ///   have a value too.
+    /// - A category bar moves along its categories by the delta of the
+    ///   pointer axis its category axis runs along (`dx` for vertical bars,
+    ///   `dy` for horizontal ones) and across the category bar series of its
+    ///   layer by the other; a box moves the same way across the box plot
+    ///   series of its layer (boxes, never their outliers).
+    /// - A histogram bin moves along its bins by `dx` for vertical bars and
+    ///   `dy` for horizontal ones, and across the histograms of the same
+    ///   orientation by the other.
+    /// - A matrix cell (a field's or a grid vector's, over its `u` grid)
+    ///   moves by `dx` along x and `dy` along y.
+    ///
+    /// A contour level and a value label do not step. An error names a
+    /// matrix cell selection whose series draws no matrix any more.
+    pub fn step_selection(
+        &mut self,
+        series: &[SeriesConfig],
+        dx: i32,
+        dy: i32,
+        column_len: impl Fn(&str) -> Option<usize>,
+    ) -> Result<bool, &'static str> {
+        let Some(next) = self.stepped_selection(series, dx, dy, &column_len)? else {
+            return Ok(false);
+        };
+        let Some(current) = self.picked_data.as_mut().and_then(|s| s.refs.first_mut()) else {
+            return Ok(false);
+        };
+        if *current == next {
+            return Ok(false);
+        }
+        *current = next;
+        Ok(true)
+    }
+
+    /// The selection [`Self::step_selection`] moves to, or `None` when it
+    /// does not move.
+    fn stepped_selection(
+        &self,
+        series: &[SeriesConfig],
+        dx: i32,
+        dy: i32,
+        column_len: &dyn Fn(&str) -> Option<usize>,
+    ) -> Result<Option<crate::config::PickedDataRef>, &'static str> {
+        use crate::config::PickedDataRef;
+        let Some(reference) = self.picked_data.as_ref().and_then(|s| s.refs.first()) else {
+            return Ok(None);
+        };
+        let Some(position) = series
+            .iter()
+            .position(|s| s.series_id == reference.series_id())
+        else {
+            return Ok(None);
+        };
+        let len = |column: &str| column_len(column).unwrap_or(0);
+        let shift = |index: usize, delta: i32, count: usize| {
+            index
+                .saturating_add_signed(delta as isize)
+                .min(count.saturating_sub(1))
+        };
+        Ok(match reference {
+            PickedDataRef::Point {
+                series_id,
+                point_index,
+                ..
+            } => {
+                let points = || series.iter().filter(|s| s.render_type.steps_points());
+                let Some(index) = points().position(|s| s.series_id == *series_id) else {
+                    return Ok(None);
+                };
+                let Some(next) = points().nth(shift(index, dy, points().count())) else {
+                    return Ok(None);
+                };
+                let mut count = len(&next.x_column).min(len(&next.y_column));
+                // A point vector draws only where all four columns have a value.
+                if let DataRenderType::Vector {
+                    components: VectorComponents::Points { u, v },
+                    ..
+                } = &next.render_type
+                {
+                    count = count.min(len(u)).min(len(v));
+                }
+                Some(PickedDataRef::Point {
+                    series_id: next.series_id.clone(),
+                    source_id: next.source_id.clone(),
+                    point_index: shift(*point_index, dx, count),
+                })
+            }
+            PickedDataRef::HistogramBin {
+                series_id,
+                bin_index,
+                ..
+            } => {
+                let selected = &series[position].render_type;
+                let boxes = selected.box_plot().is_some();
+                if selected.category_bars().is_some() || boxes {
+                    let layer = self.layer_of_series(series_id);
+                    let groups = self.bar_groups_of(layer);
+                    let horizontal = groups.direction == CategoryBarDirection::Horizontal;
+                    let members = || {
+                        series.iter().filter(|s| {
+                            (if boxes {
+                                s.render_type.box_plot().is_some()
+                            } else {
+                                s.render_type.category_bars().is_some()
+                            }) && self.layer_of_series(&s.series_id) == layer
+                        })
+                    };
+                    let Some(index) = members().position(|s| s.series_id == *series_id) else {
+                        return Ok(None);
+                    };
+                    let (bar_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let Some(next) = members().nth(shift(index, series_delta, members().count()))
+                    else {
+                        return Ok(None);
+                    };
+                    // A box's record is not a registered column: its
+                    // positions hold one value per category.
+                    let count = if boxes {
+                        len(next.box_plot_columns().0)
+                    } else {
+                        let (positions, values) = next.category_bar_columns(groups.direction);
+                        len(positions).min(len(values))
+                    };
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    Some(PickedDataRef::HistogramBin {
+                        series_id: next.series_id.clone(),
+                        source_id: next.source_id.clone(),
+                        bin_index: shift(*bin_index, bar_delta, count),
+                    })
+                } else {
+                    let DataRenderType::Histogram { bar } = selected else {
+                        return Ok(None);
+                    };
+                    let horizontal = matches!(bar.orientation, BarOrientation::Horizontal);
+                    let histograms = || {
+                        series.iter().filter(|s| {
+                            matches!(&s.render_type,
+                                DataRenderType::Histogram { bar: other }
+                                if other.orientation == bar.orientation)
+                        })
+                    };
+                    let Some(index) = histograms().position(|s| s.series_id == *series_id) else {
+                        return Ok(None);
+                    };
+                    let (bin_delta, series_delta) = if horizontal { (dy, dx) } else { (dx, dy) };
+                    let Some(next) =
+                        histograms().nth(shift(index, series_delta, histograms().count()))
+                    else {
+                        return Ok(None);
+                    };
+                    let (edges, values) = if horizontal {
+                        (&next.y_column, &next.x_column)
+                    } else {
+                        (&next.x_column, &next.y_column)
+                    };
+                    let count = len(edges).saturating_sub(1).min(len(values));
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    Some(PickedDataRef::HistogramBin {
+                        series_id: next.series_id.clone(),
+                        source_id: next.source_id.clone(),
+                        bin_index: shift(*bin_index, bin_delta, count),
+                    })
+                }
+            }
+            PickedDataRef::MatrixCell {
+                source_id,
+                series_id,
+                x_index,
+                y_index,
+            } => {
+                let selected = &series[position];
+                // A field steps over its matrix; a grid vector over its `u`
+                // grid, which every other grid of the series matches.
+                let matrix = match &selected.render_type {
+                    DataRenderType::Heatmap { matrix, .. }
+                    | DataRenderType::Contour { matrix, .. }
+                    | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                    DataRenderType::Vector {
+                        components: VectorComponents::Grid { u, .. },
+                        ..
+                    } => u,
+                    _ => return Err("selected matrix no longer exists"),
+                };
+                let edges = usize::from(matches!(matrix.grid_layout, GridLayout::Edges));
+                let depth = matrix
+                    .columns
+                    .iter()
+                    .filter_map(|c| column_len(c))
+                    .min()
+                    .unwrap_or(0);
+                let (nx, ny) = if matches!(matrix.orientation, MatrixOrientation::ColumnsAreY) {
+                    (depth, matrix.columns.len())
+                } else {
+                    (matrix.columns.len(), depth)
+                };
+                Some(PickedDataRef::MatrixCell {
+                    source_id: source_id.clone(),
+                    series_id: series_id.clone(),
+                    x_index: shift(
+                        *x_index,
+                        dx,
+                        nx.min(len(&selected.x_column).saturating_sub(edges)),
+                    ),
+                    y_index: shift(
+                        *y_index,
+                        dy,
+                        ny.min(len(&selected.y_column).saturating_sub(edges)),
+                    ),
+                })
+            }
+            PickedDataRef::ContourLevel { .. } | PickedDataRef::ValueLabel { .. } => None,
+        })
+    }
+}
+
 #[cfg(test)]
 mod vector_style_tests {
     use super::*;
@@ -5031,6 +5294,365 @@ mod radar_tests {
         assert_eq!(
             serde_json::to_string(&legacy).unwrap(),
             r#"{"line_width_px":null,"fill":null,"marker":"None","marker_size_px":null}"#
+        );
+    }
+}
+
+#[cfg(test)]
+mod step_selection_tests {
+    use super::*;
+    use crate::config::{Config, DataSelectionsConfig, PickedDataRef};
+    use std::collections::HashMap;
+
+    fn entry(id: &str, x: &str, y: &str, render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: Some(format!("{id}-source")),
+            label: None,
+            x_column: x.into(),
+            y_column: y.into(),
+            render_type,
+        }
+    }
+
+    fn line() -> DataRenderType {
+        DataRenderType::Line {
+            line: DataLineStyleConfig::default(),
+        }
+    }
+
+    fn histogram(orientation: BarOrientation) -> DataRenderType {
+        DataRenderType::Histogram {
+            bar: DataBarStyleConfig {
+                fill_color: Color::BLACK,
+                border_color: Color::BLACK,
+                border_width: 1.0,
+                baseline: 0.0,
+                gap_px: 1.0,
+                width_ratio: 1.0,
+                orientation,
+                bar_style_overrides: None,
+            },
+        }
+    }
+
+    fn bars() -> DataRenderType {
+        DataRenderType::CategoryBars {
+            color: Color::BLACK,
+            style: CategoryBarStyle::default(),
+            labels: CategoryBarSeriesLabels::default(),
+            label_format: CategoryBarLabelFormat::default(),
+            overrides: None,
+        }
+    }
+
+    fn boxes() -> DataRenderType {
+        DataRenderType::BoxPlot {
+            color: Color::BLACK,
+            style: BoxPlotStyle::default(),
+            labels: BoxPlotSeriesLabels::default(),
+            outliers: None,
+            overrides: None,
+        }
+    }
+
+    fn matrix(columns: &[&str], orientation: MatrixOrientation, layout: GridLayout) -> MatrixRef {
+        MatrixRef {
+            columns: columns.iter().map(|c| (*c).into()).collect(),
+            orientation,
+            grid_layout: layout,
+        }
+    }
+
+    fn vector(components: VectorComponents) -> DataRenderType {
+        DataRenderType::Vector {
+            components,
+            style: VectorStyle {
+                color: Color::BLACK,
+                width_px: 1.0,
+                scale: VectorScale::Pixels { px_per_unit: 1.0 },
+                pivot: VectorPivot::default(),
+                head_length_px: 4.0,
+                head_width_px: 4.0,
+                min_length_px: 0.0,
+                color_map: None,
+            },
+        }
+    }
+
+    fn selected(reference: PickedDataRef) -> Config {
+        let mut config = crate::default::default_config();
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![reference],
+            ..Default::default()
+        });
+        config
+    }
+
+    fn point(series_id: &str, point_index: usize) -> PickedDataRef {
+        PickedDataRef::Point {
+            source_id: Some(format!("{series_id}-source")),
+            series_id: series_id.into(),
+            point_index,
+        }
+    }
+
+    fn bin(series_id: &str, bin_index: usize) -> PickedDataRef {
+        PickedDataRef::HistogramBin {
+            source_id: Some(format!("{series_id}-source")),
+            series_id: series_id.into(),
+            bin_index,
+        }
+    }
+
+    fn cell(series_id: &str, x_index: usize, y_index: usize) -> PickedDataRef {
+        PickedDataRef::MatrixCell {
+            source_id: Some(format!("{series_id}-source")),
+            series_id: series_id.into(),
+            x_index,
+            y_index,
+        }
+    }
+
+    /// Step `config` once and return the moved selection, `None` when it
+    /// did not move.
+    fn step(
+        config: &mut Config,
+        series: &[SeriesConfig],
+        columns: &HashMap<&str, usize>,
+        dx: i32,
+        dy: i32,
+    ) -> Option<PickedDataRef> {
+        let moved = config
+            .step_selection(series, dx, dy, |c| columns.get(c).copied())
+            .unwrap();
+        moved.then(|| config.picked_data.as_ref().unwrap().refs[0].clone())
+    }
+
+    #[test]
+    fn a_point_steps_along_its_series_and_across_point_series_and_clamps() {
+        let series = [
+            entry("a", "x", "ya", line()),
+            entry("h", "e", "c", histogram(BarOrientation::Vertical)),
+            entry("b", "x", "yb", line()),
+            entry(
+                "v",
+                "x",
+                "yb",
+                vector(VectorComponents::Points {
+                    u: "u".into(),
+                    v: "vv".into(),
+                }),
+            ),
+        ];
+        let columns = HashMap::from([
+            ("x", 10),
+            ("ya", 10),
+            ("yb", 8),
+            ("e", 4),
+            ("c", 3),
+            ("u", 5),
+            ("vv", 6),
+        ]);
+        let mut config = selected(point("a", 2));
+        assert_eq!(
+            step(&mut config, &series, &columns, 3, 0),
+            Some(point("a", 5))
+        );
+        assert_eq!(
+            step(&mut config, &series, &columns, 100, 0),
+            Some(point("a", 9))
+        );
+        // At the end of the series nothing moves.
+        assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
+        // Across the point series, the histogram skipped, the index clamped
+        // to the next series' shorter columns.
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 1),
+            Some(point("b", 7))
+        );
+        // A point vector counts the points of all four columns.
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 1),
+            Some(point("v", 4))
+        );
+        assert_eq!(step(&mut config, &series, &columns, 0, 1), None);
+        assert_eq!(
+            step(&mut config, &series, &columns, -100, -100),
+            Some(point("a", 0))
+        );
+        assert_eq!(step(&mut config, &series, &columns, -1, -1), None);
+    }
+
+    #[test]
+    fn a_histogram_bin_steps_by_its_orientation() {
+        let series = [
+            entry("v1", "e", "c", histogram(BarOrientation::Vertical)),
+            entry("h1", "hc", "he", histogram(BarOrientation::Horizontal)),
+            entry("v2", "e", "c2", histogram(BarOrientation::Vertical)),
+        ];
+        let columns = HashMap::from([("e", 6), ("c", 5), ("c2", 3), ("he", 4), ("hc", 3)]);
+        let mut config = selected(bin("v1", 1));
+        assert_eq!(
+            step(&mut config, &series, &columns, 2, 0),
+            Some(bin("v1", 3))
+        );
+        // `dy` moves across the vertical histograms only, clamping.
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 1),
+            Some(bin("v2", 2))
+        );
+        assert_eq!(step(&mut config, &series, &columns, 0, 1), None);
+        // A horizontal histogram's bins run along `dy`; its edges are y.
+        let mut config = selected(bin("h1", 0));
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 5),
+            Some(bin("h1", 2))
+        );
+        assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
+        // Bins need edges and counts.
+        let empty = HashMap::from([("e", 1), ("c", 5)]);
+        let mut config = selected(bin("v1", 0));
+        assert_eq!(step(&mut config, &series, &empty, 1, 0), None);
+    }
+
+    #[test]
+    fn a_category_bar_or_box_steps_along_its_categories_and_across_its_layer() {
+        let series = [
+            entry("a", "pos", "va", bars()),
+            entry("box", "pos", "rec", boxes()),
+            entry("b", "pos", "vb", bars()),
+            entry("c", "pos", "vc", bars()),
+        ];
+        let columns = HashMap::from([("pos", 4), ("va", 4), ("vb", 4), ("vc", 4)]);
+        let mut config = selected(bin("a", 0));
+        // Series `c` sits on an overlay, another bar group.
+        config.overlays.push(crate::layer::OverlayLayer {
+            y_axis: crate::default::default_axis_options_y(),
+            series: vec!["c".into()],
+            legend: None,
+        });
+        assert_eq!(
+            step(&mut config, &series, &columns, 2, 0),
+            Some(bin("a", 2))
+        );
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 1),
+            Some(bin("b", 2))
+        );
+        assert_eq!(step(&mut config, &series, &columns, 0, 1), None);
+        // Horizontal bars run their categories along `dy`.
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..Default::default()
+        });
+        config.overlays.clear();
+        let horizontal = [
+            entry("a", "va", "pos", bars()),
+            entry("b", "vb", "pos", bars()),
+        ];
+        let mut config2 = config.clone();
+        assert_eq!(
+            step(&mut config2, &horizontal, &columns, 0, 1),
+            Some(bin("b", 3))
+        );
+        assert_eq!(
+            step(&mut config2, &horizontal, &columns, -1, -3),
+            Some(bin("a", 0))
+        );
+        // A box steps over the box plot series, its count from its
+        // positions (its record is not a registered column).
+        let mut config = selected(bin("box", 0));
+        assert_eq!(
+            step(&mut config, &series, &columns, 9, 0),
+            Some(bin("box", 3))
+        );
+        assert_eq!(step(&mut config, &series, &columns, 0, 1), None);
+    }
+
+    #[test]
+    fn a_matrix_cell_steps_over_its_grid_and_a_vector_grid_over_u() {
+        let field = DataRenderType::Heatmap {
+            matrix: matrix(
+                &["z0", "z1", "z2"],
+                MatrixOrientation::ColumnsAreX,
+                GridLayout::Centers,
+            ),
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+        };
+        let grid = vector(VectorComponents::Grid {
+            u: matrix(
+                &["u0", "u1"],
+                MatrixOrientation::ColumnsAreY,
+                GridLayout::Edges,
+            ),
+            v: matrix(
+                &["v0", "v1"],
+                MatrixOrientation::ColumnsAreY,
+                GridLayout::Edges,
+            ),
+        });
+        let series = [
+            entry("f", "x", "y", field),
+            entry("g", "gx", "gy", grid),
+            entry("l", "x", "y", line()),
+        ];
+        let columns = HashMap::from([
+            ("x", 3),
+            ("y", 5),
+            ("z0", 5),
+            ("z1", 4),
+            ("z2", 5),
+            ("gx", 9),
+            ("gy", 3),
+            ("u0", 8),
+            ("u1", 8),
+        ]);
+        let mut config = selected(cell("f", 0, 0));
+        // Three columns along x, the shortest column (4) along y.
+        assert_eq!(
+            step(&mut config, &series, &columns, 5, 9),
+            Some(cell("f", 2, 3))
+        );
+        // A grid vector: columns along y, edges cut one from each axis.
+        let mut config = selected(cell("g", 0, 0));
+        assert_eq!(
+            step(&mut config, &series, &columns, 20, 20),
+            Some(cell("g", 7, 1))
+        );
+        // A matrix selection on a series that draws no matrix is an error.
+        let mut config = selected(cell("l", 0, 0));
+        assert_eq!(
+            config.step_selection(&series, 1, 0, |c| columns.get(c).copied()),
+            Err("selected matrix no longer exists")
+        );
+    }
+
+    #[test]
+    fn no_selection_an_unknown_series_and_labels_do_not_step() {
+        let series = [entry("a", "x", "y", line())];
+        let columns = HashMap::from([("x", 3), ("y", 3)]);
+        let mut config = crate::default::default_config();
+        assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
+        let mut config = selected(point("gone", 0));
+        assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
+        let label = PickedDataRef::ValueLabel {
+            source_id: None,
+            series_id: "a".into(),
+            category_index: 0,
+        };
+        let mut config = selected(label.clone());
+        assert_eq!(step(&mut config, &series, &columns, 1, 0), None);
+        assert_eq!(config.picked_data.unwrap().refs, [label]);
+        // An unregistered column counts as empty: the index clamps to 0.
+        let mut config = selected(point("a", 2));
+        assert_eq!(
+            step(&mut config, &series, &HashMap::new(), 1, 0),
+            Some(point("a", 0))
         );
     }
 }
