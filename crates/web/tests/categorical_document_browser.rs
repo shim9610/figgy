@@ -111,3 +111,38 @@ async fn a_categorical_document_opens_as_category_bars() {
     let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
     assert_eq!(series.len(), 2);
 }
+
+/// A value label is a drag target: the document's labels are written,
+/// `press_value_label` selects one by its `label_id` (an id naming no label
+/// changes nothing), `on_move` writes the series' `labels.offsets`,
+/// `step_selection` does not step it and `selection_details` reports its
+/// category.
+#[wasm_bindgen_test(async)]
+async fn a_value_label_picks_selects_and_drags() {
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart.set_categorical_document(DOCUMENT).unwrap();
+    chart.frame().unwrap();
+    let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+    // The reader wrote one string per category.
+    assert_eq!(series[0].value_label_text().unwrap().len(), 3);
+
+    assert!(!chart.press_value_label("axis_left").unwrap());
+    assert!(!chart.press_value_label("series:north:label:9").unwrap());
+    assert!(chart.press_value_label("series:north:label:1").unwrap());
+    let selected = details(&chart).await;
+    assert_eq!(selected["category_id"], "q2");
+    assert_eq!(selected["label_id"], "series:north:label:1");
+    assert!(!chart.step_selection(1, 0).unwrap());
+
+    chart.on_move(6.0, -4.0).unwrap();
+    chart.on_release();
+    let series: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+    let [dx, dy] = series[0].value_label_offset(1);
+    assert!(dx > 0.0 && dy < 0.0, "the drag wrote ({dx}, {dy})");
+    assert_eq!(series[0].value_label_offset(0), [0.0, 0.0]);
+    // After the release a move drags nothing.
+    chart.on_move(6.0, -4.0).unwrap();
+    let after: Vec<SeriesConfig> = serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+    assert_eq!(after, series);
+    chart.frame().unwrap();
+}
