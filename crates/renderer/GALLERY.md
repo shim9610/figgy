@@ -189,9 +189,9 @@ Cartesian column pool. `categorical_gallery`, `boxplot_gallery` and
 Cartesian `Renderer`, value labels included (the documents' `labels`
 settings, written into `labels.text` by the readers). `categorical_gallery`
 leaves 12 % of the value range past the bars for outside labels, as the
-former chart did, and `boxplot_gallery` fixes its value range at 0 to 120 so
-the label past the highest outlier fits: labels are clipped to the data area,
-as the data they label.
+former chart did. `boxplot_gallery` labels every box with its median; the
+label past the highest outlier, which would cross the top of the data area,
+sits below that outlier instead.
 
 ## Precise and hand-drawn Sketch previews
 

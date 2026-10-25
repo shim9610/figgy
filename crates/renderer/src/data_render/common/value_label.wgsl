@@ -66,6 +66,9 @@ const VALUE_LABEL_FIT_HEIGHT: f32 = 1.4;
 const VALUE_LABEL_CENTRE_BASELINE: f32 = 0.32;
 /// The baseline below a radar label's anchor, in font sizes.
 const VALUE_LABEL_RADAR_BASELINE: f32 = 0.35;
+/// A placement direction component below this is no direction: a radar
+/// spoke straight up checks no left or right edge.
+const VALUE_LABEL_FLIP_EPSILON: f32 = 0.001;
 
 @group(1) @binding(4) var<uniform> value_label: ValueLabelParams;
 @group(1) @binding(5) var value_label_atlas: texture_2d<f32>;
@@ -98,10 +101,37 @@ fn value_label_centre_y(baseline: f32, size: vec2<f32>) -> f32 {
     return baseline + value_label.metrics.y - size.y * 0.5;
 }
 
+/// The data area in chart-area render pixels, y down, `(x0, y0, x1, y1)`:
+/// the transform's data-to-panel affine over the chart area its
+/// `pixel_to_ndc` spans.
+fn value_label_data_area() -> vec4<f32> {
+    let chart = vec2<f32>(2.0) / transform.pixel_to_ndc;
+    let lo = transform.data_to_panel_offset;
+    let hi = transform.data_to_panel_offset + transform.data_to_panel_scale;
+    return vec4<f32>(lo.x * chart.x, chart.y - hi.y * chart.y, hi.x * chart.x, chart.y - lo.y * chart.y);
+}
+
+/// Whether a content box of `size` centred on `centre` crosses the data
+/// area's edge in the direction `dir` it was placed in from its anchor (y
+/// down; a zero component checks no edge on that axis). The flip rule of
+/// every kind reads this before the drag offset: a label placed outside its
+/// anchor that would cross the edge goes to the other side of the anchor,
+/// as the bars' `Auto` rule puts a label inside its bar.
+fn value_label_crosses(centre: vec2<f32>, size: vec2<f32>, dir: vec2<f32>) -> bool {
+    let area = value_label_data_area();
+    let lo = centre - size * 0.5;
+    let hi = centre + size * 0.5;
+    return (dir.x > VALUE_LABEL_FLIP_EPSILON && hi.x > area.z)
+        || (dir.x < -VALUE_LABEL_FLIP_EPSILON && lo.x < area.x)
+        || (dir.y > VALUE_LABEL_FLIP_EPSILON && hi.y > area.w)
+        || (dir.y < -VALUE_LABEL_FLIP_EPSILON && lo.y < area.y);
+}
+
 /// A bar's label: outside its value end, or inside the bar centred on it.
 /// `VALUE_LABEL_AUTO` is the former chart's rule: outside grouped bars,
 /// inside a stack's segments that fit it, else none. An outside label of a
-/// stack segment a later segment covers draws nothing.
+/// stack segment a later segment covers draws nothing. An outside label
+/// that would cross the data area's edge goes inside the bar's end.
 fn value_label_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     let bar = category_bar(row, resolve_bar_style(category_geometry_style(), row));
     if (!bar.valid) {
@@ -130,23 +160,48 @@ fn value_label_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     }
     let end = bar.end_px;
     var centre: vec2<f32>;
+    var dir: vec2<f32>;
     if (horizontal) {
         // Past the end, away from the bar's start.
         let right = end >= middle.x;
-        let x = select(end - gap - size.x * 0.5, end + gap + size.x * 0.5, right);
-        centre = vec2<f32>(x, value_label_centre_y(middle.y + font * VALUE_LABEL_CENTRE_BASELINE, size));
-    } else if (end <= middle.y) {
-        // Above an end that rises: the baseline `gap` above it.
-        centre = vec2<f32>(middle.x, value_label_centre_y(end - gap, size));
+        dir = vec2<f32>(select(-1.0, 1.0, right), 0.0);
+        centre = vec2<f32>(
+            value_label_beside(end, gap, size.x, dir.x),
+            value_label_centre_y(middle.y + font * VALUE_LABEL_CENTRE_BASELINE, size),
+        );
+        if (value_label_crosses(centre, size, dir)) {
+            // Inside the bar's end instead.
+            centre.x = value_label_beside(end, gap, size.x, -dir.x);
+        }
     } else {
-        // Below an end that falls: the text's top about `gap` below it.
-        centre = vec2<f32>(middle.x, value_label_centre_y(end + gap + font, size));
+        // Above an end that rises, below one that falls.
+        dir = vec2<f32>(0.0, select(1.0, -1.0, end <= middle.y));
+        centre = vec2<f32>(middle.x, value_label_across(end, gap, font, size, dir.y));
+        if (value_label_crosses(centre, size, dir)) {
+            // Inside the bar's end instead.
+            centre.y = value_label_across(end, gap, font, size, -dir.y);
+        }
     }
     return value_label_box_at(row, centre, size);
 }
 
+/// The centre's x of a label `gap` beside the anchor `x`, to its right
+/// (`side` > 0) or its left.
+fn value_label_beside(x: f32, gap: f32, width: f32, side: f32) -> f32 {
+    return select(x - gap - width * 0.5, x + gap + width * 0.5, side > 0.0);
+}
+
+/// The centre's y of a label beyond the anchor `y` along the value axis:
+/// above it (`side` < 0) with its baseline `gap` above, or below it with its
+/// text's top about `gap` below, as the former charts placed them.
+fn value_label_across(y: f32, gap: f32, font: f32, size: vec2<f32>, side: f32) -> f32 {
+    return value_label_centre_y(select(y + gap + font, y - gap, side < 0.0), size);
+}
+
 /// A box's label: `gap` past the farthest of its high whisker, its mean,
-/// its notch and its outliers along the value axis, centred across the box.
+/// its notch and its outliers along the value axis, centred across the box;
+/// on the other side of that top when past it would cross the data area's
+/// edge.
 fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let s = box_stats(row);
     if (!s.valid) {
@@ -180,9 +235,20 @@ fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let font = value_label.metrics.z;
     var centre: vec2<f32>;
     if (horizontal) {
-        centre = vec2<f32>(top + gap + size.x * 0.5, value_label_centre_y(place.middle + font * VALUE_LABEL_CENTRE_BASELINE, size));
+        centre = vec2<f32>(
+            value_label_beside(top, gap, size.x, 1.0),
+            value_label_centre_y(place.middle + font * VALUE_LABEL_CENTRE_BASELINE, size),
+        );
+        if (value_label_crosses(centre, size, vec2<f32>(1.0, 0.0))) {
+            // Before the top of the box instead.
+            centre.x = value_label_beside(top, gap, size.x, -1.0);
+        }
     } else {
-        centre = vec2<f32>(place.middle, value_label_centre_y(top - gap, size));
+        centre = vec2<f32>(place.middle, value_label_across(top, gap, font, size, -1.0));
+        if (value_label_crosses(centre, size, vec2<f32>(0.0, -1.0))) {
+            // Below the top of the box instead.
+            centre.y = value_label_across(top, gap, font, size, 1.0);
+        }
     }
     return value_label_box_at(row, centre, size);
 }
@@ -197,7 +263,8 @@ fn value_label_farther(a: f32, b: f32, horizontal: bool) -> f32 {
 }
 
 /// A radar vertex's label: outside the vertex along its spoke, `gap` from
-/// it, as the former radar chart placed it.
+/// it, as the former radar chart placed it; inward along the spoke when
+/// outward would cross the data area's edge.
 fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     if (row >= category_params.count) {
         return value_label_hidden();
@@ -215,14 +282,24 @@ fn value_label_radar(row: u32, size: vec2<f32>) -> ValueLabelBox {
     if (!(dot(spoke, spoke) > 0.0) || !bar_finite(vertex.x) || !bar_finite(vertex.y)) {
         return value_label_hidden();
     }
-    let d = normalize(spoke);
+    let outward = normalize(spoke);
     let gap = value_label.metrics.x;
     let font = value_label.metrics.z;
-    let centre = vec2<f32>(
+    var centre = value_label_on_spoke(vertex, outward, gap, font, size);
+    if (value_label_crosses(centre, size, outward)) {
+        // Inward along the spoke instead.
+        centre = value_label_on_spoke(vertex, -outward, gap, font, size);
+    }
+    return value_label_box_at(row, centre, size);
+}
+
+/// The centre of a radar label `gap` from `vertex` along the unit spoke
+/// direction `d`, its baseline `0.35` font sizes below that point.
+fn value_label_on_spoke(vertex: vec2<f32>, d: vec2<f32>, gap: f32, font: f32, size: vec2<f32>) -> vec2<f32> {
+    return vec2<f32>(
         vertex.x + d.x * (gap + size.x * 0.5),
         value_label_centre_y(vertex.y + d.y * gap + font * VALUE_LABEL_RADAR_BASELINE, size),
     );
-    return value_label_box_at(row, centre, size);
 }
 
 /// Label `row` of the series as the draw, the selection box and the pick

@@ -973,7 +973,11 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   box plot input fragments. An empty string draws nothing; labels never
   displace each other (the former `LabelPlacer` is gone: thinning the
   category axis is the only thinning). Labels are drawn after every
-  series' picked highlights of their panel, clipped to the data area.
+  series' picked highlights of their panel. A label that would cross the
+  data area's edge past its anchor goes to the other side of it (inside
+  the bar's end, below the box's top, inward along the radar spoke), in
+  the shader for the draw and the pick alike; what still overflows is
+  clipped to the data area.
 - A label is a typed pick target: `pick_chart_data` answers
   `PickedData::ValueLabel { source_id, series_id, category_index,
   distance_px }` within the pick distance of its selection box, with a
@@ -1184,8 +1188,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   px), that the drawn label is the SSOT string's own raster texel for
   texel, that an empty string draws nothing, that a drag moves the label
   by its offset alone, that the selected label's box is its frame, that
-  overlay and subplot series draw their labels in their panels, and the
-  typed pick of a label. `pick_draw_agreement` gains
+  overlay and subplot series draw their labels in their panels, that a
+  label at the data area's edge flips to the other side of its anchor for
+  every kind, drawn whole and picked there, and the typed pick of a label.
+  `pick_draw_agreement` gains
   `value_labels_pick_where_they_paint`; the atlas key is mutation tested
   (`the_value_label_atlas_key_names_every_bake_input`); the model tests
   cover the offsets' validation, drag and round trip and the label id; the

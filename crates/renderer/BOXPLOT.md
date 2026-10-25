@@ -188,8 +188,9 @@ from the statistics it holds; `Config::from_boxplot` writes it from the
 document. The renderer draws each string `10` px past the top of its box (the
 highest of its high whisker, mean, notch and outliers), centred across the
 box, in the value axis' tick label face, unless the placement (or the box's
-override) is `None`; an empty string draws nothing and labels never displace
-each other. A label is a typed pick target (`PickedData::ValueLabel`), its
+override) is `None`; a label that would cross the data area's edge sits on
+the other side of that top instead. An empty string draws nothing and labels
+never displace each other. A label is a typed pick target (`PickedData::ValueLabel`), its
 selection box is its frame, and a drag writes `labels.offsets` (logical
 pixels, one per category); see Value labels in the
 [interaction guide](INTERACTION.md).
@@ -347,7 +348,8 @@ document in `FiggyChart`.
 수염, 캡, 중앙값, 평균, 이상치 모두 자기 상자를 가리킨다. `Config.picked_data`의
 `PickedDataRef::HistogramBin`으로 선택하면 그린 모양 안쪽에 강조 테두리를 그린다. 값 라벨 문자열은
 `labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
-그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면 `labels.offsets`에 기록된다.
+그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
+`labels.offsets`에 기록된다.
 입력 상한은 64범주·16시리즈·총 512항목이며, 문서는 상자 하나에 이상치를 최대 128개, 모두 4096개 받는다.
 
 ## 제목·축·라벨·범례 선택과 이동

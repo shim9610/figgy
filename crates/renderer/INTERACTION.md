@@ -173,9 +173,11 @@ displace each other; thinning the category axis is the only thinning.
 - **Export, overlays and subplots.** PNG export bakes the atlas at the
   export scale, so a 2x export draws the strings at twice the size, not a
   magnified 1x atlas. A series on an overlay or a subplot draws, picks and
-  drags its labels in its own panel; labels are clipped to the data area
-  like every data primitive, so leave room on the value axis for outside
-  labels.
+  drags its labels in its own panel. A label that would cross the data
+  area's edge past its anchor is placed on the other side of the anchor
+  (inside the bar's end, below a box's top, inward along a radar spoke),
+  drawn and picked there; what still overflows after that is clipped to the
+  data area like every data primitive.
 
 ## Manual label placement
 

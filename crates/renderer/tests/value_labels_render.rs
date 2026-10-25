@@ -1134,3 +1134,300 @@ fn a_label_picks_with_its_series_and_category_over_the_data_under_it() {
         r.remove_chart(id).unwrap();
     }
 }
+
+/// Fully covered label ink, over a transparent background or a dark bar
+/// alike: the same predicate measures a label wherever it is drawn.
+fn is_ink_core(p: [u8; 4]) -> bool {
+    p[3] > 200 && p[0] > 200 && p[1] < 40 && p[2] > 200
+}
+
+/// The typed pick of `chart` at the export pixel `at`, at `scale`.
+fn pick_at(
+    r: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    img: &RasterImage,
+    scale: f32,
+    at: (f32, f32),
+) -> Option<PickedData> {
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let request = GpuPickRequest {
+        canvas_position_px: [at.0, at.1],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: img.width,
+            height: img.height,
+        },
+        display_scale: scale,
+        max_distance_px: 0.0,
+    };
+    let picked = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    r.remove_chart(id).unwrap();
+    picked
+}
+
+/// The data area in export pixels, `(x0, y0, x1, y1)`.
+fn data_area_px(chart: &Chart, scale: f32) -> (f32, f32, f32, f32) {
+    let da = chart.config().data_area().expect("data area");
+    (
+        da.x as f32 * scale,
+        da.y as f32 * scale,
+        (da.x + da.width) as f32 * scale,
+        (da.y + da.height) as f32 * scale,
+    )
+}
+
+fn assert_inside(ink: (u32, u32, u32, u32), area: (f32, f32, f32, f32), case: &str) {
+    assert!(
+        ink.0 as f32 >= area.0
+            && ink.1 as f32 >= area.1
+            && ink.2 as f32 + 1.0 <= area.2
+            && ink.3 as f32 + 1.0 <= area.3,
+        "{case}: ink {ink:?} leaves the data area {area:?}"
+    );
+}
+
+fn assert_picks(picked: Option<PickedData>, series: &str, category: usize, case: &str) {
+    match picked {
+        Some(PickedData::ValueLabel {
+            series_id,
+            category_index,
+            ..
+        }) => assert_eq!(
+            (series_id.as_str(), category_index),
+            (series, category),
+            "{case}"
+        ),
+        other => panic!("{case}: the flipped label picked {other:?}"),
+    }
+}
+
+/// An outside bar label that would cross the data area's edge goes inside
+/// its bar's end instead, as the bars' `Auto` rule puts a label inside:
+/// fully drawn, the size the same string has where it does not flip, inside
+/// the data area and the bar, and picked there, at 1x and 2x, vertical and
+/// horizontal. A label with room keeps its outside place.
+#[test]
+fn an_edge_bar_label_flips_inside_its_end() {
+    let mut r = renderer();
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        let roomy = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 40.0));
+        // `20` ends a few pixels short of the edge; `10` and `15` have room.
+        let edge = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 21.0));
+        let series = [bars(
+            "two",
+            BLUE,
+            direction,
+            CategoryBarLabels::Outside,
+            &["20", "10", "15"],
+        )];
+        for scale in SCALES {
+            let case = format!("{direction:?} {scale}x");
+            let roomy_img = r.export_panel_rgba(&roomy, &series, scale).unwrap();
+            let want = bbox(&roomy_img, slot(&roomy, direction, 0, scale), is_ink_core)
+                .expect("the label with room");
+            let img = r.export_panel_rgba(&edge, &series, scale).unwrap();
+            let bar = bbox(&img, slot(&edge, direction, 0, scale), is_blue).unwrap();
+            let inside = (bar.0, bar.1, bar.2 + 1, bar.3 + 1);
+            let ink = bbox(&img, inside, is_ink_core)
+                .unwrap_or_else(|| panic!("{case}: no label inside the bar {bar:?}"));
+            assert_eq!(
+                (ink.2 - ink.0, ink.3 - ink.1),
+                (want.2 - want.0, want.3 - want.1),
+                "{case}: the flipped label is drawn whole"
+            );
+            assert_inside(ink, data_area_px(&edge, scale), &case);
+            let end = value_px(&edge, direction, 20.0, scale);
+            let gap = 6.0 * scale;
+            match direction {
+                CategoryBarDirection::Vertical => assert!(
+                    ink.1 as f32 >= end + gap - (2.0 * scale + 1.0),
+                    "{case}: ink top {} for an end at {end}",
+                    ink.1
+                ),
+                CategoryBarDirection::Horizontal => assert!(
+                    (ink.2 as f32 + 1.0 - (end - gap)).abs() <= 2.0 * scale + 1.0,
+                    "{case}: ink right {} for an end at {end}",
+                    ink.2 + 1
+                ),
+            }
+            assert_picks(
+                pick_at(&mut r, &edge, &series, &img, scale, centre(ink)),
+                "two",
+                0,
+                &case,
+            );
+            // The `15` bar has room: its label stays past its end.
+            let bar = bbox(&img, slot(&edge, direction, 2, scale), is_blue).unwrap();
+            assert_eq!(
+                bbox(&img, (bar.0, bar.1, bar.2 + 1, bar.3 + 1), is_ink_core),
+                None,
+                "{case}: a label with room flipped"
+            );
+        }
+    }
+}
+
+/// A box label that would cross the data area's edge past the top of its
+/// box goes to the other side of that top (below it, or left of it): fully
+/// drawn, inside the data area, `10` px from the top, picked there, at 1x
+/// and 2x. A box with room keeps its label past its top.
+#[test]
+fn an_edge_box_label_flips_below_its_top() {
+    let mut r = renderer();
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        let roomy = box_chart(direction);
+        // Box 0's top is its outlier at 85: a few pixels short of the edge.
+        let mut edge = box_chart(direction);
+        match direction {
+            CategoryBarDirection::Vertical => edge.set_y_range(0.0, 88.0),
+            CategoryBarDirection::Horizontal => edge.set_x_range(0.0, 88.0),
+        }
+        let series = [boxes(direction, &["30", "45", "25"])];
+        for scale in SCALES {
+            let case = format!("{direction:?} {scale}x");
+            let roomy_img = r.export_panel_rgba(&roomy, &series, scale).unwrap();
+            let want = bbox(&roomy_img, slot(&roomy, direction, 0, scale), is_ink_core)
+                .expect("the label with room");
+            let img = r.export_panel_rgba(&edge, &series, scale).unwrap();
+            let ink = bbox(&img, slot(&edge, direction, 0, scale), is_ink_core)
+                .unwrap_or_else(|| panic!("{case}: no label"));
+            assert_eq!(
+                (ink.2 - ink.0, ink.3 - ink.1),
+                (want.2 - want.0, want.3 - want.1),
+                "{case}: the flipped label is drawn whole"
+            );
+            assert_inside(ink, data_area_px(&edge, scale), &case);
+            let top = value_px(&edge, direction, 85.0, scale);
+            let gap = 10.0 * scale;
+            let slack = 2.0 * scale + 1.0;
+            match direction {
+                CategoryBarDirection::Vertical => assert!(
+                    ink.1 as f32 >= top + gap - slack,
+                    "{case}: ink top {} for a box top at {top}",
+                    ink.1
+                ),
+                CategoryBarDirection::Horizontal => assert!(
+                    (ink.2 as f32 + 1.0 - (top - gap)).abs() <= slack,
+                    "{case}: ink right {} for a box top at {top}",
+                    ink.2 + 1
+                ),
+            }
+            assert_picks(
+                pick_at(&mut r, &edge, &series, &img, scale, centre(ink)),
+                "box",
+                0,
+                &case,
+            );
+            // Box 1 (top 70) has room: its label stays past its top.
+            let ink = bbox(&img, slot(&edge, direction, 1, scale), is_ink_core).unwrap();
+            let top = value_px(&edge, direction, 70.0, scale);
+            match direction {
+                CategoryBarDirection::Vertical => {
+                    assert!(ink.3 as f32 + 1.0 <= top, "{case}: box 1's label flipped")
+                }
+                CategoryBarDirection::Horizontal => {
+                    assert!(ink.0 as f32 >= top, "{case}: box 1's label flipped")
+                }
+            }
+        }
+    }
+}
+
+/// A radar label that would cross the data area's edge outward along its
+/// spoke goes inward along it instead: fully drawn, inside the data area,
+/// `9` px from the vertex with the former baseline drop, picked there, at
+/// 1x and 2x. The top and bottom vertices flip; the right one, with room,
+/// does not.
+#[test]
+fn an_edge_radar_label_flips_inward() {
+    let mut r = renderer();
+    // The top and bottom vertices on the outer ring of a 0 to 0.7 axis.
+    const EDGE: [f64; 4] = [0.7, 0.5, 0.7, 0.4];
+    r.add_column("radar.edge", &col(EDGE.to_vec())).unwrap();
+    let roomy = radar_chart();
+    let mut edge = radar_chart();
+    edge.set_y_range(0.0, 0.7);
+    let series = [radar(RadarLabels::Values)];
+    let mut edge_series = series.clone();
+    edge_series[0].y_column = "radar.edge".into();
+    let font = edge.config().left_y.label_style.font_size;
+    for scale in SCALES {
+        let roomy_img = r.export_panel_rgba(&roomy, &series, scale).unwrap();
+        let img = r.export_panel_rgba(&edge, &edge_series, scale).unwrap();
+        let area = data_area_px(&edge, scale);
+        let slack = 2.0 * scale + 1.0;
+        let gap = 9.0 * scale;
+        let drop = 0.35 * font * scale;
+        for (i, side) in [(0usize, 1.0f32), (2, -1.0)] {
+            let case = format!("{scale}x vertex {i}");
+            let (_, ry) = vertex(&roomy, scale, i as f64, RADAR[i]);
+            let (vx, vy) = vertex(&edge, scale, i as f64, EDGE[i]);
+            let h = img.height as f32;
+            // The label with room: beyond the roomy vertex; the flipped one:
+            // between the edge vertex and the centre.
+            let (rx, _) = vertex(&roomy, scale, i as f64, RADAR[i]);
+            let (bx0, bx1) = ((rx - 40.0 * scale) as u32, (rx + 40.0 * scale) as u32);
+            let beyond = |y: f32| match i {
+                0 => (bx0, 0, bx1, y as u32),
+                _ => (bx0, y.ceil() as u32, bx1, h as u32),
+            };
+            let want = bbox(&roomy_img, beyond(ry), is_ink_core).expect("the label with room");
+            // Around the spoke, between the vertex and the centre.
+            let (x0, x1) = ((vx - 40.0 * scale) as u32, (vx + 40.0 * scale) as u32);
+            let inward = match i {
+                0 => (x0, vy.ceil() as u32, x1, (vy + 40.0 * scale) as u32),
+                _ => (x0, (vy - 40.0 * scale) as u32, x1, vy as u32),
+            };
+            let ink = bbox(&img, inward, is_ink_core)
+                .unwrap_or_else(|| panic!("{case}: no label inward of {vy}"));
+            assert_eq!(
+                (ink.2 - ink.0, ink.3 - ink.1),
+                (want.2 - want.0, want.3 - want.1),
+                "{case}: the flipped label is drawn whole"
+            );
+            assert_inside(ink, area, &case);
+            assert!(
+                (centre(ink).0 - vx).abs() <= slack,
+                "{case}: {ink:?} at {vx}"
+            );
+            let baseline = vy + side * gap + drop;
+            assert!(
+                (ink.3 as f32 + 1.0 - baseline).abs() <= slack,
+                "{case}: {ink:?} for a baseline at {baseline}"
+            );
+            assert_picks(
+                pick_at(&mut r, &edge, &edge_series, &img, scale, centre(ink)),
+                "radar",
+                i,
+                &case,
+            );
+        }
+        // The right vertex has room: its label stays outside.
+        let (vx, vy) = vertex(&edge, scale, 1.0, EDGE[1]);
+        let right = bbox(
+            &img,
+            (
+                vx.ceil() as u32,
+                (vy - 20.0 * scale) as u32,
+                img.width,
+                (vy + 20.0 * scale) as u32,
+            ),
+            is_ink_core,
+        )
+        .expect("the right vertex's label outside");
+        assert!(
+            right.0 as f32 >= vx + gap - slack,
+            "{scale}x: {right:?} at {vx}"
+        );
+    }
+}

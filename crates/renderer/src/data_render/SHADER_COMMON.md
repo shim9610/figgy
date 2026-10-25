@@ -1161,6 +1161,19 @@ pick:
   `gap` out plus `0.35` font sizes down, as the former radar chart placed
   it.
 
+The flip rule of every kind: a label placed outside its anchor (a bar's
+`OUTSIDE` label, or `AUTO` on a grouped bar; every box and radar label)
+whose box, before the drag offset, would cross the data area's edge in the
+direction it was placed from the anchor goes to the other side of the
+anchor, as `AUTO` puts a stack's label inside its segment: inside the
+bar's end (the text top about `gap` inside a rising end, `gap` inside a
+horizontal one), on the other side of the box's top, or inward along the
+radar spoke (`-d`). The data area comes from the transform
+(`value_label_data_area`: the data-to-panel affine over the chart area
+that `pixel_to_ndc` spans), so the rule reads only the uniform and the
+pool, and the pick sees it through the same `value_label_place`. What
+still overflows after the flip is clipped by the data-area scissor.
+
 The box is then moved by the drag offset and its origin rounded to the
 pixel grid, so `label_quad` samples the atlas texel for texel
 (`texel_exact`). Labels never displace each other: thinning the category

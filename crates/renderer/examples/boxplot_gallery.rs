@@ -119,9 +119,7 @@ fn main() -> Result {
             ],
             Color::from_rgb8(65, 144, 208),
         )],
-        // Room past the highest outlier for its label: labels are clipped
-        // to the data area, as the data they label.
-        value_range: Some([0., 120.]),
+        value_range: Some([0., 100.]),
         value_title: "Response".into(),
         font_size: 18.,
         legend: false,

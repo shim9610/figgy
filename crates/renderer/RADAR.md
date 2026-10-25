@@ -154,7 +154,8 @@ The renderer draws each string outside its vertex along the spoke, `9` px
 from it, as the former radar chart placed it, in the radius axis' tick label
 face: always with `Values`, and with `Emphasized` only while the series has a
 selected vertex or label. An empty string draws nothing, and labels never
-displace each other. A label is a typed pick target
+displace each other. A label that would cross the data area's edge outward
+goes inward along its spoke instead. A label is a typed pick target
 (`PickedData::ValueLabel`), its selection box is its frame, and a drag writes
 `labels.offsets` (logical pixels, one per category); see Value labels in the
 [interaction guide](INTERACTION.md).
@@ -284,7 +285,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 때 `data_config::format_radar_labels`나 문서 판독기가 적는다. 렌더러는 각 문자열을 꼭짓점에서
 바큇살 바깥쪽으로 9px 떨어진 곳에 반지름 축 눈금 라벨 글꼴로 그린다. `Values`는 항상,
 `Emphasized`는 시리즈에 선택한 꼭짓점이나 라벨이 있을 때만 그린다. 빈 문자열은 그리지 않고
-라벨끼리 밀어내지 않는다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
+라벨끼리 밀어내지 않는다. 바깥쪽 라벨이 데이터 영역 가장자리를 넘으면 바큇살 안쪽에 그린다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
 테두리이며, 끌면 `labels.offsets`(범주마다 하나, 논리 픽셀)에 기록한다.
 
 제목, 범례, 범주 라벨(각도 축 눈금 라벨, 스포크를 따라 이동), 고리 라벨과 반지름 선(중심을
