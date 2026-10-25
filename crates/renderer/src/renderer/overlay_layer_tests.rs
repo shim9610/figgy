@@ -508,6 +508,116 @@ fn document_export_composites_every_layer() {
     assert_eq!(&png[1..4], b"PNG");
 }
 
+// An adaptive log axis (#42) re-plans its ticks on every zoom with no help
+// from the host: `Chart::set_y_range` and `set_chart_view_state` rewrite the
+// range and keep the policy, on the base axes and an overlay's Y axis, the
+// zoom 3e3..8e5 -> 1e4..8e4 -> 1e4..1e8 walks the 1-2-5, 1..9 and decade
+// ladders, every frame is a fresh render of its state, and the document
+// exports at 1x and 2x with the adaptive chrome.
+#[test]
+fn an_adaptive_log_axis_replans_on_every_zoom() {
+    use crate::config::{AxisScale, LogTickPolicy};
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = base_config();
+    for axis in [&mut config.left_y, &mut config.right_y] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.log_ticks = LogTickPolicy::Adaptive;
+    }
+    let mut layer = overlay(3e3, 8e5, "s1", 40.0);
+    layer.y_axis.scale = AxisScale::Logarithmic;
+    layer.y_axis.log_ticks = LogTickPolicy::Adaptive;
+    config.overlays.push(layer);
+    let series = vec![declaration("s0", "x", "a"), declaration("s1", "x", "b")];
+    let mut chart = Chart::new(config);
+    chart.set_y_range(3e3, 8e5);
+    chart.set_overlay_y_range(0, 3e3, 8e5);
+    let mut r = renderer();
+    let id = r
+        .register_chart(chart.config().clone(), series.clone())
+        .unwrap();
+    let mut view = r
+        .create_chart_view(&Chart::new(chart.config().clone()), PANEL)
+        .unwrap();
+    let majors =
+        |axis: &crate::config::AxisOptions| crate::tick::major_ticks(axis).collect::<Vec<_>>();
+    let mut failures = Vec::new();
+    let mut frames = Vec::new();
+    for (min, max, expected) in [
+        (3e3, 8e5, vec![5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]),
+        (1e4, 8e4, vec![1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4]),
+        (1e4, 1e8, vec![1e4, 1e5, 1e6, 1e7, 1e8]),
+    ] {
+        chart.set_y_range(min, max);
+        let edited = chart.config().clone();
+        for axis in [&edited.left_y, &edited.right_y] {
+            if axis.log_ticks != LogTickPolicy::Adaptive || majors(axis) != expected {
+                failures.push(format!("set_y_range {min:e}..{max:e}: {:?}", majors(axis)));
+            }
+        }
+        r.set_chart_config(id, edited.clone()).unwrap();
+        refresh(&mut r, id, &mut view, None);
+        let frame = frame_with_view(&mut r, id, &view);
+        if frame != fresh_frame(&edited, series.clone()) {
+            failures.push(format!("set_y_range {min:e}..{max:e}: not a fresh render"));
+        }
+        frames.push(frame);
+
+        // The same zoom through the view state moves the overlay too.
+        let mut state = r.chart_view_state(id).unwrap();
+        state.overlay_y[0].min = min;
+        state.overlay_y[0].max = max;
+        r.set_chart_view_state(id, state).unwrap();
+        let viewed = r.chart_config(id).unwrap().clone();
+        let axis = &viewed.overlays[0].y_axis;
+        if axis.log_ticks != LogTickPolicy::Adaptive || majors(axis) != expected {
+            failures.push(format!("view state {min:e}..{max:e}: {:?}", majors(axis)));
+        }
+        if viewed.left_y.log_ticks != LogTickPolicy::Adaptive || majors(&viewed.left_y) != expected
+        {
+            failures.push(format!("view state {min:e}..{max:e}: left_y"));
+        }
+        refresh(&mut r, id, &mut view, None);
+        if frame_with_view(&mut r, id, &view) != fresh_frame(&viewed, series.clone()) {
+            failures.push(format!("view state {min:e}..{max:e}: not a fresh render"));
+        }
+        chart = Chart::new(viewed);
+    }
+    if frames[0] == frames[1] || frames[1] == frames[2] {
+        failures.push("a zoom left the frame unchanged".into());
+    }
+
+    // PNG export at 1x and 2x draws the adaptive chrome: inside one
+    // decade, where the decade ladder draws a single tick.
+    let mut adaptive = Chart::new(r.chart_config(id).unwrap().clone());
+    adaptive.set_y_range(1e4, 8e4);
+    let mut decades_config = adaptive.config().clone();
+    for axis in [&mut decades_config.left_y, &mut decades_config.right_y] {
+        axis.log_ticks = LogTickPolicy::Decades;
+    }
+    let decades = Chart::new(decades_config);
+    let mut exports = Vec::new();
+    for scale in [1.0f32, 2.0] {
+        let image = r.export_document_rgba(&adaptive, &series, scale).unwrap();
+        let other = r.export_document_rgba(&decades, &series, scale).unwrap();
+        let png = r
+            .export_document_png_bytes(&adaptive, &series, scale)
+            .unwrap();
+        exports.push((scale, image.width, image.rgba != other.rgba, png));
+    }
+    drop(fonts);
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+    for (scale, width, differs, png) in exports {
+        assert_eq!(width, (320.0 * scale) as u32);
+        assert!(
+            differs,
+            "{scale}x: the adaptive chrome is not in the export"
+        );
+        assert_eq!(&png[1..4], b"PNG", "{scale}x");
+    }
+}
+
 // Every panel's tick warnings reach the view, overlay ones tagged with their
 // layer, and the overlay's hidden copies of the base axes repeat nothing.
 #[test]

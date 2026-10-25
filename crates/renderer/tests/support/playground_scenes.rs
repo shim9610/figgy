@@ -114,7 +114,10 @@ impl SceneKind {
                  colourbar, plus pixel-scaled probe arrows. Pick an arrow or a cell to \
                  read u / v."
             }
-            SceneKind::LogAxes => "Logarithmic Y with decade ticks and dotted minor grid.",
+            SceneKind::LogAxes => {
+                "Logarithmic Y with decade ticks, a logarithmic X under one decade with \
+                 adaptive 1..9 ticks (AxisOptions.log_ticks), dotted minor grid."
+            }
             SceneKind::TwinAxes => "Switch the active layer to Overlay 0 to edit the right axis.",
             SceneKind::Subplots => {
                 "Upper-right X is linked to the parent. Activate a subplot to edit it."
@@ -967,6 +970,12 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut config = base_config("Cross-section σ(E)", "E [keV]", "σ [barn]");
     config.left_y.scale = renderer::config::AxisScale::Logarithmic;
     config.right_y.scale = renderer::config::AxisScale::Logarithmic;
+    // The energy range spans less than one decade: whole decades would label
+    // 100 alone, the adaptive policy labels the 1..9 ladder (#42).
+    for axis in [&mut config.bottom_x, &mut config.top_x] {
+        axis.scale = renderer::config::AxisScale::Logarithmic;
+        axis.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    }
     config.grid.show_minor_x = true;
     config.grid.show_minor_y = true;
     config.grid.minor_x_style = LineStylePreset::Dot;
@@ -974,6 +983,11 @@ fn log_axes(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     let mut chart = Chart::new(config);
     chart.auto_fit_x(r.pool(), "log_e", 0.0)?;
     chart.auto_fit_y(r.pool(), "log_sigma", 0.1)?;
+    // Energies read as plain numbers (50, 60, … 100) rather than powers.
+    let fitted = chart.config_mut();
+    for axis in [&mut fitted.bottom_x, &mut fitted.top_x] {
+        axis.label_style.format = LabelFormat::Decimal;
+    }
     let series = vec![series(
         "sigma",
         "log_e",

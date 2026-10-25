@@ -1124,6 +1124,101 @@ fn radius_labels_survive_rotating_the_ray() {
     }
 }
 
+// An adaptive logarithmic radius (#42): over 3e3..8e5 the rings and the
+// ray's ticks sit on the 1-2-5 ladder, so 2·10^k and 5·10^k draw a ring
+// where the decade ladder draws none, the ray labels a 1-2-5 subset, and
+// a zoom to 1e4..8e4 re-plans the 1..9 ladder with no help from the host.
+// The same rings are drawn at 2x.
+#[test]
+fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
+    use renderer::config::LogTickPolicy;
+    use renderer::layout::{DrawnPart, Element, Side};
+    use renderer::{CpuTextMeasure, MeasureText};
+    let mut renderer = renderer();
+    upload(&mut renderer, vec![0.0], vec![1e4]);
+    let chart_for = |policy: LogTickPolicy, min: f64, max: f64| {
+        let mut chart = bare_chart(PolarOptions::default());
+        chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+        chart.config_mut().left_y.log_ticks = policy;
+        chart.set_y_range(min, max);
+        let config = chart.config_mut();
+        config.grid.show_major_y = true;
+        config.grid.major_y_color = Color::new(0.0, 0.0, 1.0, 1.0);
+        config.grid.major_y_width = 2.0;
+        config.left_y.label_style.visible = true;
+        config.left_y.label_style.label_visible = true;
+        // Small enough for the 1-2-5 labels to fit along the ray; at the
+        // default size they demote to the decades.
+        config.left_y.label_style.font_size = 9.0;
+        config.left_y.line_visible = true;
+        config.left_y.tick = renderer::config::TickVisibility::Outside;
+        chart
+    };
+    let is_blue = |p: &[u8]| p[3] > 180 && p[2] > 150 && p[0] < 120 && p[1] < 120;
+    let ray_labels = |config: &Config| {
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        let mut count = 0;
+        assert!(measure.emit(
+            config,
+            &Element::AxisLabel(Side::Left),
+            &mut renderer::sink::Parts(&mut |part| {
+                if let DrawnPart::Text(_) = part {
+                    count += 1;
+                }
+            })
+        ));
+        count
+    };
+    let series = [scatter("points", 4.0)];
+    let adaptive = chart_for(LogTickPolicy::Adaptive, 3e3, 8e5);
+    let decades = chart_for(LogTickPolicy::Decades, 3e3, 8e5);
+    assert_eq!(
+        renderer::tick::major_ticks(&adaptive.config().left_y).collect::<Vec<_>>(),
+        [5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]
+    );
+    let img = export(&mut renderer, &adaptive, &series);
+    let img_decades = export(&mut renderer, &decades, &series);
+    save("polar-adaptive-log-radius", &img);
+    let config = adaptive.config();
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "ring at {value:e}: {ring:?}");
+        assert!(
+            !is_blue(at(&img_decades, ring)),
+            "the decade ladder has no ring at {value:e}"
+        );
+    }
+    for value in [1e4, 1e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "decade ring at {value:e}");
+    }
+    assert!(ray_labels(config) > ray_labels(decades.config()));
+    assert!(ray_labels(config) >= 3);
+
+    // 2x: the same rings, at twice the pixels.
+    let img2 = renderer.export_panel_rgba(&adaptive, &series, 2.0).unwrap();
+    let scaled = adaptive.config().scaled(2.0);
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(&scaled, 200.0, value);
+        assert!(is_blue(at(&img2, ring)), "2x ring at {value:e}");
+    }
+    assert_eq!(ray_labels(&scaled), ray_labels(config));
+
+    // A zoom re-plans: 1e4..8e4 draws a ring at every multiple.
+    let mut zoomed = Chart::new(adaptive.config().clone());
+    zoomed.set_y_range(1e4, 8e4);
+    assert_eq!(
+        zoomed.config().left_y.log_ticks,
+        LogTickPolicy::Adaptive,
+        "a range helper keeps the policy"
+    );
+    let img = export(&mut renderer, &zoomed, &series);
+    for value in [3e4, 4e4, 6e4, 7e4] {
+        let ring = polar_px(zoomed.config(), 200.0, value);
+        assert!(is_blue(at(&img, ring)), "zoomed ring at {value:e}");
+    }
+}
+
 // A dashed line's dash phase walks the arc length of the path as drawn, so
 // a polar geometry edit that keeps the axis ranges (the inner radius, the
 // sector, the zero angle, the direction) must not reuse the old arc
