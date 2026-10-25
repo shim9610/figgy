@@ -21,7 +21,8 @@
 //! delimiters stretched to `2·max(ascent − axis, descent + axis)`; accents
 //! by their attachment points and `AccentBaseHeight`; over and under
 //! constructions by the overbar, underbar and stretch-stack constants. A
-//! formula starts in text style (D8), and script styles take the face's
+//! formula starts in its root's style, text by default (D8) or display
+//! (`$$…$$`), and script styles take the face's
 //! `ssty` alternates (D5). Math glyphs come from the math face whatever the
 //! font policy (D6); text inside math (`CharSet::Text`) keeps the policy's
 //! chain.
@@ -34,8 +35,8 @@ use crate::color::Color;
 use crate::layout::RectF;
 use crate::text::math::subtree_end;
 use crate::text::{
-    AccentKind, CharSet, FracStyle, Limits, MathClass, MathKind, OverUnder, RichSegment, RichText,
-    greek_char, math_alphanumeric, math_class,
+    AccentKind, CharSet, FracStyle, Limits, MathClass, MathKind, MathStyle, OverUnder, RichSegment,
+    RichText, greek_char, math_alphanumeric, math_class,
 };
 
 /// TeX's atom classes, which decide the space between neighbours.
@@ -83,6 +84,10 @@ struct Style {
 }
 
 impl Style {
+    const DISPLAY: Style = Style {
+        level: 0,
+        cramped: false,
+    };
     const TEXT: Style = Style {
         level: 1,
         cramped: false,
@@ -244,7 +249,12 @@ pub(super) fn place_formula(
     };
     let base = super::segment_base_size(&segs[start], rt);
     let [body, _, _] = f.slots(start, end);
-    let m = f.row(body, Style::TEXT, base, &mut MeasureSink, (0.0, 0.0), None);
+    // The root's style is the formula's starting style (D8: text).
+    let style = match segs[start].math_node.map(|n| n.kind) {
+        Some(MathKind::Math(MathStyle::Display)) => Style::DISPLAY,
+        _ => Style::TEXT,
+    };
+    let m = f.row(body, style, base, &mut MeasureSink, (0.0, 0.0), None);
     if !m.ink {
         return FormulaExtents {
             width: m.width,
@@ -254,7 +264,7 @@ pub(super) fn place_formula(
     }
     let shift = (-m.left).max(0.0);
     if sink.paints() {
-        f.row(body, Style::TEXT, base, sink, (pen.0 + shift, pen.1), None);
+        f.row(body, style, base, sink, (pen.0 + shift, pen.1), None);
     }
     FormulaExtents {
         width: m.width.max(m.right) + shift,
@@ -482,7 +492,7 @@ impl Formula<'_> {
             color,
         };
         match node.kind {
-            MathKind::Math => self.row(slots[0], style, base, sink, pen, None),
+            MathKind::Math(_) => self.row(slots[0], style, base, sink, pen, None),
             MathKind::Frac(fs) => self.fraction(slots, fs, false, at, sink),
             MathKind::Binom(fs) => self.fraction(slots, fs, true, at, sink),
             MathKind::Sqrt => self.radical(seg.text, slots, at, sink),
@@ -1523,7 +1533,7 @@ mod tests {
     /// `$\frac{a+b}{c}$`.
     fn fraction() -> Vec<RichSegment> {
         vec![
-            node(Z, 0, MathKind::Math, None),
+            node(Z, 0, MathKind::Math(MathStyle::Text), None),
             node(Z, 1, MathKind::Frac(FracStyle::Auto), Some((0, 0))),
             leaf('a', 1, 0),
             leaf('+', 1, 0),
@@ -1535,7 +1545,7 @@ mod tests {
     /// `$\sqrt[3]{x_i^2}$`.
     fn radical() -> Vec<RichSegment> {
         vec![
-            node(Z, 0, MathKind::Math, None),
+            node(Z, 0, MathKind::Math(MathStyle::Text), None),
             node('√', 1, MathKind::Sqrt, Some((0, 0))),
             node(Z, 2, MathKind::Scripts, Some((1, 0))),
             leaf('x', 2, 0),
@@ -1548,7 +1558,7 @@ mod tests {
     /// `$\overrightarrow{ABCDEFGH}$`.
     fn arrow() -> Vec<RichSegment> {
         let mut s = vec![
-            node(Z, 0, MathKind::Math, None),
+            node(Z, 0, MathKind::Math(MathStyle::Text), None),
             node(
                 '\u{20D7}',
                 1,
@@ -1746,12 +1756,83 @@ mod tests {
         assert!(last - first > 200, "the arrow spans the body");
     }
 
+    /// A sink that records the glyph ids it is handed.
+    struct Glyphs(Vec<u16>);
+
+    impl GlyphSink for Glyphs {
+        fn paints(&self) -> bool {
+            true
+        }
+        fn glyph(&mut self, _: FontRef<'static>, glyph: u16, _: f32, _: (f32, f32), _: &Color) {
+            self.0.push(glyph);
+        }
+        fn rect(&mut self, _: RectF, _: &Color) {}
+    }
+
+    fn tex(src: &str) -> RichText {
+        RichText::from_tex(src, Color::BLACK, 20.0, "").expect("valid TeX")
+    }
+
+    fn glyphs(rt: &RichText) -> Vec<u16> {
+        let mut sink = Glyphs(Vec::new());
+        place_cell(
+            &mut sink,
+            &rt.segments,
+            rt,
+            (0.0, 0.0),
+            FontPolicy::Standard,
+        );
+        sink.0
+    }
+
+    // A display root takes the operator's display variant and its limits
+    // above and below; a text root keeps the base glyph and side limits.
+    #[test]
+    fn the_root_style_chooses_the_operator_variant_and_its_limits() {
+        let face = MathFace::for_family("");
+        let sum = face.glyph('∑');
+        let (text, display) = (tex(r"$\sum_{i=1}^{n} i$"), tex(r"$$\sum_{i=1}^{n} i$$"));
+        assert!(glyphs(&text).contains(&sum));
+        let drawn = glyphs(&display);
+        assert!(
+            !drawn.contains(&sum),
+            "the display variant replaces the base glyph"
+        );
+        let m = |rt: &RichText| measure_rich_text(rt, FontPolicy::Standard);
+        let (t, d) = (m(&text), m(&display));
+        assert!(d.height() > t.height() * 1.5, "{d:?} vs {t:?}");
+        assert!(d.width < t.width, "limits stack: {d:?} vs {t:?}");
+        // `\limits` in text style stacks the limits around the text glyph.
+        assert!(glyphs(&tex(r"$\sum\limits_{i=1}^{n} i$")).contains(&sum));
+    }
+
+    // A display root lays a fraction out with the display shifts and gaps
+    // and text-style parts; `\dfrac` inside a text root is the same
+    // fraction.
+    #[test]
+    fn the_root_style_sets_the_fraction_gaps_and_dfrac_still_forces_them() {
+        let m = |src: &str| measure_rich_text(&tex(src), FontPolicy::Standard);
+        let (text, display) = (m(r"$\frac{a}{b}$"), m(r"$$\frac{a}{b}$$"));
+        assert!(
+            display.height() > text.height() * 1.3,
+            "{display:?} vs {text:?}"
+        );
+        assert_eq!(m(r"$\dfrac{a}{b}$"), display);
+        assert_eq!(m(r"$$\tfrac{a}{b}$$"), text);
+        // The style starts at the root: a display formula's scripts are
+        // still script style.
+        assert_eq!(m("$$x^2$$"), m("$x^2$"));
+    }
+
     // Script styles draw the `ssty` alternates (D5): a superscript prime is
     // the face's script prime, not the base glyph scaled.
     #[test]
     fn script_styles_take_the_script_alternates() {
         let face = MathFace::for_family("");
-        let rt = text(vec![node(Z, 0, MathKind::Math, None)], 16.0);
+        let rt = text(
+            vec![node(Z, 0, MathKind::Math(MathStyle::Text), None)],
+            16.0,
+        );
         let f = Formula {
             rt: &rt,
             segs: &rt.segments,

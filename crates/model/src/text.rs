@@ -5,7 +5,7 @@ pub mod tex;
 
 pub use math::{
     AccentKind, FracStyle, Limits, MAX_MATH_DEPTH, MathClass, MathCursor, MathError, MathErrorKind,
-    MathKind, MathNode, MathSlot, OverUnder, math_alphanumeric, math_class,
+    MathKind, MathNode, MathSlot, MathStyle, OverUnder, math_alphanumeric, math_class,
 };
 
 /// A rich text value composed of styled segments.

@@ -48,9 +48,10 @@ pub struct MathSlot {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MathKind {
-    /// Math mode, like `$…$`: slot 0 is the body. A root only: it has no
-    /// parent and contains no other `Math`.
-    Math,
+    /// Math mode, like `$…$` (`MathStyle::Text`) or `$$…$$`
+    /// (`MathStyle::Display`): slot 0 is the body, laid out from that style.
+    /// A root only: it has no parent and contains no other `Math`.
+    Math(MathStyle),
     /// A fraction: slot 0 the numerator, slot 1 the denominator.
     Frac(FracStyle),
     /// A binomial coefficient: slots as [`MathKind::Frac`], no bar, in
@@ -87,6 +88,18 @@ pub enum MathKind {
     /// A line, brace, arrow or set label under slot 0, the body; slot 1 is
     /// the label.
     Under(OverUnder),
+}
+
+/// The style a formula starts in: text style (inline math, `$…$`, the
+/// default) or display style (`$$…$$`, `\displaystyle`), where big
+/// operators take their display variant and their limits above and below,
+/// and fractions their display gaps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum MathStyle {
+    #[default]
+    Text,
+    Display,
 }
 
 /// The style of a fraction: chosen from the surrounding style, or forced
@@ -174,7 +187,7 @@ impl MathKind {
     pub fn slot_count(self) -> u8 {
         match self {
             MathKind::Middle | MathKind::Sized { .. } => 0,
-            MathKind::Math | MathKind::Delim { .. } | MathKind::Accent(_) => 1,
+            MathKind::Math(_) | MathKind::Delim { .. } | MathKind::Accent(_) => 1,
             MathKind::Frac(_)
             | MathKind::Binom(_)
             | MathKind::Sqrt
@@ -317,7 +330,7 @@ pub struct MathFrame {
 
 const EMPTY_FRAME: MathFrame = MathFrame {
     id: 0,
-    kind: MathKind::Math,
+    kind: MathKind::Scripts,
     slot: 0,
     in_math: false,
 };
@@ -419,8 +432,8 @@ impl MathCursor {
             });
         }
         match node.kind {
-            MathKind::Math if parent.is_some() => return err(MathErrorKind::NestedMath),
-            MathKind::Math | MathKind::Scripts => {}
+            MathKind::Math(_) if parent.is_some() => return err(MathErrorKind::NestedMath),
+            MathKind::Math(_) | MathKind::Scripts => {}
             _ if !in_math => return err(MathErrorKind::MissingMathAncestor),
             _ => {}
         }
@@ -455,13 +468,13 @@ impl MathCursor {
             id: node.id,
             kind: node.kind,
             slot: 0,
-            in_math: in_math || node.kind == MathKind::Math,
+            in_math: in_math || matches!(node.kind, MathKind::Math(_)),
         };
         self.depth += 1;
         self.last_id = Some(node.id);
         Ok(MathStep {
             depth: self.depth,
-            in_math: in_math || node.kind == MathKind::Math,
+            in_math: in_math || matches!(node.kind, MathKind::Math(_)),
         })
     }
 }
@@ -1038,7 +1051,7 @@ mod tests {
     // `\frac{\sqrt{a^2}}{b}` from #45, inside `Math`.
     fn frac_example() -> Vec<RichSegment> {
         vec![
-            node(Z, 0, MathKind::Math, None),
+            node(Z, 0, MathKind::Math(MathStyle::Text), None),
             node(Z, 1, MathKind::Frac(FracStyle::Auto), Some((0, 0))),
             node('√', 2, MathKind::Sqrt, Some((1, 0))),
             node(Z, 3, MathKind::Scripts, Some((2, 0))),
@@ -1053,7 +1066,7 @@ mod tests {
         assert_eq!(check(frac_example()), Ok(()));
         // `\sum_{i=1}^{n} x_i`.
         let sum = vec![
-            node(Z, 0, MathKind::Math, None),
+            node(Z, 0, MathKind::Math(MathStyle::Text), None),
             node('∑', 1, MathKind::BigOp(Limits::Auto), Some((0, 0))),
             leaf('i', 1, 0),
             leaf('=', 1, 0),
@@ -1083,7 +1096,7 @@ mod tests {
     #[test]
     fn every_error_kind_is_reported_at_its_segment() {
         use MathErrorKind::*;
-        let math = || node(Z, 0, MathKind::Math, None);
+        let math = || node(Z, 0, MathKind::Math(MathStyle::Text), None);
         // Ids.
         let mut s = frac_example();
         s[2].math_node.as_mut().unwrap().id = 1;
@@ -1146,7 +1159,10 @@ mod tests {
         ];
         assert_eq!(error(in_text_scripts), (1, MissingMathAncestor));
         assert_eq!(
-            error(vec![math(), node(Z, 1, MathKind::Math, Some((0, 0)))]),
+            error(vec![
+                math(),
+                node(Z, 1, MathKind::Math(MathStyle::Text), Some((0, 0)))
+            ]),
             (1, NestedMath)
         );
         assert_eq!(
@@ -1227,7 +1243,7 @@ mod tests {
         assert_eq!(check(s), Ok(()));
         // Gaps are allowed.
         let gaps = vec![
-            node(Z, 3, MathKind::Math, None),
+            node(Z, 3, MathKind::Math(MathStyle::Text), None),
             node(Z, 10, MathKind::Sqrt, Some((3, 0))),
             leaf('x', 10, 0),
         ];
@@ -1268,9 +1284,9 @@ mod tests {
         assert_eq!(math_class('\u{10FFFF}'), MathClass::Special);
     }
 
-    fn every_kind() -> [MathKind; 13] {
+    fn every_kind() -> [MathKind; 14] {
         [
-            MathKind::Math,
+            MathKind::Math(MathStyle::Display),
             MathKind::Frac(FracStyle::Display),
             MathKind::Binom(FracStyle::Text),
             MathKind::Sqrt,
@@ -1289,6 +1305,7 @@ mod tests {
             MathKind::Accent(AccentKind::Wide),
             MathKind::Over(OverUnder::Brace),
             MathKind::Under(OverUnder::Set),
+            MathKind::Math(MathStyle::Text),
         ]
     }
 
@@ -1298,7 +1315,7 @@ mod tests {
     #[test]
     fn every_kind_has_a_pinned_wire_form_and_round_trips() {
         let pinned = [
-            r#""Math""#,
+            r#"{"Math":"Display"}"#,
             r#"{"Frac":"Display"}"#,
             r#"{"Binom":"Text"}"#,
             r#""Sqrt""#,
@@ -1311,6 +1328,7 @@ mod tests {
             r#"{"Accent":"Wide"}"#,
             r#"{"Over":"Brace"}"#,
             r#"{"Under":"Set"}"#,
+            r#"{"Math":"Text"}"#,
         ];
         for (kind, json) in every_kind().into_iter().zip(pinned) {
             assert_eq!(serde_json::to_string(&kind).unwrap(), json);
@@ -1337,6 +1355,17 @@ mod tests {
             serde_json::to_string(&AccentKind::Fixed).unwrap(),
             r#""Fixed""#
         );
+        // The root's style: text by default (D8), display on request.
+        assert_eq!(MathStyle::default(), MathStyle::Text);
+        for style in [MathStyle::Text, MathStyle::Display] {
+            let node = MathNode {
+                id: 0,
+                kind: MathKind::Math(style),
+            };
+            let json = serde_json::to_string(&node).unwrap();
+            assert_eq!(json, format!(r#"{{"id":0,"kind":{{"Math":"{style:?}"}}}}"#));
+            assert_eq!(serde_json::from_str::<MathNode>(&json).unwrap(), node);
+        }
     }
 
     // The two fields are written last, only when set; a segment carrying
@@ -1356,9 +1385,9 @@ mod tests {
         assert!(!plain.contains("math"), "{plain}");
 
         // Every kind in one valid text.
-        let mut segments = vec![node(Z, 0, MathKind::Math, None)];
+        let mut segments = vec![node(Z, 0, MathKind::Math(MathStyle::Text), None)];
         let mut id = 1;
-        for kind in every_kind().into_iter().skip(1) {
+        for kind in every_kind().into_iter().skip(1).take(12) {
             match kind {
                 MathKind::Middle => {
                     let delim = MathKind::Delim {
@@ -1469,7 +1498,7 @@ mod tests {
             segments,
             ..RichText::plain("", Color::BLACK, 12.0, "")
         };
-        let math = node(Z, 0, MathKind::Math, None);
+        let math = node(Z, 0, MathKind::Math(MathStyle::Text), None);
         assert!(text(vec![math.clone(), space(-3. / 18., Some((0, 0)))]).within_limits());
         assert!(text(vec![math.clone(), space(3. / 18., Some((0, 0)))]).within_limits());
         assert!(!text(vec![space(-3. / 18., None)]).within_limits());

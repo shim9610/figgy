@@ -1335,7 +1335,7 @@ mod tests {
             RichSegment {
                 math_node: Some(MathNode {
                     id: 0,
-                    kind: MathKind::Math,
+                    kind: MathKind::Math(crate::text::MathStyle::Text),
                 }),
                 ..RichSegment::plain('\u{200B}')
             },

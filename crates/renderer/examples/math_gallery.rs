@@ -27,7 +27,7 @@ const FORMULAS: &[&str] = &[
     r"$\binom{n}{k} = \frac{n!}{k!\,(n-k)!}$",
     r"$\sqrt{x^2+y^2}$ and $\sqrt[3]{x}$",
     r"$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$",
-    r"$\sum\limits_{i=1}^{n} i = \dfrac{n(n+1)}{2}$",
+    r"$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$",
     r"$\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}$",
     r"$\lim_{x\to 0}\frac{\sin x}{x} = 1$",
     r"$\lim\limits_{x\to 0}\frac{\sin x}{x} = 1$",
@@ -141,7 +141,7 @@ fn gallery(sketch: bool) -> Result<Config, Box<dyn Error>> {
         let plain = RichText::plain(tex, source, 11.0, "");
         cfg.annotations
             .items
-            .push(text(plain, x, y + 0.6 / rows as f32));
+            .push(text(plain, x, y + 0.68 / rows as f32));
     }
     Ok(cfg)
 }

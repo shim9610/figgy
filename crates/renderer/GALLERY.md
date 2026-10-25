@@ -107,9 +107,11 @@ and with `\limits`, integrals, operator names, `\left`/`\middle`/`\right` and
 braces, labels and extensible arrows, scripts and primes, Greek, `\mathbf`,
 `\mathbb`, `\mathcal` and `\text`. Every formula is written with
 `RichText::from_tex` and laid out from the bundled New Computer Modern Math. A
-formula starts in text style, so `\sum` takes side limits unless `\limits`
-asks for them above and below; display style is reached through `\dfrac` and
-`\dbinom`. The chart title is a formula too.
+formula in `$…$` starts in text style, so `\sum` takes side limits unless
+`\limits` asks for them above and below; `$$…$$` (or a leading `\displaystyle`)
+starts it in display style, with the display operator, limits above and below
+and display fractions: the gallery shows the same sum both ways. The chart title
+is a formula too.
 
 | Output | Shows | Size |
 |---|---|---|

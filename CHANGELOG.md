@@ -122,8 +122,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   `RichSegment` fields: `math_node: Option<MathNode { id, kind }>` on a
   segment that governs a layout and `math_parent: Option<MathSlot { id,
   slot }>` on every segment inside one. A node comes first and its
-  descendants follow it contiguously, slot by slot. `MathKind` is `Math`
-  (a root: math mode), `Frac` / `Binom` (`FracStyle::{Auto, Display,
+  descendants follow it contiguously, slot by slot. `MathKind` is
+  `Math(MathStyle)` (a root: math mode, `MathStyle::Text` by default or
+  `MathStyle::Display`, written `{"Math":"Text"}` / `{"Math":"Display"}`),
+  `Frac` / `Binom` (`FracStyle::{Auto, Display,
   Text}`), `Sqrt`, `Scripts` (also a text-mode root), `BigOp` / `OpName`
   (`Limits::{Auto, Limits, NoLimits}`), `Delim { open, close }`, `Middle`,
   `Sized { level, class }`, `Accent` (`AccentKind::{Fixed, Wide}`) and
@@ -140,7 +142,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   (the bold, italic and bold-italic alphabets) are the tables the layout
   reads. `RichText::from_tex(tex, color, font_size, font)` and
   `rich_segments_from_tex` convert text with `$…$` / `\(…\)` math spans
-  in the TeX subset of #45 (`model::text::tex`; errors are `TexError { at,
+  (text style) and `$$…$$` spans (display style; a leading `\displaystyle`
+  or `\textstyle` sets a span's style) in the TeX subset of #45 (`model::text::tex`; errors are `TexError { at,
   kind }` with the byte range); the source is not stored. A negative
   `field_em` (`\!`) is allowed on a space inside `Math` only. The JSON is
   additive: both keys are written last and only when set, so every older
@@ -534,7 +537,9 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   names, stretchy `\left`/`\middle`/`\right` and fixed `\big`…`\Bigg`
   delimiters (size variants, then glyph assemblies), fixed and wide accents,
   and over/under rules, braces, arrows and labels, with TeX's inter-atom
-  spacing. A formula starts in text style; script styles use the face's
+  spacing. A formula starts in its root's style: text by default, or
+  display (`$$…$$`), where `\sum` takes its display variant and its limits
+  above and below and fractions their display gaps; script styles use the face's
   `ssty` alternates. Measurement and drawing are one placement through an
   internal glyph sink, so a formula's measured extents (and with them its
   bounds, hit test, selection box, drag and title band) are its ink.

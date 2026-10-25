@@ -1031,7 +1031,7 @@ fn place_cell(
         let mut position = ScriptPosition::of(seg);
         if math {
             if let Some(node) = seg.math_node {
-                if node.kind == crate::text::MathKind::Math {
+                if matches!(node.kind, crate::text::MathKind::Math(_)) {
                     // A formula: one atom of the cell, laid out from the
                     // math face.
                     let end = crate::text::math::subtree_end(segments, i - 1);

@@ -106,7 +106,8 @@ scale against that contract.
 
 Any rich text (titles, axis titles, legend content, annotation texts, series
 labels) can hold formulas. `RichText::from_tex(tex, color, font_size, font)`
-converts text with `$…$` or `\(…\)` math spans in the TeX subset of #45
+converts text with `$…$` or `\(…\)` math spans (text style) and `$$…$$` spans
+(display style) in the TeX subset of #45
 (fractions, radicals, big operators with `\limits`/`\nolimits`, operator names,
 `\left`/`\middle`/`\right` and `\big`…`\Bigg`, accents, `\overline`,
 `\overbrace`, `\overset`, the extensible arrows, scripts, Greek, `\text`,
@@ -121,7 +122,7 @@ descendants follow it contiguously, slot by slot.
 
 | `MathKind` | Slots | Node text |
 |---|---|---|
-| `Math` | 0 body | U+200B; a root (math mode) |
+| `Math(MathStyle)` | 0 body | U+200B; a root (math mode) starting in `Text` (default, `$…$`) or `Display` (`$$…$$`) style |
 | `Frac(FracStyle)`, `Binom(FracStyle)` | 0 numerator, 1 denominator | U+200B |
 | `Sqrt` | 0 radicand, 1 index | `√` |
 | `Scripts` | 0 base, 1 superscript, 2 subscript | U+200B; also a text-mode root, laid out as the `superscript`/`subscript` flags |
@@ -138,7 +139,9 @@ unique there; nesting stops at 16. A malformed tree fails JSON parsing and is
 refused by `set_chart_config`, the annotation, bounded-title and radial title
 validation and series registration. The layout reads the OpenType MATH table of
 the bundled New Computer Modern Math, or of the face `RichText.font` names when
-it has one; a formula starts in text style, and the sketch draw style keeps
+it has one; a formula starts in its root's style (text, or display for
+`$$…$$`: display operators with limits above and below, display fractions),
+and the sketch draw style keeps
 math in the math face. The bounds, hit test, selection and drag of the element
 follow the formula's ink. [`math_gallery.rs`](examples/math_gallery.rs) draws
 every construction.
@@ -956,7 +959,7 @@ pub struct Config {
 
 ### `RichText`의 수식
 
-모든 리치 텍스트(제목, 축 제목, 범례, 주석, 시리즈 라벨)에 수식을 넣을 수 있다. `RichText::from_tex(tex, color, font_size, font)`는 `$…$` 또는 `\(…\)` 수식 구간이 있는 텍스트를 #45의 TeX 부분집합으로 변환하며, 오류에는 바이트 범위가 붙는다. 결과는 일반 구간이므로 다른 텍스트처럼 직렬화·편집·검증된다. 수식은 구간 목록 위의 트리다. 배치를 정하는 구간은 `math_node: { id, kind }`를, 노드 안의 구간은 바로 위 부모와 슬롯을 `math_parent: { id, slot }`으로 가진다. 노드가 먼저 오고 자손이 슬롯 순서대로 이어진다. id는 셀(줄바꿈·탭 사이) 안에서 증가하고 셀 안에서만 고유하며 중첩은 16단계까지다. 잘못된 트리는 JSON 파싱과 설정 검증에서 거부된다. 배치는 내장 New Computer Modern Math(또는 `RichText.font`가 가리키는 MATH 표가 있는 글꼴)의 OpenType MATH 표를 읽고, 수식은 텍스트 스타일로 시작하며, 스케치 스타일에서도 수식은 수식 글꼴로 그린다. 종류와 슬롯은 위 영문 표를 따른다.
+모든 리치 텍스트(제목, 축 제목, 범례, 주석, 시리즈 라벨)에 수식을 넣을 수 있다. `RichText::from_tex(tex, color, font_size, font)`는 `$…$` 또는 `\(…\)`(텍스트 스타일) 또는 `$$…$$`(디스플레이 스타일) 수식 구간이 있는 텍스트를 #45의 TeX 부분집합으로 변환하며, 오류에는 바이트 범위가 붙는다. 결과는 일반 구간이므로 다른 텍스트처럼 직렬화·편집·검증된다. 수식은 구간 목록 위의 트리다. 배치를 정하는 구간은 `math_node: { id, kind }`를, 노드 안의 구간은 바로 위 부모와 슬롯을 `math_parent: { id, slot }`으로 가진다. 노드가 먼저 오고 자손이 슬롯 순서대로 이어진다. id는 셀(줄바꿈·탭 사이) 안에서 증가하고 셀 안에서만 고유하며 중첩은 16단계까지다. 잘못된 트리는 JSON 파싱과 설정 검증에서 거부된다. 배치는 내장 New Computer Modern Math(또는 `RichText.font`가 가리키는 MATH 표가 있는 글꼴)의 OpenType MATH 표를 읽고, 수식은 루트 노드의 스타일(기본은 텍스트, `$$…$$`는 디스플레이)로 시작하며, 스케치 스타일에서도 수식은 수식 글꼴로 그린다. 종류와 슬롯은 위 영문 표를 따른다.
 
 ### `GridOptions`
 | 필드 | 타입 | 의미 |

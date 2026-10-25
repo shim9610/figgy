@@ -3,7 +3,9 @@
 //! are the only SSOT, and hosts may build them directly instead.
 //!
 //! D2: the input is text with math spans, `$…$` or `\(…\)` (`\$` is a
-//! dollar sign); each span becomes one `Math` node. The supported commands
+//! dollar sign) in text style and `$$…$$` in display style; each span
+//! becomes one `Math` node of that style, which a leading `\displaystyle`
+//! or `\textstyle` sets too. The supported commands
 //! are listed in [`RichText::from_tex`]. A letter is written as an italic
 //! math character (`x` with `italic: true`), not as its Mathematical Italic
 //! code point, so a consumer that ignores math nodes still draws an italic
@@ -20,7 +22,7 @@ use std::ops::Range;
 
 use super::math::{
     AccentKind, FracStyle, Limits, MAX_MATH_DEPTH, MathClass, MathCursor, MathKind, MathNode,
-    MathSlot, OverUnder,
+    MathSlot, MathStyle, OverUnder,
 };
 use super::{CharSet, RichSegment, RichText, TextAlign};
 use crate::color::Color;
@@ -42,7 +44,9 @@ pub enum TexErrorKind {
     /// `\middle` outside them.
     UnpairedLeftRight,
     /// A construct the subset excludes: environments (`matrix`, `cases`,
-    /// `array`, `align`), `\\`, `\tag`, macro definitions, `$$`, `&`.
+    /// `array`, `align`), `\\`, `\tag`, macro definitions, `&`, and a
+    /// `\displaystyle` or `\textstyle` anywhere but at the start of a math
+    /// span.
     Unsupported,
     /// Math nodes nested deeper than [`MAX_MATH_DEPTH`].
     TooDeep,
@@ -60,7 +64,11 @@ impl TexErrorKind {
             TexErrorKind::UnexpectedEnd => "unexpected end of input",
             TexErrorKind::DoubleScript => "double superscript or subscript",
             TexErrorKind::UnpairedLeftRight => "unpaired \\left, \\right or \\middle",
-            TexErrorKind::Unsupported => "unsupported construct",
+            TexErrorKind::Unsupported => {
+                "unsupported construct (an environment, `\\\\`, `&`, `\\tag`, a macro definition, \
+                 or a style command other than a leading `\\displaystyle` or `\\textstyle` of a \
+                 math span)"
+            }
             TexErrorKind::TooDeep => "math nested deeper than 16",
             TexErrorKind::BadDelimiter => "not a delimiter",
         }
@@ -90,8 +98,10 @@ impl std::fmt::Display for TexError {
 impl std::error::Error for TexError {}
 
 impl RichText {
-    /// Convert `tex`, text with `$…$` or `\(…\)` math spans, into a rich
-    /// text of `color`, `font_size` and `font`.
+    /// Convert `tex`, text with `$…$` or `\(…\)` math spans in text style and
+    /// `$$…$$` spans in display style, into a rich text of `color`,
+    /// `font_size` and `font`. A `\displaystyle` or `\textstyle` at the
+    /// start of a span sets its style.
     ///
     /// Inside math: letters (italic), digits and operators; `^`, `_` and
     /// primes; groups; `\frac`, `\dfrac`, `\tfrac`, `\binom` (and `\dbinom`,
@@ -202,6 +212,8 @@ enum Alphabet {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Until {
     Dollar,
+    /// The `$$` closing a display span.
+    DoubleDollar,
     ParenClose,
     Brace,
     Bracket,
@@ -269,9 +281,11 @@ impl<'a> Parser<'a> {
                 '$' => {
                     self.pos += 1;
                     if self.peek() == Some('$') {
-                        return err(start..start + 2, TexErrorKind::Unsupported);
+                        self.pos += 1;
+                        self.math_span(Until::DoubleDollar, start)?;
+                    } else {
+                        self.math_span(Until::Dollar, start)?;
                     }
-                    self.math_span(Until::Dollar, start)?;
                 }
                 _ => {
                     self.bump();
@@ -282,8 +296,36 @@ impl<'a> Parser<'a> {
         Ok(())
     }
 
+    /// A math span: one `Math` node in display style for `$$…$$`, in text
+    /// style for `$…$` and `\(…\)`. A `\displaystyle` or `\textstyle` at the
+    /// start of the span sets the node's style; anywhere else it is
+    /// unsupported.
     fn math_span(&mut self, until: Until, start: usize) -> Result<(), TexError> {
-        let id = self.node(ZWSP, MathKind::Math, None, start)?;
+        let mut style = if until == Until::DoubleDollar {
+            MathStyle::Display
+        } else {
+            MathStyle::Text
+        };
+        let index = self.out.len();
+        let id = self.node(ZWSP, MathKind::Math(style), None, start)?;
+        loop {
+            self.skip_spaces();
+            let rest = &self.src[self.pos..];
+            let command = ["\\displaystyle", "\\textstyle"].into_iter().find(|c| {
+                rest.starts_with(c)
+                    && !rest[c.len()..].starts_with(|n: char| n.is_ascii_alphabetic())
+            });
+            let Some(command) = command else { break };
+            self.pos += command.len();
+            style = if command == "\\displaystyle" {
+                MathStyle::Display
+            } else {
+                MathStyle::Text
+            };
+        }
+        if let Some(node) = &mut self.out[index].math_node {
+            node.kind = MathKind::Math(style);
+        }
         self.row(MathSlot { id, slot: 0 }, until, Alphabet::Normal)?;
         self.depth -= 1;
         Ok(())
@@ -360,6 +402,11 @@ impl<'a> Parser<'a> {
                     self.bump();
                     return match until {
                         Until::Dollar => Ok(()),
+                        Until::DoubleDollar if self.peek() == Some('$') => {
+                            self.bump();
+                            Ok(())
+                        }
+                        Until::DoubleDollar => err(start..self.pos, TexErrorKind::Unsupported),
                         Until::Right => err(start..self.pos, TexErrorKind::UnpairedLeftRight),
                         Until::Brace | Until::Bracket => {
                             err(start..self.pos, TexErrorKind::UnbalancedBrace)
@@ -1295,7 +1342,7 @@ mod tests {
         assert_eq!(
             shape(&x2),
             [
-                (Z, Some((0, MathKind::Math)), None),
+                (Z, Some((0, MathKind::Math(MathStyle::Text))), None),
                 (Z, Some((1, MathKind::Scripts)), Some((0, 0))),
                 ('x', None, Some((1, 0))),
                 ('2', None, Some((1, 1))),
@@ -1533,8 +1580,9 @@ mod tests {
             r"$a & b$",
             r"$\tag{1}$",
             r"$\newcommand{\x}{y}$",
-            "$$x$$",
-            r"$\displaystyle x$",
+            r"$x \displaystyle y$",
+            r"$\frac{\displaystyle a}{b}$",
+            "$$x$ y$$",
         ] {
             assert_eq!(
                 kind_of(unsupported),
@@ -1559,6 +1607,27 @@ mod tests {
                 assert_ne!(a.as_str(), b.as_str());
             }
         }
+    }
+
+    // `$$…$$` and a leading `\displaystyle` start a formula in display
+    // style; `\textstyle` returns to text; the style is the root's.
+    #[test]
+    fn display_spans_set_the_root_style() {
+        let root = |tex: &str| parse(tex)[0].math_node.map(|n| n.kind);
+        let display = Some(MathKind::Math(MathStyle::Display));
+        let text = Some(MathKind::Math(MathStyle::Text));
+        assert_eq!(root(r"$$\sum_i x_i$$"), display);
+        assert_eq!(root(r"$\displaystyle \sum_i x_i$"), display);
+        assert_eq!(root(r"\(\displaystyle x\)"), display);
+        assert_eq!(root(r"$\displaystyle\textstyle x$"), text);
+        assert_eq!(root(r"$$\textstyle x$$"), text);
+        assert_eq!(root("$x$"), text);
+        // The same body either way, after the root.
+        assert_eq!(parse("$$x+1$$")[1..], parse("$x+1$")[1..]);
+        // `\displaystylex` is not the command.
+        assert_eq!(kind_of(r"$\displaystylex$"), TexErrorKind::UnknownCommand);
+        assert!(TexErrorKind::Unsupported.as_str().contains("leading"));
+        assert_eq!(kind_of("$$x"), TexErrorKind::UnexpectedEnd);
     }
 
     // 16 nested nodes (the Math root and 15 radicals) convert; a 17th is
