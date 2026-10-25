@@ -61,6 +61,8 @@ impl AxisViewState {
             categories: _,
             // Where the line is drawn, not how data maps.
             cross_at: _,
+            // Which ticks a log axis draws, not how data maps.
+            log_ticks: _,
         } = axis;
         let (min, max) = match axis.categories {
             Some(_) => axis.data_range(),

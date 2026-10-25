@@ -1445,6 +1445,7 @@ fn config_fields_are_classified() {
         minor_tick_length: _,
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
         cross_at: _,   // axis!(...).cross_at: Prefix
+        log_ticks: _,  // the log tick ladder (#42): chrome only
     } = top_x;
     let LabelStyle {
         visible: _,

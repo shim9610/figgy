@@ -4613,6 +4613,42 @@ mod category_bar_tests {
         assert_eq!(groups, BarGroups::default());
     }
 
+    /// `log_ticks` is written only when it is not the default, so a
+    /// document written before the field existed re-serializes unchanged,
+    /// and an `Adaptive` axis round-trips (#42).
+    #[cfg(feature = "serde")]
+    #[test]
+    fn log_ticks_are_additive_on_the_wire() {
+        use crate::config::LogTickPolicy;
+        let mut config = crate::default::default_config();
+        config.colorbar = Some(crate::default::default_colorbar_options());
+        let json = serde_json::to_value(&config).unwrap();
+        for axis in ["top_x", "bottom_x", "left_y", "right_y"] {
+            assert!(json[axis].get("log_ticks").is_none(), "{axis}");
+        }
+        assert!(json["colorbar"]["axis"].get("log_ticks").is_none());
+        let mut edited = config.clone();
+        edited.left_y.log_ticks = LogTickPolicy::Adaptive;
+        edited.colorbar.as_mut().unwrap().axis.log_ticks = LogTickPolicy::Adaptive;
+        let json = serde_json::to_value(&edited).unwrap();
+        assert_eq!(json["left_y"]["log_ticks"], "Adaptive");
+        assert_eq!(json["colorbar"]["axis"]["log_ticks"], "Adaptive");
+        assert!(json["bottom_x"].get("log_ticks").is_none());
+        let text = serde_json::to_string(&edited).unwrap();
+        assert_eq!(serde_json::from_str::<Config>(&text).unwrap(), edited);
+        // The written default parses too.
+        let mut explicit = serde_json::to_value(&config).unwrap();
+        explicit["left_y"]["log_ticks"] = "Decades".into();
+        let parsed: Config = serde_json::from_value(explicit).unwrap();
+        assert_eq!(parsed, config);
+        assert_eq!(config.scaled(2.0).left_y.log_ticks, LogTickPolicy::Decades);
+        assert_eq!(
+            edited.scaled(2.0).left_y.log_ticks,
+            LogTickPolicy::Adaptive,
+            "a tick policy is not a pixel dimension"
+        );
+    }
+
     #[test]
     fn the_bar_gap_scales_and_the_rest_of_the_groups_stay() {
         let mut config = chart(3);
