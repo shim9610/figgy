@@ -271,6 +271,10 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 각 참조에 `source_id`를 넣으면 같은 `series_id`를 가진 서로 다른 데이터 출처를 구분할 수 있다. 모든 강조는 `highlight_color`로 그린다. 점은 `picked_points`와 같은 고리를 `outline_width_px` 두께와 `point_radius_extra_px`만큼 커진 반지름으로, 히스토그램 막대와 행렬 셀은 `outline_width_px` 두께의 외곽선으로, 등고선은 `contour_width_extra_px`만큼 굵어진 선으로 표시한다. 축이나 데이터를 갱신해도 선택 표시가 데이터 위치를 따라가며, 범위를 벗어난 인덱스는 그리지 않는다.
 
+`{ "kind": "value_label", "series_id": "north", "category_index": 1 }`은 범주형 막대·박스플롯·레이더 시리즈의 값 라벨
+하나(`labels.text[category_index]`)를 가리킨다. 선택한 라벨은 라벨 테두리를 `SELECTION_PADDING`만큼 넓힌 선택 상자로
+표시하며, `step_selection`은 라벨을 옮기지 않는다.
+
 <a id="resident-selection-details"></a>
 
 ### 상주 선택 값 조회와 키보드 이동
@@ -1037,7 +1041,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 범주형 막대 시리즈는 위치 컬럼(`0, 1, …, n - 1`)과, 차트의 범주형 축(세로 막대는 `bottom_x`,
 가로 막대는 `left_y`)의 범주마다 값 하나를 둔 값 컬럼을 읽는다. `Horizontal`이면 `x_column`이 값,
 `y_column`이 위치다. 값이 `null`이나 NaN이면 그 막대가 없다. `style`과 `labels`는 항상 기록하고,
-`overrides`는 `None`이면, `labels.text`는 비어 있으면 생략한다.
+`overrides`는 `None`이면, `labels.text`와 `labels.offsets`는 비어 있으면 생략한다.
 
 ```json
 {
@@ -1084,7 +1088,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 왼쪽·오른쪽 축은 `bottom_x`)의 값이며 유한해야 한다. 가로 막대의 범주 축은 `inverted`로 뒤집어 첫 범주를
 위에 둘 수 있다. 선택한 막대의 `selection_details()`에는 `category_id`, `category_label`, `value`,
 `direction`, `mode`가 더해지고, `step_selection(dx, dy)`는 범주 축 방향의 값으로 범주를, 다른 값으로
-묶음 안의 시리즈를 옮긴다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
+묶음 안의 시리즈를 옮긴다. `labels.text`는 막대 끝에 그리고, `labels.offsets`(범주마다 `[dx, dy]` 논리 픽셀)는
+라벨을 끌어 옮긴 거리다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
 <a id="boxplot-render_type"></a>
 
@@ -1093,7 +1098,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 박스플롯 시리즈는 위치 컬럼(`0, 1, …, n - 1`)을 `x_column`으로, 상자 통계 레코드(`register_record`)의 ID를
 `y_column`으로, 범주마다 이상치 묶음 하나를 둔 ragged 컬럼(`register_ragged`)의 ID를 `outliers`로 읽는다.
 방향이 바뀌어도 두 컬럼의 역할은 그대로다. 레코드의 필수 값이 NaN인 행은 상자가 없다. `style`과 `labels`는
-항상 기록하고, `outliers`와 `overrides`는 `None`이면, `labels.text`는 비어 있으면 생략한다. 같은 레이어의
+항상 기록하고, `outliers`와 `overrides`는 `None`이면, `labels.text`와 `labels.offsets`는 비어 있으면 생략한다. 같은 레이어의
 박스플롯 시리즈는 `bar_groups`(`mode`는 `"Grouped"`)로 나란히 놓이며 `bar_gap`이 상자 사이 간격이다.
 
 ```json
@@ -1147,7 +1152,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 `selection_details()`에는 `category_id`, `category_label`, `index`, `direction`과 레코드에서 읽은 통계
 (`median`, `q1`, `q3`, `whisker_low`, `whisker_high`, `mean`, `sample_count`, `ci_low`, `ci_high`, 없는 값은
 `null`)가 더해지고, `step_selection(dx, dy)`는 범주와 묶음 안의 시리즈를 옮긴다(이상치는 건너뛴다).
-`labels.text`는 아직 그리지 않는다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
+`labels.text`는 상자 꼭대기 위에 그리고, `labels.offsets`(범주마다 `[dx, dy]` 논리 픽셀)는 라벨을 끌어 옮긴
+거리다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
 <a id="radar-render_type"></a>
 
@@ -1158,7 +1164,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 외곽선과 채움이 끊긴다. `style`과 `labels`는 항상 기록한다. `style`의 `line_width_px`, `fill`, `marker`,
 `marker_size_px`는 값이 없으면 `null`로 기록하고 기본값(선 굵기 2, 색의 25% 불투명 채움, `"Circle"` 표식,
 표식 크기 7)을 쓴다. `fill_opacity`는 없으면 생략한다. `marker`는 `"None"`, `"Circle"`,
-`"Square"`, `labels.placement`는 `"None"`, `"Values"`, `"Emphasized"`이며 `labels.text`는 비어 있으면 생략한다.
+`"Square"`, `labels.placement`는 `"None"`, `"Values"`, `"Emphasized"`이며 `labels.text`와 `labels.offsets`는 비어 있으면 생략한다.
 극좌표의 `interpolation`은 `"Chord"`여야 하고 레이어마다 레이더 시리즈는 16개까지다.
 
 ```json
@@ -1184,7 +1190,8 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 `FiggyChart.set_radar_document(json)`은 예전 `RadarChart` 문서를 이 형식으로 읽는다. 선택한 꼭짓점의
 `selection_details()`에는 `category_id`, `category_label`이 더해지고, `step_selection(dx, dy)`는 시리즈의
-꼭짓점과 레이더 시리즈 사이를 옮긴다. `labels.text`는 아직 그리지 않는다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
+꼭짓점과 레이더 시리즈 사이를 옮긴다. `labels.text`는 꼭짓점 바깥쪽 바큇살 방향에 그리고, `labels.offsets`(범주마다
+`[dx, dy]` 논리 픽셀)는 라벨을 끌어 옮긴 거리다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
 ## `Vector` render_type의 전체 형식
 

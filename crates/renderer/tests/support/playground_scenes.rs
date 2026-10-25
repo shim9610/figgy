@@ -1607,6 +1607,8 @@ pub fn boxplot_document() -> renderer::BoxPlotChart {
         ],
         value_range: Some([0., 100.]),
         value_title: "Response".into(),
+        // The median above every box: the scene sweeps value labels too.
+        labels: renderer::BoxPlotLabels::Median,
         ..Default::default()
     }
 }
@@ -1711,6 +1713,8 @@ pub fn radar_document() -> renderer::RadarChart {
         ],
         value_range: Some([0., 10.]),
         ring_spacing: Some(2.5),
+        // A value label at every vertex: the scene sweeps value labels too.
+        labels: renderer::RadarLabels::Values,
         ..Default::default()
     }
 }

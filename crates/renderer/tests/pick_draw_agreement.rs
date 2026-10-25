@@ -3296,3 +3296,205 @@ fn radar_polygons_pick_their_outline_closing_segment_markers_and_fill() {
         }
     }
 }
+
+/// Value labels pick where they paint (#40 item 13h). Each label of a
+/// category bar series (outside its grouped bars, inside its stacked
+/// segments) and of a radar series, at 1x and 2x: every pixel a label
+/// paints picks that label, by its series and category, at distance zero,
+/// and a label picks only within its selection box (its content box grown
+/// by `SELECTION_PADDING`), never another label. A label is drawn over all
+/// of its panel's data, so it wins the tie against the bar it sits inside:
+/// the white text inside a segment picks the label, not the bar.
+#[test]
+fn value_labels_pick_where_they_paint() {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarMode,
+        CategoryBarSeriesLabels,
+    };
+    let mut renderer = renderer();
+    renderer
+        .add_column("pos", &col(vec![0.0, 1.0, 2.0]))
+        .expect("upload");
+    renderer
+        .add_columns(&[
+            (
+                "one",
+                &col(vec![3.0, 6.0, 4.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "two",
+                &col(vec![4.0, 2.0, 5.0]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    renderer
+        .add_column("cat", &col(vec![0.0, 1.0, 2.0, 3.0]))
+        .expect("upload");
+    renderer
+        .add_column("radar", &col(vec![0.6, 0.5, 0.7, 0.4]))
+        .expect("upload");
+    let bars = |id: &str, color: Color, placement: CategoryBarLabels| {
+        let mut style = renderer::data_config::CategoryBarStyle::default();
+        style.material = renderer::Material::Flat;
+        style.outline = false;
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "pos".into(),
+            y_column: id.into(),
+            render_type: DataRenderType::CategoryBars {
+                color,
+                style,
+                labels: CategoryBarSeriesLabels {
+                    placement,
+                    text: vec!["3".into(), "Ab".into(), "4%".into()],
+                    ..CategoryBarSeriesLabels::default()
+                },
+                label_format: Default::default(),
+                overrides: None,
+            },
+        }
+    };
+    let hidden = |series: &[SeriesConfig]| -> Vec<SeriesConfig> {
+        series
+            .iter()
+            .cloned()
+            .map(|mut s| {
+                match &mut s.render_type {
+                    DataRenderType::CategoryBars { labels, .. } => {
+                        labels.placement = CategoryBarLabels::None
+                    }
+                    DataRenderType::Radar { labels, .. } => {
+                        labels.placement = renderer::RadarLabels::None
+                    }
+                    _ => {}
+                }
+                s
+            })
+            .collect()
+    };
+    let mut cases: Vec<(String, Chart, Vec<SeriesConfig>)> = Vec::new();
+    for (mode, placement, top) in [
+        (CategoryBarMode::Grouped, CategoryBarLabels::Outside, 8.0),
+        (CategoryBarMode::Stacked, CategoryBarLabels::Inside, 12.0),
+    ] {
+        let mut chart = bare_chart();
+        let config = chart.config_mut();
+        for axis in [&mut config.bottom_x, &mut config.left_y] {
+            axis.line_visible = false;
+        }
+        config.bottom_x.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        config.bar_groups = Some(BarGroups {
+            mode,
+            direction: CategoryBarDirection::Vertical,
+            ..BarGroups::default()
+        });
+        chart.set_y_range(0.0, top);
+        cases.push((
+            format!("{mode:?} bars"),
+            chart,
+            vec![bars("one", RED, placement), bars("two", BLUE, placement)],
+        ));
+    }
+    let mut chart = bare_chart();
+    let config = chart.config_mut();
+    config.bottom_x.categories = Some(
+        (0..4)
+            .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
+            .collect(),
+    );
+    config.polar = Some(renderer::polar::PolarOptions::default());
+    chart.set_y_range(0.0, 1.0);
+    cases.push((
+        "radar".into(),
+        chart,
+        vec![SeriesConfig {
+            series_id: "radar".into(),
+            source_id: None,
+            label: None,
+            x_column: "cat".into(),
+            y_column: "radar".into(),
+            render_type: DataRenderType::Radar {
+                color: RED,
+                style: renderer::RadarSeriesStyle {
+                    marker: Some(renderer::RadarMarker::Circle),
+                    ..Default::default()
+                },
+                labels: renderer::RadarSeriesLabels {
+                    placement: renderer::RadarLabels::Values,
+                    text: vec!["0.6".into(), "0.5".into(), "0.7".into(), "0.4".into()],
+                    ..renderer::RadarSeriesLabels::default()
+                },
+            },
+        }],
+    ));
+    for (name, chart, series) in &cases {
+        for scale in [1.0f32, 2.0] {
+            let what = format!("{name} at {scale}x");
+            let with = renderer.export_panel_rgba(chart, series, scale).unwrap();
+            let without = renderer
+                .export_panel_rgba(chart, &hidden(series), scale)
+                .unwrap();
+            let is_painted = |x, y| difference(&with, &without, x, y) >= 160;
+            let window = (0, 0, with.width, with.height);
+            let painted = count_painted(window, is_painted);
+            assert!(painted > 30, "{what}: {painted} label pixels");
+            let probe = Probe::register(&mut renderer, chart, series, scale);
+            // Every label pixel within the box of its pixels grown by the
+            // selection padding and the glyphs' side bearings.
+            let reach = renderer::select::SELECTION_PADDING * scale + 3.0 * scale + 1.0;
+            let near_paint = |x: u32, y: u32| {
+                let r = reach.ceil() as i64;
+                (-r..=r).any(|dy| {
+                    (-r..=r).any(|dx| {
+                        let (px, py) = (x as i64 + dx, y as i64 + dy);
+                        px >= 0
+                            && py >= 0
+                            && (px as u32) < with.width
+                            && (py as u32) < with.height
+                            && is_painted(px as u32, py as u32)
+                    })
+                })
+            };
+            let mut failures = Vec::new();
+            let mut picked = 0usize;
+            let step = if scale > 1.0 { 2 } else { 1 };
+            for (px, py) in edge_band(window, is_painted) {
+                if (px % step) != 0 || (py % step) != 0 {
+                    continue;
+                }
+                let painted_here = is_painted(px, py);
+                if !painted_here && !near_paint(px, py) {
+                    continue;
+                }
+                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                match &hit {
+                    Some(renderer::PickedData::ValueLabel { .. }) => {
+                        picked += 1;
+                        if !near_paint(px, py) {
+                            failures.push(format!("({px}, {py}) picks {hit:?} far from paint"));
+                        }
+                    }
+                    _ if painted_here => {
+                        failures.push(format!("({px}, {py}) painted but picked {hit:?}"))
+                    }
+                    _ => {}
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(picked > 20, "{what}: {picked} label picks");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}

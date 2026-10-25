@@ -92,6 +92,14 @@ the categories and across the series of the bar group) and matrix cells
 not custom-element forwarders. See the
 [selection contract](SCHEMA.md#resident-selection-details).
 
+The value labels of category bars, box plots and radar series are pick and
+drag targets: `pick_point` and `pick_data` report a label under the pointer
+with its `label_id` (`"series:<series_id>:label:<index>"`), and
+`press_value_label(label_id)` selects it and starts its drag, which
+`on_move` continues (writing the series' `labels.offsets`) and `on_release`
+ends. A selected label reports its category, string and offset in
+`selection_details()`; `step_selection` does not step it.
+
 Serialize asynchronous operations and keep rendering, pointer edits, resize
 and disposal behind the same gate until the operation finishes. This includes
 selected-value reads; wasm-bindgen does not queue competing calls. The

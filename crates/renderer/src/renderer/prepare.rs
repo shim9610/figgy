@@ -7,12 +7,14 @@ mod contour;
 mod field;
 mod layers;
 mod stream;
+mod value_label;
 mod value_map;
 mod vector;
 use super::*;
 pub(in crate::renderer) use arc::*;
 pub(in crate::renderer) use contour::*;
 pub(in crate::renderer) use field::*;
+pub(in crate::renderer) use value_label::*;
 pub(in crate::renderer) use value_map::*;
 pub(in crate::renderer) use vector::*;
 
@@ -40,6 +42,8 @@ pub(super) struct PrepareContext<'a> {
     pub(super) field_bgl: &'a wgpu::BindGroupLayout,
     pub(super) vector_bgl: &'a wgpu::BindGroupLayout,
     pub(super) category_bar_data_bgl: &'a wgpu::BindGroupLayout,
+    /// Group 1 of the value label pipelines (`create_value_label_bind_group_layout`).
+    pub(super) value_label_bgl: &'a wgpu::BindGroupLayout,
     pub(super) field_cell_tables: &'a data_render::FieldCellTables,
     pub(super) transform_bgl: &'a wgpu::BindGroupLayout,
     pub(super) per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
@@ -53,7 +57,7 @@ pub(super) struct PrepareContext<'a> {
     pub(super) field_cache: &'a mut HashMap<String, FieldScratch>,
     pub(super) value_map_cache: &'a mut HashMap<String, ValueMapScratch>,
     pub(super) vector_cache: &'a mut HashMap<String, VectorScratch>,
-    pub(super) contour_cache: &'a mut HashMap<String, ContourScratchEntry>,
+    pub(super) contour_cache: &'a mut HashMap<String, ScratchEntry>,
     pub(super) arc_cache: &'a mut HashMap<String, Vec<ArcResultEntry>>,
     pub(super) texture_bgl: &'a wgpu::BindGroupLayout,
     pub(super) target_sample_count: u32,
@@ -339,7 +343,10 @@ impl PrepareContext<'_> {
             [
                 self.field_cache.get(id).map(|scratch| &*scratch.sources),
                 self.vector_cache.get(id).map(|scratch| &*scratch.sources),
-                self.contour_cache.get(id).map(|entry| &*entry.sources),
+                self.contour_cache
+                    .get(id)
+                    .and_then(ScratchEntry::contour)
+                    .map(|entry| &*entry.sources),
             ]
             .into_iter()
             .flatten()

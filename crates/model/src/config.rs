@@ -562,6 +562,22 @@ pub enum PickedDataRef {
         x_index: usize,
         y_index: usize,
     },
+    /// The value label of one category of a category bar, box plot or
+    /// radar series: its `labels.text[category_index]`, drawn at the bar
+    /// end, above the box or outside the vertex. A selected label is
+    /// outlined by its frame and is what a drag moves
+    /// (`SeriesConfig::drag_value_label`); `step_selection` does not step
+    /// it.
+    ValueLabel {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        /// The category, in axis order: the index into `labels.text`.
+        category_index: usize,
+    },
 }
 
 impl PickedDataRef {
@@ -570,7 +586,8 @@ impl PickedDataRef {
             Self::Point { source_id, .. }
             | Self::HistogramBin { source_id, .. }
             | Self::MatrixCell { source_id, .. }
-            | Self::ContourLevel { source_id, .. } => source_id.as_deref(),
+            | Self::ContourLevel { source_id, .. }
+            | Self::ValueLabel { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -579,7 +596,8 @@ impl PickedDataRef {
             Self::Point { series_id, .. }
             | Self::HistogramBin { series_id, .. }
             | Self::MatrixCell { series_id, .. }
-            | Self::ContourLevel { series_id, .. } => series_id,
+            | Self::ContourLevel { series_id, .. }
+            | Self::ValueLabel { series_id, .. } => series_id,
         }
     }
 }

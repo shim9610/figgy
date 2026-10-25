@@ -186,11 +186,12 @@ radial example uses `RadialRenderer`; its small-data model does not use the
 Cartesian column pool. `categorical_gallery`, `boxplot_gallery` and
 `radar_gallery` open their documents with `Config::from_categorical`,
 `Config::from_boxplot` and `Config::from_radar` and draw them with the
-Cartesian `Renderer`. `gallery-categorical.png`, `gallery-boxplot.png`,
-`gallery-radar.png` and `gallery-radar-circle.png` were drawn by the former
-bounded renderers, with value labels, which the Cartesian category bars, box
-plots and radar series do not draw yet (#40 item 13h); they are replaced when
-they do.
+Cartesian `Renderer`, value labels included (the documents' `labels`
+settings, written into `labels.text` by the readers). `categorical_gallery`
+leaves 12 % of the value range past the bars for outside labels, as the
+former chart did. `boxplot_gallery` labels every box with its median; the
+label past the highest outlier, which would cross the top of the data area,
+sits below that outlier instead.
 
 ## Precise and hand-drawn Sketch previews
 

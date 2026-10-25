@@ -10,9 +10,9 @@
 //! ```text
 //! Slot::Below   the grid texture (space background, grid, polar rings and spokes)
 //!               → the annotation underlay (spans)
-//! Data          every fill → every body → every picked highlight,
-//!               in SSOT series order (`data_render::composite`),
-//!               scissored to the data area
+//! Data          every fill → every body → every picked highlight
+//!               → every value label, in SSOT series order
+//!               (`data_render::composite`), scissored to the data area
 //! Slot::Above   the decoration texture (axis lines and ticks, tick labels,
 //!               titles, legend, colourbar, selection boxes)
 //!               → the annotation overlay (lines, arrows, text)
@@ -147,6 +147,12 @@ pub(crate) fn draw_chart_panel(
             }
             for s in series_list {
                 crate::data_render::issue_series_picked(pass, s);
+            }
+            // The value labels over all of the panel's data and its picked
+            // highlights, never in the cached bodies: a label drag or a
+            // selected label redraws only them.
+            for s in series_list {
+                crate::data_render::issue_series_value_labels(pass, s);
             }
         }
         Slot::Above => {

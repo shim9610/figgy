@@ -32,6 +32,9 @@ pub(crate) const DATA_PICK_FLAG_PAINTED: u32 = 4;
 pub(crate) const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
 pub(crate) const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
 pub(crate) const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
+/// A category bar, box plot or radar series' value label
+/// (`value_label.wgsl::pick_value_labels`): `index0` is its category.
+pub(crate) const DATA_PICK_KIND_VALUE_LABEL: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -118,6 +121,14 @@ pub(crate) enum GpuDataPickGeometry {
     /// index is its row.
     BoxPlot {
         data: crate::data_render::CategoryBarData,
+    },
+    /// A series' value labels, picked by the bar module's label entry
+    /// (`pick_value_labels`) over the draw's label uniform, category bar
+    /// group 3 and style map at the pick's display scale. A label answers as
+    /// [`DATA_PICK_KIND_VALUE_LABEL`] whose index is its category.
+    ValueLabels {
+        data: crate::data_render::CategoryBarData,
+        labels: crate::data_render::ValueLabelData,
     },
 }
 
@@ -591,6 +602,10 @@ pub(crate) struct DataPickPipelineBundle {
     vector_cell: wgpu::ComputePipeline,
     category_bar: wgpu::ComputePipeline,
     box_plot: wgpu::ComputePipeline,
+    /// Group 1 of the value label pick: the query (1, 2, 3) and the
+    /// series' label uniform (4).
+    value_label_query_bgl: wgpu::BindGroupLayout,
+    value_labels: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
     /// Group 3 of the field pick for a contour without labels.
     empty_label_gap: wgpu::BindGroup,
@@ -677,6 +692,31 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        let value_label_query_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy value label pick query bgl"),
+                entries: &[
+                    compute_uniform_entry(1),
+                    compute_storage_entry(2, true),
+                    compute_storage_entry(3, false),
+                    compute_uniform_entry(4),
+                ],
+            },
+        );
+        let value_label_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy value label data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&value_label_query_bgl),
+                    Some(bar_style_bgl),
+                    Some(category_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
 
         let histogram = observe_value(observer, INIT_SCOPE, "pick_histogram_bin", || {
@@ -744,6 +784,19 @@ impl DataPickPipelineBundle {
                 },
             )
         });
+        let value_labels = observe_value(observer, INIT_SCOPE, "pick_value_labels", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy value label data pick pipeline"),
+                    layout: Some(&value_label_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_value_labels"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
         let empty_bar_style_map =
             crate::data_render::create_bar_style_map(&device, bar_style_bgl, &[]).bind_group;
         let stream_reduce_bgl = crate::gpu_compile::bind_group_layout(
@@ -801,6 +854,8 @@ impl DataPickPipelineBundle {
             vector_cell,
             category_bar,
             box_plot,
+            value_label_query_bgl,
+            value_labels,
             empty_bar_style_map,
             empty_label_gap,
             _empty_label_gap_charge: empty_label_gap_charge,
@@ -833,6 +888,7 @@ impl DataPickPipelineBundle {
                     ("pick_histogram_bin", "pick_histogram_bin"),
                     ("pick_category_bar", "pick_category_bar"),
                     ("pick_box_plot", "pick_box_plot"),
+                    ("pick_value_labels", "pick_value_labels"),
                 ],
                 observer,
             )
@@ -1007,6 +1063,7 @@ impl DataPickPipelineBundle {
             VectorGrid(wgpu::BindGroup),
             CategoryBars(crate::data_render::CategoryBarData),
             BoxPlot(crate::data_render::CategoryBarData),
+            ValueLabels(crate::data_render::CategoryBarData),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -1028,6 +1085,9 @@ impl DataPickPipelineBundle {
         let mut field_charges = Vec::new();
 
         for (index, item) in series.into_iter().enumerate() {
+            // A value label pick binds the series' label uniform beside the
+            // query in group 1.
+            let mut label_params = None;
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1121,6 +1181,21 @@ impl DataPickPipelineBundle {
                         PreparedKind::BoxPlot(data),
                     )
                 }
+                GpuDataPickGeometry::ValueLabels { data, labels } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&labels.charge),
+                        _label: None,
+                    });
+                    label_params = Some(Arc::clone(&labels.params));
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::ValueLabels(data),
+                    )
+                }
             };
             let query_buffer = charged_buffer_init(
                 &scratch_tally,
@@ -1137,28 +1212,47 @@ impl DataPickPipelineBundle {
                 .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
                     resource: "typed data pick output offset",
                 })?;
-            let query_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy typed data pick query bg"),
-                layout: &self.query_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: query_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: pool.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &candidates,
-                            offset,
-                            size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
-                        }),
-                    },
-                ],
-            });
+            let query_entries = [
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: query_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: pool.buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &candidates,
+                        offset,
+                        size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
+                    }),
+                },
+            ];
+            let query_bg = match &label_params {
+                None => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("figgy typed data pick query bg"),
+                    layout: &self.query_bgl,
+                    entries: &query_entries,
+                }),
+                Some(params) => {
+                    let [query_entry, pool_entry, output_entry] = query_entries;
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("figgy value label pick query bg"),
+                        layout: &self.value_label_query_bgl,
+                        entries: &[
+                            query_entry,
+                            pool_entry,
+                            output_entry,
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: params.as_entire_binding(),
+                            },
+                        ],
+                    })
+                }
+            };
             identities.push(DataPickIdentity {
                 source_id: item.source_id,
                 series_id: item.series_id,
@@ -1200,6 +1294,11 @@ impl DataPickPipelineBundle {
                     }
                     PreparedKind::BoxPlot(data) => {
                         pass.set_pipeline(&self.box_plot);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::ValueLabels(data) => {
+                        pass.set_pipeline(&self.value_labels);
                         pass.set_bind_group(2, &data.style_map, &[]);
                         pass.set_bind_group(3, &data.bind_group, &[]);
                     }
@@ -1400,6 +1499,12 @@ fn decode_candidate(
             level_index: candidate.index0 as usize,
             x_index: candidate.index1 as usize,
             y_index: candidate.index2 as usize,
+            distance_px,
+        },
+        DATA_PICK_KIND_VALUE_LABEL => PickedData::ValueLabel {
+            source_id,
+            series_id,
+            category_index: candidate.index0 as usize,
             distance_px,
         },
         _ => return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult),

@@ -2269,6 +2269,8 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
 
     let first = renderer.prepare(&items).unwrap();
     let before = renderer.contour_cache["label-cache"]
+        .contour()
+        .unwrap()
         .label
         .as_ref()
         .unwrap()
@@ -2277,6 +2279,8 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         .contour_cache
         .get_mut("label-cache")
         .unwrap()
+        .contour_mut()
+        .unwrap()
         .signature
         .label
         .as_mut()
@@ -2284,7 +2288,7 @@ fn contour_label_font_generation_drift_forces_an_atlas_cache_miss() {
         .font_generation = crate::text_render::font_generation().wrapping_add(1);
 
     let second = renderer.prepare(&items).unwrap();
-    let entry = &renderer.contour_cache["label-cache"];
+    let entry = renderer.contour_cache["label-cache"].contour().unwrap();
     let after = entry.label.as_ref().unwrap().atlas_identity();
     assert_ne!(before, after, "font generation drift reused a stale atlas");
     assert_eq!(
@@ -8168,6 +8172,8 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     assert!(renderer.validate_prepared(&second).is_ok());
     assert_eq!(
         renderer.contour_cache["label-cache"]
+            .contour()
+            .unwrap()
             .label
             .as_ref()
             .unwrap()
@@ -8231,6 +8237,8 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     }
     assert_eq!(
         renderer.contour_cache["label-cache"]
+            .contour()
+            .unwrap()
             .label
             .as_ref()
             .unwrap()
@@ -8302,6 +8310,8 @@ fn contour_label_placements_reuse_only_exact_dispatch_keys() {
     );
     assert_eq!(
         renderer.contour_cache["label-cache"]
+            .contour()
+            .unwrap()
             .label
             .as_ref()
             .unwrap()
@@ -8392,6 +8402,8 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
 
     let old_prepared = renderer.prepare(&old_items).unwrap();
     let old_atlas = renderer.contour_cache["label-cache"]
+        .contour()
+        .unwrap()
         .label
         .as_ref()
         .unwrap()
@@ -8421,6 +8433,8 @@ fn contour_label_snapshot_survives_cache_replacement_until_token_drop() {
     }];
     let replacement_prepared = renderer.prepare(&replacement_items).unwrap();
     let replacement_atlas = renderer.contour_cache["label-cache"]
+        .contour()
+        .unwrap()
         .label
         .as_ref()
         .unwrap()

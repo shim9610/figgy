@@ -1,8 +1,9 @@
 //! Contour series: the level lookup, the labelled contour pipelines and the
 //! contour layers.
 //!
-//! The contour label atlas: every level's label text, formatted the way a
-//! tick label is, baked once per signature into one texture the GPU places.
+//! The label atlas: every contour level's label text, formatted the way a
+//! tick label is, or a series' value label strings (`value_label.rs`),
+//! baked once per signature into one texture the GPU places.
 
 use super::*;
 use crate::axis_render::effective_major_spacing;
@@ -159,6 +160,9 @@ pub(crate) struct BakedLabelAtlas {
     pub height: u32,
     /// Drawn label height inside each cell, excluding the transparent gutter.
     pub cell_h: f32,
+    /// The text baseline's height above the bottom edge of a cell's
+    /// content: where an upright label is aligned by its baseline.
+    pub baseline: f32,
     pub cell_stride_w: u32,
     pub cell_stride_h: u32,
     pub columns: u32,
@@ -327,7 +331,9 @@ pub(crate) fn contour_label_texts(
         .collect()
 }
 
-/// Everything an atlas is baked from, in physical pixels.
+/// Everything a label atlas is baked from, in physical pixels: the contour
+/// labels' and the value labels' (`value_label.rs`), which both bake a list
+/// of strings in one face and colour through [`bake_contour_label_atlas`].
 ///
 /// [`bake_contour_label_atlas`] takes nothing else, so a cache that compares
 /// two of these compares everything the bake can read: a field the bake
@@ -375,6 +381,35 @@ impl ContourLabelAtlasInput {
             family: config.bottom_x.label_style.label_font.clone(),
             bg_color_bits: labels.bg_color.as_ref().map(bits),
             bg_padding_bits: (labels.bg_padding_px.max(0.0) * scale).to_bits(),
+        })
+    }
+}
+
+impl ContourLabelAtlasInput {
+    /// What a series' value label strings bake to: `texts` (the series'
+    /// `labels.text`, SSOT configuration) in the tick label face of
+    /// `axis`, at its font size (a scaled config holds it in render
+    /// pixels already), in `color`, with no background. `None` when there
+    /// is nothing to bake: no string, or a non-positive font size.
+    pub(crate) fn for_value_labels(
+        config: &Config,
+        axis: &crate::config::AxisOptions,
+        texts: Vec<String>,
+        color: Color,
+    ) -> Option<Self> {
+        let size = axis.label_style.font_size;
+        if !(size > 0.0) || texts.iter().all(String::is_empty) {
+            return None;
+        }
+        let bits = |c: &Color| [c.r.to_bits(), c.g.to_bits(), c.b.to_bits(), c.a.to_bits()];
+        Some(Self {
+            texts,
+            font_size_bits: size.to_bits(),
+            color_bits: bits(&color),
+            policy: FontPolicy::for_style(&config.draw_style),
+            family: axis.label_style.label_font.clone(),
+            bg_color_bits: None,
+            bg_padding_bits: 0.0f32.to_bits(),
         })
     }
 }
@@ -474,6 +509,7 @@ pub(crate) fn bake_contour_label_atlas(
         width: grid.width,
         height: grid.height,
         cell_h,
+        baseline: cell_h - pad - ascent,
         cell_stride_w,
         cell_stride_h,
         columns: grid.columns,

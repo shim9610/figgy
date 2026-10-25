@@ -25,6 +25,9 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/errorbar_segment.wgsl",
     "data_render/common/box_plot.wgsl",
     "data_render/bar_columnar.wgsl",
+    "data_render/common/contour_label_box.wgsl",
+    "data_render/common/label_quad.wgsl",
+    "data_render/common/value_label.wgsl",
 );
 
 /// Vertices per bar instance: five axis-aligned quads (fill + four border
@@ -575,8 +578,8 @@ pub(crate) fn create_box_plot_pipeline_with_sample_count(
 }
 
 /// A pipeline of the bar module's category axis entries (category bars,
-/// box plots) with `(vertex entry, fragment entry, label)`.
-fn create_category_axis_pipeline(
+/// box plots, value labels) with `(vertex entry, fragment entry, label)`.
+pub(super) fn create_category_axis_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
     [transform_bgl, style_bgl, style_map_bgl, data_bgl]: [&wgpu::BindGroupLayout; 4],

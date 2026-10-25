@@ -1279,6 +1279,93 @@ fn pick_style_row(style: &DataScatterPointStyleConfig) -> data_render::ScatterSt
 }
 
 impl Renderer {
+    /// The category bar group 3 series `cfg`'s value labels are placed over
+    /// at the pick's display transform: the bar or box group's params and
+    /// style map (as the draw resolves them), or a radar series' category
+    /// and value columns. `None` for a series whose bars, boxes or polygon
+    /// are not drawn.
+    fn value_label_pick_group(
+        &mut self,
+        config: &Config,
+        display_config: &Config,
+        series: &[SeriesConfig],
+        cfg: &SeriesConfig,
+        scale: f32,
+    ) -> Result<Option<data_render::CategoryBarData>> {
+        let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
+        let lookup = |pool: &crate::data_render::ColumnPool, id: &str| {
+            pool.handle_for(id)
+                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+        };
+        if primitives.category_bars
+            && let Some(bars) = cfg.render_type.category_bars()
+        {
+            let params = category_bar_params(
+                display_config,
+                series.iter().filter(|s| {
+                    effective_series_primitives(&config.draw_style, &s.render_type).category_bars
+                }),
+                cfg,
+                scale,
+                |id| lookup(&self.pool, id),
+                |id| self.pool.slot(id).map(|slot| slot.min),
+            )?;
+            let style_map = crate::renderer::style::category_bar_style_map(
+                &self.device,
+                &self.per_point_style_map_bgl,
+                category_bar_categories(display_config).unwrap_or(&[]),
+                bars,
+                scale,
+            );
+            return Ok(Some(data_render::create_category_bar_data_bind_group(
+                &self.device,
+                &self.gpu_ledger,
+                &self.category_bar_data_bgl,
+                self.pool.buffer(),
+                &params,
+                style_map,
+            )));
+        }
+        if primitives.box_plot
+            && let Some(boxes) = cfg.render_type.box_plot()
+        {
+            let (params, _) = box_plot_params(
+                display_config,
+                series.iter().filter(|s| {
+                    effective_series_primitives(&config.draw_style, &s.render_type).box_plot
+                }),
+                cfg,
+                scale,
+                &self.pool,
+                |id| lookup(&self.pool, id),
+            )?;
+            let style_map = crate::renderer::style::box_plot_style_map(
+                &self.device,
+                &self.per_point_style_map_bgl,
+                category_bar_categories(display_config).unwrap_or(&[]),
+                boxes,
+                scale,
+            );
+            return Ok(Some(data_render::create_category_bar_data_bind_group(
+                &self.device,
+                &self.gpu_ledger,
+                &self.category_bar_data_bgl,
+                self.pool.buffer(),
+                &params,
+                style_map,
+            )));
+        }
+        if primitives.line && cfg.render_type.radar().is_some() {
+            let pool_buffer = self.pool.buffer().clone();
+            let (_, preparation) = self.preparation_parts();
+            let mut lookup = |id: &str| lookup(preparation.pool, id);
+            return preparation
+                .radar_label_group(cfg, &pool_buffer, scale, &mut lookup)
+                .map(Some);
+        }
+        Ok(None)
+    }
+
     /// Enable exact GPU picking for this renderer.
     ///
     /// This is idempotent. The immutable compute pipeline bundle is created
@@ -1500,8 +1587,9 @@ impl Renderer {
         let data_bundle = self.picker.ready_data_bundle()?;
 
         let mut data_series = Vec::new();
+        // One entry per series and one per series' value labels.
         data_series
-            .try_reserve_exact(series.len())
+            .try_reserve_exact(series.len().saturating_mul(2))
             .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "typed data pick series",
                 reason: error.to_string(),
@@ -1727,6 +1815,7 @@ impl Renderer {
                 let scratch = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
+                    .and_then(ScratchEntry::contour)
                     .expect("contour scratch was just ensured");
                 (
                     scratch.field_bg.clone(),
@@ -1768,6 +1857,53 @@ impl Renderer {
                     nan_color_premul,
                     label,
                 },
+            });
+        }
+
+        // Value labels: drawn over every series of the panel, so they pick
+        // with a paint order after every series and win the ties against
+        // the data under them. The same atlas, uniform and group 3 the draw
+        // places them with, at the pick's display transform and scale.
+        for (index, cfg) in series.iter().enumerate() {
+            let Some(atlas) = self
+                .preparation_parts()
+                .1
+                .ensure_value_label_scratch(&display_config, cfg)?
+            else {
+                continue;
+            };
+            let Some(data) = self.value_label_pick_group(
+                &config,
+                &display_config,
+                &series,
+                cfg,
+                request.display_scale,
+            )?
+            else {
+                continue;
+            };
+            let Some(labels) = self.preparation_parts().1.value_label_data(
+                &display_config,
+                cfg,
+                &atlas,
+                request.display_scale,
+            ) else {
+                continue;
+            };
+            if labels.count == 0 {
+                continue;
+            }
+            let paint_order = u32::try_from(series.len() + index).map_err(|_| {
+                FiggyError::InvalidSeriesConfig {
+                    series_id: cfg.series_id.clone(),
+                    reason: "value label paint order exceeds the GPU u32 index space".into(),
+                }
+            })?;
+            data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                source_id: cfg.source_id.clone(),
+                series_id: cfg.series_id.clone(),
+                paint_order,
+                geometry: crate::gpu_data_pick::GpuDataPickGeometry::ValueLabels { data, labels },
             });
         }
 

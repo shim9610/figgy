@@ -163,9 +163,12 @@ pub enum DataRenderType {
     /// other series' values from the pool for a stack; nothing per bar is
     /// kept on the CPU.
     ///
-    /// Value labels are configuration only for now: `labels.text` holds the
-    /// drawn strings ([`format_labels`] writes them) and is validated, and
-    /// the renderer does not draw them yet.
+    /// Value labels: `labels.text` holds the drawn strings ([`format_labels`]
+    /// writes them; the renderer never formats a value), one per category,
+    /// drawn at each bar's end as `labels.placement` (and a bar override's
+    /// `labels`) says, moved by `labels.offsets`. An empty string draws
+    /// nothing. Labels never displace each other: thinning the category
+    /// axis is the only way to thin them.
     ///
     /// The columns must be GPU resident; a streamed source is rejected with
     /// an error. Polar charts (`Config.polar`) reject category bars.
@@ -215,10 +218,12 @@ pub enum DataRenderType {
     /// median ≤ q3 ≤ whisker, outliers outside the whiskers) are not
     /// checked: the drawing clamps. Nothing per box is kept on the CPU.
     ///
-    /// Value labels are configuration only for now: `labels.text` holds the
-    /// drawn strings, which the host writes (the renderer has no per-box
-    /// statistics to write them from; [`format_box_plot_labels`] helps), and
-    /// the renderer does not draw them yet.
+    /// Value labels: `labels.text` holds the drawn strings, which the host
+    /// writes (the renderer has no per-box statistics to write them from;
+    /// [`format_box_plot_labels`] helps), one per category, drawn past the
+    /// top of each box (its high whisker, mean, notch and outliers) unless
+    /// `labels.placement` (or a box override's `labels`) is `None`, moved by
+    /// `labels.offsets`. An empty string draws nothing.
     ///
     /// The record and the outliers must be GPU resident; a streamed source
     /// is rejected with an error. Polar charts (`Config.polar`) reject box
@@ -264,9 +269,11 @@ pub enum DataRenderType {
     /// [`RadarSeriesStyle::fill_color`], and the markers are the scatter
     /// path. Nothing per vertex is kept on the CPU.
     ///
-    /// Value labels are configuration only for now: `labels.text` holds the
-    /// drawn strings ([`format_radar_labels`] writes them) and is
-    /// validated, and the renderer does not draw them yet.
+    /// Value labels: `labels.text` holds the drawn strings
+    /// ([`format_radar_labels`] writes them), one per category, drawn
+    /// outside each vertex along its spoke when `labels.placement` is
+    /// `Values` (or `Emphasized` and the series has a selected vertex or
+    /// label), moved by `labels.offsets`. An empty string draws nothing.
     ///
     /// Only a polar chart (`Config.polar`) with a categorical angle axis
     /// draws radar series, in the precise draw style; the columns must be
@@ -1418,6 +1425,121 @@ pub(crate) fn single_line_within(text: &str, max: usize) -> bool {
     text.chars().count() <= max && !text.chars().any(char::is_control)
 }
 
+/// The farthest a value label may be dragged from where it is placed, in
+/// logical pixels along either axis.
+pub const MAX_VALUE_LABEL_OFFSET: f32 = 4096.0;
+
+/// The rules of a series' value label offsets: empty, or one finite offset
+/// per category of at most [`MAX_VALUE_LABEL_OFFSET`] along either axis.
+fn validate_value_label_offsets(
+    offsets: &[[f32; 2]],
+    categories: usize,
+) -> Result<(), &'static str> {
+    if !offsets.is_empty() && offsets.len() != categories {
+        return Err("value label offsets need one entry per category");
+    }
+    if offsets
+        .iter()
+        .flatten()
+        .any(|v| !v.is_finite() || v.abs() > MAX_VALUE_LABEL_OFFSET)
+    {
+        return Err("a value label offset is finite and at most 4096 px along either axis");
+    }
+    Ok(())
+}
+
+/// The element id of value label `index` of series `series_id`:
+/// `"series:<series_id>:label:<index>"`. The id a pick reports for a label
+/// hit and the one a host passes back to drag it.
+pub fn value_label_id(series_id: &str, index: usize) -> String {
+    format!("series:{series_id}:label:{index}")
+}
+
+/// The series id and the label index a [`value_label_id`] names, or `None`
+/// for any other string. The index is read after the last `":label:"`, so a
+/// series id may itself contain one.
+pub fn parse_value_label_id(id: &str) -> Option<(&str, usize)> {
+    let rest = id.strip_prefix("series:")?;
+    let (series_id, index) = rest.rsplit_once(":label:")?;
+    if index.is_empty() || !index.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((series_id, index.parse().ok()?))
+}
+
+impl SeriesConfig {
+    /// The value label offsets of a category bar, box plot or radar series
+    /// (`labels.offsets`), or `None` for every other kind.
+    pub fn value_label_offsets(&self) -> Option<&[[f32; 2]]> {
+        match &self.render_type {
+            DataRenderType::CategoryBars { labels, .. } => Some(&labels.offsets),
+            DataRenderType::BoxPlot { labels, .. } => Some(&labels.offsets),
+            DataRenderType::Radar { labels, .. } => Some(&labels.offsets),
+            _ => None,
+        }
+    }
+
+    /// The drawn strings of a category bar, box plot or radar series'
+    /// value labels (`labels.text`), or `None` for every other kind.
+    pub fn value_label_text(&self) -> Option<&[String]> {
+        match &self.render_type {
+            DataRenderType::CategoryBars { labels, .. } => Some(&labels.text),
+            DataRenderType::BoxPlot { labels, .. } => Some(&labels.text),
+            DataRenderType::Radar { labels, .. } => Some(&labels.text),
+            _ => None,
+        }
+    }
+
+    /// The drag offset of value label `index`, in logical pixels: its
+    /// `labels.offsets` entry, or zero when none is stored.
+    pub fn value_label_offset(&self, index: usize) -> [f32; 2] {
+        self.value_label_offsets()
+            .and_then(|offsets| offsets.get(index).copied())
+            .unwrap_or([0.0; 2])
+    }
+
+    /// Move value label `index` of this series by `(dx, dy)` logical pixels
+    /// (x right, y down): its `labels.offsets` entry grows by the delta, the
+    /// list filled with zero offsets to `categories` entries on the first
+    /// move. Nothing changes and the move is rejected for a series without
+    /// value labels, an index past `categories`, a non-finite delta or an
+    /// offset past [`MAX_VALUE_LABEL_OFFSET`]. The label's placement is the
+    /// renderer's, from the pool, so there is no containment test beyond
+    /// that bound.
+    pub fn drag_value_label(
+        &mut self,
+        index: usize,
+        categories: usize,
+        dx: f32,
+        dy: f32,
+    ) -> crate::layout::NudgeResult {
+        use crate::layout::{NudgeReject, NudgeResult};
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let offsets = match &mut self.render_type {
+            DataRenderType::CategoryBars { labels, .. } => &mut labels.offsets,
+            DataRenderType::BoxPlot { labels, .. } => &mut labels.offsets,
+            DataRenderType::Radar { labels, .. } => &mut labels.offsets,
+            _ => return reject,
+        };
+        if index >= categories || !dx.is_finite() || !dy.is_finite() {
+            return reject;
+        }
+        let [x, y] = offsets.get(index).copied().unwrap_or([0.0; 2]);
+        let moved = [x + dx, y + dy];
+        if moved
+            .iter()
+            .any(|v| !v.is_finite() || v.abs() > MAX_VALUE_LABEL_OFFSET)
+        {
+            return reject;
+        }
+        if offsets.len() != categories {
+            offsets.resize(categories, [0.0; 2]);
+        }
+        offsets[index] = moved;
+        NudgeResult::Moved
+    }
+}
+
 impl CategoryBarStyle {
     /// The rules a bar style is held to at every level (series, override):
     /// a material with a look on a flat body, a corner radius in `0..=32`,
@@ -1510,6 +1632,13 @@ pub struct CategoryBarSeriesLabels {
     pub value_suffix: String,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub text: Vec<String>,
+    /// Where each label was dragged to, in logical pixels from where it is
+    /// placed (x right, y down), one per category in axis order, or empty
+    /// when no label was dragged. The renderer adds the offset to the
+    /// label's placement on every draw; a drag writes it
+    /// ([`SeriesConfig::drag_value_label`]).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub offsets: Vec<[f32; 2]>,
 }
 
 impl Default for CategoryBarSeriesLabels {
@@ -1519,6 +1648,7 @@ impl Default for CategoryBarSeriesLabels {
             decimals: 1,
             value_suffix: String::new(),
             text: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 }
@@ -1632,6 +1762,7 @@ pub fn validate_category_bar_series(
     if !bars.labels.text.is_empty() && bars.labels.text.len() != categories.len() {
         return Err("bar label text needs one string per category");
     }
+    validate_value_label_offsets(&bars.labels.offsets, categories.len())?;
     if bars
         .labels
         .text
@@ -2095,6 +2226,13 @@ pub struct BoxPlotSeriesLabels {
     pub value_suffix: String,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub text: Vec<String>,
+    /// Where each label was dragged to, in logical pixels from where it is
+    /// placed (x right, y down), one per category in axis order, or empty
+    /// when no label was dragged. The renderer adds the offset to the
+    /// label's placement on every draw; a drag writes it
+    /// ([`SeriesConfig::drag_value_label`]).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub offsets: Vec<[f32; 2]>,
 }
 
 impl Default for BoxPlotSeriesLabels {
@@ -2104,6 +2242,7 @@ impl Default for BoxPlotSeriesLabels {
             decimals: 1,
             value_suffix: String::new(),
             text: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 }
@@ -2175,6 +2314,7 @@ pub fn validate_box_plot_series(
     if !boxes.labels.text.is_empty() && boxes.labels.text.len() != categories.len() {
         return Err("box label text needs one string per category");
     }
+    validate_value_label_offsets(&boxes.labels.offsets, categories.len())?;
     if boxes
         .labels
         .text
@@ -2498,6 +2638,13 @@ pub struct RadarSeriesLabels {
     pub value_suffix: String,
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
     pub text: Vec<String>,
+    /// Where each label was dragged to, in logical pixels from where it is
+    /// placed (x right, y down), one per category in axis order, or empty
+    /// when no label was dragged. The renderer adds the offset to the
+    /// label's placement on every draw; a drag writes it
+    /// ([`SeriesConfig::drag_value_label`]).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub offsets: Vec<[f32; 2]>,
 }
 
 impl Default for RadarSeriesLabels {
@@ -2507,6 +2654,7 @@ impl Default for RadarSeriesLabels {
             decimals: 1,
             value_suffix: String::new(),
             text: Vec::new(),
+            offsets: Vec::new(),
         }
     }
 }
@@ -2627,6 +2775,7 @@ pub fn validate_radar_series(
     if !radar.labels.text.is_empty() && radar.labels.text.len() != categories.len() {
         return Err("radar label text needs one string per category");
     }
+    validate_value_label_offsets(&radar.labels.offsets, categories.len())?;
     if radar
         .labels
         .text
@@ -3992,6 +4141,101 @@ mod category_bar_tests {
     }
 
     #[test]
+    fn value_label_offsets_are_validated_and_written_by_a_drag() {
+        use crate::layout::{NudgeReject, NudgeResult};
+        let cats = categories(3);
+        let mut series = bars("a");
+        assert_eq!(validate_category_bar_series(&series, &cats), Ok(()));
+        assert_eq!(series.value_label_offset(1), [0.0, 0.0]);
+        // The first drag fills one zero offset per category.
+        assert_eq!(
+            series.drag_value_label(1, cats.len(), 4.0, -2.5),
+            NudgeResult::Moved
+        );
+        assert_eq!(
+            labels(&mut series).offsets,
+            [[0.0, 0.0], [4.0, -2.5], [0.0, 0.0]]
+        );
+        assert_eq!(
+            series.drag_value_label(1, cats.len(), 1.0, 0.5),
+            NudgeResult::Moved
+        );
+        assert_eq!(series.value_label_offset(1), [5.0, -2.0]);
+        assert_eq!(validate_category_bar_series(&series, &cats), Ok(()));
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let before = series.clone();
+        for (index, dx, dy) in [
+            (3, 1.0, 1.0),
+            (0, f32::NAN, 0.0),
+            (0, 0.0, f32::INFINITY),
+            (0, MAX_VALUE_LABEL_OFFSET + 1.0, 0.0),
+        ] {
+            assert_eq!(series.drag_value_label(index, cats.len(), dx, dy), reject);
+            assert_eq!(series, before);
+        }
+        let mut line = bars("l");
+        line.render_type = DataRenderType::Line {
+            line: DataLineStyleConfig::default(),
+        };
+        assert_eq!(line.drag_value_label(0, 3, 1.0, 1.0), reject);
+        assert_eq!(line.value_label_offsets(), None);
+
+        for offsets in [
+            vec![[0.0, 0.0]; 2],
+            vec![[0.0, f32::NAN]; 3],
+            vec![[MAX_VALUE_LABEL_OFFSET * 2.0, 0.0]; 3],
+        ] {
+            labels(&mut series).offsets = offsets;
+            assert!(validate_category_bar_series(&series, &cats).is_err());
+        }
+        let mut boxes = box_plot_tests::boxes("b");
+        let DataRenderType::BoxPlot { labels: l, .. } = &mut boxes.render_type else {
+            unreachable!()
+        };
+        l.offsets = vec![[0.0, 0.0]; 2];
+        assert!(validate_box_plot_series(&boxes, &cats).is_err());
+        let mut radar = radar_tests::radar("r");
+        let DataRenderType::Radar { labels: l, .. } = &mut radar.render_type else {
+            unreachable!()
+        };
+        l.offsets = vec![[f32::NAN, 0.0]; 3];
+        assert!(validate_radar_series(&radar, &cats).is_err());
+    }
+
+    #[test]
+    fn a_value_label_id_names_its_series_and_category() {
+        assert_eq!(value_label_id("a", 3), "series:a:label:3");
+        assert_eq!(parse_value_label_id("series:a:label:3"), Some(("a", 3)));
+        // A series id may hold the separator itself.
+        let id = value_label_id("x:label:y", 12);
+        assert_eq!(parse_value_label_id(&id), Some(("x:label:y", 12)));
+        for other in [
+            "axis_left",
+            "series:a:label:",
+            "series:a:label:-1",
+            "series:a:label:1x",
+            "a:label:1",
+        ] {
+            assert_eq!(parse_value_label_id(other), None, "{other}");
+        }
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn value_label_offsets_round_trip_and_are_omitted_when_empty() {
+        let mut series = bars("a");
+        let json = serde_json::to_value(&series).unwrap();
+        let fields = json["render_type"]["CategoryBars"]["labels"]
+            .as_object()
+            .unwrap();
+        assert!(!fields.contains_key("offsets"));
+        labels(&mut series).offsets = vec![[1.5, -2.0], [0.0, 0.0], [3.0, 4.0]];
+        let json = serde_json::to_string(&series).unwrap();
+        assert!(json.contains(r#""offsets":[[1.5,-2.0],[0.0,0.0],[3.0,4.0]]"#));
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), series);
+    }
+
+    #[test]
     fn format_labels_writes_each_format_from_the_host_values() {
         let cats = categories(3);
         let values = [
@@ -4143,7 +4387,7 @@ mod box_plot_tests {
             .collect()
     }
 
-    fn boxes(id: &str) -> SeriesConfig {
+    pub(crate) fn boxes(id: &str) -> SeriesConfig {
         SeriesConfig {
             series_id: id.into(),
             source_id: None,
@@ -4477,7 +4721,7 @@ mod radar_tests {
             .collect()
     }
 
-    fn radar(id: &str) -> SeriesConfig {
+    pub(crate) fn radar(id: &str) -> SeriesConfig {
         SeriesConfig {
             series_id: id.into(),
             source_id: None,
@@ -4772,6 +5016,7 @@ mod radar_tests {
             decimals: 2,
             value_suffix: " pt".into(),
             text: vec!["1.00 pt".into(), "".into()],
+            offsets: vec![[2.0, -1.5], [0.0, 0.0]],
         };
         let text = serde_json::to_string(&series).unwrap();
         let back: SeriesConfig = serde_json::from_str(&text).unwrap();

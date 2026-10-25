@@ -187,6 +187,9 @@ pub(super) struct PreparedContourScratch {
 
 pub(super) struct PreparedContourSeries {
     pub(super) scratch: Option<PreparedContourScratch>,
+    /// The series' value label atlas, baked by the contour label module's
+    /// atlas builder; `None` for a series that draws no value labels.
+    pub(super) value_labels: Option<Arc<data_render::ValueLabelAtlas>>,
 }
 
 pub(super) struct PreparedContourItem {
@@ -350,6 +353,16 @@ pub(super) struct PreparedCategoryBarLayer {
     pub(super) vertices: u32,
 }
 
+/// Owned value label layer: the label group (uniform and atlas), the
+/// category bar data it reads, and the selected label's box pipeline.
+pub(super) struct PreparedValueLabelLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) labels: data_render::ValueLabelData,
+    pub(super) data: data_render::CategoryBarData,
+    pub(super) selected: Option<(u32, wgpu::RenderPipeline)>,
+}
+
 pub(super) struct PreparedErrorBarLayer {
     pub(super) pipeline: wgpu::RenderPipeline,
     pub(super) transform_bg: wgpu::BindGroup,
@@ -386,6 +399,7 @@ pub(super) struct PreparedSeries {
     pub(super) selected_bars: Vec<PreparedBarSelectionLayer>,
     pub(super) selected_fields: Vec<PreparedFieldSelectionLayer>,
     pub(super) picked: Vec<PreparedPickRingLayer>,
+    pub(super) value_labels: Option<PreparedValueLabelLayer>,
 }
 
 /// Refcounted GPU view bindings captured by `prepare`. Bind groups keep their
@@ -863,6 +877,15 @@ impl PreparedSeries {
                     instance: layer.instance,
                 })
                 .collect(),
+            value_labels: layers.value_labels.map(|layer| PreparedValueLabelLayer {
+                pipeline: layer.pipeline.clone(),
+                transform_bg: layer.transform_bg.clone(),
+                labels: layer.labels,
+                data: layer.data,
+                selected: layer
+                    .selected
+                    .map(|(row, pipeline)| (row, pipeline.clone())),
+            }),
         }
     }
 
@@ -1041,6 +1064,18 @@ impl PreparedSeries {
                     instance: layer.instance,
                 })
                 .collect(),
+            value_labels: self.value_labels.as_ref().map(|layer| {
+                data_render::ColumnValueLabelLayer {
+                    pipeline: &layer.pipeline,
+                    transform_bg: &layer.transform_bg,
+                    labels: layer.labels.clone(),
+                    data: layer.data.clone(),
+                    selected: layer
+                        .selected
+                        .as_ref()
+                        .map(|(row, pipeline)| (*row, pipeline)),
+                }
+            }),
         }
     }
 }
@@ -2091,6 +2126,7 @@ impl Renderer {
                 field_bgl: &self.field_bgl,
                 vector_bgl: &self.vector_bgl,
                 category_bar_data_bgl: &self.category_bar_data_bgl,
+                value_label_bgl: &self.value_label_bgl,
                 field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,
                 per_point_style_map_bgl: &self.per_point_style_map_bgl,

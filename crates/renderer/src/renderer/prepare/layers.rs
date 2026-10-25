@@ -755,6 +755,50 @@ impl PrepareContext<'_> {
                 )?
             };
 
+            // Value labels: the atlas this prepare resolved for the series,
+            // placed over the series' own category bar group 3 (a bar or
+            // box series') or its category and value columns (a radar
+            // series'), with its uniform at the style's display scale. Only
+            // a series that draws its bars, boxes or polygon draws labels.
+            let atlas = products
+                .contours
+                .get(idx)
+                .and_then(|series| series.value_labels.as_ref());
+            let value_labels = match atlas {
+                Some(atlas) if phase.is_none() => {
+                    let data = match &category_bars {
+                        Some((data, ..)) => Some(data.clone()),
+                        None if rt.radar().is_some() && primitives.line => {
+                            Some(self.radar_label_group(
+                                cfg,
+                                column_buffer,
+                                series.style.display_scale,
+                                &mut lookup,
+                            )?)
+                        }
+                        None => None,
+                    };
+                    match (
+                        data,
+                        self.value_label_data(chart_config, cfg, atlas, series.style.display_scale),
+                        pipelines.bar_value_label.as_ref(),
+                    ) {
+                        (Some(data), Some(labels), Some(pipeline)) => {
+                            Some(data_render::ColumnValueLabelLayer {
+                                pipeline,
+                                transform_bg: &view.transform_bg,
+                                labels,
+                                data,
+                                selected: selected_value_label(chart_config, cfg)
+                                    .zip(pipelines.bar_value_label_selection.as_ref()),
+                            })
+                        }
+                        _ => None,
+                    }
+                }
+                _ => None,
+            };
+
             let category_bars = category_bars.map(|(data, count, vertices, pipeline)| {
                 data_render::ColumnCategoryBarLayer {
                     pipeline,
@@ -779,6 +823,7 @@ impl PrepareContext<'_> {
                 selected_bars,
                 selected_fields,
                 picked,
+                value_labels,
             });
         }
         Ok(out)

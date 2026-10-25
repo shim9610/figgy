@@ -296,6 +296,8 @@ impl Renderer {
                     && p.bar_category_selection.is_some()
                     && p.bar_box_plot.is_some()
                     && p.bar_box_plot_selection.is_some()
+                    && p.bar_value_label.is_some()
+                    && p.bar_value_label_selection.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -404,6 +406,8 @@ impl TargetPipelines {
             bar_category_selection: None,
             bar_box_plot: None,
             bar_box_plot_selection: None,
+            bar_value_label: None,
+            bar_value_label_selection: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -465,6 +469,12 @@ impl TargetPipelines {
         }
         if self.bar_box_plot_selection.is_none() {
             self.bar_box_plot_selection = other.bar_box_plot_selection;
+        }
+        if self.bar_value_label.is_none() {
+            self.bar_value_label = other.bar_value_label;
+        }
+        if self.bar_value_label_selection.is_none() {
+            self.bar_value_label_selection = other.bar_value_label_selection;
         }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;

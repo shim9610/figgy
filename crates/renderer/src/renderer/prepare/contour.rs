@@ -156,6 +156,34 @@ pub(in crate::renderer) struct ContourLabelSignature {
     pub(in crate::renderer) anchors: Vec<crate::gpu_contour::LabelAnchorGpu>,
 }
 
+/// One series' entry in the label atlas scratch cache
+/// (`Renderer::contour_cache`), keyed by `series_id`: a contour series'
+/// resolved GPU state with its label atlas, or the value label atlas of a
+/// category bar, box plot or radar series. One map, one eviction rule
+/// (`evict_if_full`, [`CONTOUR_SCRATCH_CACHE_LIMIT`]); a series id that
+/// changes kind replaces its entry.
+pub(in crate::renderer) enum ScratchEntry {
+    Contour(ContourScratchEntry),
+    ValueLabels(super::value_label::ValueLabelScratch),
+}
+
+impl ScratchEntry {
+    /// The contour scratch, when this is a contour series' entry.
+    pub(in crate::renderer) fn contour(&self) -> Option<&ContourScratchEntry> {
+        match self {
+            Self::Contour(entry) => Some(entry),
+            Self::ValueLabels(_) => None,
+        }
+    }
+
+    pub(in crate::renderer) fn contour_mut(&mut self) -> Option<&mut ContourScratchEntry> {
+        match self {
+            Self::Contour(entry) => Some(entry),
+            Self::ValueLabels(_) => None,
+        }
+    }
+}
+
 /// One contour series' resolved GPU state — the same shape a field's is.
 pub(in crate::renderer) struct ContourScratchEntry {
     pub(in crate::renderer) signature: ContourSignature,
@@ -203,10 +231,18 @@ impl PrepareContext<'_> {
             let mut per_series = Vec::with_capacity(item.series.len());
             for (series, effective_spacing_px) in item.series.iter().zip(item_spacings) {
                 let cfg = series.config;
+                // The value labels of a category bar, box plot or radar
+                // series bake through this module's atlas builder too, at
+                // the panel config's tick label size (an export's config is
+                // scaled already).
+                let value_labels = self.ensure_value_label_scratch(item.chart_config, cfg)?;
                 if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
                     .contour
                 {
-                    per_series.push(PreparedContourSeries { scratch: None });
+                    per_series.push(PreparedContourSeries {
+                        scratch: None,
+                        value_labels,
+                    });
                     continue;
                 }
                 let sources = self.ensure_contour_scratch(cfg, item.chart_config, scale)?;
@@ -221,6 +257,7 @@ impl PrepareContext<'_> {
                 let automatic = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
+                    .and_then(ScratchEntry::contour)
                     .and_then(|entry| entry.label.as_ref())
                     .is_some_and(crate::gpu_contour::ContourLabelState::is_automatic);
                 if automatic && encoder.is_none() {
@@ -241,6 +278,7 @@ impl PrepareContext<'_> {
                 let entry = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
+                    .and_then(ScratchEntry::contour)
                     .expect("contour scratch was just ensured");
                 per_series.push(PreparedContourSeries {
                     scratch: Some(PreparedContourScratch {
@@ -250,6 +288,7 @@ impl PrepareContext<'_> {
                         drawable: entry.drawable,
                         label,
                     }),
+                    value_labels,
                 });
             }
             if let Some(encoder) = encoder {
@@ -273,7 +312,7 @@ impl PrepareContext<'_> {
         (ca, da): (Rect, Rect),
         effective_spacing_px: Option<f32>,
     ) -> Option<crate::gpu_contour::ContourLabelSnapshot> {
-        let entry = self.contour_cache.get_mut(series_id)?;
+        let entry = self.contour_cache.get_mut(series_id)?.contour_mut()?;
         let label = entry.label.as_mut()?;
         if !label.is_automatic() {
             return label.explicit_snapshot();
@@ -499,7 +538,7 @@ impl PrepareContext<'_> {
             level_colors,
             label: label_sig,
         };
-        if let Some(entry) = self.contour_cache.get(cfg.series_id.as_str())
+        if let Some(ScratchEntry::Contour(entry)) = self.contour_cache.get(cfg.series_id.as_str())
             && entry.signature == signature
         {
             return Ok(Arc::clone(&entry.sources));
@@ -561,7 +600,7 @@ impl PrepareContext<'_> {
         let receipt = Arc::clone(&sources);
         self.contour_cache.insert(
             cfg.series_id.clone(),
-            ContourScratchEntry {
+            ScratchEntry::Contour(ContourScratchEntry {
                 signature,
                 style_bg,
                 field_bg,
@@ -569,7 +608,7 @@ impl PrepareContext<'_> {
                 sources,
                 drawable,
                 label,
-            },
+            }),
         );
         Ok(receipt)
     }

@@ -259,6 +259,18 @@ mod tests {
                 "DATA_PICK_KIND_CONTOUR_LEVEL",
                 data_pick::DATA_PICK_KIND_CONTOUR_LEVEL,
             ),
+            (
+                "DATA_PICK_KIND_VALUE_LABEL",
+                data_pick::DATA_PICK_KIND_VALUE_LABEL,
+            ),
+            ("VALUE_LABEL_KIND_BARS", dr::VALUE_LABEL_KIND_BARS),
+            ("VALUE_LABEL_KIND_BOXES", dr::VALUE_LABEL_KIND_BOXES),
+            ("VALUE_LABEL_KIND_RADAR", dr::VALUE_LABEL_KIND_RADAR),
+            ("VALUE_LABEL_OUTSIDE", dr::VALUE_LABEL_OUTSIDE),
+            ("VALUE_LABEL_INSIDE", dr::VALUE_LABEL_INSIDE),
+            ("VALUE_LABEL_AUTO", dr::VALUE_LABEL_AUTO),
+            ("VALUE_LABEL_CAPACITY", dr::VALUE_LABEL_CAPACITY as u32),
+            ("VALUE_LABEL_VERTICES", dr::VALUE_LABEL_VERTICES),
             ("MODE_FIELD_EDGES_CELLS", fit::FIELD_EDGES_CELLS_MODE),
             ("MODE_FIELD_EDGES_SAMPLES", fit::FIELD_EDGES_SAMPLES_MODE),
             ("MODE_FIELD_CENTERS_CELLS", fit::FIELD_CENTERS_CELLS_MODE),
@@ -346,7 +358,9 @@ mod tests {
     #[test]
     fn mirrored_struct_layouts_match_their_rust_twins() {
         use crate::data_render::vector::VectorParamsGpu;
-        use crate::data_render::{BarStyleOverrideGpu, BarStyleSlotGpu, CategoryBarParamsGpu};
+        use crate::data_render::{
+            BarStyleOverrideGpu, BarStyleSlotGpu, CategoryBarParamsGpu, ValueLabelParamsGpu,
+        };
         use crate::data_render::{
             ContourLookupMetadataGpu, DataSelectionGpu, FieldParamsGpu, GridColumnGpu, MaterialGpu,
             PointValueMapParamsGpu, PrimitiveStyle, ScatterStyleMapMeta, ScatterStyleOverrideGpu,
@@ -683,6 +697,32 @@ mod tests {
                     dir,
                     level,
                     width_px
+                }
+            ),
+            mirror!(
+                "bar",
+                "ValueLabelParams",
+                ValueLabelParamsGpu {
+                    atlas,
+                    shape,
+                    metrics,
+                    selection_color,
+                    selection,
+                    cells,
+                }
+            ),
+            mirror!(
+                "bar",
+                "LabelParams",
+                LabelParamsGpu {
+                    atlas_w,
+                    atlas_h,
+                    cell_stride_w,
+                    cell_stride_h,
+                    columns,
+                    rows,
+                    gutter,
+                    level_count,
                 }
             ),
             mirror!(

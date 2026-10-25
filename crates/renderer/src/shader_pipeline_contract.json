@@ -1768,6 +1768,106 @@
             "type": "storage"
           },
           "visibility": 4
+        },
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        }
+      ],
+      [
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 6,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 7,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 5
+        }
+      ],
+      [
+        {
+          "binding": 8,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 9,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 3,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
         }
       ],
       [
@@ -2104,6 +2204,95 @@
             "type": "uniform"
           },
           "visibility": 5
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 5,
+          "texture": {
+            "multisampled": false,
+            "sampleType": "float",
+            "viewDimension": "2d"
+          },
+          "visibility": 2
+        },
+        {
+          "binding": 6,
+          "sampler": {
+            "type": "filtering"
+          },
+          "visibility": 2
+        }
+      ],
+      [
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 6,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 7,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 5
+        }
+      ],
+      [
+        {
+          "binding": 8,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 7
+        },
+        {
+          "binding": 9,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
         }
       ]
     ],
@@ -2839,7 +3028,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 35
+        "layout": 37
       },
       "kind": "compute",
       "source": "f95a2e6c23dd3d9e"
@@ -2851,7 +3040,7 @@
           "entryPoint": "mask"
         },
         "label": "stream replay mask",
-        "layout": 38
+        "layout": 40
       },
       "kind": "compute",
       "source": "71ff5525f44eb84d"
@@ -2866,7 +3055,7 @@
         "layout": 15
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -2875,7 +3064,7 @@
           "entryPoint": "pick"
         },
         "label": "radial pick",
-        "layout": 31
+        "layout": 33
       },
       "kind": "compute",
       "source": "870f1d210023a50c"
@@ -2887,10 +3076,10 @@
           "entryPoint": "pick_box_plot"
         },
         "label": "figgy box plot data pick pipeline",
-        "layout": 26
+        "layout": 27
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -2899,10 +3088,10 @@
           "entryPoint": "pick_category_bar"
         },
         "label": "figgy category bar data pick pipeline",
-        "layout": 26
+        "layout": 27
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -2911,7 +3100,7 @@
           "entryPoint": "pick_field_data"
         },
         "label": "figgy field data pick pipeline",
-        "layout": 24
+        "layout": 25
       },
       "kind": "compute",
       "source": "360e1c69bd7684ff"
@@ -2947,10 +3136,10 @@
           "entryPoint": "pick_histogram_bin"
         },
         "label": "figgy histogram data pick pipeline",
-        "layout": 27
+        "layout": 28
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -2959,7 +3148,7 @@
           "entryPoint": "pick_reduce_candidates"
         },
         "label": "figgy GPU pick candidate reduction pipeline",
-        "layout": 41
+        "layout": 43
       },
       "kind": "compute",
       "source": "950d1761e1772e2d"
@@ -2968,10 +3157,22 @@
       "descriptor": {
         "compute": {
           "constants": {},
+          "entryPoint": "pick_value_labels"
+        },
+        "label": "figgy value label data pick pipeline",
+        "layout": 24
+      },
+      "kind": "compute",
+      "source": "79d2de17b0551a13"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
           "entryPoint": "pick_vector_cell"
         },
         "label": "figgy vector grid data pick pipeline",
-        "layout": 25
+        "layout": 26
       },
       "kind": "compute",
       "source": "06f08eac6e494049"
@@ -2986,7 +3187,7 @@
         "layout": 17
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3010,7 +3211,7 @@
         "layout": 16
       },
       "kind": "compute",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3097,7 +3298,7 @@
           ]
         },
         "label": "radial surfaces",
-        "layout": 30,
+        "layout": 32,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -3388,7 +3589,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3434,7 +3635,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3480,7 +3681,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3526,7 +3727,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3572,7 +3773,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3618,7 +3819,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3664,7 +3865,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3710,7 +3911,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3756,7 +3957,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3802,7 +4003,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3848,7 +4049,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -3894,7 +4095,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -4491,7 +4692,7 @@
           ]
         },
         "label": "figgy selected field data pipeline",
-        "layout": 29,
+        "layout": 31,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4537,7 +4738,7 @@
           ]
         },
         "label": "figgy selected field data pipeline",
-        "layout": 29,
+        "layout": 31,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4583,7 +4784,7 @@
           ]
         },
         "label": "figgy selected labelled field data pipeline",
-        "layout": 28,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4629,7 +4830,7 @@
           ]
         },
         "label": "figgy selected labelled field data pipeline",
-        "layout": 28,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4954,7 +5155,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -5034,7 +5235,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -5114,7 +5315,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -5192,7 +5393,7 @@
         }
       },
       "kind": "render",
-      "source": "b772ae1e76c11cae"
+      "source": "2bf9cec8ed9d6097"
     },
     {
       "descriptor": {
@@ -5270,7 +5471,7 @@
         }
       },
       "kind": "render",
-      "source": "b772ae1e76c11cae"
+      "source": "2bf9cec8ed9d6097"
     },
     {
       "descriptor": {
@@ -5841,7 +6042,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 32,
+        "layout": 34,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5887,7 +6088,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 32,
+        "layout": 34,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -6438,7 +6639,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -6518,7 +6719,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -6598,7 +6799,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -6838,7 +7039,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -6918,7 +7119,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -6998,7 +7199,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -7078,7 +7279,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -7342,7 +7543,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -7422,7 +7623,7 @@
         }
       },
       "kind": "render",
-      "source": "f23ee1789a714a62"
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -9013,6 +9214,190 @@
       },
       "kind": "render",
       "source": "360e1c69bd7684ff"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_value_label",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy value label pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_value_label"
+        }
+      },
+      "kind": "render",
+      "source": "79d2de17b0551a13"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_value_label",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy value label pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_value_label"
+        }
+      },
+      "kind": "render",
+      "source": "79d2de17b0551a13"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_value_label_selection",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy value label selection pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_value_label_selection"
+        }
+      },
+      "kind": "render",
+      "source": "79d2de17b0551a13"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_value_label_selection",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy value label selection pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-list",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [],
+          "constants": {},
+          "entryPoint": "vs_value_label_selection"
+        }
+      },
+      "kind": "render",
+      "source": "79d2de17b0551a13"
     },
     {
       "descriptor": {
@@ -9027,7 +9412,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 33,
+        "layout": 35,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9061,7 +9446,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 36,
+        "layout": 38,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9095,7 +9480,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 39,
+        "layout": 41,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9129,7 +9514,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 40,
+        "layout": 42,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9175,7 +9560,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 34,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9221,7 +9606,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 37,
+        "layout": 39,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9255,7 +9640,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 34,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9289,7 +9674,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 37,
+        "layout": 39,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,

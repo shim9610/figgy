@@ -43,6 +43,13 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         }
     };
     let format = value_format(&config);
+    // Outside value labels need room past the longest bar, as the former
+    // chart left them: 12 % of the value range on the sides the bars grow
+    // to. A percent stack ends at 100 and keeps its labels inside.
+    let outside = document.mode != CategoryBarMode::PercentStacked
+        && (document.labels == CategoryBarLabels::Outside
+            || (document.labels == CategoryBarLabels::Auto
+                && document.mode == CategoryBarMode::Grouped));
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
     let mut config = chart.config().clone();
@@ -52,7 +59,14 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         &mut config.left_y
     };
     value.label_style.format = format;
-    let (min, max) = (value.min, value.max);
+    let (mut min, mut max) = (value.min, value.max);
+    let span = max - min;
+    if outside && max > 0.0 {
+        max += 0.12 * span;
+    }
+    if outside && min < 0.0 {
+        min -= 0.12 * span;
+    }
     value
         .auto_ticks(min, max, 5)
         .map_err(|e| format!("value axis ticks: {e:?}"))?;

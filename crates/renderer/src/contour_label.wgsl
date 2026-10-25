@@ -12,11 +12,9 @@
 // whole reason the pipeline can be one-directional: no GPU→CPU readback, no
 // ticket, and everything finishes inside the frame.
 //
-// Atlas layout: every cell has the same 2D stride and at least one transparent
-// texel of gutter on every side. Level `i` maps to `(i % columns, i / columns)`
-// and reports its content width `w_i` separately, so the quad keeps its measured
-// size. Sampling stays between the first and last texel centres of that content;
-// linear filtering therefore cannot blend in a neighbouring label.
+// The quad and the atlas sampling are the shared label quad
+// (`common/label_quad.wgsl`), which the value labels place their quads with
+// too.
 //
 // The anchor record arrives as an **instance vertex buffer**, which is the same
 // 32 B layout whether `anchor_select` wrote it on the GPU or the renderer wrote a
@@ -28,32 +26,10 @@
 // — flipped by 180° when it would leave the text reading right-to-left. The
 // frame and `LABEL_EDGE_PX` are the fragment `common/contour_label_box.wgsl`.
 
-/// CPU twin: `gpu_contour::LabelParamsGpu` (32 B, 16 B uniform alignment).
-struct LabelParams {
-    /// Atlas dimensions in texels, at the render scale it was baked for.
-    atlas_w: f32,
-    atlas_h: f32,
-    /// Uniform grid-cell stride in texels, including both gutters.
-    cell_stride_w: f32,
-    cell_stride_h: f32,
-    columns: u32,
-    rows: u32,
-    /// Transparent texels on each side of the cell content.
-    gutter: f32,
-    /// Levels the atlas actually holds. An anchor naming a level beyond this is
-    /// stale rather than fatal: its quad collapses and nothing draws.
-    level_count: u32,
-};
-
 @group(1) @binding(0) var<uniform> lp: LabelParams;
 
 @group(1) @binding(2) var atlas: texture_2d<f32>;
 @group(1) @binding(3) var atlas_samp: sampler;
-
-struct LabelOut {
-    @builtin(position) pos: vec4<f32>,
-    @location(0) uv: vec2<f32>,
-};
 
 /// One quad per anchor. CPU twin of the vertex count: `gpu_contour::LABEL_VERTICES`.
 ///
@@ -69,79 +45,10 @@ fn vs_main(
     @location(3) a_level: u32,
     @location(4) a_width_px: f32,
 ) -> LabelOut {
-    // Corner offsets in cell fractions, centred on the anchor.
-    var corners = array<vec2<f32>, 6>(
-        vec2<f32>(-0.5, -0.5),
-        vec2<f32>(0.5, -0.5),
-        vec2<f32>(-0.5, 0.5),
-        vec2<f32>(0.5, -0.5),
-        vec2<f32>(0.5, 0.5),
-        vec2<f32>(-0.5, 0.5),
-    );
-    let corner = corners[vid];
-
-    var out: LabelOut;
-    // A level the atlas does not hold, or an empty cell, draws nothing. Both
-    // collapse to a degenerate quad rather than clamping to a neighbour's row,
-    // which would put the wrong number on the line.
-    if (a_level >= lp.level_count || lp.atlas_w <= 0.0 || lp.atlas_h <= 0.0 ||
-        lp.columns == 0u || lp.rows == 0u) {
-        out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-        out.uv = vec2<f32>(0.0, 0.0);
-        return out;
-    }
-    let w = a_width_px;
-    let cell_h = lp.cell_stride_h - 2.0 * lp.gutter;
-    let column = a_level % lp.columns;
-    let row = a_level / lp.columns;
-    if (w <= 0.0 || cell_h <= 0.0 || row >= lp.rows) {
-        out.pos = vec4<f32>(0.0, 0.0, 0.0, 1.0);
-        out.uv = vec2<f32>(0.0, 0.0);
-        return out;
-    }
-
     // The frame (centre, reading direction, upright turn) is the label box's
     // (`common/contour_label_box.wgsl`), which the contour gap tests too.
     let frame = contour_label_frame(transform, a_x, a_y, a_dir);
-
-    // The quad reaches `LABEL_EDGE_PX` past the measured content on every
-    // side. A baked background box fills its content to the edge, so a quad
-    // that ended there would make the box edge the rasterized quad edge:
-    // stair-stepped once the label is rotated. Past the content the sample
-    // below runs into the transparent gutter, so the texture filter fades the
-    // box edge over one texel, exactly as it does for the glyphs inside it.
-    let content = vec2<f32>(w, cell_h);
-    let local = corner * (content + vec2<f32>(2.0 * LABEL_EDGE_PX));
-    let offset_px = frame.right * local.x + frame.up * local.y;
-    out.pos = vec4<f32>(frame.centre + offset_px * transform.pixel_to_ndc, 0.0, 1.0);
-
-    // `f` is the position in [0, 1] over the measured content, and runs past
-    // that interval on the extended edge. Content maps to texel centres as it
-    // always has; the same affine map continues into the gutter, and the clamp
-    // below stops at this cell's outermost texel centres, which are gutter and
-    // therefore transparent. Linear filtering never reaches a neighbour.
-    let f = local / content + vec2<f32>(0.5, 0.5);
-    let cell_origin = vec2<f32>(
-        f32(column) * lp.cell_stride_w,
-        f32(row) * lp.cell_stride_h,
-    );
-    let content_origin = cell_origin + vec2<f32>(lp.gutter);
-    let sample_lo = content_origin + vec2<f32>(0.5);
-    let cell_sample_hi = cell_origin
-        + vec2<f32>(lp.cell_stride_w, lp.cell_stride_h)
-        - vec2<f32>(lp.gutter + 0.5);
-    let content_sample_hi = content_origin
-        + max(vec2<f32>(w, cell_h) - vec2<f32>(0.5), vec2<f32>(0.5));
-    let sample_hi = min(content_sample_hi, cell_sample_hi);
-    let cell_edge_lo = cell_origin + vec2<f32>(0.5);
-    // Texture v grows downward while `local.y` grows upward.
-    let sample_px = clamp(
-        mix(sample_lo, sample_hi, vec2<f32>(f.x, 1.0 - f.y)),
-        cell_edge_lo,
-        cell_sample_hi + vec2<f32>(lp.gutter),
-    );
-    out.uv = sample_px / vec2<f32>(lp.atlas_w, lp.atlas_h);
-    return out;
+    return label_quad(transform, lp, vid, frame, a_level, a_width_px, false);
 }
 
 @fragment

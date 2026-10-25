@@ -826,17 +826,35 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
                 "{name} {scale}x: cached"
             );
         }
-        // Label settings are configuration only: no pixel changes.
-        let mut quiet = series.clone();
-        if let DataRenderType::Radar { labels, .. } = &mut quiet[0].render_type {
+        // The value labels redraw on every label edit (the placement, the
+        // strings, a drag offset) like a fresh renderer: the label atlas is
+        // keyed by its strings and the offsets are read on every draw.
+        let mut labelled = series.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut labelled[0].render_type {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["a".into(); 5];
         }
-        assert_eq!(
-            export(&mut r, &grid, &quiet, scale).rgba,
-            before.rgba,
-            "{scale}x: labels draw nothing yet"
-        );
+        let mut retexted = labelled.clone();
+        if let DataRenderType::Radar { labels, .. } = &mut retexted[0].render_type {
+            labels.text[2] = "bb".into();
+        }
+        let mut dragged = labelled.clone();
+        let _ = dragged[0].drag_value_label(1, 5, 6.0, -4.0);
+        let mut previous = before.rgba.clone();
+        for (name, edited) in [
+            ("labels", &labelled),
+            ("label text", &retexted),
+            ("label drag", &dragged),
+        ] {
+            let after = export(&mut r, &grid, edited, scale);
+            assert_ne!(after.rgba, previous, "{name} {scale}x");
+            assert_eq!(
+                after.rgba,
+                export(&mut renderer(), &grid, edited, scale).rgba,
+                "{name} {scale}x: cached"
+            );
+            previous = after.rgba;
+        }
     }
 }
 

@@ -62,7 +62,7 @@ recomputes hit regions or label positions.
 | 축 제목 | `AxisTitle(Side)` | 회전된 제목도 포인터의 화면 방향으로 이동 |
 | 범례 | `Legend` | 기호와 모든 행을 함께 이동 |
 | 원형 조각 라벨 | `RadialLabel(RadialTarget)` | 이름·수치 줄을 함께 이동. 외부 라벨의 연결선은 라벨의 일부로, 조각에서 시작해 옮긴 글자까지 이어진다. 선택 테두리와 판정 영역은 글자 줄과 연결선을 각각 감싼다 |
-| 막대·박스 값 라벨 | `DataLabel { category_id, series_id }` | 해당 데이터 라벨만 이동. 재정렬해도 같은 ID에 적용 |
+| 막대·박스·레이더 값 라벨 | `PickedDataRef::ValueLabel { series_id, category_index }`(선택), 이동량은 시리즈의 `labels.offsets` | 해당 값 라벨만 이동. GPU 데이터 선택(`pick_chart_data`)으로 고르며, 아래 "Value labels" 참고 |
 
 원형 차트는 축과 범례를 그리지 않으므로 그 히트 영역도 없다. 레이더 차트는 극좌표
 차트이므로 아래 극좌표 축 드래그 규칙을 따른다. 숨긴 제목·라벨·범례는
@@ -94,8 +94,8 @@ category axis' pointer direction and across the series of the bar group on
 the other, and `selection_details()` reports the category id and label and
 the bar's value read back from the GPU column. An axis line that crosses
 the value axis (`AxisOptions::cross_at`) is hit and dragged where it is
-drawn. Value labels are not drawn in this release (#40 item 13h), so they
-have no hit region yet.
+drawn. The bars' value labels are pick and drag targets of their own
+(Value labels, below).
 
 Box plots are a Cartesian series kind too (`DataRenderType::BoxPlot` over a
 categorical axis, [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md)),
@@ -110,8 +110,8 @@ outline around its painted body, the notch included, and gains its
 emphasis brightness. In the WASM wrapper `step_selection(dx, dy)` walks the
 categories and the series of the box group (the boxes, never their
 outliers), and `selection_details()` reports the category and the box's
-statistics read back from its record. Box value labels are not drawn yet
-(#40 item 13h).
+statistics read back from its record. The boxes' value labels are pick and
+drag targets of their own (Value labels, below).
 
 Radar series are a polar series kind (`DataRenderType::Radar` on a polar
 chart with a categorical angle axis, [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)),
@@ -126,8 +126,58 @@ the fill pick the series too, with the vertex markers over the outline and
 the outline over the fill. A picked vertex (`PickedDataRef::Point`) draws the
 picked ring. In the WASM wrapper `step_selection(dx, dy)` steps the vertices
 of the series and across the radar series, and `selection_details()`
-reports the category id and label. Radar value labels are not drawn yet
-(#40 item 13h).
+reports the category id and label. The vertices' value labels are pick and
+drag targets of their own (Value labels, below).
+
+### Value labels
+
+The value label of a category bar, box plot or radar series is the
+series' `labels.text[i]` (SSOT configuration, written by `format_labels`,
+`format_box_plot_labels` or `format_radar_labels`; the renderer never formats
+a value), drawn at the bar end, past the top of the box or outside the
+vertex along its spoke, from the pool on every draw, and moved by its drag
+offset `labels.offsets[i]` (logical pixels, x right, y down). Labels never
+displace each other; thinning the category axis is the only thinning.
+
+- **Hover and click.** A label is a typed pick target: `pick_chart_data`
+  answers `PickedData::ValueLabel { series_id, category_index, distance_px }`
+  within the pick distance of its selection box (0 inside it). A label is
+  drawn over every series of its panel, so it wins every tie against the
+  data under it: the pick of an inside label's pixels names the label, not
+  its bar. `pick_chart` (points and lines) does not see labels. In the WASM
+  wrapper `pick_data` reports `{ "kind": "value_label", series_id,
+  category_index, label_id, distance_px }` and `pick_point` reports a label
+  under the pointer before any point, as `{ source_id, series_id,
+  point_index: category, distance_px, label_id }`.
+- **Selection.** A selected label is the typed selection
+  `PickedDataRef::ValueLabel` in `Config.picked_data` (`PickedData::to_ref`);
+  its selection box is drawn around its frame by the same placement it is
+  drawn with: its content box grown by `SELECTION_PADDING`, stroked
+  `SELECTION_STROKE_WIDTH` wide in `SELECTION_COLOR`, as a decoration's box.
+  `step_selection` does not step a label (it returns `false`), and
+  `selection_details()` reports its category, string, offset and
+  `label_id`. A radar series with `Emphasized` labels shows them while it has
+  a selection.
+- **Drag.** A drag writes the label's offset through
+  `SeriesConfig::drag_value_label(index, categories, dx, dy)` (logical-pixel
+  deltas; the first drag fills `labels.offsets` with one zero offset per
+  category); the next frame draws the label there. The placement is the
+  GPU's, so the only bound on a drag is `MAX_VALUE_LABEL_OFFSET` (4096 px)
+  along either axis. The CPU hit map (`hit_test`, `on_press`) does not hold
+  labels: their positions come from the pool. A WASM host presses a label by
+  the id a pick reported, `"series:<series_id>:label:<index>"`
+  (`value_label_id` / `parse_value_label_id`):
+  `press_value_label(label_id)` selects it and starts the drag, `on_move`
+  moves it and `on_release` ends it. A legacy document's `DataLabel`
+  offsets are read into `labels.offsets`.
+- **Export, overlays and subplots.** PNG export bakes the atlas at the
+  export scale, so a 2x export draws the strings at twice the size, not a
+  magnified 1x atlas. A series on an overlay or a subplot draws, picks and
+  drags its labels in its own panel. A label that would cross the data
+  area's edge past its anchor is placed on the other side of the anchor
+  (inside the bar's end, below a box's top, inward along a radar spoke),
+  drawn and picked there; what still overflows after that is clipped to the
+  data area like every data primitive.
 
 ## Manual label placement
 

@@ -38,6 +38,8 @@ mod field;
 pub use field::*;
 mod contour;
 pub use contour::*;
+mod value_label;
+pub use value_label::*;
 mod composite;
 pub use composite::*;
 // The panel draw in slot order lives with the compositor; the name stays

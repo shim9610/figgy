@@ -102,6 +102,7 @@ pub(super) async fn create_chart_kernel(
         selected_annotation: None,
         annotation_selection_dirty: false,
         annotation_pointer: false,
+        value_label_pointer: false,
     };
 
     emit_init_progress(
@@ -209,6 +210,9 @@ pub struct FiggyChart {
     /// landed on the selected annotation (the annotation layer's route),
     /// so `on_move` edits the annotation instead of a chart element.
     pub(super) annotation_pointer: bool,
+    /// The current drag started on a value label (`press_value_label`), so
+    /// `on_move` moves the selected label instead of a chart element.
+    pub(super) value_label_pointer: bool,
 }
 
 impl FiggyChart {
@@ -277,6 +281,7 @@ impl FiggyChart {
             self.dragging = false;
             self.resizing = None;
             self.annotation_pointer = false;
+            self.value_label_pointer = false;
             if layer_changed {
                 self.set_selected_annotation(None);
             }

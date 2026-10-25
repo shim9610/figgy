@@ -207,6 +207,19 @@ outliers) picks the box as `PickedData::HistogramBin` with the category row.
 chart; see the
 [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).
 
+Category bar, box plot and radar series draw value labels: the strings of
+`labels.text` (SSOT configuration written at edit time by `format_labels`,
+`format_box_plot_labels` or `format_radar_labels`; the renderer never
+formats a value), baked into a label atlas with the contour labels' text
+stack at the render scale and placed from the pool on every draw at the bar
+end, past the top of the box or outside the vertex, moved by
+`labels.offsets`. A label is picked by `pick_chart_data` as
+`PickedData::ValueLabel` (series and category), selected through
+`PickedDataRef::ValueLabel` (its frame is outlined) and dragged with
+`SeriesConfig::drag_value_label`; its id for hosts is
+`data_config::value_label_id(series_id, index)`. See Value labels in the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
+
 ```rust
 use renderer::config::Category;
 use renderer::default::default_config;
