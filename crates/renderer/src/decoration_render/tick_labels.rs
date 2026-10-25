@@ -283,13 +283,6 @@ pub(super) fn plain_seg(c: char) -> RichSegment {
     RichSegment::plain(c)
 }
 
-pub(super) fn sup_seg(c: char) -> RichSegment {
-    RichSegment {
-        superscript: true,
-        ..RichSegment::plain(c)
-    }
-}
-
 /// The text of one drawn tick label: plain, or a Power-format `RichText`
 /// with its exponent.
 pub(crate) enum TickText<'a> {

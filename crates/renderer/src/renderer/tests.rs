@@ -13434,3 +13434,27 @@ fn member_columns_are_owned_by_their_record_or_ragged_column() {
         "no chart reads a record yet"
     );
 }
+
+// A series label is a rich text like any title: a math label registers, and
+// a malformed math tree is refused with the series named.
+#[test]
+fn series_labels_with_math_validate_at_registration() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    add_state_test_xy(&mut renderer, "x", "y", vec![0.0, 1.0]);
+    let mut series = state_test_scatter("scatter", None, "x", "y");
+    series.label =
+        Some(crate::text::RichText::from_tex(r"$\sigma_x^2$", Color::BLACK, 12.0, "").unwrap());
+    renderer
+        .register_chart(crate::default::default_config(), vec![series.clone()])
+        .unwrap();
+    let label = series.label.as_mut().unwrap();
+    label.segments[2].math_parent = Some(crate::text::MathSlot { id: 4, slot: 0 });
+    let result = renderer.register_chart(crate::default::default_config(), vec![series]);
+    let Err(FiggyError::InvalidSeriesConfig { series_id, reason }) = result else {
+        panic!("a malformed label was accepted: {result:?}");
+    };
+    assert_eq!(series_id, "scatter");
+    assert!(reason.starts_with("label: segment 2"), "{reason}");
+}

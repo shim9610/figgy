@@ -42,6 +42,12 @@ const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ),
     ("annotation.rs", include_str!("../src/annotation.rs"), &[]),
     ("decoration.rs", include_str!("../src/decoration.rs"), &[]),
+    // The math layout places glyphs and rules through the text sink only.
+    (
+        "text_render/math_layout.rs",
+        include_str!("../src/text_render/math_layout.rs"),
+        &[],
+    ),
     (
         "radial_layout.rs",
         include_str!("../src/radial_layout.rs"),

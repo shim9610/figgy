@@ -2,6 +2,7 @@
 //! timestamp forms, and the power form with its superscript exponent.
 
 use super::*;
+use crate::text::{MathKind, MathNode, MathSlot};
 
 /// Minimum shared decimal count that keeps adjacent ticks distinguishable.
 /// Only the step's magnitude matters: an auto-fit step such as 1.312815 must
@@ -157,9 +158,11 @@ pub(super) fn trim_trailing_fraction_zeros(s: &str) -> String {
 /// exponent as superscript. If the mantissa is very close to 1, only "10^exp"
 /// is shown (the conventional log major-tick form).
 ///
-/// The exponent is plain `superscript` segments, so it is measured and drawn
-/// by the rich-text layout through `text_render::script_placement`, the one
-/// script layout; nothing here restates its size or shift.
+/// The power is a text-mode math `Scripts` node (D3 of #45): base "10" in
+/// slot 0, the exponent in slot 1. Without a `Math` ancestor the node lays
+/// out through `text_render::script_placement` exactly as the former
+/// `superscript` segments did, so the pixels, bounds and parts are the same;
+/// nothing here restates the script size or shift.
 pub(crate) fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> RichText {
     let style_from = |segments: Vec<RichSegment>| RichText {
         segments,
@@ -194,15 +197,86 @@ pub(crate) fn format_tick_power(value: f64, sig_digits: u8, ls: &LabelStyle) -> 
         segs.push(plain_seg('×'));
     }
 
-    // The "10".
-    segs.push(plain_seg('1'));
-    segs.push(plain_seg('0'));
-
-    // Exponent (every char is superscript).
+    // The power: a `Scripts` node over "10" (slot 0) and the exponent
+    // (slot 1).
+    segs.push(RichSegment {
+        math_node: Some(MathNode {
+            id: 0,
+            kind: MathKind::Scripts,
+        }),
+        ..plain_seg('\u{200B}')
+    });
+    let slot = |slot: u8, c: char| RichSegment {
+        math_parent: Some(MathSlot { id: 0, slot }),
+        ..plain_seg(c)
+    };
+    segs.push(slot(0, '1'));
+    segs.push(slot(0, '0'));
     let exp_str = format!("{}", exp);
     for c in exp_str.chars() {
-        segs.push(sup_seg(c));
+        segs.push(slot(1, c));
     }
 
     style_from(segs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::raster::Canvas;
+    use crate::text_render::{FontPolicy, draw_rich_text, measure_rich_text};
+
+    /// The label as the superscript flags wrote it before D3: the node
+    /// dropped, its exponent slot flagged.
+    fn as_flags(rt: &RichText) -> RichText {
+        RichText {
+            segments: rt
+                .segments
+                .iter()
+                .filter(|s| s.math_node.is_none())
+                .map(|s| RichSegment {
+                    superscript: s.math_parent.is_some_and(|p| p.slot == 1),
+                    math_parent: None,
+                    ..s.clone()
+                })
+                .collect(),
+            ..rt.clone()
+        }
+    }
+
+    fn pixels(rt: &RichText, policy: FontPolicy) -> Vec<u8> {
+        let mut canvas = Canvas::new(120, 48).unwrap();
+        draw_rich_text(&mut canvas, rt, (6.3, 30.6), policy);
+        canvas.into_rgba()
+    }
+
+    // D3: the Power label is a text-mode `Scripts` node, and it measures and
+    // draws exactly as the superscript flags it replaces.
+    #[test]
+    fn power_labels_are_a_scripts_node_with_the_flags_pixels() {
+        let mut ls = crate::default::default_axis_options_x().label_style;
+        for size in [11.0, 14.0, 28.0] {
+            ls.font_size = size;
+            for value in [1.0e-3, 1.5e-3, -2.0e5, 1.0e10, 7.25e-12, -1.0e-1] {
+                let label = format_tick_power(value, 3, &ls);
+                assert_eq!(label.validate_math(), Ok(()));
+                let node = label
+                    .segments
+                    .iter()
+                    .find_map(|s| s.math_node)
+                    .expect("a Scripts node");
+                assert_eq!(node.kind, MathKind::Scripts);
+                let flags = as_flags(&label);
+                assert!(flags.segments.iter().any(|s| s.superscript));
+                for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+                    assert_eq!(
+                        measure_rich_text(&label, policy),
+                        measure_rich_text(&flags, policy),
+                        "{value} at {size}"
+                    );
+                    assert_eq!(pixels(&label, policy), pixels(&flags, policy), "{value}");
+                }
+            }
+        }
+    }
 }

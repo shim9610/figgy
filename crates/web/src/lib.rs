@@ -36,6 +36,23 @@ enum FrameDecision {
     Draw { refresh_raster: bool },
 }
 
+/// The JSON of [`renderer::text::RichText::from_tex`]: the rich text the
+/// `rich_text_from_tex` binding returns, ready for any `RichText` field of
+/// `set_config` or `set_series`. The error names the TeX byte range.
+#[cfg(any(target_arch = "wasm32", test))]
+fn rich_text_json_from_tex(
+    tex: &str,
+    font_size: f32,
+    font: &str,
+    color: [f32; 4],
+) -> Result<String, String> {
+    let [r, g, b, a] = color;
+    let text =
+        renderer::text::RichText::from_tex(tex, renderer::Color::new(r, g, b, a), font_size, font)
+            .map_err(|e| e.to_string())?;
+    serde_json::to_string(&text).map_err(|e| e.to_string())
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn consume_successful_frame(view_dirty: &mut bool, redraw_pending: &mut bool) {
     *view_dirty = false;
@@ -1088,6 +1105,64 @@ mod tests {
         assert!(json.contains(r#""greek":false,"math":true}"#), "{json}");
         let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
         assert_eq!(back, series);
+    }
+
+    // The math fields reach JavaScript and come back unchanged through
+    // `get_config`/`set_config` and `get_series`/`set_series`; a malformed
+    // tree fails at parse, so `set_config` rejects it before it touches
+    // any state; `rich_text_from_tex` writes the JSON a host puts there.
+    #[test]
+    fn config_and_series_json_carry_math_nodes_both_ways() {
+        let title = super::rich_text_json_from_tex(
+            r"$\frac{\partial u}{\partial t} = \alpha \nabla^2 u$",
+            18.0,
+            "",
+            [0.0, 0.0, 0.0, 1.0],
+        )
+        .unwrap();
+        let title: renderer::text::RichText = serde_json::from_str(&title).unwrap();
+        assert_eq!(title.validate_math(), Ok(()));
+        let mut config = renderer::default::default_config();
+        config.chart_title.text = title.clone();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(
+            json.contains(
+                r#""math_node":{"id":1,"kind":{"Frac":"Auto"}},"math_parent":{"id":0,"slot":0}"#
+            ),
+            "{json}"
+        );
+        let back: renderer::Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, config);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+
+        let broken = json.replacen(
+            r#""math_parent":{"id":0,"slot":0}"#,
+            r#""math_parent":{"id":7,"slot":0}"#,
+            1,
+        );
+        assert_ne!(broken, json);
+        let err = serde_json::from_str::<renderer::Config>(&broken)
+            .expect_err("a malformed tree is refused at parse")
+            .to_string();
+        assert!(err.contains("parent"), "{err}");
+
+        let mut series = vec![series_config(
+            "s",
+            DataRenderType::Scatter {
+                scatter: scatter_style(),
+            },
+        )];
+        series[0].label = Some(title);
+        let json = serde_json::to_string(&series).unwrap();
+        let back: Vec<SeriesConfig> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, series);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
+
+        let err = super::rich_text_json_from_tex(r"$\frac{a}$", 12.0, "", [0.0; 4]).unwrap_err();
+        assert!(
+            err.contains("missing argument") && err.contains("1..6"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -2153,7 +2228,7 @@ mod web {
 
     mod chart;
     use chart::PreparedSeriesExtentCache;
-    pub use chart::{FiggyChart, draw_style_modes, draw_style_param_specs};
+    pub use chart::{FiggyChart, draw_style_modes, draw_style_param_specs, rich_text_from_tex};
     mod columns;
     use columns::{VectorColumns, referenced_columns, vector_columns};
     mod convert;

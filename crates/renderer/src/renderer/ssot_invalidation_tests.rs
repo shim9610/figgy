@@ -236,6 +236,85 @@ fn edits() -> Vec<Edit> {
         Prefix
     );
     edit!(chart_title.text.font_size, 16.0, Prefix);
+    // The math tree of the title (#45): each field of the math nodes is part
+    // of the raster key. The baseline title holds `x^2_i` and `\frac{a}{b}`.
+    fn math(c: &mut Config, f: fn(&mut crate::text::RichSegment)) {
+        c.chart_title.text.segments.iter_mut().for_each(f);
+        assert_eq!(c.chart_title.text.validate_math(), Ok(()));
+    }
+    cases.push(Edit {
+        name: "chart_title.text math_node.kind",
+        apply: |c| {
+            math(c, |s| {
+                if let Some(n) = &mut s.math_node
+                    && matches!(n.kind, crate::text::MathKind::Frac(_))
+                {
+                    n.kind = crate::text::MathKind::Binom(crate::text::FracStyle::Auto);
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        name: "chart_title.text math_parent.slot",
+        apply: |c| {
+            // The superscript becomes a second subscript.
+            math(c, |s| {
+                if s.text == '2'
+                    && let Some(p) = &mut s.math_parent
+                {
+                    p.slot = 2;
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        name: "chart_title.text math slot child text",
+        apply: |c| {
+            math(c, |s| {
+                if s.text == 'b' && s.math_parent.is_some() {
+                    s.text = 'c';
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        // A valid renumbering is a different document with the same layout.
+        name: "chart_title.text math ids renumbered",
+        apply: |c| {
+            math(c, |s| {
+                if let Some(n) = &mut s.math_node {
+                    n.id += 10;
+                }
+                if let Some(p) = &mut s.math_parent {
+                    p.id += 10;
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
+    });
     edit!(chart_title.offset_x, 8.0, Prefix);
     edit!(chart_title.offset_y, 4.0, Prefix);
     edit!(chart_title.top_margin, 30.0, Packed);
@@ -792,7 +871,8 @@ fn baseline() -> Config {
         width: 320,
         height: 240,
     });
-    c.chart_title.text = RichText::plain("SSOT baseline", Color::BLACK, 12.0, "");
+    c.chart_title.text =
+        RichText::from_tex(r"SSOT $x^2_i + \frac{a}{b}$", Color::BLACK, 12.0, "").unwrap();
     c.chart_title.top_margin = 20.0;
     c.legend.visible = true;
     c.legend.content = RichText::plain("Curve", Color::BLACK, 10.0, "");

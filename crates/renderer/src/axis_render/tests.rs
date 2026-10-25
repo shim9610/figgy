@@ -1684,11 +1684,15 @@ fn a_logarithmic_colorbar_ticks_by_decade() {
     let majors = major_tick_values(&bar.axis);
     assert_eq!(majors, vec![1.0e-2, 1.0e-1, 1.0, 1.0e1, 1.0e2]);
 
-    // The Power label is a RichText with a superscript exponent, which is
-    // what `format_tick_power` exists to produce.
+    // The Power label is a RichText with a superscript exponent (the
+    // superscript slot of a text-mode `Scripts` node), which is what
+    // `format_tick_power` exists to produce.
     let label = format_tick_power(1.0e-2, 3, &bar.axis.label_style);
     assert!(
-        label.segments.iter().any(|seg| seg.superscript),
+        label
+            .segments
+            .iter()
+            .any(|seg| seg.math_parent.is_some_and(|p| p.slot == 1)),
         "a decade label must carry a superscript exponent: {label:?}"
     );
 
