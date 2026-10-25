@@ -24,8 +24,8 @@
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
 mod big_data;
-mod radial;
 mod cartesian;
+mod radial;
 /// The scene catalogue, shared with the renderer's decoration oracle.
 #[path = "../../../crates/renderer/tests/support/playground_scenes.rs"]
 mod scenes;

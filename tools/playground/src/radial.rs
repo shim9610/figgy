@@ -202,8 +202,8 @@ impl RadialHost {
             Some(LayerHit::Element(id)) => {
                 let key = frame.decoration_id(&self.chart, id);
                 // Data wins over the plot area until the area itself is selected.
-                let area_passthrough = key == Some(DecorationId::DataArea)
-                    && self.chart.decorations.selected != key;
+                let area_passthrough =
+                    key == Some(DecorationId::DataArea) && self.chart.decorations.selected != key;
                 if !area_passthrough {
                     self.chart.decorations.selected = key;
                     self.chart.interaction.selected = None;
@@ -272,7 +272,10 @@ impl RadialHost {
         };
         // Keep the last feasible model when the new layout no longer fits.
         if moved == Some(NudgeResult::Moved)
-            && self.renderer.prepare(&self.chart, self.size, scale).is_err()
+            && self
+                .renderer
+                .prepare(&self.chart, self.size, scale)
+                .is_err()
         {
             self.chart = previous;
         }
@@ -284,10 +287,7 @@ impl RadialHost {
         });
         section(ui, "Selection & layers", true, |ui| {
             ui.label(format!("Data: {:?}", self.chart.interaction.selected));
-            ui.label(format!(
-                "Decoration: {:?}",
-                self.chart.decorations.selected
-            ));
+            ui.label(format!("Decoration: {:?}", self.chart.decorations.selected));
             let mut layer = self.chart.active_layer();
             if choice(
                 ui,
@@ -300,8 +300,7 @@ impl RadialHost {
             ui.horizontal(|ui| {
                 let editing = self.chart.decorations.selected == Some(DecorationId::DataArea);
                 if ui.selectable_label(editing, "Edit plot area").clicked() {
-                    self.chart.decorations.selected =
-                        (!editing).then_some(DecorationId::DataArea);
+                    self.chart.decorations.selected = (!editing).then_some(DecorationId::DataArea);
                     self.chart.interaction.selected = None;
                 }
                 if let Some(sel) = self.chart.decorations.selected.clone()
@@ -527,69 +526,69 @@ const RADIAL_FORMATS: &[RadialLabelFormat] = &[
 ];
 
 fn inspector(ui: &mut egui::Ui, c: &mut RadialChart) {
-        ui.horizontal(|ui| {
-            ui.label("Title");
-            ui.text_edit_singleline(&mut c.title);
-        });
-        let mut donut = matches!(c.kind, RadialKind::Donut { .. });
-        if ui.checkbox(&mut donut, "Donut").changed() {
-            c.kind = if donut {
-                RadialKind::Donut { inner_radius: 0.5 }
-            } else {
-                RadialKind::Pie
-            };
-        }
-        if let RadialKind::Donut { inner_radius } = &mut c.kind {
-            slider(ui, "hole", inner_radius, 0.1..=0.85);
-        }
-        choice(
-            ui,
-            "labels",
-            &mut c.labels,
-            &[
-                RadialLabels::None,
-                RadialLabels::Inside,
-                RadialLabels::Outside,
-            ],
-        );
-        choice(ui, "label content", &mut c.label_format, RADIAL_FORMATS);
-        let s = &mut c.style;
-        choice(ui, "material", &mut s.material, RADIAL_MATERIALS);
-        slider(ui, "tilt°", &mut s.tilt_degrees, 0.0..=65.0);
-        slider(ui, "depth", &mut s.depth, 0.0..=0.4);
-        slider(ui, "gap°", &mut s.gap_degrees, 0.0..=8.0);
-        slider(ui, "corners", &mut s.outer_corner, 0.0..=0.25);
-        slider(ui, "gloss", &mut s.gloss, 0.0..=1.0);
-        slider(ui, "hover lift", &mut s.hover_lift, 0.0..=0.25);
-        ui.checkbox(&mut s.shadow, "shadow");
-        ui.separator();
-        let selected = c.interaction.selected;
-        for (i, slice) in c.slices.iter_mut().enumerate() {
-            ui.push_id(i, |ui| {
-                let strong = selected == Some(RadialTarget::main(i));
-                ui.horizontal(|ui| {
-                    let mut label = egui::RichText::new(&slice.label);
-                    if strong {
-                        label = label.strong();
-                    }
-                    ui.label(label);
-                    ui.add(
-                        egui::DragValue::new(&mut slice.value)
-                            .range(0.0..=1000.0)
-                            .speed(0.5),
-                    );
-                });
-                color(ui, "colour", &mut slice.color);
-            });
-        }
-        if ui.button("+ slice").clicked() {
-            let n = c.slices.len();
-            c.slices.push(RadialSlice::new(
-                format!("Slice {n}"),
-                10.0,
-                renderer::ColorCycle::Vivid.color(n),
-            ));
-        }
-        // The drawn label strings are written at edit time.
-        c.format_labels();
+    ui.horizontal(|ui| {
+        ui.label("Title");
+        ui.text_edit_singleline(&mut c.title);
+    });
+    let mut donut = matches!(c.kind, RadialKind::Donut { .. });
+    if ui.checkbox(&mut donut, "Donut").changed() {
+        c.kind = if donut {
+            RadialKind::Donut { inner_radius: 0.5 }
+        } else {
+            RadialKind::Pie
+        };
     }
+    if let RadialKind::Donut { inner_radius } = &mut c.kind {
+        slider(ui, "hole", inner_radius, 0.1..=0.85);
+    }
+    choice(
+        ui,
+        "labels",
+        &mut c.labels,
+        &[
+            RadialLabels::None,
+            RadialLabels::Inside,
+            RadialLabels::Outside,
+        ],
+    );
+    choice(ui, "label content", &mut c.label_format, RADIAL_FORMATS);
+    let s = &mut c.style;
+    choice(ui, "material", &mut s.material, RADIAL_MATERIALS);
+    slider(ui, "tilt°", &mut s.tilt_degrees, 0.0..=65.0);
+    slider(ui, "depth", &mut s.depth, 0.0..=0.4);
+    slider(ui, "gap°", &mut s.gap_degrees, 0.0..=8.0);
+    slider(ui, "corners", &mut s.outer_corner, 0.0..=0.25);
+    slider(ui, "gloss", &mut s.gloss, 0.0..=1.0);
+    slider(ui, "hover lift", &mut s.hover_lift, 0.0..=0.25);
+    ui.checkbox(&mut s.shadow, "shadow");
+    ui.separator();
+    let selected = c.interaction.selected;
+    for (i, slice) in c.slices.iter_mut().enumerate() {
+        ui.push_id(i, |ui| {
+            let strong = selected == Some(RadialTarget::main(i));
+            ui.horizontal(|ui| {
+                let mut label = egui::RichText::new(&slice.label);
+                if strong {
+                    label = label.strong();
+                }
+                ui.label(label);
+                ui.add(
+                    egui::DragValue::new(&mut slice.value)
+                        .range(0.0..=1000.0)
+                        .speed(0.5),
+                );
+            });
+            color(ui, "colour", &mut slice.color);
+        });
+    }
+    if ui.button("+ slice").clicked() {
+        let n = c.slices.len();
+        c.slices.push(RadialSlice::new(
+            format!("Slice {n}"),
+            10.0,
+            renderer::ColorCycle::Vivid.color(n),
+        ));
+    }
+    // The drawn label strings are written at edit time.
+    c.format_labels();
+}
