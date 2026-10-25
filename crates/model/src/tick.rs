@@ -7,7 +7,7 @@
 //! caller's target and also widens the range to whole steps, which is what
 //! the legacy document readers' fixed value axes and contour levels use.
 
-use crate::config::{AxisOptions, AxisScale, Config};
+use crate::config::{AxisOptions, AxisScale, Config, LogTickPolicy};
 use crate::layout::guarded_log_range;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -506,6 +506,40 @@ pub fn effective_log_decade_step(axis: &AxisOptions) -> i32 {
     step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32
 }
 
+/// The major ladder a logarithmic axis walks, from its range, its
+/// [`AxisOptions::log_ticks`] policy and constants: nothing per point.
+///
+/// [`LogTickPolicy::Decades`]: [`LogLadder::Decades`] of
+/// [`effective_log_decade_step`], the walk every log axis took before the
+/// policy existed. [`LogTickPolicy::Adaptive`] ignores `major_spacing`: over
+/// the [`crate::layout::guarded_log_range`] of the axis range it takes
+/// `n =` [`axis_major_spacing`], `Decades(n)` when `n > 1` (more than six
+/// decades), and otherwise the first of `Decades(1)`,
+/// [`LogLadder::OneTwoFive`] and [`LogLadder::AllMantissas`] that puts at
+/// least [`LOG_LADDER_MIN_MAJORS`] majors inside the range, else
+/// `AllMantissas`.
+pub fn log_ladder(axis: &AxisOptions) -> LogLadder {
+    match axis.log_ticks {
+        LogTickPolicy::Decades => LogLadder::Decades(effective_log_decade_step(axis)),
+        LogTickPolicy::Adaptive => {
+            let (min, max) = guarded_log_range(axis.min, axis.max);
+            let step = axis_major_spacing(&AxisScale::Logarithmic, min, max);
+            if step > 1.0 {
+                return LogLadder::Decades(step.min(f64::from(MAX_LOG_DECADE_STEP)) as i32);
+            }
+            [LogLadder::Decades(1), LogLadder::OneTwoFive]
+                .into_iter()
+                .find(|ladder| {
+                    MajorTicks(log_major_walk(*ladder, min, max))
+                        .take(LOG_LADDER_MIN_MAJORS)
+                        .count()
+                        == LOG_LADDER_MIN_MAJORS
+                })
+                .unwrap_or(LogLadder::AllMantissas)
+        }
+    }
+}
+
 /// The multiples of a step inside a range, anchored to absolute multiples
 /// (`k · step`) rather than to the range's start, so tick values stay round
 /// whatever the range ends are.
@@ -639,6 +673,42 @@ impl Iterator for LogDecades {
 /// The [`LogMultiples`] mask of the log minors: the multiples 2 to 9.
 const LOG_MINOR_MULTIPLES: u16 = 0b11_1111_1100;
 
+/// The [`LogMultiples`] mask of the 1, 2 and 5 × 10^k ladder.
+const LOG_ONE_TWO_FIVE: u16 = (1 << 1) | (1 << 2) | (1 << 5);
+
+/// The [`LogMultiples`] mask of the 1 to 9 × 10^k ladder.
+const LOG_ALL_MANTISSAS: u16 = 0b11_1111_1110;
+
+/// The fewest majors inside the range at which [`log_ladder`] keeps a
+/// sparser ladder under [`LogTickPolicy::Adaptive`]: a range that holds
+/// fewer whole decades tries the 1-2-5 ladder, then the 1..9 ladder.
+pub const LOG_LADDER_MIN_MAJORS: usize = 4;
+
+/// Which multiples of every decade a logarithmic axis draws as majors
+/// ([`log_ladder`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLadder {
+    /// Every `step`-th whole decade `10^k`, `step` at least 1.
+    Decades(i32),
+    /// 1, 2 and 5 × 10^k.
+    OneTwoFive,
+    /// 1, 2, …, 9 × 10^k.
+    AllMantissas,
+}
+
+impl LogLadder {
+    /// The [`LogMultiples`] mask of the multiples the ladder's majors take
+    /// in a decade; a [`LogLadder::Decades`] step above 1 skips whole
+    /// decades as well.
+    fn multiples(self) -> u16 {
+        match self {
+            LogLadder::Decades(_) => 1 << 1,
+            LogLadder::OneTwoFive => LOG_ONE_TWO_FIVE,
+            LogLadder::AllMantissas => LOG_ALL_MANTISSAS,
+        }
+    }
+}
+
 /// The multiples `m · a` of every decade `a` overlapping `min..max` whose
 /// bit `m` is set in a mask, that fall inside the range, in increasing
 /// order: anchored at the decade powers, so partial edge decades keep their
@@ -738,6 +808,26 @@ enum MajorWalk {
     Empty,
     Linear(LinearGridIter),
     Log { decades: LogDecades, left: usize },
+    LogMultiples(LogMultiples),
+}
+
+/// The majors of `ladder` over the guarded log range `min..max`: whole
+/// decades by their exponents for [`LogLadder::Decades`], the ladder's
+/// multiples of every decade otherwise.
+fn log_major_walk(ladder: LogLadder, min: f64, max: f64) -> MajorWalk {
+    match ladder {
+        LogLadder::Decades(step) => {
+            let first = clamped_exponent(min.log10().ceil());
+            let last = clamped_exponent(max.log10().floor());
+            LogDecades::new(first, last, step).map_or(MajorWalk::Empty, |decades| MajorWalk::Log {
+                decades,
+                left: MAX_LOG_DECADES,
+            })
+        }
+        LogLadder::OneTwoFive | LogLadder::AllMantissas => {
+            MajorWalk::LogMultiples(LogMultiples::new(min, max, ladder.multiples()))
+        }
+    }
 }
 
 /// The major tick values of an axis, from [`major_ticks`].
@@ -761,6 +851,7 @@ impl Iterator for MajorTicks {
                     return Some(value);
                 }
             },
+            MajorWalk::LogMultiples(multiples) => multiples.next(),
         }
     }
 }
@@ -770,9 +861,11 @@ impl Iterator for MajorTicks {
 /// Categorical ([`AxisOptions::categories`]): every category position
 /// `0, 1, …, n - 1`, whatever the scale and spacing. Linear: absolute multiples of [`effective_major_spacing`] inside the
 /// range, at most [`MAX_MAJOR_INTERVALS`] + 1, none on a range that is not
-/// [`walkable_range`]. Logarithmic: every [`effective_log_decade_step`]-th
-/// whole decade inside the [`crate::layout::guarded_log_range`] of the axis
-/// range, at most [`MAX_LOG_DECADES`].
+/// [`walkable_range`]. Logarithmic: the [`log_ladder`] inside the
+/// [`crate::layout::guarded_log_range`] of the axis range, over at most
+/// [`MAX_LOG_DECADES`] decades: every `step`-th whole decade for
+/// [`LogLadder::Decades`] (the [`effective_log_decade_step`] under the
+/// default policy), the ladder's multiples of every decade otherwise.
 pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
     if axis.categories.is_some() {
         let (min, max) = axis.data_range();
@@ -797,15 +890,7 @@ pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
         }
         AxisScale::Logarithmic => {
             let (min, max) = guarded_log_range(axis.min, axis.max);
-            let first = clamped_exponent(min.log10().ceil());
-            let last = clamped_exponent(max.log10().floor());
-            LogDecades::new(first, last, effective_log_decade_step(axis)).map_or(
-                MajorWalk::Empty,
-                |decades| MajorWalk::Log {
-                    decades,
-                    left: MAX_LOG_DECADES,
-                },
-            )
+            log_major_walk(log_ladder(axis), min, max)
         }
     })
 }
@@ -818,6 +903,7 @@ enum MinorWalk {
         subdivisions: f64,
     },
     Log(LogMinors),
+    LogMultiples(LogMultiples),
 }
 
 /// The minor tick values of an axis, from [`minor_ticks`].
@@ -838,6 +924,7 @@ impl Iterator for MinorTicks {
                 }
             },
             MinorWalk::Log(minors) => minors.next(),
+            MinorWalk::LogMultiples(minors) => minors.next(),
         }
     }
 }
@@ -848,8 +935,11 @@ impl Iterator for MinorTicks {
 ///
 /// None when `minor_count` is 0 and on a categorical axis. Linear: [`drawn_minor_count`] subdivisions
 /// of each [`effective_major_spacing`] interval, the majors left out.
-/// Logarithmic: [`LogMinors`] over the [`crate::layout::guarded_log_range`]
-/// of the axis range, whatever the count.
+/// Logarithmic, whatever the count: the multiples 2 to 9 of every decade that
+/// are not [`log_ladder`] majors, over the
+/// [`crate::layout::guarded_log_range`] of the axis range: [`LogMinors`] for
+/// [`LogLadder::Decades`], 3, 4, 6, 7, 8 and 9 × 10^k for
+/// [`LogLadder::OneTwoFive`], none for [`LogLadder::AllMantissas`].
 pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
     if axis.minor_count == 0 || axis.categories.is_some() {
         return MinorTicks(MinorWalk::Empty);
@@ -875,7 +965,13 @@ pub fn minor_ticks(axis: &AxisOptions) -> MinorTicks {
         }
         AxisScale::Logarithmic => {
             let (min, max) = guarded_log_range(axis.min, axis.max);
-            MinorWalk::Log(LogMinors::new(min, max))
+            match log_ladder(axis) {
+                LogLadder::Decades(_) => MinorWalk::Log(LogMinors::new(min, max)),
+                ladder => match LOG_MINOR_MULTIPLES & !ladder.multiples() {
+                    0 => MinorWalk::Empty,
+                    mask => MinorWalk::LogMultiples(LogMultiples::new(min, max, mask)),
+                },
+            }
         }
     })
 }
@@ -1419,6 +1515,7 @@ mod tests {
 
         let log = axis(AxisScale::Logarithmic, 0.5, 2000.0, 2.7, 8);
         assert_eq!(effective_log_decade_step(&log), 2);
+        assert_eq!(log_ladder(&log), LogLadder::Decades(2));
         assert_eq!(major_ticks(&log).collect::<Vec<_>>(), [1.0, 100.0]);
         // 0.5..0.9, three whole decades, then 2000.
         assert_eq!(minor_ticks(&log).count(), 5 + 3 * 8 + 1);
@@ -1426,6 +1523,306 @@ mod tests {
         let unguarded = axis(AxisScale::Logarithmic, 0.0, f64::NAN, 1.0, 8);
         assert_eq!(major_ticks(&unguarded).collect::<Vec<_>>(), [1e-12, 1e-11]);
         assert_eq!(minor_ticks(&unguarded).count(), 8);
+        // The same axes under `Adaptive`: the range decides, not the spacing.
+        let mut adaptive = log.clone();
+        adaptive.log_ticks = LogTickPolicy::Adaptive;
+        assert_eq!(log_ladder(&adaptive), LogLadder::Decades(1));
+        assert_eq!(
+            major_ticks(&adaptive).collect::<Vec<_>>(),
+            [1.0, 10.0, 100.0, 1000.0]
+        );
+        assert_eq!(minor_ticks(&adaptive).count(), 5 + 3 * 8 + 1);
+    }
+
+    fn adaptive(min: f64, max: f64) -> AxisOptions {
+        let mut axis = axis(AxisScale::Logarithmic, min, max, 1.0, 8);
+        axis.log_ticks = LogTickPolicy::Adaptive;
+        axis
+    }
+
+    /// The ladders, majors and minors of the plan's table (#42) under
+    /// `Adaptive`, with `LOG_LADDER_MIN_MAJORS = 4`.
+    #[test]
+    fn adaptive_log_ladders_golden() {
+        assert_eq!(LOG_LADDER_MIN_MAJORS, 4);
+        let decades = |min: f64, max: f64, step: f64| {
+            let axis = axis(AxisScale::Logarithmic, min, max, step, 8);
+            (
+                major_ticks(&axis).collect::<Vec<_>>(),
+                minor_ticks(&axis).collect::<Vec<_>>(),
+            )
+        };
+        type Golden = (f64, f64, LogLadder, Vec<f64>, Vec<f64>);
+        let table: [Golden; 9] = [
+            (
+                1e-9,
+                1e9,
+                LogLadder::Decades(3),
+                decades(1e-9, 1e9, 3.0).0,
+                decades(1e-9, 1e9, 3.0).1,
+            ),
+            (
+                0.5,
+                2000.0,
+                LogLadder::Decades(1),
+                vec![1.0, 10.0, 100.0, 1000.0],
+                decades(0.5, 2000.0, 1.0).1,
+            ),
+            (
+                1.0,
+                1e3,
+                LogLadder::Decades(1),
+                vec![1.0, 10.0, 100.0, 1000.0],
+                decades(1.0, 1e3, 1.0).1,
+            ),
+            (
+                1.0,
+                1e6,
+                LogLadder::Decades(1),
+                vec![1.0, 10.0, 100.0, 1e3, 1e4, 1e5, 1e6],
+                decades(1.0, 1e6, 1.0).1,
+            ),
+            (
+                1.0,
+                100.0,
+                LogLadder::OneTwoFive,
+                vec![1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0],
+                vec![
+                    3.0, 4.0, 6.0, 7.0, 8.0, 9.0, 30.0, 40.0, 60.0, 70.0, 80.0, 90.0,
+                ],
+            ),
+            (
+                3e3,
+                8e5,
+                LogLadder::OneTwoFive,
+                vec![5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5],
+                vec![
+                    3e3, 4e3, 6e3, 7e3, 8e3, 9e3, 3e4, 4e4, 6e4, 7e4, 8e4, 9e4, 3e5, 4e5, 6e5, 7e5,
+                    8e5,
+                ],
+            ),
+            (
+                1e4,
+                8e4,
+                LogLadder::AllMantissas,
+                vec![1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4],
+                vec![],
+            ),
+            (
+                8e3,
+                1.2e4,
+                LogLadder::AllMantissas,
+                vec![8e3, 9e3, 1e4],
+                vec![],
+            ),
+            (2.1e4, 2.9e4, LogLadder::AllMantissas, vec![], vec![]),
+        ];
+        for (min, max, ladder, majors, minors) in table {
+            let axis = adaptive(min, max);
+            assert_eq!(log_ladder(&axis), ladder, "{min:?}..{max:?}");
+            assert_eq!(
+                major_ticks(&axis).collect::<Vec<_>>(),
+                majors,
+                "{min:?}..{max:?} majors"
+            );
+            assert_eq!(
+                minor_ticks(&axis).collect::<Vec<_>>(),
+                minors,
+                "{min:?}..{max:?} minors"
+            );
+        }
+        // 2.1e4..2.9e4 draws no tick under either policy.
+        assert_eq!(decades(2.1e4, 2.9e4, 1.0), (vec![], vec![]));
+        // The 1-2-5 ladder would leave 1e4..8e4 three majors, one short.
+        assert_eq!(
+            LogMultiples::new(1e4, 8e4, LOG_ONE_TWO_FIVE).collect::<Vec<_>>(),
+            [1e4, 2e4, 5e4]
+        );
+    }
+
+    /// Guarded and extreme ranges: a written range that is not a log range
+    /// is planned on its guarded one, and the ladders stay bounded at the
+    /// ends of `f64`.
+    #[test]
+    fn adaptive_log_ladders_on_guarded_and_extreme_ranges() {
+        // The guarded fallback decade 1e-12..1e-11 holds two decades.
+        for (min, max) in [(0.0, f64::NAN), (-1.0, -2.0), (f64::NAN, f64::INFINITY)] {
+            let axis = adaptive(min, max);
+            let (gmin, gmax) = guarded_log_range(min, max);
+            assert_eq!(log_ladder(&axis), LogLadder::OneTwoFive, "{min:?}..{max:?}");
+            let majors: Vec<f64> = major_ticks(&axis).collect();
+            assert_eq!(
+                majors,
+                LogMultiples::new(gmin, gmax, LOG_ONE_TWO_FIVE).collect::<Vec<_>>()
+            );
+            assert!(majors.len() >= LOG_LADDER_MIN_MAJORS, "{majors:?}");
+        }
+        for (min, max, ladder) in [
+            (f64::from_bits(1), f64::MAX, LogLadder::Decades(106)),
+            (1e300, f64::MAX, LogLadder::Decades(2)),
+            (1e307, f64::MAX, LogLadder::OneTwoFive),
+            (1e-320, 1e-300, LogLadder::Decades(4)),
+        ] {
+            let axis = adaptive(min, max);
+            assert_eq!(log_ladder(&axis), ladder, "{min:?}..{max:?}");
+            let majors: Vec<f64> = major_ticks(&axis).collect();
+            assert!(!majors.is_empty(), "{min:?}..{max:?}");
+            assert!(majors.iter().all(|v| v.is_finite() && *v > 0.0));
+        }
+        // 2e308 and above overflow and are not drawn.
+        let top: Vec<f64> = major_ticks(&adaptive(1e307, f64::MAX)).collect();
+        assert_eq!(top, [1e307, 2e307, 5e307, 1e308]);
+    }
+
+    fn sorted_bits(values: impl Iterator<Item = f64>) -> Vec<u64> {
+        let mut out: Vec<u64> = values.map(f64::to_bits).collect();
+        out.sort_unstable();
+        out
+    }
+
+    /// A #72-style sweep over ranges inside one decade, across powers of
+    /// ten and over many decades: wherever the adaptive ladder is
+    /// `Decades(n)` it draws exactly the majors and minors of the default
+    /// policy at `major_spacing = n`; every plan is sorted, disjoint and
+    /// inside the range; a promoted 2·10^k or 5·10^k major is bit for bit
+    /// the minor the decade ladder draws there; and a sparser ladder is
+    /// kept only with enough majors.
+    #[test]
+    fn adaptive_log_ladders_sweep() {
+        let mut decade_rows = 0;
+        let mut multiple_rows = 0;
+        for exponent in -15..=15 {
+            for lead in [1.0, 1.5, 2.0, 3.7, 8.0, 9.99] {
+                for span in [
+                    0.01, 0.05, 0.2, 0.3, 0.6, 0.9, 1.0, 1.3, 2.0, 2.2, 3.0, 4.5, 5.9, 6.0, 6.5,
+                    8.0, 12.4, 20.0, 60.0,
+                ] {
+                    let min = lead * 10f64.powi(exponent);
+                    let max = min * 10f64.powf(span);
+                    let axis = adaptive(min, max);
+                    let ladder = log_ladder(&axis);
+                    let majors: Vec<f64> = major_ticks(&axis).collect();
+                    let minors: Vec<f64> = minor_ticks(&axis).collect();
+                    let label = format!("{min:e}..{max:e} {ladder:?}");
+                    for values in [&majors, &minors] {
+                        assert!(values.windows(2).all(|w| w[0] < w[1]), "{label}");
+                        assert!(values.len() <= MAX_LOG_DECADES * 9, "{label}");
+                    }
+                    // The multiples are range-checked by value; the decade
+                    // walk takes its exponents from `log10` of the ends,
+                    // which may land on a power of ten one ulp outside.
+                    assert!(minors.iter().all(|v| *v >= min && *v <= max), "{label}");
+                    let slack = match ladder {
+                        LogLadder::Decades(_) => 1e-12,
+                        _ => 0.0,
+                    };
+                    assert!(
+                        majors
+                            .iter()
+                            .all(|v| *v >= min * (1.0 - slack) && *v <= max * (1.0 + slack)),
+                        "{label}"
+                    );
+                    let major_bits = sorted_bits(majors.iter().copied());
+                    assert!(
+                        minors
+                            .iter()
+                            .all(|v| major_bits.binary_search(&v.to_bits()).is_err()),
+                        "{label}: majors and minors overlap"
+                    );
+                    match ladder {
+                        LogLadder::Decades(step) => {
+                            decade_rows += 1;
+                            let written =
+                                self::axis(AxisScale::Logarithmic, min, max, f64::from(step), 8);
+                            assert_eq!(log_ladder(&written), ladder, "{label}");
+                            assert_eq!(
+                                majors.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                                major_ticks(&written).map(f64::to_bits).collect::<Vec<_>>(),
+                                "{label}"
+                            );
+                            assert_eq!(
+                                minors.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                                minor_ticks(&written).map(f64::to_bits).collect::<Vec<_>>(),
+                                "{label}"
+                            );
+                            if step == 1 {
+                                assert!(majors.len() >= LOG_LADDER_MIN_MAJORS, "{label}");
+                            }
+                        }
+                        LogLadder::OneTwoFive | LogLadder::AllMantissas => {
+                            multiple_rows += 1;
+                            // At most six decades: no wider range gets here.
+                            assert_eq!(
+                                axis_major_spacing(&AxisScale::Logarithmic, min, max),
+                                1.0,
+                                "{label}"
+                            );
+                            // A sparser ladder is kept only while the denser
+                            // ones before it hold too few majors.
+                            let count =
+                                |ladder| MajorTicks(log_major_walk(ladder, min, max)).count();
+                            assert!(count(LogLadder::Decades(1)) < LOG_LADDER_MIN_MAJORS);
+                            if ladder == LogLadder::OneTwoFive {
+                                assert!(majors.len() >= LOG_LADDER_MIN_MAJORS, "{label}");
+                            } else {
+                                assert!(count(LogLadder::OneTwoFive) < LOG_LADDER_MIN_MAJORS);
+                            }
+                            // Majors and minors are every multiple of every
+                            // decade in the range, at the decade ladder's
+                            // minor positions.
+                            let mut both = majors.clone();
+                            both.extend(&minors);
+                            assert_eq!(
+                                sorted_bits(both.into_iter()),
+                                sorted_bits(LogMultiples::new(min, max, LOG_ALL_MANTISSAS)),
+                                "{label}"
+                            );
+                            let decade_minors = sorted_bits(LogMinors::new(min, max));
+                            for value in majors.iter().chain(&minors) {
+                                let decade = 10f64.powf(value.log10().floor());
+                                assert!(
+                                    *value == decade
+                                        || *value == 10f64.powf(value.log10().round())
+                                        || decade_minors.binary_search(&value.to_bits()).is_ok(),
+                                    "{label}: {value:e} is not where a decade ladder draws"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(
+            decade_rows > 100 && multiple_rows > 100,
+            "{decade_rows} / {multiple_rows}"
+        );
+    }
+
+    /// The default policy is the walk every log axis took before the
+    /// policy existed; `Adaptive` ignores `major_spacing`, and a minor
+    /// count of 0 still blanks the minors.
+    #[test]
+    fn log_tick_policy_decades_is_the_written_decade_step() {
+        for spacing in [0.5, 1.0, 2.7, 3.0, f64::NAN, f64::INFINITY, -4.0] {
+            let log = axis(AxisScale::Logarithmic, 1e-9, 1e9, spacing, 8);
+            assert_eq!(log.log_ticks, LogTickPolicy::Decades);
+            assert_eq!(
+                log_ladder(&log),
+                LogLadder::Decades(effective_log_decade_step(&log))
+            );
+            let mut adaptive = log.clone();
+            adaptive.log_ticks = LogTickPolicy::Adaptive;
+            assert_eq!(log_ladder(&adaptive), LogLadder::Decades(3), "{spacing:?}");
+        }
+        let mut blank = adaptive(1.0, 100.0);
+        blank.minor_count = 0;
+        assert_eq!(minor_ticks(&blank).count(), 0);
+        assert_eq!(major_ticks(&blank).count(), 7);
+        // A linear or categorical axis ignores the policy.
+        let mut linear = axis(AxisScale::Linear, 0.0, 10.0, 2.5, 4);
+        let before: Vec<f64> = major_ticks(&linear).collect();
+        linear.log_ticks = LogTickPolicy::Adaptive;
+        assert_eq!(major_ticks(&linear).collect::<Vec<_>>(), before);
     }
 
     // compute_nice_ticks is pure.

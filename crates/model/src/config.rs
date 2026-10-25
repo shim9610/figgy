@@ -93,7 +93,7 @@ pub enum LogTickPolicy {
     /// Majors from the range: whole decades (every `n`-th one on a range of
     /// more than six decades), or on a narrower range the first of the
     /// decades, the 1, 2 and 5 × 10^k ladder and the 1 to 9 × 10^k ladder
-    /// that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors
+    /// that puts at least [`crate::tick::LOG_LADDER_MIN_MAJORS`] majors
     /// inside it. `major_spacing` is ignored.
     Adaptive,
 }
@@ -217,7 +217,7 @@ pub struct AxisOptions {
     /// `Decades` (the default, omitted from JSON) walks every
     /// `major_spacing`-th decade; `Adaptive` chooses decades, the 1-2-5
     /// ladder or the 1..9 ladder from the range and ignores `major_spacing`
-    /// (`tick::log_ladder`). The minors are the multiples 2 to 9
+    /// ([`crate::tick::log_ladder`]). The minors are the multiples 2 to 9
     /// that are not majors. A linear or categorical axis ignores it; the
     /// range helpers and a view state leave it as it is, so a zoom re-plans
     /// the ticks from the new range.
