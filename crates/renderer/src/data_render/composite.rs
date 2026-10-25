@@ -1,6 +1,6 @@
 //! The data slot of a panel: the series layer set and the order its
 //! primitives are issued in (every fill, then every body, then every picked
-//! highlight, in SSOT series order). Where the slot sits between the chrome
+//! highlight, then every value label, in SSOT series order). Where the slot sits between the chrome
 //! below and above the data is the compositor's (`renderer::composite`).
 
 use super::*;
@@ -33,6 +33,11 @@ pub struct SeriesLayers<'a> {
     pub selected_bars: Vec<ColumnBarSelectionLayer<'a>>,
     pub selected_fields: Vec<ColumnFieldSelectionLayer<'a>>,
     pub picked: Vec<ColumnPickRingLayer<'a>>,
+    /// The value labels of a category bar, box plot or radar series and its
+    /// selected label's box: issued after every series' picked highlights
+    /// (`issue_series_value_labels`), so a label sits over all the data of
+    /// its panel and under the decoration.
+    pub value_labels: Option<ColumnValueLabelLayer<'a>>,
 }
 
 /// Clamp a rect into `(0..target.0, 0..target.1)`. Returns `None` if the
@@ -333,6 +338,18 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
             pass.set_vertex_buffer(5, p.pool_buffer.slice(size_value.byte_range()));
         }
         pass.draw(0..4, p.instance..p.instance + 1);
+    }
+}
+
+/// Issue one series' value labels and its selected label's box. Called for
+/// every series after every picked highlight; the caller has set the
+/// viewport (panel) and scissor (data_area).
+pub(crate) fn issue_series_value_labels(
+    pass: &mut wgpu::RenderPass<'_>,
+    series: &SeriesLayers<'_>,
+) {
+    if let Some(layer) = series.value_labels.as_ref() {
+        issue_value_labels(pass, layer);
     }
 }
 

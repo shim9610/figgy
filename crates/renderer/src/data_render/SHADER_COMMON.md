@@ -50,7 +50,9 @@ To change shared shader code:
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
-| `contour_label_box.wgsl` (§5.10) | contour label, field |
+| `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
+| `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
+| `value_label.wgsl` (§5.17) | bar |
 
 The module lists are the `assembled!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
@@ -1063,6 +1065,116 @@ of its box, not an item of its own. Nothing per box is stored anywhere;
 the CPU keeps the lane bases, the part styles of the configuration and
 the record's and the outlier column's scalar statistics (the value-axis
 fit).
+
+### 5.16 Label quad
+
+One textured quad of a label atlas cell, placed in a label frame
+(`ContourLabelFrame`, §5.10): the shared placement of the contour labels
+(`contour_label.wgsl::vs_main`, rotated along the isoline) and the value
+labels (§5.17, upright). The fragment declares no binding: each module
+binds its own atlas and passes its `LabelParams`.
+
+```wgsl
+struct LabelParams { atlas_w: f32, atlas_h: f32, cell_stride_w: f32,
+    cell_stride_h: f32, columns: u32, rows: u32, gutter: f32, level_count: u32 };
+struct LabelOut { @builtin(position) pos: vec4<f32>, @location(0) uv: vec2<f32> };
+fn label_quad_hidden() -> LabelOut
+fn label_quad(t: Transform, lp: LabelParams, vid: u32, frame: ContourLabelFrame,
+    a_level: u32, a_width_px: f32, texel_exact: bool) -> LabelOut
+```
+
+`LabelParams` is the atlas geometry (CPU twin
+`gpu_contour::LabelParamsGpu`, 32 B; the CPU bake is
+`data_render/contour.rs::bake_contour_label_atlas`, one uniform-stride grid
+cell per string with a transparent gutter of `gutter` texels). Cell `i` is
+`(i % columns, i / columns)`; `a_width_px` is its measured content width
+and the content height is `cell_stride_h - 2 * gutter`. A cell index at or
+past `level_count`, an empty atlas or a non-positive width collapses the
+quad (`label_quad_hidden`). With `texel_exact` false (a contour label) the
+quad reaches `LABEL_EDGE_PX` past the content on every side, the content
+maps onto the cell's texel centres, `(w - 1) / w` texels per pixel, and the
+sample is clamped to the cell's outermost texel centres, which are gutter,
+so linear filtering never reaches a neighbouring cell. With it true (an
+upright label whose content origin is on the pixel grid) one content pixel
+is one texel and the quad reaches exactly the `gutter` texels past the
+content, so every pixel centre samples a texel centre of the cell, gutter
+included, exactly as the CPU drew it, and no clamp is needed (a clamp at
+the corners would be interpolated across the quad and compress the
+content).
+
+The fragment is
+[`data_render/common/label_quad.wgsl`](common/label_quad.wgsl), spliced
+after `contour_label_box.wgsl` into the contour label module and the bar
+module.
+
+### 5.17 Value labels (group 1, bindings 4 to 6)
+
+The value label of each category of a `CategoryBars`, `BoxPlot` or `Radar`
+series: `labels.text[i]` (SSOT configuration; the renderer never formats a
+value) baked into the series' label atlas by the contour labels' builder
+(`ContourLabelAtlasInput::for_value_labels`: the value axis' tick label
+face and size at the render scale, its colour or white inside a dark bar,
+no background) and placed on every draw from the pool by the bar module's
+entries in [`common/value_label.wgsl`](common/value_label.wgsl), spliced
+after `category_bars.wgsl` and `box_plot.wgsl`, whose geometry they read.
+The pipelines use the category bar layout with group 1 replaced: group 0
+the transform, group 1 the series' value label group, group 2 its bar
+style map (an empty one for a radar series), group 3 its category bar data
+(§5.13; for a radar series `positions` is its category column,
+`values[0][0]` its value column and `count` its rows).
+
+| Binding | Contents |
+|---|---|
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 1120 B) |
+| 5 | the atlas texture |
+| 6 | its filtering sampler |
+
+Bindings 0 to 3 of group 1 are the module's `Style` and typed pick query.
+
+| Member | Meaning |
+|---|---|
+| `atlas` | the atlas geometry (§5.16) |
+| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count, one per category in axis order, at most `VALUE_LABEL_CAPACITY` (64) |
+| `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
+| `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
+| `cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
+
+`value_label_place(row)` is the content box of label `row` in chart-area
+render pixels (y down), shared by the draw, the selection box and the
+pick:
+
+- a bar's label (`category_bar`, whose `end_px` is the value end and
+  `exposed` whether no later stack segment covers it): `OUTSIDE` puts the
+  baseline `gap` above a rising end (or the text top about `gap` below a
+  falling one, `gap` past a horizontal bar's end), centred across the bar,
+  and draws nothing on a covered stack segment; `INSIDE` centres it on the
+  bar (baseline `0.32` font sizes below the middle); `AUTO` is outside a
+  grouped bar and inside a stack segment that fits it (`8` logical px
+  narrower and `1.4` font sizes lower than the segment), else nothing;
+- a box's label: the baseline `gap` past the farthest of the high whisker,
+  the mean, the notch's upper bound and the box's outliers along the value
+  axis, centred across the box (`box_stats`, `box_layout`,
+  `box_outlier_range`);
+- a radar vertex's label: `gap` outside the vertex along its spoke (the
+  direction from the inner ring to the outer one through the vertex's
+  category), its centre `gap + width / 2` out across and its baseline
+  `gap` out plus `0.35` font sizes down, as the former radar chart placed
+  it.
+
+The box is then moved by the drag offset and its origin rounded to the
+pixel grid, so `label_quad` samples the atlas texel for texel
+(`texel_exact`). Labels never displace each other: thinning the category
+axis is the only thinning. `vs_value_label` / `fs_value_label` draw the
+labels (one instance per label, `VALUE_LABEL_VERTICES`), after every
+series' picked highlights, scissored to the data area like every data
+primitive; `vs_value_label_selection` / `fs_value_label_selection` stroke
+the selected label's selection box (the content box grown by the padding,
+the stroke centred on its edge). The compute entry `pick_value_labels`
+answers the nearest label within the pick distance by the distance to its
+selection box (0 inside) as a `DATA_PICK_KIND_VALUE_LABEL` (4) candidate
+whose index is the category; the renderer submits it with a paint order
+after every series of the panel, so a label wins every tie against the
+data it is drawn over.
 
 ---
 ## Checklist

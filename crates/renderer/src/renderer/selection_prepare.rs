@@ -84,6 +84,7 @@ impl<'a> SelectionLayers<'a> {
             selected_bars: self.selected_bars,
             selected_fields: self.selected_fields,
             picked: self.picked,
+            value_labels: None,
         }
     }
 }

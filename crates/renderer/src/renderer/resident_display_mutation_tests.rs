@@ -399,6 +399,7 @@ fn radar_series() -> Vec<SeriesConfig> {
                 decimals: 1,
                 value_suffix: String::new(),
                 text: vec!["0.9".into(), "0.5".into(), "0.7".into(), "0.4".into()],
+                offsets: vec![[1.0, -2.0]; 4],
             },
         },
     );

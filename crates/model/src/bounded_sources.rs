@@ -375,9 +375,9 @@ impl Config {
     /// value axis at zero (`cross_at`); `selected` is the typed selection;
     /// `active_layer` and `annotations` carry over. Not carried: `hovered`
     /// (transient), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the data label offsets (the value labels
-    /// are not drawn yet), and the decoration selection. The chart area is
-    /// the default placeholder; the host sets it.
+    /// `decorations.data_area` and the decoration selection. The data label
+    /// offsets are the series' value label offsets (`labels.offsets`). The
+    /// chart area is the default placeholder; the host sets it.
     pub fn from_categorical(
         chart: &CategoricalChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
@@ -448,6 +448,7 @@ impl Config {
                         decimals: chart.label_decimals,
                         value_suffix: chart.value_suffix.clone(),
                         text: Vec::new(),
+                        offsets: Vec::new(),
                     },
                     label_format: chart.label_format,
                     overrides: (!overrides.is_empty()).then_some(overrides),
@@ -494,6 +495,7 @@ impl Config {
             );
         }
         legacy_offsets(&mut config, &chart.decorations);
+        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -674,6 +676,35 @@ fn legacy_offsets(config: &mut Config, decorations: &crate::DecorationLayout) {
     }
 }
 
+/// The data label offsets of a legacy document as the value label offsets
+/// of its series (`labels.offsets`): a [`DecorationId::DataLabel`] names its
+/// category and series by id, and its offset is in the same chart-local
+/// logical pixels. An offset naming no category or series of the document
+/// is dropped.
+fn legacy_label_offsets(
+    series: &mut [SeriesConfig],
+    categories: &[crate::config::Category],
+    decorations: &crate::DecorationLayout,
+) {
+    for offset in &decorations.offsets {
+        let DecorationId::DataLabel {
+            category_id,
+            series_id,
+        } = &offset.element
+        else {
+            continue;
+        };
+        let Some(index) = categories.iter().position(|c| &c.id == category_id) else {
+            continue;
+        };
+        let Some(item) = series.iter_mut().find(|s| &s.series_id == series_id) else {
+            continue;
+        };
+        let [dx, dy] = offset.offset;
+        let _ = item.drag_value_label(index, categories.len(), dx, dy);
+    }
+}
+
 impl Config {
     /// The Cartesian chart a legacy [`BoxPlotChart`] document draws: its
     /// `Config`, its series and what to upload.
@@ -713,9 +744,9 @@ impl Config {
     /// matching offsets; `selected` is the typed selection; `active_layer`
     /// and `annotations` carry over. Not carried: `hovered` (transient),
     /// `background` (the host's clear colour), an explicit
-    /// `decorations.data_area` and the data label offsets (the value labels
-    /// are not drawn yet), and the decoration selection. The chart area is
-    /// the default placeholder; the host sets it.
+    /// `decorations.data_area` and the decoration selection. The data label
+    /// offsets are the series' value label offsets (`labels.offsets`). The
+    /// chart area is the default placeholder; the host sets it.
     pub fn from_boxplot(
         chart: &BoxPlotChart,
     ) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
@@ -806,6 +837,7 @@ impl Config {
                         decimals: chart.label_decimals,
                         value_suffix: chart.value_suffix.clone(),
                         text: Vec::new(),
+                        offsets: Vec::new(),
                     },
                     outliers: outliers.clone(),
                     overrides: (!overrides.is_empty()).then_some(overrides),
@@ -849,6 +881,7 @@ impl Config {
             );
         }
         legacy_offsets(&mut config, &chart.decorations);
+        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -892,9 +925,9 @@ impl Config {
     /// vertex), the style's `emphasis_brightness` (the former renderer
     /// brightened the hovered or selected series; a picked vertex takes the
     /// picked ring instead), `background` (the host's clear colour), an explicit
-    /// `decorations.data_area`, the spoke label and data label offsets (the
-    /// category labels move together, and value labels are not drawn yet),
-    /// and the decoration selection. The chart area is the default
+    /// `decorations.data_area`, the spoke label offsets (the category labels
+    /// move together) and the decoration selection; the data label offsets
+    /// are the series' value label offsets (`labels.offsets`). The chart area is the default
     /// placeholder; the host sets it.
     pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
         let mut config = crate::default::default_config();
@@ -1021,6 +1054,7 @@ impl Config {
                         decimals: chart.label_decimals,
                         value_suffix: chart.value_suffix.clone(),
                         text: Vec::new(),
+                        offsets: Vec::new(),
                     },
                 },
             });
@@ -1079,6 +1113,7 @@ impl Config {
                 _ => {}
             }
         }
+        legacy_label_offsets(&mut series, &chart.categories, &chart.decorations);
         (config, series, uploads)
     }
 }
@@ -1409,6 +1444,33 @@ mod tests {
         assert_eq!((label.label_offset_x, label.label_offset_y), (1.0, 2.0));
         let title = &config.left_y.title_option;
         assert_eq!((title.offset_x, title.offset_y), (-1.0, -2.0));
+    }
+
+    #[test]
+    fn data_label_offsets_become_the_value_label_offsets() {
+        let mut c = chart();
+        let label = |category: &str, series: &str| DecorationId::DataLabel {
+            category_id: category.into(),
+            series_id: series.into(),
+        };
+        c.decorations.offsets = vec![
+            DecorationOffset {
+                element: label("b", "t"),
+                offset: [4.0, -6.0],
+            },
+            // Naming no category or no series of the document: dropped.
+            DecorationOffset {
+                element: label("zz", "t"),
+                offset: [1.0, 1.0],
+            },
+            DecorationOffset {
+                element: label("a", "zz"),
+                offset: [1.0, 1.0],
+            },
+        ];
+        let (_, series, _) = Config::from_categorical(&c);
+        assert_eq!(bars(&series[0]).labels.offsets, Vec::<[f32; 2]>::new());
+        assert_eq!(bars(&series[1]).labels.offsets, [[0.0, 0.0], [4.0, -6.0]]);
     }
 
     #[test]

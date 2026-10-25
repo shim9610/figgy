@@ -203,10 +203,18 @@ impl PrepareContext<'_> {
             let mut per_series = Vec::with_capacity(item.series.len());
             for (series, effective_spacing_px) in item.series.iter().zip(item_spacings) {
                 let cfg = series.config;
+                // The value labels of a category bar, box plot or radar
+                // series bake through this module's atlas builder too, at
+                // the panel config's tick label size (an export's config is
+                // scaled already).
+                let value_labels = self.ensure_value_label_scratch(item.chart_config, cfg)?;
                 if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
                     .contour
                 {
-                    per_series.push(PreparedContourSeries { scratch: None });
+                    per_series.push(PreparedContourSeries {
+                        scratch: None,
+                        value_labels,
+                    });
                     continue;
                 }
                 let sources = self.ensure_contour_scratch(cfg, item.chart_config, scale)?;
@@ -250,6 +258,7 @@ impl PrepareContext<'_> {
                         drawable: entry.drawable,
                         label,
                     }),
+                    value_labels,
                 });
             }
             if let Some(encoder) = encoder {

@@ -210,6 +210,12 @@ pub(super) struct TargetPipelines {
     pub(super) bar_box_plot: Option<wgpu::RenderPipeline>,
     /// The picked box's highlight over the same layout.
     pub(super) bar_box_plot_selection: Option<wgpu::RenderPipeline>,
+    /// The value labels of category bar, box plot and radar series
+    /// (`vs_value_label` / `fs_value_label`), group 1 the series' value
+    /// label group.
+    pub(super) bar_value_label: Option<wgpu::RenderPipeline>,
+    /// The selected value label's box over the same layout.
+    pub(super) bar_value_label_selection: Option<wgpu::RenderPipeline>,
     pub(super) field: Option<wgpu::RenderPipeline>,
     pub(super) field_selection: Option<wgpu::RenderPipeline>,
     /// The selected contour level's highlight for a labelled contour, with
@@ -299,6 +305,8 @@ impl TargetPipelines {
         let mut need_category_bar_selection = false;
         let mut need_box_plot = false;
         let mut need_box_plot_selection = false;
+        let mut need_value_labels = false;
+        let mut need_value_label_selection = false;
         let mut need_field_selection = false;
         let mut need_scatter_mapped = false;
         let mut need_errorbar_mapped = false;
@@ -365,6 +373,18 @@ impl TargetPipelines {
                 need_category_bar_selection |= primitives.category_bars && typed_bin;
                 need_box_plot |= primitives.box_plot;
                 need_box_plot_selection |= primitives.box_plot && typed_bin;
+                // Value labels compile with any label the series can show;
+                // `Emphasized` radar labels with or without a selection.
+                let labels =
+                    data_render::value_label_kind(&series.config.render_type, true).is_some();
+                need_value_labels |= labels;
+                need_value_label_selection |= labels
+                    && typed_picks.is_some_and(|config| {
+                        config.refs.iter().any(|picked| {
+                            matches!(picked, PickedDataRef::ValueLabel { series_id, .. }
+                                if *series_id == series.config.series_id)
+                        })
+                    });
                 if primitives.vector
                     && let Some((components, _)) = extract_vector(&series.config.render_type)
                 {
@@ -580,6 +600,32 @@ impl TargetPipelines {
                     &self.shaders.bar,
                     transform_bgl,
                     style_bgl,
+                    per_point_style_map_bgl,
+                    category_bar_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                    selection,
+                ));
+            }
+        }
+        for (need, selection) in [
+            (need_value_labels, false),
+            (need_value_label_selection, true),
+        ] {
+            let slot = if selection {
+                &mut self.bar_value_label_selection
+            } else {
+                &mut self.bar_value_label
+            };
+            if need && slot.is_none() {
+                // An equal layout to the renderer's own: wgpu compares
+                // layouts by their entries, so its bind groups fit.
+                let value_label_bgl = data_render::create_value_label_bind_group_layout(device);
+                *slot = Some(data_render::create_value_label_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    &value_label_bgl,
                     per_point_style_map_bgl,
                     category_bar_data_bgl,
                     surface_format,
@@ -991,6 +1037,41 @@ impl TargetPipelines {
                 );
             }
         }
+        for selection in [false, true] {
+            let slot = if selection {
+                &mut self.bar_value_label_selection
+            } else {
+                &mut self.bar_value_label
+            };
+            if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_value_label")) {
+                let value_label_bgl = data_render::create_value_label_bind_group_layout(device);
+                *slot = Some(
+                    observe_value_async(
+                        observer,
+                        "renderer.prewarm",
+                        if selection {
+                            "selected value label"
+                        } else {
+                            "value labels"
+                        },
+                        || {
+                            data_render::create_value_label_pipeline_with_sample_count(
+                                device,
+                                &self.shaders.bar,
+                                transform_bgl,
+                                &value_label_bgl,
+                                per_point_style_map_bgl,
+                                category_bar_data_bgl,
+                                surface_format,
+                                self.sample_count,
+                                selection,
+                            )
+                        },
+                    )
+                    .await,
+                );
+            }
+        }
         ensure!(
             field,
             "heatmap field",
@@ -1206,6 +1287,8 @@ pub(super) fn create_target_pipelines_observed(
         bar_category_selection: None,
         bar_box_plot: None,
         bar_box_plot_selection: None,
+        bar_value_label: None,
+        bar_value_label_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1284,6 +1367,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_category_selection: None,
         bar_box_plot: None,
         bar_box_plot_selection: None,
+        bar_value_label: None,
+        bar_value_label_selection: None,
         field: None,
         field_selection: None,
         field_selection_labelled: None,
@@ -1768,6 +1853,7 @@ impl Renderer {
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
+        let value_label_bgl = data_render::create_value_label_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -1826,6 +1912,7 @@ impl Renderer {
             field_bgl,
             vector_bgl,
             category_bar_data_bgl,
+            value_label_bgl,
             field_cell_tables,
             pipelines,
             sampler,
@@ -1838,6 +1925,7 @@ impl Renderer {
             vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
+            value_label_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,
@@ -1912,6 +2000,7 @@ impl Renderer {
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
+        let value_label_bgl = data_render::create_value_label_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
         let sampler = data_render::create_linear_sampler(&device);
@@ -1970,6 +2059,7 @@ impl Renderer {
             field_bgl,
             vector_bgl,
             category_bar_data_bgl,
+            value_label_bgl,
             field_cell_tables,
             pipelines,
             sampler,
@@ -1982,6 +2072,7 @@ impl Renderer {
             vector_cache: HashMap::new(),
             contour_label_pipelines: None,
             contour_cache: HashMap::new(),
+            value_label_cache: HashMap::new(),
             arc_pipelines: None,
             #[cfg(test)]
             arc_chunk_override: None,

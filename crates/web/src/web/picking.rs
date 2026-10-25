@@ -432,6 +432,47 @@ impl FiggyChart {
                     }
                 }
             }
+            // A value label reports its category, its drawn string and its
+            // drag offset: configuration, nothing is read back.
+            PickedDataRef::ValueLabel { category_index, .. } => {
+                let config = self.chart_config();
+                let layer = config.layer_of_series(&series.series_id);
+                let panel = match layer {
+                    renderer::LayerRef::Subplot(index)
+                    | renderer::LayerRef::SubplotOverlay(index, _) => config
+                        .subplots
+                        .get(index)
+                        .map_or(config, |subplot| &subplot.config),
+                    renderer::LayerRef::Base
+                    | renderer::LayerRef::Overlay(_)
+                    | renderer::LayerRef::Annotations => config,
+                };
+                let categories = if series.render_type.radar().is_some() {
+                    &panel.bottom_x.categories
+                } else {
+                    match config.bar_groups_of(layer).direction {
+                        renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
+                        renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                    }
+                };
+                let category = categories
+                    .as_deref()
+                    .and_then(|categories| categories.get(*category_index))
+                    .ok_or_else(|| js_err("selected category no longer exists"))?;
+                let text = series
+                    .value_label_text()
+                    .and_then(|text| text.get(*category_index))
+                    .ok_or_else(|| js_err("selected label no longer exists"))?;
+                result["index"] = serde_json::json!(category_index);
+                result["category_id"] = serde_json::json!(category.id);
+                result["category_label"] = serde_json::json!(category.label);
+                result["text"] = serde_json::json!(text);
+                result["offset"] = serde_json::json!(series.value_label_offset(*category_index));
+                result["label_id"] = serde_json::json!(renderer::data_config::value_label_id(
+                    &series.series_id,
+                    *category_index
+                ));
+            }
             _ => return Ok("null".into()),
         }
         serde_json::to_string(&result).map_err(js_err)
@@ -659,6 +700,11 @@ impl FiggyChart {
     /// Resolves to a JSON string
     /// `{ source_id, series_id, point_index, distance_px }`, or
     /// `undefined` when no visible primitive is within `max_distance_px`.
+    /// On a chart that draws value labels a label under the pointer wins
+    /// (it is drawn over the data): the hit then names the label's series,
+    /// its category as `point_index`, and its `label_id`
+    /// (`"series:<series_id>:label:<index>"`), which `press_value_label`
+    /// takes to drag it.
     /// The `<figgy-chart>` facade parses the string and normalizes
     /// `undefined` to `null`.
     pub async fn pick_point(
@@ -680,6 +726,35 @@ impl FiggyChart {
             return Ok(JsValue::from_str(&json));
         }
         self.prepare_gpu_picking().await?;
+        // A drawn value label is a typed pick target; the point pick does
+        // not see it.
+        let labelled = self.chart_series().iter().any(|series| {
+            series
+                .value_label_text()
+                .is_some_and(|text| text.iter().any(|t| !t.is_empty()))
+        });
+        if labelled {
+            let ticket = self
+                .renderer
+                .pick_chart_data_at(self.chart_id, [x, y], max_distance_px)
+                .map_err(js_err)?;
+            if let Some(renderer::PickedData::ValueLabel {
+                source_id,
+                series_id,
+                category_index,
+                distance_px,
+            }) = ticket.resolve().await.map_err(js_err)?
+            {
+                let json = crate::picked_label_json_string(
+                    source_id.as_deref(),
+                    &series_id,
+                    category_index,
+                    distance_px,
+                )
+                .map_err(js_err)?;
+                return Ok(JsValue::from_str(&json));
+            }
+        }
         let ticket = self
             .renderer
             .pick_chart_at(self.chart_id, [x, y], max_distance_px)
@@ -689,6 +764,85 @@ impl FiggyChart {
         };
         let json = crate::picked_point_json_string(&picked).map_err(js_err)?;
         Ok(JsValue::from_str(&json))
+    }
+
+    /// Press on a value label: the label a `pick_point` or `pick_data` hit
+    /// names under the pointer, by its `label_id`
+    /// (`"series:<series_id>:label:<index>"`). The label becomes the typed
+    /// data selection (`picked_data`, outlined by its frame), any element
+    /// or annotation selection is cleared, and the drag starts: `on_move`
+    /// moves the label (writing the series' `labels.offsets`) and
+    /// `on_release` ends it. Returns `false` and changes nothing for an id
+    /// that names no value label of the chart's series.
+    /// JS: `const hit = JSON.parse(await chart.pick_point(x, y, 8));`
+    /// `if (hit?.label_id) chart.press_value_label(hit.label_id);`
+    pub fn press_value_label(&mut self, label_id: &str) -> Result<bool, JsValue> {
+        let Some((series_id, index)) = renderer::data_config::parse_value_label_id(label_id) else {
+            return Ok(false);
+        };
+        let Some(series) = self
+            .chart_series()
+            .iter()
+            .find(|series| series.series_id == series_id)
+        else {
+            return Ok(false);
+        };
+        if !series
+            .value_label_text()
+            .is_some_and(|text| index < text.len())
+        {
+            return Ok(false);
+        }
+        let reference = renderer::config::PickedDataRef::ValueLabel {
+            source_id: series.source_id.clone(),
+            series_id: series.series_id.clone(),
+            category_index: index,
+        };
+        if self.chart_selection().is_some() {
+            self.renderer
+                .set_chart_selection(self.chart_id, None)
+                .map_err(js_err)?;
+        }
+        self.set_selected_annotation(None);
+        let mut config = self.chart_config().clone();
+        let mut picked = config.picked_data.take().unwrap_or_default();
+        picked.refs = vec![reference];
+        config.picked_data = Some(picked);
+        self.replace_chart_config(config)?;
+        self.annotation_pointer = false;
+        self.resizing = None;
+        self.dragging = true;
+        self.value_label_pointer = true;
+        Ok(true)
+    }
+
+    /// `on_move` of a drag `press_value_label` started: the selected label
+    /// moves by the delta in document pixels.
+    fn move_value_label(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        let Some(renderer::config::PickedDataRef::ValueLabel {
+            series_id,
+            category_index,
+            ..
+        }) = self
+            .chart_config()
+            .picked_data
+            .as_ref()
+            .and_then(|picked| picked.refs.first())
+            .cloned()
+        else {
+            return Ok(());
+        };
+        let (dx, dy) = self.display_delta_to_document(dx, dy);
+        let mut series = self.chart_series().to_vec();
+        let Some(item) = series.iter_mut().find(|s| s.series_id == series_id) else {
+            return Ok(());
+        };
+        let count = item.value_label_text().map_or(0, <[String]>::len);
+        if item.drag_value_label(category_index, count, dx, dy) == NudgeResult::Moved {
+            let config = self.chart_config().clone();
+            self.replace_chart_state(config, series)?;
+        }
+        Ok(())
     }
 
     /// Move among source rows represented in the completed packed view.
@@ -789,6 +943,7 @@ impl FiggyChart {
     /// clears the annotation selection. On every other layer the items
     /// are not part of the route.
     pub fn on_press(&mut self, x: f32, y: f32) -> Result<bool, JsValue> {
+        self.value_label_pointer = false;
         let (display_config, _, _) = self.display_config();
         let routes_annotations = renderer::AnnotationMap::receives_pointer(
             display_config.active_layer(),
@@ -865,6 +1020,12 @@ impl FiggyChart {
     /// After a press on an annotation the delta moves that item (or the
     /// pressed handle) through the frame's anchor space.
     pub fn on_move(&mut self, dx: f32, dy: f32) -> Result<(), JsValue> {
+        if self.value_label_pointer {
+            if self.dragging && dx.is_finite() && dy.is_finite() {
+                self.move_value_label(dx, dy)?;
+            }
+            return Ok(());
+        }
         if self.annotation_pointer {
             if let Some(index) = self.selected_annotation
                 && (self.dragging || self.resizing.is_some())
@@ -907,6 +1068,7 @@ impl FiggyChart {
         self.dragging = false;
         self.resizing = None;
         self.annotation_pointer = false;
+        self.value_label_pointer = false;
     }
 
     /// `true` while a chart element or an annotation is selected.

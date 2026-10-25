@@ -59,6 +59,15 @@ pub enum PickedData {
         y_index: usize,
         distance_px: f32,
     },
+    /// The value label of category `category_index` of a category bar, box
+    /// plot or radar series: its `labels.text[category_index]` as drawn.
+    /// `distance_px` is the distance to its selection box, 0 inside it.
+    ValueLabel {
+        source_id: Option<String>,
+        series_id: String,
+        category_index: usize,
+        distance_px: f32,
+    },
 }
 
 impl PickedData {
@@ -67,7 +76,8 @@ impl PickedData {
             Self::Point { source_id, .. }
             | Self::HistogramBin { source_id, .. }
             | Self::MatrixCell { source_id, .. }
-            | Self::ContourLevel { source_id, .. } => source_id.as_deref(),
+            | Self::ContourLevel { source_id, .. }
+            | Self::ValueLabel { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -76,7 +86,8 @@ impl PickedData {
             Self::Point { series_id, .. }
             | Self::HistogramBin { series_id, .. }
             | Self::MatrixCell { series_id, .. }
-            | Self::ContourLevel { series_id, .. } => series_id,
+            | Self::ContourLevel { series_id, .. }
+            | Self::ValueLabel { series_id, .. } => series_id,
         }
     }
 
@@ -85,7 +96,8 @@ impl PickedData {
             Self::Point { distance_px, .. }
             | Self::HistogramBin { distance_px, .. }
             | Self::MatrixCell { distance_px, .. }
-            | Self::ContourLevel { distance_px, .. } => *distance_px,
+            | Self::ContourLevel { distance_px, .. }
+            | Self::ValueLabel { distance_px, .. } => *distance_px,
         }
     }
 
@@ -136,6 +148,16 @@ impl PickedData {
                 level_index: *level_index,
                 x_index: *x_index,
                 y_index: *y_index,
+            },
+            Self::ValueLabel {
+                source_id,
+                series_id,
+                category_index,
+                ..
+            } => crate::config::PickedDataRef::ValueLabel {
+                source_id: source_id.clone(),
+                series_id: series_id.clone(),
+                category_index: *category_index,
             },
         }
     }

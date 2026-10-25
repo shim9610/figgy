@@ -242,6 +242,9 @@ pub struct Renderer {
     /// Category bar data layout (pool + `CategoryBarParams`), group 3 of the
     /// category bar pipelines and pick.
     category_bar_data_bgl: wgpu::BindGroupLayout,
+    /// Value label layout (uniform + atlas + sampler), group 1 of the value
+    /// label pipelines of the bar module.
+    value_label_bgl: wgpu::BindGroupLayout,
     /// The padding tables every grid vector's cell-geometry field group shares.
     field_cell_tables: data_render::FieldCellTables,
 
@@ -278,6 +281,12 @@ pub struct Renderer {
     /// cache — plus the immutable label atlas and its placement-slot pool when
     /// the series has labels.
     contour_cache: HashMap<String, ContourScratchEntry>,
+    /// Per-series value label atlas, keyed by `series_id`: the baked strings
+    /// of a category bar, box plot or radar series' value labels, rebuilt
+    /// only when its [`ValueLabelSignature`] (the strings, the face, the
+    /// font size at the render scale, the colour, the font generation)
+    /// changes.
+    value_label_cache: HashMap<String, ValueLabelScratch>,
     /// Per-field-series group-2 state, keyed by `series_id`. Rebuilt only when
     /// its [`FieldSignature`] changes; a live token holds its own refcounted
     /// clone of the bind group, so replacement disturbs nothing it can draw.

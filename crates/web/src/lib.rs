@@ -70,6 +70,25 @@ fn picked_point_json_string(picked: &renderer::PickedPoint) -> serde_json::Resul
     }))
 }
 
+/// A value label hit as `pick_point` reports it: the point fields with the
+/// label's category as `point_index`, and the label's id, which
+/// `press_value_label` takes.
+#[cfg(any(target_arch = "wasm32", test))]
+fn picked_label_json_string(
+    source_id: Option<&str>,
+    series_id: &str,
+    category_index: usize,
+    distance_px: f32,
+) -> serde_json::Result<String> {
+    serde_json::to_string(&serde_json::json!({
+        "source_id": source_id,
+        "series_id": series_id,
+        "point_index": category_index,
+        "distance_px": distance_px,
+        "label_id": renderer::data_config::value_label_id(series_id, category_index),
+    }))
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<String> {
     let value = match picked {
@@ -125,6 +144,19 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             "level_index": level_index,
             "x_index": x_index,
             "y_index": y_index,
+            "distance_px": distance_px,
+        }),
+        renderer::PickedData::ValueLabel {
+            source_id,
+            series_id,
+            category_index,
+            distance_px,
+        } => serde_json::json!({
+            "kind": "value_label",
+            "source_id": source_id.as_ref(),
+            "series_id": series_id,
+            "category_index": category_index,
+            "label_id": renderer::data_config::value_label_id(series_id, *category_index),
             "distance_px": distance_px,
         }),
     };
@@ -888,12 +920,12 @@ mod tests {
     use super::{
         ColumnRegistryAction, DEMO_COLUMN_IDS, ErrorRefKind, FrameDecision,
         active_series_extent_requests, checked_column_revision, consume_successful_frame,
-        frame_decision, picked_data_json_string, picked_point_json_string,
-        prepare_batch_column_metadata, prepare_column_metadata, prepare_demo_column_metadata,
-        prepare_demo_declarations, retain_valid_series_extent_jobs, select_series_extent_job_map,
-        series_extent_key_matches_config, series_extent_mode, series_extent_needs_submission,
-        series_extent_request_from, set_plain_chart_title, validate_column_batch,
-        validate_column_data_len, validate_column_registry_action,
+        frame_decision, picked_data_json_string, picked_label_json_string,
+        picked_point_json_string, prepare_batch_column_metadata, prepare_column_metadata,
+        prepare_demo_column_metadata, prepare_demo_declarations, retain_valid_series_extent_jobs,
+        select_series_extent_job_map, series_extent_key_matches_config, series_extent_mode,
+        series_extent_needs_submission, series_extent_request_from, set_plain_chart_title,
+        validate_column_batch, validate_column_data_len, validate_column_registry_action,
     };
     use crate::scalar_job::{SeriesExtentJob, SeriesExtentStatus};
 
@@ -1149,6 +1181,38 @@ mod tests {
                 "point_index": 7,
                 "distance_px": 4.0,
             })
+        );
+    }
+
+    #[test]
+    fn a_value_label_hit_names_its_category_and_its_label_id() {
+        let picked = renderer::PickedData::ValueLabel {
+            source_id: None,
+            series_id: "bars:a".into(),
+            category_index: 2,
+            distance_px: 0.0,
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&picked_data_json_string(&picked).unwrap()).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!({
+                "kind": "value_label",
+                "source_id": null,
+                "series_id": "bars:a",
+                "category_index": 2,
+                "label_id": "series:bars:a:label:2",
+                "distance_px": 0.0,
+            })
+        );
+        let point: serde_json::Value =
+            serde_json::from_str(&picked_label_json_string(None, "bars:a", 2, 0.0).unwrap())
+                .unwrap();
+        assert_eq!(point["point_index"], 2);
+        assert_eq!(point["label_id"], "series:bars:a:label:2");
+        assert_eq!(
+            renderer::data_config::parse_value_label_id(point["label_id"].as_str().unwrap()),
+            Some(("bars:a", 2))
         );
     }
 

@@ -87,6 +87,9 @@ enum PointerMode {
 enum Drag {
     None,
     Element,
+    /// A value label the pick found under the press: the move writes its
+    /// series' `labels.offsets`.
+    ValueLabel,
     Resize(ResizeHandle),
     Annotation,
     AnnotationHandle(ResizeHandle),
@@ -484,8 +487,10 @@ impl CartesianHost {
                 self.raster_dirty = true;
             }
             self.selected_annotation = None;
-            self.drag = Drag::None;
-            self.select_pick(r, Some(picked), add);
+            // A value label is selected alone and dragged by the move.
+            let label = matches!(picked, PickedData::ValueLabel { .. });
+            self.drag = if label { Drag::ValueLabel } else { Drag::None };
+            self.select_pick(r, Some(picked), add && !label);
             return;
         }
         if !add && !self.picks.is_empty() {
@@ -507,6 +512,27 @@ impl CartesianHost {
         let mut config = self.config(r);
         let moved = match self.drag {
             Drag::None => return false,
+            Drag::ValueLabel => {
+                let Some(PickedData::ValueLabel {
+                    series_id,
+                    category_index,
+                    ..
+                }) = self.picks.last().cloned()
+                else {
+                    return false;
+                };
+                let mut series = self.series(r);
+                let Some(item) = series.iter_mut().find(|s| s.series_id == series_id) else {
+                    return false;
+                };
+                let count = item.value_label_text().map_or(0, <[String]>::len);
+                let (dx, dy) = (dx / d.scale, dy / d.scale);
+                if item.drag_value_label(category_index, count, dx, dy) != NudgeResult::Moved {
+                    return false;
+                }
+                self.commit_series(r, series);
+                return true;
+            }
             Drag::Annotation | Drag::AnnotationHandle(_) => {
                 let (Some(view), Some(index)) = (&self.view, self.selected_annotation) else {
                     return false;
@@ -1978,6 +2004,12 @@ fn describe_pick(p: &PickedData) -> String {
         } => {
             format!("{series_id} point #{point_index} ({distance_px:.1} px)")
         }
+        PickedData::ValueLabel {
+            series_id,
+            category_index,
+            distance_px,
+            ..
+        } => format!("{series_id} value label #{category_index} ({distance_px:.1} px)"),
         other => format!("{other:?}"),
     }
 }

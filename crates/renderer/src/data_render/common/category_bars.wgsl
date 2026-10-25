@@ -85,10 +85,15 @@ struct CategoryBar {
     /// `CATEGORY_EDGE_*` bits of the edges this bar shares with its stack
     /// neighbours; the bar owns those edges' pixels on its own side only.
     edges: u32,
+    /// The value end of the bar along the value axis, in chart-area render
+    /// pixels: where its value label is placed from.
+    end_px: f32,
+    /// Whether the value end is not covered by a later bar of its stack.
+    exposed: bool,
 };
 
 fn category_invalid() -> CategoryBar {
-    return CategoryBar(false, vec4<f32>(0.0), vec4<f32>(0.0), 0u);
+    return CategoryBar(false, vec4<f32>(0.0), vec4<f32>(0.0), 0u, 0.0, false);
 }
 
 /// NDC to chart-area render pixels, y down.
@@ -283,7 +288,7 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
             edges = edges | end_edge;
         }
     }
-    return CategoryBar(true, rect, radii, edges);
+    return CategoryBar(true, rect, radii, edges, b, exposed);
 }
 
 /// The signed distance from `p` to the rounded rect of `bar`, in pixels:
@@ -384,7 +389,7 @@ struct Bar {
 
 /// The bar from the fragment's flat inputs.
 fn category_fragment_bar(in: CategoryVsOut) -> CategoryBar {
-    return CategoryBar(true, in.rect, in.radii, u32(in.metrics.w));
+    return CategoryBar(true, in.rect, in.radii, u32(in.metrics.w), 0.0, true);
 }
 
 /// Four subpixel samples of the rounded rect: `(coverage, outline coverage)`.
