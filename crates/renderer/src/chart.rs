@@ -305,15 +305,25 @@ pub(crate) fn apply_auto_fit_all(
 /// The value-axis extent of the category bars `layer` of `config` draws,
 /// from the pool's statistics, with its bar direction.
 ///
-/// The bars grow from zero, so zero is always in it. Grouped bars span their
-/// value columns' range; stacked bars the group's [`StackExtent`], which the
-/// pool measured when the group's value columns were uploaded together
-/// ([`crate::Renderer::add_columns`]); a group whose columns were not is an
-/// error naming that, since no column statistic gives a stack's height.
-/// Percent stacks span `0..=100`. A layer without category bars gives the
-/// empty extent.
+/// The bars grow from zero, so zero is always in it. Grouped bars span the
+/// union of their value columns' ranges. Stacked bars span
+/// `[Σ min(0, min_i), Σ max(0, max_i)]` over the group's value columns,
+/// `min_i` and `max_i` being each column's own statistics
+/// ([`ColumnSlot::min`] and [`ColumnSlot::max`]): positive values stack up
+/// from zero and negative ones down, so no category's stack reaches past the
+/// sum of the series' extremes, and a series with both signs adds its
+/// positive part up and its negative part down. This is an upper bound,
+/// exact when every series has its extremes in one category and wider when
+/// they sit in different categories (two series peaking at 30 and 40 in
+/// different categories fit 70 however low their other bars are). The
+/// exact per-category totals are the shader's, computed from the pool on
+/// every draw; the fit reads no value back, so the group's columns may be
+/// uploaded in any batches. Percent stacks span `0..=100`: the shader draws
+/// a category's positive shares from 0 to 100 and no bar for a negative
+/// value. A layer without category bars gives the empty extent.
 ///
-/// [`StackExtent`]: crate::data_render::StackExtent
+/// [`ColumnSlot::min`]: crate::data_render::ColumnSlot::min
+/// [`ColumnSlot::max`]: crate::data_render::ColumnSlot::max
 pub fn category_bar_value_extent(
     pool: &ColumnPool,
     config: &Config,
@@ -347,23 +357,25 @@ pub fn category_bar_value_extent(
             }
         }
         CategoryBarMode::Stacked => {
-            let stack = pool
-                .stack_extent(members().map(|s| s.category_bar_columns(groups.direction).1))
-                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
-                    series_id: members()
-                        .next()
-                        .map_or_else(String::new, |s| s.series_id.clone()),
-                    reason: "a stacked bar group fits its value axis to the stack extent the \
-                             pool measures when exactly the group's value columns, at most 64 \
-                             values each, are uploaded as one batch (`add_columns`); upload \
-                             them again that way"
-                        .into(),
-                })?;
-            extent.union(&FitExtent {
-                min: stack.min,
-                max: stack.max,
-                min_positive: (stack.max > 0.0).then_some(stack.max),
-            });
+            // Each column adds its positive extreme up from zero and its
+            // negative extreme down; its smallest positive value bounds the
+            // lowest positive bar end from below, the log-axis floor.
+            let mut stack = zero;
+            for item in members() {
+                let column =
+                    Chart::slot_extent(pool, item.category_bar_columns(groups.direction).1)?;
+                if column.min.is_finite() {
+                    stack.min += column.min.min(0.0);
+                }
+                if column.max.is_finite() {
+                    stack.max += column.max.max(0.0);
+                }
+                stack.min_positive = match (stack.min_positive, column.min_positive) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            extent.union(&stack);
         }
         CategoryBarMode::PercentStacked => extent.union(&FitExtent {
             min: 0.0,

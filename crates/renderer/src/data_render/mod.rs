@@ -56,7 +56,7 @@ pub use column_pool::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, ColumnSlot, DefragPolicy,
     FreeRegion, GpuAllocCtx, GpuBudget, GrowthPolicy, MAX_RAGGED_VALUES, MAX_RECORD_FIELDS,
     RaggedId, RaggedRef, RaggedSlot, RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema,
-    RecordSlot, RecordSource, RecordStats, StackExtent,
+    RecordSlot, RecordSource, RecordStats,
 };
 
 // Instance, adapter, surface, and device setup.
