@@ -148,7 +148,9 @@ pub mod polar {
     #![doc = include_str!("../POLAR.md")]
     pub use model::polar::*;
 }
-pub use model::polar::{AngleUnit, PolarGeometry, PolarInterpolation, PolarOptions};
+pub use model::polar::{
+    AngleMap, AngleUnit, GridShape, PolarGeometry, PolarInterpolation, PolarOptions,
+};
 pub use model::radar::*;
 pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};
 

@@ -41,14 +41,14 @@ pub struct ScatterTransform {
     /// numeric conversion, preserving global identities above 2^24.
     pub style_params: [[f32; 4]; 3], // offset 64 → 112 byte
     /// `Config.polar`, all zero in a rectangular chart: `(flag, zero angle
-    /// in radians, radians per angle unit signed by the direction, inner
-    /// radius fraction)`. With the flag set, `data_to_ndc` maps the x column
+    /// in radians, radians per angle-axis value signed by the direction,
+    /// inner radius fraction)`. With the flag set, `data_to_ndc` maps the x column
     /// to an angle around the data area's centre and the y axis fraction to
     /// a radius between the inner ring and `polar_extent[3]`.
     pub polar_angle: [f32; 4], // offset 112
-    /// `(sector start, sector end in angle units; end <= start is the full
-    /// circle, arc pieces per line segment or 0 for chords, outer radius in
-    /// pixels)`.
+    /// `(sector start, sector end in angle-axis values; end <= start is the
+    /// full circle, arc pieces per line segment or 0 for chords, outer radius
+    /// in pixels)`.
     pub polar_extent: [f32; 4], // offset 128 → 144 byte
 }
 
@@ -249,17 +249,25 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
 }
 
 /// `(polar_angle, polar_extent)` of [`ScatterTransform`] for `config`: all
-/// zero for a rectangular chart.
+/// zero for a rectangular chart. The angle words are the chart's
+/// [`AngleMap`](crate::polar::AngleMap): a numeric angle axis reads its
+/// values in the angle unit from the zero angle inside the sector, and a
+/// categorical one puts category `i` at `i / n` of the turn or the sector,
+/// its window `[0, n]`.
 pub(crate) fn transform_constants(config: &Config) -> ([f32; 4], [f32; 4]) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+    let (Some(polar), Some(map), Some(geometry)) = (
+        &config.polar,
+        config.polar_angle_map(),
+        config.polar_geometry(),
+    ) else {
         return ([0.0; 4], [0.0; 4]);
     };
-    let [start, end] = polar.sector.unwrap_or([0.0, 0.0]);
+    let [start, end] = map.window.unwrap_or([0.0, 0.0]);
     (
         [
             1.0,
-            polar.zero_angle_degrees.to_radians() as f32,
-            (polar.direction() * polar.angle_unit.radians_per_unit()) as f32,
+            map.zero_radians as f32,
+            map.radians_per_value as f32,
             polar.inner_radius_fraction,
         ],
         [

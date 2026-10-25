@@ -975,6 +975,8 @@ impl Config {
                 inner_radius_fraction: _,
                 interpolation: _,
                 radial_label_angle_degrees: _,
+                // A ring shape, not a pixel dimension.
+                grid_shape: _,
             }) => true,
             None => false,
         };

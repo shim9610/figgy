@@ -80,7 +80,10 @@ pub use categorical::*;
 pub mod boxplot;
 pub use boxplot::*;
 pub mod polar;
-pub use polar::{AngleUnit, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation, PolarOptions};
+pub use polar::{
+    AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
+    PolarOptions,
+};
 pub mod radar;
 pub use radar::*;
 
