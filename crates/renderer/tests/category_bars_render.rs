@@ -739,8 +739,8 @@ fn a_stack_peaking_in_different_categories_fits_the_sum_of_the_peaks() {
     }
 }
 
-/// Percent stacks fit `0..100` whatever the values: the shader draws a
-/// category's positive shares from 0 to 100 and no bar for a negative value.
+/// Percent stacks fit `0..100` from the mode alone: the fit reads no value,
+/// so a negative one does not move it (drawing refuses it, below).
 #[test]
 fn a_percent_stack_fits_zero_to_one_hundred() {
     for (one, two) in [
@@ -756,6 +756,36 @@ fn a_percent_stack_fits_zero_to_one_hundred() {
             );
         }
     }
+}
+
+/// A percent group whose value column has a negative value is refused when
+/// it is drawn, naming the series and the mode, at 1x and 2x (the first
+/// member is fine: the error names the second); the same group draws in
+/// `Stacked` mode.
+#[test]
+fn a_percent_stack_with_a_negative_value_is_refused() {
+    let mut r = renderer(&[10.0, 20.0, 5.0], &[20.0, -10.0, 15.0]);
+    let direction = CategoryBarDirection::Vertical;
+    let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+    let percent = chart(CategoryBarMode::PercentStacked, direction, (0.0, 100.0));
+    for scale in [1.0f32, 2.0] {
+        match r.export_panel_rgba(&percent, &series, scale) {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+                assert_eq!(series_id, "two", "{scale}x");
+                assert!(reason.contains("PercentStacked"), "{reason}");
+                assert!(reason.contains("\"two\""), "{reason}");
+                assert!(reason.contains("negative"), "{reason}");
+            }
+            Err(other) => panic!("{scale}x: expected InvalidSeriesConfig, got {other:?}"),
+            Ok(_) => panic!("{scale}x: a negative value in a percent stack drew"),
+        }
+    }
+    let stacked = chart(CategoryBarMode::Stacked, direction, (-20.0, 40.0));
+    let image = r.export_panel_rgba(&stacked, &series, 1.0).unwrap();
+    assert!(
+        bbox(&image, slot(&stacked, direction, 1, 1.0), is_blue).is_some(),
+        "the negative bar draws in a stack"
+    );
 }
 
 /// A categorical document read by `Config::from_categorical` draws through

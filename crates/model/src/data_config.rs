@@ -161,7 +161,10 @@ pub enum DataRenderType {
     /// stand side by side, stack or stack to 100 % as
     /// [`BarGroups::mode`] says, in series order. The renderer reads the
     /// other series' values from the pool for a stack; nothing per bar is
-    /// kept on the CPU.
+    /// kept on the CPU. A `PercentStacked` group whose value column has a
+    /// negative value (the pool's minimum statistic below 0) is refused when
+    /// it is drawn or picked, with `InvalidSeriesConfig` naming that series
+    /// and the mode; `Stacked` and `Grouped` draw negative values.
     ///
     /// Value labels: `labels.text` holds the drawn strings ([`format_labels`]
     /// writes them; the renderer never formats a value), one per category,
@@ -1329,7 +1332,9 @@ pub enum CategoryBarMode {
     /// stack away from zero independently.
     Stacked,
     /// Stacked to the share of the category total, `0..=100` on the value
-    /// axis. Values must not be negative.
+    /// axis. Values must not be negative: the renderer refuses a series
+    /// whose value column's minimum is below 0 when it draws or picks the
+    /// group (`InvalidSeriesConfig`, naming the series and the mode).
     PercentStacked,
 }
 
@@ -1656,7 +1661,9 @@ impl Default for CategoryBarSeriesLabels {
 /// How the [`DataRenderType::CategoryBars`] series of one layer share their
 /// categorical axis: `Config::bar_groups`. The property of the set of bar
 /// series, not of one series. `None` there reads as the default (grouped,
-/// vertical, 0.7 of the slot, 3 px apart).
+/// vertical, 0.7 of the slot, 3 px apart). A [`CategoryBarMode::PercentStacked`]
+/// group draws only non-negative values; a member series with a negative
+/// value is refused when the group is drawn.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",

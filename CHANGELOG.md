@@ -738,7 +738,10 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
     grouped bars, `0..100` for percent bars, and for stacked bars
     `[Σ min(0, min_i), Σ max(0, max_i)]` over the value columns' own
     statistics, an upper bound when the series peak in different
-    categories. Value labels are drawn from `labels.text` (#40
+    categories. A `PercentStacked` group whose value column's minimum
+    statistic is below 0 is refused when drawn or picked, with
+    `InvalidSeriesConfig` naming the series and the mode, since the shader
+    stacks only positive shares. Value labels are drawn from `labels.text` (#40
     item 13h, below).
     `bar_groups.bar_gap` is logical pixels, scaled with the display config
     (`Config::scaled`), and `group_width` a share of the slot, so a 2x export

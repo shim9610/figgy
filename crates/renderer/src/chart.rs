@@ -319,8 +319,9 @@ pub(crate) fn apply_auto_fit_all(
 /// exact per-category totals are the shader's, computed from the pool on
 /// every draw; the fit reads no value back, so the group's columns may be
 /// uploaded in any batches. Percent stacks span `0..=100`: the shader draws
-/// a category's positive shares from 0 to 100 and no bar for a negative
-/// value. A layer without category bars gives the empty extent.
+/// a category's shares from 0 to 100, and a percent group with a negative
+/// value is refused when it is drawn. A layer without category bars gives
+/// the empty extent.
 ///
 /// [`ColumnSlot::min`]: crate::data_render::ColumnSlot::min
 /// [`ColumnSlot::max`]: crate::data_render::ColumnSlot::max
