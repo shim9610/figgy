@@ -29,6 +29,9 @@ use crate::layout::RectF;
 use crate::raster::Canvas;
 use crate::text::{RichSegment, RichText};
 
+mod math_font;
+mod math_layout;
+
 type FontLookupKey = (String, bool, bool);
 /// Per-character fallback decisions depend only on the character and the
 /// requested style: the chain after the primary face is the same whichever
@@ -588,6 +591,10 @@ struct GlyphExtents {
     advance: f32,
     ink_top: f32,
     ink_bottom: f32,
+    /// Horizontal ink extent from the pen (the math layout keeps every
+    /// glyph's ink inside the measured box); both 0 for a glyph without ink.
+    ink_left: f32,
+    ink_right: f32,
 }
 
 /// Rendered glyph alpha mask. `left`/`top` are the pen-relative placement
@@ -663,7 +670,7 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
         return hit;
     }
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
-    let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
+    let (ink_top, ink_bottom, ink_left, ink_right) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
         let mut scaler = cx
             .builder(font)
@@ -674,15 +681,17 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
                 let b = outline.bounds();
-                (-b.max.y, -b.min.y)
+                (-b.max.y, -b.min.y, b.min.x, b.max.x)
             }
-            None => (0.0, 0.0),
+            None => (0.0, 0.0, 0.0, 0.0),
         }
     });
     let extents = GlyphExtents {
         advance,
         ink_top,
         ink_bottom,
+        ink_left,
+        ink_right,
     };
     METRICS_CACHE.with(|c| c.borrow_mut().insert(key, extents));
     extents
@@ -1008,10 +1017,54 @@ fn place_cell(
     let mut total_w = 0.0f32;
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
+    // A cell whose math tree is malformed draws flat, as a consumer that
+    // ignores math nodes would, identically in measure and draw.
+    let math = segments
+        .iter()
+        .any(|s| s.math_node.is_some() || s.math_parent.is_some())
+        && crate::text::math::validate_math_segments(segments).is_ok();
 
-    for seg in segments {
+    let mut i = 0;
+    while i < segments.len() {
+        let seg = &segments[i];
+        i += 1;
+        let mut position = ScriptPosition::of(seg);
+        if math {
+            if let Some(node) = seg.math_node {
+                if node.kind == crate::text::MathKind::Math {
+                    // A formula: one atom of the cell, laid out from the
+                    // math face.
+                    let end = crate::text::math::subtree_end(segments, i - 1);
+                    let f = math_layout::place_formula(
+                        sink,
+                        rt,
+                        segments,
+                        (i - 1, end),
+                        (pen_x, baseline),
+                        policy,
+                    );
+                    max_ascent = max_ascent.max(f.ascent);
+                    max_descent = max_descent.max(f.descent);
+                    total_w += f.width;
+                    pen_x += f.width;
+                    i = end;
+                }
+                // A text-mode `Scripts` node places nothing itself.
+                continue;
+            }
+            // A text-mode script places its slots as the `superscript` and
+            // `subscript` flags do, so the node and the flags give the same
+            // pixels.
+            if let Some(parent) = seg.math_parent {
+                position = match parent.slot {
+                    1 => ScriptPosition::Superscript,
+                    2 => ScriptPosition::Subscript,
+                    _ => ScriptPosition::Base,
+                };
+            }
+        }
         let base = segment_base_size(seg, rt);
-        let script = script_placement(ScriptPosition::of(seg), base);
+        let script = script_placement(position, base);
         let size = script.size;
         let y_offset = script.shift;
         let color = seg.color.unwrap_or(rt.color);
@@ -1032,8 +1085,15 @@ fn place_cell(
             (field, field, center - t * 0.5, center + t * 0.5)
         } else {
             let ch = seg.char_set.glyph_char(seg.text);
-            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-            let glyph = font.charmap().map(ch);
+            // A math character draws from the math face (whatever the
+            // policy), falling back to the text chain when the face lacks it.
+            let (font, glyph) = (seg.char_set == crate::text::CharSet::Math)
+                .then(|| math_layout::math_text_glyph(rt, seg, ch))
+                .flatten()
+                .unwrap_or_else(|| {
+                    let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
+                    (font, font.charmap().map(ch))
+                });
             let g = glyph_extents_id(font, size, glyph);
             let pen_advance = match seg.field_em {
                 Some(f) => {
@@ -2411,8 +2471,9 @@ mod tests {
     }
 
     // `Greek` draws the Adobe Symbol letter of its Latin character, exactly as
-    // a segment holding that letter; `Math` draws the character as given, so
-    // until the math font exists it is pixel-identical to `Text`.
+    // a segment holding that letter; `Math` draws the character as given from
+    // the bundled math face, its italic through the Mathematical Italic
+    // alphabet.
     #[test]
     fn char_set_picks_the_drawn_character() {
         let with = |text: char, char_set: CharSet| RichText {
@@ -2430,12 +2491,22 @@ mod tests {
         assert_eq!(measure_rich_text_std(&greek), measure_rich_text_std(&alpha));
         assert_ne!(draw(&greek), draw(&with('a', CharSet::Text)));
 
+        let face = math_layout::math_text_glyph;
         for c in ['a', '∑', '≤', '∂'] {
             let math = with(c, CharSet::Math);
-            let text = with(c, CharSet::Text);
-            assert_eq!(draw(&math), draw(&text), "math {c} draws as given");
-            assert_eq!(measure_rich_text_std(&math), measure_rich_text_std(&text));
+            let (font, glyph) = face(&math, &math.segments[0], c).expect("in the math face");
+            assert_eq!(font.key, math_font::bundled_math_font().key);
+            assert_eq!(glyph, font.charmap().map(c), "math {c} draws as given");
+            assert_ne!(draw(&math), draw(&with(c, CharSet::Text)));
         }
+        let italic = RichSegment {
+            char_set: CharSet::Math,
+            italic: true,
+            ..RichSegment::plain('x')
+        };
+        let rt = with('x', CharSet::Math);
+        let (font, glyph) = face(&rt, &italic, 'x').unwrap();
+        assert_eq!(glyph, font.charmap().map('\u{1D465}'));
     }
 
     // The script layout the math `Scripts` node (#45) will reuse: these ratios

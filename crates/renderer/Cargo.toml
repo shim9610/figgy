@@ -40,6 +40,10 @@ wgpu = "30"
 fontdb = "0.24"
 swash = "0.2"
 tiny-skia = "0.12"
+# The OpenType MATH table (constants, italic corrections, accent attachments,
+# glyph variants and assemblies) and the GSUB `ssty` script alternates of the
+# math layout (#45); swash's `read-fonts` has no MATH table.
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
 
 # Blocking executor for the sync convenience wrappers — never on wasm, where
 # blocking the single thread would deadlock; use the *_async variants there.
