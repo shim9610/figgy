@@ -21,7 +21,7 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::config::{
     AxisOptions, AxisScale, AxisTitleOptions, BarAlign, ChartTitleOptions, ColorBarOptions, Config,
-    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
+    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, LogTickPolicy, TickVisibility,
 };
 use crate::format::LabelFormat;
 use crate::layer::{AnnotationLayer, LayerRef};
@@ -117,6 +117,7 @@ pub fn default_axis_options_x() -> AxisOptions {
         minor_tick_length: 3.0,
         categories: None,
         cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
     }
 }
 
@@ -143,6 +144,7 @@ pub fn default_axis_options_y() -> AxisOptions {
         minor_tick_length: 3.0,
         categories: None,
         cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
     }
 }
 
@@ -179,6 +181,7 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         minor_tick_length: 3.0,
         categories: None,
         cross_at: None,
+        log_ticks: LogTickPolicy::Decades,
     }
 }
 

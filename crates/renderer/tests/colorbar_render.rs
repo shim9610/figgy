@@ -88,6 +88,21 @@ fn probes() -> Vec<(&'static str, renderer::Config)> {
     log.colorbar = Some(bar);
     out.push(("right-log-power-titled", log));
 
+    // An adaptive logarithmic z inside one decade (#42): the labels are a
+    // 1..9 or 1-2-5 subset of the majors instead of the lone 10⁴.
+    let mut adaptive = base_config();
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.side = Side::Right;
+    bar.axis.scale = AxisScale::Logarithmic;
+    bar.axis.min = 1.0e4;
+    bar.axis.max = 8.0e4;
+    bar.axis.log_ticks = renderer::config::LogTickPolicy::Adaptive;
+    bar.axis.label_style.format = LabelFormat::Power;
+    bar.axis.label_style.significant_digits = 1;
+    bar.axis.out_margin = 110.0;
+    adaptive.colorbar = Some(bar);
+    out.push(("right-log-adaptive", adaptive));
+
     // Short, end-aligned, greyscale, inverted — the layout knobs at once.
     let mut short = base_config();
     let mut bar = renderer::default::default_colorbar_options();
@@ -304,4 +319,41 @@ fn issue_6_title_margin_reproduction_returns_promptly() {
     let rgba = try_raster_chart_layer_to_rgba_with_selection(&cfg, AxisLayerKind::Decoration, &[])
         .expect("raster succeeds");
     assert_eq!(rgba.len(), 320 * 240 * 4);
+}
+
+/// The adaptive probe's bar labels more than the decade ladder's one label,
+/// at 1x and 2x, and its ticks and labels change the raster.
+#[test]
+fn an_adaptive_log_colorbar_labels_its_ladder() {
+    use renderer::layout::{DrawnPart, Element};
+    use renderer::{CpuTextMeasure, MeasureText};
+    let config = probes()
+        .into_iter()
+        .find(|(name, _)| *name == "right-log-adaptive")
+        .map(|(_, config)| config)
+        .expect("adaptive probe");
+    let labels = |config: &renderer::Config| {
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        let mut count = 0;
+        assert!(measure.emit(
+            config,
+            &Element::ColorBarLabel,
+            &mut renderer::sink::Parts(&mut |part| {
+                if let DrawnPart::Text(_) = part {
+                    count += 1;
+                }
+            })
+        ));
+        count
+    };
+    let mut decades = config.clone();
+    decades.colorbar.as_mut().unwrap().axis.log_ticks = renderer::config::LogTickPolicy::Decades;
+    assert_eq!(labels(&decades), 1);
+    let drawn = labels(&config);
+    assert!(drawn >= 3, "{drawn} labels");
+    assert_eq!(labels(&config.scaled(2.0)), drawn);
+    assert_ne!(
+        try_raster_chart_to_rgba(&config).unwrap(),
+        try_raster_chart_to_rgba(&decades).unwrap()
+    );
 }

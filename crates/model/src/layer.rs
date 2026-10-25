@@ -214,7 +214,8 @@ pub struct Subplot {
     pub series: Vec<String>,
     /// `None` (default, omitted): the X axis is this subplot's own. `Some`:
     /// `bottom_x` follows the target's `bottom_x` range, scale, direction and
-    /// tick spacing (`major_spacing`, `minor_count`); its style stays its own.
+    /// tick spacing (`major_spacing`, `minor_count`, `log_ticks`); its style
+    /// stays its own.
     /// The target must be the parent or a subplot with a lower index.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub link_x: Option<CellRef>,

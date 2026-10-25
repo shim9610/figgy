@@ -553,6 +553,8 @@ impl Config {
                 categories: _,
                 // The hidden left axis draws no line.
                 cross_at: _,
+                // The hidden left axis draws no ticks.
+                log_ticks: _,
             } = left_y;
             let mut left = hidden_axis(y_axis, default_axis_options_y());
             left.out_margin = *out_margin;
@@ -627,6 +629,8 @@ impl Config {
                 categories: _,
                 // The hidden colourbar draws no axis line.
                 cross_at: _,
+                // The hidden colourbar draws no ticks.
+                log_ticks: _,
             } = axis;
             let mut hidden = default_colorbar_options();
             hidden.visible = false;
@@ -666,8 +670,8 @@ impl Config {
 }
 
 /// The linked part of an axis: range, scale, direction and tick spacing
-/// (`major_spacing`, `minor_count`), so linked charts place the same ticks.
-/// Line, label and title style stay each chart's own.
+/// (`major_spacing`, `minor_count`, `log_ticks`), so linked charts place the
+/// same ticks. Line, label and title style stay each chart's own.
 fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     let AxisOptions {
         scale,
@@ -692,6 +696,8 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
         categories,
         // Where the line crosses: each chart's own, like the line style.
         cross_at: _,
+        // The log tick ladder is tick spacing too.
+        log_ticks,
     } = from;
     to.scale = scale.clone();
     to.min = *min;
@@ -699,6 +705,7 @@ fn copy_axis_range(from: &AxisOptions, to: &mut AxisOptions) {
     to.inverted = *inverted;
     to.major_spacing = *major_spacing;
     to.minor_count = *minor_count;
+    to.log_ticks = *log_ticks;
     to.categories.clone_from(categories);
 }
 
@@ -731,6 +738,8 @@ fn same_axis_range(a: &AxisOptions, b: &AxisOptions) -> bool {
             categories,
             // Not linked.
             cross_at: _,
+            // Tick spacing travels with the edited range (see above).
+            log_ticks: _,
         } = axis;
         (scale.clone(), *min, *max, *inverted, categories.as_deref())
     }
@@ -768,6 +777,8 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         categories,
         // A hidden axis draws no line.
         cross_at: _,
+        // A hidden axis draws no ticks, so its tick policy is the template's.
+        log_ticks: _,
     } = axis;
     let AxisOptions {
         scale: _,
@@ -789,6 +800,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         minor_tick_length,
         categories: _,
         cross_at: _,
+        log_ticks,
     } = template;
     let (min, max) = axis.data_range();
     AxisOptions {
@@ -811,6 +823,7 @@ fn hidden_axis(axis: &AxisOptions, template: AxisOptions) -> AxisOptions {
         minor_tick_length,
         categories: categories.clone(),
         cross_at: None,
+        log_ticks,
     }
     .with_hidden_text()
 }
@@ -1509,6 +1522,62 @@ mod tests {
         stale.subplots[1].config.bottom_x.max = 99.0;
         stale.sync_subplot_links(None);
         assert_eq!(stale.subplots[1].config.bottom_x.max, 24.0);
+    }
+
+    // The log tick policy is tick spacing: a link group shares it like
+    // `major_spacing`, an overlay panel draws its overlay axis' own, and the
+    // hidden axes of a panel take the template's (#42).
+    #[test]
+    fn the_log_tick_policy_travels_with_the_tick_spacing() {
+        use crate::config::LogTickPolicy;
+        let mut cfg = subplot_document();
+        cfg.bottom_x.log_ticks = LogTickPolicy::Adaptive;
+        cfg.sync_subplot_links(None);
+        assert_eq!(
+            cfg.subplots[1].config.bottom_x.log_ticks,
+            LogTickPolicy::Adaptive
+        );
+        assert_eq!(
+            cfg.subplot_config(1).unwrap().bottom_x.log_ticks,
+            LogTickPolicy::Adaptive
+        );
+        // The unlinked axis of the first subplot keeps its own.
+        assert_eq!(
+            cfg.subplots[0].config.bottom_x.log_ticks,
+            LogTickPolicy::Decades
+        );
+        // A member's range edit carries its policy to the root.
+        let mut edited = cfg.clone();
+        edited.subplots[1].config.left_y.max = 400.0;
+        edited.subplots[1].config.left_y.log_ticks = LogTickPolicy::Adaptive;
+        edited.sync_subplot_links(Some(&cfg));
+        assert_eq!(
+            edited.subplots[0].config.left_y.log_ticks,
+            LogTickPolicy::Adaptive
+        );
+        // A policy edit of a member alone is not a range edit: the member
+        // follows its root again.
+        let mut alone = cfg.clone();
+        alone.subplots[1].config.bottom_x.log_ticks = LogTickPolicy::Decades;
+        alone.sync_subplot_links(Some(&cfg));
+        assert_eq!(
+            alone.subplots[1].config.bottom_x.log_ticks,
+            LogTickPolicy::Adaptive
+        );
+
+        let mut layered = two_layer_config();
+        layered.overlays[0].y_axis.log_ticks = LogTickPolicy::Adaptive;
+        layered.bottom_x.log_ticks = LogTickPolicy::Adaptive;
+        let expansion = layered.expand().unwrap();
+        let panel = &expansion.panels[1].config;
+        assert_eq!(panel.right_y.log_ticks, LogTickPolicy::Adaptive);
+        for hidden in [&panel.left_y, &panel.bottom_x, &panel.top_x] {
+            assert_eq!(hidden.log_ticks, LogTickPolicy::Decades);
+        }
+        assert_eq!(
+            expansion.panels[0].config.bottom_x.log_ticks,
+            LogTickPolicy::Adaptive
+        );
     }
 
     // Every subplot expands as a chart of its own after the parent, in its

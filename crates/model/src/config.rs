@@ -78,6 +78,35 @@ pub enum AxisScale {
     Logarithmic,
 }
 
+/// Which major ticks a logarithmic axis draws ([`AxisOptions::log_ticks`]).
+///
+/// The major set is a function of the axis range alone, so linked charts and
+/// every output scale place the same ticks; which of them carry a label is
+/// decided by the renderer's label pruning. A linear axis ignores the policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LogTickPolicy {
+    /// Every `major_spacing`-th whole decade (`10^k`), the floored step at
+    /// least 1, as every axis drew before the policy existed.
+    #[default]
+    Decades,
+    /// Majors from the range: whole decades (every `n`-th one on a range of
+    /// more than six decades), or on a narrower range the first of the
+    /// decades, the 1, 2 and 5 × 10^k ladder and the 1 to 9 × 10^k ladder
+    /// that puts at least [`crate::tick::LOG_LADDER_MIN_MAJORS`] majors
+    /// inside it. `major_spacing` is ignored.
+    Adaptive,
+}
+
+impl LogTickPolicy {
+    /// `true` for the default, `Decades`. Used to keep it out of serialized
+    /// JSON.
+    #[cfg(feature = "serde")]
+    fn is_decades(&self) -> bool {
+        *self == LogTickPolicy::Decades
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TickVisibility {
@@ -183,6 +212,20 @@ pub struct AxisOptions {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub cross_at: Option<f64>,
+
+    /// Which major ticks the axis draws when it is logarithmic (#42).
+    /// `Decades` (the default, omitted from JSON) walks every
+    /// `major_spacing`-th decade; `Adaptive` chooses decades, the 1-2-5
+    /// ladder or the 1..9 ladder from the range and ignores `major_spacing`
+    /// ([`crate::tick::log_ladder`]). The minors are the multiples 2 to 9
+    /// that are not majors. A linear or categorical axis ignores it; the
+    /// range helpers and a view state leave it as it is, so a zoom re-plans
+    /// the ticks from the new range.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "LogTickPolicy::is_decades")
+    )]
+    pub log_ticks: LogTickPolicy,
 }
 
 /// One category of a categorical axis ([`AxisOptions::categories`]): a stable
@@ -1207,6 +1250,8 @@ fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
         categories: _,
         // A value of the perpendicular axis.
         cross_at: _,
+        // A tick policy, not pixels.
+        log_ticks: _,
     } = axis;
     let LabelStyle {
         visible: _,

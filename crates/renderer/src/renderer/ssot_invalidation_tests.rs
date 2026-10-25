@@ -3,7 +3,7 @@
 //! with the final state, never an invalidation predicate from the implementation.
 use super::*;
 use crate::annotation::{Anchor, Annotation, AnnotationAxis, AnnotationKind};
-use crate::config::{AxisScale, DrawStyle, TickVisibility};
+use crate::config::{AxisScale, DrawStyle, LogTickPolicy, TickVisibility};
 use crate::gpu_memory::GpuResourceKind;
 use crate::layout::Side;
 use crate::text::RichText;
@@ -164,6 +164,19 @@ fn edits() -> Vec<Edit> {
             edit!($axis.major_tick_length, 8.0, Packed);
             // Only the axis line moves; the data area does not.
             edit!($axis.cross_at, Some(0.5), Prefix);
+            // A linear axis ignores the log tick policy: the axis raster is
+            // redone (its config changed) and draws the same pixels. The
+            // log axes of `log_tick_edits` draw new ones.
+            cases.push(Edit {
+                name: concat!(stringify!($axis), ".log_ticks"),
+                apply: |c| c.$axis.log_ticks = LogTickPolicy::Adaptive,
+                work: Work::Prefix,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::Unchanged,
+                streams: true,
+            });
         };
     }
     axis!(bottom_x);
@@ -625,6 +638,51 @@ fn colorbar_edits() -> Vec<Edit> {
     );
     bar!(axis.title_option.offset_x, 4.0, Prefix, Any);
     bar!(axis.title_option.offset_y, 4.0, Prefix, Any);
+    // The baseline bar is linear, which ignores the log tick policy.
+    bar!(axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    cases
+}
+
+/// The colourbar baseline with logarithmic top, right and colourbar axes
+/// over 0.1..1, whose decade ladder labels 0.1 and 1 only: the adaptive
+/// policy draws the 1-2-5 ladder there, a chrome edit of each axis (#42).
+fn baseline_with_log_axes() -> Config {
+    let mut c = baseline_with_colorbar();
+    let bar = c.colorbar.as_mut().unwrap();
+    for axis in [&mut c.top_x, &mut c.right_y, &mut bar.axis] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.major_spacing = 1.0;
+        axis.minor_count = 8;
+    }
+    c
+}
+
+fn log_tick_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    for (name, apply) in [
+        (
+            "top_x.log_ticks (log axis)",
+            (|c: &mut Config| c.top_x.log_ticks = LogTickPolicy::Adaptive) as fn(&mut Config),
+        ),
+        ("right_y.log_ticks (log axis)", |c| {
+            c.right_y.log_ticks = LogTickPolicy::Adaptive
+        }),
+        ("colorbar.axis.log_ticks (log axis)", |c| {
+            c.colorbar.as_mut().unwrap().axis.log_ticks = LogTickPolicy::Adaptive
+        }),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            // Axis chrome only: the stream pass accepts the policy.
+            streams: true,
+        });
+    }
     cases
 }
 
@@ -742,6 +800,8 @@ fn overlay_edits() -> Vec<Edit> {
     );
     overlay!(y_axis.title_option.offset_x, 4.0, Prefix, Changed);
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
+    // The baseline overlay axis is linear, which ignores the policy.
+    overlay!(y_axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -1252,6 +1312,7 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
         (baseline_with_categories(), category_edits()),
+        (baseline_with_log_axes(), log_tick_edits()),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
@@ -1445,6 +1506,7 @@ fn config_fields_are_classified() {
         minor_tick_length: _,
         categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
         cross_at: _,   // axis!(...).cross_at: Prefix
+        log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
     } = top_x;
     let LabelStyle {
         visible: _,

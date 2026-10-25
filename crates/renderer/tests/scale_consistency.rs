@@ -100,7 +100,43 @@ fn drawn_labels(cfg: &Config, element: &Element) -> usize {
 
 #[test]
 fn decorations_keep_their_layout_at_every_scale() {
-    let base = decorated_config();
+    keeps_its_layout_at_every_scale(&decorated_config(), true);
+}
+
+/// The decorated chart with adaptive logarithmic axes inside one decade
+/// and across decades, and an adaptive logarithmic colourbar (#42): the
+/// demoted label ladders are the same at every scale.
+#[test]
+fn adaptive_log_labels_keep_their_layout_at_every_scale() {
+    use renderer::config::{AxisOptions, AxisScale, LogTickPolicy};
+    use renderer::format::LabelFormat;
+    let mut cfg = decorated_config();
+    let adaptive = |axis: &mut AxisOptions, min: f64, max: f64, format: LabelFormat| {
+        axis.scale = AxisScale::Logarithmic;
+        axis.min = min;
+        axis.max = max;
+        axis.minor_count = 8;
+        axis.log_ticks = LogTickPolicy::Adaptive;
+        axis.label_style.format = format;
+        axis.label_style.significant_digits = 1;
+    };
+    adaptive(&mut cfg.bottom_x, 3e3, 8e5, LabelFormat::Scientific);
+    adaptive(&mut cfg.top_x, 3e3, 8e5, LabelFormat::Scientific);
+    adaptive(&mut cfg.left_y, 1e4, 8e4, LabelFormat::Power);
+    adaptive(&mut cfg.right_y, 8e3, 1.2e4, LabelFormat::Scientific);
+    let bar = &mut cfg.colorbar.as_mut().unwrap().axis;
+    adaptive(bar, 1.0, 100.0, LabelFormat::Power);
+    // Bounds and label sets only: the box-filtered image comparison is
+    // calibrated on the decorated chart's text, and the more numerous log
+    // labels at fractional pixel origins differ at their glyph edges by
+    // hinting alone (the rasterizer the ladder does not touch). The
+    // decoration oracle's I5 compares the adaptive LogAxes scene's 2x ink
+    // with its 1x ink up to hinting.
+    keeps_its_layout_at_every_scale(&cfg, false);
+}
+
+fn keeps_its_layout_at_every_scale(base: &Config, compare_pixels: bool) {
+    let base = base.clone();
     let one = try_raster_chart_to_rgba(&base).unwrap();
     for scale in [2u32, 3] {
         let s = scale as f32;
@@ -141,6 +177,9 @@ fn decorations_keep_their_layout_at_every_scale() {
         // Box-filtered back to 1x, the image matches the 1x image except for
         // anti-aliasing and hinting at glyph and stroke edges: no region
         // moved.
+        if !compare_pixels {
+            continue;
+        }
         let big = try_raster_chart_to_rgba(&cfg).unwrap();
         let (w, h) = (WIDTH as usize, HEIGHT as usize);
         let mut differing = 0usize;

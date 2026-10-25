@@ -121,7 +121,7 @@ field setters:
 | Operation | Config changes |
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
-| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
 | `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These and `set_x_range` / `set_y_range` leave a categorical axis (`categories` set) unchanged. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
@@ -158,7 +158,13 @@ guarantee the same number of visible labels: those depend on the new range and
 available space. Raster safety limits can still substitute unusable tick settings
 without rewriting the config; read `ChartView::render_warnings()` after refresh.
 Numeric tick labels may use a coarser display stride to avoid overlaps, without
-changing tick/grid positions or the config. Number format and requested precision
+changing tick/grid positions or the config. A logarithmic axis with
+`log_ticks: LogTickPolicy::Adaptive` ([#42](https://github.com/shim9610/figgy/issues/42))
+labels inside a decade: its majors are whole decades, 1, 2 and 5 × 10^k or
+1 to 9 × 10^k, whichever the range needs for at least four majors
+(`tick::log_ladder`, a function of the range alone, so linked charts and
+every output scale place the same ticks), and crowded labels are first
+demoted 1..9 → 1, 2, 5 → decades while at least two remain, then strided. Number format and requested precision
 are controlled by `label_style.format` and `label_style.significant_digits`,
 including colorbar labels; unusually long labels still need explicit margin space.
 Calendar-based timestamp ticks follow their own layout policy. The renderer

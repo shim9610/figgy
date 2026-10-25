@@ -5,7 +5,9 @@
 //! WASM host uses. Pointer deltas are divided by the display scale before
 //! they edit the document, so drags stay exact at any window size.
 
-use renderer::config::{AxisOptions, AxisScale, Config, DrawStyle, MilkywayOptions, SketchOptions};
+use renderer::config::{
+    AxisOptions, AxisScale, Config, DrawStyle, LogTickPolicy, MilkywayOptions, SketchOptions,
+};
 use renderer::data_config::{
     BarOrientation, DataRenderType, LineFill, LineInterpolation, PointColorMap, PointSizeMap,
     SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
@@ -918,6 +920,28 @@ impl CartesianHost {
                     config.right_y.inverted = inv_y;
                 }
             });
+            // The log tick policy (`AxisOptions::log_ticks`): whole decades,
+            // or the decades, 1-2-5 or 1..9 ladder the range calls for.
+            ui.horizontal(|ui| {
+                for (x, label) in [(true, "adaptive log X"), (false, "adaptive log Y")] {
+                    let pair = if x {
+                        [&mut config.bottom_x, &mut config.top_x]
+                    } else {
+                        [&mut config.left_y, &mut config.right_y]
+                    };
+                    let mut adaptive = pair[0].log_ticks == LogTickPolicy::Adaptive;
+                    if ui.checkbox(&mut adaptive, label).changed() {
+                        let policy = if adaptive {
+                            LogTickPolicy::Adaptive
+                        } else {
+                            LogTickPolicy::Decades
+                        };
+                        for axis in pair {
+                            axis.log_ticks = policy;
+                        }
+                    }
+                }
+            });
             ui.horizontal(|ui| {
                 ui.checkbox(&mut config.legend.visible, "Legend");
                 choice(ui, "corner", &mut config.legend.corner, CORNERS);
@@ -1404,6 +1428,7 @@ fn reset_ranges(config: &mut Config, initial: &Config) {
         dst.scale = src.scale.clone();
         dst.major_spacing = src.major_spacing;
         dst.minor_count = src.minor_count;
+        dst.log_ticks = src.log_ticks;
     }
     copy(&mut config.bottom_x, &initial.bottom_x);
     copy(&mut config.top_x, &initial.top_x);
@@ -1820,7 +1845,9 @@ fn series_controls(
         }
         // The grid shape, the spoke direction and the rings are the polar
         // chart's (the "Chart" section); the look is the series'.
-        DataRenderType::Radar { color: c, style, .. } => {
+        DataRenderType::Radar {
+            color: c, style, ..
+        } => {
             color(ui, "colour", c);
             let mut width = style.line_width();
             slider(ui, "line width", &mut width, 0.0..=12.0);

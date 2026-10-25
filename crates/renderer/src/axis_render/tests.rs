@@ -500,6 +500,46 @@ fn a_log_decade_step_that_is_not_whole_warns_with_the_step_drawn() {
     assert!(tick_warnings(&cfg).is_empty());
 }
 
+/// The adaptive log ladder plans its majors from the range and ignores
+/// `major_spacing`, like calendar ticks ignore it: no
+/// `LogDecadeStepAdjusted` for any written step, on a chart axis or the
+/// colourbar's, while the default policy still reports it (#42).
+#[test]
+fn an_adaptive_log_axis_raises_no_decade_step_warning() {
+    let mut cfg = default_config();
+    let mut bar = crate::default::default_colorbar_options();
+    for axis in [&mut cfg.left_y, &mut bar.axis] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.min = 1.0e4;
+        axis.max = 8.0e4;
+        axis.log_ticks = LogTickPolicy::Adaptive;
+    }
+    cfg.colorbar = Some(bar);
+    for requested in [2.5, 0.5, 0.0, -3.0, f64::INFINITY, f64::NAN, 1.0e12, 1.0] {
+        cfg.left_y.major_spacing = requested;
+        cfg.colorbar.as_mut().unwrap().axis.major_spacing = requested;
+        assert!(
+            tick_warnings(&cfg).is_empty(),
+            "{requested:?}: {:?}",
+            tick_warnings(&cfg)
+        );
+        assert_eq!(
+            major_tick_values(&cfg.left_y),
+            [1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4]
+        );
+    }
+    cfg.left_y.major_spacing = 2.5;
+    cfg.left_y.log_ticks = LogTickPolicy::Decades;
+    assert_eq!(
+        tick_warnings(&cfg),
+        [RenderWarning::LogDecadeStepAdjusted {
+            axis: WarningAxis::LeftY,
+            requested: 2.5,
+            used: 2.0,
+        }]
+    );
+}
+
 #[test]
 fn calendar_ticks_walk_no_spacing_and_raise_no_warning() {
     use crate::format::{TimestampLabelFormat, TimestampTickPolicy};
@@ -2280,4 +2320,408 @@ fn the_axis_walks_take_a_fractional_plot_rectangle() {
         };
         assert_eq!((a, b), expected, "{side:?}");
     }
+}
+
+// Adaptive log labels (#42): the pixel stage of the plan. The majors come
+// from the range (`tick::log_ladder`); which of them carry a label is the
+// pruning's ladder demotion and stride.
+
+/// A label's text: a Power label as `mantissa×10^exponent`.
+fn adaptive_label_text(text: &NumericTickText) -> String {
+    match text {
+        NumericTickText::Plain(text) => text.clone(),
+        NumericTickText::Power(rich) => {
+            let mut out = String::new();
+            let mut exponent = false;
+            for segment in rich.segments.iter().filter(|s| s.math_node.is_none()) {
+                if !exponent && segment.math_parent.is_some_and(|p| p.slot == 1) {
+                    out.push('^');
+                    exponent = true;
+                }
+                out.push(segment.text);
+            }
+            out
+        }
+    }
+}
+
+/// An adaptive log axis over `min..max` with the label style
+/// `Chart::set_y_range` writes for a log axis (Power, one significant digit)
+/// at 12 px, `format` in its place, drawn along `px` pixels, everything
+/// scaled by `scale`.
+fn adaptive_axis(min: f64, max: f64, format: LabelFormat, scale: f32) -> AxisOptions {
+    let mut axis = default_config().bottom_x;
+    axis.scale = AxisScale::Logarithmic;
+    axis.min = min;
+    axis.max = max;
+    axis.minor_count = 8;
+    axis.log_ticks = LogTickPolicy::Adaptive;
+    axis.label_style.format = format;
+    axis.label_style.significant_digits = 1;
+    axis.label_style.font_size = 12.0 * scale;
+    axis.major_tick_length *= scale;
+    axis
+}
+
+fn adaptive_labels(
+    axis: &AxisOptions,
+    px: u32,
+    side: Side,
+    scale: u32,
+    fp: FontPolicy,
+) -> Vec<NumericTickLabel> {
+    let (width, height) = match side {
+        Side::Top | Side::Bottom => (px, 160),
+        Side::Left | Side::Right => (220, px),
+    };
+    let da = DataArea(crate::layout::Rect {
+        x: 60 * scale,
+        y: 20 * scale,
+        width: width * scale,
+        height: height * scale,
+    });
+    visible_numeric_labels(axis, side.clone(), fp, &major_tick_values(axis), |value| {
+        value_to_screen(value, axis, side.clone(), &data_area_rect(&da))
+    })
+}
+
+const ADAPTIVE_RANGES: [(f64, f64); 9] = [
+    (1e-9, 1e9),
+    (0.5, 2000.0),
+    (1.0, 1e3),
+    (1.0, 1e6),
+    (1.0, 100.0),
+    (3e3, 8e5),
+    (1e4, 8e4),
+    (8e3, 1.2e4),
+    (2.1e4, 2.9e4),
+];
+
+fn adaptive_formats() -> [(&'static str, LabelFormat); 4] {
+    [
+        ("Power", LabelFormat::Power),
+        ("Sci", LabelFormat::Scientific),
+        ("Dec", LabelFormat::Decimal),
+        (
+            "Plain",
+            LabelFormat::Plain(crate::format::PlainNumberFormat::AUTO),
+        ),
+    ]
+}
+
+/// The labelled values and texts of every range of the plan's table ×
+/// pixel length {120, 240, 480, 960} × side × the four numeric formats, at
+/// 12 px. Top draws what Bottom draws and Right what Left draws, inverted
+/// draws the same, and `scaled(2.0)` draws the same except for the
+/// [`ADAPTIVE_2X_EXCEPTIONS`].
+#[test]
+fn adaptive_log_label_tables() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fp = FontPolicy::Standard;
+    let mut mismatches = Vec::new();
+    let texts = |labels: &[NumericTickLabel]| {
+        labels
+            .iter()
+            .map(|label| adaptive_label_text(&label.text))
+            .collect::<Vec<_>>()
+    };
+    let mut table = String::new();
+    for (min, max) in ADAPTIVE_RANGES {
+        for px in [120, 240, 480, 960] {
+            for (side, twin) in [(Side::Bottom, Side::Top), (Side::Left, Side::Right)] {
+                table.push_str(&format!("{min:e}..{max:e} @{px} {side:?}"));
+                for (name, format) in adaptive_formats() {
+                    let axis = adaptive_axis(min, max, format.clone(), 1.0);
+                    let labels = adaptive_labels(&axis, px, side.clone(), 1, fp);
+                    let drawn = texts(&labels);
+                    let label = format!("{min:e}..{max:e} @{px} {side:?} {name}");
+                    assert_eq!(
+                        texts(&adaptive_labels(&axis, px, twin.clone(), 1, fp)),
+                        drawn,
+                        "{label}: {twin:?}"
+                    );
+                    let scaled = adaptive_axis(min, max, format.clone(), 2.0);
+                    let twice = texts(&adaptive_labels(&scaled, px, side.clone(), 2, fp));
+                    if twice != drawn {
+                        mismatches.push(label.clone());
+                    }
+                    let mut inverted = axis.clone();
+                    inverted.inverted = true;
+                    assert_eq!(
+                        texts(&adaptive_labels(&inverted, px, side.clone(), 1, fp)),
+                        drawn,
+                        "{label}: inverted"
+                    );
+                    table.push_str(&format!(" | {name}: {}", drawn.join(" ")));
+                }
+                table.push('\n');
+            }
+        }
+    }
+    assert_eq!(table, ADAPTIVE_LABEL_TABLE, "\n{table}");
+    assert_eq!(
+        mismatches, ADAPTIVE_2X_EXCEPTIONS,
+        "the cells that differ at 2x"
+    );
+}
+
+const ADAPTIVE_LABEL_TABLE: &str = r#"1e-9..1e9 @120 Bottom | Power: 10^-9 10^-3 10^3 10^9 | Sci: 1e-9 1e-3 1e3 1e9 | Dec: 0.000000001 1000000 | Plain: 1.00e-9 1.00e6
+1e-9..1e9 @120 Left | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+1e-9..1e9 @240 Bottom | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.001 1000 1000000000 | Plain: 1.00e-9 0.001 1000 1.00e9
+1e-9..1e9 @240 Left | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+1e-9..1e9 @480 Bottom | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+1e-9..1e9 @480 Left | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+1e-9..1e9 @960 Bottom | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+1e-9..1e9 @960 Left | Power: 10^-9 10^-6 10^-3 10^0 10^3 10^6 10^9 | Sci: 1e-9 1e-6 1e-3 1e0 1e3 1e6 1e9 | Dec: 0.000000001 0.000001 0.001 1 1000 1000000 1000000000 | Plain: 1.00e-9 1.00e-6 0.001 1 1000 1.00e6 1.00e9
+5e-1..2e3 @120 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @120 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @240 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @240 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @480 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @480 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @960 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+5e-1..2e3 @960 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @120 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @120 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @240 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @240 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @480 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @480 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @960 Bottom | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e3 @960 Left | Power: 10^0 10^1 10^2 10^3 | Sci: 1e0 1e1 1e2 1e3 | Dec: 1 10 100 1000 | Plain: 1 10 100 1000
+1e0..1e6 @120 Bottom | Power: 10^0 10^2 10^4 10^6 | Sci: 1e0 1e2 1e4 1e6 | Dec: 1 100000 | Plain: 1 100000
+1e0..1e6 @120 Left | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e6 @240 Bottom | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 100 10000 1000000 | Plain: 1 100 10000 1.00e6
+1e0..1e6 @240 Left | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e6 @480 Bottom | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e6 @480 Left | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e6 @960 Bottom | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e6 @960 Left | Power: 10^0 10^1 10^2 10^3 10^4 10^5 10^6 | Sci: 1e0 1e1 1e2 1e3 1e4 1e5 1e6 | Dec: 1 10 100 1000 10000 100000 1000000 | Plain: 1 10 100 1000 10000 100000 1.00e6
+1e0..1e2 @120 Bottom | Power: 10^0 10^1 10^2 | Sci: 1e0 1e1 1e2 | Dec: 1 10 100 | Plain: 1 10 100
+1e0..1e2 @120 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @240 Bottom | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @240 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @480 Bottom | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @480 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @960 Bottom | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+1e0..1e2 @960 Left | Power: 10^0 2×10^0 5×10^0 10^1 2×10^1 5×10^1 10^2 | Sci: 1e0 2e0 5e0 1e1 2e1 5e1 1e2 | Dec: 1 2 5 10 20 50 100 | Plain: 1 2 5 10 20 50 100
+3e3..8e5 @120 Bottom | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
+3e3..8e5 @120 Left | Power: 10^4 10^5 | Sci: 1e4 1e5 | Dec: 10000 100000 | Plain: 10000 100000
+3e3..8e5 @240 Bottom | Power: 10^4 10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 10000 100000 | Plain: 10000 100000
+3e3..8e5 @240 Left | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
+3e3..8e5 @480 Bottom | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
+3e3..8e5 @480 Left | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
+3e3..8e5 @960 Bottom | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
+3e3..8e5 @960 Left | Power: 5×10^3 10^4 2×10^4 5×10^4 10^5 2×10^5 5×10^5 | Sci: 5e3 1e4 2e4 5e4 1e5 2e5 5e5 | Dec: 5000 10000 20000 50000 100000 200000 500000 | Plain: 5000 10000 20000 50000 100000 200000 500000
+1e4..8e4 @120 Bottom | Power: 10^4 2×10^4 5×10^4 | Sci: 1e4 2e4 5e4 | Dec: 10000 20000 50000 | Plain: 10000 20000 50000
+1e4..8e4 @120 Left | Power: 10^4 2×10^4 5×10^4 | Sci: 1e4 2e4 5e4 | Dec: 10000 20000 50000 | Plain: 10000 20000 50000
+1e4..8e4 @240 Bottom | Power: 10^4 2×10^4 5×10^4 | Sci: 1e4 2e4 5e4 | Dec: 10000 20000 50000 | Plain: 10000 20000 50000
+1e4..8e4 @240 Left | Power: 10^4 2×10^4 5×10^4 | Sci: 1e4 2e4 3e4 4e4 5e4 6e4 7e4 8e4 | Dec: 10000 20000 30000 40000 50000 60000 70000 80000 | Plain: 10000 20000 30000 40000 50000 60000 70000 80000
+1e4..8e4 @480 Bottom | Power: 10^4 2×10^4 5×10^4 | Sci: 1e4 2e4 3e4 4e4 5e4 6e4 7e4 8e4 | Dec: 10000 20000 50000 | Plain: 10000 20000 50000
+1e4..8e4 @480 Left | Power: 10^4 2×10^4 3×10^4 4×10^4 5×10^4 6×10^4 7×10^4 8×10^4 | Sci: 1e4 2e4 3e4 4e4 5e4 6e4 7e4 8e4 | Dec: 10000 20000 30000 40000 50000 60000 70000 80000 | Plain: 10000 20000 30000 40000 50000 60000 70000 80000
+1e4..8e4 @960 Bottom | Power: 10^4 2×10^4 3×10^4 4×10^4 5×10^4 6×10^4 7×10^4 8×10^4 | Sci: 1e4 2e4 3e4 4e4 5e4 6e4 7e4 8e4 | Dec: 10000 20000 30000 40000 50000 60000 70000 80000 | Plain: 10000 20000 30000 40000 50000 60000 70000 80000
+1e4..8e4 @960 Left | Power: 10^4 2×10^4 3×10^4 4×10^4 5×10^4 6×10^4 7×10^4 8×10^4 | Sci: 1e4 2e4 3e4 4e4 5e4 6e4 7e4 8e4 | Dec: 10000 20000 30000 40000 50000 60000 70000 80000 | Plain: 10000 20000 30000 40000 50000 60000 70000 80000
+8e3..1.2e4 @120 Bottom | Power: 8×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 10000 | Plain: 8000 10000
+8e3..1.2e4 @120 Left | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @240 Bottom | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @240 Left | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @480 Bottom | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @480 Left | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @960 Bottom | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+8e3..1.2e4 @960 Left | Power: 8×10^3 9×10^3 10^4 | Sci: 8e3 9e3 1e4 | Dec: 8000 9000 10000 | Plain: 8000 9000 10000
+2.1e4..2.9e4 @120 Bottom | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @120 Left | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @240 Bottom | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @240 Left | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @480 Bottom | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @480 Left | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @960 Bottom | Power:  | Sci:  | Dec:  | Plain: 
+2.1e4..2.9e4 @960 Left | Power:  | Sci:  | Dec:  | Plain: 
+"#;
+
+/// The cells whose labels differ at 2x: the digit box of a plain label is
+/// 9 px tall at 12 px and 17 px at 24 px (glyph metrics do not scale
+/// linearly), so the 5e3 and 1e4 labels of a 120 px axis are 5.9 px apart
+/// against the half-em 6 px at 1x and clear it at 2x. The half-em rule and
+/// the measurement are the stride's, unchanged by the ladder.
+const ADAPTIVE_2X_EXCEPTIONS: [&str; 3] = [
+    "3e3..8e5 @120 Left Sci",
+    "3e3..8e5 @120 Left Dec",
+    "3e3..8e5 @120 Left Plain",
+];
+
+/// Whatever the pixels, the labels kept are a ladder's labels or every n-th
+/// of them, with half an em between neighbours, on every side, inverted and
+/// with both font policies; the requested ticks and font are not
+/// rewritten.
+#[test]
+fn adaptive_log_labels_keep_a_ladder_or_a_strided_decade_subset() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for fp in [FontPolicy::Standard, FontPolicy::Handwritten] {
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            for inverted in [false, true] {
+                for (min, max) in ADAPTIVE_RANGES {
+                    for px in [60, 120, 160, 240, 480, 960] {
+                        for (_, format) in adaptive_formats() {
+                            let mut axis = adaptive_axis(min, max, format, 1.0);
+                            axis.label_style.font_size = 18.0;
+                            axis.inverted = inverted;
+                            let original = axis.clone();
+                            let majors = major_tick_values(&axis);
+                            let labels = adaptive_labels(&axis, px, side.clone(), 1, fp);
+                            let label = format!("{min:e}..{max:e} @{px} {side:?} {inverted}");
+                            let kept: Vec<u64> =
+                                labels.iter().map(|label| label.value.to_bits()).collect();
+                            // A ladder's labels (the axis' own counts as
+                            // "every label") or every n-th of them.
+                            let mut ladders = vec![u16::MAX];
+                            ladders.extend(crate::tick::log_label_ladders(&axis));
+                            let matches = ladders.iter().any(|mask| {
+                                let on: Vec<u64> = majors
+                                    .iter()
+                                    .filter(|v| {
+                                        crate::tick::log_multiple(**v)
+                                            .is_some_and(|m| mask & (1 << m) != 0)
+                                    })
+                                    .map(|v| v.to_bits())
+                                    .collect();
+                                [1, 2, 5, 10, 20, 50, 100].into_iter().any(|stride| {
+                                    on.iter().copied().step_by(stride).collect::<Vec<_>>() == kept
+                                })
+                            });
+                            assert!(matches, "{label}: {kept:?} of {majors:?}");
+                            for pair in labels.windows(2) {
+                                let (a, b) = (pair[0].bounds, pair[1].bounds);
+                                let gap = axis.label_style.font_size * 0.5 - 1e-3;
+                                let apart = |a0: f32, a1: f32, b0: f32, b1: f32| {
+                                    b0 >= a1 + gap || a0 >= b1 + gap
+                                };
+                                assert!(
+                                    apart(a.x, a.x + a.width, b.x, b.x + b.width)
+                                        || apart(a.y, a.y + a.height, b.y, b.y + b.height),
+                                    "{label}: {a:?} and {b:?} crowd"
+                                );
+                            }
+                            assert_eq!(axis, original, "{label}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The plan's example: on a 160 px axis at 12 px the 1..9 labels of
+/// 1e4..8e4 collide (about 10 px apart) and are demoted to 1e4, 2e4, 5e4,
+/// at 1x and at 2x; a longer axis, a smaller font or a zoom brings labels
+/// back without another fit, and a decade ladder thins by stride.
+#[test]
+fn adaptive_log_label_density_recovers_on_resize_zoom_and_font_changes() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let fp = FontPolicy::Standard;
+    let values = |axis: &AxisOptions, px, scale| {
+        adaptive_labels(axis, px, Side::Left, scale, fp)
+            .iter()
+            .map(|label| label.value)
+            .collect::<Vec<_>>()
+    };
+    let axis = adaptive_axis(1e4, 8e4, LabelFormat::Power, 1.0);
+    assert_eq!(
+        major_tick_values(&axis),
+        [1e4, 2e4, 3e4, 4e4, 5e4, 6e4, 7e4, 8e4]
+    );
+    assert_eq!(values(&axis, 160, 1), [1e4, 2e4, 5e4]);
+    let scaled = adaptive_axis(1e4, 8e4, LabelFormat::Power, 2.0);
+    assert_eq!(values(&scaled, 160, 2), [1e4, 2e4, 5e4]);
+    // Resize: every label comes back.
+    assert_eq!(values(&axis, 960, 1), major_tick_values(&axis));
+    // Font: a smaller font keeps more.
+    let mut small = axis.clone();
+    small.label_style.font_size = 4.0;
+    assert!(values(&small, 160, 1).len() > 3);
+    // Zoom out: the 1-2-5 ladder, then decades.
+    let wide = adaptive_axis(3e3, 8e5, LabelFormat::Power, 1.0);
+    assert_eq!(values(&wide, 960, 1), [5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]);
+    assert_eq!(values(&wide, 60, 1), [1e4, 1e5]);
+    let decades = adaptive_axis(1e4, 1e8, LabelFormat::Power, 1.0);
+    assert_eq!(values(&decades, 960, 1), [1e4, 1e5, 1e6, 1e7, 1e8]);
+    // Under the default policy the same range keeps its one decade.
+    let mut written = axis.clone();
+    written.log_ticks = LogTickPolicy::Decades;
+    assert_eq!(values(&written, 960, 1), [1e4]);
+}
+
+/// Extreme ranges plan a decade ladder (no demotion) or a bounded
+/// multiple ladder, and their labels stay finite and apart.
+#[test]
+fn adaptive_log_labels_on_extreme_ranges() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (min, max) in [
+        (f64::from_bits(1), f64::MAX),
+        (1e300, f64::MAX),
+        (1e307, f64::MAX),
+        (1e-320, 1e-300),
+        (0.0, f64::NAN),
+    ] {
+        let axis = adaptive_axis(min, max, LabelFormat::Power, 1.0);
+        let labels = adaptive_labels(&axis, 480, Side::Bottom, 1, FontPolicy::Standard);
+        assert!(!labels.is_empty(), "{min:e}..{max:e}");
+        for label in &labels {
+            assert!(label.value.is_finite() && label.value > 0.0);
+            assert!(label.position.0.is_finite() && label.position.1.is_finite());
+        }
+    }
+}
+
+/// The colourbar's labels go through the same pruning: an adaptive bar over
+/// 1e4..8e4 labels a 1-2-5 or 1..9 subset of its majors, the same at 2x.
+#[test]
+fn an_adaptive_colorbar_labels_its_ladder() {
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut config = default_config();
+    let mut bar = crate::default::default_colorbar_options();
+    bar.axis.scale = AxisScale::Logarithmic;
+    bar.axis.min = 1e4;
+    bar.axis.max = 8e4;
+    bar.axis.log_ticks = LogTickPolicy::Adaptive;
+    bar.axis.label_style.format = LabelFormat::Power;
+    bar.axis.label_style.significant_digits = 1;
+    config.colorbar = Some(bar);
+    let drawn = |config: &Config| {
+        let bar = config.colorbar.as_ref().unwrap();
+        let strip = strip_rect(config);
+        let fp = FontPolicy::for_style(&config.draw_style);
+        let mut out = Vec::new();
+        each_colorbar_tick_label(
+            &bar.axis,
+            bar.side.clone(),
+            &strip,
+            fp,
+            &major_tick_values(&bar.axis),
+            |text, _| {
+                out.push(match text {
+                    TickText::Plain(text) => text.to_string(),
+                    TickText::Power(rich) => rich.segments.iter().map(|s| s.text).collect(),
+                })
+            },
+        );
+        out
+    };
+    let one = drawn(&config);
+    assert!(one.len() >= 3, "{one:?}");
+    assert!(one.iter().any(|text| text.starts_with('2')), "{one:?}");
+    assert_eq!(drawn(&config.scaled(2.0)), one);
+    let mut decades = config.clone();
+    decades.colorbar.as_mut().unwrap().axis.log_ticks = LogTickPolicy::Decades;
+    assert_eq!(drawn(&decades).len(), 1);
 }
