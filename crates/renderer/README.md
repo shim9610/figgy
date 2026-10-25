@@ -53,15 +53,16 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Pies and donuts, including 3D/material styles | `RadialRenderer` | `RadialChart` with bounded slice values; [radial guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADIAL.md) |
 | Individual, grouped and stacked bars | `Renderer` | `CategoryBars` series over a categorical axis, or a legacy `CategoricalChart` read by `Config::from_categorical`; [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md) |
 | Grouped/notched boxes and outliers | `Renderer` | `BoxPlot` series over a categorical axis, reading a record of supplied statistics and a ragged outlier column, or a legacy `BoxPlotChart` read by `Config::from_boxplot`; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
-| Radar (spider) charts | `RadarRenderer` | `RadarChart` with one value per category and series; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
+| Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 
 The renderer re-exports model types: most applications do not need a separate
-`figgy-model` dependency. Pies, donuts and radar charts are
-bounded charts: each draws one validated model with at most 64 slices or
-categories, takes no column sources or streamed data, and computes no
+`figgy-model` dependency. Pies and donuts are the
+bounded chart: it draws one validated model with at most 64 slices,
+takes no column sources or streamed data, and computes no
 statistics from raw samples. Categorical bars and box plots are `Renderer`
-series over a categorical axis. All three renderers can share a
+series over a categorical axis, and radar series over the categorical angle
+axis of a polar chart. Both renderers can share a
 `RendererDevice`; each maintains its own resource budget. Vector fields, point
 colour and size maps, area fills, step lines, overlay axes and subplots are
 `Renderer` features declared in `SeriesConfig` and `Config`; see the
@@ -88,8 +89,7 @@ includes Cartesian refresh and bounded edit/export examples, and explains frame 
 units. The [interaction contracts](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 cover shared selection, dragging and area handles (in Korean) and titles,
 layers, subplots and annotations (in English). Runnable editors are
-`winit_simple`, `radial_editor` and
-`radar_editor`; all but the first require `--features egui_demo`.
+`winit_simple` and `radial_editor`; the second requires `--features egui_demo`.
 
 Automatic Cartesian streaming fits the axes only on request: call
 `Renderer::request_stream_auto_fit(chart_id, padding)` when the initial range is

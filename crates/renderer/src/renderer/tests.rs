@@ -6425,6 +6425,37 @@ fn streamed_series_reject_box_plots() {
     ));
 }
 
+/// Streaming is not extended to radar series: a streamed radar series is
+/// rejected with an explicit reason (CLAUDE.md rule 8), on its polar chart
+/// and before the polar rejection.
+#[test]
+fn streamed_series_reject_radar() {
+    let mut config = basic_errorbar_chart().config().clone();
+    config.polar = Some(crate::polar::PolarOptions::default());
+    config.bottom_x.categories = Some(vec![
+        crate::config::Category::new("a", "A"),
+        crate::config::Category::new("b", "B"),
+        crate::config::Category::new("c", "C"),
+    ]);
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Radar {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("radar") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to polar charts: a streamed series on one
 /// is rejected with an explicit reason.
 #[test]

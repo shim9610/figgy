@@ -1,12 +1,10 @@
 //! The decoration queries the bounded chart tests share over the bounded
-//! charts' two hit-map APIs: the `DecorationMap` of the box plot and radar
-//! frames, which answers alone, and the radial frame's
-//! `HitMap<RadialChart>`, whose elements place their parts from the chart
-//! they are asked about.
+//! chart's hit-map API: the radial frame's `HitMap<RadialChart>`, whose
+//! elements place their parts from the chart they are asked about.
 #![allow(dead_code)]
 use ::renderer::{
     BoundedAnnotationFrame, CpuTextMeasure, DecorationId, DecorationLayout, HitId, LayerHit,
-    LayerRef, RadarChart, RadarFrame, RadialChart, RadialFrame, SelectionBox,
+    LayerRef, RadialChart, RadialFrame, SelectionBox,
     layout::{NudgeResult, RectF},
     resize::ResizeHandle,
     select::SelectionGeometry,
@@ -15,8 +13,8 @@ use ::renderer::{
 
 pub trait Decorations {
     type Chart: Clone + PartialEq;
-    /// Whether the frame draws data under `p`: the box plot and radar
-    /// frames' CPU hit tests, the radial frame's GPU pick.
+    /// Whether the frame draws data under `p`: the radial frame's GPU
+    /// pick.
     async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool;
     /// The chart's decoration state.
     fn layout(chart: &mut Self::Chart) -> &mut DecorationLayout;
@@ -72,95 +70,6 @@ pub trait Decorations {
             .map(|(_, k)| k)
     }
 }
-
-macro_rules! decoration_map_frame {
-    ($frame:ty, $chart:ty) => {
-        impl Decorations for $frame {
-            type Chart = $chart;
-            async fn has_data(self: &std::sync::Arc<Self>, p: [f32; 2]) -> bool {
-                self.hit_test(p).is_some()
-            }
-            fn layout(chart: &mut $chart) -> &mut DecorationLayout {
-                &mut chart.decorations
-            }
-            fn entries(&self, _: &$chart) -> Vec<(HitId, DecorationId)> {
-                self.decorations()
-                    .entries()
-                    .map(|(id, e)| (id, e.id.clone()))
-                    .collect()
-            }
-            fn len(&self) -> usize {
-                self.decorations().hit_map().len()
-            }
-            fn find(&self, name: &str) -> Option<HitId> {
-                self.decorations().hit_map().find(name)
-            }
-            fn hit(&self, _: &$chart, p: [f32; 2]) -> Option<HitId> {
-                self.decorations().hit_test(p)
-            }
-            fn bounds(&self, _: &$chart, hit: HitId) -> Option<RectF> {
-                self.decorations().bounds(hit)
-            }
-            fn text_bounds(&self, _: &$chart, hit: HitId) -> Option<RectF> {
-                self.decorations().bounds(hit)
-            }
-            fn selection(&self, _: &$chart, hit: HitId) -> Option<SelectionBox> {
-                self.decorations().selection_box(hit)
-            }
-            fn followers(&self, _: &$chart, hit: HitId) -> Vec<DecorationId> {
-                self.decorations()
-                    .element(hit)
-                    .map(|e| e.followers.iter().map(|(f, _)| f.clone()).collect())
-                    .unwrap_or_default()
-            }
-            fn drag(
-                &self,
-                chart: &mut $chart,
-                hit: HitId,
-                dx: f32,
-                dy: f32,
-            ) -> Option<NudgeResult> {
-                self.decorations()
-                    .drag_by(&mut chart.decorations, hit, dx, dy)
-            }
-            fn resize(
-                &self,
-                chart: &mut $chart,
-                hit: HitId,
-                handle: ResizeHandle,
-                dx: f32,
-                dy: f32,
-            ) -> Option<NudgeResult> {
-                self.decorations()
-                    .resize_by(&mut chart.decorations, hit, handle, dx, dy)
-            }
-            fn handle_at(&self, _: &$chart, hit: HitId, p: [f32; 2]) -> Option<ResizeHandle> {
-                self.decorations().hit_resize_handle(hit, p)
-            }
-            fn contains(&self, _: &$chart, hit: HitId, p: [f32; 2]) -> bool {
-                let map = self.decorations();
-                map.hit_map().get(hit).is_some_and(|e| {
-                    e.contains(
-                        map.layout(),
-                        &CpuTextMeasure::for_style(&Default::default()),
-                        p[0],
-                        p[1],
-                    )
-                })
-            }
-            fn route(
-                &self,
-                annotations: &BoundedAnnotationFrame,
-                layer: LayerRef,
-                _: &$chart,
-                p: [f32; 2],
-            ) -> Option<LayerHit> {
-                annotations.hit_test_active_layer(layer, self.decorations(), p)
-            }
-        }
-    };
-}
-decoration_map_frame!(RadarFrame, RadarChart);
 
 impl Decorations for RadialFrame {
     type Chart = RadialChart;

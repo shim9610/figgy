@@ -267,37 +267,6 @@ macro_rules! family_contract {
     };
 }
 
-fn annotated_radar() -> RadarChart {
-    RadarChart {
-        title: "Annotated radar".into(),
-        categories: vec![
-            Category::new("a", "Speed"),
-            Category::new("b", "Safety"),
-            Category::new("c", "Size"),
-            Category::new("d", "Docs"),
-        ],
-        series: vec![RadarSeries::new(
-            "s",
-            "Release",
-            vec![6., 8., 4., 7.],
-            Color::from_rgb8(100, 145, 185),
-        )],
-        annotations: AnnotationLayer {
-            visible: true,
-            items: vec![
-                boxed_text(Anchor::Ratio { x: 0.05, y: 0.05 }),
-                Annotation::new(AnnotationKind::Arrow {
-                    from: Anchor::Ratio { x: 0.1, y: 0.9 },
-                    to: Anchor::Ratio { x: 0.4, y: 0.6 },
-                    style: Default::default(),
-                    text: Some(text("centre")),
-                }),
-            ],
-        },
-        ..Default::default()
-    }
-}
-
 fn annotated_radial() -> RadialChart {
     let mut chart = RadialChart {
         title: "Annotated donut".into(),
@@ -323,14 +292,6 @@ fn annotated_radial() -> RadialChart {
     chart.format_labels();
     chart
 }
-
-family_contract!(
-    radar_annotation_layer_contract,
-    RadarRenderer,
-    RadarChart,
-    annotated_radar(),
-    |c| c.annotations.items[0] = boxed_text(Anchor::Ratio { x: 0.7, y: 0.8 })
-);
 
 family_contract!(
     radial_annotation_layer_contract,
@@ -549,15 +510,6 @@ macro_rules! family_routing {
 }
 
 family_routing!(
-    radar_active_layer_routing,
-    RadarRenderer,
-    RadarChart,
-    annotated_radar(),
-    |c| c.selected = Some(RadarTarget::vertex("s", "a")),
-    |c| c.selected.is_some()
-);
-
-family_routing!(
     radial_active_layer_routing,
     RadialRenderer,
     RadialChart,
@@ -643,9 +595,9 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The radar chart is the bounded family with a decoration map left; it
-    // has no value axes, so every item is ratio-anchored.
-    let mut r = RadarRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    // The radial chart is the bounded family left; it has no value axes,
+    // so every item is ratio-anchored.
+    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let thick = ArrowStyle {
         line: AnnotationLineStyle {
             width: 12.,
@@ -686,21 +638,15 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     // plus the label padding (2 px), plus a pixel of rounding.
     const SLACK: f32 = 6.0;
     for (name, item) in items {
-        let mut c = RadarChart {
-            categories: vec![
-                Category::new("a", "A"),
-                Category::new("b", "B"),
-                Category::new("c", "C"),
+        let mut c = RadialChart {
+            slices: vec![
+                RadialSlice::new("High", 35., Color::from_rgb8(100, 145, 185)),
+                RadialSlice::new("Low", 65., Color::from_rgb8(175, 95, 140)),
             ],
-            series: vec![RadarSeries::new(
-                "s",
-                "S",
-                vec![5., 10., 7.],
-                Color::from_rgb8(60, 130, 210),
-            )],
-            legend: false,
+            labels: RadialLabels::None,
             ..Default::default()
         };
+        c.format_labels();
         c.annotations.items = vec![item];
         for scale in [1., 2.] {
             let with = r.export_rgba(&c, SIZE, scale).unwrap();

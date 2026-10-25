@@ -163,6 +163,9 @@ impl GpuSeriesFitMode {
             | DataRenderType::BoxPlot { .. } => {
                 return None;
             }
+            // A radar series fits as the line it draws (the extent mode
+            // above answers it first).
+            DataRenderType::Radar { .. } => return None,
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -220,7 +223,8 @@ impl GpuSeriesExtentMode {
     /// rather than either coordinate column's raw minimum and maximum.
     pub fn from_render_type(render_type: &DataRenderType) -> Option<Self> {
         match render_type {
-            DataRenderType::Line { .. } => Some(Self::Line),
+            // A radar outline is a line through (position, value) pairs.
+            DataRenderType::Line { .. } | DataRenderType::Radar { .. } => Some(Self::Line),
             DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
                 Some(Self::Points)
             }

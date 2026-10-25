@@ -6,8 +6,7 @@
 
 /// The files whose every text and rectangle goes through a sink, with the
 /// direct line draws each may keep: chrome that belongs to no element (the
-/// bounded charts' grid lines, a radar's rings and spokes, a radial chart's
-/// leader lines), listed so a new one is a decision here.
+/// bounded charts' grid lines, a radial chart's leader lines), listed so a new one is a decision here.
 const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ("axis_render.rs", include_str!("../src/axis_render.rs"), &[]),
     (
@@ -44,24 +43,9 @@ const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ("annotation.rs", include_str!("../src/annotation.rs"), &[]),
     ("decoration.rs", include_str!("../src/decoration.rs"), &[]),
     (
-        "bounded_title.rs",
-        include_str!("../src/bounded_title.rs"),
-        &[],
-    ),
-    (
-        "bounded_axes.rs",
-        include_str!("../src/bounded_axes.rs"),
-        &[],
-    ),
-    (
         "radial_layout.rs",
         include_str!("../src/radial_layout.rs"),
         &["draw_line"],
-    ),
-    (
-        "radar_layout.rs",
-        include_str!("../src/radar_layout.rs"),
-        &["draw_line", "draw_polyline"],
     ),
 ];
 

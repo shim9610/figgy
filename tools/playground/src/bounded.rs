@@ -1,9 +1,9 @@
-//! Bounded scenes: radial and radar charts.
+//! Bounded scenes: radial charts.
 //!
-//! Each family has its own small renderer that prepares a frame of an exact
+//! The family has its own small renderer that prepares a frame of an exact
 //! physical size. The host renders that frame (annotation underlay → chart →
 //! annotation overlay) into an offscreen texture and egui shows it as an image.
-//! One generic host covers both; `Family` adapts the per-family names.
+//! The host is generic over `Family`, which adapts the family's names.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -14,7 +14,6 @@ use renderer::HitId;
 use renderer::annotation::BoundedAnnotationFrame;
 use renderer::decoration::DecorationMap;
 use renderer::layout::NudgeResult;
-use renderer::radar::*;
 use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
@@ -24,7 +23,7 @@ use renderer::{
 
 use crate::HostCtx;
 use crate::scenes::SceneKind;
-use crate::scenes::bounded::{radar_chart, radial_chart};
+use crate::scenes::bounded::radial_chart;
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -205,7 +204,6 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
     }
     match kind {
         SceneKind::Radial => make::<RadialFamily>("radial", gpu, radial_chart()),
-        SceneKind::Radar => make::<RadarFamily>("radar", gpu, radar_chart()),
         _ => Err("not a bounded scene".into()),
     }
 }
@@ -813,140 +811,5 @@ impl Family for RadialFamily {
         }
         // The drawn label strings are written at edit time.
         c.format_labels();
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Radar
-// ---------------------------------------------------------------------------
-
-pub struct RadarFamily;
-
-impl Family for RadarFamily {
-    type Chart = RadarChart;
-    type Renderer = RadarRenderer;
-    type Frame = RadarFrame;
-    type Target = RadarTarget;
-    type Error = RadarError;
-
-    fn renderer(gpu: RendererDevice) -> Result<RadarRenderer, RadarError> {
-        RadarRenderer::new(gpu, FORMAT)
-    }
-    fn set_background(r: &mut RadarRenderer, b: FrameBackground) {
-        r.set_background(b);
-    }
-    fn prepare(
-        r: &mut RadarRenderer,
-        c: &RadarChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<RadarFrame>, RadarError> {
-        r.prepare(c, size, scale)
-    }
-    fn annotations(
-        r: &mut RadarRenderer,
-        c: &RadarChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoundedAnnotationFrame>, RadarError> {
-        r.prepare_annotations(c, size, scale)
-    }
-    fn end_frame(r: &RadarRenderer) {
-        r.end_frame();
-    }
-    fn export(
-        r: &mut RadarRenderer,
-        c: &RadarChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, RadarError> {
-        r.export_rgba(c, size, scale)
-    }
-    fn frame_size(f: &RadarFrame) -> (u32, u32) {
-        f.size()
-    }
-    fn draw(f: &RadarFrame, pass: &mut wgpu::RenderPass<'_>) {
-        f.draw(pass);
-    }
-    fn pick(f: &Arc<RadarFrame>, p: [f32; 2]) -> Pick<RadarTarget> {
-        Pick::Ready(f.hit_test(p).map(|pick| pick.target))
-    }
-    fn decoration_map(f: &RadarFrame) -> Option<&DecorationMap> {
-        Some(f.decorations())
-    }
-    fn background(c: &RadarChart) -> Color {
-        c.background
-    }
-    fn layout(c: &mut RadarChart) -> &mut DecorationLayout {
-        &mut c.decorations
-    }
-    fn annotation_layer(c: &mut RadarChart) -> &mut AnnotationLayer {
-        &mut c.annotations
-    }
-    fn active_layer(c: &RadarChart) -> LayerRef {
-        c.active_layer()
-    }
-    fn set_active_layer(c: &mut RadarChart, l: LayerRef) {
-        c.set_active_layer(l);
-    }
-    fn selected(c: &RadarChart) -> Option<RadarTarget> {
-        c.selected.clone()
-    }
-    fn set_selected(c: &mut RadarChart, t: Option<RadarTarget>) {
-        c.selected = t;
-    }
-    fn hover(c: &mut RadarChart, t: Option<RadarTarget>, _dt: f32) -> bool {
-        c.hovered = t;
-        false
-    }
-    fn inspector(ui: &mut egui::Ui, c: &mut RadarChart) {
-        ui.horizontal(|ui| {
-            ui.label("Title");
-            ui.text_edit_singleline(&mut c.title);
-        });
-        choice(
-            ui,
-            "labels",
-            &mut c.labels,
-            &[
-                RadarLabels::None,
-                RadarLabels::Values,
-                RadarLabels::Emphasized,
-            ],
-        );
-        ui.horizontal(|ui| {
-            ui.checkbox(&mut c.grid, "grid");
-            ui.checkbox(&mut c.legend, "legend");
-        });
-        let s = &mut c.style;
-        choice(
-            ui,
-            "grid shape",
-            &mut s.grid_shape,
-            &[RadarGridShape::Polygon, RadarGridShape::Circle],
-        );
-        choice(
-            ui,
-            "marker",
-            &mut s.marker,
-            &[RadarMarker::None, RadarMarker::Circle, RadarMarker::Square],
-        );
-        ui.checkbox(&mut s.clockwise, "clockwise");
-        slider(
-            ui,
-            "start angle°",
-            &mut s.start_angle_degrees,
-            -180.0..=180.0,
-        );
-        slider(ui, "line width", &mut s.line_width_px, 0.0..=12.0);
-        slider(ui, "fill opacity", &mut s.fill_opacity, 0.0..=1.0);
-        slider(ui, "marker size", &mut s.marker_size_px, 1.0..=24.0);
-        slider(ui, "emphasis", &mut s.emphasis_brightness, 0.0..=0.5);
-        color(ui, "spoke colour", &mut s.spoke_color);
-        color(ui, "ring colour", &mut s.ring_color);
-        ui.separator();
-        for (i, series) in c.series.iter_mut().enumerate() {
-            ui.push_id(i, |ui| color(ui, &series.label.clone(), &mut series.color));
-        }
     }
 }

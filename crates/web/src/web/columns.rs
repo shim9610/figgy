@@ -141,6 +141,8 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         // A box plot reads its positions here; its record and outliers are
         // resident composites outside the column registry.
         DataRenderType::BoxPlot { .. } => {}
+        // A radar series reads its category indices and values only.
+        DataRenderType::Radar { .. } => {}
         // The grid's constituent columns are referenced columns: a matrix
         // series' derived identity has to change when any of them does, or a
         // replaced grid column would keep serving a stale cache entry.

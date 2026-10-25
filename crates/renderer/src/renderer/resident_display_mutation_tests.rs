@@ -125,6 +125,13 @@ fn add_columns(r: &mut Renderer) {
         )
         .unwrap();
     }
+    // Radar polygons: the category indices and two value columns.
+    r.add_column("rcat", &column(vec![0.0, 1.0, 2.0, 3.0]))
+        .unwrap();
+    r.add_column("rva", &column(vec![0.9, 0.5, 0.7, 0.4]))
+        .unwrap();
+    r.add_column("rvb", &column(vec![0.3, 0.6, 0.2, 0.5]))
+        .unwrap();
     r.upsert_ragged(
         "out_a",
         &crate::RaggedSource {
@@ -346,6 +353,69 @@ fn box_series() -> Vec<SeriesConfig> {
         }),
         labels: None,
     }]);
+    vec![first, second]
+}
+
+/// A polar panel whose angle axis holds four categories, with a polygon
+/// grid, and two radar series over it.
+fn radar_config() -> Config {
+    let mut c = chart_config();
+    c.colorbar = None;
+    c.bottom_x.categories = Some(vec![
+        crate::config::Category::new("a", "A"),
+        crate::config::Category::new("b", "B"),
+        crate::config::Category::new("c", "C"),
+        crate::config::Category::new("d", "D"),
+    ]);
+    c.left_y.min = 0.0;
+    c.left_y.max = 1.0;
+    c.polar = Some(crate::polar::PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        grid_shape: Some(crate::polar::GridShape::Polygon),
+        ..Default::default()
+    });
+    c
+}
+
+/// A filled radar series with square markers and an outline-only one.
+fn radar_series() -> Vec<SeriesConfig> {
+    use crate::data_config::{RadarLabels, RadarMarker, RadarSeriesLabels, RadarSeriesStyle};
+    let first = declared(
+        "radar",
+        "rcat",
+        "rva",
+        DataRenderType::Radar {
+            color: Color::new(0.8, 0.2, 0.1, 1.0),
+            style: RadarSeriesStyle {
+                line_width_px: Some(2.0),
+                fill: None,
+                marker: Some(RadarMarker::Square),
+                marker_size_px: Some(6.0),
+                fill_opacity: Some(0.4),
+            },
+            labels: RadarSeriesLabels {
+                placement: RadarLabels::Values,
+                decimals: 1,
+                value_suffix: String::new(),
+                text: vec!["0.9".into(), "0.5".into(), "0.7".into(), "0.4".into()],
+            },
+        },
+    );
+    let second = declared(
+        "more",
+        "rcat",
+        "rvb",
+        DataRenderType::Radar {
+            color: Color::new(0.1, 0.3, 0.9, 1.0),
+            style: RadarSeriesStyle {
+                fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
+                marker: Some(RadarMarker::Circle),
+                ..RadarSeriesStyle::default()
+            },
+            labels: RadarSeriesLabels::default(),
+        },
+    );
     vec![first, second]
 }
 
@@ -695,6 +765,7 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
         SIZE,
     ));
     tally.absorb(run_suite("box", box_config(), box_series(), SIZE));
+    tally.absorb(run_suite("radar", radar_config(), radar_series(), SIZE));
     eprintln!("{}", tally.summary("resident (all)"));
     eprintln!("skipped:\n{}", tally.skipped.join("\n"));
     // Release the font lock before the verdict, so a confirmed gap fails

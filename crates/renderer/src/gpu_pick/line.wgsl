@@ -133,14 +133,15 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
 }
 
 // The source point a hit on segment `segment_index` names, from `position`
-// along its stepped path (0 at A, 1 at B): the nearer endpoint. Projected
-// endpoints are f32. Reciprocal/fused evaluation can put an exact midpoint
-// a rounding step on either side of 0.5 across backends. Resolve that
-// uncertainty by the same lower-index rule as the CPU picker.
+// along its stepped path (0 at A, 1 at B): the nearer endpoint, B being the
+// first point on a closed line's closing segment (`pick_next_point`).
+// Projected endpoints are f32. Reciprocal/fused evaluation can put an exact
+// midpoint a rounding step on either side of 0.5 across backends. Resolve
+// that uncertainty by the same lower-index rule as the CPU picker: toward A.
 fn pick_segment_endpoint(segment_index: u32, position: f32, coordinate_scale: f32, total_length: f32) -> u32 {
     let midpoint_tolerance = min(PICK_F32_EPSILON * coordinate_scale / total_length, 0.25);
     let use_b = position > 0.5 + midpoint_tolerance;
-    return select(segment_index, segment_index + 1u, use_b);
+    return select(segment_index, pick_next_point(segment_index), use_b);
 }
 
 fn pick_stroke_candidate(
@@ -170,8 +171,11 @@ fn pick_stroke_candidate(
     var arc_a = 0.0;
     var arc_b = 0.0;
     if has_arc {
+        // A closed line is solid and binds no arc prefix; were one bound,
+        // its closing segment would take the last point's arc at both ends
+        // as the draw does.
         arc_a = pick_arc[segment_index];
-        arc_b = pick_arc[segment_index + 1u];
+        arc_b = select(arc_a, pick_arc[segment_index + 1u], segment_index + 1u < pick_query_params.data.x);
     }
     var coordinate_scale = 1.0;
     var total_length = 0.0;

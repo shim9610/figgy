@@ -5,7 +5,7 @@
 Rust 렌더러의 WASM/WebGPU 지원과 figgy의 브라우저용 제품인 `crates/web` 래퍼를 구분한다.
 아래 `FiggyChart`, `<figgy-chart>`와 JavaScript 호출 방법은 이 래퍼의 계약이다.
 Rust 라이브러리가 모든 차트를 JavaScript API로 제공한다는 뜻은 아니다.
-`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트와 박스플롯도 `FiggyChart`가 그리며(`set_categorical_document`, `set_boxplot_document`), 원형·레이더 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
+`FiggyChart`와 `<figgy-chart>`는 직교 좌표 차트용이며, `Config.polar`를 켠 극좌표 차트도 그린다. 극좌표에서는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로, `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정한다([극좌표 안내](POLAR.md) 참고). 범주형 막대 차트·박스플롯·레이더 차트도 `FiggyChart`가 그리며(`set_categorical_document`, `set_boxplot_document`, `set_radar_document`), 원형 차트는 같은 패키지의 저수준 클래스 `FiggyBoundedChart`로 제공하며, `<figgy-chart>`는 이 클래스를 감싸지 않는다([Bounded chart host](#bounded-chart-host) 참고).
 간단한 빌드·실행 방법은 [브라우저용 figgy 안내](https://github.com/shim9610/figgy/blob/master/crates/web/README.md)를 참고한다.
 
 The [streaming contract](#streaming-contract) and the [bounded chart host](#bounded-chart-host) sections of this guide are in English.
@@ -942,22 +942,53 @@ chart.set_boxplot_document(JSON.stringify(boxPlotDoc));
 await chart.first_frame_ready();
 ```
 
+<a id="radar-documents"></a>
+
+### Radar documents
+
+`FiggyChart.set_radar_document(json)` opens a radar document (`RadarChart`
+JSON, which `FiggyBoundedChart` took as the `"radar"` family before this
+release) in the Cartesian wrapper as a polar chart. The document is
+validated and read by `Config::from_radar`: its categories become the
+categorical angle axis (category `i` of `n` at `i / n` of the turn from the
+document's start angle, in its direction), each of its series a `Radar`
+series, and its values two kinds of registered columns, `radar.positions`
+and `radar.values.<series id>`, uploaded through borrowed adapters without a
+copy. The document's grid shape becomes `PolarOptions.grid_shape`. Without
+a document `value_range` the radius axis is fitted to the value columns'
+statistics, from zero when no value is negative, and rounded to nice
+ticks; a document `ring_spacing` is kept either way. The chart keeps its
+chart area. Opening another document replaces the series, columns and
+config of the previous one; every other column stays. From there on the
+chart is edited through the Cartesian API. A vertex is picked with
+`pick_data` as a point of its series (the outline, its closing segment and
+the fill pick the series too), `selection_details()` adds the vertex's
+`category_id` and `category_label`, and `step_selection(dx, dy)` steps the
+vertices of the series and across the radar series. The value labels the
+document configures are written into `labels.text` and not drawn yet.
+
+```js
+chart.set_radar_document(JSON.stringify(radarDoc));
+await chart.first_frame_ready();
+```
+
 <a id="bounded-chart-host"></a>
 
 ## 8. Bounded chart host
 
 `FiggyBoundedChart.create(canvas, family, documentJson, width, height)` exposes
-`radial` and `radar` documents to browser hosts. It
-uses the same native renderer, decoration maps, slice/polygon picking,
+`radial` documents to browser hosts. A `"radar"` family is rejected with an
+error naming `FiggyChart.set_radar_document`, which opens radar documents as
+polar charts ([Radar documents](#radar-documents)). It
+uses the same native renderer, decoration maps, slice picking,
 and drag/resize policies. The host owns pointer events, animation scheduling,
 and synchronization.
-`width` and `height` are the document's logical size: at least 160 by 160 for
-`radial` and 240 by 240 for
-`radar`, which needs the room to place its rings and labels. The chart is drawn
+`width` and `height` are the document's logical size: at least 160 by 160.
+The chart is drawn
 at the scale that fits this size into the canvas's pixel size (the smaller of
 the two ratios, clamped to 0.5 to 4). After the canvas size changes, pass its
 new pixel size to `resize(width, height)`.
-Creation asynchronously precompiles the requested family's rendering pipeline
+Creation asynchronously precompiles the radial rendering pipeline
 and prepares its document. It does not submit the first visible frame: call
 `await view.first_frame_ready()` before reporting Ready. That method submits a
 frame and awaits the actual GPU completion Promise; rejection/device loss is
@@ -1009,27 +1040,13 @@ Coordinates and drag deltas are document logical pixels; canvas resize does not
 change export size. Keep the object alive until all async calls finish;
 `free()` releases its GPU resources.
 
-A `radar` document is a serialized `RadarChart`: `categories` (`[{id, label}]`,
-3 to 64) and `series` (`[{id, label, values, color}]`, 1 to 16, one value per
-category), with the optional `style`, `labels`, `value_range`, `ring_spacing`,
-`grid` and `legend` fields of the
-[radar model](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md).
-`pick`, `hover`, `selected` and `hovered` use the `RadarTarget` shape
-`{ "series_id": "s" }` for a polygon (an outline or fill hit) and
-`{ "series_id": "s", "category_id": "a" }` for a vertex marker.
-`step_selection` walks the series polygons in order; while a vertex is
-selected it walks that series' finite vertices in category order instead.
-The category labels at the spoke ends are decorations with the id
-`spoke_label_<length>:<category_id>` (the id's byte length, then the id), as
-`hit_decoration` reports them.
-
 ```js
 import init, { FiggyBoundedChart } from "./pkg/figgy.js"; // figgy-chart.js does not export it
 await init(); // load the WASM module before the first create
 // radialDoc is a validated RadialChart value, e.g. serialized by its model.
 const view = await FiggyBoundedChart.create(canvas, "radial", JSON.stringify(radialDoc), 960, 600);
-// "radar" takes a RadarChart's JSON instead. Categorical and box plot documents
-// open in FiggyChart (set_categorical_document, set_boxplot_document).
+// Categorical, box plot and radar documents open in FiggyChart
+// (set_categorical_document, set_boxplot_document, set_radar_document).
 await view.first_frame_ready(); // only now report Ready and enable interactions
 const point = [320, 240]; // logical document coordinates
 const selected = JSON.parse(await view.pick(...point, true)); // click toggles selection
@@ -1089,7 +1106,7 @@ JSON). While `"Annotations"` is active and the layer is shown,
 `hit_decoration` answers drawn items as `"annotation_<n>"` above every
 decoration, and `select_decoration`, `resize_handle` and `drag` accept that id;
 on `"Base"` the items are not part of the route and clicks pass through them.
-`pick` and `hover` keep addressing bars, boxes, slices and radar polygons on
+`pick` and `hover` keep addressing slices on
 every layer. A
 layer change clears `decorations.selected` (an annotation included) and keeps
 the data selection; the frame and its label raster are reused. On `FiggyChart`

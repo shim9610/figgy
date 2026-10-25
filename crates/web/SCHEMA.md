@@ -56,8 +56,8 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **등고선의 선택 키 2개**인 `ContourConfig.per_level_color` / `labels`는 `None`이면 생략한다. `per_level_color`를 생략하면 모든 레벨을 `line.line_color`로 그린다. 목록이 레벨 수보다 짧으면 색이 없는 레벨도 `line.line_color`로 그리므로, 빈 목록 `[]`도 생략한 것과 같게 그려지지만 JSON에는 `[]`로 남는다.
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_points` / `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다.
 - **`Plain` 라벨 형식**은 `{ "Plain": {} }`처럼 쓰며, `decimals`는 `None`이면, `trim_zeros`는 `false`이면 생략한다. 값만으로 라벨을 정하므로 축 스케일·눈금 간격·`significant_digits`의 영향을 받지 않는다. `decimals`를 생략하면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6`처럼 지수 표기로, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0과 소수점을 지운다. `decimals`를 주면 그 자릿수로 적고, `trim_zeros`가 `true`이면 소수 끝의 0과 소수점을 지운다. figgy-model 0.12.1 이하는 이 값을 거부한다.
-- **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)만 그린다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
-- **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. bounded 차트는 `FiggyBoundedChart`가 그리는 `radial`·`radar` 문서로, 컬럼 대신 문서 안에 값을 담는다. bounded 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
+- **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며(`grid_shape`는 기본값 `"Circle"`이면 생략하고, `"Polygon"`이면 범주형 각도 축의 범주마다 고리를 현으로 잇는다) 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)과 레이더 시리즈만 그린다. `bottom_x.categories`가 있으면 각도 축은 범주형이며, `n`개 중 `i`번째 범주가 한 바퀴의 `i / n` 자리에 놓인다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
+- **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. bounded 차트는 `FiggyBoundedChart`가 그리는 `radial` 문서로(레이더 문서는 `FiggyChart.set_radar_document`로 연다), 컬럼 대신 문서 안에 값을 담는다. bounded 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
 - **활성 레이어 키** `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"`, `{ "Subplot": 0 }`, `{ "SubplotOverlay": [0, 0] }` 중 하나다. 데이터와 장식의 그림은 바꾸지 않고 히트 맵 등록과 선택 표시, `auto_fit_all`이 맞출 축에만 영향을 준다. 범위 밖의 `Overlay`·`Subplot` 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `set_active_layer(json)` / `active_layer()`가 이 키만 바꾸고 읽는다. 저수준 `FiggyChart`는 저장된 값을 JSON 문자열로, `<figgy-chart>`는 파싱한 값으로 돌려준다. `auto_fit_all(pad)`는 활성 레이어의 축만 맞춘다. `"Base"`와 `"Annotations"`는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이의 `y_axis`를 맞춘다. 각 축은 그 축에 그려지는 시리즈로 맞추므로 오버레이 시리즈는 자기 차트의 X 축에는 들어가고 `left_y`에는 들어가지 않는다. 링크된 축(`link_x`, `link_y`)은 X와 Y를 따로 따져 링크 묶음 전체의 시리즈로 맞추고 묶음 전체를 움직인다. 자세한 규칙은 [WASM 가이드의 범위 맞춤](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#5-빌드-산출물cratesweb--pkg)을 참고한다. `"Annotations"`이면 포인터 처리(`hit_test`, `on_press`, bounded 차트의 `hit_decoration`)가 주석 항목을 가장 먼저 검사해 `annotation_<n>`을 반환하고, 다른 값이면 클릭이 주석을 통과한다. bounded 차트에는 오버레이와 서브플롯이 없으므로 `Overlay`·`Subplot`·`SubplotOverlay` 값을 `"Base"`로 읽고 저장하며, 값이 바뀌면 `decorations.selected`를 지운다.
 - **주석 레이어 키** `annotations`는 `{ "visible": true, "items": [...] }`이며 빈 `items`는 생략한다. 각 항목은 `{ "id": "mean", "visible": true, "kind": { "ReferenceLine": { "axis": "Y", "value": 0.5, "style": { "color": {...}, "width": 1.5, "style": "Dash" }, "label": <RichText | null> } } }` 형태이고 `id`가 빈 문자열이거나 `visible`이 `true`면 그 키를 생략한다. `kind`는 `ReferenceLine` / `Span { axis, from, to, fill }` / `Text { anchor, text, box_style }` / `Arrow { from, to, style, text }` 중 하나이며, 앵커는 `{ "Data": { "x": 1.0, "y": 2.0 } }` 또는 `{ "Ratio": { "x": 0.5, "y": 0.5 } }`다. 값이나 앵커를 배치할 수 없는 항목은 오류 없이 건너뛰고, 저수준 `FiggyChart.annotation_warnings()`(bounded 차트는 `FiggyBoundedChart.annotation_warnings()`)가 `[{ "index": 0, "reason": "OutOfRange" }]` 형식의 JSON 문자열로 알린다. `reason`은 `NonFinite`(NaN·무한대), `NoValueAxis`(값 축이 없는 원형 차트나 극좌표 차트의 `Data` 앵커·축 값), `OutOfRange`(축 범위나 패널 밖, 로그축의 0 이하 값), `EmptyText`(빈 텍스트) 중 하나다. `FiggyChart`의 `annotation_warnings()`와 주석 조회 메서드(`annotations()`, `hit_annotation` 등)는 마지막으로 그린 프레임을 기준으로 하므로, `add_annotation` / `set_annotation` / `remove_annotation`으로 바꾼 항목은 다음 `frame()`이 그린 뒤에 반영된다. `FiggyBoundedChart`는 편집 호출 안에서 바로 반영한다. 자세한 내용은 [주석 레이어 메서드](../renderer/WASM.md#annotation-layer)를 참고한다.
 - **오버레이 키** `overlays`는 `OverlayLayer` 배열이며 비어 있으면 생략한다. 각 항목은 `{ "y_axis": AxisOptions, "series": ["id", ...], "legend": Legend }` 형태로, `series`는 비어 있으면, `legend`는 `null`이면 생략하고 `y_axis`는 항상 쓴다(빠지면 기본 Y 축 옵션으로 읽는다). 한 시리즈 id는 최대 한 오버레이에만 적을 수 있고, 적지 않은 시리즈는 기본 레이어에 속한다. 각 오버레이의 `y_axis`가 그 오버레이에 적은 시리즈의 Y 범위·스케일·방향을 정하고, X 축과 데이터 영역은 부모와 함께 쓴다. 스트리밍 소스 시리즈는 오버레이에 넣을 수 없다. 주석은 부모 축 기준으로 기본 레이어에 한 번 그린다.
@@ -1148,6 +1148,43 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 (`median`, `q1`, `q3`, `whisker_low`, `whisker_high`, `mean`, `sample_count`, `ci_low`, `ci_high`, 없는 값은
 `null`)가 더해지고, `step_selection(dx, dy)`는 범주와 묶음 안의 시리즈를 옮긴다(이상치는 건너뛴다).
 `labels.text`는 아직 그리지 않는다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
+
+<a id="radar-render_type"></a>
+
+## `Radar` render_type
+
+레이더 시리즈는 극좌표 차트(`polar`)의 범주형 각도 축 위에서 위치 컬럼(`0, 1, …, n - 1`)을 `x_column`으로,
+범주마다 값 하나를 담은 컬럼을 `y_column`으로 읽어 마지막 범주에서 첫 범주로 닫는 외곽선을 그린다. NaN 값에서는
+외곽선과 채움이 끊긴다. `style`과 `labels`는 항상 기록한다. `style`의 `line_width_px`, `fill`, `marker`,
+`marker_size_px`는 값이 없으면 `null`로 기록하고 기본값(선 굵기 2, 색의 25% 불투명 채움, `"Circle"` 표식,
+표식 크기 7)을 쓴다. `fill_opacity`는 없으면 생략한다. `marker`는 `"None"`, `"Circle"`,
+`"Square"`, `labels.placement`는 `"None"`, `"Values"`, `"Emphasized"`이며 `labels.text`는 비어 있으면 생략한다.
+극좌표의 `interpolation`은 `"Chord"`여야 하고 레이어마다 레이더 시리즈는 16개까지다.
+
+```json
+{
+  "series_id": "v1",
+  "x_column": "radar.positions",
+  "y_column": "radar.values.v1",
+  "render_type": {
+    "Radar": {
+      "color": { "r": 0.25, "g": 0.56, "b": 0.82, "a": 1.0 },
+      "style": {
+        "line_width_px": 2.0,
+        "fill": null,
+        "marker": "Circle",
+        "marker_size_px": null,
+        "fill_opacity": 0.25
+      },
+      "labels": { "placement": "Values", "decimals": 1, "value_suffix": "", "text": ["6.0", "8.0", "4.0"] }
+    }
+  }
+}
+```
+
+`FiggyChart.set_radar_document(json)`은 예전 `RadarChart` 문서를 이 형식으로 읽는다. 선택한 꼭짓점의
+`selection_details()`에는 `category_id`, `category_label`이 더해지고, `step_selection(dx, dy)`는 시리즈의
+꼭짓점과 레이더 시리즈 사이를 옮긴다. `labels.text`는 아직 그리지 않는다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
 ## `Vector` render_type의 전체 형식
 

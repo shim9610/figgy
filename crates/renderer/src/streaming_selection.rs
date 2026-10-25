@@ -258,8 +258,11 @@ fn columns_for<'a>(
     }
     if !entry.bar
         && matches!(config.draw_style, DrawStyle::Precise)
-        && let Some(id) = extract_scatter(&series.render_type)
-            .and_then(|scatter| scatter.point_style_index_column.as_deref())
+        && let Some(id) = extract_scatter(&series.render_type).and_then(|scatter| match scatter {
+            std::borrow::Cow::Borrowed(scatter) => scatter.point_style_index_column.as_deref(),
+            // A derived (radar) marker style reads no style-index column.
+            std::borrow::Cow::Owned(_) => None,
+        })
     {
         add(id, 1);
     }

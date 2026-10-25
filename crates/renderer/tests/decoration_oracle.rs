@@ -40,13 +40,12 @@
 //! product's exports, and its highlight painted through the chart view as
 //! on screen.
 //!
-//! The two bounded families (radial, radar) run the
-//! same invariants on their hit maps (the renderer-measured `DecorationMap`
-//! of the radar frame; the radial frame's
-//! `HitMap<RadialChart>`, whose elements place their parts from the chart,
-//! an outside label's leader line among them), with each element's ink
-//! measured by drag differential and the highlight through
-//! `bounded_selection::assert_selection_only`.
+//! The bounded family (radial) runs the same invariants on its hit map
+//! (the radial frame's `HitMap<RadialChart>`, whose elements place their
+//! parts from the chart, an outside label's leader line among them), with
+//! each element's ink measured by drag differential and the highlight
+//! through `bounded_selection::assert_selection_only`. The radar scene is a
+//! polar chart and sweeps as one, with the polar scene's exclusions.
 //!
 //! The Cartesian decoration ink needs no GPU: the CPU raster of each
 //! expanded panel (`try_raster_chart_layer_to_rgba` with
@@ -87,9 +86,9 @@ use renderer::sink::Parts;
 use renderer::text::{MeasureText, RichText};
 use renderer::{
     Chart, Color, ColorMap, Config, CpuTextMeasure, DecorationId, DecorationLayout, DrawnPart,
-    HitId, HitMap, LayerRef, OverlayLayer, RadarChart, RadarFrame, RadarRenderer, RadialChart,
-    RadialFrame, RadialRenderer, RasterImage, Renderer, RendererDevice, ResizeHandle, SelectionBox,
-    SelectionGeometry, SelectionOutline, SeriesConfig,
+    HitId, HitMap, LayerRef, OverlayLayer, RadialChart, RadialFrame, RadialRenderer, RasterImage,
+    Renderer, RendererDevice, ResizeHandle, SelectionBox, SelectionGeometry, SelectionOutline,
+    SeriesConfig,
 };
 
 use scenes::SceneKind;
@@ -383,6 +382,32 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the polar outer ring is the data boundary and belongs to no element",
         issue: "#47",
     },
+    // The radar scene is a polar chart: the outer ring row above (its ray
+    // line is hidden, so it has no ray drag row), and its ring labels.
+    Exclusion {
+        scene: "Radar",
+        layer: "document",
+        element: "tick_labels_left",
+        inv: Inv::I5,
+        detail: "* ink pixels (* %) differ by more than 96 from its 2x ink box-filtered*",
+        reason: "the ring labels on the vertical ray are placed up to 0.64 logical px apart at \
+                 1x and 2x (ink centroids: 10 +0.48, 7.5 -0.64, 2.5 -0.46 px vertically), the \
+                 glyph snapping the rotated box plot title shows; the thin digits of the \
+                 radar's 14 px labels put the box-filtered share (52 %) just past the 50 % \
+                 limit. The labels are the polar radius tick labels, which radar series do \
+                 not touch",
+        issue: "#40",
+    },
+    Exclusion {
+        scene: "Radar",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring (a polygon on the radar grid) is the data boundary and \
+                 belongs to no element",
+        issue: "#47",
+    },
 ];
 
 /// What the sweep found: the divergences, and the counts and timings the
@@ -446,7 +471,7 @@ impl Report {
 
     /// Add `n` to the total `what` of the scene family `at` belongs to.
     fn count(&mut self, at: &At<'_>, what: &str, n: usize) {
-        let family = if ["Radial", "Radar"].contains(&at.scene) {
+        let family = if at.scene == "Radial" {
             "bounded"
         } else {
             "Cartesian"
@@ -2798,12 +2823,9 @@ fn check_i6(
 // Bounded families
 // ---------------------------------------------------------------------------
 //
-// A bounded chart (radial, radar) draws its
-// decorations into its own GPU frame. The radar
-// frame registers each as one renderer-measured box in its
-// `DecorationMap`; the radial frame registers each in its
-// `HitMap<RadialChart>`, placed from the chart by the one emit its raster
-// draws with, so an outside label is its text and its leader line, outlined
+// A bounded chart (radial) draws its decorations into its own GPU frame:
+// the radial frame registers each in its `HitMap<RadialChart>`, placed from
+// the chart by the one emit its raster draws with, so an outside label is its text and its leader line, outlined
 // and hit part by part. Ink is measured by drag differential: an element
 // dragged beyond its own extent leaves its old place and shows at its new
 // one, and every pixel that changes must lie in what the element's and its
@@ -2821,8 +2843,7 @@ const BOUNDED_SCALE_SHARE: f64 = 0.004;
 
 /// One bounded family's renderer, behind one face for the sweep. Its frame
 /// answers the decoration queries of `bounded_decorations::Decorations`:
-/// the radar frame through its
-/// `DecorationMap`, the radial frame through its `HitMap<RadialChart>`.
+/// the radial frame through its `HitMap<RadialChart>`.
 trait Bounded {
     type Chart: Clone + PartialEq;
     type Frame: Decorations<Chart = Self::Chart>;
@@ -2854,7 +2875,6 @@ macro_rules! bounded_family {
 }
 
 bounded_family!(RadialFamily, RadialRenderer, RadialChart, RadialFrame);
-bounded_family!(RadarFamily, RadarRenderer, RadarChart, RadarFrame);
 
 fn layout_of<B: Bounded>(c: &mut B::Chart) -> &mut DecorationLayout {
     <B::Frame as Decorations>::layout(c)
@@ -2878,15 +2898,6 @@ fn bounded_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
                 scene,
                 RadialFamily(r),
                 scenes::bounded::radial_chart(),
-            ),
-            Err(e) => failed(report, e.to_string()),
-        },
-        SceneKind::Radar => match RadarRenderer::new(gpu.clone(), format) {
-            Ok(r) => sweep_bounded(
-                report,
-                scene,
-                RadarFamily(r),
-                scenes::bounded::radar_chart(),
             ),
             Err(e) => failed(report, e.to_string()),
         },

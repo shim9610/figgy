@@ -189,7 +189,8 @@ impl PrepareContext<'_> {
                     continue;
                 };
 
-                let scatter_cfg = extract_scatter(rt);
+                let scatter_owned = extract_scatter(rt);
+                let scatter_cfg = scatter_owned.as_deref();
                 let has_line_anchor = extract_line(rt).is_some();
                 // A zero-size marker still draws its dot and picks, so it
                 // takes the ring too; a size-mapped point the map hides

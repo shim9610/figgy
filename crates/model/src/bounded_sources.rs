@@ -15,6 +15,12 @@
 //! category positions, one record upload and one ragged upload per series;
 //! their field, value and offset adapters ([`BoxColumn`]) read the summaries
 //! on the fly as they are written.
+//!
+//! A [`RadarChart`] keeps one value per category inline. A radar chart is a
+//! polar chart with a categorical angle axis whose radar series read their
+//! values from the pool, so `Config::from_radar` returns the category
+//! indices and one value column per series, each borrowing the document's
+//! values ([`UploadValues::Dense`]).
 
 use crate::boxplot::{BoxPlotChart, BoxPlotDirection, BoxSummary};
 use crate::categorical::CategoricalChart;
@@ -26,11 +32,14 @@ use crate::config::{
 use crate::data::ColumnId;
 use crate::data_config::{
     BarGroups, BoxPlotSeriesLabels, CategoryBarDirection, CategoryBarMode, CategoryBarSeriesLabels,
-    DataRenderType, SeriesConfig, format_box_plot_labels, format_labels,
+    DataRenderType, RadarSeriesLabels, SeriesConfig, format_box_plot_labels, format_labels,
+    format_radar_labels,
 };
 use crate::decoration::DecorationId;
 use crate::format::{LabelFormat, PlainNumberFormat};
 use crate::layout::{Side, axis_mut};
+use crate::polar::{AngleUnit, GridShape, PolarInterpolation, PolarOptions};
+use crate::radar::{RadarChart, RadarGridShape};
 use crate::text::RichText;
 
 /// The id of the column holding the category positions of a converted
@@ -57,6 +66,16 @@ pub fn box_plot_record(series_id: &str) -> ColumnId {
 /// `series_id`.
 pub fn box_plot_outliers(series_id: &str) -> ColumnId {
     format!("boxplot.outliers.{series_id}")
+}
+
+/// The id of the column holding the category indices of a converted radar
+/// document.
+pub const RADAR_POSITIONS_COLUMN: &str = "radar.positions";
+
+/// The id of the column holding the values of the converted radar series
+/// `series_id`.
+pub fn radar_values_column(series_id: &str) -> ColumnId {
+    format!("radar.values.{series_id}")
 }
 
 /// One field of the box plot record, in the order of the renderer's
@@ -225,6 +244,9 @@ pub enum UploadValues<'a> {
     Positions(usize),
     /// A series' values in category order; a missing value uploads NaN.
     Values(&'a [Option<f64>]),
+    /// A radar series' values in category order, as the document holds them:
+    /// a non-finite value uploads as it is and breaks the polygon there.
+    Dense(&'a [f64]),
     /// The box statistics of one box plot series, one row per category:
     /// not one column but a record (`Renderer::upsert_record` with the box
     /// plot schema), whose fields are [`UploadValues::box_fields`]. As a
@@ -270,6 +292,7 @@ impl UploadValues<'_> {
         match self {
             UploadValues::Positions(n) => *n,
             UploadValues::Values(values) => values.len(),
+            UploadValues::Dense(values) => values.len(),
             UploadValues::BoxRecord(_) | UploadValues::BoxOutliers(_) => 0,
         }
     }
@@ -287,6 +310,7 @@ impl UploadValues<'_> {
             UploadValues::Values(values) => {
                 values.get(index).copied().flatten().unwrap_or(f64::NAN)
             }
+            UploadValues::Dense(values) => values.get(index).copied().unwrap_or(f64::NAN),
             UploadValues::BoxRecord(_) | UploadValues::BoxOutliers(_) => f64::NAN,
         }
     }
@@ -825,6 +849,236 @@ impl Config {
             );
         }
         legacy_offsets(&mut config, &chart.decorations);
+        (config, series, uploads)
+    }
+}
+
+impl Config {
+    /// The polar chart a legacy [`RadarChart`] document draws: its `Config`,
+    /// its series and the columns to upload.
+    ///
+    /// The chart is a polar `Config` ([`PolarOptions`]) whose angle axis
+    /// (`bottom_x`) holds the document's categories, so category `i` sits
+    /// at `i / n` of the turn, and one [`DataRenderType::Radar`] series per
+    /// document series in document order, reading the shared
+    /// [`RADAR_POSITIONS_COLUMN`] (the category indices `0..n`) and its own
+    /// [`radar_values_column`]. Each series takes its colour, its style with
+    /// every unset field read from the chart style
+    /// ([`RadarSeriesStyle::resolved_from`](crate::data_config::RadarSeriesStyle::resolved_from)), the chart's label settings
+    /// and the label text [`format_radar_labels`] writes from the document's
+    /// values.
+    ///
+    /// The uploads are the positions column first, then the value columns
+    /// in series order, borrowing the document's values
+    /// ([`UploadValues::Dense`]); nothing is copied.
+    ///
+    /// Field map: `start_angle_degrees` (screen degrees with y down) is
+    /// `zero_angle_degrees` (with y up, so negated) and the radius labels'
+    /// ray, `clockwise` is `clockwise`, `grid_shape` is the polar
+    /// `grid_shape`; `value_range` is the radius axis (`left_y`) range with
+    /// `ring_spacing` as its major spacing, or nice spacing without one
+    /// (without a `value_range` the range is the host's to fit, as the
+    /// former chart fitted the supplied values; `ring_spacing` still sets
+    /// the spacing); `grid` shows the rings (`left_y` major grid in
+    /// `ring_color`, and the outer ring, the angle axis line, in the same
+    /// colour) and the spokes (`bottom_x` major grid in `spoke_color`);
+    /// `font_family`, `font_size` and `text_color` are the category and
+    /// ring labels; `legend` is the legend's visibility with one entry per
+    /// series; the resolved title is `chart_title`; the offsets of the
+    /// title, the legend and the ring labels are the matching offsets; a
+    /// selected vertex is the typed selection (a point whose index is its
+    /// category); `active_layer` and `annotations` carry over. Not carried:
+    /// `hovered` (transient), a selected whole series (a selection names a
+    /// vertex), the style's `emphasis_brightness` (the former renderer
+    /// brightened the hovered or selected series; a picked vertex takes the
+    /// picked ring instead), `background` (the host's clear colour), an explicit
+    /// `decorations.data_area`, the spoke label and data label offsets (the
+    /// category labels move together, and value labels are not drawn yet),
+    /// and the decoration selection. The chart area is the default
+    /// placeholder; the host sets it.
+    pub fn from_radar(chart: &RadarChart) -> (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>) {
+        let mut config = crate::default::default_config();
+        let text = |s: &str| {
+            RichText::plain(
+                s,
+                chart.text_color,
+                chart.font_size,
+                chart.font_family.as_str(),
+            )
+        };
+        let style_axis = |axis: &mut AxisOptions| {
+            axis.label_style.color = chart.text_color;
+            axis.label_style.font_size = chart.font_size;
+            axis.label_style.label_font = chart.font_family.clone();
+            axis.tick = TickVisibility::None;
+            axis.title_option = AxisTitleOptions {
+                text: text(""),
+                visible: false,
+                offset_x: 0.0,
+                offset_y: 0.0,
+            };
+            axis.line_width = 1.0;
+        };
+        let style = &chart.style;
+        // The angle axis: the categories, the outer ring as its line.
+        style_axis(&mut config.bottom_x);
+        config.bottom_x.categories = Some(chart.categories.to_vec());
+        config.bottom_x.line_visible = chart.grid;
+        config.bottom_x.line_color = style.ring_color;
+        // The radius axis: the ring labels along the first spoke, without a
+        // line of its own (the first spoke is drawn there).
+        style_axis(&mut config.left_y);
+        config.left_y.line_visible = false;
+        config.left_y.line_color = chart.text_color;
+        config.left_y.label_style.format = LabelFormat::Plain(PlainNumberFormat::AUTO);
+        if let Some([min, max]) = chart.value_range {
+            // The fixed range is kept as it is; only the spacing is nice.
+            if let Ok(plan) =
+                AxisOptions::compute_nice_ticks(config.left_y.scale.clone(), min, max, 5)
+            {
+                config.left_y.major_spacing = plan.major_spacing;
+                config.left_y.minor_count = plan.minor_count;
+            }
+            config.left_y.min = min;
+            config.left_y.max = max;
+        }
+        if let Some(spacing) = chart.ring_spacing {
+            config.left_y.major_spacing = spacing;
+        }
+        for axis in [&mut config.top_x, &mut config.right_y] {
+            axis.line_visible = false;
+            axis.tick = TickVisibility::None;
+        }
+        let zero = -f64::from(style.start_angle_degrees);
+        config.polar = Some(PolarOptions {
+            zero_angle_degrees: zero,
+            clockwise: style.clockwise,
+            radial_label_angle_degrees: zero.rem_euclid(360.0),
+            grid_shape: Some(match style.grid_shape {
+                RadarGridShape::Polygon => GridShape::Polygon,
+                RadarGridShape::Circle => GridShape::Circle,
+            }),
+            // A legacy radar is the full circle of the default unit, with
+            // straight edges and no hole.
+            angle_unit: AngleUnit::Degrees,
+            sector: None,
+            inner_radius_fraction: 0.0,
+            interpolation: PolarInterpolation::Chord,
+        });
+
+        let GridOptions {
+            show_major_x,
+            major_x_color,
+            show_major_y,
+            major_y_color,
+            show_minor_x,
+            show_minor_y,
+            // The legacy grid has one line style: the default widths and
+            // dashes, and no minor lines whose look would matter.
+            major_x_width: _,
+            major_x_style: _,
+            major_y_width: _,
+            major_y_style: _,
+            minor_x_color: _,
+            minor_x_width: _,
+            minor_x_style: _,
+            minor_y_color: _,
+            minor_y_width: _,
+            minor_y_style: _,
+        } = &mut config.grid;
+        *show_major_x = chart.grid;
+        *show_major_y = chart.grid;
+        *show_minor_x = false;
+        *show_minor_y = false;
+        *major_x_color = style.spoke_color;
+        *major_y_color = style.ring_color;
+
+        let title = chart.resolved_title();
+        config.chart_title.text = title.text;
+        config.chart_title.visible = title.visible;
+        config.active_layer = chart.active_layer();
+        config.annotations = chart.annotations.clone();
+
+        let mut series = Vec::with_capacity(chart.series.len());
+        let mut uploads = Vec::with_capacity(chart.series.len() + 1);
+        uploads.push(SeriesUpload {
+            column: RADAR_POSITIONS_COLUMN.into(),
+            values: UploadValues::Positions(chart.categories.len()),
+        });
+        for s in &chart.series {
+            let column = radar_values_column(&s.id);
+            series.push(SeriesConfig {
+                series_id: s.id.clone(),
+                source_id: None,
+                label: Some(text(&s.label)),
+                x_column: RADAR_POSITIONS_COLUMN.into(),
+                y_column: column.clone(),
+                render_type: DataRenderType::Radar {
+                    color: s.color,
+                    style: s.style.clone().unwrap_or_default().resolved_from(style),
+                    labels: RadarSeriesLabels {
+                        placement: chart.labels,
+                        decimals: chart.label_decimals,
+                        value_suffix: chart.value_suffix.clone(),
+                        text: Vec::new(),
+                    },
+                },
+            });
+            uploads.push(SeriesUpload {
+                column,
+                values: UploadValues::Dense(&s.values),
+            });
+        }
+        format_radar_labels(&mut series, &chart.categories, |k, i| {
+            chart.series.get(k)?.values.get(i).copied()
+        });
+
+        legacy_legend(
+            &mut config,
+            &series,
+            chart.legend,
+            (&chart.font_family, chart.font_size, chart.text_color),
+            |id| {
+                chart
+                    .series
+                    .iter()
+                    .find(|s| s.id == id)
+                    .map(|s| s.label.as_str())
+            },
+        );
+        if let Some(selected) = &chart.selected
+            && let Some(category) = selected.category_id.as_deref()
+            && let Some(index) = chart.categories.iter().position(|c| c.id == category)
+        {
+            let mut picked = DataSelectionsConfig::default();
+            picked.refs.push(PickedDataRef::Point {
+                source_id: None,
+                series_id: selected.series_id.clone(),
+                point_index: index,
+            });
+            config.picked_data = Some(picked);
+        }
+        for offset in &chart.decorations.offsets {
+            let [dx, dy] = offset.offset;
+            match &offset.element {
+                DecorationId::ChartTitle => {
+                    config.chart_title.offset_x = dx;
+                    config.chart_title.offset_y = dy;
+                }
+                DecorationId::Legend => {
+                    config.legend.offset_x = dx;
+                    config.legend.offset_y = dy;
+                }
+                // The ring labels: along and across the ray in a polar
+                // chart, as the legacy offset moved them on screen only
+                // when the ray points right.
+                DecorationId::AxisLabel(Side::Left) => {
+                    config.left_y.label_style.label_offset_x = dx;
+                    config.left_y.label_style.label_offset_y = dy;
+                }
+                _ => {}
+            }
+        }
         (config, series, uploads)
     }
 }
@@ -1536,6 +1790,330 @@ mod box_tests {
             height: 200.0,
         });
         let (after, _, _) = Config::from_boxplot(&c);
+        assert_eq!(after, before);
+    }
+}
+
+#[cfg(test)]
+mod radar_tests {
+    use super::*;
+    use crate::config::Category;
+    use crate::data_config::{RadarLabels, RadarMarker, RadarRef, RadarSeriesStyle};
+    use crate::decoration::DecorationOffset;
+    use crate::layer::LayerRef;
+    use crate::radar::{RadarSeries, RadarTarget};
+
+    fn chart() -> RadarChart {
+        RadarChart {
+            categories: vec![
+                Category::new("speed", "Speed"),
+                Category::new("range", "Range"),
+                Category::new("cost", "Cost"),
+            ],
+            series: vec![
+                RadarSeries::new(
+                    "a",
+                    "Model A",
+                    vec![4.0, f64::NAN, 2.5],
+                    Color::from_rgb8(200, 0, 0),
+                ),
+                RadarSeries::new(
+                    "b",
+                    "Model B",
+                    vec![1.0, 2.0, 3.0],
+                    Color::from_rgb8(0, 0, 200),
+                ),
+            ],
+            ..Default::default()
+        }
+    }
+
+    fn radar(series: &SeriesConfig) -> RadarRef<'_> {
+        series.render_type.radar().expect("radar")
+    }
+
+    #[test]
+    fn categories_become_the_categorical_angle_axis_of_a_polar_chart() {
+        let c = chart();
+        let (config, series, _) = Config::from_radar(&c);
+        assert_eq!(
+            config.bottom_x.categories.as_deref(),
+            Some(&c.categories[..])
+        );
+        assert_eq!(config.left_y.categories, None);
+        assert!(config.polar.is_some());
+        assert_eq!(config.validate_polar(), Ok(()));
+        assert_eq!(config.bottom_x.validate_categories(), Ok(()));
+        assert_eq!(config.validate_radar(&series), Ok(()));
+        assert_eq!(series[0].x_column, RADAR_POSITIONS_COLUMN);
+        assert_eq!(series[0].y_column, radar_values_column("a"));
+    }
+
+    #[test]
+    fn values_become_borrowed_uploads_in_series_order() {
+        let c = chart();
+        let (_, series, uploads) = Config::from_radar(&c);
+        let columns: Vec<_> = uploads.iter().map(|u| u.column.as_str()).collect();
+        assert_eq!(
+            columns,
+            [RADAR_POSITIONS_COLUMN, "radar.values.a", "radar.values.b"]
+        );
+        assert_eq!(uploads[0].values, UploadValues::Positions(3));
+        assert!(
+            matches!(uploads[1].values, UploadValues::Dense(v) if std::ptr::eq(v, &c.series[0].values[..]))
+        );
+        assert_eq!(uploads[1].values.len(), 3);
+        assert_eq!(uploads[1].values.value(0), 4.0);
+        assert!(uploads[1].values.value(1).is_nan());
+        assert!(uploads[1].values.value(3).is_nan());
+        assert_eq!(
+            (uploads[1].values.min(), uploads[1].values.max()),
+            (2.5, 4.0)
+        );
+        assert_eq!(
+            series
+                .iter()
+                .map(|s| s.series_id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn the_spoke_layout_maps_to_the_polar_options() {
+        let mut c = chart();
+        let (config, _, _) = Config::from_radar(&c);
+        let polar = config.polar.as_ref().unwrap();
+        // -90 screen degrees with y down is up: 90 with y up.
+        assert_eq!(polar.zero_angle_degrees, 90.0);
+        assert!(polar.clockwise);
+        assert_eq!(polar.grid_shape, Some(GridShape::Polygon));
+        assert_eq!(polar.radial_label_angle_degrees, 90.0);
+        assert!(polar.interpolation.is_chord());
+        assert_eq!(polar.sector, None);
+        // The first category points up and the second follows clockwise.
+        let map = config.polar_angle_map().unwrap();
+        assert!((map.screen_angle(0.0) - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!(map.screen_angle(1.0) < map.screen_angle(0.0));
+        c.style.start_angle_degrees = 30.0;
+        c.style.clockwise = false;
+        c.style.grid_shape = RadarGridShape::Circle;
+        let (config, _, _) = Config::from_radar(&c);
+        let polar = config.polar.as_ref().unwrap();
+        assert_eq!(polar.zero_angle_degrees, -30.0);
+        assert_eq!(polar.radial_label_angle_degrees, 330.0);
+        assert!(!polar.clockwise);
+        assert_eq!(polar.grid_shape, Some(GridShape::Circle));
+    }
+
+    #[test]
+    fn the_value_range_and_ring_spacing_are_the_radius_axis() {
+        let mut c = chart();
+        let (default, _, _) = Config::from_radar(&c);
+        c.value_range = Some([0.0, 10.0]);
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 10.0));
+        assert_eq!(config.left_y.major_spacing, 2.0);
+        c.ring_spacing = Some(2.5);
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!((config.left_y.min, config.left_y.max), (0.0, 10.0));
+        assert_eq!(config.left_y.major_spacing, 2.5);
+        // Without a range the host fits it; the spacing still applies.
+        c.value_range = None;
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!(
+            (config.left_y.min, config.left_y.max),
+            (default.left_y.min, default.left_y.max)
+        );
+        assert_eq!(config.left_y.major_spacing, 2.5);
+        assert_eq!(
+            config.left_y.label_style.format,
+            LabelFormat::Plain(PlainNumberFormat::AUTO)
+        );
+    }
+
+    #[test]
+    fn series_colour_label_and_resolved_style_carry_over() {
+        let mut c = chart();
+        c.style.line_width_px = 3.0;
+        c.style.fill_opacity = 0.4;
+        c.style.marker = RadarMarker::Square;
+        c.style.marker_size_px = 9.0;
+        c.style.emphasis_brightness = 0.2;
+        c.series[1].style = Some(RadarSeriesStyle {
+            line_width_px: Some(1.5),
+            fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
+            marker: Some(RadarMarker::None),
+            ..Default::default()
+        });
+        let (_, series, _) = Config::from_radar(&c);
+        let a = radar(&series[0]);
+        assert_eq!(a.color, c.series[0].color);
+        assert_eq!(
+            a.style,
+            &RadarSeriesStyle {
+                line_width_px: Some(3.0),
+                fill: None,
+                marker: Some(RadarMarker::Square),
+                marker_size_px: Some(9.0),
+                fill_opacity: Some(0.4),
+            }
+        );
+        assert_eq!(a.style.fill_color(a.color).a, 0.4);
+        let b = radar(&series[1]);
+        assert_eq!(b.style.line_width(), 1.5);
+        assert_eq!(b.style.marker(), RadarMarker::None);
+        assert_eq!(b.style.fill_color(b.color).a, 0.0);
+        assert!(b.scatter_style().is_none());
+        assert!(
+            b.line_style().fill.is_none(),
+            "a transparent fill draws none"
+        );
+        let label = series[0].label.as_ref().unwrap();
+        assert_eq!(
+            label.segments.iter().map(|s| s.text).collect::<String>(),
+            "Model A"
+        );
+    }
+
+    #[test]
+    fn label_settings_go_to_every_series_and_write_the_text() {
+        let mut c = chart();
+        let (_, series, _) = Config::from_radar(&c);
+        assert_eq!(radar(&series[0]).labels.text, ["", "", ""]);
+        c.labels = RadarLabels::Values;
+        c.label_decimals = 2;
+        c.value_suffix = " pt".into();
+        let (_, series, _) = Config::from_radar(&c);
+        let labels = radar(&series[0]).labels;
+        assert_eq!(labels.placement, RadarLabels::Values);
+        assert_eq!((labels.decimals, labels.value_suffix.as_str()), (2, " pt"));
+        // A non-finite value has no label.
+        assert_eq!(labels.text, ["4.00 pt", "", "2.50 pt"]);
+        assert_eq!(
+            radar(&series[1]).labels.text,
+            ["1.00 pt", "2.00 pt", "3.00 pt"]
+        );
+    }
+
+    #[test]
+    fn the_grid_is_the_rings_spokes_and_outer_ring() {
+        let mut c = chart();
+        let (config, _, _) = Config::from_radar(&c);
+        assert!(config.grid.show_major_x && config.grid.show_major_y);
+        assert!(!config.grid.show_minor_x && !config.grid.show_minor_y);
+        assert_eq!(config.grid.major_x_color, c.style.spoke_color);
+        assert_eq!(config.grid.major_y_color, c.style.ring_color);
+        assert!(config.bottom_x.line_visible);
+        assert_eq!(config.bottom_x.line_color, c.style.ring_color);
+        assert!(!config.left_y.line_visible);
+        c.grid = false;
+        let (config, _, _) = Config::from_radar(&c);
+        assert!(!config.grid.show_major_x && !config.grid.show_major_y);
+        assert!(!config.bottom_x.line_visible);
+    }
+
+    #[test]
+    fn fonts_title_legend_layer_and_annotations_carry_over() {
+        let mut c = chart();
+        c.font_family = "Serif".into();
+        c.font_size = 18.0;
+        c.text_color = Color::from_rgb8(10, 20, 30);
+        c.title = "Quality".into();
+        c.set_active_layer(LayerRef::Annotations);
+        c.annotations.visible = false;
+        let (config, _, _) = Config::from_radar(&c);
+        for axis in [&config.bottom_x, &config.left_y] {
+            assert_eq!(axis.label_style.label_font, "Serif");
+            assert_eq!(axis.label_style.font_size, 18.0);
+            assert_eq!(axis.label_style.color, c.text_color);
+            assert_eq!(axis.tick, TickVisibility::None);
+            assert!(!axis.title_option.visible);
+        }
+        assert_eq!(config.chart_title.text, c.resolved_title().text);
+        assert!(config.chart_title.visible);
+        assert_eq!(config.legend.content.font, "Serif");
+        let legend: String = config
+            .legend
+            .content
+            .segments
+            .iter()
+            .map(|s| s.text)
+            .collect();
+        assert!(
+            legend.contains("Model A") && legend.contains("Model B"),
+            "{legend}"
+        );
+        assert!(config.legend.visible);
+        assert_eq!(config.active_layer, LayerRef::Annotations);
+        assert_eq!(config.annotations, c.annotations);
+        c.legend = false;
+        assert!(!Config::from_radar(&c).0.legend.visible);
+    }
+
+    #[test]
+    fn a_selected_vertex_is_the_typed_selection_and_hover_is_dropped() {
+        let mut c = chart();
+        c.hovered = Some(RadarTarget::vertex("a", "speed"));
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!(config.picked_data, None);
+        c.selected = Some(RadarTarget::series("b"));
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!(config.picked_data, None, "a whole series is not a vertex");
+        c.selected = Some(RadarTarget::vertex("b", "cost"));
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!(
+            config.picked_data.unwrap().refs,
+            [PickedDataRef::Point {
+                source_id: None,
+                series_id: "b".into(),
+                point_index: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn title_legend_and_ring_label_offsets_carry_over() {
+        let mut c = chart();
+        let offset = |element, offset| DecorationOffset { element, offset };
+        c.decorations.offsets = vec![
+            offset(DecorationId::ChartTitle, [3.0, 4.0]),
+            offset(DecorationId::Legend, [-5.0, 6.0]),
+            offset(DecorationId::AxisLabel(Side::Left), [1.0, 2.0]),
+            offset(
+                DecorationId::SpokeLabel {
+                    category_id: "speed".into(),
+                },
+                [9.0, 9.0],
+            ),
+        ];
+        let (config, _, _) = Config::from_radar(&c);
+        assert_eq!(
+            (config.chart_title.offset_x, config.chart_title.offset_y),
+            (3.0, 4.0)
+        );
+        assert_eq!(
+            (config.legend.offset_x, config.legend.offset_y),
+            (-5.0, 6.0)
+        );
+        let label = &config.left_y.label_style;
+        assert_eq!((label.label_offset_x, label.label_offset_y), (1.0, 2.0));
+        let spokes = &config.bottom_x.label_style;
+        assert_eq!((spokes.label_offset_x, spokes.label_offset_y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn background_and_the_explicit_data_area_are_not_carried() {
+        let mut c = chart();
+        let (before, _, _) = Config::from_radar(&c);
+        c.background = Color::BLACK;
+        c.decorations.data_area = Some(crate::layout::RectF {
+            x: 100.0,
+            y: 100.0,
+            width: 300.0,
+            height: 200.0,
+        });
+        let (after, _, _) = Config::from_radar(&c);
         assert_eq!(after, before);
     }
 }

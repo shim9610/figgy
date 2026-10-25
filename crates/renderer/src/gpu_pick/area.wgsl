@@ -47,7 +47,7 @@ fn pick_area_candidate(
     var base_b = vec2<f32>(0.0);
     if to_series {
         base_a = pick_read_pair(area.x, segment_index);
-        base_b = pick_read_pair(area.x, segment_index + 1u);
+        base_b = pick_read_pair(area.x, pick_next_point(segment_index));
     }
     let baseline = pick_query_params.area_baseline.xy;
     if !area_segment_drawn(t, ax, ay, bx, by, base_a, base_b, to_series, baseline)

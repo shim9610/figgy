@@ -45,9 +45,9 @@ fn moved<F: Decorations>(
     let id = f.id_of(&shown, key);
     let old = f.text_bounds(&shown, id).unwrap();
     // Elements hit inside their padded selection box, so a later element
-    // drawn next to this one (a radar value label on the rim beside its
-    // spoke label) can cover the centre of its bounds. Press the first point
-    // of a grid over the bounds, centre first, that picks the element.
+    // drawn next to this one can cover the centre of its bounds. Press the
+    // first point of a grid over the bounds, centre first, that picks the
+    // element.
     let samples = (0..=8).flat_map(|j| (0..=8).map(move |i| (i, j)));
     let hit = std::iter::once((4, 4))
         .chain(samples)
@@ -290,8 +290,8 @@ fn bounded_area_select_resize_move_pick_and_export() {
 #[test]
 fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
     let _guard = LOCK.lock().unwrap();
-    // `$charts` are the variants of one family (a box plot's direction, a
-    // radar's grid shape). The first runs the whole contract at 1x and 2x;
+    // `$charts` are the variants of one family. The first runs the whole
+    // contract at 1x and 2x;
     // the others, at 2x, run what depends on the layout: the move, its
     // redraw, the raster invalidation, the frame reuse and the geometry.
     // `$geometry` compares the data geometry of the frame before and after
@@ -446,44 +446,6 @@ fn every_bounded_decoration_uses_public_edit_reset_and_snapshot_contracts() {
             DecorationId::RadialLabel(RadialTarget::main(0))
         ]
     );
-    let radar = RadarChart {
-        title: "Editable radar title".into(),
-        categories: vec![
-            Category::new("a", "Speed"),
-            Category::new("b", "Safety"),
-            Category::new("c", "Size"),
-        ],
-        series: vec![RadarSeries::new("s", "Release", vec![6., 8., 4.], color)],
-        labels: RadarLabels::Values,
-        ..Default::default()
-    };
-    check!(
-        RadarRenderer,
-        [RadarGridShape::Polygon, RadarGridShape::Circle].map(|grid_shape| {
-            let mut c = radar.clone();
-            c.style.grid_shape = grid_shape;
-            c
-        }),
-        [
-            DecorationId::ChartTitle,
-            DecorationId::Legend,
-            DecorationId::AxisLabel(Side::Left),
-            DecorationId::SpokeLabel {
-                category_id: "a".into(),
-            },
-            DecorationId::DataLabel {
-                category_id: "a".into(),
-                series_id: "s".into(),
-            },
-        ],
-        |f: &RadarFrame, g: &RadarFrame| {
-            assert_eq!(g.plot_rect(), f.plot_rect());
-            assert_eq!(g.plot_circle(), f.plot_circle());
-            let target = RadarTarget::vertex("s", "a");
-            assert!(f.vertex_position(&target).is_some());
-            assert_eq!(g.vertex_position(&target), f.vertex_position(&target));
-        }
-    );
 }
 
 #[test]
@@ -565,21 +527,4 @@ fn independent_rich_titles_refresh_export_cache_and_keep_public_drag_contract() 
         chart.format_labels();
         chart
     });
-    check!(
-        RadarRenderer,
-        RadarChart {
-            categories: vec![
-                Category::new("a", "A"),
-                Category::new("b", "B"),
-                Category::new("c", "C")
-            ],
-            series: vec![RadarSeries::new(
-                "s",
-                "Values",
-                vec![1., 2., 3.],
-                Color::BLACK
-            )],
-            ..Default::default()
-        }
-    );
 }

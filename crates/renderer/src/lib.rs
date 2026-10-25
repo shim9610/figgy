@@ -69,8 +69,8 @@ pub use data::{
 pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS,
-    ScatterShape, SeriesConfig, SeriesRef,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, RadarRef,
+    RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
@@ -140,7 +140,6 @@ pub use radial::RadialMaterial;
 pub use model::categorical::*;
 
 pub use model::boxplot::*;
-pub mod radar;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for
 /// `Config.polar`, the angle unit and segment interpolation it reads, and the
 /// `PolarGeometry` circle the chart draws into.
@@ -148,9 +147,16 @@ pub mod polar {
     #![doc = include_str!("../POLAR.md")]
     pub use model::polar::*;
 }
-pub use model::polar::{AngleUnit, PolarGeometry, PolarInterpolation, PolarOptions};
+pub use model::polar::{
+    AngleMap, AngleUnit, GridShape, PolarGeometry, PolarInterpolation, PolarOptions,
+};
+/// Radar charts: radar series on a polar chart with a categorical angle
+/// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
+pub mod radar {
+    #![doc = include_str!("../RADAR.md")]
+    pub use model::radar::*;
+}
 pub use model::radar::*;
-pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/support/gpu.rs"]
@@ -165,5 +171,4 @@ pub use model::{
 };
 pub mod decoration;
 
-mod bounded_title;
 pub use model::BoundedTitleOptions;

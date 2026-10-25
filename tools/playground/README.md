@@ -12,9 +12,8 @@ scene added there is checked in CI without a test of its own.
 
 winit owns the window and the event loop. The app owns the wgpu surface, and
 egui (`egui-winit` + `egui-wgpu`, no eframe) draws the controls on top.
-Cartesian charts are painted straight into the surface pass. Radial,
-categorical, box-plot and radar charts are rendered offscreen and shown as an
-egui image.
+Cartesian charts are painted straight into the surface pass. Radial charts
+are rendered offscreen and shown as an egui image.
 
 ## Run
 
@@ -46,8 +45,10 @@ The tabs at the top switch scenes.
   heatmap with labelled contours; vector field (quiver); log axes; twin Y axes; subplots;
   polar coordinates (an angle axis and a radius axis);
   annotations; a one-million-point line; categorical bars and box plots
-  (documents opened as Cartesian series on a categorical axis).
-- **Bounded**: radial (pie and donut), radar (spider).
+  (documents opened as Cartesian series on a categorical axis); a radar
+  (spider) chart (a document opened as polar radar series on a categorical
+  angle axis).
+- **Bounded**: radial (pie and donut).
 
 ## Pointer
 

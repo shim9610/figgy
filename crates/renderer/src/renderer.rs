@@ -40,6 +40,7 @@ use prepare::*;
 mod preparation;
 pub use preparation::{PipelinePreparation, PreparationFeature, PreparedPipelines};
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::Arc;
 

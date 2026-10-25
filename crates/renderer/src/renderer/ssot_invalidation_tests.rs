@@ -1720,7 +1720,7 @@ fn ssot_selection_edits_replace_only_the_overlay() {
         let mut series = declaration("s", "x", "a");
         let line = super::super::extract_line(&series.render_type)
             .unwrap()
-            .clone();
+            .into_owned();
         series.render_type = DataRenderType::ScatterLine {
             line,
             scatter: DataScatterStyleConfig {

@@ -53,7 +53,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => false,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => false,
     }
 }
 
@@ -545,8 +546,13 @@ pub(super) fn stream_phase_columns(
     }
     let data_count = count;
     let style_index = match phase {
-        StreamDrawPhase::Scatter => extract_scatter(&series.render_type)
-            .and_then(|style| style.point_style_index_column.as_deref()),
+        StreamDrawPhase::Scatter => {
+            extract_scatter(&series.render_type).and_then(|style| match style {
+                std::borrow::Cow::Borrowed(style) => style.point_style_index_column.as_deref(),
+                // A derived (radar) marker style reads no style-index column.
+                std::borrow::Cow::Owned(_) => None,
+            })
+        }
         StreamDrawPhase::Errorbar => extract_errorbar_style(&series.render_type)
             .and_then(|style| style.error_bar_style_index_column.as_deref()),
         StreamDrawPhase::Line | StreamDrawPhase::Histogram | StreamDrawPhase::Field => None,
@@ -637,6 +643,18 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::BoxPlot { .. } => Ok(&[]),
+        // Nor to radar series: a polygon closes on its first vertex. Rejected
+        // before a cursor exists; this is a backstop.
+        DataRenderType::Radar { .. } if primitives.line || primitives.scatter => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "radar series require GPU-resident columns; streamed sources are not \
+                         supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::Radar { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {

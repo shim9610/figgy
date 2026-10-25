@@ -18,6 +18,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        // A radar vertex maps no value to its marker.
+        | DataRenderType::Radar { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -206,6 +208,29 @@ impl FiggyChart {
                 result["index"] = serde_json::json!(point_index);
                 result["x"] = serde_json::json!(values[0]);
                 result["y"] = serde_json::json!(values[1]);
+                // A radar vertex also names its category: the angle axis'
+                // category at its index.
+                if series.render_type.radar().is_some() {
+                    let config = self.chart_config();
+                    let panel = match config.layer_of_series(&series.series_id) {
+                        renderer::LayerRef::Subplot(index)
+                        | renderer::LayerRef::SubplotOverlay(index, _) => config
+                            .subplots
+                            .get(index)
+                            .map_or(config, |subplot| &subplot.config),
+                        renderer::LayerRef::Base
+                        | renderer::LayerRef::Overlay(_)
+                        | renderer::LayerRef::Annotations => config,
+                    };
+                    let category = panel
+                        .bottom_x
+                        .categories
+                        .as_deref()
+                        .and_then(|categories| categories.get(*point_index))
+                        .ok_or_else(|| js_err("selected category no longer exists"))?;
+                    result["category_id"] = serde_json::json!(category.id);
+                    result["category_label"] = serde_json::json!(category.label);
+                }
                 let mut next = 2;
                 if color_column.is_some() {
                     result["color_value"] = serde_json::json!(values[next]);
@@ -436,8 +461,9 @@ impl FiggyChart {
                 source_id,
                 point_index,
             } => {
-                // Point-bearing series: lines, markers and point vectors,
-                // whose anchors pick and highlight like markers.
+                // Point-bearing series: lines, markers, radar vertices and
+                // point vectors, whose anchors pick and highlight like
+                // markers. A radar vertex steps along its categories.
                 let points = self
                     .chart_series()
                     .iter()
@@ -449,6 +475,7 @@ impl FiggyChart {
                             .values()
                             .next()
                             .is_some_and(|v| v["line"].is_object() || v["scatter"].is_object())
+                            || s.render_type.radar().is_some()
                             || matches!(
                                 vector_columns(&s.render_type),
                                 Some(VectorColumns::Points { .. })

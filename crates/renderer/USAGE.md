@@ -457,7 +457,7 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
 - **Overlay axes, subplots and annotations**: each overlay layer draws its series
   against its own right-hand Y axis; subplots arrange whole charts in a grid with
   linked or twin axes; the annotation layer adds reference lines, spans,
-  text and arrows. Polar, radar and radial charts have no value axes: they draw
+  text and arrows. Polar charts (radar charts included) and radial charts have no value axes: they draw
   ratio-anchored text and arrows only and skip reference lines, spans and
   data-anchored items with `RenderWarning::AnnotationSkipped`. A document has
   one annotation layer, drawn in the parent chart's area; subplots have none of
@@ -487,13 +487,16 @@ titles, axes, labels and legends are the Cartesian chart's
 
 ### Radar charts
 
-`RadarRenderer` compares 1 to 16 series over 3 to 64 categories: one spoke
-per category, one shared value axis, closed polygons with fills, outlines and
-vertex markers on a polygon or circular grid. The host supplies one value per
-category and series; per-spoke normalization is not computed. See the
+A radar chart is a polar chart with a categorical angle axis: one spoke per
+category, one shared numeric radius axis, and `DataRenderType::Radar` series
+drawn as closed outlines with fills and vertex markers on a polygon
+(`PolarOptions.grid_shape`) or circular grid. The host supplies one value per
+category and series as columns; per-spoke normalization is not computed.
+`Config::from_radar` opens a legacy `RadarChart` document. See the
 [radar guide](RADAR.md) or run
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`.
-Titles, labels and legends use the [shared interaction API](INTERACTION.md).
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`.
+Picking, selection, titles, axes, labels and legends are the polar chart's
+([interaction guide](INTERACTION.md)).
 
 ### Polar plots
 
@@ -935,7 +938,7 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
   [설정](CONFIG.md#벡터장)과 `vector_field` 예제.
 - **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
-  더한다. 극좌표·레이더·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
+  더한다. 극좌표(레이더 포함)·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
   기준선·구간과 데이터 좌표 항목은 `RenderWarning::AnnotationSkipped` 경고를 내고 건너뛴다.
   주석 층은 문서마다 하나이며 부모 차트 영역에 그린다. 서브플롯에는 따로 없다.
   [오버레이](INTERACTION.md#overlay-layers), [서브플롯](INTERACTION.md#subplots),
@@ -960,12 +963,13 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 레이더 차트
 
-`RadarRenderer`는 고정된 범주 집합 위에서 몇 개의 시리즈를 비교한다. 범주마다 스포크 하나,
-값 축은 하나를 공유하며, 각 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 다각형이다. 고리는
-다각형(거미줄) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가 넣으며 스포크별 정규화는
-계산하지 않는다. [사용법](RADAR.md)을 참고하거나
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+레이더 차트는 각도 축이 범주형인 극좌표 차트다. 범주마다 스포크 하나, 숫자 반지름 축 하나를
+공유하며, `DataRenderType::Radar` 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 외곽선이다. 고리는
+다각형(거미줄, `PolarOptions.grid_shape`) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가
+컬럼으로 넣으며 스포크별 정규화는 계산하지 않는다. 예전 `RadarChart` 문서는 `Config::from_radar`로 연다.
+[사용법](RADAR.md)을 참고하거나
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 극좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 극좌표 플롯
 

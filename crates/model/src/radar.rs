@@ -1,10 +1,21 @@
-//! Small radar (spider) charts: a few series compared over a fixed set of
-//! categories, one spoke per category, drawn as closed polygons over one
-//! shared value axis. Values are the host's; the renderer never normalizes a
-//! spoke to its own range.
-use crate::format::PlainNumberFormat;
+//! The legacy radar (spider) chart document, kept as a reader.
+//!
+//! A radar chart is a polar chart now: a `Config` with
+//! [`Config::polar`](crate::config::Config::polar), a categorical angle axis
+//! ([`crate::config::AxisOptions::categories`] on `bottom_x`) and one
+//! [`DataRenderType::Radar`](crate::data_config::DataRenderType::Radar)
+//! series per radar series, whose values are a column of the renderer's
+//! column pool. A [`RadarChart`] document still parses and validates here,
+//! and `Config::from_radar` turns it into that chart and the uploads of its
+//! values. Values are the host's; the renderer never normalizes a spoke to
+//! its own range.
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
+
+/// The marker, label and series style types live with the series kinds
+/// now ([`crate::data_config::DataRenderType::Radar`]); these paths keep
+/// working.
+pub use crate::data_config::{RadarLabels, RadarMarker, RadarSeriesStyle};
 
 /// The fewest categories (spokes) a radar chart draws.
 pub const MIN_RADAR_CATEGORIES: usize = 3;
@@ -56,51 +67,6 @@ pub enum RadarGridShape {
     Circle,
 }
 
-/// The marker drawn at every vertex of a series.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RadarMarker {
-    /// No marker.
-    None,
-    /// A filled circle (the default).
-    #[default]
-    Circle,
-    /// A filled square.
-    Square,
-}
-
-/// Data labels at the vertices.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum RadarLabels {
-    /// No data labels (the default).
-    #[default]
-    None,
-    /// Every vertex of every series.
-    Values,
-    /// The vertices of the hovered or selected series only.
-    Emphasized,
-}
-
-/// Per-series appearance. `None` fields fall back to the chart style.
-#[derive(Clone, Debug, Default, PartialEq)]
-#[cfg_attr(
-    feature = "serde",
-    derive(serde::Serialize, serde::Deserialize),
-    serde(default)
-)]
-pub struct RadarSeriesStyle {
-    /// Outline width in logical pixels.
-    pub line_width_px: Option<f32>,
-    /// The polygon fill. `None` fills with the series colour at the chart's
-    /// `fill_opacity`; a transparent colour draws the outline only.
-    pub fill: Option<Color>,
-    /// The marker at every vertex.
-    pub marker: Option<RadarMarker>,
-    /// Marker diameter (circle) or side length (square) in logical pixels.
-    pub marker_size_px: Option<f32>,
-}
-
 /// The chart-wide appearance: spoke layout, grid, and the series defaults a
 /// `RadarSeriesStyle` can override.
 #[derive(Clone, Debug, PartialEq)]
@@ -129,7 +95,9 @@ pub struct RadarStyle {
     /// Default marker diameter (circle) or side length (square) in logical
     /// pixels.
     pub marker_size_px: f32,
-    /// Added to the colour of the hovered or selected series.
+    /// Added to the colour of the hovered or selected series by the former
+    /// renderer. [`Config::from_radar`](crate::config::Config::from_radar)
+    /// does not carry it: a picked vertex takes the picked ring instead.
     pub emphasis_brightness: f32,
 }
 impl Default for RadarStyle {
@@ -140,10 +108,10 @@ impl Default for RadarStyle {
             grid_shape: RadarGridShape::Polygon,
             spoke_color: Color::from_rgb8(200, 206, 214),
             ring_color: Color::from_rgb8(224, 229, 235),
-            line_width_px: 2.0,
-            fill_opacity: 0.25,
-            marker: RadarMarker::Circle,
-            marker_size_px: 7.0,
+            line_width_px: RadarSeriesStyle::DEFAULT_LINE_WIDTH_PX,
+            fill_opacity: RadarSeriesStyle::DEFAULT_FILL_OPACITY,
+            marker: RadarSeriesStyle::DEFAULT_MARKER,
+            marker_size_px: RadarSeriesStyle::DEFAULT_MARKER_SIZE_PX,
             emphasis_brightness: 0.08,
         }
     }
@@ -188,9 +156,8 @@ impl RadarSeries {
     }
 }
 
-/// A radar chart: the whole small-data model one `RadarRenderer::prepare`
-/// draws. `prepare` validates it first and returns `RadarError::Invalid` with
-/// the reason; [`Self::validate`] runs the same check without preparing.
+/// A legacy radar chart document. [`Self::validate`] checks it, and
+/// `Config::from_radar` opens it as a polar chart of radar series.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -228,9 +195,9 @@ pub struct RadarChart {
     pub series: Vec<RadarSeries>,
     /// Chart-wide appearance and series defaults.
     pub style: RadarStyle,
-    /// The hovered vertex or series. Its series is brightened by
-    /// `emphasis_brightness`, and a hovered vertex grows its marker like a
-    /// selected one.
+    /// The hovered vertex or series. The former renderer brightened its
+    /// series by `emphasis_brightness` and grew a hovered vertex's marker
+    /// like a selected one; `Config::from_radar` does not carry it.
     pub hovered: Option<RadarTarget>,
     /// The selected vertex or series; a selected vertex grows its marker.
     pub selected: Option<RadarTarget>,
@@ -242,14 +209,17 @@ pub struct RadarChart {
     /// Appended to every data label, such as a unit.
     pub value_suffix: String,
     /// The one value axis every spoke shares, from the centre (`[0]`) to the
-    /// outer ring (`[1]`). `None` fits the supplied values with a nice range
-    /// starting at zero when every value is non-negative. Values below the
-    /// start sit at the centre; values above the end are clipped to the
-    /// outer ring.
+    /// outer ring (`[1]`): the fixed radius axis of the chart
+    /// [`Config::from_radar`](crate::config::Config::from_radar) reads.
+    /// `None` leaves the range to the host's fit (the browser wrapper fits
+    /// the supplied values with a nice range starting at zero when every
+    /// value is non-negative). A value below the start is not drawn, so the
+    /// outline breaks there; a value above the end is clipped at the outer
+    /// ring.
     pub value_range: Option<[f64; 2]>,
-    /// Ring spacing in value units. `None` picks a nice spacing for about
-    /// five rings; a spacing that gives more than 100 rings is refused by
-    /// `RadarRenderer::prepare`.
+    /// Ring spacing in value units: the radius axis' major spacing, under
+    /// that axis' tick limits. `None` picks a nice spacing for about five
+    /// rings.
     pub ring_spacing: Option<f64>,
     /// Whether rings and spokes are drawn.
     pub grid: bool,
@@ -347,18 +317,16 @@ impl RadarChart {
     /// The resolved outline width, fill colour, marker and marker size of a
     /// series: its own style where set, else the chart style.
     pub fn resolved_style(&self, series: &RadarSeries) -> (f32, Color, RadarMarker, f32) {
-        let own = series.style.as_ref();
-        let fill = own.and_then(|s| s.fill).unwrap_or(Color {
-            a: series.color.a * self.style.fill_opacity,
-            ..series.color
-        });
+        let style = series
+            .style
+            .clone()
+            .unwrap_or_default()
+            .resolved_from(&self.style);
         (
-            own.and_then(|s| s.line_width_px)
-                .unwrap_or(self.style.line_width_px),
-            fill,
-            own.and_then(|s| s.marker).unwrap_or(self.style.marker),
-            own.and_then(|s| s.marker_size_px)
-                .unwrap_or(self.style.marker_size_px),
+            style.line_width(),
+            style.fill_color(series.color),
+            style.marker(),
+            style.marker_size(),
         )
     }
     /// Whether the hovered or selected target emphasizes `series_id`.
@@ -367,14 +335,6 @@ impl RadarChart {
             .into_iter()
             .flatten()
             .any(|t| t.series_id == series_id)
-    }
-    /// A data label: `value` at `label_decimals` with `value_suffix`.
-    pub fn label_text(&self, value: f64) -> String {
-        format!(
-            "{}{}",
-            PlainNumberFormat::fixed(self.label_decimals, false).format(value),
-            self.value_suffix
-        )
     }
     /// Reorder the spokes to `ids`, a permutation of the category ids,
     /// moving every series' values with them.
@@ -432,12 +392,7 @@ impl RadarChart {
                 return Err("invalid series ID/label, color or value count");
             }
             if let Some(st) = &s.style {
-                if st.line_width_px.is_some_and(|v| !range(v, 0.0, 12.0))
-                    || st.fill.is_some_and(|c| !color(c))
-                    || st.marker_size_px.is_some_and(|v| !range(v, 1.0, 24.0))
-                {
-                    return Err("invalid radar series style");
-                }
+                st.validate()?;
             }
         }
         let st = &self.style;
@@ -568,7 +523,7 @@ mod tests {
             line_width_px: Some(4.0),
             fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
             marker: Some(RadarMarker::None),
-            marker_size_px: None,
+            ..Default::default()
         });
         let (width, fill, marker, size) = c.resolved_style(&c.series[0]);
         assert_eq!(
@@ -604,13 +559,6 @@ mod tests {
         c.reorder_categories(&["c", "a", "b"]).unwrap();
         assert_eq!(c.series[0].values, vec![3.0, 1.0, 2.0]);
         assert_eq!(c.value(&RadarTarget::vertex("s", "c")), Some(3.0));
-    }
-    #[test]
-    fn labels_format_values_with_decimals_and_suffix() {
-        let mut c = chart();
-        c.label_decimals = 2;
-        c.value_suffix = " pt".into();
-        assert_eq!(c.label_text(2.5), "2.50 pt");
     }
     #[cfg(feature = "serde")]
     #[test]

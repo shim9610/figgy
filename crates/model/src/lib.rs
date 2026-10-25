@@ -47,9 +47,9 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape,
-    SeriesConfig, SeriesRef, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
-    VectorStyle,
+    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, RadarRef,
+    RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, SizeScale, VectorColorMap,
+    VectorComponents, VectorPivot, VectorScale, VectorStyle,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};
@@ -80,7 +80,10 @@ pub use categorical::*;
 pub mod boxplot;
 pub use boxplot::*;
 pub mod polar;
-pub use polar::{AngleUnit, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation, PolarOptions};
+pub use polar::{
+    AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
+    PolarOptions,
+};
 pub mod radar;
 pub use radar::*;
 

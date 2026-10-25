@@ -329,6 +329,10 @@ pub struct ColumnLineLayer<'a> {
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the milkyway/constellation PSF/LUT bind group. `None` for precise/sketch.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+    /// Whether the line is a closed polygon (a radar series): one more
+    /// segment, from the last point back to the first, drawn with the same
+    /// pipeline (`draw_line_layer`).
+    pub closed: bool,
 }
 
 /// The area fill of one columnar line series: under the line to a baseline,
@@ -348,6 +352,10 @@ pub struct ColumnAreaLayer<'a> {
     /// Strip vertices per instance: [`LINE_PRECISE_VERTICES_PER_INSTANCE`] per
     /// step piece through [`line_strip_vertex_count`].
     pub verts_per_instance: u32,
+    /// Whether the fill closes its polygon (a radar series on a full
+    /// circle): one more trapezoid under the segment from the last point
+    /// back to the first.
+    pub closed: bool,
 }
 
 /// Issue one line-slot draw (the shared 6-slot binding scheme). Used for the
@@ -369,7 +377,7 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     let y_next = (y_full.start + crate::data::COLUMN_VALUE_BYTES as u64)..y_full.end;
     let x_f32_shift = (x_full.start + 4)..x_full.end;
     pass.set_vertex_buffer(0, l.pool_buffer.slice(x_full.clone()));
-    pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full));
+    pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full.clone()));
     pass.set_vertex_buffer(2, l.pool_buffer.slice(x_next));
     pass.set_vertex_buffer(3, l.pool_buffer.slice(y_next));
     // Arc-length prefix (dash phase / constellation arc); solid precise lines
@@ -380,7 +388,7 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
             pass.set_vertex_buffer(5, buf.slice(4..*len_bytes));
         }
         None => {
-            pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full));
+            pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full.clone()));
             pass.set_vertex_buffer(5, l.pool_buffer.slice(x_f32_shift));
         }
     }
@@ -388,4 +396,51 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     // picked: 4 (precise) / 18 (sketch, constellation ribbon) per step piece,
     // through `line_strip_vertex_count`.
     pass.draw(0..l.verts_per_instance, 0..(count - 1));
+    if l.closed {
+        // The closing segment: the same instance with A at the last point
+        // and B at the first. A closed line is solid (a radar outline), so
+        // its arc slots hold the inert filler; a bound prefix gives the
+        // segment the last point's arc at both ends.
+        let last = u64::from(count - 1);
+        let value = crate::data::COLUMN_VALUE_BYTES as u64;
+        pass.set_vertex_buffer(
+            0,
+            l.pool_buffer
+                .slice((x_full.start + last * value)..x_full.end),
+        );
+        pass.set_vertex_buffer(
+            1,
+            l.pool_buffer
+                .slice((y_full.start + last * value)..y_full.end),
+        );
+        pass.set_vertex_buffer(2, l.pool_buffer.slice(x_full.clone()));
+        pass.set_vertex_buffer(3, l.pool_buffer.slice(y_full.clone()));
+        if let Some((buf, len_bytes)) = l.arc.as_ref() {
+            let at = last * 4;
+            pass.set_vertex_buffer(4, buf.slice(at..*len_bytes));
+            pass.set_vertex_buffer(5, buf.slice(at..*len_bytes));
+        }
+        pass.draw(0..l.verts_per_instance, 0..1);
+    }
+}
+
+/// Issue the closing trapezoid of a closed area fill: the area instance with
+/// A at the last point and B at the first (`issue_series_fill` draws the
+/// others). `count` is the drawn point count.
+pub(super) fn draw_area_closing(
+    pass: &mut wgpu::RenderPass<'_>,
+    a: &ColumnAreaLayer<'_>,
+    count: u32,
+) {
+    let last = u64::from(count.saturating_sub(1));
+    let value = crate::data::COLUMN_VALUE_BYTES as u64;
+    let at_last = |range: std::ops::Range<u64>| (range.start + last * value)..range.end;
+    let (x, y, base) = (a.x.byte_range(), a.y.byte_range(), a.base.byte_range());
+    pass.set_vertex_buffer(0, a.pool_buffer.slice(at_last(x.clone())));
+    pass.set_vertex_buffer(1, a.pool_buffer.slice(at_last(y.clone())));
+    pass.set_vertex_buffer(2, a.pool_buffer.slice(x));
+    pass.set_vertex_buffer(3, a.pool_buffer.slice(y));
+    pass.set_vertex_buffer(4, a.pool_buffer.slice(at_last(base.clone())));
+    pass.set_vertex_buffer(5, a.pool_buffer.slice(base));
+    pass.draw(0..a.verts_per_instance, 0..1);
 }

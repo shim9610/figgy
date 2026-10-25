@@ -91,7 +91,8 @@ struct PickQueryParams {
     stream: vec4<u32>,
     // (step interpolation mode: 0 linear, 1 step-pre, 2 step-post,
     //  3 step-mid; 1 when `pick_arc` holds this series' cumulative arc
-    //  prefix; the rest reserved). The step mode mirrors the line shader's
+    //  prefix; 1 when the line is closed, its last point joined back to the
+    //  first; reserved). The step mode mirrors the line shader's
     //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
     line: vec4<u32>,
     // `point_size_map`: (size f32-lane base, size logical length, 0, 0).
@@ -363,6 +364,24 @@ fn pick_line_projected_may_hit(a_px: f32, b_px: f32, axis: u32) -> bool {
     let cursor = pick_axis_cursor(axis);
     return cursor >= min(a_px, b_px) - threshold
         && cursor <= max(a_px, b_px) + threshold;
+}
+
+// The point after `point_index` along the drawn line: the next one, or the
+// first after the last on a closed line (`line.z`, a radar outline), whose
+// closing segment the line shader draws as one more instance.
+fn pick_next_point(point_index: u32) -> u32 {
+    let next = point_index + 1u;
+    if pick_query_params.line.z != 0u && next >= pick_query_params.data.x {
+        return 0u;
+    }
+    return next;
+}
+
+// Whether `point_index` starts a drawn segment: every point but the last,
+// and the last too on a closed line.
+fn pick_starts_segment(point_index: u32) -> bool {
+    let count = pick_query_params.data.x;
+    return point_index + 1u < count || (pick_query_params.line.z != 0u && count > 1u);
 }
 
 fn pick_linear_workgroup_id(workgroup_id: vec3<u32>) -> u32 {

@@ -4,12 +4,13 @@
 //! event loop, this file owns the wgpu surface, and egui (through
 //! `egui-winit` + `egui-wgpu`, no eframe) draws the control panel over it.
 //!
-//! - Cartesian scenes (lines/areas/steps, scatter + error bars, histogram,
-//!   heatmap + contours, log axes, twin Y axes, subplots, annotations, up to
-//!   100 million resident points) are registered charts of one `Renderer`. The renderer paints
-//!   them straight into the surface pass; egui draws on top.
-//! - Bounded scenes (radial, radar) render into an
-//!   offscreen texture that egui shows as an image.
+//! - Cartesian and polar scenes (lines/areas/steps, scatter + error bars,
+//!   histogram, heatmap + contours, log axes, twin Y axes, subplots,
+//!   annotations, category bars, box plots, radar, up to 100 million
+//!   resident points) are registered charts of one `Renderer`. The renderer
+//!   paints them straight into the surface pass; egui draws on top.
+//! - The bounded scene (radial) renders into an offscreen texture that egui
+//!   shows as an image.
 //!
 //! Pointer, on the chart:
 //! - Left press: select the element (axis, labels, titles, legend, data

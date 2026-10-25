@@ -114,7 +114,9 @@ impl PreparationFeature {
                 | DataRenderType::ScatterErrorbarXY { .. }
                 | DataRenderType::LineScatterErrorbarX { .. }
                 | DataRenderType::LineScatterErrorbarY { .. }
-                | DataRenderType::LineScatterErrorbarXY { .. } => Self::Basic,
+                | DataRenderType::LineScatterErrorbarXY { .. }
+                // A radar series draws through the line and scatter pipelines.
+                | DataRenderType::Radar { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);

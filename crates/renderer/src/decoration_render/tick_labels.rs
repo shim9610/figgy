@@ -20,7 +20,7 @@ pub(crate) struct NumericTickLabel {
 }
 
 impl NumericTickText {
-    pub(super) fn as_tick_text(&self) -> TickText<'_> {
+    pub(crate) fn as_tick_text(&self) -> TickText<'_> {
         match self {
             NumericTickText::Plain(text) => TickText::Plain(text),
             NumericTickText::Power(text) => TickText::Power(text),

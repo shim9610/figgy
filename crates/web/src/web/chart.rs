@@ -1320,6 +1320,95 @@ impl FiggyChart {
         Ok(())
     }
 
+    /// Open a legacy radar document (`RadarChart` JSON, what
+    /// `FiggyBoundedChart` took as the `"radar"` family) as this polar chart.
+    ///
+    /// `Config::from_radar` turns the document into a polar config whose
+    /// angle axis holds the document's categories, one `Radar` series per
+    /// document series and the columns those read: the category indices
+    /// (`radar.positions`) and one value column per series
+    /// (`radar.values.<series id>`). The values upload through borrowed
+    /// adapters; nothing is copied. Without a document `value_range` the
+    /// radius axis is fitted to the value columns' statistics, from zero
+    /// when no value is negative (as the former chart fitted it), and
+    /// rounded to nice ticks; a document `ring_spacing` is the ring spacing
+    /// either way. The chart keeps its chart area; the series, columns and
+    /// config of a radar document opened before are replaced, every other
+    /// column stays. From here on the chart is edited through the Cartesian
+    /// API (`get_config` / `set_config`, `get_series` / `set_series`, the
+    /// column registry), and its vertices pick, select and step as points.
+    ///
+    /// JS: `chart.set_radar_document(JSON.stringify(doc));`
+    pub fn set_radar_document(&mut self, json: &str) -> Result<(), JsValue> {
+        let document: renderer::RadarChart = serde_json::from_str(json).map_err(js_err)?;
+        document.validate().map_err(js_err)?;
+        let (mut config, series, uploads) = renderer::config::Config::from_radar(&document);
+        config.chart_area = self.chart_config().chart_area.clone();
+
+        // Retire the previous document's series, then its columns.
+        let empty = self.chart_config().clone();
+        self.replace_chart_state(empty, Vec::new())?;
+        self.labels.clear();
+        self.styles.clear();
+        for upload in &uploads {
+            if self.columns.contains_key(&upload.column) {
+                self.remove_column(&upload.column)?;
+            }
+            self.upsert_column_atomic(
+                &upload.column,
+                upload.values.len(),
+                super::columns::ColumnUploadSource::Scalar(&upload.values),
+            )?;
+        }
+
+        if document.value_range.is_none() {
+            // Fit the radius axis to the values, from zero when none is
+            // negative, and round it to nice ticks. A range fit resets the
+            // label format, so the document's is put back.
+            let format = config.left_y.label_style.format.clone();
+            let mut chart = renderer::Chart::new(config);
+            chart
+                .auto_fit_layer_union(self.renderer.pool(), renderer::LayerRef::Base, &series, 0.0)
+                .map_err(js_err)?;
+            config = chart.config().clone();
+            let radius = &mut config.left_y;
+            radius.label_style.format = format;
+            let min = if radius.min >= 0.0 { 0.0 } else { radius.min };
+            let max = radius.max;
+            if radius.auto_ticks(min, max, 5).is_ok()
+                && let Some(spacing) = document.ring_spacing
+            {
+                radius.major_spacing = spacing;
+            }
+        }
+
+        let (scale, _) = self.display_scale_and_panel();
+        let mut styles = Vec::new();
+        styles.try_reserve(series.len()).map_err(js_err)?;
+        for cfg in &series {
+            styles.push(
+                self.renderer
+                    .create_style_for_series_scaled(cfg, scale)
+                    .map_err(js_err)?,
+            );
+        }
+        let mut labels = Vec::new();
+        labels.try_reserve(series.len()).map_err(js_err)?;
+        labels.extend(
+            series
+                .iter()
+                .map(|cfg| cfg.label.as_ref().map(Self::rich_text_to_plain)),
+        );
+        let count = series.len();
+        self.replace_chart_state(config, series)?;
+        // The document wrote its own legend.
+        self.legend_auto_managed = false;
+        self.labels = labels;
+        self.styles = styles;
+        self.color_seq = count.max(self.color_seq);
+        Ok(())
+    }
+
     // ---- frame / resize / export ----
 
     /// Wait until previously submitted GPU work has finished. Does not

@@ -18,8 +18,9 @@ at the time. The first crates.io publication is recorded below.
 Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
-new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups` and
-the `CategoryBars` and `BoxPlot` series kinds) are additive.
+new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups`,
+`grid_shape`, the radar series style's `fill_opacity` and
+the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -389,6 +390,75 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   are not carried. Removed: `BoxPlotChart::label_text` (a box's label is
   `format_box_plot_labels`'). Migration: an exhaustive match on
   `UploadValues` adds `BoxRecord` and `BoxOutliers`.
+- **Categorical angle axis and polygon grid**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A polar
+  chart's angle axis (`bottom_x`) may now be categorical
+  (`AxisOptions::categories`), which `Config::validate_polar` rejected
+  before: category `i` of `n` sits at `i / n` of the turn (or of
+  `sector`) from `zero_angle_degrees`, in the `clockwise` direction, so the
+  angle column holds the category positions `0..n`. `polar::AngleMap`
+  (`Config::polar_angle_map`, `PolarOptions::angle_map`) is the one mapping
+  from an angle value to the screen for both axis kinds; on a numeric axis
+  it gives the constants the projection used before, bit for bit.
+  `PolarOptions.grid_shape: Option<GridShape>` (`Circle`, the default, or
+  `Polygon`) joins every ring and the outer ring with chords at the
+  categories; a `Polygon` grid needs a categorical angle axis
+  (`InvalidConfig { field: "polar" }` otherwise). The key is additive and
+  omitted at its default. Migration: a Rust literal of `PolarOptions` adds
+  `grid_shape: None` (or ends in `..Default::default()`).
+- **Radar is a polar series kind**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+  `DataRenderType::Radar { color, style, labels }` draws a closed outline
+  through one value per category of a polar chart's categorical angle
+  axis: `x_column` the positions column `0..n`, `y_column` the values. The
+  closing segment joins the last category to the first; a NaN value breaks
+  the outline and the fill there. `RadarSeriesStyle`, `RadarMarker` and
+  `RadarLabels` move to `model::data_config`; `model::radar` re-exports
+  them, so existing paths keep working. `RadarSeriesStyle` gains the
+  optional `fill_opacity` (the default fill is the colour at 25 %), omitted
+  when unset, and the `DEFAULT_*` constants, `resolved_from(&RadarStyle)` and
+  `validate`. New items: `RadarSeriesLabels` (placement, decimals, suffix
+  and `text`, one drawn string per category, at most
+  `MAX_RADAR_LABEL_CHARS` each), `RadarRef` / `DataRenderType::radar`
+  (with the line and marker styles the series draws with),
+  `validate_radar_series`, `Config::validate_radar` (a polar chart with a
+  categorical angle axis and `Chord` interpolation, at most 16 radar series
+  per layer) and `format_radar_labels`, which writes `labels.text` at edit
+  time. Value labels are configuration only in this release; the renderer
+  validates the text and does not draw it yet (#40 item 13h). Every new key
+  is additive and omitted at its default; model 0.12.1 and older documents
+  parse and re-serialize byte for byte. Migration: an exhaustive match on
+  `DataRenderType` adds `Radar`; a Rust literal of `RadarSeriesStyle` that
+  names every field adds `fill_opacity: None` (or ends in
+  `..Default::default()`).
+- **The radar chart is a document reader**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+  `RadarChart` stays the serialized document of releases up to 0.12 and
+  keeps its `validate`. `Config::from_radar(&chart) -> (Config,
+  Vec<SeriesConfig>, Vec<SeriesUpload<'_>>)` (`model::bounded_sources`)
+  turns it into a polar chart whose angle axis holds the categories and
+  one `Radar` series per document series, each with its style's unset
+  fields read from the chart style. The uploads borrow the document's
+  values: the positions column `radar.positions`
+  (`RADAR_POSITIONS_COLUMN`) first, then one value column per series,
+  `radar.values.<series id>` (`radar_values_column`,
+  `UploadValues::Dense`); nothing is copied. `start_angle_degrees` becomes
+  `zero_angle_degrees` (negated: the document measured with y down) and
+  the ring labels' ray, `clockwise` and `grid_shape` the polar options,
+  `value_range` the fixed radius axis with `ring_spacing` as its spacing
+  (without a `value_range` the range is the host's to fit); the grid,
+  ring and spoke colours, font, colours, legend, chart title, annotations,
+  active layer, a selected vertex, label settings (with the text written
+  from the values) and the title, legend and ring label offsets map onto
+  their polar options; the hover state, a selected whole series, the
+  chart style's `emphasis_brightness`, the background colour, an explicit `decorations.data_area`, the spoke and
+  value label offsets and the decoration selection are not carried.
+  Removed: `RadarChart::label_text` (a vertex's label is
+  `format_radar_labels`'). Migration: an exhaustive match on
+  `UploadValues` adds `Dense`; a document's `style.emphasis_brightness` is
+  read and kept in the document but not drawn: the former renderer
+  brightened the hovered or selected series, and a picked vertex now takes
+  the polar chart's picked ring instead.
 
 <a id="unreleased-renderer"></a>
 
@@ -790,6 +860,70 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   1 916 942 and 352 881. None is pixel identical; every difference is the
   chrome above.
 
+- **Categorical polar angle axis**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). The polar
+  projection reads its angle constants from `AngleMap`, so a categorical
+  angle axis places category `i` at `i / n` of the turn or sector with no
+  shader change; a numeric axis draws pixel-identically. The polar axes
+  draw a categorical axis' spokes at the categories with
+  `categories[i].label` as spoke labels (an empty label draws nothing and
+  registers nothing), the rings at the radius majors and no minor angle
+  ticks, and a `Polygon` grid as chords between the category spokes. Hover,
+  click selection, decoration drag (the ring labels along the ray, the
+  spoke labels along their spokes, the ray turning), the plot area, the
+  annotation layer, subplots and PNG export follow the polar rules
+  unchanged.
+- **Radar series on the line and scatter paths**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A `Radar`
+  series draws as the polar line layer with a new `closed` flag, one more
+  instance that joins the last vertex to the first, its fill to the inner
+  ring through the area layer (`closed` too, on a full circle; a sector
+  leaves the closing wedge unfilled) and its vertex markers through the
+  scatter path, all built on every draw from the two columns; nothing per
+  vertex is stored on the CPU. The GPU pick gains the closing segment
+  (`line.z` of the pick query, `pick_next_point` and `pick_starts_segment`
+  in the pick core, a closed line scanned directly) and the closed fill,
+  with the tie rule markers over the outline over the fill, and answers
+  `PickedData::Point` with the category row as `point_index`; a picked
+  vertex draws the picked ring. The radius-axis fit
+  (`auto_fit_layer_union`) covers the value columns. A radar series is
+  drawn in the precise draw style only; a radar series on a rectangular
+  chart, a numeric angle axis, an `Arc` interpolation, more than 16 radar
+  series in a layer or columns that do not hold one value per category are
+  rejected with `InvalidSeriesConfig`, and a streamed radar series with
+  "radar series require GPU-resident columns; streamed sources are not
+  supported".
+- **The legacy radar renderer is removed.** `RadarRenderer`, `RadarFrame`
+  (`hit_test`, `part_rect`, `vertex_position`, `plot_rect`, `plot_circle`,
+  `decorations`, …), `RadarPick`, `RadarPart`, `RadarError`, `radar.wgsl`,
+  `radar_layout.rs` and its `polygon_distance` are gone, with the bounded
+  decoration helpers only they used; `renderer::radar` is the model's
+  document module. Migration: read the document with `Config::from_radar`,
+  upload its `SeriesUpload`s with `add_column`, fit the radius axis with
+  `auto_fit_layer_union` when the document has no `value_range` and draw
+  with the Cartesian `Renderer`; a vertex is picked with `pick_chart_data`.
+  The `radar_editor` example is removed; `radar_gallery` draws through the
+  reader and `bounded_titles` writes only `pie.png`.
+- **Look of a radar document.** Opened through the reader, a document draws
+  with the polar chrome instead of the former bounded layout: the plot is
+  the polar circle inside the Cartesian margins (the explicit
+  `decorations.data_area` is not carried), the legend is the Cartesian
+  legend box, the export clear colour replaces the document's
+  `background`, the ring labels are the radius tick labels on the ray, a
+  picked vertex draws the picked ring instead of the brightened series,
+  the ring labels include the centre's `0`, and value labels are not drawn
+  yet. The polygons, fills and markers themselves keep their places.
+  Changed pixels of whole 960 × 640 exports of the five `radar_gallery`
+  cases against the former renderer, composited over white (raw RGBA,
+  the clear colour differing, is 100 % in each): spider web 67 747
+  (11.0 %), circle values 72 870 (11.9 %), fixed axis 100 298 (16.3 %),
+  four series 132 665 (21.6 %), selection 111 500 (18.1 %); at 2x
+  251 852, 269 546, 384 227, 514 080 and 429 467. The released 0.12.1
+  edited document at 800 × 600, composited over its own background:
+  94 450 (19.7 %), 92 855 with a channel difference above 8; at 2x
+  371 662 and 365 452. None is pixel identical; every difference is the
+  chrome above.
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -847,6 +981,21 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   creating one with it is an error that names the new method. Migration:
   replace `FiggyBoundedChart.create(canvas, "boxplot", json, w, h)` with a
   `FiggyChart` and `set_boxplot_document(json)`; boxes are picked with
+  `pick_data` and selected through `picked_data`.
+- **Radar documents in the Cartesian wrapper**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+  `FiggyChart.set_radar_document(json)` opens a `RadarChart` document as
+  radar series on a polar chart (`Config::from_radar`), registering its
+  positions column and one value column per series from the borrowed
+  values, and fitting the radius axis (from zero when no value is
+  negative, nice ticks, the document's `ring_spacing` kept) unless the
+  document fixes `value_range`. `selection_details()` adds a selected
+  vertex's `category_id` and `category_label`, and `step_selection` steps
+  the vertices of the series and across the radar series.
+  `FiggyBoundedChart` no longer has the `"radar"` family; creating one with
+  it is an error that names the new method. Migration: replace
+  `FiggyBoundedChart.create(canvas, "radar", json, w, h)` with a
+  `FiggyChart` and `set_radar_document(json)`; vertices are picked with
   `pick_data` and selected through `picked_data`.
 
 ### Tests and guards
@@ -927,6 +1076,28 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   layout tests and the bounded span underlay test (radial and radar charts
   place no spans); the annotation hit-region test that drew on boxes runs
   on a radar chart.
+- **Radar series** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13g). `radar_series_render` checks the polygon, its closing segment
+  and fill, the zero angle and direction, a NaN vertex, a sector, several
+  series, circular and polygon grids, the category spoke labels, the picked
+  ring, the radius fit, the validation errors, the annotation layer, a
+  polar subplot, SSOT edits against a fresh renderer and a released
+  document drawn through the reader;
+  `pick_draw_agreement::radar_polygons_pick_their_outline_closing_segment_markers_and_fill`
+  holds the pick of every part to the painted polygon; `released_documents`
+  converts every released radar document and round-trips the result; the
+  resident-body mutation walk covers a radar panel; the decoration oracle
+  and the playground sweep the radar scene as a polar scene (the oracle
+  excludes the outer ring's I7 orphan ink, as on the polar scene, and the
+  ring labels' I5 2x check, whose ink centroids sit up to 0.64 px apart at
+  1x and 2x, the glyph snapping the box plot title exclusion describes;
+  the reader hides the ray line, so the polar ray's I6 row does not
+  arise); a browser test opens a document in `FiggyChart`,
+  selects, steps and exports it; `streamed_series_reject_radar` checks the
+  streaming refusal. The legacy renderer's `radar_render` and
+  `radar_browser` are removed with it, and so are the radar cases of the
+  bounded interaction, annotation and decoration tests; the annotation
+  hit-region test that drew on a radar chart runs on a radial chart.
 - **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
   dev-dependency for the mutation walker. `figgy-renderer` gains the
   `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from
@@ -965,6 +1136,20 @@ the `CategoryBars` and `BoxPlot` series kinds) are additive.
   sections of `BOXPLOT.md`, `CONFIG.md`, `INTERACTION.md`, `USAGE.md`,
   `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md` and
   `examples/README.md`) is updated in Korean.
+- **Radar charts** ([#40](https://github.com/shim9610/figgy/issues/40)
+  item 13g). `RADAR.md` describes the `Radar` series on a categorical
+  angle axis, its style, labels, picking, the fit and the reader, and drops
+  the removed renderer; `POLAR.md` and `CONFIG.md` describe the categorical
+  angle axis and `grid_shape`; `API.md`, `INTERACTION.md`, `WASM.md`,
+  `USAGE.md`, `ARCHITECTURE.md`, `GALLERY.md`, the browser `README.md` and
+  `SCHEMA.md`, the model and renderer READMEs, the example, playground and
+  CI READMEs, the contributing guide and the top-level READMEs describe the
+  series kind and `set_radar_document`. The Korean text (the Korean
+  sections of `RADAR.md`, `POLAR.md`, `CONFIG.md`, `INTERACTION.md`,
+  `USAGE.md`, `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md`
+  and `examples/README.md`) is updated in Korean. `gallery-radar.png` and
+  `gallery-radar-circle.png` keep the former renderer's images, with value
+  labels, until 13h draws them.
 - `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
   bindings, invariants, the flag table of §3.1) and names the file that
   holds each block; it is no longer parsed by a test. The contributing

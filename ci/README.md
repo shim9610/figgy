@@ -125,7 +125,7 @@ The extracted-archive audit reuses the same link rules after packaging.
 4. Extraction outside the checkout, followed by model/renderer unit tests, integration
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
    cache reuse, streaming, picking and memory regressions, plus radial, categorical,
-   boxplot, radar, polar, vector-field, area/step-line, overlay-layer, subplot and
+   boxplot, radar series, polar, vector-field, area/step-line, overlay-layer, subplot and
    annotation-layer rendering tests. Bounded interaction regressions select and drag
    renderer-measured titles, axes, labels and legends, verify changed pixels and
    unchanged data geometry, and check serialization, scale and cache reuse. The
@@ -162,8 +162,8 @@ panic details until the end of a large test binary.
 
 The renderer unit suite measures the real shader and pipeline constructors with
 `Instant`. It covers every shipped WGSL module and entry point, Cartesian pipelines
-at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical,
-boxplot and radar renderers. A missing source or entry fails coverage. Repeating
+at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical
+and boxplot renderers. A missing source or entry fails coverage. Repeating
 `prewarm_all` must create no shaders or pipelines; a single-pipeline builder must
 load only its own shader. No timing instrumentation is included in native release
 builds.
@@ -235,7 +235,7 @@ export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported
 PNG to check its pixels. Change `--test` to run another renderer browser test the
-same way, for example `bounded_interaction_browser` or `radar_browser`. The `figgy`
+same way, for example `bounded_interaction_browser` or `bounded_area_browser`. The `figgy`
 wrapper's `startup_progress_browser` (`-p figgy`) checks initialization event
 compatibility. See [optimization measurements and limitations](shader-compilation.md).
 

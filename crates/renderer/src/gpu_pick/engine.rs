@@ -106,7 +106,12 @@ pub(super) fn query_params(
             series.dispatch_x,
         ],
         stream,
-        line: [series.line_step_mode, u32::from(arc), 0, 0],
+        line: [
+            series.line_step_mode,
+            u32::from(arc),
+            u32::from(series.line_closed),
+            0,
+        ],
         size_map: [series.size_base, series.size_len, 0, 0],
         size_domain: series.size_domain,
         size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
@@ -804,6 +809,7 @@ impl GpuPickEngine {
                 to_series,
                 baseline,
                 paints: _,
+                closed,
             } = fill;
             // The fill's instance count is the shortest of the x, y and
             // second y columns it binds; one trapezoid strip per segment.
@@ -822,9 +828,16 @@ impl GpuPickEngine {
             };
             let (hi, lo) = crate::data::split_f64_to_f32_pair(baseline);
             area = Some(PickAreaGpu {
+                // A closed fill has one more trapezoid: under the segment
+                // from the last point back to the first.
                 params: [
                     lane,
-                    u32::try_from(count.saturating_sub(1)).unwrap_or(u32::MAX),
+                    u32::try_from(if closed && count > 1 {
+                        count
+                    } else {
+                        count.saturating_sub(1)
+                    })
+                    .unwrap_or(u32::MAX),
                     u32::from(to_series.is_some()),
                     0,
                 ],
@@ -861,10 +874,13 @@ impl GpuPickEngine {
         // An arrow reaches as far from its anchor as its component says, an
         // error bar as far as its error and a fill to its base, so no
         // per-axis gate bounds them: such a series scans every point.
+        // A closed line's closing segment joins its last word to its first,
+        // which the per-word gates do not see: it scans every point too.
         let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
             || flags & FLAG_VECTOR != 0
             || errorbar.is_some()
-            || area.is_some();
+            || area.is_some()
+            || descriptor.line_closed;
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
             .checked_mul(GATE_MASK_BYTES)
@@ -1091,6 +1107,7 @@ impl GpuPickEngine {
                 base_shape_id,
                 line_half_width_px,
                 line_step_mode,
+                line_closed: descriptor.line_closed && descriptor.line_width_px.is_some(),
                 line_dash,
                 line_dash_len,
                 max_extent_px,
@@ -1822,7 +1839,12 @@ impl GpuPickEngine {
                 [
                     0,
                     series.point_count,
-                    series.point_count.saturating_sub(1),
+                    // A closed line owns its closing segment too.
+                    if series.line_closed {
+                        series.point_count
+                    } else {
+                        series.point_count.saturating_sub(1)
+                    },
                     0,
                 ],
                 series_arc(arcs, series_order, series.point_count).is_some(),

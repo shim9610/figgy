@@ -168,6 +168,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
+            | DataRenderType::Radar { .. }
             | DataRenderType::Contour { .. } => false,
         })
             || match (&left.colorbar, &right.colorbar) {
