@@ -5,15 +5,18 @@ use super::engine::{GPU_PICK_GATE_WORD_POINTS, same_storage};
 use super::types::{STYLE_MASK_RADIUS, STYLE_MASK_SHAPE};
 use super::*;
 use crate::InitPhase;
+#[cfg(feature = "cpu-twin")]
 use crate::color::Color;
 use crate::config::{AxisScale, Config};
 use crate::data::{Column, split_f64_to_f32_pair};
-use crate::data_config::{
-    DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ScatterShape, SeriesConfig,
-};
+use crate::data_config::ScatterShape;
 #[cfg(feature = "cpu-twin")]
-use crate::data_config::{DataScatterPointStyleConfig, DataScatterPointStyleOverride};
+use crate::data_config::{
+    DataLineStyleConfig, DataRenderType, DataScatterPointStyleConfig,
+    DataScatterPointStyleOverride, DataScatterStyleConfig, SeriesConfig,
+};
 use crate::layout::{ChartArea, Rect};
+#[cfg(feature = "cpu-twin")]
 use crate::line::LineStylePreset;
 #[cfg(feature = "cpu-twin")]
 use crate::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
