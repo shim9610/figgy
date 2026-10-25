@@ -444,7 +444,7 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 없으므로 `Anchor::Ratio`(플롯 영역 비율)만 배치할 수 있고, `Anchor::Data`와 기준선·구간은
 건너뛴다. 건너뛴 항목은 `BoundedAnnotationFrame::render_warnings()`에
 `RenderWarning::AnnotationSkipped { index, reason: AnnotationSkip::NoValueAxis }`로 남는다.
-`renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`을
-`draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고, 히트 맵은 `annotations()`로
-얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
+`renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`은
+`frame.draw` 다음에 `draw_overlay`로 그리고, 히트 맵은 `annotations()`로 얻는다. 구간은
+건너뛰므로 조각 아래에 그리는 층은 없다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
 않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

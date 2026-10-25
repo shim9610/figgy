@@ -9,7 +9,9 @@ paths: a closed outline, a fill to the centre and a marker at every vertex.
 The values are the host's and enter through `ColumnSource`, one column per
 series; streamed sources are rejected. `RadarChart` is the document format of
 the releases up to 0.12; `Config::from_radar` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)).
+([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
+deprecated document reader for this release and is removed in the next
+milestone.
 
 ## Series and uploads
 
@@ -176,6 +178,7 @@ warning.
 ## Opening a legacy document
 
 ```rust,no_run
+# #![allow(deprecated)]
 use renderer::radar::RadarChart;
 use renderer::{Chart, LayerRef, Renderer, config::Config};
 # fn open(r: &mut Renderer, document: &RadarChart) -> Result<(), Box<dyn std::error::Error>> {
@@ -227,8 +230,8 @@ indices (`radar.positions`) first, then one value column per series
   `decorations.data_area`, the spoke label offsets and the decoration
   selection. The data label offsets become the series' `labels.offsets`.
 
-`FiggyChart.set_radar_document(json)` opens a document in the browser; the
-bounded wrapper's `"radar"` family is an error naming it.
+`FiggyChart.set_radar_document(json)` opens a document in the browser;
+`FiggyBoundedChart`'s `"radar"` family is an error naming it for one release.
 
 ## Examples and tests
 
@@ -245,6 +248,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 `Renderer`가 극좌표 선·영역·산점도 경로로 닫힌 외곽선, 중심까지의 채움, 꼭짓점 마커를 그린다.
 값은 호스트가 시리즈마다 열 하나로 `ColumnSource`를 거쳐 올린다. 스트리밍 소스는 거부한다.
 0.12까지의 문서 형식인 `RadarChart`는 `Config::from_radar`로 이 차트로 읽는다.
+`RadarChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
 
 `Radar` 시리즈의 `x_column`은 범주 번호 열(`0, 1, …, n - 1`), `y_column`은 범주별 반지름 축
 (`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가
@@ -309,5 +313,5 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로 옮긴다. 호버, 시리즈 전체
 선택, 차트 스타일의 `emphasis_brightness`(이전 렌더러가 강조한 시리즈를 밝히던 값으로, 이제 고른
 꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크 라벨 이동량은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
-`FiggyChart.set_radar_document(json)`로 문서를 열며, bounded 래퍼의 `"radar"` 계열은 이 메서드를
+`FiggyChart.set_radar_document(json)`로 문서를 열며, `FiggyBoundedChart`의 `"radar"` 계열은 이 메서드를
 안내하는 오류를 낸다.

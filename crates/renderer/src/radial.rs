@@ -124,7 +124,6 @@ pub struct RadialFrame {
     targets: Vec<RadialTarget>,
     scale: f32,
     space: crate::annotation::PixelSpace,
-    background: crate::annotation::FrameBackground,
 }
 impl RadialFrame {
     /// The frame's decorations, the plot area, the title and every slice
@@ -277,13 +276,10 @@ impl RadialFrame {
         Arc::ptr_eq(&self._annotations, &other._annotations)
     }
     /// The anchor space of this frame for the annotation layer, in logical
-    /// pixels: the plot area and the two document axes.
+    /// pixels: the canvas and the plot area, without value axes (ratio
+    /// anchors only).
     pub fn annotation_space(&self) -> crate::annotation::PixelSpace {
         self.space
-    }
-    /// How this frame treats the chart background.
-    pub fn background(&self) -> crate::annotation::FrameBackground {
-        self.background
     }
     /// Request the slice drawn under `position` (chart-local logical
     /// pixels): the visible surface nearest the camera, with tilt, gap,
@@ -498,12 +494,9 @@ pub struct RadialRenderer {
     ledger: Arc<GpuLedger>,
     budget: u64,
     annotations_cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<TrackedTexture>)>,
-    /// The dedicated annotation layer, drawn around the frame by its own pass.
-    annotation_layer: crate::annotation::BoundedAnnotationCache,
-    background: crate::annotation::FrameBackground,
-    /// One frame per background mode, so an export that needs `HostClear`
-    /// beside an interactive `Opaque` frame does not evict it.
-    cached: Vec<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
+    /// The dedicated annotation layer, drawn over the frame by its own pass.
+    annotation_layer: crate::annotation::RadialAnnotationCache,
+    cached: Option<(FrameKey, (u32, u32), f32, u64, Arc<RadialFrame>)>,
 }
 impl RadialRenderer {
     /// Initialize browser pipelines through WebGPU's asynchronous compiler.
@@ -715,27 +708,16 @@ impl RadialRenderer {
             // host-alloc: W1-a
             ledger: Arc::new(GpuLedger::new()),
             budget: 256 * 1024 * 1024,
-            cached: Vec::new(),
+            cached: None,
             annotations_cached: None,
-            annotation_layer: crate::annotation::BoundedAnnotationCache::new(format),
-            background: Default::default(),
+            annotation_layer: crate::annotation::RadialAnnotationCache::new(format),
         })
     }
-    /// How frames treat the chart background. `Opaque` (default) paints it in
-    /// the frame's own draw; `HostClear` leaves it to the host's clear colour
-    /// so an annotation underlay drawn before the frame shows through. A
-    /// host that switches to `HostClear` clears with `chart.background`.
-    pub fn set_background(&mut self, background: crate::annotation::FrameBackground) {
-        self.background = background;
-    }
-    pub fn background(&self) -> crate::annotation::FrameBackground {
-        self.background
-    }
     /// The annotation layer of `chart` for the frame [`Self::prepare`]
-    /// returns for the same arguments: two textures and their hit map, cached
-    /// like the frame. Draw it around the frame (`draw_underlay`, the frame,
-    /// `draw_overlay`); when it draws an underlay the frame must be prepared
-    /// with [`crate::annotation::FrameBackground::HostClear`].
+    /// returns for the same arguments: its texture and its hit map, cached
+    /// like the frame. Draw it over the frame (the frame, then
+    /// `draw_overlay`). The radial chart has no value axes, so it draws no
+    /// span: every item is drawn above the slices.
     pub fn prepare_annotations(
         &mut self,
         chart: &RadialChart,
@@ -805,15 +787,6 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<RadialFrame>, RadialError> {
-        self.prepare_frame(chart, size, scale, self.background)
-    }
-    fn prepare_frame(
-        &mut self,
-        chart: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-        background: crate::annotation::FrameBackground,
-    ) -> Result<Arc<RadialFrame>, RadialError> {
         chart.validate().map_err(RadialError::Invalid)?;
         if !chart.labels_have_text() {
             return Err(RadialError::Invalid(
@@ -827,12 +800,8 @@ impl RadialRenderer {
         }
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
-            self.cached.iter().find(|(c, s, k, generation, frame)| {
-                c.matches(chart)
-                    && *s == size
-                    && *k == scale
-                    && *generation == fonts
-                    && frame.background == background
+            self.cached.as_ref().filter(|(c, s, k, generation, _)| {
+                c.matches(chart) && *s == size && *k == scale && *generation == fonts
             })
         {
             return Ok(Arc::clone(frame));
@@ -864,16 +833,12 @@ impl RadialRenderer {
         let l = layout::layout(chart, size, scale, reused.is_none())?;
         let globals = Globals {
             size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
-            background: match background {
-                crate::annotation::FrameBackground::Opaque => [
-                    chart.background.r,
-                    chart.background.g,
-                    chart.background.b,
-                    chart.background.a,
-                ],
-                // Written as transparent: the frame leaves the host clear.
-                crate::annotation::FrameBackground::HostClear => [0.0; 4],
-            },
+            background: [
+                chart.background.r,
+                chart.background.g,
+                chart.background.b,
+                chart.background.a,
+            ],
             light: [
                 chart.style.light[0],
                 chart.style.light[1],
@@ -982,19 +947,15 @@ impl RadialRenderer {
             targets: l.targets,
             scale,
             space: l.space,
-            background,
         });
         self.annotations_cached = Some((key, size, scale, fonts, annotations));
-        self.cached
-            .retain(|(_, _, _, _, cached)| cached.background != background);
-        self.cached
-            .push((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
+        self.cached = Some((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
     /// Drop internal frame/annotation references. External frames stay valid.
     /// Retired allocation credits are processed through [`Self::end_frame`].
     pub fn clear_cache(&mut self) {
-        self.cached.clear();
+        self.cached = None;
         self.annotations_cached = None;
         self.annotation_layer.clear();
     }
@@ -1034,31 +995,6 @@ impl RadialRenderer {
     ) -> Result<RasterImage, RadialError> {
         let frame = self.prepare(chart, size, scale)?;
         let annotations = self.prepare_annotations_for(&frame, chart, scale)?;
-        // An underlay only shows through a frame that leaves the background to
-        // the clear colour; the export clears with the chart background then.
-        let host_clear = annotations.draws_underlay()
-            || frame.background == crate::annotation::FrameBackground::HostClear;
-        let frame =
-            if host_clear && frame.background != crate::annotation::FrameBackground::HostClear {
-                self.prepare_frame(
-                    chart,
-                    size,
-                    scale,
-                    crate::annotation::FrameBackground::HostClear,
-                )?
-            } else {
-                frame
-            };
-        let clear = if host_clear {
-            wgpu::Color {
-                r: f64::from(chart.background.r),
-                g: f64::from(chart.background.g),
-                b: f64::from(chart.background.b),
-                a: f64::from(chart.background.a),
-            }
-        } else {
-            wgpu::Color::TRANSPARENT
-        };
         let (width, height) = frame.size;
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
         let bytes = stride * u64::from(height);
@@ -1103,13 +1039,12 @@ impl RadialRenderer {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            annotations.draw_underlay(&mut pass);
             frame.draw(&mut pass);
             annotations.draw_overlay(&mut pass);
         }
@@ -1267,7 +1202,7 @@ impl FrameKey {
             chart_title,
             // Routes pointer interaction only; no pixel depends on it.
             active_layer: _,
-            // Drawn by its own pass (`BoundedAnnotationCache`).
+            // Drawn by its own pass (`RadialAnnotationCache`).
             annotations: _,
             slices,
             kind,

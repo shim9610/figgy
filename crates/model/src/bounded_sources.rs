@@ -1,5 +1,5 @@
-//! The readers of the legacy bounded chart documents, and the borrowed views
-//! their inline values upload through.
+//! The readers of the legacy categorical bar, box plot and radar documents,
+//! and the borrowed views their inline values upload through.
 //!
 //! A [`CategoricalChart`] keeps its values inline (`series[].values`). A
 //! categorical bar chart is a Cartesian chart now, whose values live in the
@@ -21,6 +21,11 @@
 //! values from the pool, so `Config::from_radar` returns the category
 //! indices and one value column per series, each borrowing the document's
 //! values ([`UploadValues::Dense`]).
+//!
+//! The three document types are deprecated with their readers' names and
+//! are removed in the next milestone.
+// The readers take the deprecated document types.
+#![allow(deprecated)]
 
 use crate::boxplot::{BoxPlotChart, BoxPlotDirection, BoxSummary};
 use crate::categorical::CategoricalChart;
@@ -1314,7 +1319,7 @@ mod tests {
         let (config, _, _) = Config::from_categorical(&c);
         assert_eq!(config.chart_title.text, c.resolved_title().text);
         assert!(config.chart_title.visible);
-        c.normalize_title();
+        c.chart_title = Some(c.resolved_title());
         c.chart_title.as_mut().unwrap().visible = false;
         let (config, _, _) = Config::from_categorical(&c);
         assert!(!config.chart_title.visible);
@@ -1409,7 +1414,7 @@ mod tests {
     #[test]
     fn the_active_layer_and_annotations_carry_over() {
         let mut c = chart();
-        c.set_active_layer(LayerRef::Annotations);
+        c.active_layer = LayerRef::Annotations;
         c.annotations.visible = false;
         let (config, _, _) = Config::from_categorical(&c);
         assert_eq!(config.active_layer, LayerRef::Annotations);
@@ -1804,7 +1809,7 @@ mod box_tests {
         assert_eq!(config.chart_title.text, c.resolved_title().text);
         assert_eq!(config.picked_data, None);
         c.selected = Some(BoxPlotTarget::new("b", "t"));
-        c.set_active_layer(LayerRef::Annotations);
+        c.active_layer = LayerRef::Annotations;
         c.annotations.visible = false;
         let offset = |element, offset| DecorationOffset { element, offset };
         c.decorations.offsets = vec![
@@ -2082,7 +2087,7 @@ mod radar_tests {
         c.font_size = 18.0;
         c.text_color = Color::from_rgb8(10, 20, 30);
         c.title = "Quality".into();
-        c.set_active_layer(LayerRef::Annotations);
+        c.active_layer = LayerRef::Annotations;
         c.annotations.visible = false;
         let (config, _, _) = Config::from_radar(&c);
         for axis in [&config.bottom_x, &config.left_y] {

@@ -8,7 +8,10 @@
 //! [`CategoricalChart`] document still parses and validates here, and
 //! `Config::from_categorical` turns it into that chart and the uploads of its
 //! values. Stable category and series ids identify edits and selections;
-//! values follow category order.
+//! values follow category order. The type is deprecated and is removed in
+//! the next milestone.
+// The module defines the deprecated reader type and its tests use it.
+#![allow(deprecated)]
 use crate::Color;
 #[cfg(test)]
 use crate::Material;
@@ -59,6 +62,13 @@ impl BarSeries {
 /// the materials [`Material::supported_on_flat_body`](crate::Material::supported_on_flat_body) excludes.
 #[deprecated(since = "0.13.0", note = "use Material")]
 pub type CategoryBarMaterial = crate::Material;
+/// A legacy categorical bar chart document. [`Self::validate`] checks it,
+/// and `Config::from_categorical` opens it as a Cartesian chart of category
+/// bar series.
+#[deprecated(
+    since = "0.13.0",
+    note = "a document reader only: open it with Config::from_categorical; removed in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -77,8 +87,8 @@ pub struct CategoricalChart {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chart_title: Option<crate::BoundedTitleOptions>,
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    /// The layer the document's pointer interaction targeted. The document
+    /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "crate::LayerRef::is_base")
@@ -175,18 +185,11 @@ fn style(s: &CategoryBarStyle) -> bool {
         && range(s.emphasis_brightness, 0.0, 0.5)
 }
 impl CategoricalChart {
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
-    /// value reads as `Base`.
+    /// The layer the document's pointer interaction targeted, as the reader
+    /// carries it: the document has no overlays or subplots, so an
+    /// `Overlay`, `Subplot` or `SubplotOverlay` value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
-    }
-    /// Set the interaction target layer and return the stored value
-    /// (`Overlay`, `Subplot` and `SubplotOverlay` are stored as `Base`). A
-    /// change clears `decorations.selected`, which names an element of the
-    /// previous layer's pointer route; the data selection is kept.
-    pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
-        crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
@@ -197,15 +200,6 @@ impl CategoricalChart {
                 self.text_color,
             )
         })
-    }
-    /// Copy the legacy `title` into `chart_title` in the current chart font
-    /// and colour, so later edits to `font_family`, `font_size` or
-    /// `text_color` no longer change the title. Does nothing when
-    /// `chart_title` is already set.
-    pub fn normalize_title(&mut self) {
-        if self.chart_title.is_none() {
-            self.chart_title = Some(self.resolved_title());
-        }
     }
 
     pub fn value(&self, target: &CategoryBarTarget) -> Option<f64> {
@@ -219,32 +213,6 @@ impl CategoricalChart {
             .find(|s| s.id == target.series_id)?
             .values
             .get(i)?
-    }
-    pub fn bar_override(&self, target: &CategoryBarTarget) -> Option<&CategoryBarOverride> {
-        self.overrides.iter().find(|o| &o.target == target)
-    }
-    /// Reorders categories and every value column together. IDs/styles/selection are preserved.
-    pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
-        self.validate()?;
-        if ids.len() != self.categories.len()
-            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
-        {
-            return Err("category order must be a permutation");
-        }
-        let order = ids
-            .iter()
-            .map(|id| {
-                self.categories
-                    .iter()
-                    .position(|c| c.id == *id)
-                    .ok_or("unknown category ID")
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.categories = order.iter().map(|i| self.categories[*i].clone()).collect();
-        for series in &mut self.series {
-            series.values = order.iter().map(|i| series.values[*i]).collect();
-        }
-        Ok(())
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
@@ -368,20 +336,6 @@ mod tests {
         assert_eq!(c.validate(), Ok(()));
         c.mode = CategoryBarMode::Stacked;
         assert_eq!(c.validate(), Err("stack total overflow"));
-    }
-    #[test]
-    fn identity_survives_reordering_and_rename() {
-        let mut c = chart();
-        let t = CategoryBarTarget::new("a", "s");
-        c.selected = Some(t.clone());
-        c.overrides.push(CategoryBarOverride::new(t.clone()));
-        c.reorder_categories(&["b", "a"]).unwrap();
-        c.categories[1].label = "Renamed".into();
-        assert_eq!(c.value(&t), Some(2.0));
-        assert_eq!(c.selected, Some(t));
-        let old = c.clone();
-        assert!(c.reorder_categories(&["a", "a"]).is_err());
-        assert_eq!(old, c);
     }
     #[test]
     fn malformed_payload_is_rejected() {

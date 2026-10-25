@@ -8,6 +8,8 @@
 //! - `terrain` writes `concept-terrain.png`: a custom colour ramp under isolines.
 //!
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]

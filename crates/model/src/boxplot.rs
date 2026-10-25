@@ -7,7 +7,10 @@
 //! are a ragged column of the renderer's column pool. A [`BoxPlotChart`]
 //! document still parses and validates here, and `Config::from_boxplot`
 //! turns it into that chart and the uploads of its summaries. Statistical
-//! policy belongs to the host: the summaries are precomputed.
+//! policy belongs to the host: the summaries are precomputed. The type is
+//! deprecated and is removed in the next milestone.
+// The module defines the deprecated reader type and its tests use it.
+#![allow(deprecated)]
 #[cfg(test)]
 use crate::Material;
 use crate::{Color, categorical::Category};
@@ -126,6 +129,12 @@ impl BoxPlotSeries {
         }
     }
 }
+/// A legacy box plot document. [`Self::validate`] checks it, and
+/// `Config::from_boxplot` opens it as a Cartesian chart of box plot series.
+#[deprecated(
+    since = "0.13.0",
+    note = "a document reader only: open it with Config::from_boxplot; removed in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -144,8 +153,8 @@ pub struct BoxPlotChart {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chart_title: Option<crate::BoundedTitleOptions>,
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    /// The layer the document's pointer interaction targeted. The document
+    /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "crate::LayerRef::is_base")
@@ -214,18 +223,11 @@ impl Default for BoxPlotChart {
     }
 }
 impl BoxPlotChart {
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
-    /// value reads as `Base`.
+    /// The layer the document's pointer interaction targeted, as the reader
+    /// carries it: the document has no overlays or subplots, so an
+    /// `Overlay`, `Subplot` or `SubplotOverlay` value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
-    }
-    /// Set the interaction target layer and return the stored value
-    /// (`Overlay`, `Subplot` and `SubplotOverlay` are stored as `Base`). A
-    /// change clears `decorations.selected`, which names an element of the
-    /// previous layer's pointer route; the data selection is kept.
-    pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
-        crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
     pub fn resolved_title(&self) -> crate::BoundedTitleOptions {
         self.chart_title.clone().unwrap_or_else(|| {
@@ -236,15 +238,6 @@ impl BoxPlotChart {
                 self.text_color,
             )
         })
-    }
-    /// Copy the legacy `title` into `chart_title` in the current chart font
-    /// and colour, so later edits to `font_family`, `font_size` or
-    /// `text_color` no longer change the title. Does nothing when
-    /// `chart_title` is already set.
-    pub fn normalize_title(&mut self) {
-        if self.chart_title.is_none() {
-            self.chart_title = Some(self.resolved_title());
-        }
     }
 
     pub fn summary(&self, target: &BoxPlotTarget) -> Option<&BoxSummary> {
@@ -271,28 +264,6 @@ impl BoxPlotChart {
                 .or(s.style.as_ref())
                 .unwrap_or(&self.style),
         )
-    }
-    pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
-        self.validate()?;
-        if ids.len() != self.categories.len()
-            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
-        {
-            return Err("category order must be a permutation");
-        }
-        let order = ids
-            .iter()
-            .map(|id| {
-                self.categories
-                    .iter()
-                    .position(|c| c.id == *id)
-                    .ok_or("unknown category ID")
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.categories = order.iter().map(|i| self.categories[*i].clone()).collect();
-        for series in &mut self.series {
-            series.values = order.iter().map(|i| series.values[*i].clone()).collect();
-        }
-        Ok(())
     }
     pub fn validate(&self) -> Result<(), &'static str> {
         self.decorations.validate()?;
@@ -503,22 +474,6 @@ mod tests {
         assert!(c.validate().is_err());
         c.series[0].values[0].as_mut().unwrap().median_ci = Some([3., 3.]);
         assert!(c.validate().is_ok());
-    }
-    #[test]
-    fn reorder_is_atomic_and_preserves_identity_edits_and_missing_values() {
-        let mut c = chart();
-        let t = BoxPlotTarget::new("a", "s");
-        c.selected = Some(t.clone());
-        c.overrides.push(BoxPlotOverride::new(t.clone()));
-        let before = c.clone();
-        assert!(c.reorder_categories(&["a", "a"]).is_err());
-        assert_eq!(c, before);
-        c.reorder_categories(&["b", "a"]).unwrap();
-        assert!(c.series[0].values[0].is_none());
-        assert_eq!(c.summary(&t).unwrap().median, 3.);
-        assert_eq!(c.selected, Some(t));
-        c.selected = Some(BoxPlotTarget::new("b", "s"));
-        assert!(c.validate().is_err());
     }
     #[test]
     fn bounds_are_independent_and_total_outliers_are_bounded() {

@@ -46,10 +46,10 @@ Tested revisions and results are in the
 | Renderer | Input | Frame preparation |
 | --- | --- | --- |
 | `Renderer` | `Config`, ordered `SeriesConfig`, registered numeric columns | `prepare` or `prepare_registered` |
-| `RadialRenderer` | `RadialChart`, bounded slice values | `prepare` |
+| `RadialRenderer` | `RadialChart`, slice values in the model | `prepare` |
 
-The bounded radial chart carries every value in the chart model, up to fixed
-limits such as 64 slices. Its API is separate from `ColumnSource` and
+The radial chart is the DataLess chart: it carries every value in the chart
+model, up to fixed limits such as 64 slices. Its API is separate from `ColumnSource` and
 streaming, and it does not calculate raw-sample statistics. Limits, missing
 values, style inheritance and picking identities are documented in its module.
 Radial targets use group/index positions, so a host that reorders slices must
@@ -236,18 +236,17 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 ## Native edit, pick and export workflow
 
 1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
-   Use `Renderer::try_new` for Cartesian charts or the bounded renderer's `new`.
+   Use `Renderer::try_new` for Cartesian charts or `RadialRenderer::new` for the radial chart.
    Window helpers are optional; a headless application does not need a window.
 2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, create a
    `ChartView` and a `ChartStyle` for each series, then use `prepare` +
    `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
-   For the bounded radial chart, edit the `RadialChart` passed to `prepare`. Normal edits do not require `clear_cache`.
-3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
-   the radial chart picks its slices on the GPU (`frame.pick(p)` returns a
-   ticket, `resolve()` reads the slice back). Bounded titles/axes/labels/
-   legends/plot areas use `frame.decorations()`; the radial frame's is a
+   For the radial chart, edit the `RadialChart` passed to `prepare`. Normal edits do not require `clear_cache`.
+3. Hit-test the frame currently displayed. The radial chart picks its slices
+   on the GPU (`frame.pick(p)` returns a ticket, `resolve()` reads the slice
+   back). Its title, slice labels and plot area use `frame.decorations()`, a
    `HitMap<RadialChart>` queried with the chart it was prepared from
    (`frame.decoration_at(&chart, p)`). All take chart-local logical pixels. Cartesian decorations use
    `HitMap::for_active_layer(&config)`, or `ChartView::hit_test_active_layer` to
@@ -259,13 +258,13 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 4. Store the target in the model and edit its values/styles or decoration layout.
    For Cartesian charts, refresh the view's changed axes/decorations and rebuild
    affected caller-owned styles as described below, then prepare, draw and submit.
-   Bounded renderers update their derived resources in `prepare`.
+   The radial renderer updates its derived resources in `prepare`.
    A stored frame is not a live view of the model.
    For a resize that may fail layout validation, prepare a trial model before
    replacing the displayed model. The host requests frames and advances animations.
 5. Export the same model state to RGBA/PNG. Selection and hover emphasis are model
-   state; clearing them or exporting another copy changes the output. For bounded
-   charts, hide only decoration handles by clearing `decorations.selected` in an
+   state; clearing them or exporting another copy changes the output. For the
+   radial chart, hide only decoration handles by clearing `decorations.selected` in an
    export clone while preserving data selection, offsets and `data_area`.
    Cartesian exports never draw decoration selection boxes. The caller stores
    PNG bytes.
@@ -354,9 +353,9 @@ subplots. See the
 [overlay layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#overlay-layers) and
 [subplots](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#subplots).
 
-### Bounded chart example
+### Radial chart example
 
-This bounded example accepts the host GPU pair, selects from a displayed frame,
+This radial example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
 the `radial_editor`
 example (`--features egui_demo`) demonstrates render-pass submission and pointer
@@ -431,7 +430,7 @@ also retain the instance, adapter and surface needed for their own lifetime.
 
 Cartesian `PreparedFrame` validity depends on captured renderer resources and
 revisions. If painting returns `StalePreparedFrame`, rebuild the inputs and
-prepare again. A bounded chart frame (`Arc<RadialFrame>`) owns an immutable GPU snapshot:
+prepare again. A radial chart frame (`Arc<RadialFrame>`) owns an immutable GPU snapshot:
 keeping it alive keeps its resources alive even after the current model changes.
 Do not retain every historical frame in a live-edit loop.
 
@@ -463,12 +462,12 @@ guarantee driver allocation success; handle allocation failure and device loss.
 
 ## Render targets, coordinates and output
 
-Bounded chart frames require a target with the prepared physical size, the renderer's
+Radial chart frames require a target with the prepared physical size, the renderer's
 format and sample count 1. `draw` sets viewport/scissor to that target. For a host
 UI subregion or a multisampled host pass, draw to a matching offscreen texture and
 composite it. Supported formats are RGBA8/BGRA8, linear or sRGB.
 
-Bounded chart `prepare` takes logical size and scale; picking takes logical
+Radial chart `prepare` takes logical size and scale; picking takes logical
 coordinates. The radial chart draws the label strings of its slices'
 `text` and formats nothing: write them with `RadialChart::format_labels`
 after editing values or formats (`normalize_labels` fills a loaded document
@@ -476,7 +475,7 @@ that has none). Frame sizes and data geometry rectangles are physical pixels;
 `frame.decorations()` exposes its hit bounds and selection boxes in logical pixels.
 Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
-contract differs from the bounded chart contract.
+contract differs from the radial chart contract.
 
 RGBA export returns pixels; PNG encoding returns bytes. The caller decides where
 to send or store them. Native blocking helpers and async variants are both
@@ -560,7 +559,7 @@ endpoint it uses distance to that endpoint. This avoids reconstructing a rounded
 closest point that can falsely reject an exact centerline hit at zero tolerance;
 it does not add a pick radius or turn finite segments into infinite lines.
 
-## Bounded chart decoration interaction
+## Radial chart decoration interaction
 
 Radial frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a `HitMap<RadialChart>`, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
@@ -575,12 +574,12 @@ spans, text boxes, arrows). Cartesian views rasterize it into two more
 `ChartView` textures: `refresh_axis*` redoes them with the axis raster and
 `Renderer::refresh_annotations(view, chart, panel_rect, selected)` redoes them
 alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
-selection changed; `ChartView::annotation_map()` is the layer's hit map. Bounded
-renderers return the layer as `prepare_annotations(chart, size, scale)` →
-`Arc<BoundedAnnotationFrame>`, drawn as `draw_underlay`, the frame, `draw_overlay`
-(an underlay needs `set_background(FrameBackground::HostClear)` and a clear with
-the chart background; `export_rgba` handles that itself). Items the raster could
-not place are `RenderWarning::AnnotationSkipped` on `ChartView::render_warnings()`
-(Cartesian) or `BoundedAnnotationFrame::render_warnings()` (bounded). See the
+selection changed; `ChartView::annotation_map()` is the layer's hit map. The
+radial renderer returns the layer as `prepare_annotations(chart, size, scale)` →
+`Arc<BoundedAnnotationFrame>`, drawn after the frame with `draw_overlay` (the
+radial chart has no value axes, so it draws no span below the slices). Items
+the raster could not place are `RenderWarning::AnnotationSkipped` on
+`ChartView::render_warnings()` (Cartesian) or
+`BoundedAnnotationFrame::render_warnings()` (radial). See the
 [annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
 and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).

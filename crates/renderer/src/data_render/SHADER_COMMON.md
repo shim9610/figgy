@@ -56,7 +56,7 @@ To change shared shader code:
 
 The module lists are the `assembled!` invocations next to each pipeline
 (`data_render/<kind>.rs`, `gpu_contour.rs`, `gpu_errorbar.rs`,
-`gpu_pick/shader.rs`, `vector.rs`, the bounded charts): one literal list per
+`gpu_pick/shader.rs`, `vector.rs`, the radial chart): one literal list per
 module gives both its source (`wgsl_module!` over the list) and its fragment
 names, and `shader_assembly::MODULES` carries both for every module. A test
 holds each source to its list, and another holds each exact pick module to

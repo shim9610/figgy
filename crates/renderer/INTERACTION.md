@@ -4,7 +4,7 @@
 Cartesian 차트와 같은 `HitMap → Selectable → Draggable / Resizable` 계약을 사용한다. 포인터 이벤트 전달과
 드래그 중 프레임 요청은 호스트가 담당한다. 클릭 영역이나 라벨 위치를 호스트에서 다시 계산하지 않는다.
 
-The radial chart is the bounded chart: its renderer draws one validated
+The radial chart is the DataLess chart: its renderer draws one validated
 model and takes no column sources. Its plot area, title, axes, labels and
 legend use the same
 `HitMap → Selectable → Draggable / Resizable` contract as Cartesian charts. The
@@ -89,7 +89,8 @@ corners and overrides included); a host's hover and click use this pick
 (`pick_data` in the WASM wrapper), as for histogram bins. A selected bar
 (`PickedDataRef::HistogramBin` in `Config.picked_data`) draws an inside
 outline in the highlight colour and gains its emphasis brightness. In the
-WASM wrapper `step_selection(dx, dy)` moves along the categories on the
+WASM wrapper `step_selection(dx, dy)` (the model's `Config::step_selection`,
+which native hosts call with their column lengths) moves along the categories on the
 category axis' pointer direction and across the series of the bar group on
 the other, and `selection_details()` reports the category id and label and
 the bar's value read back from the GPU column. An axis line that crosses
@@ -236,8 +237,8 @@ let result = element.as_draggable().unwrap()
 
 `DecorationId::DataArea`의 히트맵 요소는 `as_draggable()`와 `as_resizable()`을 모두 제공한다.
 선택 테두리의 8개 핸들, 핸들 판정과 이동 방향은 기존 공통 리사이즈 계약을 사용한다.
-`DecorationMap::hit_resize_handle`과 `resize_by`, 원형 프레임의 `decoration_resize_handle`과
-`resize_decoration`은 같은 트레잇 호출을 편하게 감싼 메서드다.
+원형 프레임의 `decoration_resize_handle`과 `resize_decoration`은 같은 트레잇 호출을 편하게
+감싼 메서드다.
 
 ```rust,no_run
 # fn resize(renderer: &mut renderer::RadialRenderer, chart: &mut renderer::RadialChart)
@@ -335,10 +336,10 @@ Cartesian용 `FiggyChart`와 별도로 WASM 래퍼는 원형 차트를 위한
 그리기 영역은 일반 차트와 같이 움직인다.
 자세한 규칙은 `CONFIG.md`의 `PolarOptions` 절에 있다.
 
-## Independent bounded chart titles
+## Independent radial chart titles
 
-The two bounded charts and the categorical and box plot documents accept an optional
-rich `chart_title`. `RadialChart`
+The radial chart and the categorical, box plot and radar documents accept an
+optional rich `chart_title`. `RadialChart`
 holds the shared chart title, `chart_title: Option<ChartTitleOptions>`, written
 and read as the same `{ visible, text }` object; its `offset_x`, `offset_y` and
 `top_margin` must be 0 there, because the position lives in `decorations`, and
@@ -348,10 +349,12 @@ the title is centred in the chart's own title band across the canvas through
 those three documents are read into a Cartesian or polar `Config`, whose chart
 title the rich title becomes.
 When present it is authoritative. The legacy plain `title` is a fallback only. Call
-`normalize_title()` once when loading an old document into an editor: it copies
-its title, family, color and former `font_size * 1.5` size into the independent
-rich document. Later label size/color/family edits do not alter that document.
-Native code can set `chart_title` directly; the old plain API remains available.
+`RadialChart::normalize_title()` once when loading an old radial document into
+an editor: it copies its title, family, color and former `font_size * 1.5` size
+into the independent rich document. Later label size/color/family edits do not
+alter that document. Native code can set `chart_title` directly; the old plain
+API remains available. A legacy document's title (its `chart_title`, or its
+plain `title` in its font) is read into the `Config`'s chart title.
 
 The existing `DecorationId::ChartTitle` and `decorations.offsets` remain the only
 position authority. Do not add a second host-side title offset or HTML overlay.
@@ -364,22 +367,22 @@ Title font sizes are 6–160 logical pixels, with at most 512 characters and eig
 lines (`RichText::within_limits`). A radial title wider than the canvas is drawn
 clipped by it; its hit region, selection box and drag containment are its drawn
 extent intersected with the canvas. The documents read into a `Config` follow
-the Cartesian title rules. The label font fields control axis, category, data and legend text as
-specified by each bounded family, not an explicit title.
+the Cartesian title rules. The label font fields control label text, not an
+explicit title.
 
 Multi-line titles also support `text.align` (`TextAlign::Left`, `Center`, or
-`Right`) inside the measured text block. `normalize_title()` preserves legacy
+`Right`) inside the measured text block. `RadialChart::normalize_title()` preserves legacy
 appearance by using `Left`; existing saved rich titles without `align` also
 read as `Left`. Explicit Rust chart literals need `chart_title: None` (or use
 `..Default::default()`).
 
-Run `cargo run --locked -p figgy-renderer --example bounded_titles -- target/bounded-titles`
+Run `cargo run --locked -p figgy-renderer --example radial_titles -- target/radial-titles`
 for a native PNG example covering the radial chart, multiline
 alignment and a subscript; it writes `pie.png`. A
 categorical, box plot or radar document's title becomes the chart title of
 the `Config` it is read into (`Config::from_categorical`,
 `Config::from_boxplot`, `Config::from_radar`). See
-[the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/bounded_titles.rs). Hosts own editor widgets,
+[the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/radial_titles.rs). Hosts own editor widgets,
 undo and file storage.
 
 ## Layers and the active layer
@@ -390,8 +393,8 @@ Every chart family and document (`Config`, `RadialChart`, `CategoricalChart`,
 parse and serialize unchanged. `LayerRef::Base` (the default) is the chart's
 own layer; `Overlay(index)` addresses an overlay layer, `Subplot(index)` and
 `SubplotOverlay(subplot, overlay)` a subplot and an overlay inside it, and
-`Annotations` the annotation layer. Bounded charts have no overlays or
-subplots and read those values as `Base`. The active layer is document state
+`Annotations` the annotation layer. The radial chart and the legacy documents
+have no overlays or subplots and read those values as `Base`. The active layer is document state
 one level above element selection: it decides which layer's elements the
 pointer route registers, while `selected`, `picked_points` and `picked_data`
 keep naming the element inside that layer. Drawn pixels never depend on
@@ -407,7 +410,7 @@ hit map registers the `Overlay` ids for the active overlay (see "Overlay
 layers"); annotation items are hit-tested through their own `AnnotationMap`,
 which the pointer route tests on top while `Annotations` is active (see
 "Annotation layer"). Explicit Rust chart literals need the two fields (or
-`..Default::default()`). The bounded frame and label raster caches strip both
+`..Default::default()`). The radial frame and label raster caches strip both
 fields from their keys, so editing either reuses the cached frame; only the
 annotation pass depends on them.
 
@@ -514,8 +517,8 @@ never invalidate a panel's axis raster cache. Overlay panels carry no
 annotation textures.
 
 **Limits.** Polar charts take no overlay layers; overlays own no X axis (no
-twiny); nesting is one level (overlays have no layers of their own); bounded
-charts cannot be overlay layers; a nonresident streaming series listed by an
+twiny); nesting is one level (overlays have no layers of their own); the
+radial chart cannot be an overlay layer; a nonresident streaming series listed by an
 overlay is rejected by every registry entry point, and the stream request
 paths reject a document with overlays as a whole. Subplots are charts of
 their own; see the next section.
@@ -622,14 +625,9 @@ fixed order is:
 
 - Cartesian panels: grid → annotation underlay → data → picked highlight →
   decoration → annotation overlay.
-- Bounded charts: annotation underlay → the frame's own draw → annotation
-  overlay. The frame paints an opaque background by default, so an underlay
-  only shows through a frame prepared with
-  `FrameBackground::HostClear` (`set_background`), which leaves the background
-  to the host's clear colour; the host then clears with `chart.background`.
-  `export_rgba` switches to that mode by itself whenever an underlay exists and
-  keeps one cached frame per mode, so an export never evicts the interactive
-  frame.
+- The radial chart: the frame's own draw (its opaque background included) →
+  annotation overlay. It has no value axes, so a span is skipped with a
+  warning and nothing is drawn below the slices.
 
 A text box may overlap the legend; the user resolves that by moving the box.
 Annotations do not take part in the data-area margins and the label placer
@@ -638,7 +636,7 @@ never nudges them.
 **Anchor space.** The only thing the layer needs from a chart family is the
 anchor ↔ pixel conversion, the `AnnotationSpace` trait implemented by the
 `PixelSpace` each frame derives from its layout (`pixel_space_for_config` for
-Cartesian configs, `Frame::annotation_space()` for bounded frames,
+Cartesian configs, `RadialFrame::annotation_space()` for the radial frame,
 `AnnotationMap::space()` on any map). Rectangular Cartesian charts convert
 data anchors through `bottom_x` / `left_y` (on a chart of category bars the
 categorical axis maps category indices, as on a chart of box plots). Polar charts (`Config.polar`, radar
@@ -655,7 +653,7 @@ map and nothing else (`ChartView::layer_stamps()` counts each layer's writes).
 `refresh_axis*` redoes the annotation rasters too, because the anchor space
 follows the axes and the data area, so a host that refreshes the axis raster
 needs no second call for the same frame. Toggling `visible` bumps no raster
-revision at all: the draw skips the two composites. On bounded charts
+revision at all: the draw skips the two composites. On the radial chart
 `prepare_annotations(chart, size, scale)` returns an
 `Arc<BoundedAnnotationFrame>` cached beside the frame: an item edit or a
 selection change returns the same `Arc<Frame>` with the same label raster and
@@ -666,10 +664,10 @@ a new annotation frame; a `visible` toggle returns an annotation frame that
 (`AnnotationLayer` implements `DragConfig`) exposed as an `AnnotationMap`:
 `ChartView::annotation_map()` after a refresh,
 `BoundedAnnotationFrame::annotations()` after `prepare_annotations`. It has the
-`DecorationMap` shape: `hit_test`, `element` (index and measured text size),
+shape of a decoration hit map: `hit_test`, `element` (index and measured text size),
 `find(index)`, `bounds`, `selection_box`, `drag_by`, `hit_resize_handle`,
 `resize_by`, `warnings`, `space`. Coordinates are logical pixels of the frame:
-chart-local for bounded charts; for Cartesian charts, the same pixel space as
+chart-local for the radial chart; for Cartesian charts, the same pixel space as
 the `HitMap`, where `chart_area` sits at its own `x` / `y`. Every item has the
 common blue selection box; the handles it carries are the item's own: a span's
 two edges (`W`/`E` or `N`/`S`), a reference line's two value handles (`W`/`E`
@@ -683,7 +681,7 @@ items overlap. Hidden items and items the raster skipped are not registered;
 the skipped ones are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` / `BoundedAnnotationFrame::render_warnings()`.
 
-Selection follows each family's convention. Bounded charts store it in the
+Selection follows each family's convention. The radial chart stores it in the
 shared `decorations.selected = Some(DecorationId::Annotation(index))`; the
 frame caches ignore that value, so selecting an annotation never rebuilds the
 chart frame. Cartesian hosts pass the selected index to `refresh_annotations`;
@@ -707,14 +705,13 @@ measured by the renderer into the annotation layer's own
   or any overlay, in a single-layer chart and in a layered document alike.
   `config` is the config the view was refreshed with (the display config of a
   scaled view).
-- Bounded: `BoundedAnnotationFrame::hit_test_active_layer(chart.active_layer(),
-  frame.decorations(), point)` tests the items above every decoration of the
-  frame; the decorations all stay registered below them, because a bounded
-  chart has no other layer whose elements could be excluded. A radial frame
-  routes through `route_active_layer(chart.active_layer(), point, ||
-  frame.decoration_at(&chart, point))`. Slices are not part of either map and keep answering through
-  the frame's own `hit_test` (the radial frame's `pick`) on every layer, as
-  GPU data picking keeps addressing the base layer on Cartesian charts.
+- Radial: `BoundedAnnotationFrame::route_active_layer(chart.active_layer(),
+  point, || frame.decoration_at(&chart, point))` tests the items above every
+  decoration of the frame; the decorations all stay registered below them,
+  because the radial chart has no other layer whose elements could be
+  excluded. Slices are not part of either map and keep answering through the
+  frame's GPU `pick` on every layer, as GPU data picking keeps addressing the
+  base layer on Cartesian charts.
 
 Both return a `LayerHit`: `Annotation { index, id }` (select
 `DecorationId::Annotation(index)` and drag through the annotation map with
@@ -725,12 +722,12 @@ part, which a hidden layer (`visible = false`) never does.
 
 Changing the layer clears the element selection, as on overlay layers: the
 registry drops its `HitId`, the WASM wrapper drops the annotation selection
-when the layer changes away from or into `Annotations`, and the bounded
-`set_active_layer` (`RadialChart`, with an `Overlay` stored as `Base`) clears
+when the layer changes away from or into `Annotations`, and
+`RadialChart::set_active_layer` (with an `Overlay` stored as `Base`) clears
 `decorations.selected`. The data selection (`picked_*`, the radial chart's
 selected slice) is kept. A layer
 switch changes no raster revision of its own: the data, grid and decoration
-textures and the bounded frame and label raster are reused, and only a cleared
+textures and the radial frame and label raster are reused, and only a cleared
 selection redraws its selection chrome. Selecting or dragging an item through
 the route is an annotation refresh only. The index-based methods
 (`AnnotationMap::find`, `drag_by`, `resize_by` and the WASM `*_annotation`
@@ -752,9 +749,6 @@ chart.annotations.items.push(Annotation::new(AnnotationKind::Text {
     text: renderer::text::RichText::plain("note", renderer::Color::BLACK, 12., ""),
     box_style: Some(Default::default()),
 }));
-// An underlay (a span) needs the frame prepared with a host clear, the pass
-// cleared with `chart.background`:
-// renderer.set_background(renderer::FrameBackground::HostClear);
 let frame = renderer.prepare(chart, (800, 520), 2.0)?;
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
 if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {
@@ -764,7 +758,7 @@ if let Some(hit) = layer.annotations().hit_test([400.0, 60.0]) {
     let _ = layer.annotations().drag_by(&mut chart.annotations, hit, 8.0, -4.0);
 }
 let layer = renderer.prepare_annotations(chart, (800, 520), 2.0)?;
-// In the pass: layer.draw_underlay(pass); frame.draw(pass); layer.draw_overlay(pass).
+// In the pass: frame.draw(pass); layer.draw_overlay(pass).
 # let _ = frame; let _ = layer;
 # Ok(()) }
 ```

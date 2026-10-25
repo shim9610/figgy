@@ -1072,6 +1072,8 @@ impl FiggyChart {
     /// `get_series` / `set_series`, the column registry).
     ///
     /// JS: `chart.set_categorical_document(JSON.stringify(doc));`
+    // The legacy document is read through its deprecated reader type.
+    #[allow(deprecated)]
     pub fn set_categorical_document(&mut self, json: &str) -> Result<(), JsValue> {
         let document: renderer::CategoricalChart = serde_json::from_str(json).map_err(js_err)?;
         document.validate().map_err(js_err)?;
@@ -1190,6 +1192,8 @@ impl FiggyChart {
     /// through the Cartesian API.
     ///
     /// JS: `chart.set_boxplot_document(JSON.stringify(doc));`
+    // The legacy document is read through its deprecated reader type.
+    #[allow(deprecated)]
     pub fn set_boxplot_document(&mut self, json: &str) -> Result<(), JsValue> {
         use renderer::{BOX_PLOT_RECORD, ColumnSource, UploadValues};
         let document: renderer::BoxPlotChart = serde_json::from_str(json).map_err(js_err)?;
@@ -1344,6 +1348,8 @@ impl FiggyChart {
     /// column registry), and its vertices pick, select and step as points.
     ///
     /// JS: `chart.set_radar_document(JSON.stringify(doc));`
+    // The legacy document is read through its deprecated reader type.
+    #[allow(deprecated)]
     pub fn set_radar_document(&mut self, json: &str) -> Result<(), JsValue> {
         let document: renderer::RadarChart = serde_json::from_str(json).map_err(js_err)?;
         document.validate().map_err(js_err)?;

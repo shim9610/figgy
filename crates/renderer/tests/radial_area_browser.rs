@@ -5,10 +5,10 @@ use renderer::RendererDevice;
 use std::sync::Arc;
 use wasm_bindgen_test::*;
 wasm_bindgen_test_configure!(run_in_browser);
-#[path = "support/bounded_area.rs"]
-mod bounded_area;
+#[path = "support/radial_area.rs"]
+mod radial_area;
 #[wasm_bindgen_test(async)]
-async fn bounded_area_select_resize_move_pick_and_export_on_webgpu() {
+async fn radial_area_select_resize_move_pick_and_export_on_webgpu() {
     let instance = renderer::data_render::create_instance();
     let adapter = renderer::data_render::request_adapter_async(&instance)
         .await
@@ -17,5 +17,5 @@ async fn bounded_area_select_resize_move_pick_and_export_on_webgpu() {
         .await
         .unwrap();
     assert!(device.as_webgpu().is_some());
-    bounded_area::check(RendererDevice::new(Arc::new(device), Arc::new(queue))).await;
+    radial_area::check(RendererDevice::new(Arc::new(device), Arc::new(queue))).await;
 }

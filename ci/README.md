@@ -126,7 +126,7 @@ The extracted-archive audit reuses the same link rules after packaging.
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
    cache reuse, streaming, picking and memory regressions, plus radial, categorical,
    boxplot, radar series, polar, vector-field, area/step-line, overlay-layer, subplot and
-   annotation-layer rendering tests. Bounded interaction regressions select and drag
+   annotation-layer rendering tests. Radial interaction regressions select and drag
    renderer-measured titles, axes, labels and legends, verify changed pixels and
    unchanged data geometry, and check serialization, scale and cache reuse. The
    normal suite also requests an unsupported device limit to test the device-error
@@ -235,7 +235,7 @@ export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported
 PNG to check its pixels. Change `--test` to run another renderer browser test the
-same way, for example `bounded_interaction_browser` or `bounded_area_browser`. The `figgy`
+same way, for example `radial_interaction_browser` or `radial_area_browser`. The `figgy`
 wrapper's `startup_progress_browser` (`-p figgy`) checks initialization event
 compatibility. See [optimization measurements and limitations](shader-compilation.md).
 

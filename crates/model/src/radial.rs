@@ -337,7 +337,7 @@ pub struct RadialChart {
     pub title: String,
     /// Independent rich title, the shared chart title. Its position remains
     /// in `decorations`: the offsets and `top_margin` must be 0, and the wire
-    /// form is the `{"visible", "text"}` object of a bounded title.
+    /// form is the `{"visible", "text"}` object of a [`BoundedTitleOptions`](crate::BoundedTitleOptions).
     #[cfg_attr(
         feature = "serde",
         serde(
@@ -347,7 +347,7 @@ pub struct RadialChart {
         )
     )]
     pub chart_title: Option<crate::config::ChartTitleOptions>,
-    /// The layer that receives pointer interaction. Bounded charts have no
+    /// The layer that receives pointer interaction. The radial chart has no
     /// overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
@@ -490,7 +490,7 @@ fn validate_style(s: &RadialStyle) -> Result<(), &'static str> {
     Ok(())
 }
 impl RadialChart {
-    /// The layer that receives pointer interaction. Bounded charts have no
+    /// The layer that receives pointer interaction. The radial chart has no
     /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
     /// value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
@@ -722,7 +722,7 @@ impl RadialChart {
 
 /// A radial chart is the state its decorations' hit map edits
 /// (`HitMap<RadialChart>`): a decoration moves in [`RadialChart::decorations`]
-/// as on any bounded chart, by the same containment rule. The element the
+/// by the containment rule of [`DecorationLayout`](crate::DecorationLayout). The element the
 /// renderer hands in carries the decoration's drawn bounds before its offset,
 /// measured on the chart it moves, so `measure` is not read.
 impl crate::drag::DragConfig for RadialChart {

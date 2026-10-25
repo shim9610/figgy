@@ -32,7 +32,10 @@ series reading a record and a ragged outlier column, and
 former `"radar"` family) as radar series on a polar chart with a categorical
 angle axis. The `<figgy-chart>` custom element wraps `FiggyChart` only. Hosts
 using `FiggyBoundedChart` own their canvas events and scheduling; see the
-[bounded host API](../renderer/WASM.md#bounded-chart-host).
+[radial chart host API](../renderer/WASM.md#bounded-chart-host). The class
+keeps its name and its `"radial"` family argument; the `"categorical"`,
+`"boxplot"` and `"radar"` families are errors naming the `FiggyChart` method
+that opens their documents, for this release.
 
 ## Build and run
 
@@ -62,8 +65,8 @@ Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cj
 | [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG output |
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | `<figgy-chart>` element: host lifecycle, events and Promise adaptation |
-| [src/lib.rs](src/lib.rs), [src/web/](src/web/chart.rs) and [src/bounded.rs](src/bounded.rs) | wasm-bindgen bridge to the renderer: `FiggyChart` in `src/web/` (one file per concern, `chart.rs` first), `FiggyBoundedChart` in `src/bounded.rs` |
-| [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the bounded chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
+| [src/lib.rs](src/lib.rs), [src/web/](src/web/chart.rs) and [src/radial.rs](src/radial.rs) | wasm-bindgen bridge to the renderer: `FiggyChart` in `src/web/` (one file per concern, `chart.rs` first), `FiggyBoundedChart` (the radial chart host) in `src/radial.rs` |
+| [WASM guide](../renderer/WASM.md) (in Korean; the [streaming contract](../renderer/WASM.md#streaming-contract) and section 8, the radial chart host with the annotation layer and Cartesian selection helpers, are in English) | Build, lifecycle, streaming, async export and wrapper methods |
 | [JSON reference](SCHEMA.md) | The wrapper's JSON representation of the shared model |
 
 ## Readiness and selected values
@@ -71,8 +74,8 @@ Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cj
 Await `FiggyChart.create(canvas)` before using a raw Cartesian chart. It
 prepares its rendering pipelines and waits for its initial empty frame.
 After installing data/configuration, `await chart.first_frame_ready()` submits
-that state and waits for GPU completion. For bounded charts, creation prepares
-the requested family, and the host must explicitly await
+that state and waits for GPU completion. For the radial chart, creation
+prepares the document, and the host must explicitly await
 `view.first_frame_ready()` before presenting the chart as ready. Device loss or
 rejected GPU completion must be treated as initialization failure.
 

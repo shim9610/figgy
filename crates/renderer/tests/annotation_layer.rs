@@ -1,16 +1,16 @@
-//! The annotation layer on bounded charts: one shared pass around each
-//! family's frame, its own cache beside the frame and label raster caches,
-//! export parity with fresh renderers, and the common hit-map contract.
+//! The annotation layer on the radial chart: one shared pass over its
+//! frame, its own cache beside the frame and label raster caches, export
+//! parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
-#[path = "support/bounded_decorations.rs"]
-mod bounded_decorations;
+#[path = "support/radial_decorations.rs"]
+mod radial_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{
     layout::{NudgeResult, RectF},
     *,
 };
-use bounded_decorations::Decorations;
+use radial_decorations::Decorations;
 use std::sync::{Arc, Mutex, OnceLock};
 static LOCK: Mutex<()> = Mutex::new(());
 fn gpu() -> RendererDevice {
@@ -193,7 +193,7 @@ macro_rules! family_contract {
                 assert!(Arc::ptr_eq(&f, &r.prepare(&hidden, SIZE, scale).unwrap()));
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 assert!(h.shares_rasters_with(&b), "a visible toggle re-rasterized");
-                assert!(!h.draws_underlay() && !h.draws_overlay());
+                assert!(!h.draws_overlay());
                 let hidden_pixels = r.export_rgba(&hidden, SIZE, scale).unwrap();
                 let mut bare = edited.clone();
                 bare.annotations.items.clear();
@@ -566,7 +566,7 @@ fn radial_data_anchors_are_warnings() {
         ]
     );
     assert_eq!(a.annotations().entries().count(), 1);
-    assert!(!a.draws_underlay() && a.draws_overlay());
+    assert!(a.draws_overlay());
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
     let with = r.export_rgba(&c, SIZE, 1.).unwrap();
     assert!(with.rgba != plain.rgba);
@@ -595,8 +595,7 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The radial chart is the bounded family left; it has no value axes,
-    // so every item is ratio-anchored.
+    // The radial chart has no value axes, so every item is ratio-anchored.
     let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let thick = ArrowStyle {
         line: AnnotationLineStyle {

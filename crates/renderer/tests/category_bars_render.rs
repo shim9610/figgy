@@ -8,6 +8,8 @@
 //! outline and square corners unless a test says otherwise, so a colour
 //! predicate attributes every pixel to one series. Expected bar extents come
 //! from the same data area and axis ranges the renderer draws with.
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 #[path = "support/gpu.rs"]
 mod test_gpu;

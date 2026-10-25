@@ -2498,7 +2498,7 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
     }
 
     // Every Cartesian scene as it starts, at 1x and 2x.
-    for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_bounded()) {
+    for kind in SceneKind::ALL.into_iter().filter(|k| !k.is_radial()) {
         let scene = scenes::build(r, kind, big_data::START_POINTS).map_err(e)?;
         let chart = Chart::new(scene.config);
         for scale in [1.0f32, 2.0] {

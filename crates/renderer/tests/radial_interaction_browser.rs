@@ -43,7 +43,7 @@ fn edit_radial(frame: &RadialFrame, chart: &mut RadialChart, key: DecorationId) 
     chart.decorations.selected = Some(key);
 }
 #[wasm_bindgen_test(async)]
-async fn all_bounded_decorations_select_drag_rerender_and_export_on_webgpu() {
+async fn all_radial_decorations_select_drag_rerender_and_export_on_webgpu() {
     let instance = renderer::data_render::create_instance();
     let adapter = renderer::data_render::request_adapter_async(&instance)
         .await

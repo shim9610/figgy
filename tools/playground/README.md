@@ -48,7 +48,7 @@ The tabs at the top switch scenes.
   (documents opened as Cartesian series on a categorical axis); a radar
   (spider) chart (a document opened as polar radar series on a categorical
   angle axis).
-- **Bounded**: radial (pie and donut).
+- **Radial**: the pie and donut chart (the DataLess chart, its own renderer).
 
 ## Pointer
 

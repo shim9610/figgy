@@ -2466,7 +2466,7 @@ impl Renderer {
     /// Compile and retain the resident Cartesian pipeline groups before first use.
     ///
     /// Covers data/style rendering, contour-label compute, arc scans, fit reduction
-    /// and GPU picking. Separate bounded renderers and nonresident matrix/tile
+    /// and GPU picking. The separate radial renderer and nonresident matrix/tile
     /// streaming pipelines are outside this scope. Chart-specific data, views,
     /// styles, atlases and result buffers can still require allocation afterwards.
     ///

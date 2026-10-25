@@ -24,8 +24,8 @@ pub enum LayerRef {
     /// The chart's own series, axes and decorations.
     #[default]
     Base,
-    /// An overlay layer by index into the document's overlay list. Bounded
-    /// charts have no overlays; a setter must fall back to `Base` there and
+    /// An overlay layer by index into the document's overlay list. The
+    /// radial chart has no overlays; a setter must fall back to `Base` there and
     /// whenever the index is out of range.
     Overlay(usize),
     /// The dedicated annotation layer.
@@ -45,8 +45,9 @@ impl LayerRef {
         matches!(self, Self::Base)
     }
 
-    /// The layer as a bounded chart reads it. Bounded charts have no
-    /// overlays and no subplots, so those indices fall back to `Base`.
+    /// The layer as the radial chart and the legacy documents read it: they
+    /// have no overlays and no subplots, so those indices fall back to
+    /// `Base`.
     pub fn bounded(self) -> Self {
         match self {
             Self::Overlay(_) | Self::Subplot(_) | Self::SubplotOverlay(..) => Self::Base,
@@ -55,7 +56,7 @@ impl LayerRef {
     }
 }
 
-/// The shared `set_active_layer` of the bounded chart families: store the
+/// The `set_active_layer` of the radial chart: store the
 /// layer with the overlay fallback and, when it actually changes, clear the
 /// decoration selection, which names an element of the previous layer's
 /// pointer route (a decoration below the annotations, or an
@@ -328,10 +329,10 @@ mod tests {
         assert_eq!(decorations.selected, Some(DecorationId::Legend));
     }
 
-    // Every bounded family stores its layer through the shared setter, reads
-    // an `Overlay` as `Base`, and keeps `Annotations` through JSON.
+    // The radial chart stores its layer through the shared setter, reads an
+    // `Overlay` as `Base`, and keeps `Annotations` through JSON.
     #[test]
-    fn bounded_charts_set_and_read_their_active_layer() {
+    fn the_radial_chart_sets_and_reads_its_active_layer() {
         use crate::decoration::DecorationId;
         macro_rules! check {
             ($chart:ty, $data:expr) => {{
@@ -366,15 +367,26 @@ mod tests {
         check!(crate::radial::RadialChart, |c| {
             c.interaction.selected = Some(crate::radial::RadialTarget::main(0))
         });
-        check!(crate::categorical::CategoricalChart, |c| {
-            c.selected = Some(crate::categorical::CategoryBarTarget::new("a", "s"))
-        });
-        check!(crate::boxplot::BoxPlotChart, |c| {
-            c.selected = Some(crate::boxplot::BoxPlotTarget::new("a", "s"))
-        });
-        check!(crate::radar::RadarChart, |c| {
-            c.selected = Some(crate::radar::RadarTarget::vertex("s", "a"))
-        });
+    }
+
+    // The legacy documents carry their layer for the readers, reading an
+    // overlay as `Base`.
+    #[test]
+    #[allow(deprecated)]
+    fn legacy_documents_read_their_active_layer() {
+        macro_rules! check {
+            ($chart:ty) => {{
+                let mut c = <$chart>::default();
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.active_layer = LayerRef::Overlay(1);
+                assert_eq!(c.active_layer(), LayerRef::Base);
+                c.active_layer = LayerRef::Annotations;
+                assert_eq!(c.active_layer(), LayerRef::Annotations);
+            }};
+        }
+        check!(crate::categorical::CategoricalChart);
+        check!(crate::boxplot::BoxPlotChart);
+        check!(crate::radar::RadarChart);
     }
 
     #[test]

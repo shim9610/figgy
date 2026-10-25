@@ -2,9 +2,10 @@
 
 Chart settings and data definitions for figgy: Cartesian axes and series
 (including polar coordinates, vector fields, point colour and size maps, area
-fills and step lines), overlay axes, subplots, annotations, interaction
-policies, the bounded radial model, and the categorical bar, box plot and
-radar documents that releases up to 0.12 wrote.
+fills, step lines, category bars, box plots and radar series), overlay axes,
+subplots, annotations, interaction policies, the radial (pie and donut)
+model, and the readers of the categorical bar, box plot and radar documents
+that releases up to 0.12 wrote.
 This crate has no GPU or windowing dependency. The optional `serde` feature adds
 serialization and deserialization.
 
@@ -67,7 +68,7 @@ assert_eq!(chart.slices.iter().map(|slice| slice.value).sum::<f64>(), 100.0);
 | Selection, dragging and area handles | `Selectable` (an element's one placement, `emit`, into a `sink::Sink`), `SelectionGeometry`, `Draggable`, `Resizable`, `DecorationLayout` |
 | Secondary Y axes, subplots and the layer that receives pointer input | `OverlayLayer` on `Config.overlays`, `Subplot` on `Config.subplots`, `LayerRef` on `active_layer` |
 | Reference lines, spans, text boxes and arrows | `AnnotationLayer` on `annotations`, `Annotation`, `AnnotationKind`, `Anchor` |
-| Rich titles on pie and radar charts and in categorical and box plot documents | `ChartTitleOptions` (pie) and `BoundedTitleOptions` on `chart_title` |
+| Rich titles | `ChartTitleOptions` on `Config.chart_title` and `RadialChart::chart_title`; `BoundedTitleOptions` on the legacy documents' `chart_title`, which the readers turn into the `Config`'s title |
 
 ## Chart classes
 
@@ -81,28 +82,33 @@ class.
   (`RadialChart`: pie, donut and the detail ring of a split) is the only
   DataLess chart. A slice is named, coloured, exploded and labelled by the
   host, its `value` is stored on it, and the chart is bounded by its nature
-  (`MAX_RADIAL_SLICES`). Its drawn label strings are SSOT strings too
+  (`MAX_RADIAL_SLICES`, 64 slices, which `validate` enforces with the other
+  size limits). Its drawn label strings are SSOT strings too
   (`RadialSlice::text`), written at edit time by `RadialChart::format_labels`;
   the renderer draws them and formats nothing.
-- **Column-backed charts** are the series kinds of `Config`: per-point data
-  enters only through the renderer's `ColumnSource` and lives in its column
-  pool. The categorical bar chart is one of them: a `CategoryBars` series
-  per bar series over a categorical axis. `Config::from_categorical` opens a
-  `CategoricalChart` document as such a chart; its `SeriesUpload`s borrow
-  the document's values for the upload, nothing is copied. The box plot is
-  one too: a `BoxPlot` series per box series, whose statistics are a record
-  and whose outliers a ragged column of the pool. `Config::from_boxplot`
-  opens a `BoxPlotChart` document as such a chart, its uploads borrowing the
-  document's summaries. The radar chart is a polar chart: a `Radar` series
-  per radar series over a categorical angle axis. `Config::from_radar` opens
-  a `RadarChart` document as such a chart, its uploads borrowing the
-  document's values.
+- **Column-backed charts** are the series kinds of `Config`, every other
+  chart: per-point data enters only through the renderer's `ColumnSource`
+  and lives in its column pool. Category bars (`CategoryBars`, one series
+  per bar series over a categorical axis), box plots (`BoxPlot`, whose
+  statistics are a record and whose outliers a ragged column of the pool)
+  and radar series (`Radar`, on a polar chart with a categorical angle
+  axis) are series kinds like lines, markers and fields.
 
-The bounded pie/donut chart carries its values in the model, not in
-columns, and takes no stream sources. Its `validate` method enforces fixed
-size limits, such as 64 slices. The
-renderer owns GPU resources, frame caches and its `ColumnSource` upload adapter;
-those are not part of this model crate. See the
+### Document readers
+
+The categorical bar, box plot and radar documents of releases up to 0.12
+(`CategoricalChart`, `BoxPlotChart`, `RadarChart`) are kept as readers for
+this release and are deprecated; they are removed in the next milestone.
+They parse, validate and turn into a column-backed chart:
+`Config::from_categorical`, `Config::from_boxplot` and `Config::from_radar`
+(in `bounded_sources`) return the `Config`, its series and the
+`SeriesUpload`s whose views borrow the document's values, so nothing is
+copied on the way into the pool. Their decoration state
+(`DecorationLayout`) and title (`BoundedTitleOptions`) are read into the
+`Config`'s offsets and chart title.
+
+The renderer owns GPU resources, frame caches and its `ColumnSource` upload
+adapter; those are not part of this model crate. See the
 [renderer interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
 for applying model edits to displayed frames.
 

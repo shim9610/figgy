@@ -13,6 +13,8 @@
 //!
 //! Run with:
 //!     cargo test --test shader_consistency
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 use std::collections::BTreeMap;
 use std::fs;

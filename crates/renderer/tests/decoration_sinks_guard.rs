@@ -5,8 +5,8 @@
 //! placement the hit geometry cannot see (#38, #46).
 
 /// The files whose every text and rectangle goes through a sink, with the
-/// direct line draws each may keep: chrome that belongs to no element (the
-/// bounded charts' grid lines, a radial chart's leader lines), listed so a new one is a decision here.
+/// direct line draws each may keep: chrome that belongs to no element (a
+/// radial chart's leader lines), listed so a new one is a decision here.
 const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ("axis_render.rs", include_str!("../src/axis_render.rs"), &[]),
     (

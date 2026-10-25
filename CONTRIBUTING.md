@@ -54,7 +54,7 @@ adapter and driver; software adapters are valid test environments when identifie
 as such. Run the regression relevant to your change, for example:
 
 ```sh
-cargo test --locked -p figgy-renderer --features serde --test bounded_interaction -- --test-threads=1
+cargo test --locked -p figgy-renderer --features serde --test radial_interaction -- --test-threads=1
 ```
 
 `--features serde` adds the serialization round trips that CI also runs.
@@ -104,9 +104,9 @@ For other chart changes, verify the items the change affects:
 State which items are not applicable and why. An element that a rectangular chart
 lets the user select or drag is selectable or draggable in a new chart as well.
 
-Radial charts use a bounded small-data model and do not need streaming
-support; categorical bars, box plots and radar series are column series that
-reject streamed sources. Existing streaming support is not extended: a new chart
+The radial chart is the DataLess chart: it takes no column sources, so it has
+no streaming; categorical bars, box plots and radar series are column series
+that reject streamed sources. Existing streaming support is not extended: a new chart
 or feature rejects streamed sources with an explicit error, as polar charts, vector
 series, line fills and step lines do with `FiggyError::InvalidSeriesConfig`.
 

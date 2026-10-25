@@ -42,7 +42,7 @@ use crate::text::MeasureText;
 
 /// State that owns position changes: [`Config`] for Cartesian and polar
 /// charts, [`DecorationLayout`](crate::decoration::DecorationLayout) for
-/// bounded chart decorations and [`AnnotationLayer`](crate::layer::AnnotationLayer)
+/// the radial chart's decorations and [`AnnotationLayer`](crate::layer::AnnotationLayer)
 /// for annotations. All three share the hit-test and drag policy of this
 /// module.
 pub trait DragConfig {

@@ -8,7 +8,10 @@
 //! column pool. A [`RadarChart`] document still parses and validates here,
 //! and `Config::from_radar` turns it into that chart and the uploads of its
 //! values. Values are the host's; the renderer never normalizes a spoke to
-//! its own range.
+//! its own range. The type is deprecated and is removed in the next
+//! milestone.
+// The module defines the deprecated reader type and its tests use it.
+#![allow(deprecated)]
 use crate::{Color, categorical::Category};
 use std::collections::HashSet;
 
@@ -158,6 +161,10 @@ impl RadarSeries {
 
 /// A legacy radar chart document. [`Self::validate`] checks it, and
 /// `Config::from_radar` opens it as a polar chart of radar series.
+#[deprecated(
+    since = "0.13.0",
+    note = "a document reader only: open it with Config::from_radar; removed in the next milestone"
+)]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",
@@ -176,8 +183,8 @@ pub struct RadarChart {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub chart_title: Option<crate::BoundedTitleOptions>,
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays, so only `Base` and `Annotations` are meaningful here.
+    /// The layer the document's pointer interaction targeted. The document
+    /// has no overlays, so only `Base` and `Annotations` are meaningful here.
     #[cfg_attr(
         feature = "serde",
         serde(default, skip_serializing_if = "crate::LayerRef::is_base")
@@ -262,18 +269,11 @@ impl Default for RadarChart {
     }
 }
 impl RadarChart {
-    /// The layer that receives pointer interaction. Bounded charts have no
-    /// overlays or subplots, so an `Overlay`, `Subplot` or `SubplotOverlay`
-    /// value reads as `Base`.
+    /// The layer the document's pointer interaction targeted, as the reader
+    /// carries it: the document has no overlays or subplots, so an
+    /// `Overlay`, `Subplot` or `SubplotOverlay` value reads as `Base`.
     pub fn active_layer(&self) -> crate::LayerRef {
         self.active_layer.bounded()
-    }
-    /// Set the interaction target layer and return the stored value
-    /// (`Overlay`, `Subplot` and `SubplotOverlay` are stored as `Base`). A
-    /// change clears `decorations.selected`, which names an element of the
-    /// previous layer's pointer route; the data selection is kept.
-    pub fn set_active_layer(&mut self, layer: crate::LayerRef) -> crate::LayerRef {
-        crate::layer::set_bounded_active_layer(&mut self.active_layer, &mut self.decorations, layer)
     }
     /// The title to draw: `chart_title`, or the legacy `title` in the chart
     /// font and colour.
@@ -286,15 +286,6 @@ impl RadarChart {
                 self.text_color,
             )
         })
-    }
-    /// Copy the legacy `title` into `chart_title` in the current chart font
-    /// and colour, so later edits to `font_family`, `font_size` or
-    /// `text_color` no longer change the title. Does nothing when
-    /// `chart_title` is already set.
-    pub fn normalize_title(&mut self) {
-        if self.chart_title.is_none() {
-            self.chart_title = Some(self.resolved_title());
-        }
     }
     /// The series with `id`.
     pub fn series(&self, id: &str) -> Option<&RadarSeries> {
@@ -313,52 +304,6 @@ impl RadarChart {
             None => self.series(&target.series_id).is_some(),
             Some(_) => self.value(target).is_some(),
         }
-    }
-    /// The resolved outline width, fill colour, marker and marker size of a
-    /// series: its own style where set, else the chart style.
-    pub fn resolved_style(&self, series: &RadarSeries) -> (f32, Color, RadarMarker, f32) {
-        let style = series
-            .style
-            .clone()
-            .unwrap_or_default()
-            .resolved_from(&self.style);
-        (
-            style.line_width(),
-            style.fill_color(series.color),
-            style.marker(),
-            style.marker_size(),
-        )
-    }
-    /// Whether the hovered or selected target emphasizes `series_id`.
-    pub fn is_emphasized(&self, series_id: &str) -> bool {
-        [&self.hovered, &self.selected]
-            .into_iter()
-            .flatten()
-            .any(|t| t.series_id == series_id)
-    }
-    /// Reorder the spokes to `ids`, a permutation of the category ids,
-    /// moving every series' values with them.
-    pub fn reorder_categories(&mut self, ids: &[&str]) -> Result<(), &'static str> {
-        self.validate()?;
-        if ids.len() != self.categories.len()
-            || ids.iter().collect::<HashSet<_>>().len() != ids.len()
-        {
-            return Err("category order must be a permutation");
-        }
-        let order = ids
-            .iter()
-            .map(|id| {
-                self.categories
-                    .iter()
-                    .position(|c| c.id == *id)
-                    .ok_or("unknown category ID")
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        self.categories = order.iter().map(|i| self.categories[*i].clone()).collect();
-        for series in &mut self.series {
-            series.values = order.iter().map(|i| series.values[*i]).collect();
-        }
-        Ok(())
     }
     /// Check the limits and invariants the renderer relies on: category and
     /// series counts, unique ids, one value per category, finite style
@@ -508,30 +453,6 @@ mod tests {
         assert!(c.validate().is_err());
         c.selected = Some(RadarTarget::series("s"));
         assert!(c.validate().is_ok());
-        assert!(c.is_emphasized("s"));
-        assert!(!c.is_emphasized("t"));
-    }
-    #[test]
-    fn resolved_style_falls_back_to_the_chart_style() {
-        let mut c = chart();
-        let (width, fill, marker, size) = c.resolved_style(&c.series[0]);
-        assert_eq!(width, 2.0);
-        assert_eq!(fill.a, 0.25);
-        assert_eq!(marker, RadarMarker::Circle);
-        assert_eq!(size, 7.0);
-        c.series[0].style = Some(RadarSeriesStyle {
-            line_width_px: Some(4.0),
-            fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
-            marker: Some(RadarMarker::None),
-            ..Default::default()
-        });
-        let (width, fill, marker, size) = c.resolved_style(&c.series[0]);
-        assert_eq!(
-            (width, fill.a, marker, size),
-            (4.0, 0.0, RadarMarker::None, 7.0)
-        );
-        c.series[0].style.as_mut().unwrap().line_width_px = Some(13.0);
-        assert!(c.validate().is_err());
     }
     #[test]
     fn ranges_and_style_are_validated() {
@@ -549,16 +470,6 @@ mod tests {
         c = chart();
         c.style.start_angle_degrees = f32::NAN;
         assert!(c.validate().is_err());
-    }
-    #[test]
-    fn reorder_is_atomic_and_moves_values_with_their_categories() {
-        let mut c = chart();
-        let before = c.clone();
-        assert!(c.reorder_categories(&["a", "a", "b"]).is_err());
-        assert_eq!(c, before);
-        c.reorder_categories(&["c", "a", "b"]).unwrap();
-        assert_eq!(c.series[0].values, vec![3.0, 1.0, 2.0]);
-        assert_eq!(c.value(&RadarTarget::vertex("s", "c")), Some(3.0));
     }
     #[cfg(feature = "serde")]
     #[test]

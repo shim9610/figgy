@@ -75,9 +75,11 @@ pub use radial::{
 #[allow(deprecated)]
 pub use radial::RadialMaterial;
 
+#[allow(deprecated)]
 pub use categorical::*;
 
 pub mod boxplot;
+#[allow(deprecated)]
 pub use boxplot::*;
 pub mod polar;
 pub use polar::{
@@ -85,6 +87,7 @@ pub use polar::{
     PolarOptions,
 };
 pub mod radar;
+#[allow(deprecated)]
 pub use radar::*;
 
 pub mod bounded_title;

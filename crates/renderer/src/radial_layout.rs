@@ -664,7 +664,6 @@ impl RadialDecoration {
             id: self.id.clone(),
             base_bounds: base,
             canvas_size: self.size,
-            followers: Vec::new(),
         })
     }
 }
@@ -712,7 +711,6 @@ impl Draggable<RadialChart> for RadialDecoration {
             id: self.id.clone(),
             base_bounds: self.automatic,
             canvas_size: self.size,
-            followers: Vec::new(),
         }
     }
     fn drag_by(
@@ -735,7 +733,7 @@ impl Resizable<RadialChart> for RadialDecoration {
     ) -> (Option<DecorationElement>, Option<DecorationElement>) {
         self.nudge_element().resize_targets(handle)
     }
-    /// Both edges move together or not at all, as on every bounded chart.
+    /// Both edges move together or not at all, as on a Cartesian chart.
     fn resize_by(
         &self,
         chart: &mut RadialChart,
