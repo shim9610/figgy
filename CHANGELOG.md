@@ -19,7 +19,7 @@ Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `{"Plain":{}}`, `categories`, `cross_at`, `bar_groups`,
-`grid_shape`, the radar style's `fill_opacity` and `emphasis_brightness` and
+`grid_shape`, the radar series style's `fill_opacity` and
 the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 <a id="unreleased-model"></a>
@@ -414,11 +414,9 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   closing segment joins the last category to the first; a NaN value breaks
   the outline and the fill there. `RadarSeriesStyle`, `RadarMarker` and
   `RadarLabels` move to `model::data_config`; `model::radar` re-exports
-  them, so existing paths keep working. `RadarSeriesStyle` gains two
-  optional fields, `fill_opacity` (the default fill is the colour at 25 %)
-  and `emphasis_brightness` (carried and validated; the picked ring is the
-  highlight of a picked vertex in this release), both omitted when unset,
-  and the `DEFAULT_*` constants, `resolved_from(&RadarStyle)` and
+  them, so existing paths keep working. `RadarSeriesStyle` gains the
+  optional `fill_opacity` (the default fill is the colour at 25 %), omitted
+  when unset, and the `DEFAULT_*` constants, `resolved_from(&RadarStyle)` and
   `validate`. New items: `RadarSeriesLabels` (placement, decimals, suffix
   and `text`, one drawn string per category, at most
   `MAX_RADAR_LABEL_CHARS` each), `RadarRef` / `DataRenderType::radar`
@@ -431,8 +429,8 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   is additive and omitted at its default; model 0.12.1 and older documents
   parse and re-serialize byte for byte. Migration: an exhaustive match on
   `DataRenderType` adds `Radar`; a Rust literal of `RadarSeriesStyle` that
-  names every field adds `fill_opacity: None, emphasis_brightness: None`
-  (or ends in `..Default::default()`).
+  names every field adds `fill_opacity: None` (or ends in
+  `..Default::default()`).
 - **The radar chart is a document reader**
   ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
   `RadarChart` stays the serialized document of releases up to 0.12 and
@@ -453,11 +451,14 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   active layer, a selected vertex, label settings (with the text written
   from the values) and the title, legend and ring label offsets map onto
   their polar options; the hover state, a selected whole series, the
-  background colour, an explicit `decorations.data_area`, the spoke and
+  chart style's `emphasis_brightness`, the background colour, an explicit `decorations.data_area`, the spoke and
   value label offsets and the decoration selection are not carried.
   Removed: `RadarChart::label_text` (a vertex's label is
   `format_radar_labels`'). Migration: an exhaustive match on
-  `UploadValues` adds `Dense`.
+  `UploadValues` adds `Dense`; a document's `style.emphasis_brightness` is
+  read and kept in the document but not drawn: the former renderer
+  brightened the hovered or selected series, and a picked vertex now takes
+  the polar chart's picked ring instead.
 
 <a id="unreleased-renderer"></a>
 

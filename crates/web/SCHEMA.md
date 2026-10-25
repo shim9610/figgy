@@ -1157,7 +1157,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 범주마다 값 하나를 담은 컬럼을 `y_column`으로 읽어 마지막 범주에서 첫 범주로 닫는 외곽선을 그린다. NaN 값에서는
 외곽선과 채움이 끊긴다. `style`과 `labels`는 항상 기록한다. `style`의 `line_width_px`, `fill`, `marker`,
 `marker_size_px`는 값이 없으면 `null`로 기록하고 기본값(선 굵기 2, 색의 25% 불투명 채움, `"Circle"` 표식,
-표식 크기 7)을 쓴다. `fill_opacity`와 `emphasis_brightness`는 없으면 생략한다. `marker`는 `"None"`, `"Circle"`,
+표식 크기 7)을 쓴다. `fill_opacity`는 없으면 생략한다. `marker`는 `"None"`, `"Circle"`,
 `"Square"`, `labels.placement`는 `"None"`, `"Values"`, `"Emphasized"`이며 `labels.text`는 비어 있으면 생략한다.
 극좌표의 `interpolation`은 `"Chord"`여야 하고 레이어마다 레이더 시리즈는 16개까지다.
 

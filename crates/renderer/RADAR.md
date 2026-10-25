@@ -121,7 +121,6 @@ an unset field takes its default:
 | `fill_opacity` | 0.25 | the alpha factor of the series colour when `fill` is unset |
 | `marker` | `Circle` | `Circle`, `Square` or `None` at every vertex |
 | `marker_size_px` | 7 | the circle's diameter or the square's side, `1..=24` |
-| `emphasis_brightness` | 0.08 | the brightness a legacy chart added to its emphasized series, `0..=0.5`; carried and validated, not drawn |
 
 The outline is the series colour, a solid line through the vertices in
 category order with one more segment from the last vertex back to the first.
@@ -214,7 +213,9 @@ indices (`radar.positions`) first, then one value column per series
   legend and the ring labels are the matching offsets; `active_layer` and
   `annotations` carry over.
 - Not carried: `hovered` (transient), a selected whole series (a selection
-  names a vertex), `background` (the host's clear colour), an explicit
+  names a vertex), `style.emphasis_brightness` (the former renderer
+  brightened the hovered or selected series; a picked vertex takes the
+  picked ring instead), `background` (the host's clear colour), an explicit
   `decorations.data_area`, the spoke label and data label offsets, and the
   decoration selection.
 
@@ -257,8 +258,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 `RadarSeriesStyle`의 필드는 모두 선택이며 비우면 기본값을 쓴다. 외곽선 굵기
 `line_width_px`(2, 0이면 외곽선 없음), 채움 색 `fill`(없으면 시리즈 색에 `fill_opacity`를 곱한
 알파, 투명색이면 외곽선만), `fill_opacity`(0.25), 마커 `marker`(`Circle`, `Square`, `None`),
-마커 지름·변 길이 `marker_size_px`(7)가 있다. `emphasis_brightness`(0.08)는 이전 차트가 강조한
-시리즈에 더하던 밝기로, 저장하고 검증하지만 그리지는 않는다. 외곽선은 범주 순서로 꼭짓점을
+마커 지름·변 길이 `marker_size_px`(7)가 있다. 외곽선은 범주 순서로 꼭짓점을
 잇고 마지막 꼭짓점에서 첫 꼭짓점으로 한 구간을 더 그린다. 채움은 다각형에서 중심까지,
 `inner_radius_fraction`이 있으면 안쪽 고리까지 칠한다. 섹터에서는 닫는 구간의 사다리꼴을
 칠하지 않으므로, 외곽선은 닫히지만 채움은 열린 외곽선과 안쪽 고리 사이 영역이다. NaN 꼭짓점은
@@ -296,6 +296,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 빈 필드는 차트 스타일로 채우고(`RadarSeriesStyle::resolved_from`), 차트의 라벨 설정과 값에서
 적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
 꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로 옮긴다. 호버, 시리즈 전체
-선택, 배경, 명시한 그리기 영역, 스포크·데이터 라벨 이동량은 옮기지 않는다. 브라우저에서는
+선택, 차트 스타일의 `emphasis_brightness`(이전 렌더러가 강조한 시리즈를 밝히던 값으로, 이제 고른
+꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크·데이터 라벨 이동량은 옮기지 않는다. 브라우저에서는
 `FiggyChart.set_radar_document(json)`로 문서를 열며, bounded 래퍼의 `"radar"` 계열은 이 메서드를
 안내하는 오류를 낸다.

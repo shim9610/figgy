@@ -95,7 +95,9 @@ pub struct RadarStyle {
     /// Default marker diameter (circle) or side length (square) in logical
     /// pixels.
     pub marker_size_px: f32,
-    /// Added to the colour of the hovered or selected series.
+    /// Added to the colour of the hovered or selected series by the former
+    /// renderer. [`Config::from_radar`](crate::config::Config::from_radar)
+    /// does not carry it: a picked vertex takes the picked ring instead.
     pub emphasis_brightness: f32,
 }
 impl Default for RadarStyle {
@@ -110,7 +112,7 @@ impl Default for RadarStyle {
             fill_opacity: RadarSeriesStyle::DEFAULT_FILL_OPACITY,
             marker: RadarSeriesStyle::DEFAULT_MARKER,
             marker_size_px: RadarSeriesStyle::DEFAULT_MARKER_SIZE_PX,
-            emphasis_brightness: RadarSeriesStyle::DEFAULT_EMPHASIS_BRIGHTNESS,
+            emphasis_brightness: 0.08,
         }
     }
 }
@@ -193,9 +195,9 @@ pub struct RadarChart {
     pub series: Vec<RadarSeries>,
     /// Chart-wide appearance and series defaults.
     pub style: RadarStyle,
-    /// The hovered vertex or series. Its series is brightened by
-    /// `emphasis_brightness`, and a hovered vertex grows its marker like a
-    /// selected one.
+    /// The hovered vertex or series. The former renderer brightened its
+    /// series by `emphasis_brightness` and grew a hovered vertex's marker
+    /// like a selected one; `Config::from_radar` does not carry it.
     pub hovered: Option<RadarTarget>,
     /// The selected vertex or series; a selected vertex grows its marker.
     pub selected: Option<RadarTarget>,

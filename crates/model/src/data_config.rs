@@ -275,7 +275,7 @@ pub enum DataRenderType {
         /// The outline and marker colour; the fill uses it at the style's
         /// fill opacity unless the style names a fill.
         color: Color,
-        /// Outline width, fill, marker and emphasis; unset fields take
+        /// Outline width, fill and marker; unset fields take
         /// their defaults.
         #[cfg_attr(feature = "serde", serde(default))]
         style: RadarSeriesStyle,
@@ -2410,13 +2410,6 @@ pub struct RadarSeriesStyle {
     /// unset, `0..=1`.
     #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
     pub fill_opacity: Option<f32>,
-    /// The brightness a legacy radar chart added to its hovered or
-    /// selected series, `0..=0.5`. Carried and validated; the renderer
-    /// highlights a picked vertex with the chart's picked ring
-    /// (`Config.picked_data`), as it highlights a polar line or marker,
-    /// and does not brighten the series.
-    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
-    pub emphasis_brightness: Option<f32>,
 }
 
 impl RadarSeriesStyle {
@@ -2428,8 +2421,6 @@ impl RadarSeriesStyle {
     pub const DEFAULT_MARKER: RadarMarker = RadarMarker::Circle;
     /// The marker size when `marker_size_px` is unset.
     pub const DEFAULT_MARKER_SIZE_PX: f32 = 7.0;
-    /// The emphasis when `emphasis_brightness` is unset.
-    pub const DEFAULT_EMPHASIS_BRIGHTNESS: f32 = 0.08;
 
     /// The outline width in logical pixels.
     pub fn line_width(&self) -> f32 {
@@ -2455,14 +2446,11 @@ impl RadarSeriesStyle {
         self.marker_size_px.unwrap_or(Self::DEFAULT_MARKER_SIZE_PX)
     }
 
-    /// The emphasis brightness.
-    pub fn emphasis(&self) -> f32 {
-        self.emphasis_brightness
-            .unwrap_or(Self::DEFAULT_EMPHASIS_BRIGHTNESS)
-    }
-
     /// This style with every unset field read from a legacy chart style:
-    /// what a legacy radar series draws with.
+    /// what a legacy radar series draws with. The chart style's
+    /// `emphasis_brightness` has no counterpart: the picked ring
+    /// (`Config.picked_data`) is the highlight of a picked vertex, as on
+    /// every polar line or marker, and no series is brightened.
     pub fn resolved_from(&self, chart: &crate::radar::RadarStyle) -> RadarSeriesStyle {
         RadarSeriesStyle {
             line_width_px: Some(self.line_width_px.unwrap_or(chart.line_width_px)),
@@ -2470,16 +2458,12 @@ impl RadarSeriesStyle {
             marker: Some(self.marker.unwrap_or(chart.marker)),
             marker_size_px: Some(self.marker_size_px.unwrap_or(chart.marker_size_px)),
             fill_opacity: Some(self.fill_opacity.unwrap_or(chart.fill_opacity)),
-            emphasis_brightness: Some(
-                self.emphasis_brightness
-                    .unwrap_or(chart.emphasis_brightness),
-            ),
         }
     }
 
     /// The ranges a set field is held to: an outline width in `0..=12`, a
-    /// fill colour with channels in `0..=1`, a marker size in `1..=24`, a
-    /// fill opacity in `0..=1` and an emphasis in `0..=0.5`.
+    /// fill colour with channels in `0..=1`, a marker size in `1..=24` and
+    /// a fill opacity in `0..=1`.
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.line_width_px.is_some_and(|v| !finite_in(v, 0.0, 12.0))
             || self.fill.is_some_and(|c| !valid_bar_color(c, false))
@@ -2487,9 +2471,6 @@ impl RadarSeriesStyle {
                 .marker_size_px
                 .is_some_and(|v| !finite_in(v, 1.0, 24.0))
             || self.fill_opacity.is_some_and(|v| !finite_in(v, 0.0, 1.0))
-            || self
-                .emphasis_brightness
-                .is_some_and(|v| !finite_in(v, 0.0, 0.5))
         {
             return Err("invalid radar series style");
         }
@@ -4608,7 +4589,6 @@ mod radar_tests {
             |s| s.marker_size_px = Some(0.5),
             |s| s.marker_size_px = Some(25.0),
             |s| s.fill_opacity = Some(1.5),
-            |s| s.emphasis_brightness = Some(0.6),
         ] {
             let mut series = radar("a");
             bad(style_mut(&mut series));
@@ -4621,7 +4601,6 @@ mod radar_tests {
             marker: Some(RadarMarker::Square),
             marker_size_px: Some(24.0),
             fill_opacity: Some(1.0),
-            emphasis_brightness: Some(0.5),
         };
         assert_eq!(check(series), Ok(()));
         let mut series = radar("a");
@@ -4663,7 +4642,6 @@ mod radar_tests {
         assert_eq!(style.line_width(), 2.0);
         assert_eq!(style.marker(), RadarMarker::Circle);
         assert_eq!(style.marker_size(), 7.0);
-        assert_eq!(style.emphasis(), 0.08);
         assert!((style.fill_color(color).a - 0.2).abs() < 1e-6);
         let chart = crate::radar::RadarStyle {
             line_width_px: 3.0,
@@ -4678,7 +4656,6 @@ mod radar_tests {
         assert_eq!(resolved.fill_opacity, Some(0.5));
         assert_eq!(resolved.marker, Some(RadarMarker::Square));
         assert_eq!(resolved.marker_size_px, Some(9.0));
-        assert_eq!(resolved.emphasis_brightness, Some(0.1));
         assert_eq!(resolved.fill, None);
         let own = RadarSeriesStyle {
             marker: Some(RadarMarker::None),
@@ -4771,7 +4748,7 @@ mod radar_tests {
             serde_json::json!({"placement": "None", "decimals": 1, "value_suffix": ""})
         );
         let style = &json["Radar"]["style"];
-        assert!(style.get("fill_opacity").is_none() && style.get("emphasis_brightness").is_none());
+        assert!(style.get("fill_opacity").is_none());
         let back: DataRenderType = serde_json::from_value(json).unwrap();
         assert_eq!(back, series.render_type);
         let minimal: DataRenderType = serde_json::from_value(serde_json::json!({
@@ -4789,7 +4766,6 @@ mod radar_tests {
             marker: Some(RadarMarker::Square),
             marker_size_px: Some(9.0),
             fill_opacity: Some(0.4),
-            emphasis_brightness: Some(0.2),
         };
         *labels_mut(&mut series) = RadarSeriesLabels {
             placement: RadarLabels::Values,

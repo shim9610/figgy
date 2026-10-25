@@ -889,7 +889,9 @@ impl Config {
     /// selected vertex is the typed selection (a point whose index is its
     /// category); `active_layer` and `annotations` carry over. Not carried:
     /// `hovered` (transient), a selected whole series (a selection names a
-    /// vertex), `background` (the host's clear colour), an explicit
+    /// vertex), the style's `emphasis_brightness` (the former renderer
+    /// brightened the hovered or selected series; a picked vertex takes the
+    /// picked ring instead), `background` (the host's clear colour), an explicit
     /// `decorations.data_area`, the spoke label and data label offsets (the
     /// category labels move together, and value labels are not drawn yet),
     /// and the decoration selection. The chart area is the default
@@ -1955,7 +1957,6 @@ mod radar_tests {
                 marker: Some(RadarMarker::Square),
                 marker_size_px: Some(9.0),
                 fill_opacity: Some(0.4),
-                emphasis_brightness: Some(0.2),
             }
         );
         assert_eq!(a.style.fill_color(a.color).a, 0.4);

@@ -393,7 +393,6 @@ fn radar_series() -> Vec<SeriesConfig> {
                 marker: Some(RadarMarker::Square),
                 marker_size_px: Some(6.0),
                 fill_opacity: Some(0.4),
-                emphasis_brightness: Some(0.1),
             },
             labels: RadarSeriesLabels {
                 placement: RadarLabels::Values,

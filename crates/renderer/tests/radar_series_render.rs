@@ -826,18 +826,16 @@ fn every_radar_edit_redraws_like_a_fresh_renderer() {
                 "{name} {scale}x: cached"
             );
         }
-        // Label settings and the emphasis are configuration only: no pixel
-        // changes.
+        // Label settings are configuration only: no pixel changes.
         let mut quiet = series.clone();
-        if let DataRenderType::Radar { style, labels, .. } = &mut quiet[0].render_type {
-            style.emphasis_brightness = Some(0.4);
+        if let DataRenderType::Radar { labels, .. } = &mut quiet[0].render_type {
             labels.placement = RadarLabels::Values;
             labels.text = vec!["a".into(); 5];
         }
         assert_eq!(
             export(&mut r, &grid, &quiet, scale).rgba,
             before.rgba,
-            "{scale}x: labels and emphasis draw nothing yet"
+            "{scale}x: labels draw nothing yet"
         );
     }
 }
