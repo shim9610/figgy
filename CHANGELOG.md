@@ -209,277 +209,280 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   hidden), for example 2 px larger at 12 px and 1 px smaller at 21 px. No API
   or serialized field changes.
 
-- **The radial chart is the DataLess chart**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The model
-  documents two chart classes: a DataLess chart is defined by its SSOT alone,
-  with no `ColumnSource`, no column pool and no streaming, and the radial
-  chart is its only member; the series kinds of `Config` are the
-  column-backed class. No new type.
-- **Radial label strings in the SSOT.** `RadialSlice` gains
-  `text: Option<String>` (additive, omitted when absent): the drawn label, at
-  most two lines joined by `'\n'`, each at most 400 characters without
-  control characters. `RadialChart::format_labels()` writes every slice's and
-  detail child's text from the label format, `label_decimals`, `value_suffix`
-  and its circle's total at edit time; `normalize_labels()` fills only the
-  missing ones, so a document written before the field draws the strings it
-  drew; `labels_have_text()` says whether a frame can draw every shown label.
-  `label_lines` is the helper both use. Migration: an exhaustive
-  `RadialSlice` struct literal needs `text: None` (or use `RadialSlice::new`);
-  call `format_labels()` after building or editing slices, values, names or
-  label formats, and `normalize_labels()` on a loaded document, because the
-  renderer draws `text` and refuses a shown label without it (see
-  [Renderer](#unreleased-renderer)).
-- **Radial title through the shared chart title.** `RadialChart.chart_title`
-  is `Option<ChartTitleOptions>` instead of `Option<BoundedTitleOptions>`,
-  written and read as the same `{"visible", "text"}` object in the same
-  order, so documents keep their bytes. The position stays in
-  `decorations`: the offsets and `top_margin` read as 0 and
-  `RadialChart::validate` rejects other values. `resolved_title()` returns a
-  `ChartTitleOptions` built by the new
-  `ChartTitleOptions::from_legacy_plain(title, font, label_size, color)`.
-  `select::emit_chart_title_in(title, chart_area, top_margin, measure, sink)`
-  is the one title placement, split out of the Cartesian title (whose pixels
-  do not change), with `layout::chart_title_placement_in` its `RectF`
-  arithmetic. The rich-text limits of bounded titles and annotations are one
-  check, `RichText::within_limits()`. `CategoricalChart`, `BoxPlotChart` and
-  `RadarChart` keep `BoundedTitleOptions`. Migration: code that sets a radial
-  `chart_title` builds a `ChartTitleOptions` (zero offsets and band) where it
-  built a `BoundedTitleOptions`.
-- **`RadialChart` is a drag state.** `impl DragConfig for RadialChart`
-  (`Element = DecorationElement`): a decoration of the radial frame's
-  `HitMap<RadialChart>` moves in `decorations` by the bounded charts' rule.
-  `SelectionBox::clipped_to(area)` intersects a selection box with a canvas.
-  `RadialChart::step_selection(backwards)` is the radial step of the bounded
-  web wrapper's `step_selection`, moved into the model since it edits only
-  the SSOT; the wrapper calls it and its behaviour is unchanged.
-- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13c). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
-  categorical axis with `n` categories maps the data range
-  `[-0.5, n - 0.5]` with category `i` at `i`, a major tick at every
-  category, no minors and `categories[i].label` as tick text, thinned by the
-  numeric labels' stride rule when they crowd. `min`, `max`,
-  `major_spacing`, `minor_count` and the label format are ignored on it.
-  New items: `AxisOptions::category_count`, `data_range` (what the tick
-  walks, `axis_fraction`, the annotation space and the overlay and subplot
-  expansion read) and `validate_categories` (1 to 64 categories, unique
-  non-empty single-line ids, single-line labels of at most 80 characters,
-  `MAX_CATEGORY_TEXT_CHARS`, a linear scale; an inverted categorical axis
-  walks its categories from the far end, the ticks, labels, grid, data and
-  picks following the same `axis_fraction`);
-  `PolarOptions::validate` rejects a categorical angle axis (it arrives
-  with the radar series kind) and radius axis. A linked subplot axis
-  follows its target's categories. `Category` moves to `model::config`
-  beside the axis; `categorical::Category` (and the crate-root path)
-  re-export it. The JSON key is additive (omitted when `None`); model 0.12.1
-  and older ignore it. Migration: an `AxisOptions { .. }` literal adds
-  `categories: None`, and an exhaustive destructuring adds `categories`.
-- **Axis anchors take the plot rectangle.** `layout::axis_anchor(side,
-  plot: &RectF)` replaces `axis_anchor(side, &DataArea)`, so a plot that is
-  not integer-aligned is anchored by the same code; an integer data area
-  gives the same endpoints bit for bit. Migration: pass
-  `&RectF::from_rect(&data_area)`.
-- **Categorical bars are a Cartesian series kind**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
-  `DataRenderType::CategoryBars { color, style, labels, label_format,
-  overrides }` draws one bar per category of the chart's categorical axis
-  (`bottom_x` for vertical bars, `left_y` for horizontal ones): the
-  positions column holds `0..n-1`, the values column one value per category
-  (NaN for a missing bar). The category bar series of one layer form its bar
-  group, laid out by the new `Config.bar_groups: Option<BarGroups>` (`mode`
-  `Grouped` / `Stacked` / `PercentStacked`, `direction`, `group_width`,
-  `bar_gap`; `None` reads as the default). `CategoryBarMode`,
-  `CategoryBarDirection`, `CategoryBarLabels`, `CategoryBarLabelFormat`,
-  `CategoryBarStyle`, `CategoryBarTarget` and `CategoryBarOverride` move to
-  `model::data_config`; `model::categorical` re-exports them, so existing
-  paths keep working. New items: `BarGroups`, `CategoryBarSeriesLabels`
-  (placement, decimals, suffix and `text`, one drawn string per category),
-  `CategoryBarsRef` / `DataRenderType::category_bars`,
-  `SeriesConfig::category_bar_columns`, `validate_category_bar_series`,
-  `Config::validate_category_bars` (a categorical axis in the bar
-  direction, a linear value axis, at most `MAX_BAR_SERIES` series per
-  group and `MAX_CATEGORY_BARS` bars, distinct value columns, no polar
-  chart, horizontal groups on the base panel only), `Config::bar_groups_of`
-  and `format_labels`, which writes `labels.text` from the host's values at
-  edit time. The renderer draws the text it is given and never formats a
-  value (value labels, #40 item 13h, below). `AxisOptions` gains `cross_at: Option<f64>`: the value of the
-  perpendicular axis the axis line crosses at (`layout::axis_cross`;
-  `axis_anchor(side, plot, cross)` takes it); only the line moves, the
-  labels and the title stay at the plot edge. The overlay panels of
-  `Config::expand` keep their categorical axes' categories and carry
-  `bar_groups`. Every new key is additive and omitted at its default;
-  model 0.12.1 and older documents parse and re-serialize byte for byte.
-  Migration: a `Config { .. }` literal adds `bar_groups: None`, an
-  `AxisOptions { .. }` literal adds `cross_at: None`, an exhaustive match
-  on `DataRenderType` adds `CategoryBars`, and `axis_anchor` takes a third
-  argument (`None` for the previous anchor).
-- **The categorical chart is a document reader**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
-  `CategoricalChart` stays the serialized document of releases up to 0.12;
-  `Config::from_categorical(&chart) -> (Config, Vec<SeriesConfig>,
-  Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a
-  Cartesian chart with a categorical axis, `bar_groups` and one
-  `CategoryBars` series per document series. The uploads borrow the
-  document's values (`UploadValues`, a `ColumnSource` in the renderer):
-  the positions column `categorical.positions` first, then one value
-  column `categorical.values.<series id>` per series; nothing is copied.
-  The titles, grid, legend, font, colours, chart title, annotations,
-  active layer, selection and decoration offsets map onto their Cartesian
-  options; the hover state, the background colour, the explicit
-  `decorations.data_area` and the data label offsets are not carried. A
-  horizontal document's category axis is inverted, so its first category
-  stays at the top and its `Y` annotations land on the same categories.
-  Removed: `CategoricalChart::segments`, `CategoryBarSegment` and
-  `CategoricalChart::label_text` (a bar's geometry is the shader's, its
-  label `format_labels`'). The DataLess chart class is the radial chart
-  alone; the categorical chart is a Cartesian series kind.
-- **Box plots are a Cartesian series kind**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
-  `DataRenderType::BoxPlot { color, style, labels, outliers, overrides }`
-  draws one box per category of the chart's categorical axis (`bottom_x`
-  for vertical boxes, `left_y` for horizontal ones) with its median,
-  whiskers and caps, mean and outliers. `x_column` is the positions column
-  `0..n-1`, `y_column` the id of the series' record of box statistics (the
-  renderer's `BOX_PLOT_RECORD` schema: `median`, `q1`, `q3`, `whisker_low`,
-  `whisker_high` and the optional `mean`, `sample_count`, `ci_low`,
-  `ci_high`; a missing box is a row of NaN), `outliers` an optional ragged
-  column with one group per category; the roles do not swap with the
-  direction. The box plot series of one layer form its box group, laid out
-  by `Config.bar_groups` (`direction`, `group_width`, `bar_gap` as the box
-  gap; the mode must be `Grouped`). `BoxPlotTarget`, `BoxPlotLabels`,
-  `BoxOutlierShape`, `BoxPlotStyle` and `BoxPlotOverride` move to
-  `model::data_config`; `model::boxplot` re-exports them, so existing paths
-  keep working. New items: `BoxPlotSeriesLabels` (placement, decimals,
-  suffix and `text`, one drawn string per category, at most
-  `MAX_BOX_PLOT_LABEL_CHARS` each), `BoxPlotRef` /
-  `DataRenderType::box_plot`, `SeriesConfig::box_plot_columns`,
-  `BoxPlotStyle::validate`, `validate_box_plot_series`,
-  `Config::validate_box_plots` (a categorical axis in the box direction, a
-  linear value axis, at most 16 box plot series per layer and 512 boxes, a
-  grouped mode, one kind per layer: a layer draws either category bars or
-  box plots, no horizontal boxes on an overlay, no polar chart) and
-  `format_box_plot_labels`, which writes `labels.text` from the host's
-  medians and counts at edit time: the renderer has no per-box statistics
-  to write it from, so a host that uploads its own records writes it.
-  The renderer draws the text it is given (value labels, #40 item 13h,
-  below). Every new key
-  is additive and omitted at its default; model 0.12.1 and older documents
-  parse and re-serialize byte for byte. Migration: an exhaustive match on
-  `DataRenderType` adds `BoxPlot`.
-- **The box plot is a document reader**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
-  `BoxPlotChart` stays the serialized document of releases up to 0.12 and
-  keeps its `validate` (ordered statistics, outliers outside the whiskers, a
-  CI around the median, the limits). `Config::from_boxplot(&chart) ->
-  (Config, Vec<SeriesConfig>, Vec<SeriesUpload<'_>>)`
-  (`model::bounded_sources`) turns it into a Cartesian chart with a
-  categorical axis (top-down for horizontal boxes, as before), a grouped
-  `bar_groups` and one `BoxPlot` series per document series. The uploads
-  borrow the document's summaries: the positions column
-  `boxplot.positions` (`BOX_PLOT_POSITIONS_COLUMN`) first, then per series
-  its record `boxplot.record.<series id>` (`UploadValues::BoxRecord`, whose
-  nine field adapters `UploadValues::box_fields` gives as `BoxColumn`s) and,
-  when any of its boxes has an outlier, its ragged column
-  `boxplot.outliers.<series id>` (`UploadValues::BoxOutliers`, values and
-  offsets from `UploadValues::box_outliers`); every value is computed from
-  the summaries on the fly, nothing is copied. `value_range` becomes the
-  fixed value axis; the titles, grid, legend, font, colours, chart title,
-  annotations, active layer, selection, label settings (with the text
-  written from the medians and counts), overrides and decoration offsets
-  map onto their Cartesian options; the hover state, the background
-  colour, an explicit `decorations.data_area` and the data label offsets
-  are not carried. Removed: `BoxPlotChart::label_text` (a box's label is
-  `format_box_plot_labels`'). Migration: an exhaustive match on
-  `UploadValues` adds `BoxRecord` and `BoxOutliers`.
-- **Categorical angle axis and polygon grid**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A polar
-  chart's angle axis (`bottom_x`) may now be categorical
-  (`AxisOptions::categories`), which `Config::validate_polar` rejected
-  before: category `i` of `n` sits at `i / n` of the turn (or of
-  `sector`) from `zero_angle_degrees`, in the `clockwise` direction, so the
-  angle column holds the category positions `0..n`. `polar::AngleMap`
-  (`Config::polar_angle_map`, `PolarOptions::angle_map`) is the one mapping
-  from an angle value to the screen for both axis kinds; on a numeric axis
-  it gives the constants the projection used before, bit for bit.
-  `PolarOptions.grid_shape: Option<GridShape>` (`Circle`, the default, or
-  `Polygon`) joins every ring and the outer ring with chords at the
-  categories; a `Polygon` grid needs a categorical angle axis
-  (`InvalidConfig { field: "polar" }` otherwise). The key is additive and
-  omitted at its default. Migration: a Rust literal of `PolarOptions` adds
-  `grid_shape: None` (or ends in `..Default::default()`).
-- **Radar is a polar series kind**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
-  `DataRenderType::Radar { color, style, labels }` draws a closed outline
-  through one value per category of a polar chart's categorical angle
-  axis: `x_column` the positions column `0..n`, `y_column` the values. The
-  closing segment joins the last category to the first; a NaN value breaks
-  the outline and the fill there. `RadarSeriesStyle`, `RadarMarker` and
-  `RadarLabels` move to `model::data_config`; `model::radar` re-exports
-  them, so existing paths keep working. `RadarSeriesStyle` gains the
-  optional `fill_opacity` (the default fill is the colour at 25 %), omitted
-  when unset, and the `DEFAULT_*` constants, `resolved_from(&RadarStyle)` and
-  `validate`. New items: `RadarSeriesLabels` (placement, decimals, suffix
-  and `text`, one drawn string per category, at most
-  `MAX_RADAR_LABEL_CHARS` each), `RadarRef` / `DataRenderType::radar`
-  (with the line and marker styles the series draws with),
-  `validate_radar_series`, `Config::validate_radar` (a polar chart with a
-  categorical angle axis and `Chord` interpolation, at most 16 radar series
-  per layer) and `format_radar_labels`, which writes `labels.text` at edit
-  time. The renderer draws the text it is given (value labels, #40 item
-  13h, below). Every new key
-  is additive and omitted at its default; model 0.12.1 and older documents
-  parse and re-serialize byte for byte. Migration: an exhaustive match on
-  `DataRenderType` adds `Radar`; a Rust literal of `RadarSeriesStyle` that
-  names every field adds `fill_opacity: None` (or ends in
-  `..Default::default()`).
-- **The radar chart is a document reader**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
-  `RadarChart` stays the serialized document of releases up to 0.12 and
-  keeps its `validate`. `Config::from_radar(&chart) -> (Config,
-  Vec<SeriesConfig>, Vec<SeriesUpload<'_>>)` (`model::bounded_sources`)
-  turns it into a polar chart whose angle axis holds the categories and
-  one `Radar` series per document series, each with its style's unset
-  fields read from the chart style. The uploads borrow the document's
-  values: the positions column `radar.positions`
-  (`RADAR_POSITIONS_COLUMN`) first, then one value column per series,
-  `radar.values.<series id>` (`radar_values_column`,
-  `UploadValues::Dense`); nothing is copied. `start_angle_degrees` becomes
-  `zero_angle_degrees` (negated: the document measured with y down) and
-  the ring labels' ray, `clockwise` and `grid_shape` the polar options,
-  `value_range` the fixed radius axis with `ring_spacing` as its spacing
-  (without a `value_range` the range is the host's to fit); the grid,
-  ring and spoke colours, font, colours, legend, chart title, annotations,
-  active layer, a selected vertex, label settings (with the text written
-  from the values) and the title, legend and ring label offsets map onto
-  their polar options; the hover state, a selected whole series, the
-  chart style's `emphasis_brightness`, the background colour, an explicit `decorations.data_area`, the spoke and
-  value label offsets and the decoration selection are not carried.
-  Removed: `RadarChart::label_text` (a vertex's label is
-  `format_radar_labels`'). Migration: an exhaustive match on
-  `UploadValues` adds `Dense`; a document's `style.emphasis_brightness` is
-  read and kept in the document but not drawn: the former renderer
-  brightened the hovered or selected series, and a picked vertex now takes
-  the polar chart's picked ring instead.
-- **Value label offsets, the label hit id and the label selection**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). The value
-  labels of `CategoryBars`, `BoxPlot` and `Radar` series are drawn (see
-  [Renderer](#unreleased-renderer)); their strings stay `labels.text`, written
-  at edit time. `CategoryBarSeriesLabels`, `BoxPlotSeriesLabels` and
-  `RadarSeriesLabels` gain `offsets: Vec<[f32; 2]>`: the drag offset of each
-  label in logical pixels (x right, y down), one per category, empty (and
-  omitted from JSON) until a label is dragged; validation takes it empty or
-  one finite offset per category of at most `MAX_VALUE_LABEL_OFFSET` (4096)
-  px along either axis. `SeriesConfig::drag_value_label(index, categories,
-  dx, dy)` writes it (the first drag fills one zero offset per category;
-  a move past the bound, a non-finite delta or an index past the categories
-  is rejected unchanged), with `value_label_offsets`, `value_label_offset`
-  and `value_label_text`. `value_label_id(series_id, index)` /
-  `parse_value_label_id` name a label `"series:<series_id>:label:<index>"`
-  for hosts. `PickedDataRef::ValueLabel { source_id, series_id,
-  category_index }` is a selected label (`{"kind":"value_label", …}` in
-  `picked_data`). The readers carry a legacy document's `DataLabel` offsets
-  into `labels.offsets`. Migration: struct literals of the three label types
-  add `offsets: Vec::new()` (or use `..Default::default()`); exhaustive
-  `PickedDataRef` matches add `ValueLabel`.
+- **The bounded group, classified per chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13, 13a to 13i).
+  The four charts the 0.12 releases grouped as "bounded" are classified on
+  their own. The radial chart is the DataLess chart, defined by its SSOT
+  alone. Category bars and box plots are Cartesian series kinds and radar
+  series a polar one, their per-point data entering through `ColumnSource`.
+  `CategoricalChart`, `BoxPlotChart` and `RadarChart` stay only as
+  deprecated readers of the documents of releases up to 0.12. Released
+  fixtures written by model 0.12.1 pin every document (13a). Every migration
+  of the item is under
+  [Migrating from the bounded group](#unreleased-bounded-migration).
+  - **The radial chart is the DataLess chart**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The model
+    documents two chart classes: a DataLess chart is defined by its SSOT alone,
+    with no `ColumnSource`, no column pool and no streaming, and the radial
+    chart is its only member; the series kinds of `Config` are the
+    column-backed class. No new type.
+  - **Radial label strings in the SSOT.** `RadialSlice` gains `text:
+    Option<String>` (additive, omitted when absent): the drawn label, at most
+    two lines joined by `'\n'`, each at most 400 characters without control
+    characters. `RadialChart::format_labels()` writes every slice's and detail
+    child's text from the label format, `label_decimals`, `value_suffix` and its
+    circle's total at edit time; `normalize_labels()` fills only the missing
+    ones, so a document written before the field draws the strings it drew;
+    `labels_have_text()` says whether a frame can draw every shown label.
+    `label_lines` is the helper both use.
+  - **Radial title through the shared chart title.** `RadialChart.chart_title`
+    is `Option<ChartTitleOptions>` instead of `Option<BoundedTitleOptions>`,
+    written and read as the same `{"visible", "text"}` object in the same order,
+    so documents keep their bytes. The position stays in `decorations`: the
+    offsets and `top_margin` read as 0 and `RadialChart::validate` rejects other
+    values. `resolved_title()` returns a `ChartTitleOptions` built by the new
+    `ChartTitleOptions::from_legacy_plain(title, font, label_size, color)`.
+    `select::emit_chart_title_in(title, chart_area, top_margin, measure, sink)`
+    is the one title placement, split out of the Cartesian title (whose pixels
+    do not change), with `layout::chart_title_placement_in` its `RectF`
+    arithmetic. The rich-text limits of titles and annotations are one
+    check, `RichText::within_limits()`. `CategoricalChart`, `BoxPlotChart` and
+    `RadarChart` keep `BoundedTitleOptions`.
+  - **`RadialChart` is a drag state.** `impl DragConfig for RadialChart`
+    (`Element = DecorationElement`): a decoration of the radial frame's
+    `HitMap<RadialChart>` moves in `decorations` by `DecorationLayout`'s rule.
+    `SelectionBox::clipped_to(area)` intersects a selection box with a canvas.
+    `RadialChart::step_selection(backwards)` is the radial step of the web
+    wrapper's `step_selection`, moved into the model since it edits only the
+    SSOT; the wrapper calls it and its behaviour is unchanged.
+  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13c). `AxisOptions` gains `categories: Option<Vec<Category>>`; a
+    categorical axis with `n` categories maps the data range `[-0.5, n - 0.5]`
+    with category `i` at `i`, a major tick at every category, no minors and
+    `categories[i].label` as tick text, thinned by the numeric labels' stride
+    rule when they crowd. `min`, `max`, `major_spacing`, `minor_count` and the
+    label format are ignored on it. New items: `AxisOptions::category_count`,
+    `data_range` (what the tick walks, `axis_fraction`, the annotation space and
+    the overlay and subplot expansion read) and `validate_categories` (1 to 64
+    categories, unique non-empty single-line ids, single-line labels of at most
+    80 characters, `MAX_CATEGORY_TEXT_CHARS`, a linear scale; an inverted
+    categorical axis walks its categories from the far end, the ticks, labels,
+    grid, data and picks following the same `axis_fraction`);
+    `PolarOptions::validate` rejects a categorical angle axis (it arrives with
+    the radar series kind) and radius axis. A linked subplot axis follows its
+    target's categories. `Category` moves to `model::config` beside the axis;
+    `categorical::Category` (and the crate-root path) re-export it. The JSON key
+    is additive (omitted when `None`); model 0.12.1 and older ignore it.
+  - **Axis anchors take the plot rectangle.** `layout::axis_anchor(side, plot:
+    &RectF)` replaces `axis_anchor(side, &DataArea)`, so a plot that is not
+    integer-aligned is anchored by the same code; an integer data area gives the
+    same endpoints bit for bit.
+  - **Categorical bars are a Cartesian series kind**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    `DataRenderType::CategoryBars { color, style, labels, label_format,
+    overrides }` draws one bar per category of the chart's categorical axis
+    (`bottom_x` for vertical bars, `left_y` for horizontal ones): the positions
+    column holds `0..n-1`, the values column one value per category (NaN for a
+    missing bar). The category bar series of one layer form its bar group, laid
+    out by the new `Config.bar_groups: Option<BarGroups>` (`mode` `Grouped` /
+    `Stacked` / `PercentStacked`, `direction`, `group_width`, `bar_gap`; `None`
+    reads as the default). `CategoryBarMode`, `CategoryBarDirection`,
+    `CategoryBarLabels`, `CategoryBarLabelFormat`, `CategoryBarStyle`,
+    `CategoryBarTarget` and `CategoryBarOverride` move to `model::data_config`;
+    `model::categorical` re-exports them, so existing paths keep working. New
+    items: `BarGroups`, `CategoryBarSeriesLabels` (placement, decimals, suffix
+    and `text`, one drawn string per category), `CategoryBarsRef` /
+    `DataRenderType::category_bars`, `SeriesConfig::category_bar_columns`,
+    `validate_category_bar_series`, `Config::validate_category_bars` (a
+    categorical axis in the bar direction, a linear value axis, at most
+    `MAX_BAR_SERIES` series per group and `MAX_CATEGORY_BARS` bars, distinct
+    value columns, no polar chart, horizontal groups on the base panel only),
+    `Config::bar_groups_of` and `format_labels`, which writes `labels.text` from
+    the host's values at edit time. The renderer draws the text it is given and
+    never formats a value (value labels, #40 item 13h, below). `AxisOptions`
+    gains `cross_at: Option<f64>`: the value of the perpendicular axis the axis
+    line crosses at (`layout::axis_cross`; `axis_anchor(side, plot, cross)`
+    takes it); only the line moves, the labels and the title stay at the plot
+    edge. The overlay panels of `Config::expand` keep their categorical axes'
+    categories and carry `bar_groups`. Every new key is additive and omitted at
+    its default; model 0.12.1 and older documents parse and re-serialize byte
+    for byte.
+  - **The categorical chart is a document reader**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    `CategoricalChart` stays the serialized document of releases up to 0.12;
+    `Config::from_categorical(&chart) -> (Config, Vec<SeriesConfig>,
+    Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a
+    Cartesian chart with a categorical axis, `bar_groups` and one
+    `CategoryBars` series per document series. The uploads borrow the
+    document's values (`UploadValues`, a `ColumnSource` in the renderer):
+    the positions column `categorical.positions` first, then one value
+    column `categorical.values.<series id>` per series; nothing is copied.
+    The titles, grid, legend, font, colours, chart title, annotations,
+    active layer, selection and decoration offsets map onto their Cartesian
+    options; the hover state, the background colour, the explicit
+    `decorations.data_area` and the data label offsets are not carried. A
+    horizontal document's category axis is inverted, so its first category
+    stays at the top and its `Y` annotations land on the same categories.
+    Removed: `CategoricalChart::segments`, `CategoryBarSegment` and
+    `CategoricalChart::label_text` (a bar's geometry is the shader's, its
+    label `format_labels`').
+  - **Box plots are a Cartesian series kind**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    `DataRenderType::BoxPlot { color, style, labels, outliers, overrides }`
+    draws one box per category of the chart's categorical axis (`bottom_x` for
+    vertical boxes, `left_y` for horizontal ones) with its median, whiskers and
+    caps, mean and outliers. `x_column` is the positions column `0..n-1`,
+    `y_column` the id of the series' record of box statistics (the renderer's
+    `BOX_PLOT_RECORD` schema: `median`, `q1`, `q3`, `whisker_low`,
+    `whisker_high` and the optional `mean`, `sample_count`, `ci_low`, `ci_high`;
+    a missing box is a row of NaN), `outliers` an optional ragged column with
+    one group per category; the roles do not swap with the direction. The box
+    plot series of one layer form its box group, laid out by `Config.bar_groups`
+    (`direction`, `group_width`, `bar_gap` as the box gap; the mode must be
+    `Grouped`). `BoxPlotTarget`, `BoxPlotLabels`, `BoxOutlierShape`,
+    `BoxPlotStyle` and `BoxPlotOverride` move to `model::data_config`;
+    `model::boxplot` re-exports them, so existing paths keep working. New items:
+    `BoxPlotSeriesLabels` (placement, decimals, suffix and `text`, one drawn
+    string per category, at most `MAX_BOX_PLOT_LABEL_CHARS` each), `BoxPlotRef`
+    / `DataRenderType::box_plot`, `SeriesConfig::box_plot_columns`,
+    `BoxPlotStyle::validate`, `validate_box_plot_series`,
+    `Config::validate_box_plots` (a categorical axis in the box direction, a
+    linear value axis, at most 16 box plot series per layer and 512 boxes, a
+    grouped mode, one kind per layer: a layer draws either category bars or box
+    plots, no horizontal boxes on an overlay, no polar chart) and
+    `format_box_plot_labels`, which writes `labels.text` from the host's medians
+    and counts at edit time: the renderer has no per-box statistics to write it
+    from, so a host that uploads its own records writes it. The renderer draws
+    the text it is given (value labels, #40 item 13h, below). Every new key is
+    additive and omitted at its default; model 0.12.1 and older documents parse
+    and re-serialize byte for byte.
+  - **The box plot is a document reader**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    `BoxPlotChart` stays the serialized document of releases up to 0.12 and
+    keeps its `validate` (ordered statistics, outliers outside the whiskers, a
+    CI around the median, the limits). `Config::from_boxplot(&chart) -> (Config,
+    Vec<SeriesConfig>, Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns
+    it into a Cartesian chart with a categorical axis (top-down for horizontal
+    boxes, as before), a grouped `bar_groups` and one `BoxPlot` series per
+    document series. The uploads borrow the document's summaries: the positions
+    column `boxplot.positions` (`BOX_PLOT_POSITIONS_COLUMN`) first, then per
+    series its record `boxplot.record.<series id>` (`UploadValues::BoxRecord`,
+    whose nine field adapters `UploadValues::box_fields` gives as `BoxColumn`s)
+    and, when any of its boxes has an outlier, its ragged column
+    `boxplot.outliers.<series id>` (`UploadValues::BoxOutliers`, values and
+    offsets from `UploadValues::box_outliers`); every value is computed from the
+    summaries on the fly, nothing is copied. `value_range` becomes the fixed
+    value axis; the titles, grid, legend, font, colours, chart title,
+    annotations, active layer, selection, label settings (with the text written
+    from the medians and counts), overrides and decoration offsets map onto
+    their Cartesian options; the hover state, the background colour, an explicit
+    `decorations.data_area` and the data label offsets are not carried. Removed:
+    `BoxPlotChart::label_text` (a box's label is `format_box_plot_labels`').
+  - **Categorical angle axis and polygon grid**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A polar
+    chart's angle axis (`bottom_x`) may now be categorical
+    (`AxisOptions::categories`), which `Config::validate_polar` rejected before:
+    category `i` of `n` sits at `i / n` of the turn (or of `sector`) from
+    `zero_angle_degrees`, in the `clockwise` direction, so the angle column
+    holds the category positions `0..n`. `polar::AngleMap`
+    (`Config::polar_angle_map`, `PolarOptions::angle_map`) is the one mapping
+    from an angle value to the screen for both axis kinds; on a numeric axis it
+    gives the constants the projection used before, bit for bit.
+    `PolarOptions.grid_shape: Option<GridShape>` (`Circle`, the default, or
+    `Polygon`) joins every ring and the outer ring with chords at the
+    categories; a `Polygon` grid needs a categorical angle axis (`InvalidConfig
+    { field: "polar" }` otherwise). The key is additive and omitted at its
+    default.
+  - **Radar is a polar series kind**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+    `DataRenderType::Radar { color, style, labels }` draws a closed outline
+    through one value per category of a polar chart's categorical angle axis:
+    `x_column` the positions column `0..n`, `y_column` the values. The closing
+    segment joins the last category to the first; a NaN value breaks the outline
+    and the fill there. `RadarSeriesStyle`, `RadarMarker` and `RadarLabels` move
+    to `model::data_config`; `model::radar` re-exports them, so existing paths
+    keep working. `RadarSeriesStyle` gains the optional `fill_opacity` (the
+    default fill is the colour at 25 %), omitted when unset, and the `DEFAULT_*`
+    constants, `resolved_from(&RadarStyle)` and `validate`. New items:
+    `RadarSeriesLabels` (placement, decimals, suffix and `text`, one drawn
+    string per category, at most `MAX_RADAR_LABEL_CHARS` each), `RadarRef` /
+    `DataRenderType::radar` (with the line and marker styles the series draws
+    with), `validate_radar_series`, `Config::validate_radar` (a polar chart with
+    a categorical angle axis and `Chord` interpolation, at most 16 radar series
+    per layer) and `format_radar_labels`, which writes `labels.text` at edit
+    time. The renderer draws the text it is given (value labels, #40 item 13h,
+    below). Every new key is additive and omitted at its default; model 0.12.1
+    and older documents parse and re-serialize byte for byte.
+  - **The radar chart is a document reader**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). `RadarChart`
+    stays the serialized document of releases up to 0.12 and keeps its
+    `validate`. `Config::from_radar(&chart) -> (Config, Vec<SeriesConfig>,
+    Vec<SeriesUpload<'_>>)` (`model::bounded_sources`) turns it into a polar
+    chart whose angle axis holds the categories and one `Radar` series per
+    document series, each with its style's unset fields read from the chart
+    style. The uploads borrow the document's values: the positions column
+    `radar.positions` (`RADAR_POSITIONS_COLUMN`) first, then one value column
+    per series, `radar.values.<series id>` (`radar_values_column`,
+    `UploadValues::Dense`); nothing is copied. `start_angle_degrees` becomes
+    `zero_angle_degrees` (negated: the document measured with y down) and the
+    ring labels' ray, `clockwise` and `grid_shape` the polar options,
+    `value_range` the fixed radius axis with `ring_spacing` as its spacing
+    (without a `value_range` the range is the host's to fit); the grid, ring and
+    spoke colours, font, colours, legend, chart title, annotations, active
+    layer, a selected vertex, label settings (with the text written from the
+    values) and the title, legend and ring label offsets map onto their polar
+    options; the hover state, a selected whole series, the chart style's
+    `emphasis_brightness`, the background colour, an explicit
+    `decorations.data_area`, the spoke and value label offsets and the
+    decoration selection are not carried. Removed: `RadarChart::label_text` (a
+    vertex's label is `format_radar_labels`').
+  - **Value label offsets, the label hit id and the label selection**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). The value
+    labels of `CategoryBars`, `BoxPlot` and `Radar` series are drawn (see
+    [Renderer](#unreleased-renderer)); their strings stay `labels.text`, written
+    at edit time. `CategoryBarSeriesLabels`, `BoxPlotSeriesLabels` and
+    `RadarSeriesLabels` gain `offsets: Vec<[f32; 2]>`: the drag offset of each
+    label in logical pixels (x right, y down), one per category, empty (and
+    omitted from JSON) until a label is dragged; validation takes it empty or
+    one finite offset per category of at most `MAX_VALUE_LABEL_OFFSET` (4096) px
+    along either axis. `SeriesConfig::drag_value_label(index, categories, dx,
+    dy)` writes it (the first drag fills one zero offset per category; a move
+    past the bound, a non-finite delta or an index past the categories is
+    rejected unchanged), with `value_label_offsets`, `value_label_offset` and
+    `value_label_text`. `value_label_id(series_id, index)` /
+    `parse_value_label_id` name a label `"series:<series_id>:label:<index>"` for
+    hosts. `PickedDataRef::ValueLabel { source_id, series_id, category_index }`
+    is a selected label (`{"kind":"value_label", …}` in `picked_data`). The
+    readers carry a legacy document's `DataLabel` offsets into `labels.offsets`.
+  - **Readers deprecated, their dead helpers removed** (13i).
+    `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
+    `#[deprecated(since = "0.13.0")]`, each message naming its reader
+    (`Config::from_categorical`, `Config::from_boxplot`, `Config::from_radar`);
+    they are removed in the next milestone. The helpers of the removed
+    renderers and editors that no reader needs are gone:
+    `CategoricalChart::bar_override`, the three types' `reorder_categories`,
+    `set_active_layer` and `normalize_title`, and `RadarChart::is_emphasized`
+    and `resolved_style`; `active_layer()`, `resolved_title()`, `validate()`
+    and the lookups `validate` uses stay. `DecorationElement.followers` (the
+    followers of the removed bounded axes, always empty on the radial chart)
+    is removed with the follower check of `DecorationLayout`'s drag rule.
+    Kept, because the radial chart or a reader needs them: `DecorationLayout`,
+    `DecorationOffset`, `DecorationElement`, every `DecorationId` variant
+    (documents carry them), `BoundedTitleOptions` (the documents'
+    `chart_title`) and the `bounded_title` and `bounded_sources` modules. The
+    model README names the two chart classes and the readers.
+  - **Cartesian selection stepping in the model** (13i).
+    `Config::step_selection(series, dx, dy, column_len) -> Result<bool,
+    &'static str>` is the web wrapper's Cartesian `step_selection` moved into
+    the model, with the same order and clamp rule: a point along its series
+    and across the point-drawing series (lines, markers, radar vertices, point
+    vectors), a category bar or box along its categories and across its
+    layer's group (the category axis taking its pointer direction), a
+    histogram bin along its bins and across the histograms of its
+    orientation, a matrix cell over its grid (a grid vector's `u` grid); a
+    contour level and a value label do not step. `column_len` gives the
+    registered columns' lengths; it walks the series without collecting
+    them.
 
 <a id="unreleased-renderer"></a>
 
@@ -640,369 +643,361 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   which changes pixels only where the charts overlap. No API or serialized
   field changes.
 
-- **Radial decorations on the shared sinks and hit map**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The radial
-  frame's title, plot area and slice labels are `Selectable<RadialChart>`
-  elements of a `HitMap<RadialChart>`: each places its parts from the chart
-  through one emit into the `model::sink` sinks, and the label raster draws
-  with the same emit, so hit regions, selection boxes, drag containment and
-  the drawn highlight come from one placement. An outside label's leader
-  line is a part of the label: it starts at the slice, follows the label's
-  offset from its elbow, and is hit and outlined with the text part by part
-  (the oracle's leader-line exclusion is gone). **Behaviour change:** the
-  selected outside label's highlight outlines each text line and the leader
-  line instead of one box around the text; a drag is contained on the text it
-  moves. `RadialFrame::decorations()` returns the `HitMap<RadialChart>`
-  instead of a `DecorationMap`; query it with the chart the frame was
-  prepared from. `decoration_at`, `decoration`, `decoration_id`,
-  `decoration_ids`, `decoration_bounds`, `decoration_selection_box`,
-  `drag_decoration`, `decoration_resize_handle` and `resize_decoration` wrap
-  the trait calls as the `DecorationMap` methods did, and
-  `BoundedAnnotationFrame::route_active_layer` routes the annotation layer
-  over them. The categorical, box plot and radar charts keep `DecorationMap`.
-  Migration: replace `frame.decorations().hit_test(p)` with
-  `frame.decoration_at(&chart, p)`, `map.element(hit).id` with
-  `frame.decoration_id(&chart, hit)`, and `map.drag_by(&mut chart.decorations,
-  hit, dx, dy)` with `frame.drag_decoration(&mut chart, hit, dx, dy)`.
-- **Radial title band.** The radial title is drawn through
-  `emit_chart_title_in`, centred in the chart's own title band across the
-  canvas. **Behaviour change:** a default title moves about 2 px down (it
-  was placed on a fixed baseline); the plot area does not move. A title wider
-  than the canvas is drawn clipped instead of refusing the frame with "title
-  does not fit"; its hit region, selection box and drag containment are its
-  drawn extent intersected with the canvas.
-- **Radial labels draw their SSOT text.** The radial layout draws
-  `RadialSlice::text` and formats no value. **Behaviour change:** `prepare`
-  refuses (`RadialError::Invalid`, naming `format_labels`) a chart where a
-  slice with a value shows a label without text. The outside-label stacking
-  keeps its order and arithmetic in fixed arrays of `MAX_RADIAL_SLICES`.
-- **Radial slices are picked on the GPU.** The sector layout and its
-  ray-march are the shader fragment `data_render/common/radial_sector.wgsl`,
-  spliced into the draw module and a new pick module (`radial_pick`); the
-  pick runs the draw's `hit_pixel` and occlusion rule over the frame's own
-  sector buffer. `RadialFrame::hit_test` and `hit_test_at_rest`, whose CPU
-  twin was product code, are replaced by `RadialFrame::pick(position)` and
-  `pick_at_rest(position)`, which submit the pick and return a
-  `RadialPickTicket`; `resolve().await` (natively `resolve_blocking()`) reads
-  the slice back, like the Cartesian pick ticket. The frame no longer keeps
-  its sectors on the CPU; the CPU twin is test support under the `cpu-twin`
-  feature. Migration: replace `frame.hit_test(p)` with
-  `frame.pick(p)?.resolve().await?` (`pick` takes `&Arc<RadialFrame>`).
-- **Radial frame key.** The frame cache is keyed by `FrameKey`, the chart's
-  fields that reach the frame named one by one, instead of a clone of the
-  chart; a mutation test classifies every field
-  ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
-  `label_format`, `label_decimals` or `value_suffix` without writing the
-  labels again reuses the frame, since nothing it draws changed.
-- **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13c). The four Cartesian axes and the overlay Y axes may be
-  categorical (`AxisOptions::categories`). The category labels are the
-  side's `AxisLabel` element, placed by the numeric labels' placement in the
-  axis' label style, so hover, hit, selection, both drag offsets, the picked
-  highlight and the PNG export are the existing ones; the data transform,
-  the annotation space and the view state map the category range. The
-  renderer gate applies `validate_categories` and rejects a categorical
-  colourbar axis with `InvalidConfig`; a streamed series on a chart with a
-  categorical axis is rejected with `InvalidSeriesConfig`. The range
-  helpers (`set_*_range`, `auto_fit_*`, view states) leave a categorical
-  axis unchanged. With labels "0", "1", … a categorical axis draws pixel
-  for pixel what the numeric axis over the same range with a tick at every
-  integer draws.
-- **Axis walks on the plot rectangle.** The Cartesian axis, tick, tick
-  label and grid walks take the plot `RectF` instead of the integer data
-  area. Every existing document draws the same pixels.
-- **Category bars on the bar path**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d). A
-  `CategoryBars` series draws through the bar module: the input fragment
-  `data_render/common/category_bars.wgsl` (SHADER_COMMON §5.13) is spliced
-  into `bar.rs::BAR_SHADER` beside the histogram entries, one instance per
-  category, the rect built on every draw from the positions, the group
-  layout and, for a stack, the other series' values read by their pool
-  lanes in a fixed loop of at most 16 (group 3, bindings 8 and 9:
-  `CategoryBarParamsGpu`). The bars are shaded by `bar_surface` with their
-  material; the histogram's override table carries the per-bar overrides
-  (`BarStyleSlotGpu` / `BarStyleOverrideGpu` gain the `material` and
-  `finish` lanes, `BAR_STYLE_MASK_MATERIAL`). The typed data pick
-  (`pick_category_bar`, answered as `PickedData::HistogramBin` with the
-  category row), the selection outline and emphasis, `step_selection`,
-  hover, PNG export, the resident body cache (its key gains `bar_groups`
-  and the category axes) and the overlay and subplot panels are the
-  histogram's. The value-axis fit (`Chart::auto_fit_layer_union`,
-  `category_bar_value_extent`) covers zero and each column's range for
-  grouped bars, `0..100` for percent bars, and for stacked bars the
-  `StackExtent` the pool measured while one `add_columns` batch of exactly
-  the group's value columns was written (`ColumnPool::stack_extent`;
-  per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
-  is an error that says so. Value labels are drawn from `labels.text` (#40
-  item 13h, below).
-  `bar_groups.bar_gap` is logical pixels, scaled with the display config
-  (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
-  is the 1x layout doubled (`category_bars_render` and `box_plot_render`
-  check it).
-  A streamed category bar series is rejected with `InvalidSeriesConfig`.
-- **The legacy categorical renderer is removed.** `CategoricalRenderer`,
-  `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
-  `CategoricalError`, `categorical.wgsl` and `categorical_layout.rs` are
-  gone; `renderer::categorical` is the model's document module. Migration:
-  read the document with `Config::from_categorical`, upload its
-  `SeriesUpload`s (positions with `add_column`, the value columns together
-  with `add_columns`), fit the value axis with `auto_fit_layer_union` and
-  draw with the Cartesian `Renderer`; a bar is picked with
-  `pick_chart_data`.
-- **Axis crossing.** `AxisOptions::cross_at` moves the axis line and its hit
-  area to the value of the perpendicular axis (the ticks, labels and title
-  stay at the plot edge)
-  (`layout::axis_cross`); a non-finite value is rejected with
-  `InvalidConfig`. `None` draws every existing document the same.
-- **Look of a categorical document.** Opened through the reader, a
-  document draws with the Cartesian chrome instead of the former bounded
-  layout: the data area follows the Cartesian margins (the explicit
-  `decorations.data_area` is not carried), the legend is the Cartesian
-  legend box in its corner instead of the row below the chart (the bottom
-  row legend is gone), the export clear colour replaces the document's
-  `background`, and value labels are drawn through the contour label
-  module (#40 item 13h, below; the changed-pixel counts here were measured
-  before they were). The bars themselves shade as before: the dominant bar
-  colours of the former renderer's and the new exports of the same
-  documents are equal for Flat, Enamel and Paper and within 1/255 for
-  SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
-  of whole 900 × 620 exports of the five `categorical_gallery` cases
-  against the former renderer: grouped-matte 533 431 (95.6 %),
-  horizontal-satin 514 021 (92.1 %), stacked-enamel 369 997 (66.3 %),
-  percent-outline 373 719 (67.0 %), signed-stacked 454 125 (81.4 %); the
-  reader inverts the category axis of a horizontal document, so its first
-  category is at the top as before (the two horizontal cases drew it at the
-  bottom before that, 557 936 and 386 412 changed pixels); the
-  released 0.12.1 edited document at 800 × 600: 446 660 at 1x, 1 788 971
-  at 2x. None is pixel identical; every difference is the chrome above.
-
-
-- **Record and ragged column sources in the pool**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13e). Two
-  `ColumnSource` extensions for the box plot, with no drawing consumer yet:
-  a record (`RecordSource { schema, fields }`, a fixed set of named scalar
-  fields per row checked by name against a static `RecordSchema` such as
-  `BOX_PLOT_RECORD`, at most `MAX_RECORD_FIELDS` = 12) and a ragged column
-  (`RaggedSource { values, offsets }`, group `g` being
-  `values[offsets[g]..offsets[g + 1]]`, at most `MAX_RAGGED_VALUES` = 2^24
-  values). `ColumnPool::upsert_record` / `upsert_ragged` upload the members
-  as one batch transaction (one region, one staging buffer) and measure
-  `RecordStats` (per field: presence, finite range, finite and NaN counts)
-  and `RaggedStats` (the values' range and counts, the offsets'
-  `non_decreasing` flag, the longest group) in the write observer; a
-  replacement takes a new epoch and frees the old members, and
-  `remove_record` / `remove_ragged` delete them. `record(id)` / `ragged(id)`
-  return `RecordRef` / `RaggedRef` (member handles), `record_stats` /
-  `ragged_stats` the statistics. A schema mismatch, unequal field lengths,
-  a non-monotone offsets column and the other rejections are
-  `FiggyError::InvalidSeriesConfig` naming the id, with nothing published.
-  `Renderer::upsert_record`, `upsert_ragged`, `remove_record` and
-  `remove_ragged` (forwarded by `WindowedRenderer`) wrap them with the picker
-  and invalidation preparation of `add_columns`. Records and ragged columns are resident only: upserting onto
-  a streamed id, or registering a stream onto a record or ragged id, is an
-  `InvalidSeriesConfig` that names the limitation. Columns, records and
-  ragged columns share one id space; a member column (internal id) cannot be
-  inserted, replaced or removed as a column (`ReservedColumnId`) and a series
-  cannot reference it. No serialized field and no shader change; the
-  additions are API only.
-- **Box plots on the bar path**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f). A
-  `BoxPlot` series draws through the bar module: the fragment
-  `data_render/common/box_plot.wgsl` (SHADER_COMMON §2.5 and §5.15) is
-  spliced into `bar.rs::BAR_SHADER` with the marker, error bar segment,
-  ramp and sketch noise fragments, one instance per category with
-  `BOX_PLOT_BASE_VERTICES` (42) vertices plus six per outlier of the longest
-  group (`RaggedStats::max_group`), reading the record's fields and the
-  outliers by their pool lanes through the category bar binding layout
-  unchanged (group 3, bindings 8 and 9: `CategoryBarParamsGpu`, whose lanes
-  a box plot reads as its record, outlier and group lanes). The body is
-  shaded by `bar_surface` with its material and drawn with the former
-  renderer's notch polygon; the whiskers, caps and median are
-  `ErrorBarSegment` quads and the mean and outliers `marker.wgsl` shapes,
-  all built on every draw. The parts' styles are three slots of the bar
-  style map (`PrimitiveStyle::from_box_plot`,
-  `create_bar_style_map_with_slots`, the `BAR_STYLE_MASK_FILL`, `_BORDER_*`,
-  `_GAP` and `_WIDTH_RATIO` masks) and the per-box overrides its override
-  rows (`row * 3 + part`, a fixed array, no new binding).
-  `ColumnCategoryBarLayer` gains `vertices`. The typed data pick
-  (`pick_box_plot`, answered as `PickedData::HistogramBin` with the
-  category row) tests the body, the whisker and cap and median strokes, the
-  mean and every outlier of the box, each answering its box; the selection
-  outline (an inside ring around the drawn body, the notch included) and
-  emphasis, `step_selection` (the boxes, not the outliers), hover, PNG
-  export, the resident body cache (its key gains the box plot category
-  axes, and its column fingerprint the record and ragged member columns)
-  and the overlay and subplot panels are the category bars'. The
-  value-axis fit (`Chart::auto_fit_layer_union`, `box_plot_value_extent`)
-  covers the pool's statistics of every value field of the records (all
-  but `sample_count`) and of the outlier columns, hidden means and outliers
-  included as before. Nothing per box is stored on the CPU.
-  **Unordered statistics are clamped, not rejected**: the renderer cannot
-  read a record on the CPU, so it no longer checks the order the former
-  renderer checked. The body spans `min(q1, q3)..max(q1, q3)`, the median
-  is clamped into it, the stems run from `min(whisker_low, body low)` and
-  to `max(whisker_high, body high)`, a notch needs both CI endpoints, and a
-  row with a missing required field draws nothing. A `BoxPlotChart` still
-  validates the order, so a document drawn through the reader draws as
-  before. A streamed box plot series (or a streamed record or outlier id)
-  is rejected with `InvalidSeriesConfig`, and a polar chart rejects box
-  plots.
-- **The legacy box plot renderer is removed.** `BoxPlotRenderer`,
-  `BoxPlotFrame` (`hit_test`, `part_rect`, `box_rect`, `plot_rect`,
-  `decorations`, …), `BoxPlotPick`, `BoxPlotPart`, `BoxPlotError`,
-  `boxplot.wgsl` and `boxplot_layout.rs` are gone; `renderer::boxplot` is the
-  model's document module. Migration: read the document with
-  `Config::from_boxplot`, upload its `SeriesUpload`s (the positions with
-  `add_column`, each record with `upsert_record` and the `BOX_PLOT_RECORD`
-  schema, each outlier column with `upsert_ragged`), fit the value axis with
-  `auto_fit_layer_union` when the document has no `value_range` and draw
-  with the Cartesian `Renderer`; a box and every part of it is picked with
-  `pick_chart_data`, its statistics are the host's (or the document's).
-  The `boxplot_editor` example is removed; `boxplot_gallery` draws through
-  the reader.
-- **Look of a box plot document.** Opened through the reader, a document
-  draws with the Cartesian chrome instead of the former bounded layout:
-  the data area follows the Cartesian margins (the explicit
-  `decorations.data_area` is not carried), the legend is the Cartesian
-  legend box in its corner, the export clear colour (transparent in the
-  gallery) replaces the document's `background`, a selected box draws the
-  Cartesian inside outline, an unfilled outlier is the marker's 1.5 px ring
-  (formerly at most 1.2 logical px inside the marker), and value labels are
-  drawn through the contour label module (#40 item 13h, below; the
-  changed-pixel counts here were measured before they were). The boxes
-  themselves shade as before: the dominant box
-  colours of the former renderer's and the new exports of the same
-  documents are equal. Changed pixels of whole 960 × 640 exports of the
-  five `boxplot_gallery` cases against the former renderer, composited
-  over white (raw RGBA in brackets, the clear colour differing): classic
-  matte 106 874 (17.4 %) [600 005], satin 93 480 (15.2 %) [587 033],
-  horizontal 98 512 (16.0 %) [600 129], grouped notch 92 956 (15.1 %)
-  [600 227], mean and selection 95 304 (15.5 %) [600 168]; at 2x 385 432,
-  340 208, 373 575, 328 413 and 335 510. A horizontal document with
-  per-box overrides: 92 608 (15.1 %) at 1x, 344 896 at 2x. The released
-  0.12.1 edited document at 800 × 600, whose background is not white:
-  479 241 (99.8 %) raw, 90 046 with a channel difference above 8; at 2x
-  1 916 942 and 352 881. None is pixel identical; every difference is the
-  chrome above.
-
-- **Categorical polar angle axis**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). The polar
-  projection reads its angle constants from `AngleMap`, so a categorical
-  angle axis places category `i` at `i / n` of the turn or sector with no
-  shader change; a numeric axis draws pixel-identically. The polar axes
-  draw a categorical axis' spokes at the categories with
-  `categories[i].label` as spoke labels (an empty label draws nothing and
-  registers nothing), the rings at the radius majors and no minor angle
-  ticks, and a `Polygon` grid as chords between the category spokes. Hover,
-  click selection, decoration drag (the ring labels along the ray, the
-  spoke labels along their spokes, the ray turning), the plot area, the
-  annotation layer, subplots and PNG export follow the polar rules
-  unchanged.
-- **Radar series on the line and scatter paths**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A `Radar`
-  series draws as the polar line layer with a new `closed` flag, one more
-  instance that joins the last vertex to the first, its fill to the inner
-  ring through the area layer (`closed` too, on a full circle; a sector
-  leaves the closing wedge unfilled) and its vertex markers through the
-  scatter path, all built on every draw from the two columns; nothing per
-  vertex is stored on the CPU. The GPU pick gains the closing segment
-  (`line.z` of the pick query, `pick_next_point` and `pick_starts_segment`
-  in the pick core, a closed line scanned directly) and the closed fill,
-  with the tie rule markers over the outline over the fill, and answers
-  `PickedData::Point` with the category row as `point_index`; a picked
-  vertex draws the picked ring. The radius-axis fit
-  (`auto_fit_layer_union`) covers the value columns. A radar series is
-  drawn in the precise draw style only; a radar series on a rectangular
-  chart, a numeric angle axis, an `Arc` interpolation, more than 16 radar
-  series in a layer or columns that do not hold one value per category are
-  rejected with `InvalidSeriesConfig`, and a streamed radar series with
-  "radar series require GPU-resident columns; streamed sources are not
-  supported".
-- **The legacy radar renderer is removed.** `RadarRenderer`, `RadarFrame`
-  (`hit_test`, `part_rect`, `vertex_position`, `plot_rect`, `plot_circle`,
-  `decorations`, …), `RadarPick`, `RadarPart`, `RadarError`, `radar.wgsl`,
-  `radar_layout.rs` and its `polygon_distance` are gone, with the bounded
-  decoration helpers only they used; `renderer::radar` is the model's
-  document module. Migration: read the document with `Config::from_radar`,
-  upload its `SeriesUpload`s with `add_column`, fit the radius axis with
-  `auto_fit_layer_union` when the document has no `value_range` and draw
-  with the Cartesian `Renderer`; a vertex is picked with `pick_chart_data`.
-  The `radar_editor` example is removed; `radar_gallery` draws through the
-  reader and `bounded_titles` writes only `pie.png`.
-- **Look of a radar document.** Opened through the reader, a document draws
-  with the polar chrome instead of the former bounded layout: the plot is
-  the polar circle inside the Cartesian margins (the explicit
-  `decorations.data_area` is not carried), the legend is the Cartesian
-  legend box, the export clear colour replaces the document's
-  `background`, the ring labels are the radius tick labels on the ray, a
-  picked vertex draws the picked ring instead of the brightened series,
-  the ring labels include the centre's `0`, and value labels are drawn
-  through the contour label module (#40 item 13h, below; the changed-pixel
-  counts here were measured before they were). The polygons, fills and
-  markers themselves keep their places.
-  Changed pixels of whole 960 × 640 exports of the five `radar_gallery`
-  cases against the former renderer, composited over white (raw RGBA,
-  the clear colour differing, is 100 % in each): spider web 67 747
-  (11.0 %), circle values 72 870 (11.9 %), fixed axis 100 298 (16.3 %),
-  four series 132 665 (21.6 %), selection 111 500 (18.1 %); at 2x
-  251 852, 269 546, 384 227, 514 080 and 429 467. The released 0.12.1
-  edited document at 800 × 600, composited over its own background:
-  94 450 (19.7 %), 92 855 with a channel difference above 8; at 2x
-  371 662 and 365 452. None is pixel identical; every difference is the
-  chrome above.
-- **Value labels through the contour label module**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). Category
-  bar, box plot and radar series draw their value labels again: each
-  series' `labels.text` strings are baked into one label atlas by the
-  contour labels' builder (`bake_contour_label_atlas`: the one text stack,
-  `FontPolicy`), in the value axis' tick label face and size at the render
-  scale and its colour (the radius axis' for a radar series; white inside
-  a dark bar), cached per series in the contour labels' scratch cache
-  (its entry is now `ScratchEntry::Contour` or `ScratchEntry::ValueLabels`,
-  one map with one eviction rule) under the atlas input (the strings, the
-  face, the size, the colour) and the font generation, and
-  placed on every draw from the pool by the bar module's value label
-  entries: at the bar end (outside, inside, or `Auto`: outside grouped
-  bars, inside stack segments that fit), past the top of the box (its high
-  whisker, mean, notch and outliers), or outside the radar vertex along its
-  spoke, as the former charts placed them, moved by `labels.offsets` and
-  sampled texel for texel (an upright label's quad reaches the atlas
-  cell's gutter, so it needs no clamp; the contour labels keep theirs).
-  A radar series' `Emphasized` labels draw while it has a selected vertex
-  or label. The contour label's quad placement is the shared
-  fragment `common/label_quad.wgsl`; the value labels are
-  `common/value_label.wgsl` in the bar module, after the category bar and
-  box plot input fragments. An empty string draws nothing; labels never
-  displace each other (the former `LabelPlacer` is gone: thinning the
-  category axis is the only thinning). Labels are drawn after every
-  series' picked highlights of their panel. A label that would cross the
-  data area's edge past its anchor goes to the other side of it (inside
-  the bar's end, below the box's top, inward along the radar spoke), in
-  the shader for the draw and the pick alike; what still overflows is
-  clipped to the data area.
-- A label is a typed pick target: `pick_chart_data` answers
-  `PickedData::ValueLabel { source_id, series_id, category_index,
-  distance_px }` within the pick distance of its selection box, with a
-  paint order after every series of the panel, so it wins every tie
-  against the data under it (`pick_value_labels`, candidate kind 4). A
-  selected label (`PickedDataRef::ValueLabel`) draws its selection box
-  around its frame, the decorations' selection policy (`SELECTION_PADDING`,
-  `SELECTION_STROKE_WIDTH`, `SELECTION_COLOR`). PNG export bakes the atlas
-  at the export scale; labels of overlay and subplot series draw and pick
-  in their panels. Migration: exhaustive `PickedData` matches add
-  `ValueLabel`; `data_render::SeriesLayers` literals add `value_labels:
-  None`.
+- **The bounded group, classified per chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13). The radial
+  chart keeps its own renderer, on the shared sinks, title and hit map, with
+  a GPU pick; category bars and box plots draw through the bar module and
+  radar series through the polar line, area and scatter paths; the three
+  legacy renderers and the bounded chrome are removed. Migrations, the look
+  changes and the oracle exclusions are under
+  [Migrating from the bounded group](#unreleased-bounded-migration).
+  - **Radial decorations on the shared sinks and hit map**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13b). The radial
+    frame's title, plot area and slice labels are `Selectable<RadialChart>`
+    elements of a `HitMap<RadialChart>`: each places its parts from the chart
+    through one emit into the `model::sink` sinks, and the label raster draws
+    with the same emit, so hit regions, selection boxes, drag containment and
+    the drawn highlight come from one placement. An outside label's leader line
+    is a part of the label: it starts at the slice, follows the label's offset
+    from its elbow, and is hit and outlined with the text part by part (the
+    oracle's leader-line exclusion is gone). **Behaviour change:** the selected
+    outside label's highlight outlines each text line and the leader line
+    instead of one box around the text; a drag is contained on the text it
+    moves. `RadialFrame::decorations()` returns the `HitMap<RadialChart>`
+    instead of a `DecorationMap`; query it with the chart the frame was prepared
+    from. `decoration_at`, `decoration`, `decoration_id`, `decoration_ids`,
+    `decoration_bounds`, `decoration_selection_box`, `drag_decoration`,
+    `decoration_resize_handle` and `resize_decoration` wrap the trait calls as
+    the `DecorationMap` methods did, and
+    `BoundedAnnotationFrame::route_active_layer` routes the annotation layer
+    over them.
+  - **Radial title band.** The radial title is drawn through
+    `emit_chart_title_in`, centred in the chart's own title band across the
+    canvas. **Behaviour change:** a default title moves about 2 px down (it
+    was placed on a fixed baseline); the plot area does not move. A title wider
+    than the canvas is drawn clipped instead of refusing the frame with "title
+    does not fit"; its hit region, selection box and drag containment are its
+    drawn extent intersected with the canvas.
+  - **Radial labels draw their SSOT text.** The radial layout draws
+    `RadialSlice::text` and formats no value. **Behaviour change:** `prepare`
+    refuses (`RadialError::Invalid`, naming `format_labels`) a chart where a
+    slice with a value shows a label without text. The outside-label stacking
+    keeps its order and arithmetic in fixed arrays of `MAX_RADIAL_SLICES`.
+  - **Radial slices are picked on the GPU.** The sector layout and its ray-march
+    are the shader fragment `data_render/common/radial_sector.wgsl`, spliced
+    into the draw module and a new pick module (`radial_pick`); the pick runs
+    the draw's `hit_pixel` and occlusion rule over the frame's own sector
+    buffer. `RadialFrame::hit_test` and `hit_test_at_rest`, whose CPU twin was
+    product code, are replaced by `RadialFrame::pick(position)` and
+    `pick_at_rest(position)`, which submit the pick and return a
+    `RadialPickTicket`; `resolve().await` (natively `resolve_blocking()`) reads
+    the slice back, like the Cartesian pick ticket. The frame no longer keeps
+    its sectors on the CPU; the CPU twin is test support under the `cpu-twin`
+    feature.
+  - **Radial frame key.** The frame cache is keyed by `FrameKey`, the chart's
+    fields that reach the frame named one by one, instead of a clone of the
+    chart; a mutation test classifies every field
+    ([#66](https://github.com/shim9610/figgy/issues/66)). Editing
+    `label_format`, `label_decimals` or `value_suffix` without writing the
+    labels again reuses the frame, since nothing it draws changed.
+  - **Categorical axes** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13c). The four Cartesian axes and the overlay Y axes may be
+    categorical (`AxisOptions::categories`). The category labels are the
+    side's `AxisLabel` element, placed by the numeric labels' placement in the
+    axis' label style, so hover, hit, selection, both drag offsets, the picked
+    highlight and the PNG export are the existing ones; the data transform,
+    the annotation space and the view state map the category range. The
+    renderer gate applies `validate_categories` and rejects a categorical
+    colourbar axis with `InvalidConfig`; a streamed series on a chart with a
+    categorical axis is rejected with `InvalidSeriesConfig`. The range
+    helpers (`set_*_range`, `auto_fit_*`, view states) leave a categorical
+    axis unchanged. With labels "0", "1", … a categorical axis draws pixel
+    for pixel what the numeric axis over the same range with a tick at every
+    integer draws.
+  - **Axis walks on the plot rectangle.** The Cartesian axis, tick, tick
+    label and grid walks take the plot `RectF` instead of the integer data
+    area. Every existing document draws the same pixels.
+  - **Category bars on the bar path**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d). A
+    `CategoryBars` series draws through the bar module: the input fragment
+    `data_render/common/category_bars.wgsl` (SHADER_COMMON §5.13) is spliced
+    into `bar.rs::BAR_SHADER` beside the histogram entries, one instance per
+    category, the rect built on every draw from the positions, the group
+    layout and, for a stack, the other series' values read by their pool
+    lanes in a fixed loop of at most 16 (group 3, bindings 8 and 9:
+    `CategoryBarParamsGpu`). The bars are shaded by `bar_surface` with their
+    material; the histogram's override table carries the per-bar overrides
+    (`BarStyleSlotGpu` / `BarStyleOverrideGpu` gain the `material` and
+    `finish` lanes, `BAR_STYLE_MASK_MATERIAL`). The typed data pick
+    (`pick_category_bar`, answered as `PickedData::HistogramBin` with the
+    category row), the selection outline and emphasis, `step_selection`,
+    hover, PNG export, the resident body cache (its key gains `bar_groups`
+    and the category axes) and the overlay and subplot panels are the
+    histogram's. The value-axis fit (`Chart::auto_fit_layer_union`,
+    `category_bar_value_extent`) covers zero and each column's range for
+    grouped bars, `0..100` for percent bars, and for stacked bars the
+    `StackExtent` the pool measured while one `add_columns` batch of exactly
+    the group's value columns was written (`ColumnPool::stack_extent`;
+    per-row sums in a fixed `[f64; 64]`, no value kept); without it the fit
+    is an error that says so. Value labels are drawn from `labels.text` (#40
+    item 13h, below).
+    `bar_groups.bar_gap` is logical pixels, scaled with the display config
+    (`Config::scaled`), and `group_width` a share of the slot, so a 2x export
+    is the 1x layout doubled (`category_bars_render` and `box_plot_render`
+    check it).
+    A streamed category bar series is rejected with `InvalidSeriesConfig`.
+  - **The legacy categorical renderer is removed.** `CategoricalRenderer`,
+    `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
+    `CategoricalError`, `categorical.wgsl` and `categorical_layout.rs` are gone;
+    `renderer::categorical` is the model's document module.
+  - **Axis crossing.** `AxisOptions::cross_at` moves the axis line and its hit
+    area to the value of the perpendicular axis (the ticks, labels and title
+    stay at the plot edge)
+    (`layout::axis_cross`); a non-finite value is rejected with
+    `InvalidConfig`. `None` draws every existing document the same.
+  - **Look of a categorical document.** Opened through the reader, a
+    document draws with the Cartesian chrome instead of the former bounded
+    layout: the data area follows the Cartesian margins (the explicit
+    `decorations.data_area` is not carried), the legend is the Cartesian
+    legend box in its corner instead of the row below the chart (the bottom
+    row legend is gone), the export clear colour replaces the document's
+    `background`, and value labels are drawn through the contour label
+    module (#40 item 13h, below; the changed-pixel counts here were measured
+    before they were). The bars themselves shade as before: the dominant bar
+    colours of the former renderer's and the new exports of the same
+    documents are equal for Flat, Enamel and Paper and within 1/255 for
+    SatinMetal and 2/255 for Matte, whose grain pattern differs. Changed pixels
+    of whole 900 × 620 exports of the five `categorical_gallery` cases
+    against the former renderer: grouped-matte 533 431 (95.6 %),
+    horizontal-satin 514 021 (92.1 %), stacked-enamel 369 997 (66.3 %),
+    percent-outline 373 719 (67.0 %), signed-stacked 454 125 (81.4 %); the
+    reader inverts the category axis of a horizontal document, so its first
+    category is at the top as before (the two horizontal cases drew it at the
+    bottom before that, 557 936 and 386 412 changed pixels); the
+    released 0.12.1 edited document at 800 × 600: 446 660 at 1x, 1 788 971
+    at 2x. None is pixel identical; every difference is the chrome above.
+  - **Record and ragged column sources in the pool**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13e). Two
+    `ColumnSource` extensions for the box plot, with no drawing consumer yet:
+    a record (`RecordSource { schema, fields }`, a fixed set of named scalar
+    fields per row checked by name against a static `RecordSchema` such as
+    `BOX_PLOT_RECORD`, at most `MAX_RECORD_FIELDS` = 12) and a ragged column
+    (`RaggedSource { values, offsets }`, group `g` being
+    `values[offsets[g]..offsets[g + 1]]`, at most `MAX_RAGGED_VALUES` = 2^24
+    values). `ColumnPool::upsert_record` / `upsert_ragged` upload the members
+    as one batch transaction (one region, one staging buffer) and measure
+    `RecordStats` (per field: presence, finite range, finite and NaN counts)
+    and `RaggedStats` (the values' range and counts, the offsets'
+    `non_decreasing` flag, the longest group) in the write observer; a
+    replacement takes a new epoch and frees the old members, and
+    `remove_record` / `remove_ragged` delete them. `record(id)` / `ragged(id)`
+    return `RecordRef` / `RaggedRef` (member handles), `record_stats` /
+    `ragged_stats` the statistics. A schema mismatch, unequal field lengths,
+    a non-monotone offsets column and the other rejections are
+    `FiggyError::InvalidSeriesConfig` naming the id, with nothing published.
+    `Renderer::upsert_record`, `upsert_ragged`, `remove_record` and
+    `remove_ragged` (forwarded by `WindowedRenderer`) wrap them with the picker
+    and invalidation preparation of `add_columns`. Records and ragged columns are resident only: upserting onto
+    a streamed id, or registering a stream onto a record or ragged id, is an
+    `InvalidSeriesConfig` that names the limitation. Columns, records and
+    ragged columns share one id space; a member column (internal id) cannot be
+    inserted, replaced or removed as a column (`ReservedColumnId`) and a series
+    cannot reference it. No serialized field and no shader change; the
+    additions are API only.
+  - **Box plots on the bar path**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f). A
+    `BoxPlot` series draws through the bar module: the fragment
+    `data_render/common/box_plot.wgsl` (SHADER_COMMON §2.5 and §5.15) is
+    spliced into `bar.rs::BAR_SHADER` with the marker, error bar segment,
+    ramp and sketch noise fragments, one instance per category with
+    `BOX_PLOT_BASE_VERTICES` (42) vertices plus six per outlier of the longest
+    group (`RaggedStats::max_group`), reading the record's fields and the
+    outliers by their pool lanes through the category bar binding layout
+    unchanged (group 3, bindings 8 and 9: `CategoryBarParamsGpu`, whose lanes
+    a box plot reads as its record, outlier and group lanes). The body is
+    shaded by `bar_surface` with its material and drawn with the former
+    renderer's notch polygon; the whiskers, caps and median are
+    `ErrorBarSegment` quads and the mean and outliers `marker.wgsl` shapes,
+    all built on every draw. The parts' styles are three slots of the bar
+    style map (`PrimitiveStyle::from_box_plot`,
+    `create_bar_style_map_with_slots`, the `BAR_STYLE_MASK_FILL`, `_BORDER_*`,
+    `_GAP` and `_WIDTH_RATIO` masks) and the per-box overrides its override
+    rows (`row * 3 + part`, a fixed array, no new binding).
+    `ColumnCategoryBarLayer` gains `vertices`. The typed data pick
+    (`pick_box_plot`, answered as `PickedData::HistogramBin` with the
+    category row) tests the body, the whisker and cap and median strokes, the
+    mean and every outlier of the box, each answering its box; the selection
+    outline (an inside ring around the drawn body, the notch included) and
+    emphasis, `step_selection` (the boxes, not the outliers), hover, PNG
+    export, the resident body cache (its key gains the box plot category
+    axes, and its column fingerprint the record and ragged member columns)
+    and the overlay and subplot panels are the category bars'. The
+    value-axis fit (`Chart::auto_fit_layer_union`, `box_plot_value_extent`)
+    covers the pool's statistics of every value field of the records (all
+    but `sample_count`) and of the outlier columns, hidden means and outliers
+    included as before. Nothing per box is stored on the CPU.
+    **Unordered statistics are clamped, not rejected**: the renderer cannot
+    read a record on the CPU, so it no longer checks the order the former
+    renderer checked. The body spans `min(q1, q3)..max(q1, q3)`, the median
+    is clamped into it, the stems run from `min(whisker_low, body low)` and
+    to `max(whisker_high, body high)`, a notch needs both CI endpoints, and a
+    row with a missing required field draws nothing. A `BoxPlotChart` still
+    validates the order, so a document drawn through the reader draws as
+    before. A streamed box plot series (or a streamed record or outlier id)
+    is rejected with `InvalidSeriesConfig`, and a polar chart rejects box
+    plots.
+  - **The legacy box plot renderer is removed.** `BoxPlotRenderer`,
+    `BoxPlotFrame` (`hit_test`, `part_rect`, `box_rect`, `plot_rect`,
+    `decorations`, …), `BoxPlotPick`, `BoxPlotPart`, `BoxPlotError`,
+    `boxplot.wgsl` and `boxplot_layout.rs` are gone; `renderer::boxplot` is the
+    model's document module. The `boxplot_editor` example is removed;
+    `boxplot_gallery` draws through the reader.
+  - **Look of a box plot document.** Opened through the reader, a document
+    draws with the Cartesian chrome instead of the former bounded layout:
+    the data area follows the Cartesian margins (the explicit
+    `decorations.data_area` is not carried), the legend is the Cartesian
+    legend box in its corner, the export clear colour (transparent in the
+    gallery) replaces the document's `background`, a selected box draws the
+    Cartesian inside outline, an unfilled outlier is the marker's 1.5 px ring
+    (formerly at most 1.2 logical px inside the marker), and value labels are
+    drawn through the contour label module (#40 item 13h, below; the
+    changed-pixel counts here were measured before they were). The boxes
+    themselves shade as before: the dominant box
+    colours of the former renderer's and the new exports of the same
+    documents are equal. Changed pixels of whole 960 × 640 exports of the
+    five `boxplot_gallery` cases against the former renderer, composited
+    over white (raw RGBA in brackets, the clear colour differing): classic
+    matte 106 874 (17.4 %) [600 005], satin 93 480 (15.2 %) [587 033],
+    horizontal 98 512 (16.0 %) [600 129], grouped notch 92 956 (15.1 %)
+    [600 227], mean and selection 95 304 (15.5 %) [600 168]; at 2x 385 432,
+    340 208, 373 575, 328 413 and 335 510. A horizontal document with
+    per-box overrides: 92 608 (15.1 %) at 1x, 344 896 at 2x. The released
+    0.12.1 edited document at 800 × 600, whose background is not white:
+    479 241 (99.8 %) raw, 90 046 with a channel difference above 8; at 2x
+    1 916 942 and 352 881. None is pixel identical; every difference is the
+    chrome above.
+  - **Categorical polar angle axis**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). The polar
+    projection reads its angle constants from `AngleMap`, so a categorical
+    angle axis places category `i` at `i / n` of the turn or sector with no
+    shader change; a numeric axis draws pixel-identically. The polar axes
+    draw a categorical axis' spokes at the categories with
+    `categories[i].label` as spoke labels (an empty label draws nothing and
+    registers nothing), the rings at the radius majors and no minor angle
+    ticks, and a `Polygon` grid as chords between the category spokes. Hover,
+    click selection, decoration drag (the ring labels along the ray, the
+    spoke labels along their spokes, the ray turning), the plot area, the
+    annotation layer, subplots and PNG export follow the polar rules
+    unchanged.
+  - **Radar series on the line and scatter paths**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g). A `Radar`
+    series draws as the polar line layer with a new `closed` flag, one more
+    instance that joins the last vertex to the first, its fill to the inner
+    ring through the area layer (`closed` too, on a full circle; a sector
+    leaves the closing wedge unfilled) and its vertex markers through the
+    scatter path, all built on every draw from the two columns; nothing per
+    vertex is stored on the CPU. The GPU pick gains the closing segment
+    (`line.z` of the pick query, `pick_next_point` and `pick_starts_segment`
+    in the pick core, a closed line scanned directly) and the closed fill,
+    with the tie rule markers over the outline over the fill, and answers
+    `PickedData::Point` with the category row as `point_index`; a picked
+    vertex draws the picked ring. The radius-axis fit
+    (`auto_fit_layer_union`) covers the value columns. A radar series is
+    drawn in the precise draw style only; a radar series on a rectangular
+    chart, a numeric angle axis, an `Arc` interpolation, more than 16 radar
+    series in a layer or columns that do not hold one value per category are
+    rejected with `InvalidSeriesConfig`, and a streamed radar series with
+    "radar series require GPU-resident columns; streamed sources are not
+    supported".
+  - **The legacy radar renderer is removed.** `RadarRenderer`, `RadarFrame`
+    (`hit_test`, `part_rect`, `vertex_position`, `plot_rect`, `plot_circle`,
+    `decorations`, …), `RadarPick`, `RadarPart`, `RadarError`, `radar.wgsl`,
+    `radar_layout.rs` and its `polygon_distance` are gone, with the bounded
+    decoration helpers only they used; `renderer::radar` is the model's document
+    module. The `radar_editor` example is removed; `radar_gallery` draws through
+    the reader.
+  - **Look of a radar document.** Opened through the reader, a document draws
+    with the polar chrome instead of the former bounded layout: the plot is
+    the polar circle inside the Cartesian margins (the explicit
+    `decorations.data_area` is not carried), the legend is the Cartesian
+    legend box, the export clear colour replaces the document's
+    `background`, the ring labels are the radius tick labels on the ray, a
+    picked vertex draws the picked ring instead of the brightened series,
+    the ring labels include the centre's `0`, and value labels are drawn
+    through the contour label module (#40 item 13h, below; the changed-pixel
+    counts here were measured before they were). The polygons, fills and
+    markers themselves keep their places.
+    Changed pixels of whole 960 × 640 exports of the five `radar_gallery`
+    cases against the former renderer, composited over white (raw RGBA,
+    the clear colour differing, is 100 % in each): spider web 67 747
+    (11.0 %), circle values 72 870 (11.9 %), fixed axis 100 298 (16.3 %),
+    four series 132 665 (21.6 %), selection 111 500 (18.1 %); at 2x
+    251 852, 269 546, 384 227, 514 080 and 429 467. The released 0.12.1
+    edited document at 800 × 600, composited over its own background:
+    94 450 (19.7 %), 92 855 with a channel difference above 8; at 2x
+    371 662 and 365 452. None is pixel identical; every difference is the
+    chrome above.
+  - **Value labels through the contour label module**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13h). Category
+    bar, box plot and radar series draw their value labels again: each
+    series' `labels.text` strings are baked into one label atlas by the
+    contour labels' builder (`bake_contour_label_atlas`: the one text stack,
+    `FontPolicy`), in the value axis' tick label face and size at the render
+    scale and its colour (the radius axis' for a radar series; white inside
+    a dark bar), cached per series in the contour labels' scratch cache
+    (its entry is now `ScratchEntry::Contour` or `ScratchEntry::ValueLabels`,
+    one map with one eviction rule) under the atlas input (the strings, the
+    face, the size, the colour) and the font generation, and
+    placed on every draw from the pool by the bar module's value label
+    entries: at the bar end (outside, inside, or `Auto`: outside grouped
+    bars, inside stack segments that fit), past the top of the box (its high
+    whisker, mean, notch and outliers), or outside the radar vertex along its
+    spoke, as the former charts placed them, moved by `labels.offsets` and
+    sampled texel for texel (an upright label's quad reaches the atlas
+    cell's gutter, so it needs no clamp; the contour labels keep theirs).
+    A radar series' `Emphasized` labels draw while it has a selected vertex
+    or label. The contour label's quad placement is the shared
+    fragment `common/label_quad.wgsl`; the value labels are
+    `common/value_label.wgsl` in the bar module, after the category bar and
+    box plot input fragments. An empty string draws nothing; labels never
+    displace each other (the former `LabelPlacer` is gone: thinning the
+    category axis is the only thinning). Labels are drawn after every
+    series' picked highlights of their panel. A label that would cross the
+    data area's edge past its anchor goes to the other side of it (inside
+    the bar's end, below the box's top, inward along the radar spoke), in
+    the shader for the draw and the pick alike; what still overflows is
+    clipped to the data area.
+  - A label is a typed pick target: `pick_chart_data` answers
+    `PickedData::ValueLabel { source_id, series_id, category_index,
+    distance_px }` within the pick distance of its selection box, with a
+    paint order after every series of the panel, so it wins every tie
+    against the data under it (`pick_value_labels`, candidate kind 4). A
+    selected label (`PickedDataRef::ValueLabel`) draws its selection box
+    around its frame, the decorations' selection policy (`SELECTION_PADDING`,
+    `SELECTION_STROKE_WIDTH`, `SELECTION_COLOR`). PNG export bakes the atlas
+    at the export scale; labels of overlay and subplot series draw and pick
+    in their panels.
+  - **Bounded leftovers removed** (13i). `decoration::DecorationMap`, which
+    had no constructor left after the radar renderer, and
+    `BoundedAnnotationFrame::hit_test_active_layer`, which took one, are
+    removed; the radial frame answers through `HitMap<RadialChart>` and
+    `route_active_layer`. So is the annotation underlay path no chart reached:
+    `FrameBackground` (`Opaque`, `HostClear`), `RadialRenderer::set_background`
+    and `background`, `RadialFrame::background`,
+    `BoundedAnnotationFrame::draw_underlay` and `draws_underlay`, and the
+    radial export's host-clear branch. The radial chart has no value axes, so
+    a span on it was always skipped with a warning; it draws its frame with
+    its opaque background and the annotations above it, as before, and its
+    frame cache holds one frame instead of one per background mode. The
+    annotation admission counts no underlay texture for it. The `decoration`
+    module keeps the interaction guide; `BoundedAnnotationFrame` keeps its
+    name. The `bounded_titles` example is `radial_titles`. No shader or GPU
+    struct changes; the radial pixels and picks are unchanged.
 
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
 
-- **Asynchronous bounded picks.** `FiggyBoundedChart.pick`, `hover` and
-  `hit_decoration` return Promises, because a radial chart picks its slices
-  on the GPU ([#40](https://github.com/shim9610/figgy/issues/40) item 13b).
-  Migration: `await` them. A parsed radial document's slices without `text`
-  get the text their label format writes (`normalize_labels`); a set `text`
-  is drawn as it is, so remove or rewrite it after editing a value or format.
 - **Selection outlines.** `decoration_bounds(id)` returns `outline` (one
   polygon of `[x, y]` corners per drawn part, in physical canvas pixels)
   instead of `labels` for an element that outlines its parts
@@ -1013,85 +1008,200 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   mutation test found it ([#46](https://github.com/shim9610/figgy/issues/46)).
 - The wrapper's inline `mod web` is split into files under `src/web/`
   (moves only); no JavaScript export changes.
-- **Categorical documents in the Cartesian wrapper**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
-  `FiggyChart.set_categorical_document(json)` opens a `CategoricalChart`
-  document as category bars (`Config::from_categorical`), registering its
-  positions and value columns and fitting the value axis.
-  `selection_details()` reports a selected bar's `category_id`,
-  `category_label`, `value`, `direction` and `mode`, and `step_selection`
-  walks the categories and the series of the bar group.
-  `FiggyBoundedChart` no longer has the `"categorical"` family; creating
-  one with it is an error that names the new method. Migration: replace
-  `FiggyBoundedChart.create(canvas, "categorical", json, w, h)` with a
-  `FiggyChart` and `set_categorical_document(json)`; bars are picked with
-  `pick_data` and selected through `picked_data`.
+- **The bounded group, classified per chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13). Categorical
+  bar, box plot and radar documents open in `FiggyChart`; `FiggyBoundedChart`
+  is the radial chart's host. Migrations are under
+  [Migrating from the bounded group](#unreleased-bounded-migration).
+  - **Asynchronous radial picks.** `FiggyBoundedChart.pick`, `hover` and
+    `hit_decoration` return Promises, because a radial chart picks its slices on
+    the GPU ([#40](https://github.com/shim9610/figgy/issues/40) item 13b).
+  - **Categorical documents in the Cartesian wrapper**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13d).
+    `FiggyChart.set_categorical_document(json)` opens a `CategoricalChart`
+    document as category bars (`Config::from_categorical`), registering its
+    positions and value columns and fitting the value axis.
+    `selection_details()` reports a selected bar's `category_id`,
+    `category_label`, `value`, `direction` and `mode`, and `step_selection`
+    walks the categories and the series of the bar group. `FiggyBoundedChart` no
+    longer has the `"categorical"` family; creating one with it is an error that
+    names the new method.
+  - **Record and ragged registration**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13e).
+    `FiggyChart.register_record(id, fields)` registers or replaces a box plot
+    record from an object of `Float32Array`/`Float64Array` fields keyed by
+    field name, and `FiggyChart.register_ragged(id, values, offsets)` a ragged
+    column from two `Float64Array`s. Both are additive; nothing draws them
+    yet (the box plot series of item 13f will).
+  - **Box plot documents in the Cartesian wrapper**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
+    `FiggyChart.set_boxplot_document(json)` opens a `BoxPlotChart` document as
+    box plot series (`Config::from_boxplot`), registering its positions column,
+    one record per series and, for a series with outliers, its ragged outlier
+    column from the borrowed summaries, and fitting the value axis (a tenth of
+    the span as padding, nice ticks) unless the document fixes `value_range`.
+    `selection_details()` reports a selected box's `category_id`,
+    `category_label`, `index`, `direction` and its statistics read back from the
+    record (`null` for a missing one), and `step_selection` walks the categories
+    and the series of the box group (boxes, never outliers). `FiggyBoundedChart`
+    no longer has the `"boxplot"` family; creating one with it is an error that
+    names the new method.
+  - **Radar documents in the Cartesian wrapper**
+    ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
+    `FiggyChart.set_radar_document(json)` opens a `RadarChart` document as radar
+    series on a polar chart (`Config::from_radar`), registering its positions
+    column and one value column per series from the borrowed values, and fitting
+    the radius axis (from zero when no value is negative, nice ticks, the
+    document's `ring_spacing` kept) unless the document fixes `value_range`.
+    `selection_details()` adds a selected vertex's `category_id` and
+    `category_label`, and `step_selection` steps the vertices of the series and
+    across the radar series. `FiggyBoundedChart` no longer has the `"radar"`
+    family; creating one with it is an error that names the new method.
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+    13h). `pick_data` reports a label as `{ kind: "value_label", source_id,
+    series_id, category_index, label_id, distance_px }`, and `pick_point` on
+    a chart that draws value labels reports a label under the pointer before
+    any point, as `{ source_id, series_id, point_index, distance_px,
+    label_id }` with the category as `point_index`.
+    `FiggyChart.press_value_label(label_id)` (and the element's
+    `press_value_label`) selects the label and starts its drag; `on_move`
+    writes the series' `labels.offsets` and `on_release` ends it.
+    `step_selection` does not step a label; `selection_details()` reports its
+    `category_id`, `category_label`, `text`, `offset` and `label_id`.
+  - **The radial chart host** (13i). `FiggyBoundedChart` serves only the
+    radial chart: its single-family document, renderer and frame enums and
+    its unreachable host-clear path (a span is never drawn on a radial chart)
+    are gone, and the Rust type is `FiggyRadialChart` in `src/radial.rs`,
+    exported to JavaScript as `FiggyBoundedChart` with the same methods and
+    the `"radial"` family argument. The `"categorical"`, `"boxplot"` and
+    `"radar"` families stay errors naming the `FiggyChart` method for this
+    release; an unknown family and a canvas below 160 × 160 name the radial
+    chart in their errors. `FiggyChart.step_selection(dx, dy)` calls
+    `Config::step_selection` (see [Model](#unreleased-model)); it steps as
+    before, except that a column the wrapper has not registered counts as
+    empty instead of trapping.
 
-- **Record and ragged registration**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13e).
-  `FiggyChart.register_record(id, fields)` registers or replaces a box plot
-  record from an object of `Float32Array`/`Float64Array` fields keyed by
-  field name, and `FiggyChart.register_ragged(id, values, offsets)` a ragged
-  column from two `Float64Array`s. Both are additive; nothing draws them
-  yet (the box plot series of item 13f will).
+<a id="unreleased-bounded-migration"></a>
 
-- **Box plot documents in the Cartesian wrapper**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13f).
-  `FiggyChart.set_boxplot_document(json)` opens a `BoxPlotChart` document
-  as box plot series (`Config::from_boxplot`), registering its positions
-  column, one record per series and, for a series with outliers, its ragged
-  outlier column from the borrowed summaries, and fitting the value axis
-  (a tenth of the span as padding, nice ticks) unless the document fixes
-  `value_range`. `selection_details()` reports a selected box's
-  `category_id`, `category_label`, `index`, `direction` and its statistics
-  read back from the record (`null` for a missing one), and
-  `step_selection` walks the categories and the series of the box group
-  (boxes, never outliers). `FiggyBoundedChart` no longer has the `"boxplot"` family;
-  creating one with it is an error that names the new method. Migration:
-  replace `FiggyBoundedChart.create(canvas, "boxplot", json, w, h)` with a
-  `FiggyChart` and `set_boxplot_document(json)`; boxes are picked with
-  `pick_data` and selected through `picked_data`.
-- **Radar documents in the Cartesian wrapper**
-  ([#40](https://github.com/shim9610/figgy/issues/40) item 13g).
-  `FiggyChart.set_radar_document(json)` opens a `RadarChart` document as
-  radar series on a polar chart (`Config::from_radar`), registering its
-  positions column and one value column per series from the borrowed
-  values, and fitting the radius axis (from zero when no value is
-  negative, nice ticks, the document's `ring_spacing` kept) unless the
-  document fixes `value_range`. `selection_details()` adds a selected
-  vertex's `category_id` and `category_label`, and `step_selection` steps
-  the vertices of the series and across the radar series.
-  `FiggyBoundedChart` no longer has the `"radar"` family; creating one with
-  it is an error that names the new method. Migration: replace
-  `FiggyBoundedChart.create(canvas, "radar", json, w, h)` with a
-  `FiggyChart` and `set_radar_document(json)`; vertices are picked with
-  `pick_data` and selected through `picked_data`.
-- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-  13h). `pick_data` reports a label as `{ kind: "value_label", source_id,
-  series_id, category_index, label_id, distance_px }`, and `pick_point` on
-  a chart that draws value labels reports a label under the pointer before
-  any point, as `{ source_id, series_id, point_index, distance_px,
-  label_id }` with the category as `point_index`.
-  `FiggyChart.press_value_label(label_id)` (and the element's
-  `press_value_label`) selects the label and starts its drag; `on_move`
-  writes the series' `labels.offsets` and `on_release` ends it.
-  `step_selection` does not step a label; `selection_details()` reports its
-  `category_id`, `category_label`, `text`, `offset` and `label_id`.
+### Migrating from the bounded group ([#40](https://github.com/shim9610/figgy/issues/40) item 13)
+
+The migrations of item 13 in one place; the model, renderer and browser
+entries above describe the changes.
+
+- **Readers.** `CategoricalChart`, `BoxPlotChart` and `RadarChart` are
+  deprecated document readers for this release and are removed in the next
+  milestone; code that names them compiles with a deprecation warning
+  (`#[allow(deprecated)]` silences it while they last). Open a document with
+  `Config::from_categorical`, `Config::from_boxplot` or `Config::from_radar`,
+  which return the `Config`, its series and the `SeriesUpload`s that borrow
+  the document's values. Upload them (the positions with
+  `Renderer::add_column`; a bar group's value columns together with
+  `add_columns`; each box plot record with `upsert_record` and the
+  `BOX_PLOT_RECORD` schema and each outlier column with `upsert_ragged`;
+  radar values with `add_column`), fit the value or radius axis with
+  `Chart::auto_fit_layer_union` when the document fixes no range, draw with
+  the Cartesian `Renderer` and pick with `pick_chart_data` (a bar or a box
+  answers `PickedData::HistogramBin` with its category row, a radar vertex
+  `PickedData::Point`, a value label `PickedData::ValueLabel`). In the
+  browser, `FiggyChart.set_categorical_document`, `set_boxplot_document` and
+  `set_radar_document` do all of it.
+- **Removed renderers, types and functions.** `CategoricalRenderer`,
+  `CategoricalFrame` (`bar_rect`, `hit_test`, `decorations`, …),
+  `CategoricalError`, `BoxPlotRenderer`, `BoxPlotFrame` (`hit_test`,
+  `part_rect`, `box_rect`, `plot_rect`, `decorations`, …), `BoxPlotPick`,
+  `BoxPlotPart`, `BoxPlotError`, `RadarRenderer`, `RadarFrame` (`hit_test`,
+  `part_rect`, `vertex_position`, `plot_rect`, `plot_circle`,
+  `decorations`, …), `RadarPick`, `RadarPart`, `RadarError`, their shaders
+  and layout modules and the bounded chrome only they used;
+  `decoration::DecorationMap`, `BoundedAnnotationFrame::hit_test_active_layer`,
+  `FrameBackground`, `RadialRenderer::set_background` and `background`,
+  `RadialFrame::background`, `BoundedAnnotationFrame::draw_underlay` and
+  `draws_underlay`, `RadialFrame::hit_test` and `hit_test_at_rest`;
+  `CategoricalChart::segments`, `CategoryBarSegment`, the three documents'
+  `label_text`, `CategoricalChart::bar_override`, their `reorder_categories`,
+  `set_active_layer` and `normalize_title`, `RadarChart::is_emphasized` and
+  `resolved_style`, and `DecorationElement.followers`. The
+  `categorical_editor`, `boxplot_editor` and `radar_editor` examples are
+  removed; `bounded_titles` is `radial_titles`.
+- **The radial chart.**
+  - Hit-test decorations with `frame.decoration_at(&chart, p)` instead of
+    `frame.decorations().hit_test(p)`, name a hit with
+    `frame.decoration_id(&chart, hit)` instead of `map.element(hit).id`, and
+    drag with `frame.drag_decoration(&mut chart, hit, dx, dy)` instead of
+    `map.drag_by(&mut chart.decorations, hit, dx, dy)`: `decorations()` is
+    a `HitMap<RadialChart>`, queried with the chart the frame was prepared
+    from.
+  - Pick slices with `frame.pick(p)?.resolve().await?` (natively
+    `resolve_blocking()`) instead of `frame.hit_test(p)`; `pick` takes
+    `&Arc<RadialFrame>`.
+  - Call `format_labels()` after building or editing slices, values, names
+    or label formats, and `normalize_labels()` on a loaded document: the
+    renderer draws `RadialSlice::text` and refuses a shown label without
+    it. An exhaustive `RadialSlice` literal needs `text: None` (or use
+    `RadialSlice::new`).
+  - Build a radial `chart_title` as a `ChartTitleOptions` (zero offsets and
+    band) where a `BoundedTitleOptions` was built.
+  - Draw the annotation layer after the frame with `draw_overlay` alone;
+    drop `set_background(FrameBackground::HostClear)` and `draw_underlay`.
+    The radial chart has no value axes, so a span was never drawn on it.
+- **Rust literals and matches.** `Config { .. }` adds `bar_groups: None`;
+  `AxisOptions { .. }` adds `categories: None` and `cross_at: None` (an
+  exhaustive destructuring names both); `PolarOptions { .. }` adds
+  `grid_shape: None`; a `RadarSeriesStyle` literal that names every field
+  adds `fill_opacity: None`; the three series label types add
+  `offsets: Vec::new()`; `data_render::SeriesLayers` adds
+  `value_labels: None`; a `DecorationElement` literal drops `followers`
+  (`..Default::default()` covers the additions). Exhaustive matches add
+  `DataRenderType::{CategoryBars, BoxPlot, Radar}`,
+  `UploadValues::{BoxRecord, BoxOutliers, Dense}`,
+  `PickedDataRef::ValueLabel` and `PickedData::ValueLabel`.
+  `layout::axis_anchor(side, plot, cross)` takes the plot as
+  `&RectF::from_rect(&data_area)` and a crossing value (`None` for the
+  former anchor).
+- **Web API.** `FiggyBoundedChart` keeps its JavaScript name, its methods
+  and the `"radial"` family. `pick`, `hover` and `hit_decoration` return
+  Promises: `await` them. A parsed radial document's slices without `text`
+  get the text their label format writes, so remove or rewrite a set `text`
+  after editing a value or a format. Replace
+  `FiggyBoundedChart.create(canvas, "categorical" | "boxplot" | "radar",
+  json, w, h)` with a `FiggyChart` and `set_categorical_document(json)`,
+  `set_boxplot_document(json)` or `set_radar_document(json)`; the marks are
+  picked with `pick_data` and selected through `picked_data`. The three
+  family names are errors naming those methods for this release.
+- **Look and behaviour changes.** A legacy document opened through a reader
+  draws with the Cartesian or polar chrome instead of the former bounded
+  layout: Cartesian margins (an explicit `decorations.data_area` is not
+  carried), the Cartesian legend box, the export clear colour instead of
+  `background`, the Cartesian selection outline or the polar picked ring
+  instead of a brightened series, and value labels through the contour
+  label module; the marks themselves keep their places and shading (the
+  per-case pixel counts are under [Renderer](#unreleased-renderer)). A legacy
+  radar document's `style.emphasis_brightness` is kept in the document but
+  not drawn. The radial title moves about 2 px down into its band and is
+  clipped instead of refused when wider than the canvas, and a selected
+  outside radial label outlines its text lines and its leader line.
+- **Box plot statistics (D6).** The renderer cannot read a record on the
+  CPU, so it clamps unordered box statistics instead of rejecting them: the
+  body spans `min(q1, q3)..max(q1, q3)`, the median is clamped into it, the
+  stems reach the body, a notch needs both CI endpoints and a row with a
+  missing required field draws nothing. `BoxPlotChart::validate` still
+  rejects an unordered document, so a document drawn through the reader
+  draws as before; a host that uploads its own records checks the order
+  itself.
+- **Stacked bar fit.** The value-axis fit of a `Stacked` bar group reads
+  the `StackExtent` the pool measures while one `add_columns` batch writes
+  exactly the group's value columns: upload them together, or the fit
+  returns an error that says so.
+- **Decoration oracle exclusions.** Item 13 adds three rows to the decoration
+  oracle's exclusions: I5 of the box plot scene's `axis_title_left` and I5
+  of the radar scene's `tick_labels_left`, both sub-pixel glyph snapping
+  between 1x and 2x (box-filtered shares of 63 % and 52 % against a 50 %
+  limit), and I7 of the radar scene's `axis_bottom`, the polar outer ring's
+  orphan ink the polar scene is excluded for. The radial leader-line row is
+  gone (13b), and the radial scene has no exclusion.
 
 ### Tests and guards
 
-- **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13b). `radial_render` compares the GPU pick with the CPU twin over
-  tilt, depth, gaps, corners, explode, the hole, the detail circle and the
-  lift, lifted and at rest, and checks the at-rest pick; the shader mirrors
-  hold both radial modules' `Sector` and the pick query and result to their
-  Rust twins. The oracle's bounded branch and the bounded interaction tests
-  go through the radial frame's `HitMap<RadialChart>` (a test-support
-  adapter covers both hit-map APIs), and the selection-only check accepts a
-  selection that outlines its parts.
-- Released-document fixtures written by figgy-model 0.12.1 cover the radial,
-  categorical, box plot and radar charts at their default and edited
-  (`released_documents`, #40 item 13a).
 - **Flag blend lint.** `shader_consistency` rejects a choice by a 0/1 flag
   that drivers may evaluate inexactly: an unguarded `mix` by a flag, a flag
   as a factor of a hand-written blend (`x + f * (y - x)`,
@@ -1115,91 +1225,120 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   duplicate tests are removed and 7 pairs merged, each keeping every check;
   the draw-and-pick agreement tests probe the pixels of an edge band around
   each primitive.
-- **Category bars** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13d). `category_bars_render` checks every mode in both directions at
-  1x and 2x against the bars' expected extents, signed and missing stacks,
-  overrides and materials, the selection outline of an overridden bar, the
-  value-axis fit over the stack extent and its refusal without a measured
-  stack, the axis crossing, an overlay's and a subplot's own bar groups
-  drawn and picked on their layers, and a released document drawn through
-  the reader; `pick_draw_agreement` holds the bar pick to the painted bar;
-  `released_documents` converts every released categorical document and
-  round-trips the result; the SSOT matrix classifies `bar_groups` and
-  `cross_at`, and the resident-body mutation walk covers a stacked category
-  bar panel (385 config and 82 series leaves); the decoration oracle and
-  the playground sweep the categorical scene as a Cartesian scene; a
-  browser test opens a document in `FiggyChart`. The legacy renderer's
-  `categorical_render` and `categorical_browser` are removed with it; the
-  bounded annotation tests that drew on bars run on box plots.
-- **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13f). `box_plot_render` checks the boxes' statistics in both
-  directions at 1x and 2x against their expected pixel extents, notches,
-  missing boxes and clamped unordered statistics, overrides and materials
-  restyling only their box, the selection outline of an overridden box, the
-  value-axis fit over the record and outlier statistics, a replaced record
-  and mismatched sources, an overlay's and a subplot's own box groups, the
-  annotation layer's spans and reference lines over the categories and
-  values, a 2x export that is the 1x layout doubled, and a released
-  document drawn through the reader;
-  `pick_draw_agreement::box_plots_pick_the_box_they_paint` holds the pick of
-  every part to the painted box; `released_documents` converts every
-  released box plot document and round-trips the result; the resident-body
-  mutation walk covers a box plot panel (384 config and 166 series leaves,
-  records and a ragged column included); the decoration oracle and the
-  playground sweep the box plot scene as a Cartesian scene (the oracle's
-  I5 rotated-title 1x/2x check excludes the box plot's left axis title,
-  whose sub-pixel centroid offset the categorical scene shares, #40); a
-  browser test opens a document in `FiggyChart`, selects, steps and exports
-  it; `streamed_series_reject_box_plots` checks the streaming refusal. The
-  legacy renderer's `boxplot_render` and `boxplot_browser` are removed with
-  it, and so are the box plot cases of the bounded interaction and label
-  layout tests and the bounded span underlay test (radial and radar charts
-  place no spans); the annotation hit-region test that drew on boxes runs
-  on a radar chart.
-- **Radar series** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13g). `radar_series_render` checks the polygon, its closing segment
-  and fill, the zero angle and direction, a NaN vertex, a sector, several
-  series, circular and polygon grids, the category spoke labels, the picked
-  ring, the radius fit, the validation errors, the annotation layer, a
-  polar subplot, SSOT edits against a fresh renderer and a released
-  document drawn through the reader;
-  `pick_draw_agreement::radar_polygons_pick_their_outline_closing_segment_markers_and_fill`
-  holds the pick of every part to the painted polygon; `released_documents`
-  converts every released radar document and round-trips the result; the
-  resident-body mutation walk covers a radar panel; the decoration oracle
-  and the playground sweep the radar scene as a polar scene (the oracle
-  excludes the outer ring's I7 orphan ink, as on the polar scene, and the
-  ring labels' I5 2x check, whose ink centroids sit up to 0.64 px apart at
-  1x and 2x, the glyph snapping the box plot title exclusion describes;
-  the reader hides the ray line, so the polar ray's I6 row does not
-  arise); a browser test opens a document in `FiggyChart`,
-  selects, steps and exports it; `streamed_series_reject_radar` checks the
-  streaming refusal. The legacy renderer's `radar_render` and
-  `radar_browser` are removed with it, and so are the radar cases of the
-  bounded interaction, annotation and decoration tests; the annotation
-  hit-region test that drew on a radar chart runs on a radial chart.
 - **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
   dev-dependency for the mutation walker. `figgy-renderer` gains the
   `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from
   the docs), which its own tests enable through a dev-dependency on the
   crate itself; a packaged crate builds its tests without it. No product
   dependency changes.
-- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-  13h). `value_labels_render` checks, at 1x and 2x, that bar, box and radar
-  labels sit where the former charts placed them (within `2 * scale + 1`
-  px), that the drawn label is the SSOT string's own raster texel for
-  texel, that an empty string draws nothing, that a drag moves the label
-  by its offset alone, that the selected label's box is its frame, that
-  overlay and subplot series draw their labels in their panels, that a
-  label at the data area's edge flips to the other side of its anchor for
-  every kind, drawn whole and picked there, and the typed pick of a label.
-  `pick_draw_agreement` gains
-  `value_labels_pick_where_they_paint`; the atlas key is mutation tested
-  (`the_value_label_atlas_key_names_every_bake_input`); the model tests
-  cover the offsets' validation, drag and round trip and the label id; the
-  browser tests cover the label hit's JSON and a label's pick, selection
-  and drag (`a_value_label_picks_selects_and_drags`). The playground scenes
-  of the box plot and radar charts show their labels.
+- **The bounded group, classified per chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13).
+  - **Released fixtures** (13a). Released-document fixtures written by
+    figgy-model 0.12.1 cover the radial, categorical, box plot and radar
+    charts at their default and edited (`released_documents`).
+  - **Radial pick and decorations** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13b). `radial_render` compares the GPU pick with the CPU twin over
+    tilt, depth, gaps, corners, explode, the hole, the detail circle and the
+    lift, lifted and at rest, and checks the at-rest pick; the shader mirrors
+    hold both radial modules' `Sector` and the pick query and result to their
+    Rust twins. The oracle's radial branch and the radial interaction tests
+    go through the radial frame's `HitMap<RadialChart>` (a test-support
+    adapter covers both hit-map APIs), and the selection-only check accepts a
+    selection that outlines its parts.
+  - **Category bars** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13d). `category_bars_render` checks every mode in both directions at
+    1x and 2x against the bars' expected extents, signed and missing stacks,
+    overrides and materials, the selection outline of an overridden bar, the
+    value-axis fit over the stack extent and its refusal without a measured
+    stack, the axis crossing, an overlay's and a subplot's own bar groups
+    drawn and picked on their layers, and a released document drawn through
+    the reader; `pick_draw_agreement` holds the bar pick to the painted bar;
+    `released_documents` converts every released categorical document and
+    round-trips the result; the SSOT matrix classifies `bar_groups` and
+    `cross_at`, and the resident-body mutation walk covers a stacked category
+    bar panel (385 config and 82 series leaves); the decoration oracle and
+    the playground sweep the categorical scene as a Cartesian scene; a
+    browser test opens a document in `FiggyChart`. The legacy renderer's
+    `categorical_render` and `categorical_browser` are removed with it; the
+    bounded annotation tests that drew on bars run on box plots.
+  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13f). `box_plot_render` checks the boxes' statistics in both
+    directions at 1x and 2x against their expected pixel extents, notches,
+    missing boxes and clamped unordered statistics, overrides and materials
+    restyling only their box, the selection outline of an overridden box, the
+    value-axis fit over the record and outlier statistics, a replaced record
+    and mismatched sources, an overlay's and a subplot's own box groups, the
+    annotation layer's spans and reference lines over the categories and
+    values, a 2x export that is the 1x layout doubled, and a released
+    document drawn through the reader;
+    `pick_draw_agreement::box_plots_pick_the_box_they_paint` holds the pick of
+    every part to the painted box; `released_documents` converts every
+    released box plot document and round-trips the result; the resident-body
+    mutation walk covers a box plot panel (384 config and 166 series leaves,
+    records and a ragged column included); the decoration oracle and the
+    playground sweep the box plot scene as a Cartesian scene (the oracle's
+    I5 rotated-title 1x/2x check excludes the box plot's left axis title,
+    whose sub-pixel centroid offset the categorical scene shares, #40); a
+    browser test opens a document in `FiggyChart`, selects, steps and exports
+    it; `streamed_series_reject_box_plots` checks the streaming refusal. The
+    legacy renderer's `boxplot_render` and `boxplot_browser` are removed with
+    it, and so are the box plot cases of the bounded interaction and label
+    layout tests and the bounded span underlay test (radial and radar charts
+    place no spans); the annotation hit-region test that drew on boxes runs
+    on a radar chart.
+  - **Radar series** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13g). `radar_series_render` checks the polygon, its closing segment
+    and fill, the zero angle and direction, a NaN vertex, a sector, several
+    series, circular and polygon grids, the category spoke labels, the picked
+    ring, the radius fit, the validation errors, the annotation layer, a
+    polar subplot, SSOT edits against a fresh renderer and a released
+    document drawn through the reader;
+    `pick_draw_agreement::radar_polygons_pick_their_outline_closing_segment_markers_and_fill`
+    holds the pick of every part to the painted polygon; `released_documents`
+    converts every released radar document and round-trips the result; the
+    resident-body mutation walk covers a radar panel; the decoration oracle
+    and the playground sweep the radar scene as a polar scene (the oracle
+    excludes the outer ring's I7 orphan ink, as on the polar scene, and the
+    ring labels' I5 2x check, whose ink centroids sit up to 0.64 px apart at
+    1x and 2x, the glyph snapping the box plot title exclusion describes;
+    the reader hides the ray line, so the polar ray's I6 row does not
+    arise); a browser test opens a document in `FiggyChart`,
+    selects, steps and exports it; `streamed_series_reject_radar` checks the
+    streaming refusal. The legacy renderer's `radar_render` and
+    `radar_browser` are removed with it, and so are the radar cases of the
+    bounded interaction, annotation and decoration tests; the annotation
+    hit-region test that drew on a radar chart runs on a radial chart.
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+    13h). `value_labels_render` checks, at 1x and 2x, that bar, box and radar
+    labels sit where the former charts placed them (within `2 * scale + 1`
+    px), that the drawn label is the SSOT string's own raster texel for
+    texel, that an empty string draws nothing, that a drag moves the label
+    by its offset alone, that the selected label's box is its frame, that
+    overlay and subplot series draw their labels in their panels, that a
+    label at the data area's edge flips to the other side of its anchor for
+    every kind, drawn whole and picked there, and the typed pick of a label.
+    `pick_draw_agreement` gains
+    `value_labels_pick_where_they_paint`; the atlas key is mutation tested
+    (`the_value_label_atlas_key_names_every_bake_input`); the model tests
+    cover the offsets' validation, drag and round trip and the label id; the
+    browser tests cover the label hit's JSON and a label's pick, selection
+    and drag (`a_value_label_picks_selects_and_drags`). The playground scenes
+    of the box plot and radar charts show their labels.
+  - **The radial tests** (13i). The tests and test support that only test the
+    radial chart are named for it: `bounded_interaction`,
+    `bounded_label_layout`, `bounded_interaction_browser` and
+    `bounded_area_browser` are `radial_interaction`, `radial_label_layout`,
+    `radial_interaction_browser` and `radial_area_browser`, and
+    `support/bounded_decorations.rs`, `bounded_selection.rs` and
+    `bounded_area.rs` are `radial_decorations.rs`, `selection_only.rs` and
+    `radial_area.rs` (the area check without its one-family macro, the
+    decoration adapter without the always-empty followers). The decoration
+    oracle's bounded branch is a radial sweep without the per-family trait,
+    its rows unchanged: the radial scene has no exclusion. The model tests the
+    moved `Config::step_selection` (points across series, a point vector,
+    histograms by orientation, category bars and boxes by layer, matrix and
+    grid vector cells, no selection, labels); the tests of the removed
+    helpers and underlay go with them.
 
 ### Documentation
 
@@ -1210,54 +1349,69 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   integration example. The package keeps its own version and `publish = false`;
   its publication target is still open. No API, serialized field or build
   change.
-- **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13d). `CATEGORICAL.md` (Korean) says that the categorical chart is a
-  `CategoryBars` series on a `Config` with a categorical axis, read from
-  legacy documents by `Config::from_categorical`, and drops the sections of
-  the removed bounded renderer; `SHADER_COMMON.md`
-  §2.4 and §5.13 hold the category bar contract; `CONFIG.md`, `API.md`,
-  `INTERACTION.md`, `WASM.md`, the browser `README.md` and `SCHEMA.md` and
-  the model README describe the series kind, `bar_groups`, `cross_at` and
-  `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
-  radial chart alone.
-- **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13f). `BOXPLOT.md` describes the `BoxPlot` series, its record and
-  ragged sources, the box group, the clamping, styles and overrides, value
-  labels, the fit, picking and the reader, and drops the removed renderer;
-  `SHADER_COMMON.md` §2.5 and §5.15 hold the box plot contract; `CONFIG.md`,
-  `API.md`, `INTERACTION.md`, `WASM.md`, `USAGE.md`, `ARCHITECTURE.md`,
-  `GALLERY.md`, the browser `README.md` and `SCHEMA.md`, the model README,
-  the example and playground READMEs and the top-level READMEs describe the
-  series kind and `set_boxplot_document`. The Korean text (the Korean
-  sections of `BOXPLOT.md`, `CONFIG.md`, `INTERACTION.md`, `USAGE.md`,
-  `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md` and
-  `examples/README.md`) is updated in Korean.
-- **Radar charts** ([#40](https://github.com/shim9610/figgy/issues/40)
-  item 13g). `RADAR.md` describes the `Radar` series on a categorical
-  angle axis, its style, labels, picking, the fit and the reader, and drops
-  the removed renderer; `POLAR.md` and `CONFIG.md` describe the categorical
-  angle axis and `grid_shape`; `API.md`, `INTERACTION.md`, `WASM.md`,
-  `USAGE.md`, `ARCHITECTURE.md`, `GALLERY.md`, the browser `README.md` and
-  `SCHEMA.md`, the model and renderer READMEs, the example, playground and
-  CI READMEs, the contributing guide and the top-level READMEs describe the
-  series kind and `set_radar_document`. The Korean text (the Korean
-  sections of `RADAR.md`, `POLAR.md`, `CONFIG.md`, `INTERACTION.md`,
-  `USAGE.md`, `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md`
-  and `examples/README.md`) is updated in Korean. `gallery-radar.png` and
-  `gallery-radar-circle.png` keep the former renderer's images, with value
-  labels, until 13h draws them.
 - `SHADER_COMMON.md` is the contract of the shared fragments (layouts,
   bindings, invariants, the flag table of §3.1) and names the file that
   holds each block; it is no longer parsed by a test. The contributing
   guide, the CI guide and the guides that named a split file point at the
   file the item lives in now.
-- **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
-  13h). `INTERACTION.md` (Value labels), `API.md`, `WASM.md`, `CONFIG.md`,
-  `CATEGORICAL.md`, `BOXPLOT.md`, `RADAR.md`, `GALLERY.md`,
-  `examples/README.md`, `crates/web/README.md`, `crates/web/SCHEMA.md` and
-  `SHADER_COMMON.md` (§5.16 Label quad, §5.17 Value labels) describe the
-  drawn labels, their pick, selection and drag. The categorical, box plot
-  and radar gallery images are regenerated with their labels.
+- **The bounded group, classified per chart**
+  ([#40](https://github.com/shim9610/figgy/issues/40) item 13).
+  - **Categorical bars** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13d). `CATEGORICAL.md` (Korean) says that the categorical chart is a
+    `CategoryBars` series on a `Config` with a categorical axis, read from
+    legacy documents by `Config::from_categorical`, and drops the sections of
+    the removed bounded renderer; `SHADER_COMMON.md`
+    §2.4 and §5.13 hold the category bar contract; `CONFIG.md`, `API.md`,
+    `INTERACTION.md`, `WASM.md`, the browser `README.md` and `SCHEMA.md` and
+    the model README describe the series kind, `bar_groups`, `cross_at` and
+    `set_categorical_document`, the Korean sections in Korean. The model README's DataLess class is the
+    radial chart alone.
+  - **Box plots** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13f). `BOXPLOT.md` describes the `BoxPlot` series, its record and
+    ragged sources, the box group, the clamping, styles and overrides, value
+    labels, the fit, picking and the reader, and drops the removed renderer;
+    `SHADER_COMMON.md` §2.5 and §5.15 hold the box plot contract; `CONFIG.md`,
+    `API.md`, `INTERACTION.md`, `WASM.md`, `USAGE.md`, `ARCHITECTURE.md`,
+    `GALLERY.md`, the browser `README.md` and `SCHEMA.md`, the model README,
+    the example and playground READMEs and the top-level READMEs describe the
+    series kind and `set_boxplot_document`. The Korean text (the Korean
+    sections of `BOXPLOT.md`, `CONFIG.md`, `INTERACTION.md`, `USAGE.md`,
+    `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md` and
+    `examples/README.md`) is updated in Korean.
+  - **Radar charts** ([#40](https://github.com/shim9610/figgy/issues/40)
+    item 13g). `RADAR.md` describes the `Radar` series on a categorical
+    angle axis, its style, labels, picking, the fit and the reader, and drops
+    the removed renderer; `POLAR.md` and `CONFIG.md` describe the categorical
+    angle axis and `grid_shape`; `API.md`, `INTERACTION.md`, `WASM.md`,
+    `USAGE.md`, `ARCHITECTURE.md`, `GALLERY.md`, the browser `README.md` and
+    `SCHEMA.md`, the model and renderer READMEs, the example, playground and
+    CI READMEs, the contributing guide and the top-level READMEs describe the
+    series kind and `set_radar_document`. The Korean text (the Korean
+    sections of `RADAR.md`, `POLAR.md`, `CONFIG.md`, `INTERACTION.md`,
+    `USAGE.md`, `ARCHITECTURE.md` and `WASM.md`, `SCHEMA.md`, `README.ko.md`
+    and `examples/README.md`) is updated in Korean. `gallery-radar.png` and
+    `gallery-radar-circle.png` keep the former renderer's images, with value
+    labels, until 13h draws them.
+  - **Value labels** ([#40](https://github.com/shim9610/figgy/issues/40) item
+    13h). `INTERACTION.md` (Value labels), `API.md`, `WASM.md`, `CONFIG.md`,
+    `CATEGORICAL.md`, `BOXPLOT.md`, `RADAR.md`, `GALLERY.md`,
+    `examples/README.md`, `crates/web/README.md`, `crates/web/SCHEMA.md` and
+    `SHADER_COMMON.md` (§5.16 Label quad, §5.17 Value labels) describe the
+    drawn labels, their pick, selection and drag. The categorical, box plot
+    and radar gallery images are regenerated with their labels.
+  - **The end state** (13i). The guides describe the radial chart as the
+    DataLess chart, `FiggyBoundedChart` as its host and the three legacy
+    documents as deprecated readers, and drop the deleted underlay path,
+    `DecorationMap` and the removed helpers: `ARCHITECTURE.md` (both
+    languages), `INTERACTION.md`, `API.md`, `WASM.md` (section 8 is the radial
+    chart host; its anchor is unchanged), `CONFIG.md`, `RADIAL.md`,
+    `RADAR.md`, `BOXPLOT.md`, `CATEGORICAL.md`, the renderer, model, browser,
+    example, playground, fixture and CI READMEs, `SCHEMA.md`,
+    `SHADER_COMMON.md`, the contributing guide and the top-level README. The
+    Korean text (the Korean sections of `ARCHITECTURE.md`, `INTERACTION.md`,
+    `CONFIG.md`, `RADIAL.md`, `RADAR.md`, `BOXPLOT.md` and `WASM.md`,
+    `CATEGORICAL.md`, `SCHEMA.md` and `examples/README.md`) is edited in
+    Korean.
 
 <a id="release-0181"></a>
 
