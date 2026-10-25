@@ -636,12 +636,20 @@ impl Iterator for LogDecades {
     }
 }
 
-/// The log minor ticks `2a..9a` of every decade `a` overlapping `min..max`
-/// that fall inside it, in increasing order: anchored at the decade powers,
-/// not at the majors, so partial edge decades (and multi-decade major steps)
-/// keep their minors. At most [`MAX_LOG_DECADES`] decades are visited.
+/// The [`LogMultiples`] mask of the log minors: the multiples 2 to 9.
+const LOG_MINOR_MULTIPLES: u16 = 0b11_1111_1100;
+
+/// The multiples `m · a` of every decade `a` overlapping `min..max` whose
+/// bit `m` is set in a mask, that fall inside the range, in increasing
+/// order: anchored at the decade powers, so partial edge decades keep their
+/// multiples. At most [`MAX_LOG_DECADES`] decades are visited.
+///
+/// Bit `m` of the mask (`m` in `1..=9`) selects `m · 10^k`; bit 0 and bits
+/// 10 to 15 are ignored. Each value is `10^k` (`powf`, which keeps subnormal
+/// decades) times `m`, so a multiple is the same `f64` whichever mask walks
+/// it.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LogMinors {
+pub struct LogMultiples {
     min: f64,
     max: f64,
     decade: Option<i32>,
@@ -649,12 +657,14 @@ pub struct LogMinors {
     decades_left: usize,
     base: f64,
     multiple: u8,
+    mask: u16,
 }
 
-impl LogMinors {
-    /// The minors over `min..max`, a finite, positive, ordered log range
-    /// (a written one is guarded by [`crate::layout::guarded_log_range`]).
-    pub fn new(min: f64, max: f64) -> Self {
+impl LogMultiples {
+    /// The multiples selected by `mask` over `min..max`, a finite,
+    /// positive, ordered log range (a written one is guarded by
+    /// [`crate::layout::guarded_log_range`]).
+    pub fn new(min: f64, max: f64, mask: u16) -> Self {
         let first = clamped_exponent(min.log10().floor());
         Self {
             min,
@@ -665,11 +675,12 @@ impl LogMinors {
             base: 0.0,
             // Past 9: the next call opens the first decade.
             multiple: 10,
+            mask,
         }
     }
 }
 
-impl Iterator for LogMinors {
+impl Iterator for LogMultiples {
     type Item = f64;
 
     fn next(&mut self) -> Option<f64> {
@@ -683,14 +694,42 @@ impl Iterator for LogMinors {
                 self.decades_left -= 1;
                 self.decade = decade.checked_add(1);
                 self.base = 10f64.powf(f64::from(decade));
-                self.multiple = 2;
+                self.multiple = 1;
             }
-            let value = self.base * f64::from(self.multiple);
+            let multiple = self.multiple;
             self.multiple += 1;
+            if self.mask & (1 << multiple) == 0 {
+                continue;
+            }
+            let value = self.base * f64::from(multiple);
             if value.is_finite() && value >= self.min && value <= self.max {
                 return Some(value);
             }
         }
+    }
+}
+
+/// The log minor ticks `2a..9a` of every decade `a` overlapping `min..max`
+/// that fall inside it, in increasing order: anchored at the decade powers,
+/// not at the majors, so partial edge decades (and multi-decade major steps)
+/// keep their minors. At most [`MAX_LOG_DECADES`] decades are visited. The
+/// [`LogMultiples`] of the multiples 2 to 9.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LogMinors(LogMultiples);
+
+impl LogMinors {
+    /// The minors over `min..max`, a finite, positive, ordered log range
+    /// (a written one is guarded by [`crate::layout::guarded_log_range`]).
+    pub fn new(min: f64, max: f64) -> Self {
+        Self(LogMultiples::new(min, max, LOG_MINOR_MULTIPLES))
+    }
+}
+
+impl Iterator for LogMinors {
+    type Item = f64;
+
+    fn next(&mut self) -> Option<f64> {
+        self.0.next()
     }
 }
 
@@ -1268,6 +1307,81 @@ mod tests {
             minors,
             [3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 20.0, 30.0, 40.0, 50.0]
         );
+    }
+
+    /// The walk `LogMinors` took before it was built on `LogMultiples`:
+    /// multiples 2 to 9 of every decade, the same guards.
+    fn legacy_log_minors(min: f64, max: f64) -> Vec<f64> {
+        let mut out = Vec::new();
+        let first = clamped_exponent(min.log10().floor());
+        let last = clamped_exponent(max.log10().floor());
+        let mut decade = Some(first);
+        let mut decades_left = MAX_LOG_DECADES;
+        while let Some(d) = decade.filter(|d| *d <= last) {
+            if decades_left == 0 {
+                break;
+            }
+            decades_left -= 1;
+            decade = d.checked_add(1);
+            let base = 10f64.powf(f64::from(d));
+            for multiple in 2..=9u8 {
+                let value = base * f64::from(multiple);
+                if value.is_finite() && value >= min && value <= max {
+                    out.push(value);
+                }
+            }
+        }
+        out
+    }
+
+    /// `LogMinors` is `LogMultiples` of the multiples 2 to 9, bit for bit,
+    /// on ordinary, partial, subnormal, overflowing and capped ranges.
+    #[test]
+    fn log_minors_are_the_multiples_two_to_nine() {
+        for (min, max) in [
+            (3.0, 50.0),
+            (0.5, 2000.0),
+            (1e-9, 1e9),
+            (2.1e4, 2.9e4),
+            (8e3, 1.2e4),
+            (1e-12, 1e-11),
+            (f64::from_bits(1), 1e-300),
+            (1e300, f64::MAX),
+            (f64::from_bits(1), f64::MAX),
+        ] {
+            let minors: Vec<u64> = LogMinors::new(min, max).map(f64::to_bits).collect();
+            let multiples: Vec<u64> = LogMultiples::new(min, max, LOG_MINOR_MULTIPLES)
+                .map(f64::to_bits)
+                .collect();
+            let legacy: Vec<u64> = legacy_log_minors(min, max)
+                .into_iter()
+                .map(f64::to_bits)
+                .collect();
+            assert_eq!(minors, multiples, "{min:?}..{max:?}");
+            assert_eq!(minors, legacy, "{min:?}..{max:?}");
+        }
+    }
+
+    /// A mask selects its multiples in every decade, and a multiple is the
+    /// same value under every mask that walks it.
+    #[test]
+    fn log_multiples_walk_the_masked_multiples() {
+        let one_two_five = (1 << 1) | (1 << 2) | (1 << 5);
+        let values: Vec<f64> = LogMultiples::new(1.0, 100.0, one_two_five).collect();
+        assert_eq!(values, [1.0, 2.0, 5.0, 10.0, 20.0, 50.0, 100.0]);
+        let values: Vec<f64> = LogMultiples::new(3e3, 8e5, one_two_five).collect();
+        assert_eq!(values, [5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]);
+        // Bit 0 and the bits past 9 select nothing.
+        assert_eq!(LogMultiples::new(1.0, 1e3, 0xFC01).count(), 0);
+        let all: Vec<u64> = LogMultiples::new(1e-5, 1e5, 0b11_1111_1110)
+            .map(f64::to_bits)
+            .collect();
+        for value in LogMultiples::new(1e-5, 1e5, one_two_five) {
+            assert!(all.contains(&value.to_bits()), "{value:?}");
+        }
+        for value in LogMinors::new(1e-5, 1e5) {
+            assert!(all.contains(&value.to_bits()), "{value:?}");
+        }
     }
 
     #[test]
