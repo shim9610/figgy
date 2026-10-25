@@ -12,6 +12,8 @@ pub(crate) enum NumericTickText {
 }
 
 pub(crate) struct NumericTickLabel {
+    /// The major tick value the label shows.
+    pub(crate) value: f64,
     pub(crate) position: (f32, f32),
     /// The box the label is drawn in, which decides whether it collides
     /// with its neighbours.
@@ -59,6 +61,11 @@ pub(crate) fn visible_numeric_labels(
 /// to every 2nd, 5th, 10th... label. A Cartesian axis' labels line up, so
 /// this compares them along the axis; a polar ray's labels step along the
 /// ray at any angle.
+///
+/// On an adaptive log axis ([`crate::tick::log_label_ladders`]) crowded
+/// labels are first demoted to the next sparser ladder, {1..9} → {1, 2, 5}
+/// → {1} × 10^k, as long as that keeps at least two labels; the stride then
+/// thins the ladder that is left, every n-th decade on the decade ladder.
 pub(crate) fn prune_numeric_labels(
     axis: &AxisOptions,
     fp: FontPolicy,
@@ -94,15 +101,52 @@ pub(crate) fn prune_numeric_labels(
                 .into_iter()
                 .all(f32::is_finite)
                 .then_some(NumericTickLabel {
+                    value,
                     position,
                     bounds,
                     text,
                 })
         })
         .collect();
-    let stride = label_stride(labels.len(), ls.font_size, |index| labels[index].bounds);
+    // The ladder the labels are demoted to; `None` keeps every label.
+    let on_ladder = |label: &NumericTickLabel, mask: u16| {
+        crate::tick::log_multiple(label.value).is_some_and(|multiple| mask & (1 << multiple) != 0)
+    };
+    let kept = |ladder: Option<u16>, label: &NumericTickLabel| {
+        ladder.is_none_or(|mask| on_ladder(label, mask))
+    };
+    let kept_bounds = |ladder: Option<u16>, index: usize| {
+        labels
+            .iter()
+            .filter(|label| kept(ladder, *label))
+            .nth(index)
+            .map_or(labels[index].bounds, |label| label.bounds)
+    };
+    let mut ladder = None;
+    for &mask in crate::tick::log_label_ladders(axis) {
+        let count = labels
+            .iter()
+            .filter(|label| on_ladder(*label, mask))
+            .count();
+        if count < 2 {
+            break;
+        }
+        ladder = Some(mask);
+        if label_stride(count, ls.font_size, |index| kept_bounds(ladder, index)) == 1 {
+            break;
+        }
+    }
+    let stride = match ladder {
+        None => label_stride(labels.len(), ls.font_size, |index| labels[index].bounds),
+        Some(_) => label_stride(
+            labels.iter().filter(|label| kept(ladder, *label)).count(),
+            ls.font_size,
+            |index| kept_bounds(ladder, index),
+        ),
+    };
     labels
         .into_iter()
+        .filter(|label| kept(ladder, label))
         .enumerate()
         .filter_map(|(index, label)| (index % stride == 0).then_some(label))
         .collect()

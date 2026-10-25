@@ -673,6 +673,9 @@ impl Iterator for LogDecades {
 /// The [`LogMultiples`] mask of the log minors: the multiples 2 to 9.
 const LOG_MINOR_MULTIPLES: u16 = 0b11_1111_1100;
 
+/// The [`LogMultiples`] mask of the decade ladder: the multiple 1.
+const LOG_DECADE: u16 = 1 << 1;
+
 /// The [`LogMultiples`] mask of the 1, 2 and 5 × 10^k ladder.
 const LOG_ONE_TWO_FIVE: u16 = (1 << 1) | (1 << 2) | (1 << 5);
 
@@ -702,7 +705,7 @@ impl LogLadder {
     /// decades as well.
     fn multiples(self) -> u16 {
         match self {
-            LogLadder::Decades(_) => 1 << 1,
+            LogLadder::Decades(_) => LOG_DECADE,
             LogLadder::OneTwoFive => LOG_ONE_TWO_FIVE,
             LogLadder::AllMantissas => LOG_ALL_MANTISSAS,
         }
@@ -801,6 +804,45 @@ impl Iterator for LogMinors {
     fn next(&mut self) -> Option<f64> {
         self.0.next()
     }
+}
+
+/// The label ladders the renderer's tick-label pruning demotes an axis'
+/// labels along, as [`LogMultiples`] masks, densest first: the axis'
+/// [`log_ladder`] and the sparser ones after it, {1..9} → {1, 2, 5} → {1}.
+/// Empty for a [`LogLadder::Decades`] ladder (always so under the default
+/// [`LogTickPolicy::Decades`]) and on a linear or categorical axis, whose
+/// labels are thinned by stride alone.
+pub fn log_label_ladders(axis: &AxisOptions) -> &'static [u16] {
+    if axis.scale != AxisScale::Logarithmic || axis.categories.is_some() {
+        return &[];
+    }
+    match log_ladder(axis) {
+        LogLadder::Decades(_) => &[],
+        LogLadder::OneTwoFive => &[LOG_ONE_TWO_FIVE, LOG_DECADE],
+        LogLadder::AllMantissas => &[LOG_ALL_MANTISSAS, LOG_ONE_TWO_FIVE, LOG_DECADE],
+    }
+}
+
+/// The multiple `m` (1 to 9) when `value` is `m · 10^k` exactly as the log
+/// walkers write it (`10^k` by `powf`, times `m`); `None` for any other
+/// value (`3.5e4`), zero, a negative or a non-finite value.
+pub fn log_multiple(value: f64) -> Option<u8> {
+    if !(value.is_finite() && value > 0.0) {
+        return None;
+    }
+    let exponent = clamped_exponent(value.log10().floor());
+    // `log10` may land one decade off next to a power of ten.
+    [
+        exponent,
+        exponent.saturating_sub(1),
+        exponent.saturating_add(1),
+    ]
+    .into_iter()
+    .find_map(|exponent| {
+        let base = 10f64.powf(f64::from(exponent));
+        let multiple = (value / base).round();
+        ((1.0..=9.0).contains(&multiple) && base * multiple == value).then_some(multiple as u8)
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1823,6 +1865,69 @@ mod tests {
         let before: Vec<f64> = major_ticks(&linear).collect();
         linear.log_ticks = LogTickPolicy::Adaptive;
         assert_eq!(major_ticks(&linear).collect::<Vec<_>>(), before);
+    }
+
+    /// `log_multiple` names the multiple of every value the walkers write,
+    /// over decades -307 to 307, and nothing else.
+    #[test]
+    fn log_multiple_names_every_walked_multiple_and_nothing_else() {
+        for exponent in -307..=307 {
+            let base = 10f64.powf(f64::from(exponent));
+            for multiple in 1..=9u8 {
+                let value = base * f64::from(multiple);
+                assert_eq!(log_multiple(value), Some(multiple), "{multiple}e{exponent}");
+            }
+            for off in [base * 3.5, base * 1.25, base * 9.5] {
+                assert_eq!(log_multiple(off), None, "{off:e}");
+            }
+        }
+        for value in [
+            3.5e4,
+            0.0,
+            -0.0,
+            -1.0,
+            -2e4,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            f64::MAX,
+            1.0 + f64::EPSILON,
+        ] {
+            assert_eq!(log_multiple(value), None, "{value:e}");
+        }
+        // Every major and minor an adaptive axis draws has its multiple.
+        for (min, max) in [(1.0, 100.0), (3e3, 8e5), (1e4, 8e4), (1e-9, 1e9)] {
+            let axis = adaptive(min, max);
+            for value in major_ticks(&axis).chain(minor_ticks(&axis)) {
+                assert!(log_multiple(value).is_some(), "{value:e}");
+            }
+        }
+    }
+
+    /// The label ladders start at the axis' own ladder and end at the
+    /// decades; a decade ladder, the default policy and a linear axis have
+    /// none.
+    #[test]
+    fn log_label_ladders_demote_to_the_decades() {
+        assert_eq!(
+            log_label_ladders(&adaptive(1e4, 8e4)),
+            [LOG_ALL_MANTISSAS, LOG_ONE_TWO_FIVE, LOG_DECADE]
+        );
+        assert_eq!(
+            log_label_ladders(&adaptive(3e3, 8e5)),
+            [LOG_ONE_TWO_FIVE, LOG_DECADE]
+        );
+        assert!(log_label_ladders(&adaptive(1.0, 1e6)).is_empty());
+        assert!(log_label_ladders(&adaptive(1e-9, 1e9)).is_empty());
+        let mut decades = adaptive(1e4, 8e4);
+        decades.log_ticks = LogTickPolicy::Decades;
+        assert!(log_label_ladders(&decades).is_empty());
+        let mut linear = adaptive(1e4, 8e4);
+        linear.scale = AxisScale::Linear;
+        assert!(log_label_ladders(&linear).is_empty());
+        // Every ladder is a subset of the one before it.
+        let ladders = log_label_ladders(&adaptive(1e4, 8e4));
+        assert!(ladders.windows(2).all(|w| w[1] & !w[0] == 0));
     }
 
     // compute_nice_ticks is pure.
