@@ -1,7 +1,9 @@
 //! Box plot documents drawn as Cartesian box plot series: each
 //! `BoxPlotChart` is opened with `Config::from_boxplot`, its positions,
 //! records and outliers uploaded from the borrowed summaries, and exported by
-//! the Cartesian renderer at 960 x 640 without post-render scaling.
+//! the Cartesian renderer at 960 x 640 without post-render scaling. Every
+//! case labels each box with its median (`BoxPlotLabels::Median`, written
+//! into `labels.text` by the reader).
 use renderer::{
     BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
     RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, data_render,
@@ -117,10 +119,14 @@ fn main() -> Result {
             ],
             Color::from_rgb8(65, 144, 208),
         )],
-        value_range: Some([0., 100.]),
+        // Room past the highest outlier for its label: labels are clipped
+        // to the data area, as the data they label.
+        value_range: Some([0., 120.]),
         value_title: "Response".into(),
         font_size: 18.,
         legend: false,
+        // The median above every box, in every case below.
+        labels: BoxPlotLabels::Median,
         ..Default::default()
     };
     for (id, color) in [

@@ -6,8 +6,8 @@
 //! `target/radar-gallery`), and fails when an image has fewer than 1000
 //! coloured pixels.
 //! - `01-spider-web.png`: two series on the default polygon grid.
-//! - `02-circle-values.png`: a circular grid (value labels are configured;
-//!   the renderer does not draw them yet).
+//! - `02-circle-values.png`: a circular grid with a value label outside
+//!   every vertex.
 //! - `03-fixed-axis.png`: a fixed 0 to 10 axis with a ring every 2.5 and
 //!   square markers.
 //! - `04-four-series.png`: four series counter-clockwise from the right,
