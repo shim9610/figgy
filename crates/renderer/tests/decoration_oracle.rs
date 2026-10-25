@@ -2968,7 +2968,7 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
             }
         };
         let entries = radial_entries(&frame, &c);
-        report.count(&at, "radial elements", entries.len());
+        report.count(&at, "elements", entries.len());
         // I7: the hit map holds exactly the frame's entries.
         report.check(&at, "<map>", Inv::I7, frame.len() == entries.len(), || {
             format!(
