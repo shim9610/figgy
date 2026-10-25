@@ -1,12 +1,15 @@
-//! Raw WASM host for radial charts. The renderer owns all geometry.
+//! Raw WASM host for the radial chart (pie, donut, detail ring), the
+//! DataLess chart: the renderer owns all geometry.
 //!
-//! A categorical bar chart and a box plot are Cartesian charts and a radar
-//! chart is a polar one: their documents open through
-//! `FiggyChart::set_categorical_document`, `FiggyChart::set_boxplot_document`
-//! and `FiggyChart::set_radar_document`.
+//! The JS class keeps the name `FiggyBoundedChart` and the `"radial"` family
+//! argument hosts already pass. A categorical bar chart and a box plot are
+//! Cartesian charts and a radar chart is a polar one: their documents open
+//! through `FiggyChart::set_categorical_document`,
+//! `FiggyChart::set_boxplot_document` and `FiggyChart::set_radar_document`,
+//! and their family names are errors naming those methods.
 use renderer::{
-    AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
-    LayerHit, LayerRef, RendererDevice, layout::Rect, radial::*,
+    AnnotationLayer, BoundedAnnotationFrame, DecorationId, LayerHit, LayerRef, RendererDevice,
+    radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -35,260 +38,61 @@ async fn radial_at(
         .await?
         .filter(|t| Some(*t) == hovered))
 }
-#[derive(Clone, PartialEq)]
-enum DocumentChart {
-    Radial(RadialChart),
+/// Whether data is drawn under `p`; a radial frame picks on the GPU.
+async fn has_data(frame: &Arc<RadialFrame>, p: [f32; 2]) -> Result<bool, JsValue> {
+    Ok(picked(frame.pick(p)).await?.is_some() || picked(frame.pick_at_rest(p)).await?.is_some())
 }
-impl DocumentChart {
-    pub fn family(&self) -> &'static str {
-        match self {
-            Self::Radial(_) => "radial",
-        }
-    }
-    pub fn decorations(&self) -> &DecorationLayout {
-        match self {
-            Self::Radial(c) => &c.decorations,
-        }
-    }
-    pub fn decorations_mut(&mut self) -> &mut DecorationLayout {
-        match self {
-            Self::Radial(c) => &mut c.decorations,
-        }
-    }
-    pub fn active_layer(&self) -> LayerRef {
-        match self {
-            Self::Radial(c) => c.active_layer(),
-        }
-    }
-    pub fn set_active_layer(&mut self, layer: LayerRef) -> LayerRef {
-        match self {
-            Self::Radial(c) => c.set_active_layer(layer),
-        }
-    }
-    pub fn annotations(&self) -> &AnnotationLayer {
-        match self {
-            Self::Radial(c) => &c.annotations,
-        }
-    }
-    pub fn annotations_mut(&mut self) -> &mut AnnotationLayer {
-        match self {
-            Self::Radial(c) => &mut c.annotations,
-        }
-    }
-    pub fn background(&self) -> renderer::Color {
-        match self {
-            Self::Radial(c) => c.background,
-        }
-    }
-    /// A visible span needs the frame to leave the background to the host
-    /// clear, so the underlay drawn before it shows through. Charts without
-    /// one keep today's opaque frame and white clear exactly.
-    pub fn frame_background(&self) -> FrameBackground {
-        let layer = self.annotations();
-        if layer.visible && layer.items.iter().any(|i| i.visible && i.is_underlay()) {
-            FrameBackground::HostClear
-        } else {
-            FrameBackground::Opaque
-        }
-    }
-    #[allow(dead_code)]
-    pub fn radial(&self) -> Option<&RadialChart> {
-        let Self::Radial(c) = self;
-        Some(c)
-    }
-    pub fn validate(&self, rect: Rect) -> Result<(), JsValue> {
-        if rect.width < 160 || rect.height < 160 {
-            return Err(js_err(
-                "bounded chart canvas must be at least 160x160 pixels",
-            ));
-        }
-        match self {
-            Self::Radial(c) => c.validate().map_err(js_err),
-        }
-    }
-    pub fn selected_json(&self) -> serde_json::Value {
-        match self {
-            Self::Radial(c) => json!(c.interaction.selected),
-        }
-    }
-    pub fn clear_selection(&mut self) {
-        self.decorations_mut().selected = None;
-        match self {
-            Self::Radial(c) => c.interaction.selected = None,
-        }
-    }
-    /// Select the data under `point`. A radial chart picks on the GPU, so
-    /// this resolves asynchronously.
-    pub async fn select_at(
-        &mut self,
-        frame: &DocumentFrame,
-        point: [f32; 2],
-        toggle: bool,
-    ) -> Result<(), JsValue> {
-        match (self, frame) {
-            (Self::Radial(c), DocumentFrame::Radial(f)) => {
-                let hit = radial_at(f, point, c.interaction.hovered).await?;
-                c.interaction.selected = if toggle && hit == c.interaction.selected {
-                    None
-                } else {
-                    hit
-                };
-            }
-        }
-        Ok(())
-    }
-    /// Hover the data under `point`, or none. A radial chart picks on the
-    /// GPU, so this resolves asynchronously.
-    pub async fn hover(
-        &mut self,
-        frame: &DocumentFrame,
-        point: Option<[f32; 2]>,
-        dt: f32,
-    ) -> Result<bool, JsValue> {
-        Ok(match (self, frame) {
-            (Self::Radial(c), DocumentFrame::Radial(f)) => {
-                let hit = match point {
-                    Some(p) => radial_at(f, p, c.interaction.hovered).await?,
-                    None => None,
-                };
-                c.interaction.animate_hover(hit, dt, 0.16)
-            }
-        })
-    }
-    pub fn step(&mut self, backwards: bool) {
-        match self {
-            Self::Radial(c) => c.step_selection(backwards),
-        }
-    }
-}
-
-enum DocumentRenderer {
-    Radial(RadialRenderer),
-}
-enum DocumentFrame {
-    Radial(Arc<RadialFrame>),
-}
-impl DocumentRenderer {
-    pub async fn new_async(
-        gpu: RendererDevice,
-        chart: &DocumentChart,
-        format: wgpu::TextureFormat,
-    ) -> Result<Self, JsValue> {
-        Ok(match chart {
-            DocumentChart::Radial(_) => Self::Radial(
-                RadialRenderer::new_async(gpu, format)
-                    .await
-                    .map_err(js_err)?,
-            ),
-        })
-    }
-    /// The chart frame and its annotation layer for one document state.
-    pub fn prepare(
-        &mut self,
-        chart: &DocumentChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<(DocumentFrame, Arc<BoundedAnnotationFrame>), JsValue> {
-        let background = chart.frame_background();
-        match (self, chart) {
-            (Self::Radial(r), DocumentChart::Radial(c)) => {
-                r.set_background(background);
-                let frame = r.prepare(c, size, scale).map_err(js_err)?;
-                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
-                Ok((DocumentFrame::Radial(frame), annotations))
-            }
-        }
-    }
-    pub async fn export(
-        &mut self,
-        chart: &DocumentChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, JsValue> {
-        match (self, chart) {
-            (Self::Radial(r), DocumentChart::Radial(c)) => {
-                r.export_rgba_async(c, size, scale).await.map_err(js_err)
-            }
-        }
-    }
-    #[allow(dead_code)]
-    pub fn gpu_bytes(&self) -> u64 {
-        match self {
-            Self::Radial(r) => r.gpu_memory_usage().total_bytes(),
-        }
-    }
-    pub fn end_frame(&self) {
-        match self {
-            Self::Radial(r) => r.end_frame(),
-        }
-    }
-}
-impl DocumentFrame {
-    /// The hit-map entry of the decoration named `name` (its stable
-    /// element id): the radial frame answers through its
-    /// `HitMap<RadialChart>`.
-    fn decoration_named(&self, name: &str) -> Option<renderer::HitId> {
-        match self {
-            Self::Radial(f) => f.decorations().find(name),
-        }
-    }
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
-        match self {
-            Self::Radial(f) => f.draw(pass),
-        }
-    }
-    /// Whether data is drawn under `p`; a radial frame picks on the GPU.
-    pub async fn has_data(&self, p: [f32; 2]) -> Result<bool, JsValue> {
-        Ok(match self {
-            Self::Radial(f) => {
-                picked(f.pick(p)).await?.is_some() || picked(f.pick_at_rest(p)).await?.is_some()
-            }
-        })
-    }
-}
-
-fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
-    Ok(match family {
+/// The radial document of `family`. The three former bounded families name
+/// the `FiggyChart` method that opens their documents.
+fn parse_chart(family: &str, value: &str) -> Result<RadialChart, JsValue> {
+    match family {
         "radial" => {
             let mut chart: RadialChart = serde_json::from_str(value).map_err(js_err)?;
             // A slice without its drawn text gets the one its label format
             // writes; a text the document carries is drawn as it is.
             chart.normalize_labels();
-            DocumentChart::Radial(chart)
+            Ok(chart)
         }
-        "categorical" => {
-            return Err(js_err(
-                "categorical bar charts are Cartesian charts: open the document with FiggyChart.set_categorical_document",
-            ));
-        }
-        "boxplot" => {
-            return Err(js_err(
-                "box plots are Cartesian charts: open the document with FiggyChart.set_boxplot_document",
-            ));
-        }
-        "radar" => {
-            return Err(js_err(
-                "radar charts are polar charts: open the document with FiggyChart.set_radar_document",
-            ));
-        }
-        _ => return Err(js_err("unknown bounded chart family")),
-    })
+        "categorical" => Err(js_err(
+            "categorical bar charts are Cartesian charts: open the document with FiggyChart.set_categorical_document",
+        )),
+        "boxplot" => Err(js_err(
+            "box plots are Cartesian charts: open the document with FiggyChart.set_boxplot_document",
+        )),
+        "radar" => Err(js_err(
+            "radar charts are polar charts: open the document with FiggyChart.set_radar_document",
+        )),
+        _ => Err(js_err(
+            "unknown chart family: FiggyBoundedChart opens \"radial\" documents",
+        )),
+    }
 }
-#[wasm_bindgen]
-pub struct FiggyBoundedChart {
+/// Validate a radial document for a logical canvas of `size`.
+fn validate(chart: &RadialChart, size: (u32, u32)) -> Result<(), JsValue> {
+    if size.0 < 160 || size.1 < 160 {
+        return Err(js_err(
+            "radial chart canvas must be at least 160x160 pixels",
+        ));
+    }
+    chart.validate().map_err(js_err)
+}
+/// The browser host of one radial document, exported to JavaScript as
+/// `FiggyBoundedChart`.
+#[wasm_bindgen(js_name = FiggyBoundedChart)]
+pub struct FiggyRadialChart {
     surface: wgpu::Surface<'static>,
     _instance: wgpu::Instance,
     _adapter: wgpu::Adapter,
     gpu: RendererDevice,
     surface_config: wgpu::SurfaceConfiguration,
-    chart: DocumentChart,
-    renderer: DocumentRenderer,
-    frame: DocumentFrame,
+    chart: RadialChart,
+    renderer: RadialRenderer,
+    frame: Arc<RadialFrame>,
     annotations: Arc<BoundedAnnotationFrame>,
     size: (u32, u32),
 }
-#[wasm_bindgen]
-impl FiggyBoundedChart {
+#[wasm_bindgen(js_class = FiggyBoundedChart)]
+impl FiggyRadialChart {
     /// One GPU surface; no kernel PNG transport is used for interactive frames.
     pub async fn create(
         canvas: HtmlCanvasElement,
@@ -296,15 +100,10 @@ impl FiggyBoundedChart {
         value: &str,
         width: u32,
         height: u32,
-    ) -> Result<FiggyBoundedChart, JsValue> {
+    ) -> Result<FiggyRadialChart, JsValue> {
         console_error_panic_hook::set_once();
         let chart = parse_chart(family, value)?;
-        chart.validate(Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        })?;
+        validate(&chart, (width, height))?;
         let instance = renderer::data_render::create_instance();
         let surface = instance
             .create_surface(wgpu::SurfaceTarget::Canvas(canvas.clone()))
@@ -324,9 +123,11 @@ impl FiggyBoundedChart {
         )
         .map_err(js_err)?;
         let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-        let mut renderer = DocumentRenderer::new_async(gpu.clone(), &chart, config.format).await?;
+        let mut renderer = RadialRenderer::new_async(gpu.clone(), config.format)
+            .await
+            .map_err(js_err)?;
         let scale = surface_scale(&config, (width, height));
-        let (frame, annotations) = renderer.prepare(&chart, (width, height), scale)?;
+        let (frame, annotations) = prepare(&mut renderer, &chart, (width, height), scale)?;
         Ok(Self {
             surface,
             _instance: instance,
@@ -341,21 +142,14 @@ impl FiggyBoundedChart {
         })
     }
     pub fn get_document(&self) -> Result<String, JsValue> {
-        match &self.chart {
-            DocumentChart::Radial(c) => serde_json::to_string(c).map_err(js_err),
-        }
+        serde_json::to_string(&self.chart).map_err(js_err)
     }
     /// Validate and prepare before replacing the SSOT, retaining the old chart on failure.
     pub fn set_document(&mut self, value: &str, width: u32, height: u32) -> Result<(), JsValue> {
-        let next = parse_chart(self.chart.family(), value)?;
-        next.validate(Rect {
-            x: 0,
-            y: 0,
-            width,
-            height,
-        })?;
+        let next = parse_chart("radial", value)?;
+        validate(&next, (width, height))?;
         let scale = surface_scale(&self.surface_config, (width, height));
-        let (frame, annotations) = self.renderer.prepare(&next, (width, height), scale)?;
+        let (frame, annotations) = prepare(&mut self.renderer, &next, (width, height), scale)?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -375,23 +169,9 @@ impl FiggyBoundedChart {
     }
     pub fn frame(&mut self) -> Result<(), JsValue> {
         let scale = self.surface_scale();
-        let (frame, annotations) = self.renderer.prepare(&self.chart, self.size, scale)?;
+        let (frame, annotations) = prepare(&mut self.renderer, &self.chart, self.size, scale)?;
         self.frame = frame;
         self.annotations = annotations;
-        // A frame that leaves its background to the clear needs the chart
-        // background there; every other frame keeps the white clear it had.
-        let clear = match self.chart.frame_background() {
-            FrameBackground::HostClear => {
-                let c = self.chart.background();
-                wgpu::Color {
-                    r: f64::from(c.r),
-                    g: f64::from(c.g),
-                    b: f64::from(c.b),
-                    a: f64::from(c.a),
-                }
-            }
-            FrameBackground::Opaque => wgpu::Color::WHITE,
-        };
         let surface = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(f)
             | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
@@ -414,15 +194,15 @@ impl FiggyBoundedChart {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(clear),
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 ..Default::default()
             });
-            // Fixed order: spans below the chart, every other annotation and
-            // the annotation selection box above all decorations.
-            self.annotations.draw_underlay(&mut pass);
+            // Fixed order: the frame paints its own background, then every
+            // annotation and the annotation selection box above all
+            // decorations.
             self.frame.draw(&mut pass);
             self.annotations.draw_overlay(&mut pass);
         }
@@ -442,7 +222,11 @@ impl FiggyBoundedChart {
     }
 
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-        let image = self.renderer.export(&self.chart, self.size, scale).await?;
+        let image = self
+            .renderer
+            .export_rgba_async(&self.chart, self.size, scale)
+            .await
+            .map_err(js_err)?;
         let bytes = renderer::encode_png(&image).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     }
@@ -452,7 +236,7 @@ impl FiggyBoundedChart {
             let r = b.rect();
             json!({"id":id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})
         };
-        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
+        let (f, c) = (&self.frame, &self.chart);
         let values = f
             .decoration_ids(c)
             .filter_map(|(hit, id)| Some(entry(&id, f.decoration_selection_box(c, hit)?)))
@@ -465,18 +249,17 @@ impl FiggyBoundedChart {
     /// they are not registered and clicks pass through them.
     ///
     /// Asynchronous: over the plot area it asks whether data is drawn
-    /// there, which a radial chart answers with its GPU pick.
+    /// there, which the radial chart answers with its GPU pick.
     pub async fn hit_decoration(
         &self,
         x: f32,
         y: f32,
         edit_area: bool,
     ) -> Result<Option<String>, JsValue> {
-        let layer = self.chart.active_layer();
-        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
+        let (f, c) = (&self.frame, &self.chart);
         let hit = self
             .annotations
-            .route_active_layer(layer, [x, y], || f.decoration_at(c, [x, y]));
+            .route_active_layer(c.active_layer(), [x, y], || f.decoration_at(c, [x, y]));
         let id = match hit {
             Some(LayerHit::Annotation { index, .. }) => {
                 return Ok(Some(DecorationId::Annotation(index).element_id()));
@@ -487,10 +270,10 @@ impl FiggyBoundedChart {
         let Some(key) = f.decoration_id(c, id) else {
             return Ok(None);
         };
-        if key == renderer::DecorationId::DataArea
+        if key == DecorationId::DataArea
             && !edit_area
-            && self.chart.decorations().selected != Some(key.clone())
-            && self.frame.has_data([x, y]).await?
+            && c.decorations.selected != Some(key.clone())
+            && has_data(f, [x, y]).await?
         {
             return Ok(None);
         }
@@ -505,9 +288,8 @@ impl FiggyBoundedChart {
                 self.drawn_annotation(&name)
                     .map(DecorationId::Annotation)
                     .or_else(|| {
-                        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) =
-                            (&self.frame, &self.chart);
-                        f.decoration_ids(c)
+                        self.frame
+                            .decoration_ids(&self.chart)
                             .find(|(_, id)| id.element_id() == name)
                             .map(|(_, id)| id)
                     })
@@ -515,8 +297,8 @@ impl FiggyBoundedChart {
             ),
             None => None,
         };
-        self.chart.clear_selection();
-        self.chart.decorations_mut().selected = selected;
+        self.clear_selection();
+        self.chart.decorations.selected = selected;
         Ok(())
     }
     /// The drawn annotation an `"annotation_<n>"` id names, as its index.
@@ -531,9 +313,9 @@ impl FiggyBoundedChart {
         if let Some(index) = self.drawn_annotation(target) {
             return self.annotation_handle(index as u32, x, y);
         }
-        let id = self.frame.decoration_named(target)?;
-        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
-        f.decoration_resize_handle(c, id, [x, y])
+        let id = self.frame.decorations().find(target)?;
+        self.frame
+            .decoration_resize_handle(&self.chart, id, [x, y])
             .map(|h| format!("{h:?}"))
     }
     pub fn drag(
@@ -552,7 +334,8 @@ impl FiggyBoundedChart {
         use renderer::resize::ResizeHandle::*;
         let id = self
             .frame
-            .decoration_named(target)
+            .decorations()
+            .find(target)
             .ok_or_else(|| js_err("unknown decoration"))?;
         let handle = handle
             .map(|name| {
@@ -562,19 +345,17 @@ impl FiggyBoundedChart {
                     .ok_or_else(|| js_err("unknown resize handle"))
             })
             .transpose()?;
-        let mut next = self.chart.clone();
         // The radial decorations edit the chart they are placed from.
-        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &mut next);
+        let mut next = self.chart.clone();
         let result = match handle {
-            Some(h) => f.resize_decoration(c, id, h, dx, dy),
-            None => f.drag_decoration(c, id, dx, dy),
+            Some(h) => self.frame.resize_decoration(&mut next, id, h, dx, dy),
+            None => self.frame.drag_decoration(&mut next, id, dx, dy),
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }
-        let (frame, annotations) = self
-            .renderer
-            .prepare(&next, self.size, self.surface_scale())?;
+        let scale = self.surface_scale();
+        let (frame, annotations) = prepare(&mut self.renderer, &next, self.size, scale)?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
@@ -582,23 +363,17 @@ impl FiggyBoundedChart {
     }
     /// Validate and prepare an edited document, then adopt it; the previous
     /// chart and frames stay on failure.
-    fn adopt(&mut self, next: DocumentChart) -> Result<(), JsValue> {
-        next.validate(Rect {
-            x: 0,
-            y: 0,
-            width: self.size.0,
-            height: self.size.1,
-        })?;
-        let (frame, annotations) = self
-            .renderer
-            .prepare(&next, self.size, self.surface_scale())?;
+    fn adopt(&mut self, next: RadialChart) -> Result<(), JsValue> {
+        validate(&next, self.size)?;
+        let scale = self.surface_scale();
+        let (frame, annotations) = prepare(&mut self.renderer, &next, self.size, scale)?;
         self.chart = next;
         self.frame = frame;
         self.annotations = annotations;
         Ok(())
     }
     /// Set the layer that receives pointer interaction: `"Base"` or
-    /// `"Annotations"` as JSON (bounded charts have no overlays, so an
+    /// `"Annotations"` as JSON (the radial chart has no overlays, so an
     /// `{ "Overlay": n }` is stored as `"Base"`). A change clears the
     /// decoration selection (`decorations.selected`, an annotation
     /// included); the data selection is kept. Returns the stored layer as
@@ -631,8 +406,8 @@ impl FiggyBoundedChart {
     /// `annotation_warnings` instead.
     pub fn annotations(&self) -> Result<String, JsValue> {
         let map = self.annotations.annotations();
-        let items = &self.chart.annotations().items;
-        let selected = AnnotationLayer::selected_index(self.chart.decorations().selected.as_ref());
+        let items = &self.chart.annotations.items;
+        let selected = AnnotationLayer::selected_index(self.chart.decorations.selected.as_ref());
         let values = map
             .entries()
             .filter_map(|(id, e)| {
@@ -662,20 +437,19 @@ impl FiggyBoundedChart {
     /// `select_decoration`.
     pub fn select_annotation(&mut self, index: Option<u32>) -> Result<(), JsValue> {
         let selected = match index {
-            Some(i) if (i as usize) < self.chart.annotations().items.len() => {
+            Some(i) if (i as usize) < self.chart.annotations.items.len() => {
                 Some(DecorationId::Annotation(i as usize))
             }
             Some(_) => return Err(js_err("unknown annotation")),
             None => None,
         };
         let mut next = self.chart.clone();
-        next.clear_selection();
-        next.decorations_mut().selected = selected;
+        next.decorations.selected = selected;
+        next.interaction.selected = None;
         self.adopt(next)
     }
     pub fn selected_annotation(&self) -> Option<u32> {
-        AnnotationLayer::selected_index(self.chart.decorations().selected.as_ref())
-            .map(|i| i as u32)
+        AnnotationLayer::selected_index(self.chart.decorations.selected.as_ref()).map(|i| i as u32)
     }
     /// The compass name of the annotation's live handle under a point.
     pub fn annotation_handle(&self, index: u32, x: f32, y: f32) -> Option<String> {
@@ -706,9 +480,9 @@ impl FiggyBoundedChart {
                 .into_iter()
                 .find(|h| format!("{h:?}") == name)
                 .ok_or_else(|| js_err("unknown resize handle"))?;
-            map.resize_by(next.annotations_mut(), id, h, dx, dy)
+            map.resize_by(&mut next.annotations, id, h, dx, dy)
         } else {
-            map.drag_by(next.annotations_mut(), id, dx, dy)
+            map.drag_by(&mut next.annotations, id, dx, dy)
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
@@ -720,8 +494,8 @@ impl FiggyBoundedChart {
     pub fn add_annotation(&mut self, json: &str) -> Result<u32, JsValue> {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
         let mut next = self.chart.clone();
-        next.annotations_mut().items.push(item);
-        let index = next.annotations().items.len() - 1;
+        next.annotations.items.push(item);
+        let index = next.annotations.items.len() - 1;
         self.adopt(next)?;
         Ok(index as u32)
     }
@@ -730,7 +504,7 @@ impl FiggyBoundedChart {
         let item: renderer::Annotation = serde_json::from_str(json).map_err(js_err)?;
         let mut next = self.chart.clone();
         let slot = next
-            .annotations_mut()
+            .annotations
             .items
             .get_mut(index as usize)
             .ok_or_else(|| js_err("unknown annotation"))?;
@@ -742,12 +516,11 @@ impl FiggyBoundedChart {
     pub fn remove_annotation(&mut self, index: u32) -> Result<(), JsValue> {
         let index = index as usize;
         let mut next = self.chart.clone();
-        if index >= next.annotations().items.len() {
+        if index >= next.annotations.items.len() {
             return Err(js_err("unknown annotation"));
         }
-        next.annotations_mut().items.remove(index);
-        let selected = next.decorations().selected.clone();
-        next.decorations_mut().selected = match selected {
+        next.annotations.items.remove(index);
+        next.decorations.selected = match next.decorations.selected.take() {
             Some(DecorationId::Annotation(i)) if i == index => None,
             Some(DecorationId::Annotation(i)) if i > index => Some(DecorationId::Annotation(i - 1)),
             other => other,
@@ -757,7 +530,7 @@ impl FiggyBoundedChart {
     /// Show or hide the whole annotation layer without re-rasterizing it.
     pub fn set_annotations_visible(&mut self, visible: bool) -> Result<(), JsValue> {
         let mut next = self.chart.clone();
-        next.annotations_mut().visible = visible;
+        next.annotations.visible = visible;
         self.adopt(next)
     }
     /// The `Anchor` JSON at a point for `"Data"` or `"Ratio"`; `null` when
@@ -781,32 +554,55 @@ impl FiggyBoundedChart {
         crate::annotation_warnings_json(self.annotations.render_warnings())
     }
     /// Select the data under a point (or toggle it off) and resolve to the
-    /// selection as JSON. Asynchronous: a radial chart picks on the GPU,
+    /// selection as JSON. Asynchronous: the radial chart picks on the GPU,
     /// like `FiggyChart.pick_point`.
     pub async fn pick(&mut self, x: f32, y: f32, toggle: bool) -> Result<String, JsValue> {
-        self.chart.decorations_mut().selected = None;
-        self.chart.select_at(&self.frame, [x, y], toggle).await?;
-        serde_json::to_string(&self.chart.selected_json()).map_err(js_err)
+        self.chart.decorations.selected = None;
+        let hit = radial_at(&self.frame, [x, y], self.chart.interaction.hovered).await?;
+        let interaction = &mut self.chart.interaction;
+        interaction.selected = if toggle && hit == interaction.selected {
+            None
+        } else {
+            hit
+        };
+        serde_json::to_string(&json!(self.chart.interaction.selected)).map_err(js_err)
     }
     /// Hover the data under a point (`None` leaves the chart) and advance
     /// the hover animation by `dt` seconds; resolves to whether the chart
-    /// changed. Asynchronous: a radial chart picks on the GPU.
+    /// changed. Asynchronous: the radial chart picks on the GPU.
     pub async fn hover(
         &mut self,
         x: Option<f32>,
         y: Option<f32>,
         dt: f32,
     ) -> Result<bool, JsValue> {
-        self.chart
-            .hover(&self.frame, x.zip(y).map(|(x, y)| [x, y]), dt.min(0.1))
-            .await
+        let hit = match x.zip(y) {
+            Some((x, y)) => radial_at(&self.frame, [x, y], self.chart.interaction.hovered).await?,
+            None => None,
+        };
+        Ok(self.chart.interaction.animate_hover(hit, dt.min(0.1), 0.16))
     }
     pub fn clear_selection(&mut self) {
-        self.chart.clear_selection();
+        self.chart.decorations.selected = None;
+        self.chart.interaction.selected = None;
     }
     pub fn step_selection(&mut self, backwards: bool) {
-        self.chart.step(backwards);
+        self.chart.step_selection(backwards);
     }
+}
+
+/// The radial frame and its annotation layer for one document state.
+fn prepare(
+    renderer: &mut RadialRenderer,
+    chart: &RadialChart,
+    size: (u32, u32),
+    scale: f32,
+) -> Result<(Arc<RadialFrame>, Arc<BoundedAnnotationFrame>), JsValue> {
+    let frame = renderer.prepare(chart, size, scale).map_err(js_err)?;
+    let annotations = renderer
+        .prepare_annotations(chart, size, scale)
+        .map_err(js_err)?;
+    Ok((frame, annotations))
 }
 
 /// The scale a surface of `config`'s size shows a chart of logical `size` at.
