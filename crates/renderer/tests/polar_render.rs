@@ -22,9 +22,10 @@ use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape,
-    SeriesConfig, Subplot, display_config_for_surface,
+    OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig, Subplot,
 };
+#[cfg(feature = "cpu-twin")]
+use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
