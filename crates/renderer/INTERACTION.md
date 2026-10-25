@@ -76,6 +76,13 @@ selected, highlighted and dragged (along and across the axis, through
 `label_offset_x` / `label_offset_y`) together, and the axis line drag moves
 them with the line. This holds on overlay Y axes and in subplots.
 
+The labels an adaptive logarithmic axis (`AxisOptions::log_ticks`, #42)
+keeps on its 1..9 or 1-2-5 ladder are the same `AxisLabel(Side)` group: a
+2·10^k label is inside the group's bounds, hits as it and drags with it, on
+overlay Y axes, in subplots, on the polar ray and on the colourbar. Which
+labels the pruning keeps depends on the range and the pixels only; a drag
+moves the kept labels and does not change the set.
+
 Categorical bars are a Cartesian series kind (`DataRenderType::CategoryBars`
 over a categorical axis, [bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)),
 so every Cartesian interaction applies to them unchanged: the title, legend,

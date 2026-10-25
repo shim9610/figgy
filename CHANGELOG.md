@@ -19,7 +19,7 @@ Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
-`categories`, `cross_at`, `bar_groups`,
+`categories`, `cross_at`, `bar_groups`, `log_ticks`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection and
 the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
@@ -522,6 +522,31 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
     contour level and a value label do not step. `column_len` gives the
     registered columns' lengths; it walks the series without collecting
     them.
+- **Adaptive log-axis ticks**
+  ([#42](https://github.com/shim9610/figgy/issues/42),
+  [#58](https://github.com/shim9610/figgy/issues/58) item 20).
+  `AxisOptions::log_ticks: LogTickPolicy` decides a logarithmic axis'
+  majors. `Decades`, the default, is the walk every log axis took before:
+  every `major_spacing`-th decade. `Adaptive` ignores `major_spacing` and
+  plans from the range alone: `tick::log_ladder` returns
+  `LogLadder::Decades(n)` over more than six decades (`n` is
+  `tick::axis_major_spacing`), otherwise the first of whole decades,
+  `LogLadder::OneTwoFive` (1, 2 and 5 × 10^k) and
+  `LogLadder::AllMantissas` (1 to 9 × 10^k) that puts at least
+  `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, else
+  `AllMantissas`. `major_ticks` and `minor_ticks` walk the ladder, the minors
+  being the multiples 2 to 9 that are not majors (`minor_count` 0 still
+  hides them), so the strokes, grid, labels, polar rings and ray, colourbar
+  and hit geometry follow it. `tick::LogMultiples::new(min, max, mask)`
+  walks any set of multiples and `LogMinors` is its 2..9 set, bit for bit;
+  `tick::log_multiple(value)` names the multiple of a walked value and
+  `tick::log_label_ladders(axis)` lists the label ladders the renderer
+  demotes along. A subplot link copies the policy with the tick spacing
+  (`copy_axis_range`), the range helpers and a view state keep it, and a
+  hidden panel axis takes its template's. The field is additive: only
+  `Adaptive` is written, so released documents re-serialize byte for byte.
+  Migration: an `AxisOptions { .. }` literal or exhaustive destructuring
+  names `log_ticks` (`LogTickPolicy::Decades` keeps the former ticks).
 
 <a id="unreleased-renderer"></a>
 
@@ -1075,11 +1100,32 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
     module keeps the interaction guide; `BoundedAnnotationFrame` keeps its
     name. The `bounded_titles` example is `radial_titles`. No shader or GPU
     struct changes; the radial pixels and picks are unchanged.
+- **Adaptive log-axis labels**
+  ([#42](https://github.com/shim9610/figgy/issues/42),
+  [#58](https://github.com/shim9610/figgy/issues/58) item 20). On an axis
+  with `log_ticks: Adaptive` the tick-label pruning first demotes crowded
+  labels to the next sparser ladder, 1..9 → 1, 2, 5 → decades, while at
+  least two labels remain, then thins what is left by the existing 1, 2, 5,
+  10… stride ("every n-th decade"). The half-em gap and the box test are
+  unchanged, so the labelled set is the same at every output scale; the
+  ticks and grid lines are not thinned. The polar ray and the colourbar
+  labels go through the same pruning. An adaptive axis raises no
+  `RenderWarning::LogDecadeStepAdjusted`, as calendar ticks raise no spacing
+  warning. Under the default `Decades` policy every label, pixel and warning
+  is unchanged. Streamed charts accept the policy (axis chrome only). The
+  playground's chart panel has "adaptive log X" and "adaptive log Y"
+  switches, and the `LogAxes` catalogue scene draws its energy axis, which
+  spans under one decade, logarithmic with the adaptive policy (1..9 ladder,
+  Decimal labels).
 
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Adaptive log ticks.** `"log_ticks": "Adaptive"` is read and written on
+  every axis of `set_config` / `get_config` and on `set_colorbar_axis`
+  ([#42](https://github.com/shim9610/figgy/issues/42)); the default
+  `"Decades"` is not written. No new binding; `SCHEMA.md` lists the values.
 - **Math text.** `rich_text_from_tex(tex, font_size, font, r, g, b, a)`
   returns the JSON of `RichText::from_tex` for any rich text field of
   `set_config` or `set_series` ([#45](https://github.com/shim9610/figgy/issues/45)).
@@ -1290,6 +1336,22 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
+  The model pins the plan's golden ladders, majors and minors (with guarded
+  and extreme ranges), a sweep where every `Decades(n)` ladder draws the
+  default policy's majors and minors at `major_spacing = n` and every
+  promoted 2·10^k or 5·10^k major sits on the decade ladder's minor,
+  `log_multiple` over decades -307 to 307, `LogMinors` against the former
+  walk, the wire format and the link and overlay copies. The renderer pins
+  the labelled texts of nine ranges × {120, 240, 480, 960} px × side × four
+  formats (the same inverted, and at 2x except three named cells whose
+  plain digit boxes sit on the half-em threshold), the ladder-or-stride shape with
+  half-em gaps, recovery on resize, zoom and font changes, the warning
+  skip, a colourbar, polar rings and ray, a 2e4 label's bounds, hit and
+  drag on every side and on overlay and subplot axes, the zoom
+  3e3..8e5 → 1e4..8e4 → 1e4..1e8 through `set_y_range` and
+  `set_chart_view_state` with PNG export at 1x and 2x, scale consistency,
+  the SSOT edits, and a browser round trip with a hit and drag.
 - **Math text** ([#45](https://github.com/shim9610/figgy/issues/45)).
   `tests/math_text.rs` checks a formula as chart title, axis title (rotated
   too), legend label and colourbar title at 1x, 2x and 3x: ink inside the
@@ -1442,6 +1504,12 @@ entries above describe the changes.
 
 ### Documentation
 
+- **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
+  `CONFIG.md` describes `AxisOptions::log_ticks` and the `major_spacing`,
+  `minor_count` and `link_x` rows that it changes (the Korean section in
+  Korean), `API.md` the range helpers and label density, `INTERACTION.md`
+  the adaptive labels as their side's label group, and `SCHEMA.md` (in
+  Korean) the JSON values and the editing rule.
 - **Browser product status**
   ([#57](https://github.com/shim9610/figgy/issues/57)). The documentation describes
   `crates/web` (`figgy`: `FiggyChart`, `FiggyBoundedChart` and `<figgy-chart>`)

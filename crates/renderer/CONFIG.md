@@ -48,8 +48,8 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` or `Logarithmic` (log10) |
 | `min, max` | f64 | Data-space range. For log scale, positive bounds are used as-is; a manual non-positive or non-finite `min` is guarded to `1e-12` on renderer/axis paths, and a `max` that is non-positive, non-finite or not above `min` becomes one decade above `min`. Non-positive line/scatter coordinates are omitted on the corresponding logarithmic axis; line segments touching an omitted sample form gaps rather than connecting across it. The source data and other valid samples are preserved |
-| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …). When a linear spacing is non-finite, ≤ 0, too small to advance from the range ends, or would draw more than 1000 intervals across the range, the raster draws the automatic spacing for the range instead (`tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span, the spacing `Chart::set_x_range` writes). A log step is floored to a whole number of decades and capped at 2147483647 (`i32::MAX`); a step below 1 or non-finite draws 1. Each substitution is reported by `ChartView::render_warnings` after the next refresh |
-| `minor_count` | usize | Minors per major (linear). On a logarithmic axis the value is a switch: 0 hides the minors and any other value draws the eight sub-decade minors 2..9 of every decade (`Chart::set_x_range` / `set_y_range` write 8). A linear count over 99 draws 99 minors per major and is reported the same way |
+| `major_spacing` | f64 | linear: data units; log: decade step (1, 2, …) under `log_ticks: Decades` (an `Adaptive` log axis ignores it). When a linear spacing is non-finite, ≤ 0, too small to advance from the range ends, or would draw more than 1000 intervals across the range, the raster draws the automatic spacing for the range instead (`tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span, the spacing `Chart::set_x_range` writes). A log step is floored to a whole number of decades and capped at 2147483647 (`i32::MAX`); a step below 1 or non-finite draws 1. Each substitution is reported by `ChartView::render_warnings` after the next refresh |
+| `minor_count` | usize | Minors per major (linear). On a logarithmic axis the value is a switch: 0 hides the minors and any other value draws the eight sub-decade minors 2..9 of every decade, less the ones an `Adaptive` ladder draws as majors (`Chart::set_x_range` / `set_y_range` write 8). A linear count over 99 draws 99 minors per major and is reported the same way |
 | `inverted` | bool | Reverses the visual direction of this axis. Tick/grid placement, data rendering, and picking all use the same reversed mapping; `min`/`max` remain the data-space bounds |
 | `label_style` | `LabelStyle` | Tick-label styling |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
@@ -60,6 +60,7 @@ pub struct Config {
 | `major_tick_length / minor_tick_length` | f32 | Tick mark length (px) |
 | `categories` | `Option<Vec<Category>>` | A categorical axis (see the [API guide](API.md)) |
 | `cross_at` | `Option<f64>` | Where the axis line crosses the perpendicular axis, as a value of that axis (`left_y` for the top and bottom axes, `bottom_x` for the left and right ones), clamped to the plot. Only the line and its hit region move; ticks, labels and the title stay at the plot edge. Must be finite; ignored on polar charts. `None` (default, omitted from JSON) keeps the line on its edge |
+| `log_ticks` | `LogTickPolicy` | Which major ticks a logarithmic axis draws ([#42](https://github.com/shim9610/figgy/issues/42)). `Decades` (default, omitted from JSON) draws every `major_spacing`-th decade, as every log axis did before the field existed. `Adaptive` ignores `major_spacing` and plans the majors from the range alone (`tick::log_ladder`): every n-th decade over more than six decades (`n` is `tick::axis_major_spacing`), otherwise the first of whole decades, 1, 2 and 5 × 10^k, and 1 to 9 × 10^k that puts at least `tick::LOG_LADDER_MIN_MAJORS` (4) majors inside the range, or 1 to 9 × 10^k when none does. The minors are the multiples 2 to 9 that are not majors. When the labels crowd, they are demoted 1..9 → 1, 2, 5 → decades while at least two remain, then thinned to every 2nd, 5th, 10th… label; ticks and grid lines stay. No `LogDecadeStepAdjusted` warning is raised for it. Ignored on linear and categorical axes. The range helpers and a view state keep it, so a zoom re-plans the ticks; a subplot link copies it with the tick spacing |
 
 ### `LabelStyle`
 | Field | Type | Meaning |
@@ -374,7 +375,7 @@ chart, so a 2×2 grid is the parent plus three subplots.
 |---|---|---|
 | `config` | `Config` | The subplot's chart. Its `overlays` are secondary Y axes inside it (one nesting level: its own `subplots` must be empty). Its `annotations` must stay default, since the document has one annotation layer, on the parent; its `active_layer` is ignored. |
 | `series` | `Vec<String>` | Ids of the series this subplot draws, from the document's single series list, including the ones its own overlays scale. An id belongs to at most one subplot and to no parent overlay (`Config::validate_subplots`); ids with no declaration are ignored. Omitted from JSON when empty. |
-| `link_x` | `Option<CellRef>` | `None` (default, omitted): the X axis is the subplot's own. `Some(CellRef::Parent)` or `Some(CellRef::Subplot(j))` with `j` below this subplot's index: `bottom_x` follows the target's `bottom_x` range, scale, direction and tick spacing (`major_spacing`, `minor_count`). Line, label and title style stay the subplot's own. |
+| `link_x` | `Option<CellRef>` | `None` (default, omitted): the X axis is the subplot's own. `Some(CellRef::Parent)` or `Some(CellRef::Subplot(j))` with `j` below this subplot's index: `bottom_x` follows the target's `bottom_x` range, scale, direction and tick spacing (`major_spacing`, `minor_count`, `log_ticks`). Line, label and title style stay the subplot's own. |
 | `link_y` | `Option<CellRef>` | The same for `left_y`. |
 
 A link group has one value: `Config::subplot_config(i)` resolves subplot `i`
@@ -919,8 +920,8 @@ pub struct Config {
 |---|---|---|
 | `scale` | `AxisScale` | `Linear` 또는 `Logarithmic` (log10) |
 | `min, max` | f64 | 데이터 좌표 범위. 로그축에서는 양수 경계를 그대로 쓴다. 로그축의 수동 최솟값이 0 이하이거나 유한하지 않으면 `1e-12`로, 최댓값이 최솟값 이하이거나 유한하지 않으면 최솟값의 10배로 보정한다. 로그축에 대응하는 선·산점도 좌표가 0 이하이면 해당 점을 그리지 않는다. 그 점에 닿는 선분도 생략해 빈 구간으로 남기며, 원본 데이터와 나머지 유효한 점은 유지한다. |
-| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 범위 끝값에 더하거나 빼도 값이 바뀌지 않을 만큼 작거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 자동 간격은 `tick::axis_major_spacing`이 범위 폭에서 고르는 0.2·0.5·1 × 10^k 간격이며, `Chart::set_x_range`가 쓰는 값과 같다. 로그축 간격은 1 이상 2147483647(`i32::MAX`) 이하의 정수 중 그 값을 넘지 않는 가장 큰 수로 그리고, 1보다 작거나 유한하지 않으면 1로 그린다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
-| `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 보조 눈금을 켜고 끄는 값으로만 쓴다. 0이면 숨기고, 1 이상이면 값과 관계없이 decade마다 2배~9배 위치 8곳에 그린다(`Chart::set_x_range` / `set_y_range`는 8을 쓴다). 선형축에서 99를 넘으면 주 눈금 사이에 99개만 그리고 같은 방식으로 알린다. |
+| `major_spacing` | f64 | 주 눈금 간격. 선형축은 데이터 단위, 로그축은 decade(10배 간격) 단위. 선형축 간격이 유한하지 않거나 0 이하이거나, 범위 끝값에 더하거나 빼도 값이 바뀌지 않을 만큼 작거나, 범위를 1000구간 넘게 나누면 자동 간격으로 그린다. 자동 간격은 `tick::axis_major_spacing`이 범위 폭에서 고르는 0.2·0.5·1 × 10^k 간격이며, `Chart::set_x_range`가 쓰는 값과 같다. `log_ticks`가 `Decades`인 로그축 간격은 1 이상 2147483647(`i32::MAX`) 이하의 정수 중 그 값을 넘지 않는 가장 큰 수로 그리고, 1보다 작거나 유한하지 않으면 1로 그린다. `Adaptive`인 로그축은 이 값을 쓰지 않는다. 이렇게 바꾼 값은 다음 갱신 뒤 `ChartView::render_warnings`로 알린다. |
+| `minor_count` | usize | 선형축에서는 주 눈금 사이의 보조 눈금 수. 로그축에서는 보조 눈금을 켜고 끄는 값으로만 쓴다. 0이면 숨기고, 1 이상이면 값과 관계없이 decade마다 2배~9배 위치 8곳에 그리되 `Adaptive`가 주 눈금으로 쓰는 위치는 뺀다(`Chart::set_x_range` / `set_y_range`는 8을 쓴다). 선형축에서 99를 넘으면 주 눈금 사이에 99개만 그리고 같은 방식으로 알린다. |
 | `inverted` | bool | 화면상의 축 방향을 뒤집는다. 눈금·격자·데이터·피킹이 같은 변환을 쓰며 `min` / `max`는 데이터 좌표 기준을 유지한다. |
 | `label_style` | `LabelStyle` | 눈금 라벨 스타일 |
 | `tick` | `TickVisibility` | `None / Outside / Inside / Both` |
@@ -930,6 +931,7 @@ pub struct Config {
 | `line_offset` | f32 | 데이터 영역을 유지한 채 축선·눈금·라벨을 축에 수직인 방향으로 이동한다. 전체 배치에는 영향을 주지 않으며 축 드래그 결과를 이 값에 기록한다. |
 | `major_tick_length / minor_tick_length` | f32 | 눈금 길이(px) |
 | `cross_at` | `Option<f64>` | 축선이 수직인 축과 만나는 위치를 그 축의 값으로 정한다(위·아래 축은 `left_y`, 왼쪽·오른쪽 축은 `bottom_x`의 값). 그리기 영역 안으로 제한하며 축선과 그 히트 영역만 옮기고 눈금·라벨·제목은 그대로 둔다. 유한해야 하며 극좌표 차트에서는 무시한다. `None`(기본값, JSON에서 생략)이면 축선은 가장자리에 있다 |
+| `log_ticks` | `LogTickPolicy` | 로그축의 주 눈금을 정하는 방식([#42](https://github.com/shim9610/figgy/issues/42)). `Decades`(기본값, JSON에서 생략)는 지금까지처럼 `major_spacing` decade마다 주 눈금을 놓는다. `Adaptive`는 `major_spacing`을 쓰지 않고 범위만 보고 주 눈금을 고른다(`tick::log_ladder`). 범위가 6 decade보다 넓으면 n decade마다 놓고(`n`은 `tick::axis_major_spacing`), 그보다 좁으면 10^k, 1·2·5 × 10^k, 1~9 × 10^k 가운데 범위 안에 주 눈금이 `tick::LOG_LADDER_MIN_MAJORS`(4)개 이상 들어가는 첫 단계를 쓴다. 1~9 × 10^k로도 4개가 되지 않으면 1~9 × 10^k를 그대로 쓴다. 보조 눈금은 2~9배 위치 가운데 주 눈금이 아닌 곳이다. 라벨이 겹치면 1~9 → 1·2·5 → 10^k 순서로 라벨을 줄이되 라벨이 2개 미만이 되는 단계로는 내려가지 않고, 그래도 겹치면 2개, 5개, 10개마다 하나씩 남긴다. 눈금과 격자선은 그대로 두며, 이 방식에는 `LogDecadeStepAdjusted` 경고를 내지 않는다. 선형축과 범주형 축은 이 값을 무시한다. 범위를 바꾸는 편의 함수와 뷰 상태 적용은 이 값을 유지하므로 확대·축소하면 눈금을 새 범위에 맞게 다시 고른다. 연결된 서브플롯 축은 눈금 간격과 함께 이 값을 복사한다 |
 
 ### `LabelStyle`
 | 필드 | 타입 | 의미 |
@@ -1139,7 +1141,7 @@ pub struct Config {
 |---|---|---|
 | `config` | `Config` | 서브플롯의 차트. 그 `overlays`는 서브플롯 안의 보조 Y 축이다(중첩은 한 단계라서 그 `subplots`는 비어 있어야 한다). 주석 층은 문서에 하나뿐이고 부모에 있으므로 그 `annotations`는 기본값이어야 하며, 그 `active_layer`는 무시한다. |
 | `series` | `Vec<String>` | 이 서브플롯이 그리는 시리즈 id. 문서의 단일 시리즈 목록에서 참조하며 서브플롯 오버레이가 스케일하는 시리즈도 포함한다. 한 id는 최대 한 서브플롯에만 속하고 부모 오버레이에는 속할 수 없다(`Config::validate_subplots`). 선언이 없는 id는 무시한다. 비어 있으면 JSON에서 생략한다. |
-| `link_x` | `Option<CellRef>` | `None`(기본값, 생략)이면 X 축은 서브플롯 자신의 것이다. `Some(CellRef::Parent)` 또는 이 서브플롯보다 작은 `j`의 `Some(CellRef::Subplot(j))`이면 `bottom_x`의 범위·스케일·방향·눈금 간격(`major_spacing`, `minor_count`)이 대상의 `bottom_x`를 따른다. 축선·라벨·제목 스타일은 서브플롯 자신의 것이다. |
+| `link_x` | `Option<CellRef>` | `None`(기본값, 생략)이면 X 축은 서브플롯 자신의 것이다. `Some(CellRef::Parent)` 또는 이 서브플롯보다 작은 `j`의 `Some(CellRef::Subplot(j))`이면 `bottom_x`의 범위·스케일·방향·눈금 간격(`major_spacing`, `minor_count`, `log_ticks`)이 대상의 `bottom_x`를 따른다. 축선·라벨·제목 스타일은 서브플롯 자신의 것이다. |
 | `link_y` | `Option<CellRef>` | `left_y`에 대해 같은 규칙. |
 
 링크 묶음에는 값이 하나뿐이다. `Config::subplot_config(i)`는 링크된 축을 체인의 뿌리에서 복사해
