@@ -1,6 +1,7 @@
 use crate::color::Color;
 
 pub mod math;
+pub mod tex;
 
 pub use math::{
     AccentKind, FracStyle, Limits, MAX_MATH_DEPTH, MathClass, MathCursor, MathError, MathErrorKind,
