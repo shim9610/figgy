@@ -20,6 +20,16 @@ impl PrepareContext<'_> {
         {
             return Err(unsupported());
         }
+        // Streaming is not extended to radar series: a polygon closes on its
+        // first vertex, which no streamed chunk after the first holds.
+        if series.render_type.radar().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "radar series require GPU-resident columns; streamed sources are not \
+                         supported"
+                    .into(),
+            });
+        }
         // Streaming is not extended to polar charts.
         if config.polar.is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

@@ -363,6 +363,7 @@ impl Renderer {
             validate_line_fill(&self.pool, series.iter(), config)?;
             validate_polar_series(chart.config(), config)?;
         }
+        validate_radar_rules(chart.config(), series)?;
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
         let orig = match scope {

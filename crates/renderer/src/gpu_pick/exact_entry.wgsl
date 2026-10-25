@@ -16,7 +16,7 @@ fn pick_direct_masks(word_index: u32) -> vec2<u32> {
         if (flags & PICK_FLAG_SCATTER) != 0u && point_index < pick_query_params.stream.y {
             scatter_mask = scatter_mask | (1u << bit);
         }
-        if (flags & PICK_FLAG_LINE) != 0u && point_index < pick_query_params.stream.z && point_index + 1u < point_count {
+        if (flags & PICK_FLAG_LINE) != 0u && point_index < pick_query_params.stream.z && pick_starts_segment(point_index) {
             line_mask = line_mask | (1u << bit);
         }
     }
@@ -68,10 +68,11 @@ fn pick_exact_candidates(
                 }
             }
             if (masks.y & bit_mask) != 0u {
-                let next_x =
-                    pick_read_pair(pick_query_params.data.y, point_index + 1u);
-                let next_y =
-                    pick_read_pair(pick_query_params.data.z, point_index + 1u);
+                // The next point, or the first one for the closing segment of
+                // a closed line (`pick_next_point`).
+                let next = pick_next_point(point_index);
+                let next_x = pick_read_pair(pick_query_params.data.y, next);
+                let next_y = pick_read_pair(pick_query_params.data.z, next);
                 let candidate =
                     pick_line_candidate(point_index, x, y, next_x, next_y);
                 if pick_candidate_is_better(candidate, local_best) {
@@ -79,7 +80,7 @@ fn pick_exact_candidates(
                 }
                 cached_x = next_x;
                 cached_y = next_y;
-                cached_index = point_index + 1u;
+                cached_index = next;
                 has_cached_point = true;
             } else {
                 has_cached_point = false;

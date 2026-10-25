@@ -213,6 +213,10 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// The line's area fill (`line_width_px` must be set too: it is part of
     /// the line primitive). Resident series only.
     pub(crate) area: Option<GpuPickArea>,
+    /// Whether the line is a closed polygon (a radar series): the segment
+    /// from the last point back to the first is a candidate too, naming its
+    /// nearer endpoint. Such a series scans every point directly.
+    pub(crate) line_closed: bool,
 }
 
 /// The error bars of a marker series as the error-bar shader draws them
@@ -258,6 +262,9 @@ pub(crate) struct GpuPickArea {
     /// Whether the fill colour paints: a zero-alpha fill draws nothing and
     /// does not pick.
     pub(crate) paints: bool,
+    /// Whether the fill closes its polygon (a closed line on a full circle):
+    /// the trapezoid under the closing segment is filled too.
+    pub(crate) closed: bool,
 }
 
 /// The arrows of a point vector series, as the vector shader draws them
@@ -815,6 +822,8 @@ pub(super) struct PickSeriesGpu {
     pub(super) base_shape_id: u32,
     pub(super) line_half_width_px: f32,
     pub(super) line_step_mode: u32,
+    /// [`GpuPickSeriesDescriptor::line_closed`].
+    pub(super) line_closed: bool,
     /// The dash pattern in logical pixels and how many of its lengths count.
     pub(super) line_dash: [f32; 8],
     pub(super) line_dash_len: u32,

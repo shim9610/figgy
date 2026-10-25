@@ -902,6 +902,35 @@ impl CartesianHost {
                     choice(ui, "map", &mut bar.colormap, COLORMAPS);
                 });
             }
+            // The polar coordinate system: a radar chart's spoke layout and
+            // ring shape.
+            if let Some(polar) = config.polar.as_mut() {
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut polar.clockwise, "clockwise");
+                    let mut polygon = polar.grid_shape() == renderer::GridShape::Polygon;
+                    if config.bottom_x.categories.is_some()
+                        && ui.checkbox(&mut polygon, "polygon grid").changed()
+                    {
+                        polar.grid_shape = Some(if polygon {
+                            renderer::GridShape::Polygon
+                        } else {
+                            renderer::GridShape::Circle
+                        });
+                    }
+                });
+                let mut zero = polar.zero_angle_degrees as f32;
+                slider(ui, "zero angle°", &mut zero, -180.0..=180.0);
+                polar.zero_angle_degrees = f64::from(zero);
+                let mut ray = polar.radial_label_angle_degrees as f32;
+                slider(ui, "ray angle°", &mut ray, 0.0..=360.0);
+                polar.radial_label_angle_degrees = f64::from(ray);
+                slider(
+                    ui,
+                    "inner radius",
+                    &mut polar.inner_radius_fraction,
+                    0.0..=0.9,
+                );
+            }
             // How the category bar series share a slot. The direction stays:
             // it decides which columns and axes the series read.
             if let Some(groups) = config.bar_groups.as_mut() {
@@ -1391,6 +1420,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Histogram { .. } => "histogram",
         DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::BoxPlot { .. } => "box plot",
+        DataRenderType::Radar { .. } => "radar",
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
@@ -1761,6 +1791,34 @@ fn series_controls(
             ui.checkbox(&mut style.outline, "outline");
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=3.0);
             slider(ui, "whisker width", &mut style.whisker_width, 0.0..=4.0);
+        }
+        // The grid shape, the spoke direction and the rings are the polar
+        // chart's (the "Chart" section); the look is the series'.
+        DataRenderType::Radar { color: c, style, .. } => {
+            color(ui, "colour", c);
+            let mut width = style.line_width();
+            slider(ui, "line width", &mut width, 0.0..=12.0);
+            style.line_width_px = Some(width);
+            let mut opacity = style
+                .fill_opacity
+                .unwrap_or(renderer::RadarSeriesStyle::DEFAULT_FILL_OPACITY);
+            slider(ui, "fill opacity", &mut opacity, 0.0..=1.0);
+            style.fill_opacity = Some(opacity);
+            let mut marker = style.marker();
+            choice(
+                ui,
+                "marker",
+                &mut marker,
+                &[
+                    renderer::RadarMarker::None,
+                    renderer::RadarMarker::Circle,
+                    renderer::RadarMarker::Square,
+                ],
+            );
+            style.marker = Some(marker);
+            let mut size = style.marker_size();
+            slider(ui, "marker size", &mut size, 1.0..=24.0);
+            style.marker_size_px = Some(size);
         }
         DataRenderType::Heatmap { fill, .. } => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);

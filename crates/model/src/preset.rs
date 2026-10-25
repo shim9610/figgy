@@ -322,6 +322,11 @@ impl ColorCycle {
             DataRenderType::BoxPlot { color, .. } => {
                 *color = c;
             }
+            // The outline and markers join the cycle, and the fill follows
+            // them unless the style names its own.
+            DataRenderType::Radar { color, .. } => {
+                *color = c;
+            }
         }
     }
 

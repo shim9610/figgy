@@ -89,6 +89,9 @@ pub(crate) fn issue_series_fill(pass: &mut wgpu::RenderPass<'_>, series: &Series
             .slice((base_full.start + shift)..base_full.end),
     );
     pass.draw(0..a.verts_per_instance, 0..(count - 1));
+    if a.closed {
+        super::line::draw_area_closing(pass, a, count);
+    }
 }
 
 /// Issue draw calls for one series' data primitives. The caller must have

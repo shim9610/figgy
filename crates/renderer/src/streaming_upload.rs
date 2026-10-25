@@ -1069,6 +1069,7 @@ mod tests {
                                     arc: None,
                                     verts_per_instance: 4,
                                     texture_bg: None,
+                                    closed: false,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,

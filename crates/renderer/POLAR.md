@@ -14,9 +14,10 @@ are unchanged.
 
 Antenna and microphone patterns, phase and direction data, orbits and
 periodic signals over a cycle are the use cases. For a few series over a
-fixed set of categories, drawn as closed polygons, use a
+fixed set of categories, drawn as closed polygons, give the angle axis its
+categories and draw `Radar` series: a
 [radar chart](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
-instead.
+([Categorical angle axis](#categorical-angle-axis)).
 
 ## Input and first render
 
@@ -90,10 +91,12 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
   radius. The data area, chart title, legend and margins follow the
   rectangular rules.
 - Scatter, line and scatter-line series draw in polar mode, including line
-  fills (`LineFill`), which draw area charts. Histograms, heatmaps, contours,
-  error bars, vector fields, overlay layers and streamed sources have no
-  polar form and are rejected with an explicit error (`InvalidSeriesConfig` /
-  `InvalidConfig`), never drawn as a fallback.
+  fills (`LineFill`), which draw area charts, and radar series draw their
+  polygons on a categorical angle axis. Histograms, heatmaps, contours,
+  error bars, vector fields, category bars, box plots, overlay layers and
+  streamed sources have no polar form and are rejected with an explicit
+  error (`InvalidSeriesConfig` / `InvalidConfig`), never drawn as a
+  fallback.
 
 ## Coordinate options
 
@@ -106,6 +109,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 | `inner_radius_fraction` | A hole at the centre, `0.0..=0.9` of the outer radius; `left_y.min` sits on that ring |
 | `interpolation` | `Chord` (default): straight segments between samples. `Arc { pieces }` (`pieces` 1 to 64, otherwise `InvalidConfig`): each segment bends along the data in `pieces` chords, so a constant radius follows its ring and sparse samples still draw a spiral. `Arc` needs a `LineInterpolation::Linear` line: a step line (`StepPre`, `StepPost`, `StepMid`) under `Arc` is rejected with `InvalidSeriesConfig`; `Chord` accepts it |
 | `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on, default 90 (up); dragging the ray turns it |
+| `grid_shape` | `None` or `Some(GridShape::Circle)` (default): circular rings. `Some(GridShape::Polygon)` joins the rings and the outer ring at the categories of a categorical angle axis, the radar look; without one it is `InvalidConfig` |
 
 Every option has a default, so `{ "polar": {} }` in JSON turns a chart
 polar. The full field reference, validation rules and clipping details are
@@ -138,6 +142,23 @@ values come from the same nice-tick computation as rectangular axes, so
 `LabelFormat::Radians` as a multiple of π (`π/2`, `3π/4`, `0.4π`); neither
 converts units, so pair each with the matching `angle_unit`. `top_x` and
 `right_y` are not drawn.
+
+## Categorical angle axis
+
+`bottom_x.categories` makes the angle axis categorical. Category `i` sits at
+`i / n` of the full turn from `zero_angle_degrees` in the `clockwise`
+direction, or at `i / n` of the `sector` from its start, whatever the angle
+unit: `PolarOptions::angle_map` (and `Config::polar_angle_map`) is that
+mapping, the one the GPU transform, the grid, the labels and the picker
+read. The spokes are the major angle grid at the categories, the labels are
+`categories[i].label` outside the ring along each spoke (thinned by the
+stride rule when they crowd; an empty label keeps its slot and draws
+nothing), and there are no minor angle ticks. `x_column` then holds category
+indices. The radius axis cannot be categorical. With a categorical angle
+axis, `grid_shape: Some(GridShape::Polygon)` joins every ring at the
+category angles; [radar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
+(`DataRenderType::Radar`) draw a closed polygon over it, one vertex per
+category.
 
 ## Picking and selection
 
@@ -210,7 +231,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 그릴지만 정한다. 각도 컬럼은 축 범위와 관계없이 `zero_angle_degrees`에서 시작하는 원 위에 놓인다.
 격자는 고리와 스포크, 각도 축은 바깥 고리, 반지름 축은 라벨이 붙은 반직선이 된다.
 `polar: None`(기본, JSON에서 생략)은 직교 차트이므로 기존 문서는 바뀌지 않는다. 고정된 범주
-위에서 시리즈 몇 개를 닫힌 다각형으로 비교하려면 [레이더 차트](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)를 쓴다.
+위에서 시리즈 몇 개를 닫힌 다각형으로 비교하려면 각도 축에 범주를 주고 `Radar` 시리즈를 그리는
+[레이더 차트](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)를 쓴다.
 
 ### 입력과 첫 렌더링
 
@@ -223,7 +245,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 축은 로그 스케일이 가능하고, 각도 축은 선형이며 뒤집을 수 없다(방향은 `clockwise`로 정한다).
 플롯은 데이터 영역 안에서 각도 라벨 띠 하나를 남기는 가장 큰 원이며 `Config::polar_geometry`가
 중심과 반지름을 돌려준다. 산점도·선·산점선 시리즈와 면 채움(`LineFill`)을 그리고,
-히스토그램·히트맵·등고선·오차 막대·벡터·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
+범주형 각도 축에서는 레이더 시리즈가 다각형을 그린다. 히스토그램·히트맵·등고선·오차 막대·벡터·범주 막대·
+박스플롯·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
 
 ### 좌표 옵션
 
@@ -236,6 +259,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 | `inner_radius_fraction` | 중심 구멍. 바깥 반지름의 `0.0..=0.9`이며 `left_y.min`이 그 고리에 놓인다 |
 | `interpolation` | `Chord`(기본): 표본 사이를 직선으로 잇는다. `Arc { pieces }`(`pieces`는 1~64, 벗어나면 `InvalidConfig`): 각 구간을 (각도, 반지름) 공간에서 `pieces`개의 현으로 나눠 그리므로 반지름이 일정한 구간은 고리를 따르고 표본이 드물어도 나선을 그릴 수 있다. `Arc`는 `LineInterpolation::Linear` 선에만 쓸 수 있고, 계단선(`StepPre`, `StepPost`, `StepMid`)은 `InvalidSeriesConfig`로 거부한다. `Chord`는 계단선도 받는다 |
 | `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 기본 90(위). 반직선을 드래그하면 바뀐다 |
+| `grid_shape` | `None` 또는 `Some(GridShape::Circle)`(기본)은 원형 고리. `Some(GridShape::Polygon)`은 고리와 바깥 고리를 범주형 각도 축의 범주 각도에서 꺾어 다각형으로 그린다(레이더 모양). 범주형 각도 축이 없으면 `InvalidConfig` |
 
 모든 옵션에 기본값이 있어 JSON에서 `{ "polar": {} }`만으로 극좌표가 켜진다. 전체 필드와 검증,
 클립 규칙은 [설정 명세](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#polaroptions-configpolar-1)에
@@ -254,6 +278,18 @@ draws an antenna-like pattern and a three-leaf rose interactively
 `LabelFormat::Degrees`는 눈금 값에 도 기호를 붙이고(`90°`), `LabelFormat::Radians`는 π의 배수로
 쓴다(`π/2`, `3π/4`, `0.4π`). 둘 다 단위를 변환하지 않으므로 같은 단위의 `angle_unit`과 함께 쓴다.
 `top_x`와 `right_y`는 그리지 않는다.
+
+### 범주형 각도 축
+
+`bottom_x.categories`를 주면 각도 축이 범주형이 된다. 각도 단위와 관계없이 범주 `i`는
+`zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴의 `i / n`, `sector`가 있으면 섹터 시작에서
+섹터의 `i / n`에 놓인다. 이 매핑이 `PolarOptions::angle_map`(`Config::polar_angle_map`)이며 GPU 변환,
+격자, 라벨, 피킹이 모두 같은 매핑을 쓴다. 스포크는 범주 위치의 각도 주 격자, 라벨은 스포크 끝
+바깥의 `categories[i].label`이다. 라벨이 겹치면 다른 축과 같은 간격 규칙으로 솎아 내고, 빈 라벨은
+자리만 차지하고 그리지 않는다. 각도 보조 눈금은 없다. 이때 `x_column`에는 범주 번호를 넣는다.
+반지름 축은 범주형이 될 수 없다. 범주형 각도 축에서 `grid_shape: Some(GridShape::Polygon)`은 모든
+고리를 범주 각도에서 꺾고, [레이더 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
+(`DataRenderType::Radar`)는 범주마다 꼭짓점 하나인 닫힌 다각형을 그린다.
 
 ### 피킹과 선택
 

@@ -2524,6 +2524,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::HeatmapContour { .. }
                     | DataRenderType::CategoryBars { .. }
                     | DataRenderType::BoxPlot { .. }
+                    | DataRenderType::Radar { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
             }
@@ -6368,7 +6369,9 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
         let (mut r, id, _) = renderer(2);
         if markers {
             let mut series = r.chart_series(id).unwrap().to_vec();
-            let line = super::extract_line(&series[0].render_type).unwrap().clone();
+            let line = super::extract_line(&series[0].render_type)
+                .unwrap()
+                .into_owned();
             series[0].render_type = DataRenderType::ScatterLine {
                 line,
                 scatter: DataScatterStyleConfig {
@@ -6634,7 +6637,9 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                 point_size_map: None,
             };
             if matches!(style, DrawStyle::Constellation(_)) {
-                let line = super::extract_line(&series.render_type).unwrap().clone();
+                let line = super::extract_line(&series.render_type)
+                    .unwrap()
+                    .into_owned();
                 series.render_type = DataRenderType::ScatterLine { line, scatter };
             } else {
                 series.render_type = DataRenderType::Scatter { scatter };

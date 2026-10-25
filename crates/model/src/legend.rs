@@ -376,6 +376,30 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
         DataRenderType::BoxPlot { color, .. } => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
+        // A radar series reads as the line it is drawn with: its outline
+        // over its fill band, with its vertex marker when it has one.
+        DataRenderType::Radar {
+            color,
+            style,
+            labels,
+        } => {
+            let radar = crate::data_config::RadarRef {
+                color: *color,
+                style,
+                labels,
+            };
+            let line = radar.line_style();
+            let band = line_fill_band(&line);
+            match radar.scatter_style() {
+                Some(scatter) => line_scatter_symbol_with_style(
+                    &scatter.point_shape,
+                    radar.color,
+                    LineStylePreset::Solid,
+                    band,
+                ),
+                None => line_symbol(radar.color, LineStylePreset::Solid, band),
+            }
+        }
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterErrorbarX { scatter, .. }
         | DataRenderType::ScatterErrorbarY { scatter, .. }

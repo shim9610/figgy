@@ -164,6 +164,11 @@ impl PrepareContext<'_> {
             } else {
                 lookup(&cfg.y_column)?
             };
+            // A radar polygon has one vertex per category: its columns are
+            // data, so their lengths are checked here against the pool.
+            if rt.radar().is_some() {
+                radar_columns_fit(chart_config, cfg, x_h.len_values, y_h.len_values)?;
+            }
 
             // A field: the group-2 state was resolved in `ensure_field_scratches`
             // (the prepare phase's `&mut self` half) and is reused whole while
@@ -424,6 +429,11 @@ impl PrepareContext<'_> {
 
             let interpolation =
                 extract_line(rt).map_or(LineInterpolation::Linear, |line| line.interpolation);
+            // A radar polygon closes its outline, and its fill on a full
+            // circle (in a sector the closing trapezoid would cover the
+            // others).
+            let closed = rt.radar().is_some();
+            let closed_fill = closed && polar_fill_closes(chart_config);
             let line = if primitives.line
                 && phase.is_none_or(|phase| phase == streaming_runtime::StreamDrawPhase::Line)
             {
@@ -451,6 +461,7 @@ impl PrepareContext<'_> {
                         ),
                     ),
                     texture_bg: line_pick.texture_bg,
+                    closed,
                 })
             } else {
                 None
@@ -465,7 +476,8 @@ impl PrepareContext<'_> {
             // column before any GPU work.
             let area = if line.is_some()
                 && phase.is_none()
-                && let Some(fill) = extract_line(rt).and_then(|line| line.fill.as_ref())
+                && let Some(line_config) = extract_line(rt)
+                && let Some(fill) = line_config.fill.as_ref()
             {
                 let base = match fill {
                     LineFill::ToBaseline(_) => y_h,
@@ -519,6 +531,7 @@ impl PrepareContext<'_> {
                             crate::line_step::arc_pieces(chart_config.polar.as_ref()),
                         ),
                     ),
+                    closed: closed_fill,
                 })
             } else {
                 None
@@ -556,7 +569,7 @@ impl PrepareContext<'_> {
                 } else {
                     None
                 };
-                let style_index = match (precise_style_map, extract_scatter(rt)) {
+                let style_index = match (precise_style_map, extract_scatter(rt).as_deref()) {
                     (Some(map), Some(sc)) if map.has_index => {
                         let Some(column) = sc.point_style_index_column.as_ref() else {
                             return Err(FiggyError::InvalidSeriesConfig {

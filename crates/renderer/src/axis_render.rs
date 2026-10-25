@@ -340,11 +340,8 @@ pub(crate) fn emit_part_of(
     true
 }
 
-#[path = "bounded_axes.rs"]
-mod bounded;
 #[path = "polar_axes.rs"]
 mod polar;
-pub(crate) use bounded::{BoundedLegend, draw_bounded_legend, plan_bounded_legend};
 
 #[cfg(test)]
 mod tests;

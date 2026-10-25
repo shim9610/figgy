@@ -57,13 +57,18 @@ pub(super) fn has_errorbar(rt: &DataRenderType) -> bool {
     extract_err_x(rt).is_some() || extract_err_y(rt).is_some()
 }
 
-pub(super) fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
+/// The line a render type draws through `(x_column, y_column)`, borrowed
+/// from its config or, for a radar series, the polar line its outline and
+/// fill are drawn as ([`crate::data_config::RadarRef::line_style`]): a
+/// display mapping of the series' style, never of its data.
+pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleConfig>> {
     match rt {
         DataRenderType::Line { line }
         | DataRenderType::ScatterLine { line, .. }
         | DataRenderType::LineScatterErrorbarX { line, .. }
         | DataRenderType::LineScatterErrorbarY { line, .. }
-        | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(line),
+        | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(Cow::Borrowed(line)),
+        DataRenderType::Radar { .. } => rt.radar().map(|radar| Cow::Owned(radar.line_style())),
         DataRenderType::Scatter { .. }
         | DataRenderType::ScatterErrorbarX { .. }
         | DataRenderType::ScatterErrorbarY { .. }
@@ -82,7 +87,10 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> 
     }
 }
 
-pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
+/// The markers a render type draws at `(x_column, y_column)`, borrowed from
+/// its config or, for a radar series with a marker, its vertex markers
+/// ([`crate::data_config::RadarRef::scatter_style`]).
+pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatterStyleConfig>> {
     match rt {
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterLine { scatter, .. }
@@ -91,7 +99,11 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleCo
         | DataRenderType::ScatterErrorbarXY { scatter, .. }
         | DataRenderType::LineScatterErrorbarX { scatter, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, .. }
-        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(Cow::Borrowed(scatter)),
+        DataRenderType::Radar { .. } => rt
+            .radar()
+            .and_then(|radar| radar.scatter_style())
+            .map(Cow::Owned),
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
@@ -155,7 +167,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -189,7 +202,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -222,7 +236,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Histogram { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -252,7 +267,8 @@ pub(super) fn extract_vector(
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -376,6 +392,18 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
+        // A radar polygon: one closed segment and one marker per vertex of
+        // the category index and value columns, which hold one value per
+        // category (checked when the polygon is prepared).
+        DataRenderType::Radar { .. } => {
+            let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         // One bar per row of the position and value columns; both hold one
         // value per category (checked when the bars are prepared).
         DataRenderType::CategoryBars { .. } => {
@@ -453,7 +481,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         // `fit_matrix` reaches the `u` grid for the coordinate lattice.
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -483,7 +512,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -504,7 +534,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -525,7 +556,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => None,
     }
 }
 
@@ -555,6 +587,44 @@ pub(super) fn picked_data_ref_matches_series(
         Some(source_id) => series.source_id.as_deref() == Some(source_id),
         None => true,
     }
+}
+
+/// Check that a radar series of the panel `config` holds one value per
+/// category of the angle axis in both its category index column (`x_len`
+/// values) and its value column (`y_len`): the column lengths are data, so
+/// they are checked when the polygon is prepared.
+pub(super) fn radar_columns_fit(
+    config: &Config,
+    series: &SeriesConfig,
+    x_len: usize,
+    y_len: usize,
+) -> Result<()> {
+    let n = config.bottom_x.category_count().unwrap_or(0);
+    if x_len != n || y_len != n {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: format!(
+                "a radar series holds one value per category: the angle axis has {n} \
+                 categories, the category index column {:?} {x_len} values and the value \
+                 column {:?} {y_len}",
+                series.x_column, series.y_column
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Whether a radar series of `config` (one panel) closes its fill with the
+/// segment from its last vertex back to the first: on a full circle. In a
+/// sector the closing trapezoid would cover the others, so the fill is the
+/// region between the open outline and the inner ring there, while the
+/// outline still closes. The draw (`ColumnAreaLayer::closed`) and the pick
+/// (the filled segment count) read this one answer.
+pub(super) fn polar_fill_closes(config: &Config) -> bool {
+    config
+        .polar
+        .as_ref()
+        .is_some_and(|polar| polar.sector.is_none())
 }
 
 /// The categories a category bar series of `config` (one panel) draws

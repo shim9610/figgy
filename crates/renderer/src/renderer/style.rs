@@ -678,8 +678,13 @@ pub(super) fn effective_series_primitives(
         // precise-mode primitive: a stylized panel has no entry point that would
         // draw them in its own visual language.
         contour: matches!(draw_style, DrawStyle::Precise) && has_contour(render_type),
-        line: has_line(render_type),
-        scatter: has_scatter(render_type),
+        // A radar polygon is a precise-mode primitive like the bars: its
+        // closing segment has no styled entry, so a stylized chart draws no
+        // radar series at all.
+        line: has_line(render_type)
+            && (matches!(draw_style, DrawStyle::Precise) || render_type.radar().is_none()),
+        scatter: has_scatter(render_type)
+            && (matches!(draw_style, DrawStyle::Precise) || render_type.radar().is_none()),
         // Bars are a precise-mode primitive. A stylized mode has no bar entry
         // point, and drawing the precise one inside a sketch/milkyway chart
         // would mix two visual languages in one panel — so a stylized chart
@@ -752,7 +757,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => false,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::Radar { .. } => false,
     }
 }
 
@@ -815,7 +821,7 @@ impl Renderer {
             render_type,
         } = cfg;
         let series_salt = crate::sketch::fnv1a(series_id);
-        let line = match extract_line(render_type) {
+        let line = match extract_line(render_type).as_deref() {
             Some(DataLineStyleConfig {
                 line_style,
                 line_color,
@@ -836,7 +842,9 @@ impl Renderer {
         // The fill's `Style` reinterpretation (SHADER_COMMON.md §2.2): fill
         // colour, the step mode, the fill-to-series bit and the baseline as
         // the pool's `(hi, lo)` pair in `dash[1].xy`.
-        let area = extract_line(render_type)
+        let line_config = extract_line(render_type);
+        let area = line_config
+            .as_deref()
             .and_then(|l| l.fill.as_ref().map(|fill| (l, fill)))
             .map(|(l, fill)| {
                 let DataLineStyleConfig {
@@ -865,7 +873,7 @@ impl Renderer {
                 s.series_salt = series_salt;
                 s
             });
-        let scatter = match extract_scatter(render_type) {
+        let scatter = match extract_scatter(render_type).as_deref() {
             Some(DataScatterStyleConfig {
                 point_color,
                 point_shape,
@@ -932,7 +940,7 @@ impl Renderer {
         errorbar.series_salt = series_salt;
         bar.series_salt = series_salt;
         let scatter_map = extract_scatter(render_type)
-            .and_then(|sc| self.create_scatter_style_map_for(sc, scale));
+            .and_then(|sc| self.create_scatter_style_map_for(&sc, scale));
         let errorbar_map = extract_errorbar_style(render_type)
             .and_then(|eb| self.create_errorbar_style_map_for(eb, scale));
         let bar_map =

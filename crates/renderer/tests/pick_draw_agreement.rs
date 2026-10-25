@@ -3140,3 +3140,159 @@ fn box_plots_pick_the_box_they_paint() {
         }
     }
 }
+
+/// A polar chart whose angle axis holds `n` categories (radar spokes) over
+/// a 0..1 radius, without chrome.
+fn bare_radar_chart(n: usize, polar: renderer::polar::PolarOptions) -> Chart {
+    let mut chart = bare_polar_chart(polar);
+    chart.config_mut().bottom_x.categories = Some(
+        (0..n)
+            .map(|i| renderer::config::Category::new(format!("c{i}"), format!("C{i}")))
+            .collect(),
+    );
+    chart
+}
+
+fn radar(id: &str, style: renderer::RadarSeriesStyle) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "cat".into(),
+        y_column: "val".into(),
+        render_type: DataRenderType::Radar {
+            color: RED,
+            style,
+            labels: Default::default(),
+        },
+    }
+}
+
+/// G12: a radar polygon picks where it paints: its outline with the
+/// closing segment from the last vertex back to the first, its vertex
+/// markers and its fill to the centre (or the hole), at 1x and 2x, on the
+/// full circle and in a sector (where the closing trapezoid is not filled).
+/// The closing segment names its nearer endpoint, the last vertex or the
+/// first.
+#[test]
+fn radar_polygons_pick_their_outline_closing_segment_markers_and_fill() {
+    use renderer::RadarMarker;
+    use renderer::polar::PolarOptions;
+    let mut renderer = renderer();
+    renderer
+        .add_columns(&[
+            (
+                "cat",
+                &col(vec![0.0, 1.0, 2.0, 3.0, 4.0]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "val",
+                &col(vec![0.9, 0.55, 0.8, 0.4, 0.7]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let outline = renderer::RadarSeriesStyle {
+        line_width_px: Some(2.5),
+        fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
+        marker: Some(RadarMarker::None),
+        ..Default::default()
+    };
+    let markers = renderer::RadarSeriesStyle {
+        marker: Some(RadarMarker::Square),
+        marker_size_px: Some(9.0),
+        ..outline.clone()
+    };
+    let filled = renderer::RadarSeriesStyle {
+        fill: Some(GREEN),
+        marker: Some(RadarMarker::Circle),
+        ..markers.clone()
+    };
+    for (polar, what) in [
+        (
+            PolarOptions {
+                zero_angle_degrees: 90.0,
+                clockwise: true,
+                ..PolarOptions::default()
+            },
+            "full circle",
+        ),
+        (
+            PolarOptions {
+                sector: Some([0.0, 270.0]),
+                inner_radius_fraction: 0.2,
+                ..PolarOptions::default()
+            },
+            "sector with a hole",
+        ),
+    ] {
+        let chart = bare_radar_chart(5, polar);
+        for scale in [1.0, 2.0] {
+            for (style, tolerance, case) in [
+                (outline.clone(), STRICT, "outline"),
+                (markers.clone(), STRICT, "outline and markers"),
+                (filled.clone(), FILL_EDGE, "filled"),
+            ] {
+                let series = [radar("radar", style)];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "radar",
+                    scale,
+                    None,
+                    &format!("{what} {case}"),
+                    tolerance,
+                );
+                assert!(painted > 200, "{what} {case} at {scale}x: {painted}");
+            }
+            // The closing segment picks where it is drawn and names its
+            // nearer endpoint: near the last vertex the last one, near the
+            // first vertex the first. (Its middle can lie outside a sector
+            // or inside the hole, where it is clipped.)
+            let config = chart.config().scaled(scale);
+            let map = config.polar_angle_map().unwrap();
+            let geometry = config.polar_geometry().unwrap();
+            let inner = f64::from(geometry.inner_radius);
+            let radius = |v: f64| inner + (f64::from(geometry.radius) - inner) * v;
+            let vertex = |i: f64, v: f64| {
+                let a = map.screen_angle(i);
+                (
+                    f64::from(geometry.center[0]) + a.cos() * radius(v),
+                    f64::from(geometry.center[1]) - a.sin() * radius(v),
+                )
+            };
+            let (a, b) = (vertex(4.0, 0.7), vertex(0.0, 0.9));
+            let series = [radar("radar", outline.clone())];
+            let image = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut probed = 0;
+            for (from, to, index, end) in [(a, b, 4, "last"), (b, a, 0, "first")] {
+                // The first drawn pixel of this half of the segment, from
+                // its end inward; a sector edge can clip the whole half.
+                let Some((x, y)) = (3..50).find_map(|k| {
+                    let t = f64::from(k) / 100.0;
+                    let (x, y) = (
+                        (from.0 + (to.0 - from.0) * t) as u32,
+                        (from.1 + (to.1 - from.1) * t) as u32,
+                    );
+                    (pixel(&image, x, y)[0] > 128).then_some((x, y))
+                }) else {
+                    continue;
+                };
+                let hit = probe
+                    .pick(&mut renderer, x, y, 2.0)
+                    .unwrap_or_else(|| panic!("{what} at {scale}x: the closing segment picks"));
+                assert_eq!(
+                    hit.point_index, index,
+                    "{what} at {scale}x: near the {end} vertex"
+                );
+                probed += 1;
+            }
+            assert!(
+                probed > 0,
+                "{what} at {scale}x: the closing segment is drawn"
+            );
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}

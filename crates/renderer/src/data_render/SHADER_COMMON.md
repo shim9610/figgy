@@ -50,7 +50,6 @@ To change shared shader code:
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
-| `srgb_output.wgsl` (the bounded charts' `output`) | radar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field |
 
 The module lists are the `assembled!` invocations next to each pipeline
@@ -574,6 +573,23 @@ milkyway_line_half_extent`), since the star positions are hashed per slot.
 
 CPU twin: `cpu_twin::line_segment_pick` (precise strokes and dashes) with
 its arc sum.
+
+**Closed lines.** A radar outline (`DataRenderType::Radar`) is a closed
+line: `ColumnLineLayer.closed` makes `draw_line_layer` issue one more
+instance after the `n - 1` segments, with slots 0/1 bound at the last
+value and slots 2/3 at the first, so the closing segment runs through the
+same `vs_main` / `fs_main` and stroke as every other segment (the precise
+entries do not read `instance_index`). A closed fill
+(`ColumnAreaLayer.closed`, `line.rs::draw_area_closing`, on a full polar
+circle only, because in a sector the closing piece would overlap the
+drawn ones) is the same extra instance of `vs_area`. The picker reads the
+flag as `PickQueryParams.line.z` (0 or 1): `pick_next_point` in
+`gpu_pick/core.wgsl` is the point after a vertex, the first after the
+last on a closed line, and `pick_starts_segment` whether a vertex starts a
+drawn segment, the last one too on a closed line; the line and area
+candidates and `pick_segment_endpoint` take their B endpoint from it, and
+a closed line is scanned directly (no gate texture). A closed fill's
+segment count is the vertex count.
 
 The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
 

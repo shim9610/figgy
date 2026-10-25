@@ -47,17 +47,13 @@ Tested revisions and results are in the
 | --- | --- | --- |
 | `Renderer` | `Config`, ordered `SeriesConfig`, registered numeric columns | `prepare` or `prepare_registered` |
 | `RadialRenderer` | `RadialChart`, bounded slice values | `prepare` |
-| `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
-Bounded charts (radial and radar) carry every value in
-the chart model, up to fixed per-module limits such as 64 radial slices, or 64
-categories and 16 series for radar charts. Their APIs are separate from `ColumnSource`
-and streaming, and they do not calculate raw-sample statistics. Chart-specific
-limits, missing values, style inheritance and picking identities are documented
-in their modules. Radar
-targets a series ID with an optional category ID for a vertex; radial targets
-use group/index positions, so a host that reorders slices must update
-interaction targets too.
+The bounded radial chart carries every value in the chart model, up to fixed
+limits such as 64 slices. Its API is separate from `ColumnSource` and
+streaming, and it does not calculate raw-sample statistics. Limits, missing
+values, style inheritance and picking identities are documented in its module.
+Radial targets use group/index positions, so a host that reorders slices must
+update interaction targets too.
 
 A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
 makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
@@ -75,6 +71,15 @@ Histograms, fields, contours, error bars, vectors, overlay layers, a
 logarithmic or inverted angle axis, an arc interpolation on a step line and
 streamed sources are rejected with explicit errors. See the
 [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md).
+
+A radar chart is a polar chart with a categorical angle axis
+(`bottom_x.categories`) and `DataRenderType::Radar` series: closed outlines
+through the category spokes, with an optional fill and vertex markers, picked
+by vertex as `PickedData::Point`. A legacy `RadarChart` document opens through
+`Config::from_radar`, which returns the `Config`, the series and the columns to
+upload (category positions and one value column per series) borrowed from the
+document. Radar series reject streamed sources. See the
+[radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md).
 
 `ColumnSource` uploads each value as one `f32`, stored as an `(f32, 0)` pair;
 `HiLoColumnSource` uploads `(hi, lo)` `f32` pairs that preserve sub-f32 deltas
@@ -225,8 +230,7 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
    `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
-   For bounded charts, edit the `RadialChart`
-   or `RadarChart` passed to `prepare`. Normal edits do not require `clear_cache`.
+   For the bounded radial chart, edit the `RadialChart` passed to `prepare`. Normal edits do not require `clear_cache`.
 3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
    the radial chart picks its slices on the GPU (`frame.pick(p)` returns a
    ticket, `resolve()` reads the slice back). Bounded titles/axes/labels/
@@ -341,8 +345,8 @@ subplots. See the
 
 This bounded example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
-the `radial_editor` and `radar_editor`
-examples (`--features egui_demo`) demonstrate render-pass submission and pointer
+the `radial_editor`
+example (`--features egui_demo`) demonstrates render-pass submission and pointer
 events.
 
 ```rust,no_run
@@ -376,8 +380,9 @@ async fn edit_and_export(
 
 ## Errors
 
-Cartesian operations return `FiggyError`; bounded renderers use `RadialError`
-and `RadarError`. Handle validation/layout/budget errors before
+Cartesian operations return `FiggyError`; the radial renderer uses
+`RadialError`. `RadarChart::validate` reports a legacy radar document's
+validation error as a `&'static str`. Handle validation/layout/budget errors before
 replacing the last valid display.
 
 ## Construction and prewarming
@@ -401,8 +406,8 @@ still involve driver compilation work during construction.
 
 Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
-compilation-free first drawing. Separate radial/radar
-renderers and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
+compilation-free first drawing. The separate radial
+renderer and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
 
 ## Ownership and frame validity
 
@@ -413,8 +418,7 @@ also retain the instance, adapter and surface needed for their own lifetime.
 
 Cartesian `PreparedFrame` validity depends on captured renderer resources and
 revisions. If painting returns `StalePreparedFrame`, rebuild the inputs and
-prepare again. A bounded chart frame (`Arc<RadialFrame>`
-or `Arc<RadarFrame>`) owns an immutable GPU snapshot:
+prepare again. A bounded chart frame (`Arc<RadialFrame>`) owns an immutable GPU snapshot:
 keeping it alive keeps its resources alive even after the current model changes.
 Do not retain every historical frame in a live-edit loop.
 
@@ -545,7 +549,7 @@ it does not add a pick radius or turn finite segments into infinite lines.
 
 ## Bounded chart decoration interaction
 
-Radial and radar frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a renderer-measured `DecorationMap` on the radar frame, and a `HitMap<RadialChart>` on the radial frame, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a `HitMap<RadialChart>`, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
 ## Pointer position in drags
 

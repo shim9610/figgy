@@ -248,6 +248,42 @@ pub enum DataRenderType {
         )]
         overrides: Option<Vec<BoxPlotOverride>>,
     },
+    /// The polygon of a radar chart: one vertex per category of the polar
+    /// chart's categorical angle axis (`bottom_x` with
+    /// [`AxisOptions::categories`]), joined into a closed outline, filled
+    /// to the centre (the inner ring) and marked at every vertex, in this
+    /// series' colour and look.
+    ///
+    /// `x_column` is the category index column (the host uploads
+    /// `0, 1, ..., n - 1`) and `y_column` the value of each category on the
+    /// radius axis (`left_y`), NaN for a missing value. Both columns hold
+    /// exactly one value per category. The outline is the polar line path
+    /// with its last segment drawn back to the first vertex; a NaN vertex
+    /// breaks the outline and the fill on both of its sides, as a NaN
+    /// breaks a line. The fill is the polar area path to the inner ring at
+    /// [`RadarSeriesStyle::fill_color`], and the markers are the scatter
+    /// path. Nothing per vertex is kept on the CPU.
+    ///
+    /// Value labels are configuration only for now: `labels.text` holds the
+    /// drawn strings ([`format_radar_labels`] writes them) and is
+    /// validated, and the renderer does not draw them yet.
+    ///
+    /// Only a polar chart (`Config.polar`) with a categorical angle axis
+    /// draws radar series, in the precise draw style; the columns must be
+    /// GPU resident, and a streamed source is rejected with an error.
+    Radar {
+        /// The outline and marker colour; the fill uses it at the style's
+        /// fill opacity unless the style names a fill.
+        color: Color,
+        /// Outline width, fill, marker and emphasis; unset fields take
+        /// their defaults.
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: RadarSeriesStyle,
+        /// Which vertices carry value labels, how a value is written and
+        /// the drawn text of each vertex.
+        #[cfg_attr(feature = "serde", serde(default))]
+        labels: RadarSeriesLabels,
+    },
 }
 
 /// Where a vector series' components come from.
@@ -2322,6 +2358,405 @@ pub fn format_box_plot_labels(
     }
 }
 
+/// The marker drawn at every vertex of a radar series.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RadarMarker {
+    /// No marker.
+    None,
+    /// A filled circle (the default).
+    #[default]
+    Circle,
+    /// A filled square.
+    Square,
+}
+
+/// Which vertices of a radar series carry value labels.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RadarLabels {
+    /// No data labels (the default).
+    #[default]
+    None,
+    /// Every vertex of every series.
+    Values,
+    /// The vertices of the hovered or selected series only.
+    Emphasized,
+}
+
+/// The look of a radar series. Every field is optional: an unset field
+/// takes its default ([`Self::DEFAULT_LINE_WIDTH_PX`] and the other
+/// `DEFAULT_*` constants), and a legacy [`RadarChart`](crate::radar::RadarChart)
+/// series reads an unset field from its chart style
+/// ([`Self::resolved_from`]).
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct RadarSeriesStyle {
+    /// Outline width in logical pixels, `0..=12`; zero draws no outline.
+    pub line_width_px: Option<f32>,
+    /// The polygon fill. `None` fills with the series colour at
+    /// `fill_opacity`; a transparent colour draws the outline only.
+    pub fill: Option<Color>,
+    /// The marker at every vertex.
+    pub marker: Option<RadarMarker>,
+    /// Marker diameter (circle) or side length (square) in logical pixels,
+    /// `1..=24`.
+    pub marker_size_px: Option<f32>,
+    /// Alpha factor of the series colour the fill takes when `fill` is
+    /// unset, `0..=1`.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub fill_opacity: Option<f32>,
+    /// The brightness a legacy radar chart added to its hovered or
+    /// selected series, `0..=0.5`. Carried and validated; the renderer
+    /// highlights a picked vertex with the chart's picked ring
+    /// (`Config.picked_data`), as it highlights a polar line or marker,
+    /// and does not brighten the series.
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub emphasis_brightness: Option<f32>,
+}
+
+impl RadarSeriesStyle {
+    /// The outline width when `line_width_px` is unset.
+    pub const DEFAULT_LINE_WIDTH_PX: f32 = 2.0;
+    /// The fill opacity when `fill_opacity` is unset.
+    pub const DEFAULT_FILL_OPACITY: f32 = 0.25;
+    /// The marker when `marker` is unset.
+    pub const DEFAULT_MARKER: RadarMarker = RadarMarker::Circle;
+    /// The marker size when `marker_size_px` is unset.
+    pub const DEFAULT_MARKER_SIZE_PX: f32 = 7.0;
+    /// The emphasis when `emphasis_brightness` is unset.
+    pub const DEFAULT_EMPHASIS_BRIGHTNESS: f32 = 0.08;
+
+    /// The outline width in logical pixels.
+    pub fn line_width(&self) -> f32 {
+        self.line_width_px.unwrap_or(Self::DEFAULT_LINE_WIDTH_PX)
+    }
+
+    /// The fill colour of a series in `color`: `fill`, or `color` with its
+    /// alpha multiplied by the fill opacity.
+    pub fn fill_color(&self, color: Color) -> Color {
+        self.fill.unwrap_or(Color {
+            a: color.a * self.fill_opacity.unwrap_or(Self::DEFAULT_FILL_OPACITY),
+            ..color
+        })
+    }
+
+    /// The vertex marker.
+    pub fn marker(&self) -> RadarMarker {
+        self.marker.unwrap_or(Self::DEFAULT_MARKER)
+    }
+
+    /// The marker diameter or side length in logical pixels.
+    pub fn marker_size(&self) -> f32 {
+        self.marker_size_px.unwrap_or(Self::DEFAULT_MARKER_SIZE_PX)
+    }
+
+    /// The emphasis brightness.
+    pub fn emphasis(&self) -> f32 {
+        self.emphasis_brightness
+            .unwrap_or(Self::DEFAULT_EMPHASIS_BRIGHTNESS)
+    }
+
+    /// This style with every unset field read from a legacy chart style:
+    /// what a legacy radar series draws with.
+    pub fn resolved_from(&self, chart: &crate::radar::RadarStyle) -> RadarSeriesStyle {
+        RadarSeriesStyle {
+            line_width_px: Some(self.line_width_px.unwrap_or(chart.line_width_px)),
+            fill: self.fill,
+            marker: Some(self.marker.unwrap_or(chart.marker)),
+            marker_size_px: Some(self.marker_size_px.unwrap_or(chart.marker_size_px)),
+            fill_opacity: Some(self.fill_opacity.unwrap_or(chart.fill_opacity)),
+            emphasis_brightness: Some(
+                self.emphasis_brightness
+                    .unwrap_or(chart.emphasis_brightness),
+            ),
+        }
+    }
+
+    /// The ranges a set field is held to: an outline width in `0..=12`, a
+    /// fill colour with channels in `0..=1`, a marker size in `1..=24`, a
+    /// fill opacity in `0..=1` and an emphasis in `0..=0.5`.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if self.line_width_px.is_some_and(|v| !finite_in(v, 0.0, 12.0))
+            || self.fill.is_some_and(|c| !valid_bar_color(c, false))
+            || self
+                .marker_size_px
+                .is_some_and(|v| !finite_in(v, 1.0, 24.0))
+            || self.fill_opacity.is_some_and(|v| !finite_in(v, 0.0, 1.0))
+            || self
+                .emphasis_brightness
+                .is_some_and(|v| !finite_in(v, 0.0, 0.5))
+        {
+            return Err("invalid radar series style");
+        }
+        Ok(())
+    }
+}
+
+/// The value labels of a radar series: which vertices show one, how a
+/// value is written, and the drawn text of each vertex.
+///
+/// `text` holds one string per category, written at edit time by
+/// [`format_radar_labels`] (or by a document reader); the renderer draws
+/// strings and never formats a value. It is empty until written.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct RadarSeriesLabels {
+    pub placement: RadarLabels,
+    /// Fixed decimals of a written value, `0..=6`.
+    pub decimals: usize,
+    /// Appended to a written value; one line of at most 24 characters.
+    pub value_suffix: String,
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Vec::is_empty"))]
+    pub text: Vec<String>,
+}
+
+impl Default for RadarSeriesLabels {
+    fn default() -> Self {
+        Self {
+            placement: RadarLabels::None,
+            decimals: 1,
+            value_suffix: String::new(),
+            text: Vec::new(),
+        }
+    }
+}
+
+/// The most characters of one radar value label.
+pub const MAX_RADAR_LABEL_CHARS: usize = 160;
+
+/// The baseline a radar fill reaches: a value below every radius axis, which
+/// the polar projection puts on the inner ring (the centre when
+/// `inner_radius_fraction` is zero). Finite in both lanes of its `(hi, lo)`
+/// pair, so the fill's sample check keeps it.
+pub const RADAR_FILL_BASELINE: f64 = -(f32::MAX as f64);
+
+/// The fields of a [`DataRenderType::Radar`] series, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct RadarRef<'a> {
+    pub color: Color,
+    pub style: &'a RadarSeriesStyle,
+    pub labels: &'a RadarSeriesLabels,
+}
+
+impl RadarRef<'_> {
+    /// The polar line a radar series' outline and fill are drawn as: a
+    /// solid, linearly interpolated line in the series colour at the
+    /// outline width (transparent at width zero) whose fill reaches the
+    /// inner ring ([`RADAR_FILL_BASELINE`]) in the fill colour, or no fill
+    /// when that colour is transparent. The renderer draws it closed.
+    pub fn line_style(&self) -> DataLineStyleConfig {
+        let width = self.style.line_width();
+        let fill = self.style.fill_color(self.color);
+        DataLineStyleConfig {
+            line_style: LineStylePreset::Solid,
+            line_color: if width > 0.0 {
+                self.color
+            } else {
+                Color {
+                    a: 0.0,
+                    ..self.color
+                }
+            },
+            line_width: width,
+            fill: (fill.a > 0.0).then_some(LineFill::ToBaseline(RADAR_FILL_BASELINE)),
+            fill_color: Some(fill),
+            interpolation: LineInterpolation::Linear,
+        }
+    }
+
+    /// The markers a radar series' vertices are drawn with, `None` without
+    /// a marker: filled circles of the marker size as diameter, or filled
+    /// squares of the marker size as side length, in the series colour.
+    pub fn scatter_style(&self) -> Option<DataScatterStyleConfig> {
+        let half = self.style.marker_size() * 0.5;
+        let (point_shape, point_size) = match self.style.marker() {
+            RadarMarker::None => return None,
+            RadarMarker::Circle => (ScatterShape::CircleFilled, half),
+            // The shared marker sizes a square by the circle of equal area
+            // (`visual_shape_radius`): its half side is `sqrt(pi) / 2` of
+            // the radius.
+            RadarMarker::Square => (ScatterShape::SquareFilled, half / SQUARE_HALF_SIDE),
+        };
+        Some(DataScatterStyleConfig {
+            point_color: self.color,
+            point_shape,
+            point_size,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        })
+    }
+}
+
+/// The half side of a filled square marker of radius 1 (`sqrt(pi) / 2`,
+/// SHADER_COMMON.md §5.5).
+const SQUARE_HALF_SIDE: f32 = 0.886_226_95;
+
+impl DataRenderType {
+    /// The fields of a radar series, or `None` for every other kind.
+    pub fn radar(&self) -> Option<RadarRef<'_>> {
+        match self {
+            DataRenderType::Radar {
+                color,
+                style,
+                labels,
+            } => Some(RadarRef {
+                color: *color,
+                style,
+                labels,
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The rules one radar series is held to against the `categories` of its
+/// angle axis: a colour with channels in `0..=1`, a valid style, label
+/// decimals `0..=6`, a one-line value suffix of at most 24 characters,
+/// `labels.text` empty or one one-line string of at most
+/// [`MAX_RADAR_LABEL_CHARS`] characters per category, and named category
+/// index and value columns.
+pub fn validate_radar_series(
+    series: &SeriesConfig,
+    categories: &[Category],
+) -> Result<(), &'static str> {
+    let Some(radar) = series.render_type.radar() else {
+        return Ok(());
+    };
+    if !valid_bar_color(radar.color, false) {
+        return Err("a radar colour needs channels in 0..=1");
+    }
+    radar.style.validate()?;
+    if radar.labels.decimals > 6 || !single_line_within(&radar.labels.value_suffix, 24) {
+        return Err(
+            "radar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
+        );
+    }
+    if !radar.labels.text.is_empty() && radar.labels.text.len() != categories.len() {
+        return Err("radar label text needs one string per category");
+    }
+    if radar
+        .labels
+        .text
+        .iter()
+        .any(|text| !single_line_within(text, MAX_RADAR_LABEL_CHARS))
+    {
+        return Err("a radar label is one line of at most 160 characters");
+    }
+    if series.x_column.is_empty() || series.y_column.is_empty() {
+        return Err(
+            "a radar series names its category index column (x_column) and its value column \
+             (y_column)",
+        );
+    }
+    Ok(())
+}
+
+impl crate::config::Config {
+    /// The rules the radar series of a chart are held to, with the series
+    /// list it draws.
+    ///
+    /// A radar series is drawn on a polar chart (`Config.polar`, the
+    /// parent's or a subplot's own) whose angle axis (`bottom_x`) is
+    /// categorical, with chord segments
+    /// ([`PolarInterpolation::Chord`](crate::polar::PolarInterpolation)):
+    /// a polygon's edges are straight. At most
+    /// [`MAX_RADAR_SERIES`](crate::radar::MAX_RADAR_SERIES) radar series
+    /// share one chart, and each passes [`validate_radar_series`] against
+    /// the angle axis' categories. Whether a column holds one value per
+    /// category is data: the renderer checks it against the pool when it
+    /// prepares.
+    pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        use crate::layer::LayerRef;
+        use crate::radar::MAX_RADAR_SERIES;
+        let radars = || series.iter().filter(|s| s.render_type.radar().is_some());
+        if radars().next().is_none() {
+            return Ok(());
+        }
+        for layer in self.panel_layers() {
+            let members = || radars().filter(|s| self.layer_of_series(&s.series_id) == layer);
+            let count = members().count();
+            if count == 0 {
+                continue;
+            }
+            let subplot = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    self.subplot_config(index)
+                }
+                LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
+            };
+            let chart = subplot.as_ref().unwrap_or(self);
+            let Some(polar) = &chart.polar else {
+                return Err("radar series are drawn on a polar chart (Config.polar)");
+            };
+            if count > MAX_RADAR_SERIES {
+                return Err("a radar chart draws at most 16 radar series");
+            }
+            let Some(categories) = chart.bottom_x.categories.as_deref() else {
+                return Err(
+                    "radar series need a categorical angle axis: bottom_x.categories on the \
+                     polar chart",
+                );
+            };
+            if !polar.interpolation.is_chord() {
+                return Err(
+                    "radar polygons have straight edges: the polar interpolation must be Chord",
+                );
+            }
+            for item in members() {
+                validate_radar_series(item, categories)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Write `labels.text` of every [`DataRenderType::Radar`] series in
+/// `series` from the values the host holds for it: the edit-time helper
+/// the renderer relies on, since it never formats a value.
+///
+/// `value(k, i)` is the value of category `i` of the `k`-th radar series in
+/// `series` (`None` for a missing value). `categories` are the angle axis'
+/// categories, whose order the text follows. With `labels.placement`
+/// [`RadarLabels::None`] every text is empty; otherwise a vertex's text is
+/// its value with `labels.decimals` fixed decimals and
+/// `labels.value_suffix`, and a missing or non-finite value's text is
+/// empty. Other series are left alone.
+pub fn format_radar_labels(
+    series: &mut [SeriesConfig],
+    categories: &[Category],
+    value: impl Fn(usize, usize) -> Option<f64>,
+) {
+    let mut k = 0;
+    for item in series.iter_mut() {
+        let DataRenderType::Radar { labels, .. } = &mut item.render_type else {
+            continue;
+        };
+        let number = crate::format::PlainNumberFormat::fixed(labels.decimals, false);
+        labels.text.clear();
+        for i in 0..categories.len() {
+            let text = match (labels.placement, value(k, i)) {
+                (RadarLabels::None, _) | (_, None) => String::new(),
+                (_, Some(v)) if !v.is_finite() => String::new(),
+                (_, Some(v)) => format!("{}{}", number.format(v), labels.value_suffix),
+            };
+            labels.text.push(text);
+        }
+        k += 1;
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ScatterShape {
@@ -4043,6 +4478,338 @@ mod box_plot_tests {
         assert_eq!(
             minimal.render_type.box_plot().unwrap().style,
             &BoxPlotStyle::default()
+        );
+    }
+}
+
+#[cfg(test)]
+mod radar_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::layer::Subplot;
+    use crate::polar::{PolarInterpolation, PolarOptions};
+    use crate::radar::MAX_RADAR_SERIES;
+
+    fn categories(n: usize) -> Vec<Category> {
+        (0..n)
+            .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
+            .collect()
+    }
+
+    fn radar(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "positions".into(),
+            y_column: format!("values.{id}"),
+            render_type: DataRenderType::Radar {
+                color: Color::from_rgb8(40, 120, 200),
+                style: RadarSeriesStyle::default(),
+                labels: RadarSeriesLabels::default(),
+            },
+        }
+    }
+
+    fn polar_config(n: usize) -> Config {
+        let mut config = crate::default::default_config();
+        config.polar = Some(PolarOptions::default());
+        config.bottom_x.categories = Some(categories(n));
+        config
+    }
+
+    fn style_mut(series: &mut SeriesConfig) -> &mut RadarSeriesStyle {
+        match &mut series.render_type {
+            DataRenderType::Radar { style, .. } => style,
+            _ => unreachable!(),
+        }
+    }
+
+    fn labels_mut(series: &mut SeriesConfig) -> &mut RadarSeriesLabels {
+        match &mut series.render_type {
+            DataRenderType::Radar { labels, .. } => labels,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn radar_series_need_a_polar_chart_with_a_categorical_angle_axis() {
+        let config = polar_config(5);
+        assert_eq!(config.validate_radar(&[radar("a"), radar("b")]), Ok(()));
+        assert_eq!(
+            crate::default::default_config().validate_radar(&[]),
+            Ok(()),
+            "a chart without radar series passes"
+        );
+        let mut rectangular = config.clone();
+        rectangular.polar = None;
+        assert!(
+            rectangular
+                .validate_radar(&[radar("a")])
+                .unwrap_err()
+                .contains("polar")
+        );
+        let mut numeric = config.clone();
+        numeric.bottom_x.categories = None;
+        assert!(
+            numeric
+                .validate_radar(&[radar("a")])
+                .unwrap_err()
+                .contains("categorical angle axis")
+        );
+        let mut arcs = config.clone();
+        arcs.polar.as_mut().unwrap().interpolation = PolarInterpolation::Arc { pieces: 4 };
+        assert!(
+            arcs.validate_radar(&[radar("a")])
+                .unwrap_err()
+                .contains("Chord")
+        );
+        let mut sector = config.clone();
+        sector.polar.as_mut().unwrap().sector = Some([0.0, 180.0]);
+        sector.polar.as_mut().unwrap().inner_radius_fraction = 0.2;
+        assert_eq!(sector.validate_radar(&[radar("a")]), Ok(()));
+    }
+
+    #[test]
+    fn a_chart_draws_at_most_sixteen_radar_series() {
+        let config = polar_config(4);
+        let many: Vec<_> = (0..=MAX_RADAR_SERIES)
+            .map(|i| radar(&format!("s{i}")))
+            .collect();
+        assert!(config.validate_radar(&many).is_err());
+        assert_eq!(config.validate_radar(&many[..MAX_RADAR_SERIES]), Ok(()));
+    }
+
+    #[test]
+    fn a_subplot_draws_radar_series_against_its_own_polar_axes() {
+        let mut config = crate::default::default_config();
+        let mut cell = polar_config(3);
+        cell.chart_area = config.chart_area.clone();
+        config.subplots.push(Subplot {
+            config: cell,
+            series: vec!["a".into()],
+            ..Default::default()
+        });
+        assert_eq!(config.validate_radar(&[radar("a")]), Ok(()));
+        assert!(
+            config.validate_radar(&[radar("b")]).is_err(),
+            "the parent chart is rectangular"
+        );
+    }
+
+    #[test]
+    fn style_and_labels_are_validated() {
+        let config = polar_config(3);
+        let check = |series: SeriesConfig| config.validate_radar(&[series]);
+        for bad in [
+            (|s: &mut RadarSeriesStyle| s.line_width_px = Some(13.0)) as fn(&mut _),
+            |s| s.line_width_px = Some(f32::NAN),
+            |s| s.fill = Some(Color::new(2.0, 0.0, 0.0, 1.0)),
+            |s| s.marker_size_px = Some(0.5),
+            |s| s.marker_size_px = Some(25.0),
+            |s| s.fill_opacity = Some(1.5),
+            |s| s.emphasis_brightness = Some(0.6),
+        ] {
+            let mut series = radar("a");
+            bad(style_mut(&mut series));
+            assert!(check(series).is_err());
+        }
+        let mut series = radar("a");
+        *style_mut(&mut series) = RadarSeriesStyle {
+            line_width_px: Some(0.0),
+            fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
+            marker: Some(RadarMarker::Square),
+            marker_size_px: Some(24.0),
+            fill_opacity: Some(1.0),
+            emphasis_brightness: Some(0.5),
+        };
+        assert_eq!(check(series), Ok(()));
+        let mut series = radar("a");
+        labels_mut(&mut series).decimals = 7;
+        assert!(check(series).is_err());
+        let mut series = radar("a");
+        labels_mut(&mut series).value_suffix = "x".repeat(25);
+        assert!(check(series).is_err());
+        let mut series = radar("a");
+        labels_mut(&mut series).text = vec!["1".into(); 2];
+        assert!(
+            check(series)
+                .unwrap_err()
+                .contains("one string per category"),
+            "text follows the categories"
+        );
+        let mut series = radar("a");
+        labels_mut(&mut series).text = vec!["1".into(), "a\nb".into(), "3".into()];
+        assert!(check(series).is_err());
+        let mut series = radar("a");
+        labels_mut(&mut series).text = vec!["1".into(), "".into(), "3".into()];
+        assert_eq!(check(series), Ok(()));
+        let mut series = radar("a");
+        series.render_type = DataRenderType::Radar {
+            color: Color::new(0.0, 0.0, 1.5, 1.0),
+            style: RadarSeriesStyle::default(),
+            labels: RadarSeriesLabels::default(),
+        };
+        assert!(check(series).is_err());
+        let mut series = radar("a");
+        series.y_column.clear();
+        assert!(check(series).is_err());
+    }
+
+    #[test]
+    fn unset_style_fields_take_the_defaults() {
+        let style = RadarSeriesStyle::default();
+        let color = Color::from_rgba(0.2, 0.4, 0.6, 0.8);
+        assert_eq!(style.line_width(), 2.0);
+        assert_eq!(style.marker(), RadarMarker::Circle);
+        assert_eq!(style.marker_size(), 7.0);
+        assert_eq!(style.emphasis(), 0.08);
+        assert!((style.fill_color(color).a - 0.2).abs() < 1e-6);
+        let chart = crate::radar::RadarStyle {
+            line_width_px: 3.0,
+            fill_opacity: 0.5,
+            marker: RadarMarker::Square,
+            marker_size_px: 9.0,
+            emphasis_brightness: 0.1,
+            ..Default::default()
+        };
+        let resolved = style.resolved_from(&chart);
+        assert_eq!(resolved.line_width_px, Some(3.0));
+        assert_eq!(resolved.fill_opacity, Some(0.5));
+        assert_eq!(resolved.marker, Some(RadarMarker::Square));
+        assert_eq!(resolved.marker_size_px, Some(9.0));
+        assert_eq!(resolved.emphasis_brightness, Some(0.1));
+        assert_eq!(resolved.fill, None);
+        let own = RadarSeriesStyle {
+            marker: Some(RadarMarker::None),
+            ..Default::default()
+        }
+        .resolved_from(&chart);
+        assert_eq!(own.marker, Some(RadarMarker::None));
+    }
+
+    #[test]
+    fn a_radar_draws_as_a_filled_line_with_vertex_markers() {
+        let series = radar("a");
+        let r = series.render_type.radar().unwrap();
+        let line = r.line_style();
+        assert_eq!(line.line_style, LineStylePreset::Solid);
+        assert_eq!(line.line_color, r.color);
+        assert_eq!(line.line_width, 2.0);
+        assert_eq!(line.fill, Some(LineFill::ToBaseline(RADAR_FILL_BASELINE)));
+        assert_eq!(line.fill_color, Some(r.style.fill_color(r.color)));
+        assert!(line.interpolation.is_linear());
+        let (hi, lo) = (
+            RADAR_FILL_BASELINE as f32,
+            (RADAR_FILL_BASELINE - f64::from(RADAR_FILL_BASELINE as f32)) as f32,
+        );
+        assert!(hi.is_finite() && lo.is_finite());
+        let scatter = r.scatter_style().unwrap();
+        assert_eq!(scatter.point_shape, ScatterShape::CircleFilled);
+        assert_eq!(scatter.point_size, 3.5, "a circle's diameter is the size");
+        assert_eq!(scatter.point_color, r.color);
+        let mut square = radar("a");
+        style_mut(&mut square).marker = Some(RadarMarker::Square);
+        let scatter = square.render_type.radar().unwrap().scatter_style().unwrap();
+        assert_eq!(scatter.point_shape, ScatterShape::SquareFilled);
+        assert!(
+            (scatter.point_size * SQUARE_HALF_SIDE * 2.0 - 7.0).abs() < 1e-5,
+            "a square's side is the size"
+        );
+        let mut bare = radar("a");
+        *style_mut(&mut bare) = RadarSeriesStyle {
+            line_width_px: Some(0.0),
+            marker: Some(RadarMarker::None),
+            fill_opacity: Some(0.0),
+            ..Default::default()
+        };
+        let r = bare.render_type.radar().unwrap();
+        assert_eq!(r.line_style().line_color.a, 0.0, "no outline at width 0");
+        assert_eq!(r.line_style().fill, None, "no fill when it is transparent");
+        assert!(r.scatter_style().is_none());
+    }
+
+    #[test]
+    fn format_radar_labels_writes_one_string_per_category() {
+        let cats = categories(3);
+        let mut series = vec![radar("a"), radar("b")];
+        let values = [[1.24, f64::NAN, 3.0], [0.0, 2.0, -1.5]];
+        let value = |k: usize, i: usize| Some(values[k][i]);
+        format_radar_labels(&mut series, &cats, value);
+        for s in &series {
+            assert_eq!(s.render_type.radar().unwrap().labels.text, ["", "", ""]);
+        }
+        for s in &mut series {
+            let labels = labels_mut(s);
+            labels.placement = RadarLabels::Emphasized;
+            labels.decimals = 1;
+            labels.value_suffix = " u".into();
+        }
+        format_radar_labels(&mut series, &cats, value);
+        assert_eq!(
+            series[0].render_type.radar().unwrap().labels.text,
+            ["1.2 u", "", "3.0 u"]
+        );
+        assert_eq!(
+            series[1].render_type.radar().unwrap().labels.text,
+            ["0.0 u", "2.0 u", "-1.5 u"]
+        );
+        format_radar_labels(&mut series, &cats, |_, i| (i != 1).then_some(5.0));
+        assert_eq!(
+            series[0].render_type.radar().unwrap().labels.text,
+            ["5.0 u", "", "5.0 u"]
+        );
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn radar_series_round_trip_and_omit_their_defaults() {
+        let mut series = radar("a");
+        let json = serde_json::to_value(&series.render_type).unwrap();
+        assert_eq!(
+            json["Radar"]["labels"],
+            serde_json::json!({"placement": "None", "decimals": 1, "value_suffix": ""})
+        );
+        let style = &json["Radar"]["style"];
+        assert!(style.get("fill_opacity").is_none() && style.get("emphasis_brightness").is_none());
+        let back: DataRenderType = serde_json::from_value(json).unwrap();
+        assert_eq!(back, series.render_type);
+        let minimal: DataRenderType = serde_json::from_value(serde_json::json!({
+            "Radar": {"color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0}}
+        }))
+        .unwrap();
+        assert_eq!(minimal.radar().unwrap().style, &RadarSeriesStyle::default());
+        assert_eq!(
+            minimal.radar().unwrap().labels,
+            &RadarSeriesLabels::default()
+        );
+        *style_mut(&mut series) = RadarSeriesStyle {
+            line_width_px: Some(3.0),
+            fill: Some(Color::WHITE),
+            marker: Some(RadarMarker::Square),
+            marker_size_px: Some(9.0),
+            fill_opacity: Some(0.4),
+            emphasis_brightness: Some(0.2),
+        };
+        *labels_mut(&mut series) = RadarSeriesLabels {
+            placement: RadarLabels::Values,
+            decimals: 2,
+            value_suffix: " pt".into(),
+            text: vec!["1.00 pt".into(), "".into()],
+        };
+        let text = serde_json::to_string(&series).unwrap();
+        let back: SeriesConfig = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, series);
+        assert_eq!(serde_json::to_string(&back).unwrap(), text);
+        // A legacy series style keeps its spelling: its four fields are
+        // written as before and the two new ones are omitted while unset.
+        let legacy = RadarSeriesStyle {
+            marker: Some(RadarMarker::None),
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_string(&legacy).unwrap(),
+            r#"{"line_width_px":null,"fill":null,"marker":"None","marker_size_px":null}"#
         );
     }
 }

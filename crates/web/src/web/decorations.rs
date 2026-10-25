@@ -319,7 +319,8 @@ impl FiggyChart {
                 DataRenderType::Line { .. }
                 | DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. } => {}
+                | DataRenderType::BoxPlot { .. }
+                | DataRenderType::Radar { .. } => {}
             }
         }
         let mut chart = Chart::new(self.chart_config().clone());

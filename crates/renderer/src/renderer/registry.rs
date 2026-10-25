@@ -1322,7 +1322,9 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         // Category positions and values are its x and y columns.
-        | DataRenderType::CategoryBars { .. } => {}
+        | DataRenderType::CategoryBars { .. }
+        // Category indices and values too.
+        | DataRenderType::Radar { .. } => {}
         // Its positions are its x column and its record its y column; the
         // outliers are a referenced ragged column like a matrix' columns, so
         // replacing or removing them invalidates the series.
@@ -1400,6 +1402,7 @@ pub(super) fn validate_renderer_series(
             reason: reason.to_string(),
         });
     }
+    validate_radar_rules(config, series)?;
     for (index, item) in series.iter().enumerate() {
         if item.series_id.is_empty() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -1508,10 +1511,26 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
         })
 }
 
-/// The series a polar chart draws: scatter markers and lines (with fills).
-/// Histograms, fields, contours, error bars and vectors have no polar form
-/// and are rejected rather than drawn on the wrong axes; an arc
-/// interpolation needs a linearly interpolated line.
+/// The series a polar chart draws: scatter markers, lines (with fills) and
+/// radar polygons. Histograms, fields, contours, error bars, vectors,
+/// category bars and box plots have no polar form and are rejected rather
+/// than drawn on the wrong axes; an arc interpolation needs a linearly
+/// interpolated line.
+/// The radar rules of a chart, at registration and at export: a polar chart
+/// with a categorical angle axis, chord edges, at most 16 series per layer
+/// and every series' style and labels (`Config::validate_radar`).
+pub(super) fn validate_radar_rules(config: &Config, series: &[SeriesConfig]) -> Result<()> {
+    config
+        .validate_radar(series)
+        .map_err(|reason| FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.radar().is_some())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        })
+}
+
 pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Result<()> {
     let Some(polar) = &config.polar else {
         return Ok(());
@@ -1523,7 +1542,8 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
     match &item.render_type {
         DataRenderType::Scatter { .. }
         | DataRenderType::Line { .. }
-        | DataRenderType::ScatterLine { .. } => {}
+        | DataRenderType::ScatterLine { .. }
+        | DataRenderType::Radar { .. } => {}
         DataRenderType::Histogram { .. } => {
             return Err(invalid("histogram series are not drawn on polar axes"));
         }

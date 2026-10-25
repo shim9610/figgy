@@ -1,6 +1,6 @@
 //! The playground's scene catalogue: synthetic data and the starting model
-//! of every scene, Cartesian (`Config` and series) and bounded (the four
-//! family charts in [`bounded`]).
+//! of every scene, Cartesian and polar (`Config` and series) and bounded
+//! (the radial chart in [`bounded`]).
 //!
 //! The file lives with the renderer's tests so the decoration oracle
 //! (`tests/decoration_oracle.rs`) sweeps exactly the scenes the playground
@@ -143,12 +143,16 @@ impl SceneKind {
                  axis: pick a box, a whisker or an outlier, step with the arrows; \
                  notches, means and outliers come from the document's style."
             }
-            SceneKind::Radar => "Click a polygon or vertex; grid shape, markers, value labels.",
+            SceneKind::Radar => {
+                "A radar document opened as radar series on a polar chart whose \
+                 angle axis holds the categories: pick a vertex, an edge or a \
+                 fill, step with the arrows; grid shape, markers and fill."
+            }
         }
     }
 
     pub fn is_bounded(self) -> bool {
-        matches!(self, SceneKind::Radial | SceneKind::Radar)
+        matches!(self, SceneKind::Radial)
     }
 }
 
@@ -309,6 +313,7 @@ pub fn build(
         SceneKind::CategoryAxis => category_axis(r),
         SceneKind::Categorical => categorical(r),
         SceneKind::BoxPlot => box_plot(r),
+        SceneKind::Radar => radar(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         _ => unreachable!("bounded scenes are built by `bounded::chart`"),
     }
@@ -1675,16 +1680,67 @@ fn box_plot(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene { config, series })
 }
 
+/// The radar scene's document: three releases over six categories on a
+/// fixed 0 to 10 axis.
+pub fn radar_document() -> renderer::RadarChart {
+    renderer::RadarChart {
+        title: "Build quality".into(),
+        categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
+            .into_iter()
+            .map(|s| renderer::Category::new(s.to_lowercase(), s))
+            .collect(),
+        series: vec![
+            renderer::RadarSeries::new(
+                "v1",
+                "Release 1",
+                vec![6., 8., 4., 5., 7., 6.5],
+                Color::from_rgb8(65, 144, 208),
+            ),
+            renderer::RadarSeries::new(
+                "v2",
+                "Release 2",
+                vec![8., 7., 6., 8., 9., 7.],
+                Color::from_rgb8(230, 120, 64),
+            ),
+            renderer::RadarSeries::new(
+                "v3",
+                "Release 3",
+                vec![9., 8.5, 8., 9., 9.5, 8.],
+                Color::from_rgb8(42, 168, 120),
+            ),
+        ],
+        value_range: Some([0., 10.]),
+        ring_spacing: Some(2.5),
+        ..Default::default()
+    }
+}
+
+fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let document = radar_document();
+    let (mut config, series, uploads) = Config::from_radar(&document);
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: DOC_W,
+        height: DOC_H,
+    });
+    for upload in &uploads {
+        if r.handle_for(&upload.column).is_err() {
+            r.add_column(upload.column.clone(), &upload.values)?;
+        }
+    }
+    Ok(CartesianScene { config, series })
+}
+
 // ---------------------------------------------------------------------------
 // Bounded scenes
 // ---------------------------------------------------------------------------
 
-/// The starting models of the four bounded scenes; the playground's
-/// `bounded.rs` hosts them.
+/// The starting model of the bounded scene; the playground's `bounded.rs`
+/// hosts it.
 pub mod bounded {
-    use renderer::radar::*;
+    use renderer::Color;
     use renderer::radial::*;
-    use renderer::{Category, Color};
 
     pub fn radial_chart() -> RadialChart {
         let mut chart = RadialChart {
@@ -1702,38 +1758,5 @@ pub mod bounded {
         chart.style = RadialStyle::three_dimensional();
         chart.format_labels();
         chart
-    }
-
-    pub fn radar_chart() -> RadarChart {
-        RadarChart {
-            title: "Build quality".into(),
-            categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
-                .into_iter()
-                .map(|s| Category::new(s.to_lowercase(), s))
-                .collect(),
-            series: vec![
-                RadarSeries::new(
-                    "v1",
-                    "Release 1",
-                    vec![6., 8., 4., 5., 7., 6.5],
-                    Color::from_rgb8(65, 144, 208),
-                ),
-                RadarSeries::new(
-                    "v2",
-                    "Release 2",
-                    vec![8., 7., 6., 8., 9., 7.],
-                    Color::from_rgb8(230, 120, 64),
-                ),
-                RadarSeries::new(
-                    "v3",
-                    "Release 3",
-                    vec![9., 8.5, 8., 9., 9.5, 8.],
-                    Color::from_rgb8(42, 168, 120),
-                ),
-            ],
-            value_range: Some([0., 10.]),
-            ring_spacing: Some(2.5),
-            ..Default::default()
-        }
     }
 }

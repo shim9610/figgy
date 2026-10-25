@@ -141,7 +141,7 @@ fn picked_suite() -> (Config, Vec<SeriesConfig>) {
     let mut series = declaration("s", "x", "a");
     let line = super::super::super::extract_line(&series.render_type)
         .unwrap()
-        .clone();
+        .into_owned();
     series.render_type = DataRenderType::ScatterLine {
         line,
         scatter: DataScatterStyleConfig {

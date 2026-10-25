@@ -207,6 +207,7 @@ pub(super) struct PreparedAreaLayer {
     pub(super) y: ColumnHandle,
     pub(super) base: ColumnHandle,
     pub(super) verts_per_instance: u32,
+    pub(super) closed: bool,
 }
 
 pub(super) struct PreparedLineLayer {
@@ -219,6 +220,7 @@ pub(super) struct PreparedLineLayer {
     pub(super) arc: Option<ArcPrefix>,
     pub(super) verts_per_instance: u32,
     pub(super) texture_bg: Option<wgpu::BindGroup>,
+    pub(super) closed: bool,
 }
 
 pub(super) struct PreparedScatterLayer {
@@ -717,6 +719,7 @@ impl PreparedSeries {
                 y: layer.y,
                 base: layer.base,
                 verts_per_instance: layer.verts_per_instance,
+                closed: layer.closed,
             }),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
@@ -788,6 +791,7 @@ impl PreparedSeries {
                 arc: layer.arc,
                 verts_per_instance: layer.verts_per_instance,
                 texture_bg: layer.texture_bg.cloned(),
+                closed: layer.closed,
             }),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
@@ -876,6 +880,7 @@ impl PreparedSeries {
                     y: layer.y,
                     base: layer.base,
                     verts_per_instance: layer.verts_per_instance,
+                    closed: layer.closed,
                 }),
             field: self
                 .field
@@ -961,6 +966,7 @@ impl PreparedSeries {
                 arc: layer.arc.clone(),
                 verts_per_instance: layer.verts_per_instance,
                 texture_bg: layer.texture_bg.as_ref(),
+                closed: layer.closed,
             }),
             line_extra: self
                 .line_extra

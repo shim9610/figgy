@@ -1,21 +1,82 @@
-//! Radar charts over six categories: grid shapes, markers, labels and
-//! selection emphasis. Writes five 960 × 640 PNGs into the directory given as
-//! the first argument (default `target/radar-gallery`), and fails when an
-//! image has fewer than 1000 coloured pixels.
+//! Radar documents drawn as polar charts of radar series: each `RadarChart`
+//! is opened with `Config::from_radar`, its category indices and values
+//! uploaded from the borrowed document, and exported by the Cartesian
+//! renderer at 960 × 640 without post-render scaling. Writes five PNGs into
+//! the directory given as the first argument (default
+//! `target/radar-gallery`), and fails when an image has fewer than 1000
+//! coloured pixels.
 //! - `01-spider-web.png`: two series on the default polygon grid.
-//! - `02-circle-values.png`: a circular grid with a value label at every vertex.
+//! - `02-circle-values.png`: a circular grid (value labels are configured;
+//!   the renderer does not draw them yet).
 //! - `03-fixed-axis.png`: a fixed 0 to 10 axis with a ring every 2.5 and
 //!   square markers.
 //! - `04-four-series.png`: four series counter-clockwise from the right,
 //!   including an unfilled baseline without markers.
-//! - `05-selection.png`: a selected vertex and a hovered series; data labels
-//!   are drawn only on the hovered and selected series
-//!   (`RadarLabels::Emphasized`).
+//! - `05-selection.png`: a selected vertex, highlighted by the picked ring.
 //!
 //! cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
-use renderer::{Category, Color, RendererDevice, data_render, encode_png, radar::*};
-use std::{path::PathBuf, sync::Arc};
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+use renderer::{
+    Category, Chart, Color, LayerRef, Renderer, RendererDevice, config::Config, data_render,
+    encode_png, radar::*,
+};
+use std::{path::Path, path::PathBuf, sync::Arc};
+
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
+/// `document` as a polar chart of radar series, exported to `name.png`.
+fn save(r: &mut Renderer, document: &RadarChart, directory: &Path, name: &str) -> Result {
+    document.validate()?;
+    let (mut config, series, uploads) = Config::from_radar(document);
+    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 640,
+    });
+    for upload in &uploads {
+        r.remove_column(&upload.column)?;
+        r.add_column(upload.column.clone(), &upload.values)?;
+    }
+    // The fixed `value_range` of a document is the radius axis; a document
+    // without one fits the values' statistics from zero, as the former
+    // chart did, and keeps its ring spacing.
+    let mut chart = Chart::new(config);
+    if document.value_range.is_none() {
+        // The fit chooses a label format too; the document's ring labels
+        // keep the reader's.
+        let format = chart.config().left_y.label_style.format.clone();
+        chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
+        let mut config = chart.config().clone();
+        let radius = &mut config.left_y;
+        let min = radius.min.min(0.0);
+        let max = radius.max;
+        radius
+            .auto_ticks(min, max, 5)
+            .map_err(|e| format!("radius axis ticks: {e:?}"))?;
+        radius.label_style.format = format;
+        if let Some(spacing) = document.ring_spacing {
+            radius.major_spacing = spacing;
+        }
+        chart = Chart::new(config);
+    }
+    let image = r.export_panel_rgba(&chart, &series, 1.0)?;
+    let colored = image
+        .rgba
+        .chunks_exact(4)
+        .filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 40)
+        .count();
+    if colored < 1000 {
+        return Err("missing radar pixels".into());
+    }
+    std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
+    println!(
+        "{name}: {}x{}, {colored} colored pixels",
+        image.width, image.height
+    );
+    Ok(())
+}
+
+fn main() -> Result {
     let dir = PathBuf::from(
         std::env::args()
             .nth(1)
@@ -27,7 +88,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Radar adapter: {:?}", adapter.get_info());
     let (d, q) = data_render::request_device(&adapter)?;
     let gpu = RendererDevice::new(Arc::new(d), Arc::new(q));
-    let mut r = RadarRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = RadarChart {
         title: "Build quality".into(),
         categories: ["Speed", "Safety", "Size", "Docs", "Tests", "Ergonomics"]
@@ -51,38 +112,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         font_size: 18.,
         ..Default::default()
     };
-    let save = |r: &mut RadarRenderer,
-                c: &RadarChart,
-                name: &str|
-     -> Result<(), Box<dyn std::error::Error>> {
-        let image = r.export_rgba(c, (960, 640), 1.)?;
-        let colored = image
-            .rgba
-            .chunks_exact(4)
-            .filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 40)
-            .count();
-        if colored < 1000 {
-            return Err("missing radar pixels".into());
-        }
-        std::fs::write(dir.join(format!("{name}.png")), encode_png(&image)?)?;
-        r.end_frame();
-        gpu.device().poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
-        println!(
-            "{name}: {}x{}, {colored} colored pixels",
-            image.width, image.height
-        );
-        Ok(())
-    };
-    save(&mut r, &c, "01-spider-web")?;
+    save(&mut r, &c, &dir, "01-spider-web")?;
     c.title = "Circular grid, value labels".into();
     c.style.grid_shape = RadarGridShape::Circle;
     c.labels = RadarLabels::Values;
     c.value_suffix = " pt".into();
     c.label_decimals = 0;
-    save(&mut r, &c, "02-circle-values")?;
+    save(&mut r, &c, &dir, "02-circle-values")?;
     c.title = "Fixed 0 to 10 axis, square markers".into();
     c.style.grid_shape = RadarGridShape::Polygon;
     c.labels = RadarLabels::None;
@@ -90,7 +126,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     c.ring_spacing = Some(2.5);
     c.style.marker = RadarMarker::Square;
     c.style.fill_opacity = 0.15;
-    save(&mut r, &c, "03-fixed-axis")?;
+    save(&mut r, &c, &dir, "03-fixed-axis")?;
     c.title = "Four teams, counter-clockwise from the right".into();
     c.style.start_angle_degrees = 0.;
     c.style.clockwise = false;
@@ -114,11 +150,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         line_width_px: Some(1.5),
         fill: Some(Color::new(0., 0., 0., 0.)),
         marker: Some(RadarMarker::None),
-        marker_size_px: None,
+        ..Default::default()
     });
     c.series.push(muted);
-    save(&mut r, &c, "04-four-series")?;
-    c.title = "Selected vertex with emphasized labels".into();
+    save(&mut r, &c, &dir, "04-four-series")?;
+    c.title = "Selected vertex".into();
     c.style.start_angle_degrees = -90.;
     c.style.clockwise = true;
     c.style.marker = RadarMarker::Circle;
@@ -126,6 +162,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     c.labels = RadarLabels::Emphasized;
     c.selected = Some(RadarTarget::vertex("v2", "docs"));
     c.hovered = Some(RadarTarget::series("v1"));
-    save(&mut r, &c, "05-selection")?;
+    save(&mut r, &c, &dir, "05-selection")?;
     Ok(())
 }

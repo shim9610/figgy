@@ -102,6 +102,8 @@ pub(super) struct PickSeriesResource {
     pub(super) errorbar: Option<OwnedGpuPickErrorBar>,
     /// The line's area fill.
     pub(super) area: Option<crate::gpu_pick::GpuPickArea>,
+    /// Whether the line is a closed polygon (a radar outline).
+    pub(super) line_closed: bool,
 }
 
 /// A series' error bars in the plan (`GpuPickErrorBar` without its rows,
@@ -131,6 +133,7 @@ impl PartialEq for PickSeriesResource {
             vector,
             errorbar,
             area,
+            line_closed,
         } = self;
         let Self {
             x_column: other_x_column,
@@ -142,8 +145,10 @@ impl PartialEq for PickSeriesResource {
             vector: other_vector,
             errorbar: other_errorbar,
             area: other_area,
+            line_closed: other_line_closed,
         } = other;
-        x_column == other_x_column
+        line_closed == other_line_closed
+            && x_column == other_x_column
             && y_column == other_y_column
             && scatter == other_scatter
             && line_width_px.map(f32::to_bits) == other_line_width_px.map(f32::to_bits)
@@ -179,6 +184,7 @@ impl PickSeriesResource {
             vector,
             errorbar,
             area,
+            line_closed: _,
         } = self;
         x_column == id
             || y_column == id
@@ -295,15 +301,18 @@ fn same_pick_area(
         to_series,
         baseline,
         paints,
+        closed,
     } = area;
     let crate::gpu_pick::GpuPickArea {
         to_series: other_to_series,
         baseline: other_baseline,
         paints: other_paints,
+        closed: other_closed,
     } = other;
     to_series == other_to_series
         && baseline.to_bits() == other_baseline.to_bits()
         && paints == other_paints
+        && closed == other_closed
 }
 
 /// A `point_size_map`, compared field by field with floats by bits.
@@ -438,6 +447,7 @@ impl OwnedGpuPickSeriesDescriptor {
             vector,
             errorbar,
             area,
+            line_closed,
         } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
             source_id: source_id.clone(),
@@ -485,6 +495,7 @@ impl OwnedGpuPickSeriesDescriptor {
                 }
             }),
             area: area.clone(),
+            line_closed: *line_closed,
         }
     }
 }
@@ -581,6 +592,7 @@ impl PickChartPlan {
             } else if primitives.scatter {
                 let scatter = extract_scatter(&series.render_type)
                     .expect("effective scatter primitive has scatter configuration");
+                let scatter = scatter.as_ref();
                 let base_radius_px = scatter.point_size;
                 let base_shape_id = data_render::shape_id(&scatter.point_shape);
                 if config.draw_style.is_precise() {
@@ -675,6 +687,7 @@ impl PickChartPlan {
                 extract_line(&series.render_type)
                     .expect("effective line primitive has line configuration")
             });
+            let line = line.as_deref();
             let line_width_px = line.map(|line| line.line_width);
             let line_interpolation =
                 line.map_or(LineInterpolation::Linear, |line| line.interpolation);
@@ -683,7 +696,17 @@ impl PickChartPlan {
                 .as_ref()
                 .filter(|_| !vector_points)
                 .and_then(|_| pick_errorbar(config, &series.render_type));
-            let area = line.and_then(|line| pick_area(line, series, all_series));
+            // A radar outline is closed, and so is its fill on a full
+            // circle, as `build_series_layers` draws them.
+            let line_closed = line.is_some() && series.render_type.radar().is_some();
+            let area = line.and_then(|line| {
+                pick_area(
+                    line,
+                    series,
+                    all_series,
+                    line_closed && polar_fill_closes(config),
+                )
+            });
             descriptors.push(OwnedGpuPickSeriesDescriptor {
                 series_id: series.series_id.clone(),
                 source_id: series.source_id.clone(),
@@ -697,6 +720,7 @@ impl PickChartPlan {
                     vector,
                     errorbar,
                     area,
+                    line_closed,
                 },
             });
         }
@@ -1213,6 +1237,7 @@ fn pick_area(
     line: &DataLineStyleConfig,
     series: &SeriesConfig,
     all_series: &[SeriesConfig],
+    closed: bool,
 ) -> Option<crate::gpu_pick::GpuPickArea> {
     let paints = line.effective_fill_color().a > 0.0;
     match line.fill.as_ref()? {
@@ -1220,6 +1245,7 @@ fn pick_area(
             to_series: None,
             baseline: *baseline,
             paints,
+            closed,
         }),
         LineFill::ToSeries(target) => {
             let target = all_series
@@ -1230,6 +1256,7 @@ fn pick_area(
                 to_series: Some(target.y_column.clone()),
                 baseline: 0.0,
                 paints,
+                closed,
             })
         }
     }

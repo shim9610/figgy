@@ -1,11 +1,12 @@
-//! Raw WASM host for radial and radar charts. The renderer owns all geometry.
+//! Raw WASM host for radial charts. The renderer owns all geometry.
 //!
-//! A categorical bar chart and a box plot are Cartesian charts: their
-//! documents open through `FiggyChart::set_categorical_document` and
-//! `FiggyChart::set_boxplot_document`.
+//! A categorical bar chart and a box plot are Cartesian charts and a radar
+//! chart is a polar one: their documents open through
+//! `FiggyChart::set_categorical_document`, `FiggyChart::set_boxplot_document`
+//! and `FiggyChart::set_radar_document`.
 use renderer::{
     AnnotationLayer, BoundedAnnotationFrame, DecorationId, DecorationLayout, FrameBackground,
-    LayerHit, LayerRef, RendererDevice, layout::Rect, radar::*, radial::*,
+    LayerHit, LayerRef, RendererDevice, layout::Rect, radial::*,
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -37,55 +38,46 @@ async fn radial_at(
 #[derive(Clone, PartialEq)]
 enum DocumentChart {
     Radial(RadialChart),
-    Radar(RadarChart),
 }
 impl DocumentChart {
     pub fn family(&self) -> &'static str {
         match self {
             Self::Radial(_) => "radial",
-            Self::Radar(_) => "radar",
         }
     }
     pub fn decorations(&self) -> &DecorationLayout {
         match self {
             Self::Radial(c) => &c.decorations,
-            Self::Radar(c) => &c.decorations,
         }
     }
     pub fn decorations_mut(&mut self) -> &mut DecorationLayout {
         match self {
             Self::Radial(c) => &mut c.decorations,
-            Self::Radar(c) => &mut c.decorations,
         }
     }
     pub fn active_layer(&self) -> LayerRef {
         match self {
             Self::Radial(c) => c.active_layer(),
-            Self::Radar(c) => c.active_layer(),
         }
     }
     pub fn set_active_layer(&mut self, layer: LayerRef) -> LayerRef {
         match self {
             Self::Radial(c) => c.set_active_layer(layer),
-            Self::Radar(c) => c.set_active_layer(layer),
         }
     }
     pub fn annotations(&self) -> &AnnotationLayer {
         match self {
             Self::Radial(c) => &c.annotations,
-            Self::Radar(c) => &c.annotations,
         }
     }
     pub fn annotations_mut(&mut self) -> &mut AnnotationLayer {
         match self {
             Self::Radial(c) => &mut c.annotations,
-            Self::Radar(c) => &mut c.annotations,
         }
     }
     pub fn background(&self) -> renderer::Color {
         match self {
             Self::Radial(c) => c.background,
-            Self::Radar(c) => c.background,
         }
     }
     /// A visible span needs the frame to leave the background to the host
@@ -101,11 +93,8 @@ impl DocumentChart {
     }
     #[allow(dead_code)]
     pub fn radial(&self) -> Option<&RadialChart> {
-        if let Self::Radial(c) = self {
-            Some(c)
-        } else {
-            None
-        }
+        let Self::Radial(c) = self;
+        Some(c)
     }
     pub fn validate(&self, rect: Rect) -> Result<(), JsValue> {
         if rect.width < 160 || rect.height < 160 {
@@ -115,20 +104,17 @@ impl DocumentChart {
         }
         match self {
             Self::Radial(c) => c.validate().map_err(js_err),
-            Self::Radar(c) => c.validate().map_err(js_err),
         }
     }
     pub fn selected_json(&self) -> serde_json::Value {
         match self {
             Self::Radial(c) => json!(c.interaction.selected),
-            Self::Radar(c) => json!(c.selected),
         }
     }
     pub fn clear_selection(&mut self) {
         self.decorations_mut().selected = None;
         match self {
             Self::Radial(c) => c.interaction.selected = None,
-            Self::Radar(c) => c.selected = None,
         }
     }
     /// Select the data under `point`. A radial chart picks on the GPU, so
@@ -148,15 +134,6 @@ impl DocumentChart {
                     hit
                 };
             }
-            (Self::Radar(c), DocumentFrame::Radar(f)) => {
-                let hit = f.hit_test(point).map(|p| p.target);
-                c.selected = if toggle && hit == c.selected {
-                    None
-                } else {
-                    hit
-                };
-            }
-            _ => unreachable!(),
         }
         Ok(())
     }
@@ -176,68 +153,20 @@ impl DocumentChart {
                 };
                 c.interaction.animate_hover(hit, dt, 0.16)
             }
-            (Self::Radar(c), DocumentFrame::Radar(f)) => {
-                let hit = point.and_then(|p| f.hit_test(p)).map(|p| p.target);
-                let changed = hit != c.hovered;
-                c.hovered = hit;
-                changed
-            }
-            _ => unreachable!(),
         })
     }
     pub fn step(&mut self, backwards: bool) {
-        fn next<T: PartialEq + Clone>(items: Vec<T>, selected: &mut Option<T>, backwards: bool) {
-            if items.is_empty() {
-                return;
-            }
-            let i = selected
-                .as_ref()
-                .and_then(|s| items.iter().position(|x| x == s));
-            let n = items.len();
-            let i = match i {
-                Some(i) if backwards => (i + n - 1) % n,
-                Some(i) => (i + 1) % n,
-                None if backwards => n - 1,
-                None => 0,
-            };
-            *selected = Some(items[i].clone());
-        }
         match self {
             Self::Radial(c) => c.step_selection(backwards),
-            Self::Radar(c) => {
-                // A selected vertex steps along its series' finite vertices;
-                // otherwise the series polygons are stepped in order.
-                let vertex = c
-                    .selected
-                    .as_ref()
-                    .and_then(|t| t.category_id.as_ref().and_then(|_| c.series(&t.series_id)));
-                let items = match vertex {
-                    Some(s) => c
-                        .categories
-                        .iter()
-                        .zip(&s.values)
-                        .filter(|(_, v)| v.is_finite())
-                        .map(|(cat, _)| RadarTarget::vertex(&s.id, &cat.id))
-                        .collect(),
-                    None => c
-                        .series
-                        .iter()
-                        .map(|s| RadarTarget::series(&s.id))
-                        .collect(),
-                };
-                next(items, &mut c.selected, backwards);
-            }
         }
     }
 }
 
 enum DocumentRenderer {
     Radial(RadialRenderer),
-    Radar(RadarRenderer),
 }
 enum DocumentFrame {
     Radial(Arc<RadialFrame>),
-    Radar(Arc<RadarFrame>),
 }
 impl DocumentRenderer {
     pub async fn new_async(
@@ -248,11 +177,6 @@ impl DocumentRenderer {
         Ok(match chart {
             DocumentChart::Radial(_) => Self::Radial(
                 RadialRenderer::new_async(gpu, format)
-                    .await
-                    .map_err(js_err)?,
-            ),
-            DocumentChart::Radar(_) => Self::Radar(
-                RadarRenderer::new_async(gpu, format)
                     .await
                     .map_err(js_err)?,
             ),
@@ -273,13 +197,6 @@ impl DocumentRenderer {
                 let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
                 Ok((DocumentFrame::Radial(frame), annotations))
             }
-            (Self::Radar(r), DocumentChart::Radar(c)) => {
-                r.set_background(background);
-                let frame = r.prepare(c, size, scale).map_err(js_err)?;
-                let annotations = r.prepare_annotations(c, size, scale).map_err(js_err)?;
-                Ok((DocumentFrame::Radar(frame), annotations))
-            }
-            _ => Err(js_err("cannot change chart family")),
         }
     }
     pub async fn export(
@@ -292,48 +209,32 @@ impl DocumentRenderer {
             (Self::Radial(r), DocumentChart::Radial(c)) => {
                 r.export_rgba_async(c, size, scale).await.map_err(js_err)
             }
-            (Self::Radar(r), DocumentChart::Radar(c)) => {
-                r.export_rgba_async(c, size, scale).await.map_err(js_err)
-            }
-            _ => Err(js_err("cannot change chart family")),
         }
     }
     #[allow(dead_code)]
     pub fn gpu_bytes(&self) -> u64 {
         match self {
             Self::Radial(r) => r.gpu_memory_usage().total_bytes(),
-            Self::Radar(r) => r.gpu_memory_usage().total_bytes(),
         }
     }
     pub fn end_frame(&self) {
         match self {
             Self::Radial(r) => r.end_frame(),
-            Self::Radar(r) => r.end_frame(),
         }
     }
 }
 impl DocumentFrame {
-    /// The decoration map of a box plot or radar frame; the
-    /// radial frame answers through its `HitMap<RadialChart>` with the
-    /// chart instead.
-    pub fn decoration_map(&self) -> Option<&renderer::decoration::DecorationMap> {
-        match self {
-            Self::Radial(_) => None,
-            Self::Radar(f) => Some(f.decorations()),
-        }
-    }
     /// The hit-map entry of the decoration named `name` (its stable
-    /// element id).
+    /// element id): the radial frame answers through its
+    /// `HitMap<RadialChart>`.
     fn decoration_named(&self, name: &str) -> Option<renderer::HitId> {
         match self {
             Self::Radial(f) => f.decorations().find(name),
-            _ => self.decoration_map()?.hit_map().find(name),
         }
     }
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>) {
         match self {
             Self::Radial(f) => f.draw(pass),
-            Self::Radar(f) => f.draw(pass),
         }
     }
     /// Whether data is drawn under `p`; a radial frame picks on the GPU.
@@ -342,7 +243,6 @@ impl DocumentFrame {
             Self::Radial(f) => {
                 picked(f.pick(p)).await?.is_some() || picked(f.pick_at_rest(p)).await?.is_some()
             }
-            Self::Radar(f) => f.hit_test(p).is_some(),
         })
     }
 }
@@ -366,7 +266,11 @@ fn parse_chart(family: &str, value: &str) -> Result<DocumentChart, JsValue> {
                 "box plots are Cartesian charts: open the document with FiggyChart.set_boxplot_document",
             ));
         }
-        "radar" => DocumentChart::Radar(serde_json::from_str(value).map_err(js_err)?),
+        "radar" => {
+            return Err(js_err(
+                "radar charts are polar charts: open the document with FiggyChart.set_radar_document",
+            ));
+        }
         _ => return Err(js_err("unknown bounded chart family")),
     })
 }
@@ -439,7 +343,6 @@ impl FiggyBoundedChart {
     pub fn get_document(&self) -> Result<String, JsValue> {
         match &self.chart {
             DocumentChart::Radial(c) => serde_json::to_string(c).map_err(js_err),
-            DocumentChart::Radar(c) => serde_json::to_string(c).map_err(js_err),
         }
     }
     /// Validate and prepare before replacing the SSOT, retaining the old chart on failure.
@@ -549,20 +452,11 @@ impl FiggyBoundedChart {
             let r = b.rect();
             json!({"id":id.element_id(),"rect":[r.x,r.y,r.width,r.height],"handles":b.handles().iter().map(|r|vec![r.x,r.y,r.width,r.height]).collect::<Vec<_>>()})
         };
-        let values = match (&self.frame, &self.chart) {
-            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
-                .decoration_ids(c)
-                .filter_map(|(hit, id)| Some(entry(&id, f.decoration_selection_box(c, hit)?)))
-                .collect::<Vec<_>>(),
-            (frame, _) => {
-                let map = frame
-                    .decoration_map()
-                    .ok_or_else(|| js_err("chart and frame families differ"))?;
-                map.entries()
-                    .filter_map(|(id, e)| Some(entry(&e.id, map.selection_box(id)?)))
-                    .collect::<Vec<_>>()
-            }
-        };
+        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
+        let values = f
+            .decoration_ids(c)
+            .filter_map(|(hit, id)| Some(entry(&id, f.decoration_selection_box(c, hit)?)))
+            .collect::<Vec<_>>();
         serde_json::to_string(&values).map_err(js_err)
     }
     /// The topmost decoration under a point, as its stable id. While the
@@ -579,15 +473,10 @@ impl FiggyBoundedChart {
         edit_area: bool,
     ) -> Result<Option<String>, JsValue> {
         let layer = self.chart.active_layer();
-        let hit = match (&self.frame, &self.chart) {
-            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => self
-                .annotations
-                .route_active_layer(layer, [x, y], || f.decoration_at(c, [x, y])),
-            (frame, _) => match frame.decoration_map() {
-                Some(map) => self.annotations.hit_test_active_layer(layer, map, [x, y]),
-                None => None,
-            },
-        };
+        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
+        let hit = self
+            .annotations
+            .route_active_layer(layer, [x, y], || f.decoration_at(c, [x, y]));
         let id = match hit {
             Some(LayerHit::Annotation { index, .. }) => {
                 return Ok(Some(DecorationId::Annotation(index).element_id()));
@@ -595,14 +484,7 @@ impl FiggyBoundedChart {
             Some(LayerHit::Element(id)) => id,
             None => return Ok(None),
         };
-        let key = match (&self.frame, &self.chart) {
-            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f.decoration_id(c, id),
-            (frame, _) => frame
-                .decoration_map()
-                .and_then(|map| map.element(id))
-                .map(|e| e.id.clone()),
-        };
-        let Some(key) = key else {
+        let Some(key) = f.decoration_id(c, id) else {
             return Ok(None);
         };
         if key == renderer::DecorationId::DataArea
@@ -622,16 +504,12 @@ impl FiggyBoundedChart {
             Some(name) => Some(
                 self.drawn_annotation(&name)
                     .map(DecorationId::Annotation)
-                    .or_else(|| match (&self.frame, &self.chart) {
-                        (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => f
-                            .decoration_ids(c)
+                    .or_else(|| {
+                        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) =
+                            (&self.frame, &self.chart);
+                        f.decoration_ids(c)
                             .find(|(_, id)| id.element_id() == name)
-                            .map(|(_, id)| id),
-                        (frame, _) => frame
-                            .decoration_map()?
-                            .entries()
-                            .find(|(_, e)| e.id.element_id() == name)
-                            .map(|(_, e)| e.id.clone()),
+                            .map(|(_, id)| id)
                     })
                     .ok_or_else(|| js_err("unknown decoration"))?,
             ),
@@ -654,13 +532,9 @@ impl FiggyBoundedChart {
             return self.annotation_handle(index as u32, x, y);
         }
         let id = self.frame.decoration_named(target)?;
-        match (&self.frame, &self.chart) {
-            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => {
-                f.decoration_resize_handle(c, id, [x, y])
-            }
-            (frame, _) => frame.decoration_map()?.hit_resize_handle(id, [x, y]),
-        }
-        .map(|h| format!("{h:?}"))
+        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &self.chart);
+        f.decoration_resize_handle(c, id, [x, y])
+            .map(|h| format!("{h:?}"))
     }
     pub fn drag(
         &mut self,
@@ -689,21 +563,11 @@ impl FiggyBoundedChart {
             })
             .transpose()?;
         let mut next = self.chart.clone();
-        let result = match (&self.frame, &mut next) {
-            // The radial decorations edit the chart they are placed from.
-            (DocumentFrame::Radial(f), DocumentChart::Radial(c)) => match handle {
-                Some(h) => f.resize_decoration(c, id, h, dx, dy),
-                None => f.drag_decoration(c, id, dx, dy),
-            },
-            (frame, next) => {
-                let map = frame
-                    .decoration_map()
-                    .ok_or_else(|| js_err("chart and frame families differ"))?;
-                match handle {
-                    Some(h) => map.resize_by(next.decorations_mut(), id, h, dx, dy),
-                    None => map.drag_by(next.decorations_mut(), id, dx, dy),
-                }
-            }
+        // The radial decorations edit the chart they are placed from.
+        let (DocumentFrame::Radial(f), DocumentChart::Radial(c)) = (&self.frame, &mut next);
+        let result = match handle {
+            Some(h) => f.resize_decoration(c, id, h, dx, dy),
+            None => f.drag_decoration(c, id, dx, dy),
         };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
