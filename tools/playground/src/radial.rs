@@ -1,146 +1,46 @@
-//! Bounded scenes: radial charts.
+//! The radial scene: the DataLess radial chart (pie, donut and detail ring).
 //!
-//! The family has its own small renderer that prepares a frame of an exact
-//! physical size. The host renders that frame (annotation underlay → chart →
-//! annotation overlay) into an offscreen texture and egui shows it as an image.
-//! The host is generic over `Family`, which adapts the family's names.
+//! The radial chart has its own small renderer that prepares a frame of an
+//! exact physical size. The host renders that frame (the chart, then the
+//! annotation layer) into an offscreen texture and egui shows it as an image.
 
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll, Waker};
 
-use renderer::HitId;
 use renderer::annotation::BoundedAnnotationFrame;
-use renderer::decoration::DecorationMap;
 use renderer::layout::NudgeResult;
 use renderer::radial::*;
 use renderer::text::RichText;
 use renderer::{
-    Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLayer, Color, DecorationId,
-    DecorationLayout, FrameBackground, LayerHit, LayerRef, Material, RendererDevice, ResizeHandle,
+    Anchor, Annotation, AnnotationAxis, AnnotationKind, Color, DecorationId, LayerHit, LayerRef,
+    Material, RendererDevice, ResizeHandle,
 };
 
 use crate::HostCtx;
-use crate::scenes::SceneKind;
-use crate::scenes::bounded::radial_chart;
+use crate::scenes::radial::radial_chart;
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
-/// Object-safe face of a bounded scene, used by the host loop.
-pub trait BoundedScene {
-    fn controls(&mut self, ui: &mut egui::Ui, host: &mut HostCtx<'_>);
-    fn viewport(
-        &mut self,
-        ui: &mut egui::Ui,
-        rect: egui::Rect,
-        response: &egui::Response,
-        host: &mut HostCtx<'_>,
-    );
-    fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer);
+/// A slice pick: a GPU readback polled once per frame.
+type Pick = Pin<Box<dyn Future<Output = Option<RadialTarget>>>>;
+
+/// The slice under `p`, picked on the GPU; `None` once answered without a
+/// slice, and at once when the request fails.
+fn pick(f: &Arc<RadialFrame>, p: [f32; 2]) -> Pick {
+    match f.pick(p) {
+        Ok(ticket) => Box::pin(async move { ticket.resolve().await.ok()? }),
+        Err(_) => Box::pin(async { None }),
+    }
 }
 
-/// Per-family adapter: the two renderers share a shape but not a trait.
-pub trait Family: 'static {
-    type Chart: Clone;
-    type Renderer;
-    type Frame;
-    type Target: Clone + PartialEq + std::fmt::Debug;
-    type Error: std::fmt::Display;
-
-    fn renderer(gpu: RendererDevice) -> Result<Self::Renderer, Self::Error>;
-    fn set_background(r: &mut Self::Renderer, b: FrameBackground);
-    fn prepare(
-        r: &mut Self::Renderer,
-        c: &Self::Chart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<Self::Frame>, Self::Error>;
-    fn annotations(
-        r: &mut Self::Renderer,
-        c: &Self::Chart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoundedAnnotationFrame>, Self::Error>;
-    fn end_frame(r: &Self::Renderer);
-    fn export(
-        r: &mut Self::Renderer,
-        c: &Self::Chart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, Self::Error>;
-
-    fn frame_size(f: &Self::Frame) -> (u32, u32);
-    fn draw(f: &Self::Frame, pass: &mut wgpu::RenderPass<'_>);
-    /// The data under `p`: answered at once, or by a GPU pick the host
-    /// polls on later frames (the radial chart).
-    fn pick(f: &Arc<Self::Frame>, p: [f32; 2]) -> Pick<Self::Target>;
-    /// The frame's `DecorationMap`; `None` for a chart whose decorations are
-    /// a `HitMap` of the chart (the radial chart), which overrides the
-    /// decoration methods below.
-    fn decoration_map(f: &Self::Frame) -> Option<&DecorationMap>;
-    fn decoration_at(f: &Self::Frame, _c: &Self::Chart, p: [f32; 2]) -> Option<HitId> {
-        Self::decoration_map(f)?.hit_test(p)
-    }
-    fn decoration_find(f: &Self::Frame, _c: &Self::Chart, id: &DecorationId) -> Option<HitId> {
-        let map = Self::decoration_map(f)?;
-        map.entries().find(|(_, e)| &e.id == id).map(|(hit, _)| hit)
-    }
-    fn decoration_key(f: &Self::Frame, _c: &Self::Chart, hit: HitId) -> Option<DecorationId> {
-        Self::decoration_map(f)?.element(hit).map(|e| e.id.clone())
-    }
-    fn decoration_handle(
-        f: &Self::Frame,
-        _c: &Self::Chart,
-        hit: HitId,
-        p: [f32; 2],
-    ) -> Option<ResizeHandle> {
-        Self::decoration_map(f)?.hit_resize_handle(hit, p)
-    }
-    fn move_decoration(
-        f: &Self::Frame,
-        c: &mut Self::Chart,
-        hit: HitId,
-        handle: Option<ResizeHandle>,
-        dx: f32,
-        dy: f32,
-    ) -> Option<NudgeResult> {
-        let map = Self::decoration_map(f)?;
-        let layout = Self::layout(c);
-        match handle {
-            Some(h) => map.resize_by(layout, hit, h, dx, dy),
-            None => map.drag_by(layout, hit, dx, dy),
-        }
-    }
-
-    fn background(c: &Self::Chart) -> Color;
-    fn layout(c: &mut Self::Chart) -> &mut DecorationLayout;
-    fn annotation_layer(c: &mut Self::Chart) -> &mut AnnotationLayer;
-    fn active_layer(c: &Self::Chart) -> LayerRef;
-    fn set_active_layer(c: &mut Self::Chart, l: LayerRef);
-    fn selected(c: &Self::Chart) -> Option<Self::Target>;
-    fn set_selected(c: &mut Self::Chart, t: Option<Self::Target>);
-    /// Returns `true` while a hover animation still runs.
-    fn hover(c: &mut Self::Chart, t: Option<Self::Target>, dt: f32) -> bool;
-    fn inspector(ui: &mut egui::Ui, c: &mut Self::Chart);
-}
-
-/// A data pick: ready, or a GPU readback polled once per frame.
-pub enum Pick<T> {
-    Ready(Option<T>),
-    Pending(Pin<Box<dyn Future<Output = Option<T>>>>),
-}
-impl<T> Pick<T> {
-    /// The picked target once the answer is in; `None` while it is pending.
-    fn poll(&mut self) -> Option<Option<T>> {
-        match self {
-            Self::Ready(t) => Some(t.take()),
-            Self::Pending(f) => match f.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
-                Poll::Ready(t) => Some(t),
-                Poll::Pending => None,
-            },
-        }
+/// The picked slice once the answer is in; `None` while it is pending.
+fn poll(pick: &mut Pick) -> Option<Option<RadialTarget>> {
+    match pick.as_mut().poll(&mut Context::from_waker(Waker::noop())) {
+        Poll::Ready(t) => Some(t),
+        Poll::Pending => None,
     }
 }
 
@@ -159,36 +59,28 @@ enum Drag {
     Annotation(Option<ResizeHandle>),
 }
 
-pub struct Host<F: Family> {
-    name: &'static str,
-    renderer: F::Renderer,
-    chart: F::Chart,
-    initial: F::Chart,
-    frame: Option<Arc<F::Frame>>,
+pub struct RadialHost {
+    renderer: RadialRenderer,
+    chart: RadialChart,
+    initial: RadialChart,
+    frame: Option<Arc<RadialFrame>>,
     layer: Option<Arc<BoundedAnnotationFrame>>,
     target: Option<(wgpu::Texture, egui::TextureId)>,
     drag: Drag,
     /// The press waiting for its data pick.
-    press: Option<(Press, Pick<F::Target>)>,
+    press: Option<(Press, Pick)>,
     /// The hover pick in flight, and the last answered hover.
-    hover_pick: Option<Pick<F::Target>>,
-    hovered: Option<F::Target>,
+    hover_pick: Option<Pick>,
+    hovered: Option<RadialTarget>,
     size: (u32, u32),
     error: String,
 }
 
-pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedScene>, String> {
-    fn make<F: Family>(
-        name: &'static str,
-        gpu: RendererDevice,
-        chart: F::Chart,
-    ) -> Result<Box<dyn BoundedScene>, String> {
-        let mut renderer = F::renderer(gpu).map_err(|e| e.to_string())?;
-        // Leave the background to our clear so annotation spans show under the data.
-        F::set_background(&mut renderer, FrameBackground::HostClear);
-        Ok(Box::new(Host::<F> {
-            name,
-            renderer,
+impl RadialHost {
+    pub fn create(gpu: RendererDevice) -> Result<Self, String> {
+        let chart = radial_chart();
+        Ok(Self {
+            renderer: RadialRenderer::new(gpu, FORMAT).map_err(|e| e.to_string())?,
             initial: chart.clone(),
             chart,
             frame: None,
@@ -200,22 +92,20 @@ pub fn create(kind: SceneKind, gpu: RendererDevice) -> Result<Box<dyn BoundedSce
             hovered: None,
             size: (1, 1),
             error: String::new(),
-        }))
+        })
     }
-    match kind {
-        SceneKind::Radial => make::<RadialFamily>("radial", gpu, radial_chart()),
-        _ => Err("not a bounded scene".into()),
-    }
-}
 
-impl<F: Family> Host<F> {
     /// Prepare the frame + annotation layer and render them into the texture.
     fn render(&mut self, host: &mut HostCtx<'_>, scale: f32) -> Result<(), String> {
-        let frame = F::prepare(&mut self.renderer, &self.chart, self.size, scale)
+        let frame = self
+            .renderer
+            .prepare(&self.chart, self.size, scale)
             .map_err(|e| e.to_string())?;
-        let layer = F::annotations(&mut self.renderer, &self.chart, self.size, scale)
+        let layer = self
+            .renderer
+            .prepare_annotations(&self.chart, self.size, scale)
             .map_err(|e| e.to_string())?;
-        let (w, h) = F::frame_size(&frame);
+        let (w, h) = frame.size();
         if self
             .target
             .as_ref()
@@ -225,7 +115,7 @@ impl<F: Family> Host<F> {
                 host.egui_renderer.free_texture(&id);
             }
             let texture = host.device.create_texture(&wgpu::TextureDescriptor {
-                label: Some("bounded scene"),
+                label: Some("radial scene"),
                 size: wgpu::Extent3d {
                     width: w,
                     height: h,
@@ -252,7 +142,7 @@ impl<F: Family> Host<F> {
             .unwrap()
             .0
             .create_view(&Default::default());
-        let bg = F::background(&self.chart);
+        let bg = self.chart.background;
         let mut encoder = host.device.create_command_encoder(&Default::default());
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -272,14 +162,13 @@ impl<F: Family> Host<F> {
                 })],
                 ..Default::default()
             });
-            layer.draw_underlay(&mut pass);
-            F::draw(&frame, &mut pass);
+            frame.draw(&mut pass);
             layer.draw_overlay(&mut pass);
         }
         host.queue.submit([encoder.finish()]);
         self.frame = Some(frame);
         self.layer = Some(layer);
-        F::end_frame(&self.renderer);
+        self.renderer.end_frame();
         Ok(())
     }
 
@@ -287,9 +176,9 @@ impl<F: Family> Host<F> {
         let (Some(frame), Some(layer)) = (self.frame.clone(), self.layer.clone()) else {
             return;
         };
-        let active = F::active_layer(&self.chart);
+        let active = self.chart.active_layer();
         // The selected annotation's own handles win first.
-        if let Some(DecorationId::Annotation(index)) = F::layout(&mut self.chart).selected.clone()
+        if let Some(DecorationId::Annotation(index)) = self.chart.decorations.selected.clone()
             && let Some(id) = layer.annotations().find(index)
             && let Some(h) = layer.annotations().hit_resize_handle(id, p)
         {
@@ -297,37 +186,37 @@ impl<F: Family> Host<F> {
             return;
         }
         // Then the selected decoration's resize handles.
-        if let Some(selected) = F::layout(&mut self.chart).selected.clone()
-            && let Some(id) = F::decoration_find(&frame, &self.chart, &selected)
-            && let Some(h) = F::decoration_handle(&frame, &self.chart, id, p)
+        if let Some(selected) = self.chart.decorations.selected.clone()
+            && let Some(id) = frame.decoration(&selected)
+            && let Some(h) = frame.decoration_resize_handle(&self.chart, id, p)
         {
             self.drag = Drag::Decoration(Some(h));
             return;
         }
-        match layer.route_active_layer(active, p, || F::decoration_at(&frame, &self.chart, p)) {
+        match layer.route_active_layer(active, p, || frame.decoration_at(&self.chart, p)) {
             Some(LayerHit::Annotation { index, .. }) => {
-                F::layout(&mut self.chart).selected = Some(DecorationId::Annotation(index));
+                self.chart.decorations.selected = Some(DecorationId::Annotation(index));
                 self.drag = Drag::Annotation(None);
                 return;
             }
             Some(LayerHit::Element(id)) => {
-                let key = F::decoration_key(&frame, &self.chart, id);
+                let key = frame.decoration_id(&self.chart, id);
                 // Data wins over the plot area until the area itself is selected.
                 let area_passthrough = key == Some(DecorationId::DataArea)
-                    && F::layout(&mut self.chart).selected != key;
+                    && self.chart.decorations.selected != key;
                 if !area_passthrough {
-                    F::layout(&mut self.chart).selected = key;
-                    F::set_selected(&mut self.chart, None);
+                    self.chart.decorations.selected = key;
+                    self.chart.interaction.selected = None;
                     self.drag = Drag::Decoration(None);
                     return;
                 }
-                self.press = Some((Press::AreaOrData, F::pick(&frame, p)));
+                self.press = Some((Press::AreaOrData, pick(&frame, p)));
                 self.drag = Drag::None;
                 return;
             }
             None => {}
         }
-        self.press = Some((Press::Data, F::pick(&frame, p)));
+        self.press = Some((Press::Data, pick(&frame, p)));
         self.drag = Drag::None;
     }
 
@@ -336,16 +225,16 @@ impl<F: Family> Host<F> {
         let Some((press, pick)) = &mut self.press else {
             return;
         };
-        let Some(hit) = pick.poll() else { return };
+        let Some(hit) = poll(pick) else { return };
         let area = matches!(press, Press::AreaOrData) && hit.is_none();
         self.press = None;
         if area {
-            F::layout(&mut self.chart).selected = Some(DecorationId::DataArea);
-            F::set_selected(&mut self.chart, None);
+            self.chart.decorations.selected = Some(DecorationId::DataArea);
+            self.chart.interaction.selected = None;
             self.drag = Drag::Decoration(None);
         } else {
-            F::layout(&mut self.chart).selected = None;
-            F::set_selected(&mut self.chart, hit);
+            self.chart.decorations.selected = None;
+            self.chart.interaction.selected = hit;
         }
     }
 
@@ -353,7 +242,7 @@ impl<F: Family> Host<F> {
         let (Some(frame), Some(layer)) = (self.frame.clone(), self.layer.clone()) else {
             return;
         };
-        let Some(selected) = F::layout(&mut self.chart).selected.clone() else {
+        let Some(selected) = self.chart.decorations.selected.clone() else {
             return;
         };
         let previous = self.chart.clone();
@@ -365,59 +254,60 @@ impl<F: Family> Host<F> {
                 };
                 let map = layer.annotations();
                 let Some(id) = map.find(index) else { return };
-                let items = F::annotation_layer(&mut self.chart);
+                let items = &mut self.chart.annotations;
                 match handle {
                     Some(h) => map.resize_by(items, id, h, dx, dy),
                     None => map.drag_by(items, id, dx, dy),
                 }
             }
             Drag::Decoration(handle) => {
-                let Some(id) = F::decoration_find(&frame, &self.chart, &selected) else {
+                let Some(id) = frame.decoration(&selected) else {
                     return;
                 };
-                F::move_decoration(&frame, &mut self.chart, id, handle, dx, dy)
+                match handle {
+                    Some(h) => frame.resize_decoration(&mut self.chart, id, h, dx, dy),
+                    None => frame.drag_decoration(&mut self.chart, id, dx, dy),
+                }
             }
         };
         // Keep the last feasible model when the new layout no longer fits.
         if moved == Some(NudgeResult::Moved)
-            && F::prepare(&mut self.renderer, &self.chart, self.size, scale).is_err()
+            && self.renderer.prepare(&self.chart, self.size, scale).is_err()
         {
             self.chart = previous;
         }
     }
-}
 
-impl<F: Family> BoundedScene for Host<F> {
-    fn controls(&mut self, ui: &mut egui::Ui, host: &mut HostCtx<'_>) {
+    pub fn controls(&mut self, ui: &mut egui::Ui, host: &mut HostCtx<'_>) {
         section(ui, "Chart", true, |ui| {
-            F::inspector(ui, &mut self.chart);
+            inspector(ui, &mut self.chart);
         });
         section(ui, "Selection & layers", true, |ui| {
-            ui.label(format!("Data: {:?}", F::selected(&self.chart)));
+            ui.label(format!("Data: {:?}", self.chart.interaction.selected));
             ui.label(format!(
                 "Decoration: {:?}",
-                F::layout(&mut self.chart).selected
+                self.chart.decorations.selected
             ));
-            let mut layer = F::active_layer(&self.chart);
+            let mut layer = self.chart.active_layer();
             if choice(
                 ui,
                 "Active layer",
                 &mut layer,
                 &[LayerRef::Base, LayerRef::Annotations],
             ) {
-                F::set_active_layer(&mut self.chart, layer);
+                self.chart.set_active_layer(layer);
             }
             ui.horizontal(|ui| {
-                let editing = F::layout(&mut self.chart).selected == Some(DecorationId::DataArea);
+                let editing = self.chart.decorations.selected == Some(DecorationId::DataArea);
                 if ui.selectable_label(editing, "Edit plot area").clicked() {
-                    F::layout(&mut self.chart).selected =
+                    self.chart.decorations.selected =
                         (!editing).then_some(DecorationId::DataArea);
-                    F::set_selected(&mut self.chart, None);
+                    self.chart.interaction.selected = None;
                 }
-                if let Some(sel) = F::layout(&mut self.chart).selected.clone()
+                if let Some(sel) = self.chart.decorations.selected.clone()
                     && ui.button("Reset position").clicked()
                 {
-                    F::layout(&mut self.chart).reset(&sel);
+                    self.chart.decorations.reset(&sel);
                 }
                 if ui.button("Reset scene").clicked() {
                     self.chart = self.initial.clone();
@@ -426,9 +316,9 @@ impl<F: Family> BoundedScene for Host<F> {
         });
         section(ui, "Annotations", false, |ui| {
             let accent = Color::from_rgb8(200, 40, 120);
-            let add = |chart: &mut F::Chart, kind| {
-                F::annotation_layer(chart).items.push(Annotation::new(kind));
-                F::set_active_layer(chart, LayerRef::Annotations);
+            let add = |chart: &mut RadialChart, kind| {
+                chart.annotations.items.push(Annotation::new(kind));
+                chart.set_active_layer(LayerRef::Annotations);
             };
             ui.horizontal_wrapped(|ui| {
                 if ui.button("+ Text").clicked() {
@@ -479,7 +369,7 @@ impl<F: Family> BoundedScene for Host<F> {
                     );
                 }
             });
-            let layer = F::annotation_layer(&mut self.chart);
+            let layer = &mut self.chart.annotations;
             ui.checkbox(&mut layer.visible, "Visible");
             ui.label(format!("{} items", layer.items.len()));
             if let Some(l) = &self.layer {
@@ -490,12 +380,14 @@ impl<F: Family> BoundedScene for Host<F> {
         });
         section(ui, "Export", false, |ui| {
             if ui.button("Export PNG (2x)").clicked() {
-                let result = F::export(&mut self.renderer, &self.chart, self.size, 2.0)
+                let result = self
+                    .renderer
+                    .export_rgba(&self.chart, self.size, 2.0)
                     .map_err(|e| e.to_string())
                     .and_then(|img| renderer::encode_png(&img).map_err(|e| e.to_string()))
                     .and_then(|bytes| {
                         let dir = std::path::Path::new("target/playground");
-                        let path = dir.join(format!("{}.png", self.name));
+                        let path = dir.join("radial.png");
                         std::fs::create_dir_all(dir)
                             .and_then(|_| std::fs::write(&path, &bytes))
                             .map(|_| path.display().to_string())
@@ -512,7 +404,7 @@ impl<F: Family> BoundedScene for Host<F> {
         }
     }
 
-    fn viewport(
+    pub fn viewport(
         &mut self,
         ui: &mut egui::Ui,
         rect: egui::Rect,
@@ -542,7 +434,7 @@ impl<F: Family> BoundedScene for Host<F> {
         let local = |p: egui::Pos2| [p.x - rect.left(), p.y - rect.top()];
         // Picks requested on earlier frames answer first.
         self.poll_press();
-        if let Some(hit) = self.hover_pick.as_mut().and_then(Pick::poll) {
+        if let Some(hit) = self.hover_pick.as_mut().and_then(poll) {
             self.hover_pick = None;
             self.hovered = hit;
         }
@@ -561,7 +453,7 @@ impl<F: Family> BoundedScene for Host<F> {
         ) {
             (Some(p), Some(frame)) => {
                 if self.hover_pick.is_none() {
-                    self.hover_pick = Some(F::pick(frame, local(p)));
+                    self.hover_pick = Some(pick(frame, local(p)));
                 }
             }
             _ => {
@@ -572,8 +464,8 @@ impl<F: Family> BoundedScene for Host<F> {
         if self.press.is_some() || self.hover_pick.is_some() {
             ui.ctx().request_repaint();
         }
-        let hovered = self.hovered.clone();
-        if F::hover(&mut self.chart, hovered.clone(), dt) {
+        let hovered = self.hovered;
+        if self.chart.interaction.animate_hover(hovered, dt, 0.16) {
             ui.ctx().request_repaint();
         }
         if let Some(t) = hovered {
@@ -596,7 +488,7 @@ impl<F: Family> BoundedScene for Host<F> {
         }
     }
 
-    fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer) {
+    pub fn release(&mut self, egui_renderer: &mut egui_wgpu::Renderer) {
         if let Some((_, id)) = self.target.take() {
             egui_renderer.free_texture(&id);
         }
@@ -604,15 +496,13 @@ impl<F: Family> BoundedScene for Host<F> {
         self.layer = None;
         self.press = None;
         self.hover_pick = None;
-        F::end_frame(&self.renderer);
+        self.renderer.end_frame();
     }
 }
 
 // ---------------------------------------------------------------------------
-// Radial
+// Inspector
 // ---------------------------------------------------------------------------
-
-pub struct RadialFamily;
 
 const RADIAL_MATERIALS: &[Material] = &[
     Material::Flat,
@@ -636,116 +526,7 @@ const RADIAL_FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::NameValuePercent,
 ];
 
-impl Family for RadialFamily {
-    type Chart = RadialChart;
-    type Renderer = RadialRenderer;
-    type Frame = RadialFrame;
-    type Target = RadialTarget;
-    type Error = RadialError;
-
-    fn renderer(gpu: RendererDevice) -> Result<RadialRenderer, RadialError> {
-        RadialRenderer::new(gpu, FORMAT)
-    }
-    fn set_background(r: &mut RadialRenderer, b: FrameBackground) {
-        r.set_background(b);
-    }
-    fn prepare(
-        r: &mut RadialRenderer,
-        c: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<RadialFrame>, RadialError> {
-        r.prepare(c, size, scale)
-    }
-    fn annotations(
-        r: &mut RadialRenderer,
-        c: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<Arc<BoundedAnnotationFrame>, RadialError> {
-        r.prepare_annotations(c, size, scale)
-    }
-    fn end_frame(r: &RadialRenderer) {
-        r.end_frame();
-    }
-    fn export(
-        r: &mut RadialRenderer,
-        c: &RadialChart,
-        size: (u32, u32),
-        scale: f32,
-    ) -> Result<renderer::RasterImage, RadialError> {
-        r.export_rgba(c, size, scale)
-    }
-    fn frame_size(f: &RadialFrame) -> (u32, u32) {
-        f.size()
-    }
-    fn draw(f: &RadialFrame, pass: &mut wgpu::RenderPass<'_>) {
-        f.draw(pass);
-    }
-    fn pick(f: &Arc<RadialFrame>, p: [f32; 2]) -> Pick<RadialTarget> {
-        match f.pick(p) {
-            Ok(ticket) => Pick::Pending(Box::pin(async move { ticket.resolve().await.ok()? })),
-            Err(_) => Pick::Ready(None),
-        }
-    }
-    fn decoration_map(_: &RadialFrame) -> Option<&DecorationMap> {
-        None
-    }
-    fn decoration_at(f: &RadialFrame, c: &RadialChart, p: [f32; 2]) -> Option<HitId> {
-        f.decoration_at(c, p)
-    }
-    fn decoration_find(f: &RadialFrame, _: &RadialChart, id: &DecorationId) -> Option<HitId> {
-        f.decoration(id)
-    }
-    fn decoration_key(f: &RadialFrame, c: &RadialChart, hit: HitId) -> Option<DecorationId> {
-        f.decoration_id(c, hit)
-    }
-    fn decoration_handle(
-        f: &RadialFrame,
-        c: &RadialChart,
-        hit: HitId,
-        p: [f32; 2],
-    ) -> Option<ResizeHandle> {
-        f.decoration_resize_handle(c, hit, p)
-    }
-    fn move_decoration(
-        f: &RadialFrame,
-        c: &mut RadialChart,
-        hit: HitId,
-        handle: Option<ResizeHandle>,
-        dx: f32,
-        dy: f32,
-    ) -> Option<NudgeResult> {
-        match handle {
-            Some(h) => f.resize_decoration(c, hit, h, dx, dy),
-            None => f.drag_decoration(c, hit, dx, dy),
-        }
-    }
-    fn background(c: &RadialChart) -> Color {
-        c.background
-    }
-    fn layout(c: &mut RadialChart) -> &mut DecorationLayout {
-        &mut c.decorations
-    }
-    fn annotation_layer(c: &mut RadialChart) -> &mut AnnotationLayer {
-        &mut c.annotations
-    }
-    fn active_layer(c: &RadialChart) -> LayerRef {
-        c.active_layer()
-    }
-    fn set_active_layer(c: &mut RadialChart, l: LayerRef) {
-        c.set_active_layer(l);
-    }
-    fn selected(c: &RadialChart) -> Option<RadialTarget> {
-        c.interaction.selected
-    }
-    fn set_selected(c: &mut RadialChart, t: Option<RadialTarget>) {
-        c.interaction.selected = t;
-    }
-    fn hover(c: &mut RadialChart, t: Option<RadialTarget>, dt: f32) -> bool {
-        c.interaction.animate_hover(t, dt, 0.16)
-    }
-    fn inspector(ui: &mut egui::Ui, c: &mut RadialChart) {
+fn inspector(ui: &mut egui::Ui, c: &mut RadialChart) {
         ui.horizontal(|ui| {
             ui.label("Title");
             ui.text_edit_singleline(&mut c.title);
@@ -812,4 +593,3 @@ impl Family for RadialFamily {
         // The drawn label strings are written at edit time.
         c.format_labels();
     }
-}
