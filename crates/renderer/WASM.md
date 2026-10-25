@@ -895,8 +895,7 @@ document is validated and read by `Config::from_categorical`: its
 categories become the categorical axis of the bar direction, each of its
 series a `CategoryBars` series, and its values two kinds of registered
 columns, `categorical.positions` and `categorical.values.<series id>`, the
-value columns registered as one batch so the value axis can be fitted to a
-stacked group. The value axis is fitted and rounded to nice ticks; the
+value columns registered as one batch. The value axis is fitted and rounded to nice ticks; the
 chart keeps its chart area. Opening another document replaces the series
 and the columns of the previous one; every other column stays. From there
 on the chart is edited through the Cartesian API (`get_config` /

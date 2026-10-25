@@ -983,9 +983,10 @@ nearest bar within the pick distance by the rounded rect's distance, as a
 the geometry from `CategoryBarParams` and the overrides' gap and width
 (`category_geometry_style`), never a `Style`.
 
-Nothing per bar is stored anywhere: the CPU keeps the pool lane bases, the
-group layout and, for the value axis fit only, the stacked extent of a
-batch-uploaded group (`ColumnPool::stack_extent`).
+Nothing per bar is stored anywhere: the CPU keeps the pool lane bases and
+the group layout. The value axis fit reads only the value columns' own
+statistics (`ColumnSlot::min` / `max`); the per-category totals exist only
+in this shader, on every draw.
 
 ### 5.14 Records and ragged columns in the pool
 

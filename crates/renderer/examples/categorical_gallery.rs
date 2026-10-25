@@ -23,7 +23,7 @@ fn save(r: &mut Renderer, document: &CategoricalChart, directory: &Path, name: &
         height: 620,
     });
     // The previous document's columns go; the positions come first, then
-    // the value columns as one batch, so the pool measures their stack.
+    // the value columns as one batch.
     for upload in &uploads {
         r.remove_column(&upload.column)?;
     }

@@ -2,7 +2,7 @@
 //! (`DataRenderType::CategoryBars`) through the public renderer API and the
 //! headless `export_panel_rgba`: grouped, stacked and percent bars in both
 //! directions at 1x and 2x, per-bar overrides and materials, the selected
-//! bar's outline, and the value-axis fit over the stacked extent.
+//! bar's outline, and the value-axis fit from the per-column statistics.
 //!
 //! The first series is pure red, the second pure blue, both flat with no
 //! outline and square corners unless a test says otherwise, so a colour
@@ -75,7 +75,7 @@ fn col(data: Vec<f64>) -> Column<f64> {
 }
 
 /// A renderer holding the position column and the two value columns, the
-/// values uploaded as one batch so the pool measures their stack.
+/// values uploaded as one batch.
 fn renderer(one: &[f64], two: &[f64]) -> Renderer {
     let (device, queue) = shared_device();
     let mut r = Renderer::try_new(
@@ -582,8 +582,8 @@ fn the_selection_outline_traces_an_overridden_bar() {
 }
 
 /// The value-axis fit covers what the bars draw: the grouped values and
-/// zero, the stacked extent the pool measured at upload (positive and
-/// negative stacks apart), or 0..100 for percent bars.
+/// zero, the sum of the columns' positive maxima and negative minima for
+/// stacks, or 0..100 for percent bars.
 #[test]
 fn the_value_axis_fits_the_drawn_extent() {
     let one = [10.0, 25.0, -5.0];
@@ -610,15 +610,12 @@ fn the_value_axis_fits_the_drawn_extent() {
             min <= -10.0 && max >= 25.0,
             "grouped {direction:?}: {min}..{max}"
         );
-        // Stacks: a = 30, b = 25 and -10, c = -10.
-        let (min, max) = fit(CategoryBarMode::Stacked, direction);
-        assert!(
-            min <= -10.0 && max >= 30.0,
-            "stacked {direction:?}: {min}..{max}"
-        );
-        assert!(
-            max < 40.0,
-            "stacked {direction:?}: the fit sums by category: {max}"
+        // Stacks: a = 30, b = 25 and -10, c = -10. The fit sums each
+        // column's extremes: -5 - 10 and 25 + 20.
+        assert_eq!(
+            fit(CategoryBarMode::Stacked, direction),
+            (-15.0, 45.0),
+            "stacked {direction:?}"
         );
         let (min, max) = fit(CategoryBarMode::PercentStacked, direction);
         assert!(
@@ -642,32 +639,153 @@ fn the_value_axis_fits_the_drawn_extent() {
     assert_eq!(chart.config().bottom_x.data_range(), (-0.5, 2.5));
 }
 
-/// A stacked group whose value columns were not uploaded together has no
-/// measured stack: the fit says so instead of guessing.
+/// The value axis range `auto_fit_layer_union` gives the two series `one`
+/// and `two` of `r` in `mode`, without padding.
+fn value_fit(r: &Renderer, mode: CategoryBarMode, direction: CategoryBarDirection) -> (f64, f64) {
+    let mut chart = chart(mode, direction, (0.0, 1.0));
+    let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
+    chart
+        .auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)
+        .unwrap();
+    let config = chart.config();
+    match direction {
+        CategoryBarDirection::Vertical => (config.left_y.min, config.left_y.max),
+        CategoryBarDirection::Horizontal => (config.bottom_x.min, config.bottom_x.max),
+    }
+}
+
+const DIRECTIONS: [CategoryBarDirection; 2] = [
+    CategoryBarDirection::Vertical,
+    CategoryBarDirection::Horizontal,
+];
+
+/// A stacked group fits `[Σ min(0, min_i), Σ max(0, max_i)]` over its value
+/// columns' statistics: positive columns from zero up, negative ones from
+/// zero down, and a column with both signs its positive part up and its
+/// negative part down.
 #[test]
-fn a_stack_uploaded_column_by_column_is_not_fitted() {
+fn the_stacked_fit_sums_the_columns_extremes() {
+    let cases: [(&str, [f64; 3], [f64; 3], (f64, f64)); 3] = [
+        ("positive", [10.0, 20.0, 5.0], [5.0, 30.0, 1.0], (0.0, 50.0)),
+        (
+            "negative",
+            [-10.0, -20.0, -5.0],
+            [-5.0, -30.0, -1.0],
+            (-50.0, 0.0),
+        ),
+        (
+            "mixed",
+            [10.0, 25.0, -5.0],
+            [20.0, -10.0, -5.0],
+            (-15.0, 45.0),
+        ),
+    ];
+    for (name, one, two, expected) in cases {
+        let r = renderer(&one, &two);
+        for direction in DIRECTIONS {
+            assert_eq!(
+                value_fit(&r, CategoryBarMode::Stacked, direction),
+                expected,
+                "{name} {direction:?}"
+            );
+        }
+    }
+}
+
+/// The fit reads only each column's own statistics, so a group uploaded
+/// column by column fits exactly as the same group uploaded as one batch.
+#[test]
+fn a_stack_uploaded_column_by_column_fits_as_one_batch() {
+    let one = [10.0, 25.0, -5.0];
+    let two = [20.0, -10.0, -5.0];
+    let batched = renderer(&one, &two);
     let (device, queue) = shared_device();
-    let mut r = Renderer::try_new(
+    let mut apart = Renderer::try_new(
         RendererDevice::new(device, queue),
         wgpu::TextureFormat::Rgba8Unorm,
         4 * 1024 * 1024,
     )
     .unwrap();
-    r.add_column("pos", &col(vec![0.0, 1.0, 2.0])).unwrap();
-    r.add_column("one", &col(ONE.to_vec())).unwrap();
-    r.add_column("two", &col(TWO.to_vec())).unwrap();
+    apart.add_column("pos", &col(vec![0.0, 1.0, 2.0])).unwrap();
+    apart.add_column("one", &col(one.to_vec())).unwrap();
+    apart.add_column("two", &col(two.to_vec())).unwrap();
+    for direction in DIRECTIONS {
+        for mode in [
+            CategoryBarMode::Grouped,
+            CategoryBarMode::Stacked,
+            CategoryBarMode::PercentStacked,
+        ] {
+            assert_eq!(
+                value_fit(&apart, mode, direction),
+                value_fit(&batched, mode, direction),
+                "{mode:?} {direction:?}"
+            );
+        }
+    }
+}
+
+/// The stacked fit is an upper bound: when the series peak in different
+/// categories, it is the sum of their peaks, past the tallest stack drawn.
+#[test]
+fn a_stack_peaking_in_different_categories_fits_the_sum_of_the_peaks() {
+    // Stacks: a = 31, b = 2, c = 41; the peaks 30 and 40 sum to 70.
+    let r = renderer(&[30.0, 1.0, 1.0], &[1.0, 1.0, 40.0]);
+    for direction in DIRECTIONS {
+        assert_eq!(
+            value_fit(&r, CategoryBarMode::Stacked, direction),
+            (0.0, 70.0),
+            "{direction:?}"
+        );
+    }
+}
+
+/// Percent stacks fit `0..100` from the mode alone: the fit reads no value,
+/// so a negative one does not move it (drawing refuses it, below).
+#[test]
+fn a_percent_stack_fits_zero_to_one_hundred() {
+    for (one, two) in [
+        ([10.0, 20.0, 5.0], [20.0, 10.0, 15.0]),
+        ([10.0, -20.0, 5.0], [-20.0, 10.0, 15.0]),
+    ] {
+        let r = renderer(&one, &two);
+        for direction in DIRECTIONS {
+            assert_eq!(
+                value_fit(&r, CategoryBarMode::PercentStacked, direction),
+                (0.0, 100.0),
+                "{one:?} {direction:?}"
+            );
+        }
+    }
+}
+
+/// A percent group whose value column has a negative value is refused when
+/// it is drawn, naming the series and the mode, at 1x and 2x (the first
+/// member is fine: the error names the second); the same group draws in
+/// `Stacked` mode.
+#[test]
+fn a_percent_stack_with_a_negative_value_is_refused() {
+    let mut r = renderer(&[10.0, 20.0, 5.0], &[20.0, -10.0, 15.0]);
     let direction = CategoryBarDirection::Vertical;
-    let mut chart = chart(CategoryBarMode::Stacked, direction, (0.0, 1.0));
     let series = [bars("one", RED, direction), bars("two", BLUE, direction)];
-    let error = chart
-        .auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)
-        .unwrap_err();
-    assert!(error.to_string().contains("one batch"), "{error}");
-    // Grouped bars fit from each column's own statistics.
-    let mut chart = self::chart(CategoryBarMode::Grouped, direction, (0.0, 1.0));
-    chart
-        .auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)
-        .unwrap();
+    let percent = chart(CategoryBarMode::PercentStacked, direction, (0.0, 100.0));
+    for scale in [1.0f32, 2.0] {
+        match r.export_panel_rgba(&percent, &series, scale) {
+            Err(renderer::FiggyError::InvalidSeriesConfig { series_id, reason }) => {
+                assert_eq!(series_id, "two", "{scale}x");
+                assert!(reason.contains("PercentStacked"), "{reason}");
+                assert!(reason.contains("\"two\""), "{reason}");
+                assert!(reason.contains("negative"), "{reason}");
+            }
+            Err(other) => panic!("{scale}x: expected InvalidSeriesConfig, got {other:?}"),
+            Ok(_) => panic!("{scale}x: a negative value in a percent stack drew"),
+        }
+    }
+    let stacked = chart(CategoryBarMode::Stacked, direction, (-20.0, 40.0));
+    let image = r.export_panel_rgba(&stacked, &series, 1.0).unwrap();
+    assert!(
+        bbox(&image, slot(&stacked, direction, 1, 1.0), is_blue).is_some(),
+        "the negative bar draws in a stack"
+    );
 }
 
 /// A categorical document read by `Config::from_categorical` draws through

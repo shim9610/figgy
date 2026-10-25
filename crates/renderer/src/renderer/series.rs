@@ -644,9 +644,10 @@ pub(super) fn category_bar_categories(config: &Config) -> Option<&[crate::config
 /// its corner radius and emphasis at `display_scale`.
 ///
 /// The columns are data, so they are checked here against the pool's
-/// length statistic: every column holds one value per category, and a
-/// percent stack's value columns hold no negative value (`min_of`, the
-/// pool's minimum). `lookup` resolves a column to its handle.
+/// statistics: every column holds one value per category, and a percent
+/// stack's value columns hold no negative value (`min_of`, the pool's
+/// minimum; the error names the member series that has one, whichever
+/// member is being prepared). `lookup` resolves a column to its handle.
 pub(super) fn category_bar_params<'c>(
     config: &Config,
     group: impl IntoIterator<Item = &'c SeriesConfig>,
@@ -701,12 +702,21 @@ pub(super) fn category_bar_params<'c>(
         let (_, values) = item.category_bar_columns(groups.direction);
         let handle = lookup(values)?;
         params.values[members / 4][members % 4] = lane(&handle, values)?;
+        // The shader stacks a category's positive shares of its total; a
+        // negative value would enter the total but not the stack and push
+        // the shares past 100, so the pool's minimum refuses it here.
         if groups.mode == CategoryBarMode::PercentStacked
             && min_of(values).is_some_and(|min| min < 0.0)
         {
-            return Err(invalid(format!(
-                "percent stacks need non-negative values; column {values:?} has a negative one"
-            )));
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: item.series_id.clone(),
+                reason: format!(
+                    "a PercentStacked bar group needs non-negative values: the value column \
+                     {values:?} of series {:?} has a negative value; draw it Stacked or \
+                     Grouped instead",
+                    item.series_id
+                ),
+            });
         }
         if item.series_id == series.series_id {
             member = Some(members);

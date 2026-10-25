@@ -3142,7 +3142,6 @@ fn a_record_uploads_its_fields_in_one_batch_with_statistics() {
         pool.allocation_epoch(members[0]).unwrap()
     );
     assert_eq!(pool.used_bytes(), 6 * ALIGN, "six one-block fields");
-    assert!(pool.slot(members[0]).unwrap().stack_extent.is_none());
     assert_eq!(pool.composite_kind("box"), Some("a record"));
     assert!(!pool.is_member_column("box"));
 }

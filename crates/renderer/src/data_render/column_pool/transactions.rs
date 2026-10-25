@@ -743,7 +743,6 @@ impl ColumnPool {
                         min: staged.min,
                         max: staged.max,
                         min_positive: staged.min_positive,
-                        stack_extent: None,
                     },
                 );
             }
@@ -846,7 +845,6 @@ impl ColumnPool {
                     min: staged.min,
                     max: staged.max,
                     min_positive: staged.min_positive,
-                    stack_extent: None,
                 },
             );
         }
@@ -954,8 +952,7 @@ impl ColumnPool {
     /// [`Self::begin_add_columns`] with an observer of every written pair:
     /// `observe(column, row, hi, lo)`, `column` being the index into
     /// `columns`. Records and ragged columns measure their statistics through
-    /// it while the staging write happens. An observed batch is not a bar
-    /// group and measures no [`StackExtent`].
+    /// it while the staging write happens.
     pub(super) fn begin_add_columns_observed<'a>(
         &'a mut self,
         columns: &[(&str, &dyn ColumnSource)],
@@ -1055,16 +1052,6 @@ impl ColumnPool {
         }
 
         // ── Nothing below can fail. ───────────────────────────────────────
-        // A batch the size of a bar group measures its stacked extent while
-        // it writes (`StackExtent`): row totals in fixed accumulators, fed by
-        // the pair writer's observer, so no value is read back or kept.
-        let stacked = observe.is_none()
-            && columns.len() <= model::categorical::MAX_BAR_SERIES
-            && columns
-                .iter()
-                .all(|(_, source)| source.len() <= model::categorical::MAX_CATEGORIES);
-        let mut positive = [0.0f64; model::categorical::MAX_CATEGORIES];
-        let mut negative = [0.0f64; model::categorical::MAX_CATEGORIES];
         let mut epoch = first_epoch;
         for (chunk, buffer) in chunks.iter().zip(&staging) {
             let mut view = buffer
@@ -1084,22 +1071,6 @@ impl ColumnPool {
                         source,
                         ColumnPairWriter::new_observed(dst, &mut per_column),
                     )
-                } else if stacked {
-                    let mut observe = |row: usize, hi: f32, lo: f32| {
-                        let value = hi as f64 + lo as f64;
-                        if !value.is_finite() {
-                            return;
-                        }
-                        if value > 0.0 {
-                            positive[row] += value;
-                        } else if value < 0.0 {
-                            negative[row] += value;
-                        }
-                    };
-                    write_scalar_source_as_pairs(
-                        source,
-                        ColumnPairWriter::new_observed(dst, &mut observe),
-                    )
                 } else {
                     write_scalar_source_as_pairs(source, ColumnPairWriter::new(dst))
                 };
@@ -1116,26 +1087,11 @@ impl ColumnPool {
                         min: source.min(),
                         max: source.max(),
                         min_positive: stats.min_positive,
-                        stack_extent: None,
                     },
                 );
             }
             drop(view);
             buffer.unmap();
-        }
-
-        if stacked {
-            let extent = StackExtent {
-                min: negative.iter().copied().fold(0.0, f64::min),
-                max: positive.iter().copied().fold(0.0, f64::max),
-                batch: first_epoch + 1,
-                members: columns.len(),
-            };
-            for (id, _) in columns {
-                if let Some(slot) = self.slots.get_mut(*id) {
-                    slot.stack_extent = Some(extent);
-                }
-            }
         }
 
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1494,7 +1450,6 @@ impl ColumnPool {
                 min: column.min,
                 max: column.max,
                 min_positive: column.min_positive,
-                stack_extent: None,
             };
             handles.push(ColumnHandle {
                 generation: slot.generation,
@@ -1787,7 +1742,6 @@ impl ColumnPool {
             min,
             max,
             min_positive,
-            stack_extent: None,
         };
         let handle = ColumnHandle {
             generation: slot.generation,
@@ -1993,7 +1947,6 @@ impl ColumnPool {
             min,
             max,
             min_positive,
-            stack_extent: None,
         };
         let handle = ColumnHandle {
             generation: slot.generation,

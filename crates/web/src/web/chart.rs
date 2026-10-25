@@ -1063,10 +1063,10 @@ impl FiggyChart {
     /// categorical axis and `bar_groups`, one `CategoryBars` series per
     /// document series and the columns those read: the category positions
     /// (`categorical.positions`) and one value column per series
-    /// (`categorical.values.<series id>`), registered as one batch so a
-    /// stacked group's extent is measured. The value axis is fitted to the
-    /// bars and rounded to nice ticks. The chart keeps its chart area; the
-    /// series, columns and config of a categorical document opened before
+    /// (`categorical.values.<series id>`), registered as one batch. The
+    /// value axis is fitted to the bars from the columns' statistics and
+    /// rounded to nice ticks. The chart keeps its chart area; the series,
+    /// columns and config of a categorical document opened before
     /// are replaced, every other column stays. From here on the chart is
     /// edited through the Cartesian API (`get_config` / `set_config`,
     /// `get_series` / `set_series`, the column registry).
@@ -1100,7 +1100,8 @@ impl FiggyChart {
             positions.values.len(),
             super::columns::ColumnUploadSource::Scalar(&positions.values),
         )?;
-        // The value columns go together: the batch measures the stack.
+        // The value columns go in one batch commit, the one
+        // `register_columns_f64` uses.
         let mut ids = Vec::new();
         ids.try_reserve_exact(values.len()).map_err(js_err)?;
         ids.extend(values.iter().map(|upload| upload.column.clone()));

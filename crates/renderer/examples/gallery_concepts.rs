@@ -183,8 +183,7 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         width: SIZE.0,
         height: SIZE.1,
     });
-    // The positions, then the value columns as one batch so the pool
-    // measures the stack the value axis is fitted to.
+    // The positions, then the value columns as one batch.
     let (positions, values) = uploads.split_first().expect("the positions column");
     r.add_column(positions.column.clone(), &positions.values)?;
     let columns: Vec<(&str, &dyn renderer::ColumnSource)> = values
