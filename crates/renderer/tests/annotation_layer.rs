@@ -193,7 +193,7 @@ macro_rules! family_contract {
                 assert!(Arc::ptr_eq(&f, &r.prepare(&hidden, SIZE, scale).unwrap()));
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 assert!(h.shares_rasters_with(&b), "a visible toggle re-rasterized");
-                assert!(!h.draws_underlay() && !h.draws_overlay());
+                assert!(!h.draws_overlay());
                 let hidden_pixels = r.export_rgba(&hidden, SIZE, scale).unwrap();
                 let mut bare = edited.clone();
                 bare.annotations.items.clear();
@@ -566,7 +566,7 @@ fn radial_data_anchors_are_warnings() {
         ]
     );
     assert_eq!(a.annotations().entries().count(), 1);
-    assert!(!a.draws_underlay() && a.draws_overlay());
+    assert!(a.draws_overlay());
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
     let with = r.export_rgba(&c, SIZE, 1.).unwrap();
     assert!(with.rgba != plain.rgba);

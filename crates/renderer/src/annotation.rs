@@ -11,8 +11,7 @@
 //! edit re-rasterizes only this layer.
 //!
 //! Hit testing uses the same measured geometry as the raster through an
-//! [`AnnotationMap`], the annotation twin of
-//! [`DecorationMap`](crate::decoration::DecorationMap): the renderer measures
+//! [`AnnotationMap`], a [`HitMap`] of the layer: the renderer measures
 //! text at the output scale when it registers an element, and the model's
 //! `Selectable` / `Draggable` / `Resizable` implementations for
 //! [`AnnotationElement`] turn pointer deltas back into anchors.
@@ -61,8 +60,8 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
 
 fn axis_space(axis: &AxisOptions) -> AxisSpace {
     let map = match axis.scale {
-        // Category `i` is centred at coordinate `i`, as on the bounded bar
-        // and box charts.
+        // Category `i` is centred at coordinate `i`, where category bars
+        // and boxes are centred.
         _ if axis.categories.is_some() => AxisMap::Index {
             count: axis.category_count().unwrap_or(0),
         },
@@ -83,7 +82,7 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
 
 /// Renderer-measured annotation hit map for one frame. Coordinates and drag
 /// deltas are logical pixels in the frame's own space: chart-local for
-/// bounded charts; for Cartesian charts, the config pixel space of the
+/// the radial chart; for Cartesian charts, the config pixel space of the
 /// chart's [`HitMap`], where `chart_area` sits at its own `x` / `y`.
 pub struct AnnotationMap {
     state: AnnotationLayer,
@@ -220,8 +219,8 @@ impl AnnotationMap {
 
 /// What a pointer hit on the active layer's route names: an annotation item
 /// or an element of the chart's own hit map (the Cartesian
-/// [`HitMap::for_active_layer`] map or a bounded frame's
-/// [`DecorationMap`](crate::decoration::DecorationMap)).
+/// [`HitMap::for_active_layer`] map or the radial frame's
+/// [`RadialFrame::decorations`](crate::radial::RadialFrame::decorations)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerHit {
     /// An annotation item: its index in `annotations.items` (the
@@ -291,7 +290,7 @@ pub(crate) struct RasterRequest<'a> {
     /// The frame's anchor space, in the map's logical coordinates.
     pub space: PixelSpace,
     /// The logical origin of the raster's top-left pixel (the chart area's
-    /// origin for Cartesian charts, zero for bounded charts).
+    /// origin for Cartesian charts, zero for the radial chart).
     pub origin: [f32; 2],
     /// Raster size in physical pixels.
     pub size: (u32, u32),
@@ -547,13 +546,13 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     }
 }
 
-/// The selected annotation index named by a bounded chart's decoration
+/// The selected annotation index named by the radial chart's decoration
 /// selection.
 pub(crate) fn selected_index(selected: Option<&DecorationId>) -> Option<usize> {
     AnnotationLayer::selected_index(selected)
 }
 
-// GPU side shared by the bounded renderers.
+// GPU side of the radial chart's annotation layer.
 
 /// One uploaded annotation raster and its bind group.
 pub(crate) struct LayerTexture {
@@ -561,23 +560,8 @@ pub(crate) struct LayerTexture {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// How a bounded frame treats its background.
-///
-/// `Opaque` (default) draws the chart's `background` colour inside the
-/// frame's single draw, as every bounded chart always has. `HostClear`
-/// leaves the background to the host's clear colour, which lets an
-/// annotation underlay drawn before the frame show through; the host must
-/// then clear with the chart's background colour. Pixels of a chart without
-/// an underlay are the same under both modes up to premultiplied rounding.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-pub enum FrameBackground {
-    #[default]
-    Opaque,
-    HostClear,
-}
-
-/// The fullscreen textured pipeline of one bounded renderer, created on the
-/// first frame that has an annotation to draw.
+/// The fullscreen textured pipeline of the radial renderer's annotation
+/// layer, created on the first frame that has an annotation to draw.
 pub(crate) struct AnnotationPipeline {
     pub layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
@@ -659,19 +643,18 @@ impl AnnotationPipeline {
     }
 }
 
-/// The GPU textures of one bounded annotation raster, shared between frames
+/// The GPU texture of one radial annotation raster, shared between frames
 /// that differ only in the layer's `visible` flag.
 pub(crate) struct AnnotationRasters {
-    underlay: Option<LayerTexture>,
     overlay: Option<LayerTexture>,
     map: AnnotationMap,
 }
 
-/// The annotation layer of one bounded chart frame: the two textures and
-/// their hit map. Draw [`Self::draw_underlay`] before the chart frame and
-/// [`Self::draw_overlay`] after it, into the same attachment, with the same
-/// size and format as the frame. Both are no-ops for a hidden layer and for
-/// an empty texture.
+/// The annotation layer of one radial chart frame: its texture and its hit
+/// map. Draw [`Self::draw_overlay`] after the chart frame, into the same
+/// attachment, with the same size and format as the frame; it is a no-op
+/// for a hidden layer and for a layer that draws nothing. The radial chart
+/// has no value axes, so the layer draws no span below the slices.
 pub struct BoundedAnnotationFrame {
     rasters: Arc<AnnotationRasters>,
     /// `None` until the renderer has drawn an annotation; a layer with no
@@ -692,27 +675,15 @@ impl BoundedAnnotationFrame {
         self.rasters.map.warnings()
     }
 
-    /// The pointer route of a bounded chart whose active layer is `active`
+    /// The pointer route of a radial chart whose active layer is `active`
     /// (an `Overlay` reads as `Base`): while the annotation layer is active
-    /// and shown, its items sit on top of every decoration of `decorations`
-    /// (the chart frame's map, in the same chart-local coordinates), which
-    /// all stay registered below them; otherwise the items are not part of
-    /// the route and the decorations answer alone. Data targets are not
-    /// part of either map and keep answering through the frame's own
-    /// `hit_test` on every layer.
-    pub fn hit_test_active_layer(
-        &self,
-        active: LayerRef,
-        decorations: &crate::decoration::DecorationMap,
-        position: [f32; 2],
-    ) -> Option<LayerHit> {
-        self.route_active_layer(active, position, || decorations.hit_test(position))
-    }
-
-    /// [`Self::hit_test_active_layer`] for a chart whose decorations answer
-    /// through their own hit test: `decorations` names the decoration at
-    /// `position` when the items do not take it. The radial chart passes
-    /// its frame's `decoration_at`.
+    /// and shown, its items sit on top of every decoration of the frame,
+    /// which all stay registered below them; otherwise the items are not
+    /// part of the route and the decorations answer alone. `decorations`
+    /// names the decoration at `position` when the items do not take it:
+    /// the radial frame's `decoration_at`, in the same chart-local
+    /// coordinates. Slices are not part of either map and keep answering
+    /// through the frame's GPU `pick` on every layer.
     pub fn route_active_layer(
         &self,
         active: LayerRef,
@@ -731,13 +702,6 @@ impl BoundedAnnotationFrame {
         self.size
     }
 
-    /// `true` when [`Self::draw_underlay`] draws something, so the host must
-    /// render the chart frame with [`FrameBackground::HostClear`] and clear
-    /// with the chart's background for the underlay to show.
-    pub fn draws_underlay(&self) -> bool {
-        self.visible && self.rasters.underlay.is_some()
-    }
-
     /// `true` when [`Self::draw_overlay`] draws something.
     pub fn draws_overlay(&self) -> bool {
         self.visible && self.rasters.overlay.is_some()
@@ -746,14 +710,6 @@ impl BoundedAnnotationFrame {
     /// True when the GPU rasters are shared (a `visible` toggle only).
     pub fn shares_rasters_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.rasters, &other.rasters)
-    }
-
-    pub fn draw_underlay(&self, pass: &mut wgpu::RenderPass<'_>) {
-        if self.visible
-            && let Some(layer) = &self.rasters.underlay
-        {
-            self.draw(pass, layer);
-        }
     }
 
     pub fn draw_overlay(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -821,16 +777,16 @@ impl RasterKey {
     }
 }
 
-/// Per-renderer cache of the annotation layer for bounded charts: one GPU
+/// Per-renderer cache of the radial chart's annotation layer: one GPU
 /// raster per distinct input, one frame per raster and visibility.
-pub(crate) struct BoundedAnnotationCache {
+pub(crate) struct RadialAnnotationCache {
     format: wgpu::TextureFormat,
     pipeline: Option<AnnotationPipeline>,
     rasters: Option<(RasterKey, Arc<AnnotationRasters>)>,
     frame: Option<(RasterKey, bool, Arc<BoundedAnnotationFrame>)>,
 }
 
-impl BoundedAnnotationCache {
+impl RadialAnnotationCache {
     pub fn new(format: wgpu::TextureFormat) -> Self {
         Self {
             format,
@@ -846,22 +802,12 @@ impl BoundedAnnotationCache {
     }
 
     /// Bytes a fresh raster of `layer` at `size` would allocate, for the
-    /// renderer's admission check before any GPU work.
+    /// renderer's admission check before any GPU work: one texture when a
+    /// visible item is drawn above the slices. A span is never drawn on the
+    /// radial chart (it has no value axes), so it needs none.
     pub fn bytes_needed(&self, layer: &AnnotationLayer, size: (u32, u32)) -> u64 {
-        let (underlay, overlay) =
-            layer
-                .items
-                .iter()
-                .filter(|i| i.visible)
-                .fold((false, false), |(u, o), i| {
-                    if i.is_underlay() {
-                        (true, o)
-                    } else {
-                        (u, true)
-                    }
-                });
-        let texture = u64::from(size.0) * u64::from(size.1) * 4;
-        texture * (u64::from(underlay) + u64::from(overlay))
+        let overlay = layer.items.iter().any(|i| i.visible && !i.is_underlay());
+        u64::from(size.0) * u64::from(size.1) * 4 * u64::from(overlay)
     }
 
     fn key(
@@ -937,10 +883,10 @@ impl BoundedAnnotationCache {
                             .upload(gpu, ledger, label, size, &rgba)
                     })
                 };
-                let underlay = upload(raster.underlay, "annotation underlay");
+                // The radial space has no value axes: a span is skipped
+                // with a warning and the raster has no underlay.
                 let overlay = upload(raster.overlay, "annotation overlay");
                 let rasters = Arc::new(AnnotationRasters {
-                    underlay,
                     overlay,
                     map: raster.map,
                 });
