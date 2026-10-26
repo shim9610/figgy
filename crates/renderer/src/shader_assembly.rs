@@ -198,6 +198,10 @@ mod tests {
                 crate::gpu_pick::exact_variant::STYLED_LINE,
             ),
             ("PICK_VARIANT_POLAR", crate::gpu_pick::exact_variant::POLAR),
+            (
+                "PICK_VARIANT_PATH_ARROWS",
+                crate::gpu_pick::exact_variant::PATH_ARROWS,
+            ),
             ("STYLE_MASK_COLOR", dr::STYLE_MASK_COLOR),
             ("STYLE_MASK_RADIUS", dr::STYLE_MASK_RADIUS),
             ("STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),

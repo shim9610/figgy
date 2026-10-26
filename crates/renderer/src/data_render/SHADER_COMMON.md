@@ -42,10 +42,10 @@ To change shared shader code:
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
 | `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
-| `path_arrow.wgsl` (§5.3 path form) | the path vector module |
+| `path_arrow.wgsl` (§5.3 path form) | the path vector module, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
-| `arrow.wgsl` (§5.8) | vector, the pick vector module |
+| `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | bar (category bars, box plots), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
@@ -704,6 +704,24 @@ few ulps whose round end the draw painted and the pick did not.
 
 CPU twin: `cpu_twin::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
+
+**Streamline arrowheads** pick with their line: under
+`PICK_VARIANT_PATH_ARROWS` (128), `pick_line_candidate` also runs
+`pick_path_arrow_candidate` for the segment. The exact pass binds the
+line's arc prefix (`pick_arc`, scanned with the arrow pitch, the draw's
+cache key), and `PickQueryParams.vector_min.y` is the spacing in canvas
+pixels and `vector_px` the head (length, 0, length, width). The segment
+tests the three slots nearest the cursor's arc position on it (the
+cursor projected onto the segment), each through the draw's
+`path_arrow_on_segment`, the pixel-mode projection one head long along
+the tangent through `axis_px_per_unit_at`, `arrow_place` with the middle
+pivot and no shaft, and `arrow_distance`. A hit is the segment's
+`PICK_KIND_LINE` candidate naming its nearer endpoint by the stroke's
+rule; the heads are drawn under the stroke, so an exact tie keeps the
+stroke. The per-axis gate reach (`line_px.z`) grows by a head's half
+diagonal, since a head is centred on the path. The pick line modules
+splice `arrow.wgsl` and `path_arrow.wgsl` for it; the CPU twin does not
+model the heads, which `pick_draw_agreement` holds to the paint.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
 

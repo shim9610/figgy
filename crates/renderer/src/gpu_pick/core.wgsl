@@ -47,7 +47,8 @@ const PICK_VARIANT_AREA: u32 = 8u;          // a line's area fill (§2.2)
 const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
-override PICK_VARIANT: u32 = 127u;
+const PICK_VARIANT_PATH_ARROWS: u32 = 128u; // streamline arrowheads (§5.8)
+override PICK_VARIANT: u32 = 255u;
 
 fn pick_variant(bits: u32) -> bool {
     return (PICK_VARIANT & bits) != 0u;
@@ -117,9 +118,12 @@ struct PickQueryParams {
     // pivot | `PICK_VECTOR_SCALE_PIXELS`).
     vector: vec4<u32>,
     // (scale — the `Data` factor, or `px_per_unit` times the display scale —,
-    //  shaft width, head length, head width), canvas pixels.
+    //  shaft width, head length, head width), canvas pixels. A streamline
+    //  series' arrowheads (`PICK_VARIANT_PATH_ARROWS`): (head length, 0,
+    //  head length, head width).
     vector_px: vec4<f32>,
-    // (minimum length, 0, 0, 0), canvas pixels.
+    // (minimum length, arrowhead spacing along the drawn arc — zero without
+    //  streamline arrowheads —, 0, 0), canvas pixels.
     vector_min: vec4<f32>,
     // The error bars drawn with the markers (`gpu_pick/errorbar.wgsl`): (bar
     // count — the shortest of the six columns the error-bar shader reads,

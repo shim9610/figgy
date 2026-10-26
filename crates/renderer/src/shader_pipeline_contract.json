@@ -2944,7 +2944,7 @@
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 126.0
+            "PICK_VARIANT": 254.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2952,13 +2952,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "4c48dec07a5b48d7"
+      "source": "15ed8b455b5a077f"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 126.0
+            "PICK_VARIANT": 254.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2966,13 +2966,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "ba66d6d8de98fee6"
+      "source": "680882559965e22f"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 126.0
+            "PICK_VARIANT": 254.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2980,13 +2980,13 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "c976ba4bfeea5526"
+      "source": "757f6158402310b0"
     },
     {
       "descriptor": {
         "compute": {
           "constants": {
-            "PICK_VARIANT": 126.0
+            "PICK_VARIANT": 254.0
           },
           "entryPoint": "pick_exact_candidates"
         },
@@ -2994,7 +2994,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "d59635f635845d53"
+      "source": "7e13e3ab8b5177c4"
     },
     {
       "descriptor": {
@@ -3270,7 +3270,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "950d1761e1772e2d"
+      "source": "641cac0377784f60"
     },
     {
       "descriptor": {
@@ -3282,7 +3282,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "950d1761e1772e2d"
+      "source": "641cac0377784f60"
     },
     {
       "descriptor": {
@@ -3306,7 +3306,7 @@
         "layout": 45
       },
       "kind": "compute",
-      "source": "950d1761e1772e2d"
+      "source": "641cac0377784f60"
     },
     {
       "descriptor": {

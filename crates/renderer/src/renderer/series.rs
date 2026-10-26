@@ -5,12 +5,20 @@
 use super::*;
 
 /// Whether the line `series` draws under `draw_style` walks its arc prefix:
-/// a dashed stroke takes its dash phase from it and a sketch stroke its
-/// wobble. A Milkyway ribbon is never dashed and its stars are picked by
-/// their envelope, so it needs none.
+/// a dashed stroke takes its dash phase from it, a sketch stroke its wobble
+/// and a streamline series' arrowheads their slots. A Milkyway ribbon is
+/// never dashed and its stars are picked by their envelope, so it needs
+/// none.
 pub(super) fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig) -> bool {
     if !effective_series_primitives(draw_style, &series.render_type).line {
         return false;
+    }
+    if series
+        .render_type
+        .streamlines()
+        .is_some_and(|streamlines| streamlines.arrows.is_some())
+    {
+        return true;
     }
     let Some(line) = extract_line(&series.render_type) else {
         return false;

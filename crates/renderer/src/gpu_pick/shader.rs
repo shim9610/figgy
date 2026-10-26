@@ -17,9 +17,12 @@ pub(crate) mod exact_variant {
     pub(crate) const DASH: u32 = 16;
     pub(crate) const STYLED_LINE: u32 = 32;
     pub(crate) const POLAR: u32 = 64;
+    /// A streamline series' arrowheads with its line (`gpu_pick/line.wgsl`).
+    pub(crate) const PATH_ARROWS: u32 = 128;
     /// Every path: the shader's default.
     #[cfg(test)]
-    pub(crate) const ALL: u32 = STYLED_MARKER | ERRORBAR | AREA | DASH | STYLED_LINE | POLAR;
+    pub(crate) const ALL: u32 =
+        STYLED_MARKER | ERRORBAR | AREA | DASH | STYLED_LINE | POLAR | PATH_ARROWS;
     /// The override's name in `gpu_pick/core.wgsl`.
     pub(crate) const CONSTANT: &str = "PICK_VARIANT";
 }
@@ -87,6 +90,8 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
             "data_render/common/area_piece.wgsl",
+            "data_render/common/arrow.wgsl",
+            "data_render/common/path_arrow.wgsl",
             "data_render/common/marker.wgsl",
             "gpu_pick/marker.wgsl",
             "gpu_pick/errorbar.wgsl",
@@ -106,6 +111,8 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
             "data_render/common/area_piece.wgsl",
+            "data_render/common/arrow.wgsl",
+            "data_render/common/path_arrow.wgsl",
             "gpu_pick/no_scatter.wgsl",
             "gpu_pick/line.wgsl",
             "gpu_pick/area.wgsl",
