@@ -2678,8 +2678,8 @@ const SCALE_EXTENT: f32 = 1.5;
 const TEXT_SCALE_SHARE: f64 = 0.65;
 /// The same share for a stroke element (axis lines and ticks, the colourbar
 /// ramp and its axis): anti-aliasing along its edges only, measured at most
-/// STROKE_MEASURED in the catalogue.
-const STROKE_SCALE_SHARE: f64 = 0.30;
+/// 3 % over the catalogue (the field and value-map colourbars at 2x).
+const STROKE_SCALE_SHARE: f64 = 0.05;
 
 /// The I5 ink-share limit of the element `name`: text elements carry glyphs
 /// (tick labels, titles, the legend and annotations), everything else is a
