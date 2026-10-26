@@ -6,12 +6,19 @@ break one of them, stop and ask instead of working around it.
 
 ## Design rules
 
-1. **The renderer draws the data it is given.** It never changes the dimension
-   of the data or computes statistics from it: no binning, no density
-   estimates, no gradients from a scalar field, no magnitudes from vectors, no
-   per-axis normalization. Hosts supply data in the dimensions the chart needs.
-   Visual helpers that only choose display parameters from column statistics
-   are allowed, for example `auto_fit_*`, `auto_ticks` or a size-domain fit.
+1. **The host computes data; the renderer computes appearance.** The
+   renderer draws the data it is given and never produces new values the
+   user reads as data: no binning, no density estimates, no integration (such
+   as streamlines), no running totals, no statistics shown as data, and no
+   per-axis normalization of the data. A gradient or magnitude shown as data,
+   such as arrows of ∇f or a color by |v|, is host work. Hosts supply data in
+   the dimensions the chart needs. Values that only decide how the given data
+   looks are the renderer's job: color mapping, antialiasing, shading normals
+   and shadows, projection (including normalizing ternary components only to
+   place them), dash phase, arrowhead direction along a drawn path, jitter,
+   and display parameters chosen from column statistics, for example
+   `auto_fit_*`, the tick plan or a size-domain fit. Per-point appearance
+   values are computed in the shader on every draw and never stored (rule 2).
 2. **No data copies.** Copying is allowed only for SSOT configuration. A
    resident column's only copy is the GPU column pool; the CPU keeps scalar
    statistics only (`column_pool.rs`). Values derived per point, such as mapped
@@ -57,8 +64,9 @@ follow-up.
 - **Allocations (rule 3).** Every new `Vec`, `vec!` or `collect` outside tests
   is one the plan names; list them in the PR.
 - **Copies (rules 1, 2 and 5).** No per-point data is stored or copied on the
-  CPU, nothing is computed from the data beyond display parameters, and new
-  per-point input enters through `ColumnSource`.
+  CPU, the renderer produces no value the user reads as data (rule 1:
+  appearance and display parameters only), and new per-point input enters
+  through `ColumnSource`.
 - **Streaming and new paths (rules 7 and 8).** Streamed sources are rejected
   with an explicit error, and every new path, binding, cache or module has the
   maintainer's approval in the issue.
