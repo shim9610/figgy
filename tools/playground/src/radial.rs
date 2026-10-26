@@ -378,20 +378,41 @@ impl RadialHost {
             }
         });
         section(ui, "Export", false, |ui| {
-            if ui.button("Export PNG (2x)").clicked() {
-                let result = self
-                    .renderer
-                    .export_rgba(&self.chart, self.size, 2.0)
-                    .map_err(|e| e.to_string())
-                    .and_then(|img| renderer::encode_png(&img).map_err(|e| e.to_string()))
-                    .and_then(|bytes| {
-                        let dir = std::path::Path::new("target/playground");
-                        let path = dir.join("radial.png");
-                        std::fs::create_dir_all(dir)
-                            .and_then(|_| std::fs::write(&path, &bytes))
-                            .map(|_| path.display().to_string())
-                            .map_err(|e| e.to_string())
-                    });
+            let exported = if ui.button("Export PNG (2x)").clicked() {
+                Some((
+                    "png",
+                    self.renderer
+                        .export_rgba(&self.chart, self.size, 2.0)
+                        .map_err(|e| e.to_string())
+                        .and_then(|img| renderer::encode_png(&img).map_err(|e| e.to_string())),
+                ))
+            } else if ui.button("Export SVG (2x)").clicked() {
+                Some((
+                    "svg",
+                    self.renderer
+                        .export_svg(&self.chart, self.size, 2.0)
+                        .map(String::into_bytes)
+                        .map_err(|e| e.to_string()),
+                ))
+            } else if ui.button("Export PDF (2x)").clicked() {
+                Some((
+                    "pdf",
+                    self.renderer
+                        .export_pdf(&self.chart, self.size, 2.0)
+                        .map_err(|e| e.to_string()),
+                ))
+            } else {
+                None
+            };
+            if let Some((extension, bytes)) = exported {
+                let result = bytes.and_then(|bytes| {
+                    let dir = std::path::Path::new("target/playground");
+                    let path = dir.join(format!("radial.{extension}"));
+                    std::fs::create_dir_all(dir)
+                        .and_then(|_| std::fs::write(&path, &bytes))
+                        .map(|_| path.display().to_string())
+                        .map_err(|e| e.to_string())
+                });
                 *host.status = match result {
                     Ok(path) => format!("Saved {path}"),
                     Err(e) => format!("Export failed: {e}"),

@@ -1,4 +1,5 @@
-//! PNG export of resident and streamed charts.
+//! PNG export of resident and streamed charts, and the SVG and PDF export
+//! of resident charts.
 
 use super::*;
 
@@ -32,6 +33,36 @@ impl FiggyChart {
                 scale,
                 self.clear_color,
             )
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(bytes.as_slice()))
+    }
+
+    /// Export the document as an SVG document at `scale ×` resolution: the
+    /// decorations, annotations and text as vector content (glyphs as
+    /// outlines) over each panel group's data embedded as a PNG image, with
+    /// the clear colour as its background.
+    /// JS: `const svg = await chart.export_svg(2.0);`
+    /// The same borrow and gate rules as [`Self::export_png`]. A chart with a
+    /// streamed source is rejected; the `<figgy-chart>` facade rejects it
+    /// before calling.
+    pub async fn export_svg(&mut self, scale: f32) -> Result<String, JsValue> {
+        let export_chart = Chart::new(self.chart_config().clone());
+        let series = self.chart_series().to_vec();
+        self.renderer
+            .export_document_svg_with_clear_async(&export_chart, &series, scale, self.clear_color)
+            .await
+            .map_err(js_err)
+    }
+
+    /// [`Self::export_svg`] as one-page PDF bytes.
+    /// JS: `const pdf = await chart.export_pdf(2.0);`
+    pub async fn export_pdf(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+        let export_chart = Chart::new(self.chart_config().clone());
+        let series = self.chart_series().to_vec();
+        let bytes = self
+            .renderer
+            .export_document_pdf_with_clear_async(&export_chart, &series, scale, self.clear_color)
             .await
             .map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))

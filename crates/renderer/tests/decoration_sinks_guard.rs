@@ -4,9 +4,9 @@
 //! direct text, rectangle or line draw in one of these files is a second
 //! placement the hit geometry cannot see (#38, #46).
 
-/// The files whose every text and rectangle goes through a sink, with the
-/// direct line draws each may keep: chrome that belongs to no element (a
-/// radial chart's leader lines), listed so a new one is a decision here.
+/// The files whose every text, rectangle and line goes through a sink, with
+/// the direct draws each may keep (the colourbar's ramp bands), listed so a
+/// new one is a decision here.
 const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     ("axis_render.rs", include_str!("../src/axis_render.rs"), &[]),
     (
@@ -51,7 +51,7 @@ const PLACED_FILES: &[(&str, &str, &[&str])] = &[
     (
         "radial_layout.rs",
         include_str!("../src/radial_layout.rs"),
-        &["draw_line"],
+        &[],
     ),
 ];
 

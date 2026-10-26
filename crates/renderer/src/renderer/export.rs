@@ -56,7 +56,7 @@ pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
 
 /// What an export renders: one panel or the whole layered document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ExportScope {
+pub(crate) enum ExportScope {
     Panel,
     Document,
 }
@@ -151,6 +151,42 @@ impl PanelDrawStorage<'_> {
                 }
             })
             .collect()
+    }
+}
+
+/// What [`Renderer::prepare_export`] builds for one export: its panels'
+/// prepared draws and the target they render into, with every resource
+/// those draws read kept alive until the export ends.
+pub(crate) struct ExportFrame {
+    /// The target size in physical pixels.
+    pub(crate) size: (u32, u32),
+    /// The exported area's size in logical pixels.
+    pub(crate) logical: (u32, u32),
+    /// The scaled document, placed at the target's origin.
+    pub(crate) chart: Chart,
+    /// The expanded panels of a layered document; empty for a single-layer
+    /// one, whose only panel is `chart`'s config.
+    panel_configs: Vec<Config>,
+    /// One prepared draw per panel, in panel order.
+    pub(super) items: Vec<PreparedItem>,
+    target: TrackedTexture,
+    msaa: Option<MsaaTarget>,
+    _view: ChartView,
+    _styles: Vec<ChartStyle>,
+    _pipelines: TargetPipelines,
+    #[cfg(target_arch = "wasm32")]
+    browser_scopes: Option<BrowserErrorScopes>,
+}
+
+impl ExportFrame {
+    /// Every panel's config in the scaled document's frame, in panel order:
+    /// the order of [`Self::paint_export`]'s panel indices.
+    pub(crate) fn panels(&self) -> &[Config] {
+        if self.panel_configs.is_empty() {
+            std::slice::from_ref(self.chart.config())
+        } else {
+            &self.panel_configs
+        }
     }
 }
 
@@ -272,6 +308,151 @@ impl Renderer {
         pollster::block_on(self.export_document_png_bytes_async(chart, series, scale))
     }
 
+    /// Export the whole document as an SVG document at `scale ×` resolution
+    /// (#48). The decorations are vector content from the placement the PNG
+    /// export draws with: axes, ticks, tick labels, grid, titles, legend,
+    /// colourbar, polar chrome and the annotation layer, glyphs written as
+    /// outlines. The data layer is drawn by the GPU, so each panel group's
+    /// data (fills, bodies, picked highlights, value labels) is embedded as a
+    /// PNG image of its data area, the same pixels as the PNG export; the
+    /// colourbar ramp and the Milkyway backdrop are images too, and the
+    /// Milkyway glow is omitted. The `viewBox` is in physical pixels and the
+    /// size the logical size in points (1 px = 0.75 pt).
+    ///
+    /// `scale` is clamped as for [`Self::export_document_rgba_async`]; a
+    /// series with a streamed source is rejected, as for the PNG export.
+    /// Native callers can use the blocking `Renderer::export_document_svg`.
+    pub async fn export_document_svg_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        self.export_document_svg_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// [`Self::export_document_svg_async`] over a rectangle of the clear
+    /// colour.
+    pub async fn export_document_svg_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<String> {
+        self.export_vector_scoped::<crate::vector_export::SvgOut>(chart, series, scale, clear)
+            .await
+    }
+
+    /// [`Self::export_document_svg_async`] as a one-page PDF: the page is the
+    /// logical size in points, each image a deflated RGB image with a soft
+    /// mask. Glyphs are outlines, so the text is not searchable.
+    pub async fn export_document_pdf_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.export_document_pdf_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// [`Self::export_document_pdf_async`] over a rectangle of the clear
+    /// colour.
+    pub async fn export_document_pdf_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        self.export_vector_scoped::<crate::vector_export::PdfOut>(chart, series, scale, clear)
+            .await
+    }
+
+    /// Blocking wrapper around [`Self::export_document_svg_async`]. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_svg(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        pollster::block_on(self.export_document_svg_async(chart, series, scale))
+    }
+
+    /// Blocking wrapper around [`Self::export_document_pdf_async`]. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_pdf(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        pollster::block_on(self.export_document_pdf_async(chart, series, scale))
+    }
+
+    /// The vector export in format `F`, with the PNG export's checks, device
+    /// error scopes and end-of-frame report
+    /// ([`Self::export_rgba_with_clear_scoped`]).
+    async fn export_vector_scoped<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<F::Output> {
+        for item in series {
+            self.require_resident_series(item)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let result = self
+            .export_vector_inner::<F>(chart, series, scale, clear)
+            .await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            let scope_guard = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let rendered = self
+                .export_vector_inner::<F>(chart, series, scale, clear)
+                .await;
+            let out_of_memory = scope_guard.pop().await;
+            match (rendered, out_of_memory) {
+                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export target",
+                    reason: format!("device reported out of memory during export: {error}"),
+                }),
+                (result, _) => result,
+            }
+        };
+        self.end_gpu_frame();
+        result
+    }
+
+    async fn export_vector_inner<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<F::Output> {
+        let mut frame = self.prepare_export(chart, series, scale, ExportScope::Document)?;
+        crate::vector_export::document_file::<F>(self, &mut frame, clear).await
+    }
+
     /// Export a panel with an explicit clear color behind the chart.
     ///
     /// Wrapped in device error scopes. Export is where figgy asks for its
@@ -355,6 +536,24 @@ impl Renderer {
         clear: crate::color::Color,
         scope: ExportScope,
     ) -> Result<RasterImage> {
+        let mut frame = self.prepare_export(chart, series, scale, scope)?;
+        let panels = 0..frame.items.len();
+        self.paint_export(&mut frame, panels, true, clear).await
+    }
+
+    /// The first half of an export: validate the series, scale and place
+    /// the document at the origin of a `scale ×` target, build its views,
+    /// styles and pipelines, and resolve every panel's prepared draw. Runs
+    /// once per export; [`Self::paint_export`] renders from what it returns.
+    /// Synchronous, so the browser error scopes it pushes are still open
+    /// when the first paint pops them.
+    pub(crate) fn prepare_export(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        scope: ExportScope,
+    ) -> Result<ExportFrame> {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
 
@@ -484,7 +683,6 @@ impl Renderer {
             GpuResourceKind::ExportTarget,
             create_texture_checked(&self.device, &target_desc, "figgy export target")?,
         );
-        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let msaa_export_target = match create_msaa_target(
             &self.device,
             &self.gpu_ledger,
@@ -501,10 +699,6 @@ impl Renderer {
                 None
             }
             Err(e) => return Err(e),
-        };
-        let (render_view, resolve_target, store) = match msaa_export_target.as_ref() {
-            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
-            None => (&target_view, None, wgpu::StoreOp::Store),
         };
         // Per-call set against the export format. The same prepare-phase
         // ensure as `paint` fills the styled cache, so styled variants
@@ -557,6 +751,53 @@ impl Renderer {
             &export_target_pipelines,
         )?;
         lift_annotation_overlays(&mut prepared_items, &group_sizes);
+        let PanelDrawStorage {
+            configs: panel_configs,
+            ..
+        } = storage;
+        Ok(ExportFrame {
+            size: (w, h),
+            logical: (orig.width, orig.height),
+            chart: scaled_chart,
+            panel_configs,
+            items: prepared_items,
+            target: target_tex,
+            msaa: msaa_export_target,
+            _view: view,
+            _styles: scaled_styles,
+            _pipelines: export_target_pipelines,
+            #[cfg(target_arch = "wasm32")]
+            browser_scopes: Some(browser_scopes),
+        })
+    }
+
+    /// The second half of an export: render `panels` of `frame` (a range of
+    /// its panel indices, all of them for a full export) into its target,
+    /// cleared to `clear`, and read the target back as straight-alpha RGBA.
+    /// With `chrome` false only the data slot of each panel is drawn: the
+    /// fills, bodies, picked highlights and value labels, without the grid,
+    /// decoration and annotation textures. The PNG export paints every panel
+    /// with the chrome; the vector export paints each panel group's data.
+    pub(crate) async fn paint_export(
+        &self,
+        frame: &mut ExportFrame,
+        panels: std::ops::Range<usize>,
+        chrome: bool,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        #[cfg(target_arch = "wasm32")]
+        let browser_scopes = match frame.browser_scopes.take() {
+            Some(scopes) => scopes,
+            None => BrowserErrorScopes::push(&self.device, "figgy export target")?,
+        };
+        let (w, h) = frame.size;
+        let target_tex = &frame.target;
+        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let (render_view, resolve_target, store) = match frame.msaa.as_ref() {
+            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
+            None => (&target_view, None, wgpu::StoreOp::Store),
+        };
+        let prepared_items = &frame.items[panels];
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -631,7 +872,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
+            self.paint_prepared_items(&mut pass, (w, h), prepared_items, chrome)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -664,7 +905,7 @@ impl Renderer {
                     });
             copy_encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &target_tex,
+                    texture: target_tex,
                     mip_level: 0,
                     origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
                     aspect: wgpu::TextureAspect::All,

@@ -488,6 +488,42 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
         policy: request.policy,
     };
     let mut registered = Vec::new();
+    emit_annotation_layer(request, &mut sink, &mut |placed| match placed {
+        Ok(element) => registered.push(element),
+        Err(warning) => map.warnings.push(warning),
+    });
+    for element in registered {
+        let id = map.map.register(element.clone());
+        map.entries.push((id, element));
+    }
+    if let Some(index) = request.selected
+        && let Some(id) = map.find(index)
+        && let Some(selection) = map.selection_box(id)
+    {
+        sink.ensure(Slot::Above);
+        if let Some(c) = sink.overlay.as_mut() {
+            crate::axis_render::draw_selection_box(c, &selection, origin, scale);
+        }
+    }
+    AnnotationRaster {
+        underlay: sink.underlay.map(Canvas::into_rgba),
+        overlay: sink.overlay.map(Canvas::into_rgba),
+        map,
+    }
+}
+
+/// Place every item of `request.layer` into `sink`, in index order, through
+/// [`AnnotationElement::emit`]: the one placement of the layer, which the
+/// raster paints and the vector export writes. A hidden item is skipped; an
+/// item that cannot be placed is reported to `placed` as its warning, a
+/// placed one as its element.
+pub(crate) fn emit_annotation_layer(
+    request: &RasterRequest<'_>,
+    sink: &mut dyn Sink,
+    placed: &mut dyn FnMut(Result<AnnotationElement, RenderWarning>),
+) {
+    let scale = request.scale;
+    let space = request.space;
     for (index, item) in request.layer.items.iter().enumerate() {
         if !item.visible {
             continue;
@@ -511,10 +547,10 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
         };
         let text_size = measured.map(|m| m.size);
         if geometry(&item.kind, &space, text_size).is_none() {
-            map.warnings.push(RenderWarning::AnnotationSkipped {
+            placed(Err(RenderWarning::AnnotationSkipped {
                 index,
                 reason: skip_reason(&item.kind, &space, text_size),
-            });
+            }));
             continue;
         }
         let element = AnnotationElement {
@@ -523,26 +559,8 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
             text: measured,
             handle: None,
         };
-        element.emit(request.layer, &mut sink);
-        registered.push(element);
-    }
-    for element in registered {
-        let id = map.map.register(element.clone());
-        map.entries.push((id, element));
-    }
-    if let Some(index) = request.selected
-        && let Some(id) = map.find(index)
-        && let Some(selection) = map.selection_box(id)
-    {
-        sink.ensure(Slot::Above);
-        if let Some(c) = sink.overlay.as_mut() {
-            crate::axis_render::draw_selection_box(c, &selection, origin, scale);
-        }
-    }
-    AnnotationRaster {
-        underlay: sink.underlay.map(Canvas::into_rgba),
-        overlay: sink.overlay.map(Canvas::into_rgba),
-        map,
+        element.emit(request.layer, sink);
+        placed(Ok(element));
     }
 }
 

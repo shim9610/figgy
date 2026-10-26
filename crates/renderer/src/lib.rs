@@ -40,6 +40,11 @@ pub mod streaming_source;
 mod streaming_upload;
 pub mod text_render;
 mod time_axis;
+mod vector_export;
+/// Test support: the parts the vector export writes (`cpu-twin` only).
+#[cfg(feature = "cpu-twin")]
+#[doc(hidden)]
+pub use vector_export::{WrittenPart, written_document_parts};
 
 // Model layer (chart option SSoT, data containers, preset policies) lives in
 // the sibling `model` crate. Re-exported module-by-module so every path keeps
