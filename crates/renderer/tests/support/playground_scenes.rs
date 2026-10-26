@@ -54,10 +54,11 @@ pub enum SceneKind {
     Categorical,
     BoxPlot,
     Radar,
+    LongLabels,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 17] = [
+    pub const ALL: [SceneKind; 18] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -75,6 +76,7 @@ impl SceneKind {
         SceneKind::Categorical,
         SceneKind::BoxPlot,
         SceneKind::Radar,
+        SceneKind::LongLabels,
     ];
 
     pub fn label(self) -> &'static str {
@@ -96,6 +98,7 @@ impl SceneKind {
             SceneKind::Categorical => "Categorical bars",
             SceneKind::BoxPlot => "Box plot",
             SceneKind::Radar => "Radar (spider)",
+            SceneKind::LongLabels => "Long labels (auto layout)",
         }
     }
 
@@ -147,6 +150,12 @@ impl SceneKind {
                 "A box plot document opened as box plot series on a categorical \
                  axis: pick a box, a whisker or an outlier, step with the arrows; \
                  notches, means and outliers come from the document's style."
+            }
+            SceneKind::LongLabels => {
+                "Labels such as 0.00300 under the Y title, negative decimals on the right, \
+                 a logarithmic top axis, timestamps and a colourbar, in bands set by hand. \
+                 Press \"Auto layout\" (layout::auto_layout) to fit bands, title offsets \
+                 and label formats."
             }
             SceneKind::Radar => {
                 "A radar document opened as radar series on a polar chart whose \
@@ -336,6 +345,7 @@ pub fn build(
         SceneKind::Categorical => categorical(r),
         SceneKind::BoxPlot => box_plot(r),
         SceneKind::Radar => radar(r),
+        SceneKind::LongLabels => long_labels(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -1065,6 +1075,107 @@ fn category_axis(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     ];
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The overlap `layout::auto_layout` resolves (#44), as a user reported it
+/// and left it: small optical depths whose `0.00300` labels run under the Y
+/// title, with every other kind of label that needs room beside them:
+/// negative long decimals on the right, a logarithmic top axis with adaptive
+/// labels printed as decimals, timestamps along the bottom and a colourbar
+/// with long labels under a math title. The bands are the ones a host set by
+/// hand; the playground's "Auto layout" action and the decoration oracle's
+/// second sweep apply `auto_layout` to it.
+fn long_labels(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{AxisScale, LogTickPolicy};
+    use renderer::format::TimestampLabelFormat;
+    // 2023-11-14 22:13:20 UTC, then every 45 minutes for three days.
+    const START: f64 = 1_700_000_000.0;
+    const HOURS: f64 = 72.0;
+    let n = 97;
+    let t: Vec<f64> = (0..n)
+        .map(|i| START + i as f64 * HOURS * 3600.0 / (n - 1) as f64)
+        .collect();
+    let tau: Vec<f64> = (0..n)
+        .map(|i| 0.0016 + 0.0011 * (i as f64 * 0.21).sin() + 0.0001 * noise(51, i))
+        .collect();
+    let albedo: Vec<f64> = (0..n)
+        .map(|i| 0.0024 + 0.0016 * (i as f64 * 0.13 + 0.7).cos())
+        .collect();
+    upload(r, "ll_t", t)?;
+    upload(r, "ll_tau", tau)?;
+    upload(r, "ll_albedo", albedo)?;
+
+    let blue = Color::from_rgb8(31, 119, 180);
+    let mut points = scatter_style(blue, ScatterShape::CircleFilled, 7.0);
+    points.point_color_map = Some(PointColorMap {
+        column: "ll_albedo".into(),
+    });
+    let series = vec![series(
+        "optical_depth",
+        "ll_t",
+        "ll_tau",
+        DataRenderType::ScatterLine {
+            scatter: points,
+            line: line_style(blue, 1.5),
+        },
+    )];
+
+    let mut config = base_config("Aerosol optical depth over three days", "Time (UTC)", "");
+    config.left_y.title_option.text = math_text(
+        r"Optical depth $\tau_{550}$",
+        &config.left_y.title_option.text,
+    );
+    config.bottom_x.label_style.format = LabelFormat::Timestamp(TimestampLabelFormat::default());
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.title_option.visible = true;
+    bar.axis.title_option.text = math_text(
+        r"Albedo $\omega_0 - 10^{-3}$",
+        &config.left_y.title_option.text,
+    );
+    // Room the host gave the bar's labels, not its title.
+    bar.axis.out_margin = 80.0;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(START, START + HOURS * 3600.0);
+    chart.set_y_range(0.0, 0.003);
+    chart.auto_fit_colorbar_union(r.pool(), &["ll_albedo"], 0.0)?;
+    let mut config = chart.config().clone();
+
+    // A second Y scale on the right: the same depths as a negative forcing.
+    let right = &mut config.right_y;
+    right.min = -0.0045;
+    right.max = -0.0005;
+    right.major_spacing = 0.0005;
+    right.minor_count = 4;
+    right.label_style.label_visible = true;
+    right.label_style.significant_digits = 3;
+    right.title_option.visible = true;
+    right.title_option.text = math_text(r"Forcing $\Delta F$", &config.left_y.title_option.text);
+    right.out_margin = 110.0;
+
+    // A wavelength scale on top, logarithmic with adaptive majors, its
+    // labels printed as decimals.
+    let top = &mut config.top_x;
+    top.scale = AxisScale::Logarithmic;
+    top.min = 1.0e-6;
+    top.max = 1.0e3;
+    top.log_ticks = LogTickPolicy::Adaptive;
+    top.minor_count = 8;
+    top.label_style.format = LabelFormat::Decimal;
+    top.label_style.significant_digits = 1;
+    top.label_style.label_visible = true;
+    top.title_option.visible = true;
+    top.title_option.text = math_text(
+        r"Wavelength $\lambda$ (m)",
+        &config.bottom_x.title_option.text,
+    );
+    top.out_margin = 40.0;
+
+    Ok(CartesianScene {
+        config: with_legend(config, &series),
         series,
     })
 }

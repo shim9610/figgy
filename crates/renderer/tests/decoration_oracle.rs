@@ -35,6 +35,13 @@
 //!   without an element, no element without ink; and the CPU decoration
 //!   raster is what the product exports.
 //!
+//! A second sweep runs every Cartesian scene through
+//! `layout::auto_layout` (#44) first and holds the result to the same seven
+//! invariants (the `auto_layout_*` tests): the rule 6 interactions of an
+//! auto-laid-out document. The [`LAID_OUT_EXCLUSIONS`] cover the overlap the
+//! `LongLabels` scene shows as the catalogue lays it out, which that sweep
+//! must find gone; the [`AUTO_LAYOUT_EXCLUSIONS`] what it leaves.
+//!
 //! The annotation layer runs I1, I2, I3, I6 and I7 on its
 //! renderer-measured `AnnotationMap`, with each item's ink measured on the
 //! product's exports, and its highlight painted through the chart view as
@@ -411,10 +418,142 @@ const EXCLUSIONS: &[Exclusion] = &[
     },
 ];
 
+/// Rows only the sweep of the scenes as laid out has: the `LongLabels`
+/// scene is the overlap `auto_layout` resolves (#44), as a host left it.
+/// Every one must still match there; the `auto_layout` sweep does not apply
+/// them.
+const LAID_OUT_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "LongLabels",
+        layer: "document",
+        element: "*tick_labels* x *title*",
+        inv: Inv::I4,
+        detail: "*",
+        reason: "as laid out, the 0.00300, -0.00450 and 0.000001 labels and the colourbar's \
+                 reach into their centred titles: the overlap auto_layout resolves, which the \
+                 auto_layout sweep checks clean",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "base",
+        element: "*tick_labels*",
+        inv: Inv::I2,
+        detail: "*hit another element that has no ink there ({\"*title*\": *",
+        reason: "the labels under their titles, as in I4: the title registers later and takes \
+                 the labels' pixels",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "base",
+        element: "*tick_labels*",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of *tick_labels*: *({\"*title*\": *",
+        reason: "the labels under their titles, as in I2",
+        issue: "#44",
+    },
+];
+
+/// Rows only the `auto_layout` sweep has, which it must still find.
+const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
+    Exclusion {
+        scene: "LongLabels",
+        layer: "base",
+        element: "tick_labels_top",
+        inv: Inv::I2,
+        detail: "1 of * strong ink pixels hit another element that has no ink there ({\"tick_labels_left\": 1})*",
+        reason: "at 2x the first top label, centred on the data area's corner, and the top left \
+                 label are 2.5 px apart, under each other's padded box: labels at a corner run \
+                 along their axes, which auto_layout does not move (out of scope in the plan)",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "document",
+        element: "*tick_labels_left",
+        inv: Inv::I5,
+        detail: "* ink pixels (5* %) differ by more than 96 from its 2x ink box-filtered*",
+        reason: "the Power labels (2.5×10⁻³) the auto_layout sweep switches the left and \
+                 colourbar axes to: their thin digits and script-size exponents put the \
+                 box-filtered share at 51-52 %, just past the 50 % limit, as the radar ring \
+                 labels do",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "document",
+        element: "colorbar_tick_labels",
+        inv: Inv::I5,
+        detail: "* ink pixels (5* %) differ by more than 96 from its 2x ink box-filtered*",
+        reason: "the colourbar's Power labels, as for the left axis",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "base",
+        element: "*tick_labels_right",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of tick_labels_right: *({\"axis_title_right\": *",
+        reason: "auto_layout leaves the gap (4 px) between the labels and their title; the \
+                 (+7, +5) drag moves the right labels outward under the title's padded box, as \
+                 on the twin axes' overlay. They stay grabbable elsewhere",
+        issue: "#44",
+    },
+    Exclusion {
+        scene: "LongLabels",
+        layer: "base",
+        element: "colorbar_tick_labels",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of colorbar_tick_labels: *({\"colorbar_title\": *",
+        reason: "the colourbar's labels dragged under its title, as for the right axis",
+        issue: "#44",
+    },
+];
+
+/// Which documents a sweep checks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum Sweep {
+    /// Every scene as the catalogue lays it out.
+    #[default]
+    AsLaidOut,
+    /// Every Cartesian scene through `layout::auto_layout` (#44).
+    AutoLayout,
+}
+
+impl Sweep {
+    /// The exclusions that apply to the sweep's rows: the shared table, and
+    /// the sweep's own.
+    fn exclusions(self) -> impl Iterator<Item = &'static Exclusion> {
+        EXCLUSIONS.iter().chain(self.own_exclusions())
+    }
+
+    /// The sweep's own exclusions.
+    fn own_exclusions(self) -> &'static [Exclusion] {
+        match self {
+            Sweep::AsLaidOut => LAID_OUT_EXCLUSIONS,
+            Sweep::AutoLayout => AUTO_LAYOUT_EXCLUSIONS,
+        }
+    }
+
+    /// The exclusions that must match a row of the sweep: all of them for
+    /// the scenes as laid out, which the shared table describes; only its
+    /// own for the `auto_layout` sweep, which may resolve shared rows.
+    fn held_exclusions(self) -> impl Iterator<Item = &'static Exclusion> {
+        let shared: &'static [Exclusion] = match self {
+            Sweep::AsLaidOut => EXCLUSIONS,
+            Sweep::AutoLayout => &[],
+        };
+        shared.iter().chain(self.own_exclusions())
+    }
+}
+
 /// What the sweep found: the divergences, and the counts and timings the
 /// report prints.
 #[derive(Default)]
 struct Report {
+    /// The documents the rows are of.
+    sweep: Sweep,
     rows: Vec<Row>,
     /// Checks run and failed per invariant and element kind.
     matrix: BTreeMap<(Inv, String), (usize, usize)>,
@@ -500,7 +639,7 @@ impl Report {
         let rows: Vec<&Row> = self.rows.iter().filter(|r| r.inv == inv).collect();
         let _ = writeln!(out, "{}: {} rows", inv.title(), rows.len());
         for row in &rows {
-            let excluded = EXCLUSIONS.iter().find(|e| e.matches(row));
+            let excluded = self.sweep.exclusions().find(|e| e.matches(row));
             if excluded.is_none() {
                 open += 1;
             }
@@ -519,8 +658,9 @@ impl Report {
                 row.detail
             );
         }
-        let stale: Vec<&Exclusion> = EXCLUSIONS
-            .iter()
+        let stale: Vec<&Exclusion> = self
+            .sweep
+            .held_exclusions()
             .filter(|e| e.inv == inv && !self.rows.iter().any(|r| e.matches(r)))
             .collect();
         for e in &stale {
@@ -541,7 +681,7 @@ impl Report {
 
     fn print(&self) {
         let mut out = String::new();
-        let _ = writeln!(out, "decoration oracle");
+        let _ = writeln!(out, "decoration oracle ({:?})", self.sweep);
         for line in &self.summary {
             let _ = writeln!(out, "  {line}");
         }
@@ -570,12 +710,12 @@ impl Report {
             let rows: Vec<&Row> = self.rows.iter().filter(|r| r.inv == inv).collect();
             let excluded = rows
                 .iter()
-                .filter(|r| EXCLUSIONS.iter().any(|e| e.matches(r)))
+                .filter(|r| self.sweep.exclusions().any(|e| e.matches(r)))
                 .count();
             let _ = writeln!(out, "  {}: {} / {excluded}", inv.title(), rows.len());
         }
-        let _ = writeln!(out, "exclusions: {}", EXCLUSIONS.len());
-        for e in EXCLUSIONS {
+        let _ = writeln!(out, "exclusions: {}", self.sweep.exclusions().count());
+        for e in self.sweep.exclusions() {
             let rows = self.rows.iter().filter(|r| e.matches(r)).count();
             let _ = writeln!(
                 out,
@@ -626,7 +766,17 @@ struct At<'a> {
 fn report() -> &'static Report {
     static REPORT: OnceLock<Report> = OnceLock::new();
     REPORT.get_or_init(|| {
-        let report = sweep();
+        let report = sweep(Sweep::AsLaidOut);
+        report.print();
+        report
+    })
+}
+
+/// The sweep of every Cartesian scene through `layout::auto_layout`.
+fn auto_report() -> &'static Report {
+    static REPORT: OnceLock<Report> = OnceLock::new();
+    REPORT.get_or_init(|| {
+        let report = sweep(Sweep::AutoLayout);
         report.print();
         report
     })
@@ -667,6 +817,41 @@ fn i7_hit_map_entries_are_the_emitted_elements() {
     report().assert_clean(Inv::I7);
 }
 
+#[test]
+fn auto_layout_i1_every_drawn_part_is_inside_its_panel() {
+    auto_report().assert_clean(Inv::I1);
+}
+
+#[test]
+fn auto_layout_i2_every_hit_region_is_the_drawn_outline() {
+    auto_report().assert_clean(Inv::I2);
+}
+
+#[test]
+fn auto_layout_i3_every_drawn_highlight_is_the_model_box() {
+    auto_report().assert_clean(Inv::I3);
+}
+
+#[test]
+fn auto_layout_i4_no_two_decorations_overlap() {
+    auto_report().assert_clean(Inv::I4);
+}
+
+#[test]
+fn auto_layout_i5_2x_is_1x_scaled() {
+    auto_report().assert_clean(Inv::I5);
+}
+
+#[test]
+fn auto_layout_i6_a_drag_keeps_every_element_grabbable() {
+    auto_report().assert_clean(Inv::I6);
+}
+
+#[test]
+fn auto_layout_i7_hit_map_entries_are_the_emitted_elements() {
+    auto_report().assert_clean(Inv::I7);
+}
+
 // ---------------------------------------------------------------------------
 // The sweep
 // ---------------------------------------------------------------------------
@@ -695,11 +880,15 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Categorical => "Categorical",
         SceneKind::BoxPlot => "BoxPlot",
         SceneKind::Radar => "Radar",
+        SceneKind::LongLabels => "LongLabels",
     }
 }
 
-fn sweep() -> Report {
-    let mut report = Report::default();
+fn sweep(sweep: Sweep) -> Report {
+    let mut report = Report {
+        sweep,
+        ..Report::default()
+    };
     let start = Instant::now();
     let gpu = gpu();
     let mut r = Renderer::try_new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm, POOL_BYTES)
@@ -710,6 +899,11 @@ fn sweep() -> Report {
     let mut cases = 0;
     for kind in SceneKind::ALL {
         if kind.is_radial() {
+            // The radial chart is not a `Config`: `auto_layout` has nothing
+            // to lay out there.
+            if sweep == Sweep::AutoLayout {
+                continue;
+            }
             radial += 1;
             radial_scene(&mut report, &gpu, kind);
             continue;
@@ -717,6 +911,13 @@ fn sweep() -> Report {
         cartesian += 1;
         let phase = Instant::now();
         let scene = match scenes::build(&mut r, kind, BIG_DATA_POINTS) {
+            Ok(scene) if sweep == Sweep::AutoLayout => {
+                let measure = CpuTextMeasure::for_style(&scene.config.draw_style);
+                scenes::CartesianScene {
+                    config: renderer::layout::auto_layout(&scene.config, &measure),
+                    series: scene.series,
+                }
+            }
             Ok(scene) => scene,
             Err(e) => {
                 let at = At {
