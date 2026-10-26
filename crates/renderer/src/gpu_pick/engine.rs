@@ -1735,7 +1735,7 @@ impl GpuPickEngine {
         for key in self.exact_variants(&query) {
             exact.ensure(&self.bundle, key)?;
         }
-        self.pick_with_arcs(pool, query, display_scale, &[], &exact)
+        self.pick_with_arcs(pool, query, display_scale, &[], &[], &exact)
     }
 
     /// The exact module and variant each registered series needs under
@@ -1762,12 +1762,20 @@ impl GpuPickEngine {
     /// transform, which places its dash phase and sketch wobble. A missing
     /// entry, or a buffer too short for the series, picks without it.
     /// `exact` must hold every variant [`Self::exact_variants`] names.
+    ///
+    /// The last `member_transforms.len()` registered series are line offset
+    /// members (`Config::line_offsets`), each drawn by a panel of its own
+    /// with the transform given for it here, in stacking order. They are
+    /// tested from the top of the stack first: the ticket resolves to the
+    /// last member with a hit, and to the best hit of the other series only
+    /// when no member has one.
     pub(crate) fn pick_with_arcs(
         &self,
         pool: &ColumnPool,
         query: GpuPickQuery,
         display_scale: f32,
         arcs: &[Option<Arc<wgpu::Buffer>>],
+        member_transforms: &[ScatterTransform],
         exact: &PickExactPipelines,
     ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
@@ -1821,10 +1829,12 @@ impl GpuPickEngine {
             });
         }
 
+        let members = member_transforms.len().min(self.registry.slots.len());
+        let first_member = self.registry.slots.len() - members;
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
             Self::validate_series_columns(pool, slot)?;
             let series = &slot.gpu;
-            let params = query_params(
+            let mut params = query_params(
                 series,
                 &slot.identity.series_id,
                 &query,
@@ -1849,18 +1859,23 @@ impl GpuPickEngine {
                 ],
                 series_arc(arcs, series_order, series.point_count).is_some(),
             );
+            // A line offset member is tested where its own panel draws it.
+            if let Some(member) = series_order.checked_sub(first_member) {
+                params.transform = member_transforms[member];
+            }
             self.bundle
                 .queue
                 .write_buffer(&series.query_params, 0, bytemuck::bytes_of(&params));
         }
 
+        // The final candidate, then each member's own candidate.
         let readback_tally = ChargeTally::new();
         let readback = create_buffer_checked(
             &readback_tally,
             &self.bundle.device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy GPU pick detached readback"),
-                size: CANDIDATE_BYTES,
+                size: CANDIDATE_BYTES * (1 + members as u64),
                 usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
@@ -1965,9 +1980,18 @@ impl GpuPickEngine {
             0,
             CANDIDATE_BYTES,
         );
+        for (member, slot) in self.registry.slots[first_member..].iter().enumerate() {
+            encoder.copy_buffer_to_buffer(
+                &slot.gpu.result,
+                0,
+                &readback,
+                (1 + member as u64) * CANDIDATE_BYTES,
+                CANDIDATE_BYTES,
+            );
+        }
         self.bundle.queue.submit(std::iter::once(encoder.finish()));
 
-        let slice = readback.slice(..CANDIDATE_BYTES);
+        let slice = readback.slice(..);
         let (sender, receiver) = oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
             let _ = sender.send(result);
@@ -1978,6 +2002,7 @@ impl GpuPickEngine {
                 readback,
                 receiver,
                 identities: Arc::clone(&self.registry.identities),
+                members,
                 _charge: readback_tally.into_charge(&self.bundle.ledger, GpuResourceKind::Readback),
                 _scratch_charge: None,
             },
@@ -1992,6 +2017,9 @@ pub(super) enum GpuPickTicketState {
         readback: wgpu::Buffer,
         receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
         identities: Arc<[PickIdentity]>,
+        /// How many line offset member candidates follow the final one in
+        /// `readback`, in stacking order; zero for every other pick.
+        members: usize,
         /// Credited when the ticket resolves or is abandoned — either way the
         /// MAP_READ buffer goes with it.
         _charge: GpuByteCharge,
@@ -2034,6 +2062,7 @@ impl GpuPickTicket {
             readback,
             receiver,
             identities,
+            members,
             // Dropped here: resolving consumes the readback buffer.
             _charge,
             _scratch_charge,
@@ -2051,11 +2080,21 @@ impl GpuPickTicket {
             .await
             .map_err(|_| GpuPickError::MapChannelClosed)?
             .map_err(GpuPickError::MapFailed)?;
-        let slice = readback.slice(..CANDIDATE_BYTES);
+        let slice = readback.slice(..);
         let mapped = slice
             .get_mapped_range()
             .expect("GPU pick readback is mapped after map_async");
-        let candidate = *bytemuck::from_bytes::<PickCandidateGpu>(&mapped);
+        let size = CANDIDATE_BYTES as usize;
+        let candidate_at = |index: usize| {
+            *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size])
+        };
+        // The line offset members are tested from the top of the stack: the
+        // last member with a hit (or an overflow) answers before the rest.
+        let candidate = (1..=members)
+            .rev()
+            .map(candidate_at)
+            .find(|candidate| candidate.valid != 0)
+            .unwrap_or_else(|| candidate_at(0));
         drop(mapped);
         readback.unmap();
 

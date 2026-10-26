@@ -2262,13 +2262,24 @@ impl Renderer {
     /// A series an overlay layer scales or a subplot draws must be resident:
     /// the nonresident stream pass draws one panel, so a streamed series on
     /// another panel is an explicit error rather than a silently mis-scaled
-    /// drawing.
+    /// drawing. A line offset member is new and not streamed at all (rule
+    /// 8): a nonresident member is an explicit error too.
     pub(super) fn require_resident_overlay_series(
         &self,
         config: &Config,
         series: &[SeriesConfig],
     ) -> Result<()> {
         for item in series {
+            if config.line_offset_of(&item.series_id).is_some()
+                && self.require_resident_series(item).is_err()
+            {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: "a line offset member must be resident: streamed sources are not \
+                             drawn with line offsets"
+                        .into(),
+                });
+            }
             let layer = config.layer_of_series(&item.series_id);
             if !matches!(layer, crate::LayerRef::Base)
                 && self.require_resident_series(item).is_err()

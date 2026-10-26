@@ -1543,27 +1543,36 @@ enum GpuDataPickTicketState {
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
         point_orders: Arc<[PointPaintOrder]>,
+        /// The paint order of the first line offset member; `point_orders`'
+        /// length when the layer has none.
+        first_member: usize,
     },
     Stream(DataPickTicket),
 }
 
 impl GpuDataPickTicket {
+    /// The last `members` entries of `point_orders` are line offset members
+    /// (`Config::line_offsets`), drawn by panels above every other series of
+    /// the layer: a point hit on one of them answers before any data hit.
     pub(crate) fn new(
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
         point_orders: Vec<PointPaintOrder>,
+        members: usize,
     ) -> Self {
+        let first_member = point_orders.len().saturating_sub(members);
         Self {
             state: GpuDataPickTicketState::Resident {
                 point,
                 data,
                 point_orders: point_orders.into(),
+                first_member,
             },
         }
     }
 
     pub async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
-        let (point, data, point_orders) = match self.state {
+        let (point, data, point_orders, first_member) = match self.state {
             GpuDataPickTicketState::Stream(ticket) => {
                 return ticket
                     .resolve()
@@ -1574,7 +1583,8 @@ impl GpuDataPickTicket {
                 point,
                 data,
                 point_orders,
-            } => (point, data, point_orders),
+                first_member,
+            } => (point, data, point_orders, first_member),
         };
         let point = point.resolve().await?;
         let data = data.resolve().await?;
@@ -1595,6 +1605,10 @@ impl GpuDataPickTicket {
             (None, None) => None,
             (Some(point), None) => Some(point.picked),
             (None, Some(data)) => Some(data.picked),
+            // A line offset member is tested before everything under it.
+            (Some(point), Some(_)) if point.paint_order as usize >= first_member => {
+                Some(point.picked)
+            }
             (Some(point), Some(data)) => {
                 let point_distance = point.picked.distance_px();
                 let data_distance = data.picked.distance_px();

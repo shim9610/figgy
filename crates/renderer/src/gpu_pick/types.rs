@@ -705,6 +705,8 @@ impl GpuStreamPick {
                 readback,
                 receiver,
                 identities: self.identities,
+                // A streamed pick has no line offset members (rule 8).
+                members: 0,
                 _charge: tally.into_charge(&bundle.ledger, GpuResourceKind::Readback),
                 _scratch_charge: Some(self.engine.registry.reduce._charge.clone()),
             },
