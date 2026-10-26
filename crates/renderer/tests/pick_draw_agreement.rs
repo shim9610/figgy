@@ -3498,3 +3498,118 @@ fn value_labels_pick_where_they_paint() {
         }
     }
 }
+
+/// A streamline series over the `x` / `y` columns with 10 px wide heads
+/// every 24 px of drawn arc.
+fn streamline(
+    id: &str,
+    width: f32,
+    style: renderer::line::LineStylePreset,
+    color_map: Option<&str>,
+) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Streamlines {
+            line: renderer::DataLineStyleConfig {
+                line_style: style,
+                line_color: RED,
+                line_width: width,
+                fill: None,
+                fill_color: None,
+                interpolation: renderer::data_config::LineInterpolation::Linear,
+            },
+            arrows: Some(renderer::StreamlineArrows {
+                spacing_px: 24.0,
+                head_length_px: 9.0,
+                head_width_px: 10.0,
+            }),
+            color_map: color_map.map(|column| renderer::data_config::PointColorMap {
+                column: column.into(),
+            }),
+        },
+    }
+}
+
+/// G-streamlines: a streamline series picks where its stroke and its
+/// arrowheads paint, at 1x and 2x: two curved streamlines separated by a NaN
+/// row (the gap picks nothing), solid and dashed, plain and colour-mapped,
+/// on linear axes and on a logarithmic y axis, where the heads are placed in
+/// data space and the pick follows the same placement. A pick on a head
+/// names the nearer endpoint of the segment it sits on.
+#[test]
+fn streamline_strokes_and_arrowheads_pick_where_they_paint() {
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    let xs = vec![1.5, 3.0, 4.5, 6.0, 7.5, f64::NAN, 2.0, 4.0, 6.5, 8.5];
+    let ys = vec![2.0, 3.4, 3.9, 3.5, 2.4, f64::NAN, 8.5, 6.6, 6.2, 7.4];
+    let speed = vec![0.0, 2.0, 4.0, 6.0, 8.0, f64::NAN, 10.0, 7.0, 4.0, 1.0];
+    renderer
+        .add_columns(&[
+            ("x", &col(xs) as &dyn renderer::ColumnSource),
+            ("y", &col(ys) as &dyn renderer::ColumnSource),
+            ("speed", &col(speed) as &dyn renderer::ColumnSource),
+        ])
+        .expect("upload");
+    let mut chart = bare_chart();
+    let mut bar = renderer::default::default_colorbar_options();
+    bar.visible = false;
+    bar.axis.min = 0.0;
+    bar.axis.max = 10.0;
+    // Saturated stops, so a half-covered pixel's ink is the red line's.
+    bar.colormap = renderer::ColorMap::Custom {
+        stops: vec![RED, BLUE],
+    };
+    chart.config_mut().colorbar = Some(bar);
+    let mut log = Chart::new(chart.config().clone());
+    log.config_mut().left_y.scale = renderer::config::AxisScale::Logarithmic;
+    log.config_mut().right_y.scale = renderer::config::AxisScale::Logarithmic;
+    log.set_y_range(1.0, 10.0);
+    for (chart, axes) in [(&chart, "linear"), (&log, "log y")] {
+        for (style, color_map) in [
+            (LineStylePreset::Solid, None),
+            (LineStylePreset::Dash, Some("speed")),
+        ] {
+            for scale in [1.0, 2.0] {
+                let series = [streamline("flow", 1.5, style, color_map)];
+                let what = format!("{axes} {style:?} {color_map:?}");
+                // A dashed stroke has hard, multisampled edges, as in
+                // `dashed_lines_pick_their_dashes_and_not_their_gaps`.
+                let tolerance = if style == LineStylePreset::Solid {
+                    STRICT
+                } else {
+                    MSAA_EDGE
+                };
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "flow",
+                    scale,
+                    None,
+                    &what,
+                    tolerance,
+                );
+                assert!(painted > 200, "{what}: {painted}");
+            }
+        }
+    }
+    // The gap between the streamlines picks nothing.
+    let series = [streamline("flow", 1.5, LineStylePreset::Solid, None)];
+    let gap = [
+        data_to_px(&chart, 8.0, 5.0, 1.0),
+        data_to_px(&chart, 5.0, 5.0, 1.0),
+    ];
+    assert_nothing_picks_at(
+        &mut renderer,
+        &chart,
+        &series,
+        "flow",
+        1.0,
+        &gap,
+        "the NaN gap",
+    );
+}

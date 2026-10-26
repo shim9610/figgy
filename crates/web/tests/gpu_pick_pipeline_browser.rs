@@ -141,6 +141,83 @@ async fn raw_figgy_prewarm_is_idempotent_and_pick_reuses_it() {
     assert_eq!(picked["point_index"], 1);
 }
 
+/// A streamline series goes through the wrapper whole: `set_series` /
+/// `get_series` round-trip it byte for byte, it draws, and `pick_point`
+/// on its line names the vertex the GPU pick resolves.
+#[wasm_bindgen_test(async)]
+async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
+    let mut chart = figgy::FiggyChart::create(canvas(100, 100))
+        .await
+        .expect("chart creation failed");
+    chart
+        .register_column_f32("sl-x", &[0.0, 1.0, 2.0, f32::NAN, 0.0, 2.0])
+        .expect("x-column registration failed");
+    chart
+        .register_column_f32("sl-y", &[1.0, 1.0, 1.0, f32::NAN, 0.2, 0.2])
+        .expect("y-column registration failed");
+    let series = vec![SeriesConfig {
+        series_id: "flow".into(),
+        source_id: None,
+        label: None,
+        x_column: "sl-x".into(),
+        y_column: "sl-y".into(),
+        render_type: DataRenderType::Streamlines {
+            line: renderer::DataLineStyleConfig {
+                line_width: 2.0,
+                ..renderer::DataLineStyleConfig::default()
+            },
+            arrows: Some(renderer::StreamlineArrows::default()),
+            color_map: None,
+        },
+    }];
+    let json = serde_json::to_string(&series).expect("series serialization failed");
+    chart
+        .set_series(&json)
+        .expect("streamline registration failed");
+    assert_eq!(chart.get_series().expect("series read failed"), json);
+
+    let mut config: renderer::Config =
+        serde_json::from_str(&chart.get_config().expect("config serialization failed"))
+            .expect("config JSON failed to parse");
+    config.chart_area = ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 100,
+    });
+    config.chart_title.top_margin = 0.0;
+    for axis in [
+        &mut config.top_x,
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.out_margin = 0.0;
+        axis.major_tick_length = 0.0;
+        axis.min = 0.0;
+        axis.max = 2.0;
+    }
+    chart
+        .set_config(&serde_json::to_string(&config).expect("config serialization failed"))
+        .expect("config update failed");
+    chart.resize(100, 100).expect("chart resize failed");
+    chart
+        .prewarm_gpu_picking()
+        .await
+        .expect("picker prewarm failed");
+    // The first streamline runs along y = 1, the middle of the panel.
+    let picked = chart
+        .pick_point(50.0, 50.0, 2.0)
+        .await
+        .expect("pick failed")
+        .as_string()
+        .expect("the streamline's middle vertex was not picked");
+    let picked: serde_json::Value =
+        serde_json::from_str(&picked).expect("pick payload was not JSON");
+    assert_eq!(picked["series_id"], "flow");
+    assert_eq!(picked["point_index"], 1);
+}
+
 #[wasm_bindgen_test(async)]
 async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_error() {
     let instance = create_instance();
