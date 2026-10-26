@@ -787,17 +787,7 @@ impl RadialRenderer {
         size: (u32, u32),
         scale: f32,
     ) -> Result<Arc<RadialFrame>, RadialError> {
-        chart.validate().map_err(RadialError::Invalid)?;
-        if !chart.labels_have_text() {
-            return Err(RadialError::Invalid(
-                "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
-            ));
-        }
-        if size.0 < 160 || size.1 < 160 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
-            return Err(RadialError::Invalid(
-                "radial canvas must be at least 160x160; scale must be 0.5..4",
-            ));
-        }
+        let (width, height) = self.frame_size(chart, size, scale)?;
         let fonts = crate::text_render::font_generation();
         if let Some((_, _, _, _, frame)) =
             self.cached.as_ref().filter(|(c, s, k, generation, _)| {
@@ -806,15 +796,6 @@ impl RadialRenderer {
         {
             return Ok(Arc::clone(frame));
         }
-        let width = (size.0 as f64 * f64::from(scale)).round();
-        let height = (size.1 as f64 * f64::from(scale)).round();
-        let limit = f64::from(self.gpu.device().limits().max_texture_dimension_2d);
-        if width > limit || height > limit {
-            return Err(RadialError::Invalid(
-                "radial output exceeds the device texture limit",
-            ));
-        }
-        let (width, height) = (width as u32, height as u32);
         let count = chart.slices.len() + chart.split.as_ref().map_or(0, |s| s.children.len());
         let key = annotation_key(chart);
         let reused = self
@@ -830,45 +811,13 @@ impl RadialRenderer {
             } + 112
                 + count as u64 * std::mem::size_of::<Sector>() as u64,
         )?;
-        let l = layout::layout(chart, size, scale, reused.is_none())?;
-        let globals = Globals {
-            size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
-            background: [
-                chart.background.r,
-                chart.background.g,
-                chart.background.b,
-                chart.background.a,
-            ],
-            light: [
-                chart.style.light[0],
-                chart.style.light[1],
-                chart.style.light[2],
-                0.0,
-            ],
-            shadow: [if chart.style.shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
-            groups: l.groups,
-            meta: [
-                if chart.split.is_some() { 2.0 } else { 1.0 },
-                if self.format.is_srgb() { 1.0 } else { 0.0 },
-                l.holes[0],
-                l.holes[1],
-            ],
+        let labels = if reused.is_none() {
+            layout::Labels::Raster
+        } else {
+            layout::Labels::None
         };
+        let l = layout::layout(chart, size, scale, labels)?;
         let device = self.gpu.device();
-        // gpu-alloc: Uniform
-        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("radial globals"),
-            contents: bytemuck::bytes_of(&globals),
-            usage: wgpu::BufferUsages::UNIFORM,
-        });
-        let uniform = TrackedBuffer::new(&self.ledger, GpuResourceKind::Uniform, uniform);
-        // gpu-alloc: FieldTable
-        let sectors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("radial sectors"),
-            contents: bytemuck::cast_slice(&l.sectors),
-            usage: wgpu::BufferUsages::STORAGE,
-        });
-        let sectors = TrackedBuffer::new(&self.ledger, GpuResourceKind::FieldTable, sectors);
         let annotations = if let Some(texture) = reused {
             texture
         } else {
@@ -910,26 +859,8 @@ impl RadialRenderer {
             );
             Arc::new(annotations)
         };
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("radial frame"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: sectors.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::TextureView(
-                        &annotations.create_view(&Default::default()),
-                    ),
-                },
-            ],
-        });
+        let (uniform, sectors, bind_group) =
+            self.bind_frame(chart, &l, (width, height), &annotations);
         let frame = Arc::new(RadialFrame {
             decorations: l.decorations,
             gpu: self.gpu.clone(),
@@ -952,6 +883,207 @@ impl RadialRenderer {
         self.cached = Some((FrameKey::of(chart), size, scale, fonts, Arc::clone(&frame)));
         Ok(frame)
     }
+    /// The vector export of `chart` at logical `size` and `scale` into
+    /// `out` (#48): the frame's sectors and background as one image, from a
+    /// frame laid out without labels and built uncached; then the title, the
+    /// labels with their leader lines and the split connectors from the
+    /// layout's own label emit, and the annotation overlay, as vector
+    /// content. Every inside label is drawn above every sector at its lifted
+    /// place, and no selection box is drawn.
+    // Called by the radial SVG / PDF export API, the next step of #48.
+    #[allow(dead_code)]
+    pub(crate) async fn write_vector(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+        out: &mut dyn crate::vector_export::VectorOut,
+    ) -> Result<(), RadialError> {
+        let (width, height) = self.frame_size(chart, size, scale)?;
+        let count = chart.slices.len() + chart.split.as_ref().map_or(0, |s| s.children.len());
+        self.admit(
+            u64::from(width) * u64::from(height) * 4
+                + 112
+                + count as u64 * std::mem::size_of::<Sector>() as u64,
+        )?;
+        let l = layout::layout(chart, size, scale, layout::Labels::None)?;
+        // A texture starts zeroed: the frame draws no label.
+        // gpu-alloc: PanelTexture
+        let labels = self.gpu.device().create_texture(&wgpu::TextureDescriptor {
+            label: Some("radial vector export without labels"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let labels = TrackedTexture::new(&self.ledger, GpuResourceKind::PanelTexture, labels);
+        let (_uniform, _sectors, bind_group) = self.bind_frame(chart, &l, (width, height), &labels);
+        let image = self
+            .render_rgba((width, height), |pass| {
+                pass.set_viewport(0.0, 0.0, width as f32, height as f32, 0.0, 1.0);
+                pass.set_scissor_rect(0, 0, width, height);
+                pass.set_pipeline(&self.pipeline);
+                pass.set_bind_group(0, &bind_group, &[]);
+                pass.draw(0..3, 0..1);
+            })
+            .await?;
+        let failed = |e: crate::FiggyError| RadialError::Gpu(e.to_string());
+        out.image([0, 0], &image).map_err(failed)?;
+        drop(image);
+        let canvas = crate::layout::Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        out.push_clip(canvas);
+        let mut sink = crate::vector_export::VectorSink::new(
+            out,
+            crate::sketch::DecoStroker::Precise,
+            crate::text_render::FontPolicy::Standard,
+            [0.0, 0.0],
+            scale,
+            canvas,
+        );
+        let placed = layout::layout(chart, size, scale, layout::Labels::Into(&mut sink));
+        if placed.is_ok() && chart.annotations.visible {
+            // The overlay the frame's annotation layer draws
+            // (`RadialAnnotationCache`): the radial space has no value axes,
+            // so nothing goes below the slices.
+            let request = crate::annotation::RasterRequest {
+                layer: &chart.annotations,
+                space: l.space,
+                origin: [0.0, 0.0],
+                size,
+                scale,
+                selected: None,
+                policy: crate::text_render::FontPolicy::Standard,
+            };
+            crate::annotation::emit_annotation_layer(
+                &request,
+                &mut crate::vector_export::SlotFilter {
+                    slot: crate::sink::Slot::Above,
+                    inner: &mut sink,
+                },
+                &mut |_| {},
+            );
+        }
+        let error = sink.error.take();
+        drop(sink);
+        out.pop_clip();
+        placed?;
+        error.map_or(Ok(()), |e| Err(failed(e)))
+    }
+
+    /// The physical size of `chart`'s frame at logical `size` and `scale`,
+    /// after the checks every frame passes: a valid chart whose shown
+    /// labels have text, a canvas of at least 160x160 at a scale of 0.5..4,
+    /// inside the device's texture limit.
+    fn frame_size(
+        &self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<(u32, u32), RadialError> {
+        chart.validate().map_err(RadialError::Invalid)?;
+        if !chart.labels_have_text() {
+            return Err(RadialError::Invalid(
+                "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
+            ));
+        }
+        if size.0 < 160 || size.1 < 160 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+            return Err(RadialError::Invalid(
+                "radial canvas must be at least 160x160; scale must be 0.5..4",
+            ));
+        }
+        let width = (size.0 as f64 * f64::from(scale)).round();
+        let height = (size.1 as f64 * f64::from(scale)).round();
+        let limit = f64::from(self.gpu.device().limits().max_texture_dimension_2d);
+        if width > limit || height > limit {
+            return Err(RadialError::Invalid(
+                "radial output exceeds the device texture limit",
+            ));
+        }
+        Ok((width as u32, height as u32))
+    }
+
+    /// The GPU inputs of one frame of layout `l`: its globals, its sectors
+    /// and the bind group that reads them with the label texture `labels`.
+    fn bind_frame(
+        &self,
+        chart: &RadialChart,
+        l: &layout::Layout,
+        (width, height): (u32, u32),
+        labels: &TrackedTexture,
+    ) -> (TrackedBuffer, TrackedBuffer, wgpu::BindGroup) {
+        let globals = Globals {
+            size: [width as f32, height as f32, l.sectors.len() as f32, 2.0],
+            background: [
+                chart.background.r,
+                chart.background.g,
+                chart.background.b,
+                chart.background.a,
+            ],
+            light: [
+                chart.style.light[0],
+                chart.style.light[1],
+                chart.style.light[2],
+                0.0,
+            ],
+            shadow: [if chart.style.shadow { 1.0 } else { 0.0 }, 0.0, 0.0, 0.0],
+            groups: l.groups,
+            meta: [
+                if chart.split.is_some() { 2.0 } else { 1.0 },
+                if self.format.is_srgb() { 1.0 } else { 0.0 },
+                l.holes[0],
+                l.holes[1],
+            ],
+        };
+        let device = self.gpu.device();
+        // gpu-alloc: Uniform
+        let uniform = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("radial globals"),
+            contents: bytemuck::bytes_of(&globals),
+            usage: wgpu::BufferUsages::UNIFORM,
+        });
+        let uniform = TrackedBuffer::new(&self.ledger, GpuResourceKind::Uniform, uniform);
+        // gpu-alloc: FieldTable
+        let sectors = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("radial sectors"),
+            contents: bytemuck::cast_slice(&l.sectors),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let sectors = TrackedBuffer::new(&self.ledger, GpuResourceKind::FieldTable, sectors);
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("radial frame"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: uniform.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sectors.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(
+                        &labels.create_view(&Default::default()),
+                    ),
+                },
+            ],
+        });
+        (uniform, sectors, bind_group)
+    }
+
     /// Drop internal frame/annotation references. External frames stay valid.
     /// Retired allocation credits are processed through [`Self::end_frame`].
     pub fn clear_cache(&mut self) {
@@ -995,7 +1127,21 @@ impl RadialRenderer {
     ) -> Result<RasterImage, RadialError> {
         let frame = self.prepare(chart, size, scale)?;
         let annotations = self.prepare_annotations_for(&frame, chart, scale)?;
-        let (width, height) = frame.size;
+        self.render_rgba(frame.size, |pass| {
+            frame.draw(pass);
+            annotations.draw_overlay(pass);
+        })
+        .await
+    }
+
+    /// Render `draw` into a cleared target of `width x height` physical
+    /// pixels in the renderer's format and read it back as straight-alpha
+    /// RGBA8 (linear, whatever the format's encoding).
+    async fn render_rgba(
+        &self,
+        (width, height): (u32, u32),
+        draw: impl FnOnce(&mut wgpu::RenderPass<'_>),
+    ) -> Result<RasterImage, RadialError> {
         let stride = (u64::from(width) * 4).div_ceil(256) * 256;
         let bytes = stride * u64::from(height);
         if bytes > self.gpu.device().limits().max_buffer_size {
@@ -1045,8 +1191,7 @@ impl RadialRenderer {
                 })],
                 ..Default::default()
             });
-            frame.draw(&mut pass);
-            annotations.draw_overlay(&mut pass);
+            draw(&mut pass);
         }
         encoder.copy_texture_to_buffer(
             wgpu::TexelCopyTextureInfo {

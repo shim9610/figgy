@@ -796,12 +796,26 @@ pub(super) fn emit_split_connectors(
     }
 }
 
+/// Where [`layout`] places the title, the labels, their leader lines and
+/// the split connectors.
+pub(super) enum Labels<'a> {
+    /// Nowhere: the frame's sectors and hit map only.
+    None,
+    /// Into the frame's label raster, inside labels at rest while the shader
+    /// lifts them, with the selected decoration's selection box.
+    Raster,
+    /// Into `sink` in logical pixels, inside labels at their lifted place,
+    /// without a selection box: the vector export.
+    Into(&'a mut dyn Sink),
+}
+
 pub(super) fn layout(
     chart: &RadialChart,
     size: (u32, u32),
     scale: f32,
-    annotate: bool,
+    labels: Labels<'_>,
 ) -> Result<Layout, RadialError> {
+    let annotate = matches!(labels, Labels::Raster);
     let w = size.0 as f32;
     let h = size.1 as f32;
     let mut canvas = Canvas::new(
@@ -849,19 +863,27 @@ pub(super) fn layout(
     };
     register(&mut out.decorations, DecorationId::DataArea);
     register(&mut out.decorations, DecorationId::ChartTitle);
-    let mut paint = CanvasSink::placed(
-        None,
-        Some(&mut canvas),
-        DecoStroker::Precise,
-        FontPolicy::Standard,
-        [0.0, 0.0],
-        scale,
-    );
-    if annotate {
-        emit_title(chart, &f, &mut paint);
+    let mut raster;
+    let mut paint: Option<&mut dyn Sink> = match labels {
+        Labels::None => None,
+        Labels::Raster => {
+            raster = CanvasSink::placed(
+                None,
+                Some(&mut canvas),
+                DecoStroker::Precise,
+                FontPolicy::Standard,
+                [0.0, 0.0],
+                scale,
+            );
+            Some(&mut raster)
+        }
+        Labels::Into(sink) => Some(sink),
+    };
+    if let Some(paint) = paint.as_deref_mut() {
+        emit_title(chart, &f, paint);
     }
     // While the shader lifts the inside glyphs, they are rastered at rest.
-    let inside_at_rest = !raster_moves_inside_labels(chart);
+    let inside_at_rest = annotate && !raster_moves_inside_labels(chart);
     for g in 0..if chart.split.is_some() { 2 } else { 1 } {
         let c = circle(chart, f.area, g)?;
         out.groups[g] = [
@@ -879,8 +901,8 @@ pub(super) fn layout(
         }
         for (index, slice) in c.slices.iter().enumerate() {
             if slice.value > 0.0 && slice.labels.unwrap_or(chart.labels) == RadialLabels::Inside {
-                if annotate {
-                    emit_inside(chart, &f, &c, g, index, inside_at_rest, &mut paint);
+                if let Some(paint) = paint.as_deref_mut() {
+                    emit_inside(chart, &f, &c, g, index, inside_at_rest, paint);
                 }
                 register(
                     &mut out.decorations,
@@ -889,8 +911,8 @@ pub(super) fn layout(
             }
         }
         for left_side in [true, false] {
-            if annotate {
-                emit_outside(chart, &f, &c, g, left_side, None, &mut paint);
+            if let Some(paint) = paint.as_deref_mut() {
+                emit_outside(chart, &f, &c, g, left_side, None, paint);
             }
             let (labels, n) = side_labels(chart, &c, g, left_side, scale);
             for (_, index) in &labels[..n] {
@@ -904,10 +926,9 @@ pub(super) fn layout(
             }
         }
     }
-    if annotate {
-        emit_split_connectors(chart, &out.sectors, out.groups[1], scale, &mut paint);
+    if let Some(paint) = paint {
+        emit_split_connectors(chart, &out.sectors, out.groups[1], scale, paint);
     }
-    drop(paint);
     if annotate {
         // The highlight of the selected decoration is its selection box,
         // from the same parts its hit test answers from.
@@ -976,9 +997,9 @@ mod title_tests {
         c.title = "Independent title".into();
         c.format_labels();
         for scale in [1., 2.] {
-            let legacy = layout(&c, (800, 520), scale, true).unwrap();
+            let legacy = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             c.normalize_title();
-            let original = layout(&c, (800, 520), scale, true).unwrap();
+            let original = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert_eq!(
                 legacy.annotations, original.annotations,
                 "normalization must preserve appearance"
@@ -990,7 +1011,7 @@ mod title_tests {
             let saved = c.clone();
             c.font_size *= 1.25;
             c.label_color = Color::new(0.8, 0.1, 0.1, 1.);
-            let labels = layout(&c, (800, 520), scale, true).unwrap();
+            let labels = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert_eq!(bounds(&labels, &c, true), Some(tb));
             assert_eq!(
                 crop(&labels.annotations, tb, scale),
@@ -1000,7 +1021,7 @@ mod title_tests {
             assert!(bounds(&labels, &c, false).unwrap().height > lb.height);
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.font_size += 6.;
-            let sized = layout(&c, (800, 520), scale, true).unwrap();
+            let sized = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert!(bounds(&sized, &c, true).unwrap().height > tb.height);
             let label = bounds(&sized, &c, false).unwrap();
             assert!(
@@ -1009,7 +1030,7 @@ mod title_tests {
             );
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.color = Color::new(0.1, 0.7, 0.1, 1.);
-            let colored = layout(&c, (800, 520), scale, true).unwrap();
+            let colored = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert_ne!(crop(&colored.annotations, tb, scale), title_ink);
             assert_eq!(
                 crop(&colored.annotations, lb, scale),
@@ -1019,14 +1040,14 @@ mod title_tests {
             c = saved.clone();
             c.chart_title.as_mut().unwrap().text.segments[0].bold = true;
             c.chart_title.as_mut().unwrap().text.segments[1].superscript = true;
-            let rich = layout(&c, (800, 520), scale, true).unwrap();
+            let rich = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert_ne!(
                 crop(&rich.annotations, tb, scale),
                 title_ink,
                 "rich text is actually painted"
             );
             c.chart_title.as_mut().unwrap().visible = false;
-            let hidden = layout(&c, (800, 520), scale, true).unwrap();
+            let hidden = layout(&c, (800, 520), scale, Labels::Raster).unwrap();
             assert!(bounds(&hidden, &c, true).is_none());
             c = saved;
         }
