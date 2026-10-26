@@ -34,6 +34,7 @@ pub struct Config {
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
     pub annotations: AnnotationLayer,        // dedicated annotation layer: visibility + items
     pub bar_groups: Option<BarGroups>,       // how the CategoryBars or BoxPlot series of a layer share a slot; None = the default
+    pub line_offsets: Option<LineOffsets>,   // offset spectra: line series drawn stacked by a step; None = every series where its values are
 }
 ```
 
@@ -536,6 +537,45 @@ form its box group the same way (at most 16 series and 512 boxes); their mode
 must be `Grouped` and `bar_gap` is the gap between boxes. A layer holds
 category bars or box plots, not both.
 
+### `LineOffsets` (`Config::line_offsets`)
+
+Offset spectra (a ridgeline or a waterfall of curves): line series drawn
+shifted from each other so their traces separate. The host uploads every
+curve as measured; the shift is a display parameter, like an axis range.
+`None` (key absent in JSON) draws every series where its values are.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `series` | `Vec<String>` | The member series ids in stacking order. Member `k` is drawn shifted by `k` steps, so the first member is unshifted. Line kinds only (`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`), each id once, at most `MAX_OFFSET_LINES` (32) members |
+| `step_y` | f64 | The step along y between consecutive members, in data units; on a logarithmic Y axis in decades (a factor of `10^step_y`) |
+| `step_x` | f64 | The step along x for a skewed waterfall, in the same units on `bottom_x`. Omitted from JSON at `0.0` |
+
+The members are series of the chart's base layer or of its overlays; a
+member an overlay scales moves on that overlay's Y axis. A subplot has its
+own `line_offsets` in its `config`. `Config::line_offset_of(id)` returns a
+member's shift as `[dx, dy]`. The registry rejects an unknown or duplicate
+id, a member of another kind, a non-finite step, a polar chart, more than 32
+members, a member another chart draws, a `ToSeries` fill between a member and
+another series, and a streamed (nonresident) member (`FiggyError`; rule 8).
+`Config::scaled` keeps the steps, which are data units.
+
+`Config::expand()` draws each member as an internal panel of its own, after
+the overlay panels: the panel of the layer that scales it with `bottom_x`
+moved by `-k * step_x` and the transform's Y axis by `-k * step_y` (decades
+on a log axis), every axis element hidden with `out_margin = 0` before the
+margin alignment, the title, grid, legend and colourbar hidden, and only the
+member's picked references. The base (or overlay) panel keeps the axes, the
+grid, the legend and the annotation layer and draws no member. Lines, fills,
+markers, error bars, dashes and the picked ring follow the member's panel; a
+later member is drawn over an earlier one, its fill included. A member panel
+is not a layer: `panel_layers()` reports its owner's layer for it,
+`panel_member(index)` names the member a panel draws and
+`panel_of_series(id)` the panel of a series. Each member panel costs the
+textures of an overlay, so a document with more traces uses two charts.
+`Chart::auto_fit_layer_union` fits the base range from every member's
+extents plus its shift. See the [interaction guide](INTERACTION.md#offset-spectra)
+for picks, selection and export.
+
 ### `data_config` — declarative series schema (the active API)
 
 Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which `Renderer::paint` calls) matches on `render_type` and builds the layers that variant draws (line, scatter, errorbar, bar, field, contour or vector); colors, widths, and shapes come from the matching sub-style.
@@ -909,6 +949,7 @@ pub struct Config {
     pub active_layer: LayerRef,              // 포인터 상호작용 대상 레이어. 기본값 `Base`는 차트 자체의 시리즈와 장식
     pub annotations: AnnotationLayer,        // 전용 주석 레이어: 표시 여부와 항목
     pub bar_groups: Option<BarGroups>,       // 한 레이어의 CategoryBars·BoxPlot 시리즈가 범주 칸을 나누는 방식, None이면 기본값
+    pub line_offsets: Option<LineOffsets>,   // 오프셋 스펙트럼: 선 시리즈를 일정 간격씩 밀어 쌓아 그린다. None이면 모든 시리즈를 값 그대로 그린다
 }
 ```
 
@@ -1239,6 +1280,38 @@ pub struct Config {
 512개 막대까지 둘 수 있다. 서브플롯은 자기 `bar_groups`를, 오버레이는 부모 차트의 것을 쓴다.
 `BoxPlot` 시리즈도 같은 방식으로 레이어의 상자 묶음(최대 16개 시리즈, 512개 상자)을 이루며 `mode`는
 `Grouped`여야 하고 `bar_gap`은 상자 사이 간격이다. 한 레이어에는 범주형 막대와 박스플롯 중 하나만 둔다.
+
+### `LineOffsets` (`Config::line_offsets`)
+
+오프셋 스펙트럼(능선 그래프나 폭포형 곡선 묶음)은 선 시리즈를 서로 조금씩 밀어서 그려 곡선이
+겹치지 않게 한다. 호스트는 측정한 곡선을 그대로 올리고, 미는 양은 축 범위처럼 표시 매개변수일 뿐이다.
+`None`(JSON에서 키 생략)이면 모든 시리즈를 값 그대로 그린다.
+
+| 필드 | 타입 | 의미 |
+|---|---|---|
+| `series` | `Vec<String>` | 쌓는 순서대로 적은 구성원 시리즈 id. `k`번째 구성원을 `k`칸만큼 밀어 그리므로 첫 구성원은 제자리에 있다. 선 종류(`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`)만 받고, id마다 한 번씩, 최대 `MAX_OFFSET_LINES`(32)개 |
+| `step_y` | f64 | 이웃한 구성원 사이의 y 간격(데이터 단위). 로그 Y 축에서는 데케이드 단위다(`10^step_y`배) |
+| `step_x` | f64 | 비스듬한 폭포형 그래프를 위한 x 간격. `bottom_x`에서 같은 단위를 쓰며 `0.0`이면 JSON에서 생략한다 |
+
+구성원은 차트의 기본 레이어나 오버레이의 시리즈다. 오버레이가 스케일하는 구성원은 그 오버레이의
+Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_offsets`를 둔다.
+`Config::line_offset_of(id)`는 구성원이 밀린 양을 `[dx, dy]`로 돌려준다. 레지스트리는 모르는 id나
+중복 id, 다른 종류의 구성원, 유한하지 않은 간격, 극좌표 차트, 32개를 넘는 구성원, 다른 차트가
+그리는 구성원, 구성원과 다른 시리즈를 잇는 `ToSeries` 채우기, 스트리밍(비상주) 구성원을
+`FiggyError`로 거부한다(규칙 8). 간격은 데이터 단위이므로 `Config::scaled`는 그대로 둔다.
+
+`Config::expand()`는 구성원마다 내부 패널을 하나씩 오버레이 패널 뒤에 만든다. 그 구성원을
+스케일하는 레이어의 패널을 복사해 `bottom_x`를 `-k * step_x`만큼, 변환이 읽는 Y 축을
+`-k * step_y`만큼(로그 축에서는 데케이드 단위로) 옮기고, 축 요소를 모두 숨긴 뒤 여백 맞춤 전에
+`out_margin = 0`으로 둔다. 제목·그리드·범례·색상 막대도 숨기고 그 구성원의 선택 참조만 남긴다.
+기본(또는 오버레이) 패널은 축·그리드·범례·주석 레이어를 그대로 갖고 구성원은 그리지 않는다.
+선, 채우기, 마커, 오차 막대, 점선 무늬와 선택 고리는 구성원의 패널을 따르고, 뒤의 구성원은
+채우기까지 앞 구성원 위에 그린다. 구성원 패널은 레이어가 아니다. `panel_layers()`는 구성원 패널에
+대해 그 주인 레이어를 답하고, `panel_member(index)`는 패널이 그리는 구성원을,
+`panel_of_series(id)`는 시리즈를 그리는 패널을 알려 준다. 구성원 패널 하나는 오버레이 하나만큼
+텍스처를 쓰므로 곡선이 더 많으면 차트 둘로 나눈다. `Chart::auto_fit_layer_union`은 모든 구성원의
+범위에 밀린 양을 더해 기본 범위를 맞춘다. 선택, 히트 테스트와 출력은
+[상호작용 가이드(영문)](INTERACTION.md#offset-spectra)에 있다.
 
 ### `data_config` 시리즈 선언 형식
 

@@ -5932,4 +5932,103 @@ mod step_selection_tests {
             Some(point("a", 0))
         );
     }
+
+    // A line offset is a display shift: stepping walks the source indices
+    // and the series order exactly as without one.
+    #[test]
+    fn step_selection_ignores_line_offsets() {
+        let series = [
+            entry("a", "x", "ya", line()),
+            entry("b", "x", "yb", line()),
+            entry("c", "x", "yb", line()),
+        ];
+        let columns = HashMap::from([("x", 10), ("ya", 10), ("yb", 8)]);
+        let walk = |offsets: Option<LineOffsets>| {
+            let mut config = selected(point("a", 2));
+            config.line_offsets = offsets;
+            let mut moves = Vec::new();
+            for (dx, dy) in [(3, 0), (0, 1), (100, 0), (0, 1), (-1, -1), (0, -100)] {
+                moves.push(step(&mut config, &series, &columns, dx, dy));
+            }
+            moves
+        };
+        let plain = walk(None);
+        assert_eq!(plain[0], Some(point("a", 5)));
+        assert_eq!(
+            walk(Some(LineOffsets {
+                series: vec!["c".into(), "a".into(), "b".into()],
+                step_y: 2.5,
+                step_x: 0.5,
+            })),
+            plain
+        );
+    }
+
+    // The layout rules and the member rules of a line offset group.
+    #[test]
+    fn line_offsets_are_validated_with_and_without_the_series() {
+        let series = [
+            entry("a", "x", "ya", line()),
+            entry("b", "x", "yb", line()),
+            entry("h", "e", "c", histogram(BarOrientation::Vertical)),
+        ];
+        let group = |ids: &[&str]| LineOffsets {
+            series: ids.iter().map(|id| (*id).into()).collect(),
+            step_y: 1.0,
+            step_x: 0.0,
+        };
+        let mut config = crate::default::default_config();
+        config.line_offsets = Some(group(&["a", "b"]));
+        assert_eq!(config.validate_line_offsets(&series), Ok(()));
+        assert_eq!(config.line_offset_of("a"), Some([0.0, 0.0]));
+        assert_eq!(config.line_offset_of("b"), Some([0.0, 1.0]));
+        assert_eq!(config.line_offset_of("h"), None);
+        let rejected = |offsets: LineOffsets, edit: fn(&mut Config)| {
+            let mut config = crate::default::default_config();
+            config.line_offsets = Some(offsets);
+            edit(&mut config);
+            config.validate_line_offsets(&series).is_err()
+        };
+        assert!(rejected(group(&["a", "a"]), |_| {}), "duplicate");
+        assert!(rejected(group(&["a", ""]), |_| {}), "empty id");
+        assert!(rejected(group(&["a", "zz"]), |_| {}), "unknown");
+        assert!(rejected(group(&["h"]), |_| {}), "no line");
+        let mut nan = group(&["a"]);
+        nan.step_y = f64::INFINITY;
+        assert!(rejected(nan, |_| {}), "non-finite");
+        let many: Vec<String> = (0..=MAX_OFFSET_LINES).map(|i| format!("s{i}")).collect();
+        assert!(
+            LineOffsets {
+                series: many,
+                ..Default::default()
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            rejected(group(&["a"]), |c| {
+                c.polar = Some(crate::polar::PolarOptions::default())
+            }),
+            "polar"
+        );
+        assert!(
+            rejected(group(&["a"]), |c| c.subplots.push(crate::layer::Subplot {
+                series: vec!["a".into()],
+                ..Default::default()
+            })),
+            "drawn by a subplot"
+        );
+        // A fill between a member and another series spans two panels.
+        let mut filled = series.clone();
+        if let DataRenderType::Line { line } = &mut filled[1].render_type {
+            line.fill = Some(LineFill::ToSeries("a".into()));
+        }
+        let mut config = crate::default::default_config();
+        config.line_offsets = Some(group(&["a"]));
+        assert!(config.validate_line_offsets(&filled).is_err());
+        config.line_offsets = Some(group(&["a", "b"]));
+        assert!(config.validate_line_offsets(&filled).is_err());
+        config.line_offsets = None;
+        assert_eq!(config.validate_line_offsets(&filled), Ok(()));
+    }
 }

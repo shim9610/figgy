@@ -1576,6 +1576,49 @@ mod draw_style_serde_tests {
         serde_json::to_value(default_config()).expect("serialize Config")
     }
 
+    // `line_offsets` is additive: absent at its default, so an older document
+    // parses and re-serializes byte-identically; `step_x` is omitted at zero;
+    // set, it round-trips, on the chart and on a subplot's chart.
+    #[test]
+    fn line_offsets_round_trip_and_old_documents_unchanged() {
+        use crate::data_config::LineOffsets;
+        let json = default_config_json();
+        assert!(json.get("line_offsets").is_none(), "{json}");
+        let text = serde_json::to_string(&default_config()).unwrap();
+        let old: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(old.line_offsets, None);
+        assert_eq!(serde_json::to_string(&old).unwrap(), text);
+
+        let mut cfg = default_config();
+        cfg.line_offsets = Some(LineOffsets {
+            series: vec!["a".into(), "b".into()],
+            step_y: 0.5,
+            step_x: 0.0,
+        });
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(
+            json["line_offsets"],
+            serde_json::json!({ "series": ["a", "b"], "step_y": 0.5 })
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        cfg.line_offsets.as_mut().unwrap().step_x = -0.25;
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.line_offsets = cfg.line_offsets.clone();
+        cfg.subplots.push(subplot);
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["line_offsets"]["step_x"], serde_json::json!(-0.25));
+        assert_eq!(
+            json["subplots"][0]["config"]["line_offsets"],
+            json["line_offsets"]
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        // A partial group reads the missing keys as their defaults.
+        let partial: LineOffsets = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
+        assert_eq!(partial.step_y, 0.0);
+        // A scaled export keeps the steps: they are data units.
+        assert_eq!(cfg.scaled(2.0).line_offsets, cfg.line_offsets);
+    }
+
     // The layer fields are additive schema in the same way: `active_layer`,
     // `annotations` and `overlays` are absent at their defaults (so every
     // document written before them is byte-identical), parse to the defaults

@@ -2013,4 +2013,163 @@ mod tests {
         assert_eq!(edited.bottom_x.categories, categories(2));
         assert_eq!(edited.subplots[1].config.bottom_x.categories, categories(2));
     }
+
+    fn offsets(ids: &[&str], step_y: f64, step_x: f64) -> crate::data_config::LineOffsets {
+        crate::data_config::LineOffsets {
+            series: ids.iter().map(|id| (*id).into()).collect(),
+            step_y,
+            step_x,
+        }
+    }
+
+    /// Line offset members expand after the overlays, each the panel of the
+    /// layer that scales it with the transform axes moved by its shift
+    /// (decades on a log axis) and nothing but its own data and picks; the
+    /// base and overlay panels draw none of them and keep everything else.
+    #[test]
+    fn line_offset_members_expand_into_shifted_panels() {
+        use crate::config::{PickedPointRef, PickedPointsConfig};
+        let mut cfg = two_layer_config();
+        cfg.bottom_x.min = 0.0;
+        cfg.bottom_x.max = 10.0;
+        cfg.left_y.scale = AxisScale::Logarithmic;
+        cfg.left_y.min = 1.0;
+        cfg.left_y.max = 1000.0;
+        cfg.overlays[0].series.push("p2".into());
+        cfg.line_offsets = Some(offsets(&["a", "b", "p2"], 0.5, 2.0));
+        let pick = |id: &str| PickedPointRef {
+            source_id: None,
+            series_id: id.into(),
+            point_index: 1,
+        };
+        cfg.picked_points = Some(PickedPointsConfig {
+            refs: vec![
+                pick("a"),
+                pick("b"),
+                pick("p2"),
+                pick("base"),
+                pick("pressure"),
+            ],
+            ..Default::default()
+        });
+        let expansion = cfg.expand().unwrap();
+        let layers: Vec<LayerRef> = expansion.panels.iter().map(|p| p.layer).collect();
+        assert_eq!(layers, cfg.panel_layers());
+        assert_eq!(
+            layers,
+            [
+                LayerRef::Base,
+                LayerRef::Overlay(0),
+                LayerRef::Base,
+                LayerRef::Base,
+                LayerRef::Overlay(0)
+            ]
+        );
+        let refs = |panel: &ExpandedPanel| -> Vec<String> {
+            panel
+                .config
+                .picked_points
+                .as_ref()
+                .unwrap()
+                .refs
+                .iter()
+                .map(|r| r.series_id.clone())
+                .collect()
+        };
+        let base = &expansion.panels[0].config;
+        assert_eq!(base.line_offsets, None);
+        assert_eq!(refs(&expansion.panels[0]), ["base"]);
+        assert_eq!(refs(&expansion.panels[1]), ["pressure"]);
+        for (index, (id, k)) in [(2, ("a", 0.0)), (3, ("b", 1.0)), (4, ("p2", 2.0))] {
+            let panel = &expansion.panels[index].config;
+            assert_eq!(cfg.panel_member(index), Some(id));
+            assert_eq!(cfg.panel_of_series(id), index);
+            assert_eq!(refs(&expansion.panels[index]), [id]);
+            assert_eq!(panel.data_area().unwrap(), expansion.data_area);
+            assert_eq!(panel.bottom_x.min, -2.0 * k);
+            assert_eq!(panel.bottom_x.max, 10.0 - 2.0 * k);
+            for axis in [&panel.top_x, &panel.bottom_x, &panel.left_y, &panel.right_y] {
+                assert!(!axis.line_visible && !axis.label_style.visible);
+                assert!(!axis.title_option.visible && axis.tick == TickVisibility::None);
+            }
+            assert!(!panel.legend.visible && !panel.chart_title.visible);
+            assert!(!panel.grid.show_major_x && !panel.grid.show_major_y);
+            assert!(panel.annotations.is_default());
+            assert_eq!(panel.line_offsets, None);
+        }
+        // Decades on the base's log axis, data units on the overlay's.
+        let b = &expansion.panels[3].config.left_y;
+        assert!((b.min - 10f64.powf(-0.5)).abs() < 1e-12);
+        assert!((b.max - 1000.0 * 10f64.powf(-0.5)).abs() < 1e-9);
+        let p2 = &expansion.panels[4].config.left_y;
+        assert_eq!((p2.min, p2.max), (-6.0, 4.0));
+        assert_eq!(cfg.panel_of_series("pressure"), 1);
+        assert_eq!(cfg.panel_of_series("base"), 0);
+        assert_eq!(cfg.panel_member(0), None);
+        assert_eq!(cfg.panel_member(1), None);
+        assert_eq!(cfg.panel_member(5), None);
+        // The pointer never names a member: the base layer answers for them.
+        assert_eq!(expansion.panel(LayerRef::Base).unwrap().config, *base);
+        assert_eq!(cfg.set_active_layer(LayerRef::Overlay(1)), LayerRef::Base);
+        // A group without members is a single-layer chart.
+        let mut empty = default_config();
+        empty.line_offsets = Some(offsets(&[], 1.0, 0.0));
+        assert!(!empty.has_offset_members());
+        assert_eq!(empty.panel_layers(), [LayerRef::Base]);
+        // A member edit changes only the member panels.
+        let mut stepped = cfg.clone();
+        stepped.line_offsets.as_mut().unwrap().step_y = 0.25;
+        let after = stepped.expand().unwrap();
+        assert_eq!(after.panels[0], expansion.panels[0]);
+        assert_eq!(after.panels[1], expansion.panels[1]);
+        assert_eq!(after.panels[2], expansion.panels[2]);
+        assert_ne!(after.panels[3], expansion.panels[3]);
+    }
+
+    /// A subplot's line offsets are its own: its members expand among its
+    /// own panels, shifted on its own axes, and the parent's group does not
+    /// reach into it.
+    #[test]
+    fn subplot_line_offsets_are_its_own() {
+        let mut cfg = subplot_document();
+        cfg.subplots[0].series.push("flow2".into());
+        cfg.subplots[0].config.line_offsets = Some(offsets(&["flow", "flow2"], 10.0, 0.0));
+        cfg.line_offsets = Some(offsets(&["top", "top2"], 1.0, 0.0));
+        let layers = cfg.panel_layers();
+        assert_eq!(
+            layers,
+            [
+                LayerRef::Base,
+                LayerRef::Base,
+                LayerRef::Base,
+                LayerRef::Subplot(0),
+                LayerRef::SubplotOverlay(0, 0),
+                LayerRef::Subplot(0),
+                LayerRef::Subplot(0),
+                LayerRef::Subplot(1),
+            ]
+        );
+        let expansion = cfg.expand().unwrap();
+        assert_eq!(expansion.panels.len(), layers.len());
+        assert_eq!(cfg.panel_of_series("flow2"), 6);
+        assert_eq!(cfg.panel_member(6), Some("flow2"));
+        assert_eq!(cfg.panel_of_series("rate"), 7);
+        assert_eq!(cfg.panel_of_series("top2"), 2);
+        assert_eq!(cfg.line_offset_of("flow2"), Some([0.0, 10.0]));
+        assert_eq!(cfg.line_offset_of("top2"), Some([0.0, 1.0]));
+        let member = &expansion.panels[6].config;
+        let own = &expansion.panels[3].config;
+        assert_eq!(member.chart_area, own.chart_area);
+        assert_eq!(member.data_area().unwrap(), own.data_area().unwrap());
+        assert_eq!((member.left_y.min, member.left_y.max), (90.0, 190.0));
+        assert_eq!(member.bottom_x.min, own.bottom_x.min);
+        // A parent member drawn by a subplot is a configuration error.
+        let mut wrong = cfg.clone();
+        wrong.line_offsets = Some(offsets(&["flow"], 1.0, 0.0));
+        assert!(wrong.validate_line_offset_layout().is_err());
+        assert!(wrong.expand().is_err());
+        let mut wrong = cfg;
+        wrong.subplots[1].config.line_offsets = Some(offsets(&["flow"], 1.0, 0.0));
+        assert!(wrong.validate_line_offset_layout().is_err());
+    }
 }
