@@ -810,6 +810,17 @@ impl CartesianHost {
                 if ui.button("Reset view").clicked() {
                     reset_ranges(&mut config, &self.initial);
                 }
+                if ui
+                    .button("Auto layout")
+                    .on_hover_text(
+                        "layout::auto_layout: axis bands, title offsets and label formats \
+                         that do not overlap. Press again after a fit or a zoom.",
+                    )
+                    .clicked()
+                {
+                    let measure = CpuTextMeasure::for_style(&config.draw_style);
+                    config = renderer::layout::auto_layout(&config, &measure);
+                }
                 if ui.button("Reset scene").clicked() {
                     config = self.initial.clone();
                     series = self.initial_series.clone();
@@ -2536,6 +2547,32 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
         }
         println!("ok  scene {kind:?}");
+    }
+
+    // The long-label scene as the "Auto layout" button leaves it, committed
+    // through the registry like any edit, at 1x and 2x; a second press
+    // changes nothing.
+    {
+        let scene = scenes::build(r, SceneKind::LongLabels, big_data::START_POINTS).map_err(e)?;
+        let id = r
+            .register_chart(scene.config.clone(), scene.series.clone())
+            .map_err(e)?;
+        let measure = CpuTextMeasure::for_style(&scene.config.draw_style);
+        let laid_out = renderer::layout::auto_layout(&scene.config, &measure);
+        if renderer::layout::auto_layout(&laid_out, &measure) != laid_out {
+            return Err("auto_layout is not idempotent on the long-label scene".into());
+        }
+        r.set_chart_config(id, laid_out).map_err(e)?;
+        let chart = Chart::new(r.chart_config(id).map_err(e)?.clone());
+        for scale in [1.0f32, 2.0] {
+            let png = r
+                .export_document_png_bytes(&chart, &scene.series, scale)
+                .map_err(e)?;
+            let path = dir.join(format!("scene_longlabels_auto_layout_{scale}x.png"));
+            std::fs::write(&path, png).map_err(|e| e.to_string())?;
+        }
+        r.remove_chart(id).map_err(e)?;
+        println!("ok  long labels through auto_layout");
     }
     Ok(())
 }
