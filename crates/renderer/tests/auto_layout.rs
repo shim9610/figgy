@@ -200,14 +200,14 @@ fn auto_layout_keeps_the_default_and_the_released_config_documents() {
     }
     // The edited documents of 0.10.0 and 0.11.0 set a 48 px title band for a
     // taller title (fitted to 60 px), show the top labels in an 8 px band
-    // and a left title beside its labels with less than the gap between
-    // them. Every other released config is kept to the pixel.
+    // and centre a left title less than the gap from its labels, which moves
+    // 10 px outward. Every other released config is kept to the pixel.
     let expected: &[&str] = &[
         "model-0.10.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.10.0-config-edited.json: left_y.out_margin 120 -> 139",
+        "model-0.10.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
         "model-0.10.0-config-edited.json: chart_title.top_margin 48 -> 60",
         "model-0.11.0-config-edited.json: top_x.out_margin 8 -> 12",
-        "model-0.11.0-config-edited.json: left_y.out_margin 120 -> 139",
+        "model-0.11.0-config-edited.json: left_y.title_option.offset_y 0 -> -10",
         "model-0.11.0-config-edited.json: chart_title.top_margin 48 -> 60",
     ];
     assert_eq!(seen, expected);
@@ -249,8 +249,8 @@ fn title_overlaps(cfg: &Config) -> usize {
 }
 
 // The user's case: `0.00300` labels under the Y title. After `auto_layout`
-// the Y labels print as powers of ten and no title touches its labels, at
-// 1x and 2x.
+// the Y labels print as powers of ten, the title sits beside them, and no
+// title touches its labels, at 1x and 2x.
 #[test]
 fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
     let mut r = renderer();
@@ -272,7 +272,10 @@ fn the_long_labels_scene_overlaps_as_laid_out_and_clears_after_auto_layout() {
         out.left_y.label_style.format,
         renderer::format::LabelFormat::Power
     );
-    assert!(out.left_y.out_margin > scene.config.left_y.out_margin);
+    // The 110 px band the host set holds the labels and the title beside
+    // them: the band is kept and the title moves outward by its offset.
+    assert_eq!(out.left_y.out_margin, scene.config.left_y.out_margin);
+    assert!(out.left_y.title_option.offset_y < 0.0);
 }
 
 // An auto-laid-out document is an ordinary SSOT: it serializes and parses

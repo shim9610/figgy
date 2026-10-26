@@ -785,39 +785,38 @@ impl BandMeasure {
         }
     }
 
-    /// The band the labels and a centred title need: the title's thickness
-    /// plus twice the labels' reach and the clearance, so the centred title
-    /// clears the labels by the clearance; the reach and the clearance alone
-    /// without a title. `None` for a band with neither.
+    /// The band the labels and a title placed beside them need: the labels'
+    /// reach, the clearance, the title's thickness and the clearance again
+    /// to the band's outer edge; the reach and the clearance alone without a
+    /// title. `None` for a band with neither.
     fn required(&self) -> Option<f32> {
         let reach = self.reach.unwrap_or(0.0);
         match self.title {
-            Some((near, far)) => Some(far - near + 2.0 * (reach + AUTO_LAYOUT_CLEARANCE)),
+            Some((near, far)) => {
+                Some(reach + AUTO_LAYOUT_CLEARANCE + (far - near) + AUTO_LAYOUT_CLEARANCE)
+            }
             None => self.reach.map(|r| r + AUTO_LAYOUT_CLEARANCE),
         }
     }
 
-    /// The outward title offset, within the band `band` wide, at which the
-    /// title clears the labels and stays inside the band by the clearance,
-    /// for a title now offset outward by `offset`; `None` when `offset`
-    /// already does, or no offset can. A new offset is a whole pixel on the
-    /// safe side.
-    fn clamped_offset(&self, band: f32, offset: f32) -> Option<f32> {
+    /// The outward title offset that places the title, in a band `band`
+    /// wide where it is now offset outward by `offset`, beside its labels:
+    /// its inner edge the clearance past their reach, rounded outward to a
+    /// whole pixel. `None` when there is no title, or when the title at
+    /// `offset` already clears the labels by the clearance and stays inside
+    /// the band.
+    fn placed_offset(&self, band: f32, offset: f32) -> Option<f32> {
+        const EPS: f32 = 1e-3;
         let (near, far) = self.title?;
         let thickness = far - near;
-        let reach = self.reach.unwrap_or(0.0);
-        let low = reach + AUTO_LAYOUT_CLEARANCE + thickness * 0.5 - band * 0.5;
-        let high = band * 0.5 - thickness * 0.5 - AUTO_LAYOUT_CLEARANCE;
-        if !(low.ceil() <= high.floor()) {
+        let clear = self.reach.unwrap_or(0.0) + AUTO_LAYOUT_CLEARANCE;
+        // The centred title's inner edge, moved by the offset.
+        let at = (band - thickness) * 0.5 + offset;
+        if at >= clear - EPS && at + thickness <= band + EPS {
             return None;
         }
-        if offset < low {
-            Some(low.ceil())
-        } else if offset > high {
-            Some(high.floor())
-        } else {
-            None
-        }
+        let placed = (clear - (band - thickness) * 0.5).ceil();
+        (placed.is_finite() && placed != offset).then_some(placed)
     }
 }
 
@@ -858,16 +857,20 @@ const AUTO_LAYOUT_PASSES: usize = 8;
 ///   categorical switches to `LabelFormat::Power` when a drawn label prints
 ///   more than five digits (`0.00300`) or is wider than five ems of its font
 ///   size. Other formats are left alone, and a format never switches back.
-/// - **`out_margin`.** The band of each side grows so its centred title
-///   clears the labels: the title's thickness plus twice the labels' reach
-///   past the tick and [`LABEL_GAP`], or the reach and the gap when the side
+/// - **`out_margin`.** The band of each side grows to hold its labels and,
+///   beside them, its title: the labels' reach past the tick, [`LABEL_GAP`],
+///   the title's thickness and [`LABEL_GAP`] again to the band's outer edge
+///   (there is no separate title gap), or the reach and the gap when the side
 ///   has no title. A band that already holds them is kept as it is, a side
 ///   without labels or a title keeps its margin, and a band is never shrunk.
 ///   A growth that would leave no data area is not made.
-/// - **Title offsets.** A title offset of zero stays zero. A title already
-///   offset across its band (`title_option.offset_y`) is moved, by whole
-///   pixels, only as far as it takes to clear its labels and stay inside its
-///   band by [`LABEL_GAP`].
+/// - **Title offsets.** A title that does not clear its labels by
+///   [`LABEL_GAP`], or leaves its band, gets the offset across the band
+///   (`title_option.offset_y`) that puts its inner edge [`LABEL_GAP`] past
+///   the labels, rounded outward to a whole pixel. A title that already
+///   clears them inside its band, centred or offset by the host, is left
+///   where it is. The offset is an ordinary SSOT field: drag, hit testing and
+///   selection follow it.
 /// - **Overlays and the colourbar.** Each overlay axis' band grows the same
 ///   way (the right margin is the widest band of the group), and so does the
 ///   colourbar's `axis.out_margin`, measured from the strip.
@@ -1052,8 +1055,8 @@ impl BandOwner<'_> {
 /// Fit one band of `cfg`: grow the `out_margin` of `owner`'s axis so `band`
 /// fits in it, unless the band it was drawn with (`drawn`; for an overlay
 /// or the parent's right axis, the group's) already holds it or the growth
-/// leaves no data area; then move a title that is offset across the band
-/// only as far as it must. Returns whether anything changed.
+/// leaves no data area; then place a title that does not clear its labels
+/// inside the band beside them. Returns whether anything changed.
 fn fit_band(
     cfg: &mut Config,
     band: &BandMeasure,
@@ -1086,10 +1089,7 @@ fn fit_band(
     }
     if let Some(axis) = owner.axis(cfg) {
         let sign = outward_sign(side);
-        let offset = axis.title_option.offset_y;
-        if offset != 0.0
-            && let Some(outward) = band.clamped_offset(width, sign * offset)
-        {
+        if let Some(outward) = band.placed_offset(width, sign * axis.title_option.offset_y) {
             axis.title_option.offset_y = sign * outward;
             changed = true;
         }
@@ -1915,30 +1915,36 @@ mod tests {
         assert_eq!(band.title, Some((55.0 - 6.5, 55.0 + 6.5)));
     }
 
-    // A centred title clears labels reaching `R` in a band of
-    // `t + 2 (R + gap)`; an offset title is clamped to the whole pixels at
-    // which it clears them and stays inside the band.
+    // A title placed beside labels reaching `R` needs a band of
+    // `R + gap + t + gap`; a title that does not clear them gets the offset
+    // that puts its inner edge the gap past them.
     #[test]
-    fn a_band_needs_room_for_its_labels_and_a_centred_title() {
+    fn a_band_needs_room_for_its_labels_and_a_title_beside_them() {
         let both = BandMeasure {
             reach: Some(30.0),
             title: Some((40.0, 53.0)),
         };
-        assert_eq!(both.required(), Some(13.0 + 2.0 * (30.0 + LABEL_GAP)));
+        assert_eq!(both.required(), Some(30.0 + LABEL_GAP + 13.0 + LABEL_GAP));
         let labels = BandMeasure {
             reach: Some(30.0),
             title: None,
         };
         assert_eq!(labels.required(), Some(30.0 + LABEL_GAP));
         assert_eq!(BandMeasure::default().required(), None);
-        // In a 110 px band the title may move from 30 + 4 + 6.5 - 55 =
-        // -14.5 (inward) to 55 - 6.5 - 4 = 44.5 (outward).
-        assert_eq!(both.clamped_offset(110.0, 0.0), None);
-        assert_eq!(both.clamped_offset(110.0, -14.5), None);
-        assert_eq!(both.clamped_offset(110.0, -20.0), Some(-14.0));
-        assert_eq!(both.clamped_offset(110.0, 50.0), Some(44.0));
-        assert_eq!(labels.clamped_offset(110.0, -20.0), None, "no title");
-        assert_eq!(both.clamped_offset(40.0, -20.0), None, "no room at all");
+        // In a 110 px band the centred title's inner edge is at 48.5, clear
+        // of labels reaching 30 + 4: it stays, and so does an offset one that
+        // still clears them inside the band.
+        assert_eq!(both.placed_offset(110.0, 0.0), None);
+        assert_eq!(both.placed_offset(110.0, -14.5), None);
+        assert_eq!(both.placed_offset(110.0, 40.0), None);
+        // Into the labels, or out of the band: placed at 34, i.e. -14.5,
+        // rounded outward.
+        assert_eq!(both.placed_offset(110.0, -20.0), Some(-14.0));
+        assert_eq!(both.placed_offset(110.0, 50.0), Some(-14.0));
+        // A band of exactly 51 px: the title's inner edge goes from 19 to 34.
+        assert_eq!(both.placed_offset(51.0, 0.0), Some(15.0));
+        assert_eq!(both.placed_offset(51.0, 15.0), None);
+        assert_eq!(labels.placed_offset(110.0, -20.0), None, "no title");
     }
 
     // auto_layout (#44).
@@ -1989,41 +1995,61 @@ mod tests {
         assert_eq!(auto_layout(&default_config(), &measure), default_config());
     }
 
+    /// The gap between the title on `side` and the outer edge of its band.
+    fn title_outer_gap(cfg: &Config, side: Side, measure: &dyn MeasureText) -> f32 {
+        let title = rects(cfg, Element::AxisTitle(side.clone()), measure)[0];
+        let ca = RectF::from_rect(&cfg.chart_area);
+        let inset = cfg.colorbar_band(&side);
+        match side {
+            Side::Left => title.x - (ca.x + inset),
+            Side::Right => ca.x + ca.width - inset - (title.x + title.width),
+            Side::Top => title.y - (ca.y + cfg.chart_title.top_margin + inset),
+            Side::Bottom => ca.y + ca.height - inset - (title.y + title.height),
+        }
+    }
+
     // `-1.2345` labels (56 px) reach into the centred title of the default
-    // 110 px left band. The band grows to the title's thickness plus twice the
-    // labels' reach and the gap, after which the centred title clears them by
-    // the gap; the input is untouched and a second call changes nothing.
+    // 110 px left band. The band already holds labels, gap, title and gap, so
+    // it is kept and the title gets the offset that puts it the gap past the
+    // labels. In a 60 px band the band grows to exactly that sum and the
+    // title fills it. The input is untouched and a second call changes
+    // nothing.
     #[test]
-    fn auto_layout_grows_a_band_until_its_centred_title_clears_the_labels() {
+    fn auto_layout_places_a_title_beside_its_labels_in_a_tight_band() {
         // Five digits: long, but not too long for `Decimal`.
         let measure = Labels { decimal: "-1.2345" };
-        let cfg = with_titles("Optical depth");
-        let input = cfg.clone();
-        assert!(
-            title_clearance(&cfg, Side::Left, &measure) < 0.0,
-            "overlaps as laid out"
-        );
+        // Past the tick: the gap and 56 px; the title is 13 px thick.
+        let (reach, title) = (LABEL_GAP + 56.0, 13.0);
+        for (band, grown) in [
+            (110.0, 110.0),
+            (60.0, reach + LABEL_GAP + title + LABEL_GAP),
+        ] {
+            let mut cfg = with_titles("Optical depth");
+            cfg.left_y.out_margin = band;
+            let input = cfg.clone();
+            assert!(
+                title_clearance(&cfg, Side::Left, &measure) < 0.0,
+                "{band}: overlaps as laid out"
+            );
 
-        let out = auto_layout(&cfg, &measure);
-        assert_eq!(cfg, input, "the input is not modified");
-        // Past the tick: the gap and 56 px.
-        let reach = LABEL_GAP + 56.0;
-        let title = 13.0;
-        assert_eq!(
-            out.left_y.out_margin,
-            (title + 2.0 * (reach + LABEL_GAP)).ceil()
-        );
-        assert!(title_clearance(&out, Side::Left, &measure) >= LABEL_GAP - 1e-3);
-        assert_eq!(
-            out.left_y.title_option.offset_y, 0.0,
-            "a centred title stays centred"
-        );
-        // Everything else is the input's.
-        let mut back = out.clone();
-        back.left_y.out_margin = cfg.left_y.out_margin;
-        back.bottom_x.out_margin = cfg.bottom_x.out_margin;
-        assert_eq!(back, cfg);
-        assert_eq!(auto_layout(&out, &measure), out, "idempotent");
+            let out = auto_layout(&cfg, &measure);
+            assert_eq!(cfg, input, "the input is not modified");
+            assert_eq!(out.left_y.out_margin, grown, "{band}");
+            let clearance = title_clearance(&out, Side::Left, &measure);
+            assert!(
+                (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
+                "{band}: {clearance}"
+            );
+            assert!(title_outer_gap(&out, Side::Left, &measure) >= LABEL_GAP - 1.0);
+            let offset = out.left_y.title_option.offset_y;
+            assert!(offset < 0.0 && offset == offset.round(), "{band}: {offset}");
+            // Everything else is the input's.
+            let mut back = out.clone();
+            back.left_y.out_margin = cfg.left_y.out_margin;
+            back.left_y.title_option.offset_y = 0.0;
+            assert_eq!(back, cfg);
+            assert_eq!(auto_layout(&out, &measure), out, "{band}: idempotent");
+        }
     }
 
     // A side with no labels and no title keeps its margin, however small,
@@ -2041,13 +2067,14 @@ mod tests {
         assert_eq!(out.top_x.out_margin, cfg.top_x.out_margin);
     }
 
-    // A title the host offset into its labels is moved out of them, by whole
-    // pixels and no further than it must; a title offset the other way, but
-    // still clear and inside its band, is left where it is.
+    // A title the host offset into its labels is placed beside them, by
+    // whole pixels; a title offset the other way, but still clear and inside
+    // its band, is left where it is, as is a centred one that clears.
     #[test]
-    fn auto_layout_moves_an_offset_title_only_as_far_as_it_must() {
+    fn auto_layout_leaves_a_title_that_clears_and_places_one_that_does_not() {
         let measure = Labels { decimal: "0.5" };
         let mut cfg = with_titles("y");
+        assert_eq!(auto_layout(&cfg, &measure), cfg, "centred and clear");
         // Left: offset_y is screen x; +30 moves the title inward.
         cfg.left_y.title_option.offset_y = 30.0;
         assert!(title_clearance(&cfg, Side::Left, &measure) < LABEL_GAP);
@@ -2102,10 +2129,13 @@ mod tests {
     fn auto_layout_never_grows_a_band_past_the_data_area() {
         let measure = Labels { decimal: "-1.2345" };
         let mut cfg = with_titles("Optical depth");
+        // 60 + 5 + 32 + 5 px of margins leave 20 px; the 81 px band the
+        // labels and title need would leave none.
+        cfg.left_y.out_margin = 60.0;
         cfg.chart_area = ChartArea(Rect {
             x: 0,
             y: 0,
-            width: 180,
+            width: 122,
             height: 400,
         });
         assert!(cfg.data_area().is_ok());
@@ -2132,10 +2162,15 @@ mod tests {
         let out = auto_layout(&cfg, &measure);
         let bar = out.colorbar.as_ref().unwrap();
         let reach = LABEL_GAP + 56.0;
-        assert_eq!(
-            bar.axis.out_margin,
-            (13.0 + 2.0 * (reach + LABEL_GAP)).ceil()
-        );
+        assert_eq!(bar.axis.out_margin, reach + LABEL_GAP + 13.0 + LABEL_GAP);
+        // The bar's title sits the gap past its labels.
+        let labels = rects(&out, Element::ColorBarLabel, &measure);
+        let title = rects(&out, Element::ColorBarTitle, &measure)[0];
+        let gap = labels
+            .iter()
+            .map(|l| title.x - (l.x + l.width))
+            .fold(f32::INFINITY, f32::min);
+        assert!((LABEL_GAP..LABEL_GAP + 1.0).contains(&gap), "{gap}");
         assert_eq!((out.legend.offset_x, out.legend.offset_y), (0.0, 0.0));
         let legend = rects(&out, Element::Legend, &measure)[0];
         for element in [

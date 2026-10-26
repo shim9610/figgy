@@ -471,13 +471,14 @@ const AUTO_LAYOUT_EXCLUSIONS: &[Exclusion] = &[
     Exclusion {
         scene: "LongLabels",
         layer: "document",
-        element: "*tick_labels_left",
+        element: "*tick_labels_*",
         inv: Inv::I5,
         detail: "* ink pixels (5* %) differ by more than 96 from its 2x ink box-filtered*",
-        reason: "the Power labels (2.5×10⁻³) the auto_layout sweep switches the left and \
-                 colourbar axes to: their thin digits and script-size exponents put the \
-                 box-filtered share at 51-52 %, just past the 50 % limit, as the radar ring \
-                 labels do",
+        reason: "the Power labels (2.5×10⁻³) the auto_layout sweep switches the axes and the \
+                 colourbar to: their thin digits and script-size exponents put the \
+                 box-filtered share at 50-52 %, just past the 50 % limit, on whichever axis \
+                 the sub-pixel placement of its labels lands worst (the right one at this \
+                 layout), as the radar ring labels do",
         issue: "#44",
     },
     Exclusion {

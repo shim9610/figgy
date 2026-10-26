@@ -38,11 +38,13 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   setting, a series, an annotation or a pick. A `Decimal` or `Plain`,
   non-categorical axis whose labels print more than five digits (`0.00300`)
   or are wider than five ems switches to `LabelFormat::Power`; each band's
-  `out_margin` grows, never shrinks, until its centred title clears its
-  labels by `LABEL_GAP` (a side that already clears, or has neither labels
-  nor a title, is kept); a title offset of zero stays zero and an offset
-  title moves only as far as it must; overlay axes and the colourbar's axis
-  follow the same rule, the title band follows `fit_chart_title_margin`, a
+  `out_margin` grows, never shrinks, to the labels' reach, `LABEL_GAP`, the
+  title's thickness and `LABEL_GAP` again (a band that already holds them,
+  or a side with neither labels nor a title, is kept); a title that does not
+  clear its labels by `LABEL_GAP` inside its band gets the `offset_y` that
+  puts it `LABEL_GAP` past them, and one that already clears, centred or
+  offset by the host, stays; overlay axes and the colourbar's axis follow the
+  same rule, the title band follows `fit_chart_title_margin`, a
   legend over the colourbar goes to the first corner that clears it, and
   each subplot is laid out as its own chart. No serialized field is added.
   Not covered: overlay axes drawn over each other, polar angle labels against
