@@ -152,9 +152,17 @@ artifacts, including on failure, and retained for seven days. The logs identify 
 checks actually completed. The configured matrix alone is not evidence of a pass;
 consult the Actions run of the PR that tested the commit and the
 [recorded backend results](STATUS.md).
-Independent test binaries, doctests and missing-adapter checks continue after a test
-failure, while the final job still fails. This prevents one failing suite from hiding
-the rest of the backend results.
+The GPU numeric tests run first, right after the adapter record: the CPU/GPU
+placement agreement at every magnitude, the f64 residual pick, the projection
+oracles and the shader consistency suite (`NUMERIC_TESTS` in `verify.py`). A red
+one fails the job at once, so a precision regression shows within minutes instead
+of after the hour of remaining tests; every listed test must produce its result
+line, so a renamed test cannot drop out of the set. The extracted tests run with
+the renderer's `cpu-twin` feature named explicitly, because `cargo package` strips
+the path dev-dependency that enables it in the workspace. After that step, independent
+test binaries, doctests and missing-adapter checks continue after a test failure,
+while the final job still fails. This prevents one failing suite from hiding the
+rest of the backend results.
 Test output is streamed immediately, so a cancellation or timeout does not hide
 panic details until the end of a large test binary.
 
@@ -290,8 +298,10 @@ macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 �
 PR의 Actions 실행 아티팩트에서 확인할 수 있다. master 커밋은 따로 실행하지 않으므로 그 커밋을
 병합한 PR의 마지막 실행 결과를 본다. 이 검사는 실제 GPU 제조사별 드라이버 검증이나
 브라우저 실행 검사를 대신하지 않는다. [실행 결과와 확인된 문제](STATUS.md)도 함께 확인한다.
-한 테스트가 실패해도 다른 테스트 바이너리와 문서 테스트는 계속 실행하며, 최종 CI 결과는
-실패로 남는다.
+GPU 수치 테스트(모든 자릿수에서의 CPU·GPU 배치 일치, f64 잔차 픽, 투영 오라클,
+셰이더 일관성)는 어댑터 기록 직후 가장 먼저 실행하며, 하나라도 실패하면 즉시 작업을
+실패로 끝낸다. 그 뒤로는 한 테스트가 실패해도 다른 테스트 바이너리와 문서 테스트는 계속
+실행하며, 최종 CI 결과는 실패로 남는다.
 
 셰이더 컴파일 시간도 실제 생성 경로에서 잰다. 모든 WGSL 진입점이 검사에 포함됐는지,
 예열을 한 번 더 해도 셰이더를 새로 만들지 않는지 확인한다. 각 컴파일이 기본 제한인 30초를 넘으면
