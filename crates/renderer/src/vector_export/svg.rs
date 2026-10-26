@@ -131,6 +131,52 @@ fn segment_is_finite(segment: &PathSegment) -> bool {
 /// Glyph definitions: face, size bits and glyph id to the `<defs>` id.
 type GlyphKey = (swash::CacheKey, u32, u16);
 
+/// An opaque stroke's paint: colour, width and dash, compared bit for bit.
+#[derive(Clone, Copy, PartialEq)]
+struct StrokeKey {
+    color: [u32; 3],
+    width: u32,
+    dash: [u32; 8],
+    dash_len: usize,
+}
+
+impl StrokeKey {
+    /// The key of `paint` when it is an opaque stroke: its subpaths can join
+    /// the previous path of the same paint without changing a pixel, since
+    /// opaque overlaps cover the same either way.
+    fn of(paint: &PathPaint<'_>) -> Option<Self> {
+        let PathPaint::Stroke { color, width, dash } = *paint else {
+            return None;
+        };
+        if color.a < 1.0 || dash.len() > 8 {
+            return None;
+        }
+        let mut bits = [0u32; 8];
+        for (b, d) in bits.iter_mut().zip(dash) {
+            *b = d.to_bits();
+        }
+        Some(Self {
+            color: [color.r.to_bits(), color.g.to_bits(), color.b.to_bits()],
+            width: width.to_bits(),
+            dash: bits,
+            dash_len: dash.len(),
+        })
+    }
+}
+
+/// The path being written.
+struct OpenPath {
+    /// Where its text starts: its `<path`, or its first subpath when it
+    /// joined the previous path.
+    start: usize,
+    valid: bool,
+    segments: usize,
+    joined: bool,
+    key: Option<StrokeKey>,
+}
+
+const PATH_END: &str = "\"/>\n";
+
 /// The SVG writer. [`Self::finish`] returns the document.
 pub(crate) struct SvgOut {
     /// The document: the header, then the body as it is written.
@@ -140,8 +186,10 @@ pub(crate) struct SvgOut {
     /// The glyph outlines, written once each.
     defs: String,
     glyphs: HashMap<GlyphKey, u32>,
-    /// The start of the path being written and whether it is still valid.
-    path: Option<(usize, bool)>,
+    path: Option<OpenPath>,
+    /// The last path's stroke key and where its text ends: a path of the
+    /// same opaque stroke right after it joins it as more subpaths.
+    last: Option<(StrokeKey, usize)>,
     clips: u32,
 }
 
@@ -164,6 +212,7 @@ impl SvgOut {
             defs: String::new(),
             glyphs: HashMap::new(),
             path: None,
+            last: None,
             clips: 0,
         }
     }
@@ -201,7 +250,28 @@ impl SvgOut {
 
 impl VectorOut for SvgOut {
     fn begin_path(&mut self, paint: PathPaint<'_>) {
-        self.path = Some((self.svg.len(), true));
+        let key = StrokeKey::of(&paint);
+        if let (Some(key), Some((last, end))) = (key, self.last)
+            && key == last
+            && end == self.svg.len()
+        {
+            self.svg.truncate(end - PATH_END.len());
+            self.path = Some(OpenPath {
+                start: self.svg.len(),
+                valid: true,
+                segments: 0,
+                joined: true,
+                key: Some(key),
+            });
+            return;
+        }
+        self.path = Some(OpenPath {
+            start: self.svg.len(),
+            valid: true,
+            segments: 0,
+            joined: false,
+            key,
+        });
         let svg = &mut self.svg;
         svg.push_str("<path");
         match paint {
@@ -234,26 +304,30 @@ impl VectorOut for SvgOut {
     }
 
     fn segment(&mut self, segment: PathSegment) {
-        let Some((_, valid)) = self.path.as_mut() else {
+        let Some(path) = self.path.as_mut() else {
             return;
         };
-        if !segment_is_finite(&segment) {
-            *valid = false;
-        }
-        if *valid {
+        path.valid &= segment_is_finite(&segment);
+        if path.valid {
             push_segment(&mut self.svg, segment);
+            path.segments += 1;
         }
     }
 
     fn end_path(&mut self) {
-        let Some((start, valid)) = self.path.take() else {
+        let Some(path) = self.path.take() else {
             return;
         };
-        if !valid || self.svg.ends_with(" d=\"") {
-            self.svg.truncate(start);
+        if !path.valid || path.segments == 0 {
+            self.svg.truncate(path.start);
+            if path.joined {
+                // The previous path, as it was.
+                self.svg.push_str(PATH_END);
+            }
             return;
         }
-        self.svg.push_str("\"/>\n");
+        self.svg.push_str(PATH_END);
+        self.last = path.key.map(|key| (key, self.svg.len()));
     }
 
     fn begin_text(&mut self, origin: [f32; 2], rotation: Option<(f32, [f32; 2])>) {

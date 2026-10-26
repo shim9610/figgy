@@ -904,28 +904,44 @@ pub(crate) fn write_background(out: &mut dyn VectorOut, size: (u32, u32), clear:
     out.end_path();
 }
 
-/// The SVG of `frame`'s document, over `clear`.
-pub(crate) async fn document_svg(
-    renderer: &Renderer,
-    frame: &mut ExportFrame,
-    clear: Color,
-) -> Result<String> {
-    let mut out = SvgOut::new(frame.size, page_points(frame.logical));
-    write_background(&mut out, frame.size, clear);
-    write_document(renderer, frame, &mut out).await?;
-    Ok(out.finish())
+/// A vector file format: its writer, made for a page of `size` physical
+/// pixels shown at `page` points, and the file it finishes into.
+pub(crate) trait VectorFile: VectorOut + Sized {
+    type Output;
+    fn create(size: (u32, u32), page: [f32; 2]) -> Self;
+    fn finish_file(self) -> Result<Self::Output>;
 }
 
-/// The PDF of `frame`'s document, over `clear`.
-pub(crate) async fn document_pdf(
+impl VectorFile for SvgOut {
+    type Output = String;
+    fn create(size: (u32, u32), page: [f32; 2]) -> Self {
+        SvgOut::new(size, page)
+    }
+    fn finish_file(self) -> Result<String> {
+        Ok(self.finish())
+    }
+}
+
+impl VectorFile for PdfOut {
+    type Output = Vec<u8>;
+    fn create(size: (u32, u32), page: [f32; 2]) -> Self {
+        PdfOut::new(size, page)
+    }
+    fn finish_file(self) -> Result<Vec<u8>> {
+        self.finish()
+    }
+}
+
+/// The file of `frame`'s document over `clear`, in format `F`.
+pub(crate) async fn document_file<F: VectorFile>(
     renderer: &Renderer,
     frame: &mut ExportFrame,
     clear: Color,
-) -> Result<Vec<u8>> {
-    let mut out = PdfOut::new(frame.size, page_points(frame.logical));
+) -> Result<F::Output> {
+    let mut out = F::create(frame.size, page_points(frame.logical));
     write_background(&mut out, frame.size, clear);
     write_document(renderer, frame, &mut out).await?;
-    out.finish()
+    out.finish_file()
 }
 
 #[cfg(test)]

@@ -759,6 +759,72 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.export_document_png_bytes(chart, series, scale)
     }
 
+    pub async fn export_document_svg_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        self.inner
+            .export_document_svg_async(chart, series, scale)
+            .await
+    }
+
+    pub async fn export_document_svg_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<String> {
+        self.inner
+            .export_document_svg_with_clear_async(chart, series, scale, clear)
+            .await
+    }
+
+    pub async fn export_document_pdf_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_document_pdf_async(chart, series, scale)
+            .await
+    }
+
+    pub async fn export_document_pdf_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        self.inner
+            .export_document_pdf_with_clear_async(chart, series, scale, clear)
+            .await
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_svg(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        self.inner.export_document_svg(chart, series, scale)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_pdf(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.inner.export_document_pdf(chart, series, scale)
+    }
+
     /// Reconfigure the swap chain after a window resize. The caller is then
     /// responsible for updating each chart's `chart_area` — figgy doesn't
     /// know your panel layout policy.

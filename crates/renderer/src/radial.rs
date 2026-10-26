@@ -890,8 +890,6 @@ impl RadialRenderer {
     /// layout's own label emit, and the annotation overlay, as vector
     /// content. Every inside label is drawn above every sector at its lifted
     /// place, and no selection box is drawn.
-    // Called by the radial SVG / PDF export API, the next step of #48.
-    #[allow(dead_code)]
     pub(crate) async fn write_vector(
         &mut self,
         chart: &RadialChart,
@@ -1274,6 +1272,71 @@ impl RadialRenderer {
             rgba,
         })
     }
+    /// Export the chart as an SVG document at logical `size` and `scale`,
+    /// with the same checks as [`Self::prepare`]: the slices and background
+    /// as one image at `scale ×` resolution, the title, the labels with
+    /// their leader lines, the split connectors and the annotation layer as
+    /// vector content, glyphs as outlines. The SVG's `viewBox` is in physical
+    /// pixels and its size the logical size in points (1 px = 0.75 pt). Every
+    /// inside label is drawn above every slice, at its place in the PNG, and
+    /// no selection box is drawn.
+    pub async fn export_svg_async(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<String, RadialError> {
+        self.export_vector::<crate::vector_export::SvgOut>(chart, size, scale)
+            .await
+    }
+
+    /// [`Self::export_svg_async`] as a one-page PDF: the page is the logical
+    /// size in points, the image a deflated RGB image with a soft mask.
+    pub async fn export_pdf_async(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Vec<u8>, RadialError> {
+        self.export_vector::<crate::vector_export::PdfOut>(chart, size, scale)
+            .await
+    }
+
+    async fn export_vector<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<F::Output, RadialError> {
+        let physical = self.frame_size(chart, size, scale)?;
+        let mut out = F::create(physical, crate::vector_export::page_points(size));
+        self.write_vector(chart, size, scale, &mut out).await?;
+        out.finish_file()
+            .map_err(|e| RadialError::Gpu(e.to_string()))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Native blocking wrapper for [`Self::export_svg_async`].
+    pub fn export_svg(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<String, RadialError> {
+        pollster::block_on(self.export_svg_async(chart, size, scale))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Native blocking wrapper for [`Self::export_pdf_async`].
+    pub fn export_pdf(
+        &mut self,
+        chart: &RadialChart,
+        size: (u32, u32),
+        scale: f32,
+    ) -> Result<Vec<u8>, RadialError> {
+        pollster::block_on(self.export_pdf_async(chart, size, scale))
+    }
+
     #[cfg(not(target_arch = "wasm32"))]
     /// Native blocking wrapper for [`Self::export_rgba_async`].
     pub fn export_rgba(

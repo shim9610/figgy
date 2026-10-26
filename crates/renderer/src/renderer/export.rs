@@ -308,6 +308,151 @@ impl Renderer {
         pollster::block_on(self.export_document_png_bytes_async(chart, series, scale))
     }
 
+    /// Export the whole document as an SVG document at `scale ×` resolution
+    /// (#48). The decorations are vector content from the placement the PNG
+    /// export draws with: axes, ticks, tick labels, grid, titles, legend,
+    /// colourbar, polar chrome and the annotation layer, glyphs written as
+    /// outlines. The data layer is drawn by the GPU, so each panel group's
+    /// data (fills, bodies, picked highlights, value labels) is embedded as a
+    /// PNG image of its data area, the same pixels as the PNG export; the
+    /// colourbar ramp and the Milkyway backdrop are images too, and the
+    /// Milkyway glow is omitted. The `viewBox` is in physical pixels and the
+    /// size the logical size in points (1 px = 0.75 pt).
+    ///
+    /// `scale` is clamped as for [`Self::export_document_rgba_async`]; a
+    /// series with a streamed source is rejected, as for the PNG export.
+    /// Native callers can use the blocking `Renderer::export_document_svg`.
+    pub async fn export_document_svg_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        self.export_document_svg_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// [`Self::export_document_svg_async`] over a rectangle of the clear
+    /// colour.
+    pub async fn export_document_svg_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<String> {
+        self.export_vector_scoped::<crate::vector_export::SvgOut>(chart, series, scale, clear)
+            .await
+    }
+
+    /// [`Self::export_document_svg_async`] as a one-page PDF: the page is the
+    /// logical size in points, each image a deflated RGB image with a soft
+    /// mask. Glyphs are outlines, so the text is not searchable.
+    pub async fn export_document_pdf_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        self.export_document_pdf_with_clear_async(
+            chart,
+            series,
+            scale,
+            crate::color::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        )
+        .await
+    }
+
+    /// [`Self::export_document_pdf_async`] over a rectangle of the clear
+    /// colour.
+    pub async fn export_document_pdf_with_clear_async(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<Vec<u8>> {
+        self.export_vector_scoped::<crate::vector_export::PdfOut>(chart, series, scale, clear)
+            .await
+    }
+
+    /// Blocking wrapper around [`Self::export_document_svg_async`]. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_svg(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<String> {
+        pollster::block_on(self.export_document_svg_async(chart, series, scale))
+    }
+
+    /// Blocking wrapper around [`Self::export_document_pdf_async`]. Native
+    /// only.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn export_document_pdf(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+    ) -> Result<Vec<u8>> {
+        pollster::block_on(self.export_document_pdf_async(chart, series, scale))
+    }
+
+    /// The vector export in format `F`, with the PNG export's checks, device
+    /// error scopes and end-of-frame report
+    /// ([`Self::export_rgba_with_clear_scoped`]).
+    async fn export_vector_scoped<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<F::Output> {
+        for item in series {
+            self.require_resident_series(item)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let result = self
+            .export_vector_inner::<F>(chart, series, scale, clear)
+            .await;
+
+        #[cfg(not(target_arch = "wasm32"))]
+        let result = {
+            let scope_guard = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+            let rendered = self
+                .export_vector_inner::<F>(chart, series, scale, clear)
+                .await;
+            let out_of_memory = scope_guard.pop().await;
+            match (rendered, out_of_memory) {
+                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
+                    resource: "figgy export target",
+                    reason: format!("device reported out of memory during export: {error}"),
+                }),
+                (result, _) => result,
+            }
+        };
+        self.end_gpu_frame();
+        result
+    }
+
+    async fn export_vector_inner<F: crate::vector_export::VectorFile>(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        clear: crate::color::Color,
+    ) -> Result<F::Output> {
+        let mut frame = self.prepare_export(chart, series, scale, ExportScope::Document)?;
+        crate::vector_export::document_file::<F>(self, &mut frame, clear).await
+    }
+
     /// Export a panel with an explicit clear color behind the chart.
     ///
     /// Wrapped in device error scopes. Export is where figgy asks for its
