@@ -324,5 +324,7 @@ pub fn default_config() -> Config {
         annotations: AnnotationLayer::default(),
         // Grouped vertical bars until a chart sets its own.
         bar_groups: None,
+        // Every series drawn where its values are.
+        line_offsets: None,
     }
 }

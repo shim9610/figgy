@@ -964,6 +964,19 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub bar_groups: Option<crate::data_config::BarGroups>,
+    /// Offset spectra: line series drawn shifted from each other by a step
+    /// per member, in stacking order
+    /// ([`LineOffsets`](crate::data_config::LineOffsets)). `None` (key
+    /// absent in JSON) draws every series where its values are. The members
+    /// are series of this chart's base layer or of its overlays; a subplot
+    /// has its own field. The renderer draws each member as an internal
+    /// panel of its own ([`Config::expand`]); the shift is a display
+    /// parameter and reported values stay unshifted.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub line_offsets: Option<crate::data_config::LineOffsets>,
 }
 
 impl Config {
@@ -999,6 +1012,9 @@ impl Config {
             active_layer: _,
             annotations,
             bar_groups,
+            // Steps in data units (or decades) and series ids: not a
+            // dimension.
+            line_offsets: _,
         } = self;
 
         let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
@@ -1558,6 +1574,49 @@ mod draw_style_serde_tests {
     /// no `"draw_style"` key: exactly the shape of pre-sketch documents.
     fn default_config_json() -> serde_json::Value {
         serde_json::to_value(default_config()).expect("serialize Config")
+    }
+
+    // `line_offsets` is additive: absent at its default, so an older document
+    // parses and re-serializes byte-identically; `step_x` is omitted at zero;
+    // set, it round-trips, on the chart and on a subplot's chart.
+    #[test]
+    fn line_offsets_round_trip_and_old_documents_unchanged() {
+        use crate::data_config::LineOffsets;
+        let json = default_config_json();
+        assert!(json.get("line_offsets").is_none(), "{json}");
+        let text = serde_json::to_string(&default_config()).unwrap();
+        let old: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(old.line_offsets, None);
+        assert_eq!(serde_json::to_string(&old).unwrap(), text);
+
+        let mut cfg = default_config();
+        cfg.line_offsets = Some(LineOffsets {
+            series: vec!["a".into(), "b".into()],
+            step_y: 0.5,
+            step_x: 0.0,
+        });
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(
+            json["line_offsets"],
+            serde_json::json!({ "series": ["a", "b"], "step_y": 0.5 })
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        cfg.line_offsets.as_mut().unwrap().step_x = -0.25;
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.line_offsets = cfg.line_offsets.clone();
+        cfg.subplots.push(subplot);
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["line_offsets"]["step_x"], serde_json::json!(-0.25));
+        assert_eq!(
+            json["subplots"][0]["config"]["line_offsets"],
+            json["line_offsets"]
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        // A partial group reads the missing keys as their defaults.
+        let partial: LineOffsets = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
+        assert_eq!(partial.step_y, 0.0);
+        // A scaled export keeps the steps: they are data units.
+        assert_eq!(cfg.scaled(2.0).line_offsets, cfg.line_offsets);
     }
 
     // The layer fields are additive schema in the same way: `active_layer`,

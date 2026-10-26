@@ -56,6 +56,9 @@ pub(super) fn annotation_raster_for_chart(
         active_layer: _,
         annotations,
         bar_groups: _,
+        // The members draw no annotations; the layer is anchored in the
+        // base panel's axes.
+        line_offsets: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {
@@ -1308,10 +1311,18 @@ impl ChartView {
     }
 }
 
-/// Whether `config` draws as more than one panel: it has overlays or
-/// subplots.
+/// Whether `config` draws as more than one panel: it has overlays,
+/// subplots or line offset members.
 pub(super) fn is_layered(config: &Config) -> bool {
-    !config.overlays.is_empty() || !config.subplots.is_empty()
+    !config.overlays.is_empty() || !config.subplots.is_empty() || config.has_offset_members()
+}
+
+/// The panel that draws series `series_id` among the `count` panels
+/// `config` drew as (`Config::panel_of_series`). A panel past them — a
+/// document that drew as its base panel alone — is the base panel.
+pub(super) fn series_panel_index(config: &Config, count: usize, series_id: &str) -> usize {
+    let index = config.panel_of_series(series_id);
+    if index < count { index } else { 0 }
 }
 
 /// The panel that draws `layer` among the `count` panels `config` drew as
@@ -1354,6 +1365,12 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             reason,
         });
     }
+    if let Err(reason) = config.validate_line_offset_layout() {
+        return Err(FiggyError::InvalidConfig {
+            field: "line_offsets",
+            reason,
+        });
+    }
     match config.expand() {
         Ok(expansion) => Ok(expansion
             .panels
@@ -1368,6 +1385,7 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             let mut panel = config.clone();
             panel.overlays.clear();
             panel.subplots.clear();
+            panel.line_offsets = None;
             panel.active_layer = crate::LayerRef::Base;
             Ok(vec![panel])
         }
@@ -1376,12 +1394,14 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
 
 /// The view of each panel, base first. A view created or refreshed with
 /// fewer overlays than the document now has cannot draw it; refresh first.
+/// Line offset members count like overlays: each has a panel view of its
+/// own in `overlay_views`.
 pub(super) fn layer_views(view: &ChartView, panels: usize) -> Result<Vec<&ChartView>> {
     if view.overlay_views.len() + 1 < panels {
         return Err(FiggyError::StaleStateToken {
             reason: format!(
-                "the chart view holds {} overlay layers but the document has {}; \
-                 refresh the view before drawing",
+                "the chart view holds {} overlay or line offset panels but the document has \
+                 {}; refresh the view before drawing",
                 view.overlay_views.len(),
                 panels - 1
             ),
@@ -1423,7 +1443,11 @@ pub(super) fn merged_render_warnings(
 ) -> Vec<crate::RenderWarning> {
     let layers = config.panel_layers();
     let mut merged = Vec::new();
-    for (panel, layer) in panels.iter().zip(layers) {
+    for (index, (panel, layer)) in panels.iter().zip(layers).enumerate() {
+        // A line offset member's axes are hidden copies of its owner's.
+        if config.panel_member(index).is_some() {
+            continue;
+        }
         for warning in axis_render::tick_warnings(panel) {
             let axis = warning.axis();
             let tagged = match (layer, axis) {
@@ -1476,23 +1500,28 @@ pub(super) fn panel_places(
     panels
         .iter()
         .zip(config.panel_layers())
-        .map(|(panel, layer)| match layer {
-            crate::LayerRef::Subplot(_) | crate::LayerRef::SubplotOverlay(..) => {
-                let area = panel.chart_area.0;
-                PanelPlace {
-                    rect: Rect {
-                        x: shift(area.x, dx),
-                        y: shift(area.y, dy),
-                        width: area.width,
-                        height: area.height,
-                    },
-                    draws_backdrop: matches!(layer, crate::LayerRef::Subplot(_)),
+        .enumerate()
+        .map(|(index, (panel, layer))| {
+            // A line offset member draws over its owner's backdrop.
+            let member = config.panel_member(index).is_some();
+            match layer {
+                crate::LayerRef::Subplot(_) | crate::LayerRef::SubplotOverlay(..) => {
+                    let area = panel.chart_area.0;
+                    PanelPlace {
+                        rect: Rect {
+                            x: shift(area.x, dx),
+                            y: shift(area.y, dy),
+                            width: area.width,
+                            height: area.height,
+                        },
+                        draws_backdrop: matches!(layer, crate::LayerRef::Subplot(_)) && !member,
+                    }
                 }
+                layer => PanelPlace {
+                    rect: panel_rect,
+                    draws_backdrop: layer == crate::LayerRef::Base && !member,
+                },
             }
-            layer => PanelPlace {
-                rect: panel_rect,
-                draws_backdrop: layer == crate::LayerRef::Base,
-            },
         })
         .collect()
 }

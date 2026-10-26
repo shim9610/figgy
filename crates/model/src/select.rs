@@ -652,6 +652,7 @@ impl SubplotElement {
                 active_layer: _,
                 annotations: _,
                 bar_groups,
+                line_offsets,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -672,6 +673,7 @@ impl SubplotElement {
                 active_layer: stored.active_layer,
                 annotations: std::mem::take(&mut stored.annotations),
                 bar_groups,
+                line_offsets,
             };
         }
         result
@@ -884,7 +886,7 @@ fn axis_of<'a>(cfg: &'a Config, side: &Side) -> &'a AxisOptions {
 /// without its layers when it does not expand at this size, as the
 /// renderer's panel expansion does.
 pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
-    if cfg.overlays.is_empty() && cfg.subplots.is_empty() {
+    if cfg.overlays.is_empty() && cfg.subplots.is_empty() && !cfg.has_offset_members() {
         return f(cfg);
     }
     match cfg.expand() {
@@ -896,6 +898,7 @@ pub fn on_drawn_panel<R>(cfg: &Config, f: impl FnOnce(&Config) -> R) -> R {
             let mut panel = cfg.clone();
             panel.overlays.clear();
             panel.subplots.clear();
+            panel.line_offsets = None;
             panel.active_layer = LayerRef::Base;
             f(&panel)
         }

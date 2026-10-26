@@ -618,6 +618,62 @@ subplots linked to its X axis, and `mixed-axes.png` with one linked axis, a
 different X column and a twin Y axis inside a subplot. See
 [the example source](https://github.com/shim9610/figgy/blob/master/crates/renderer/examples/subplots.rs).
 
+## Offset spectra
+
+`Config::line_offsets` stacks line series as offset spectra (see
+[`LineOffsets`](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#lineoffsets-configline_offsets)):
+member `k` is drawn shifted by `k * step_y` along y and `k * step_x` along x.
+The host uploads the curves as they are; the shift is a display parameter,
+and nothing per point is shifted or stored on the CPU. `Config::expand()`
+draws each member as an internal panel of its own after the overlay panels,
+the panel of the layer that scales it with its ranges moved and every axis
+element hidden, so lines, fills, markers, error bars, dashes and the picked
+ring follow without a transform of their own. A later member is drawn over
+an earlier one, its fill included.
+
+**Views and caches.** A member panel has the textures and the raster cache
+of an overlay panel and is counted with them (`overlay_count()`,
+`layer_raster_generations()`); a view created or refreshed with fewer panels
+than the document now has must be refreshed before it draws. Every
+`line_offsets` field is a raster edit and a geometry edit (the `raster` and
+`view` revisions), like adding an overlay; a step edit re-rasterizes only the
+member panels it moves.
+
+**Picking and selection.** A member panel is not a layer: `active_layer`
+never names one, and `Config::panel_layers()` reports its owner's layer for
+it. A pick on the owner layer tests every member where its own panel draws
+it and answers with what is painted under the cursor: the last member in
+`line_offsets.series` order with a hit at distance 0 (inside its painted
+line, marker, error bar or fill) answers first, since the member panels
+composite in that order and a later member's fill covers an earlier
+member's line; with no member painted there, the nearest hit within
+`max_distance_px` of any series answers, as on every chart. A typed pick
+(`pick_chart_data`) lets a member's point hit painted under the cursor
+answer before the data under it. A pick names the source index; `selection_details` in the WASM wrapper
+reads the column's own values from the pool, unshifted, and
+`step_selection` walks the source indices and the series order as without a
+group.
+
+**Decorations, the data area and annotations.** The member panels register
+nothing in the hit map: the owner layer's elements answer as on any chart,
+and a plot-area drag, resize or wheel acts on the base panel, which the
+member panels follow because they are derived from it at expansion. The
+annotation layer stays on the base panel, anchored in the base axes; the
+host places trace labels as annotations (the `OffsetSpectra` playground
+scene labels each trace at its start).
+
+**Fit and export.** `Chart::auto_fit_layer_union` fits the base range from
+every member's extents plus its shift (a factor of `10^shift` on a
+logarithmic axis, `Chart::line_offset_fit_extents`), and the WASM
+`auto_fit_all` does the same with the GPU extents. The document export
+(PNG at any scale, SVG and PDF) draws every member; `export_panel_*` keeps
+the base panel.
+
+**Limits.** Line kinds only, at most 32 members per chart, no polar chart,
+no `ToSeries` fill across members, and a nonresident streaming member is
+rejected by every registry entry point; the stream request paths reject a
+document with members as a whole.
+
 ## Annotation layer
 
 Reference lines, spans, text boxes and arrows live in

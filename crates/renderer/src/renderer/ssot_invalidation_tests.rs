@@ -419,6 +419,26 @@ fn edits() -> Vec<Edit> {
         pixels: Pixels::Unchanged,
         streams: true,
     });
+    // A line offset group moves its members into panels of their own: a
+    // relayout like adding an overlay, so the view and the raster follow.
+    // The one member is the stack's first, unshifted, so the frame is the
+    // same picture; the stream pass rejects line offsets (rule 8).
+    cases.push(Edit {
+        name: "line_offsets (None -> Some)",
+        apply: |c| {
+            c.line_offsets = Some(crate::data_config::LineOffsets {
+                series: vec!["s".into()],
+                step_y: 0.5,
+                step_x: 0.25,
+            })
+        },
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: false,
+    });
     // Adding a colourbar reserves its band, so the data area moves.
     cases.push(Edit {
         name: "colorbar (None -> Some)",
@@ -1485,6 +1505,7 @@ fn config_fields_are_classified() {
         active_layer: _,  // layer only: no raster, no pixels
         annotations: _,   // annotation_edits(): annotation revision only
         bar_groups: _,    // "bar_groups (None -> Some)" + resident display mutations
+        line_offsets: _,  // "line_offsets (None -> Some)" + resident display mutations
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,

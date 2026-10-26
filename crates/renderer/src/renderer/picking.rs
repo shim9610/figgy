@@ -509,12 +509,40 @@ pub(super) struct PickChartPlan {
 /// the group data area) and only the series that layer scales; the base
 /// layer answers while the annotation layer is active, which has no series.
 /// A document without overlays is its own panel.
+///
+/// The line offset members the layer scales are drawn by panels of their
+/// own (`Config::expand`). They follow the layer's other series, in stacking
+/// order, and `member_transforms` holds the transform of each one's panel:
+/// the pick tests each member where its panel draws it, from the top of the
+/// stack first, and the layer's own panel last
+/// (`GpuPickEngine::pick_with_arcs`).
+pub(super) struct LayerPickInputs {
+    pub(super) panel: Config,
+    pub(super) series: Vec<SeriesConfig>,
+    pub(super) member_transforms:
+        [data_render::ScatterTransform; crate::data_config::MAX_OFFSET_LINES],
+    pub(super) member_count: usize,
+}
+
+impl LayerPickInputs {
+    /// The transforms of the members at the end of `series`.
+    pub(super) fn members(&self) -> &[data_render::ScatterTransform] {
+        &self.member_transforms[..self.member_count]
+    }
+}
+
 pub(super) fn active_layer_pick_inputs(
     config: &Config,
     series: &[SeriesConfig],
-) -> std::result::Result<(Config, Vec<SeriesConfig>), crate::gpu_pick::GpuPickError> {
+) -> std::result::Result<LayerPickInputs, crate::gpu_pick::GpuPickError> {
+    let member_transforms = [bytemuck::Zeroable::zeroed(); crate::data_config::MAX_OFFSET_LINES];
     if !is_layered(config) {
-        return Ok((config.clone(), series.to_vec()));
+        return Ok(LayerPickInputs {
+            panel: config.clone(),
+            series: series.to_vec(),
+            member_transforms,
+            member_count: 0,
+        });
     }
     let layer = match config.active_layer() {
         crate::LayerRef::Annotations => crate::LayerRef::Base,
@@ -525,17 +553,44 @@ pub(super) fn active_layer_pick_inputs(
             resource: "renderer pick layer expansion",
         })?;
     let index = panel_index(config, panels.len(), layer);
-    let layer = config.panel_layers()[index];
+    let layers = config.panel_layers();
+    let layer = layers[index];
+    let mut subset: Vec<SeriesConfig> = series
+        .iter()
+        .filter(|item| series_panel_index(config, panels.len(), &item.series_id) == index)
+        .cloned()
+        .collect();
+    let mut transforms = member_transforms;
+    let mut member_count = 0;
+    // The layer's members, in stacking order, each with its panel's
+    // transform.
+    for (panel_at, panel) in panels.iter().enumerate() {
+        if layers.get(panel_at) != Some(&layer) {
+            continue;
+        }
+        let Some(member) = config.panel_member(panel_at) else {
+            continue;
+        };
+        let Some(item) = series.iter().find(|item| item.series_id == member) else {
+            continue;
+        };
+        let Some(slot) = transforms.get_mut(member_count) else {
+            break;
+        };
+        *slot = data_render::scatter_transform_from_config(panel);
+        member_count += 1;
+        subset.push(item.clone());
+    }
     let panel = panels
         .into_iter()
         .nth(index)
         .expect("expansion yields one panel per layer");
-    let subset = series
-        .iter()
-        .filter(|item| config.layer_of_series(&item.series_id) == layer)
-        .cloned()
-        .collect();
-    Ok((panel, subset))
+    Ok(LayerPickInputs {
+        panel,
+        series: subset,
+        member_transforms: transforms,
+        member_count,
+    })
 }
 
 impl PickChartPlan {
@@ -545,8 +600,8 @@ impl PickChartPlan {
         config: &Config,
         series: &[SeriesConfig],
     ) -> std::result::Result<Self, crate::gpu_pick::GpuPickError> {
-        let (panel, subset) = active_layer_pick_inputs(config, series)?;
-        Self::new(&panel, &subset)
+        let inputs = active_layer_pick_inputs(config, series)?;
+        Self::new(&inputs.panel, &inputs.series)
     }
 
     pub(super) fn new(
@@ -1464,8 +1519,13 @@ impl Renderer {
             request.display_scale,
             request.display_panel_px,
         );
-        let (display_config, layer_series) = active_layer_pick_inputs(&displayed, &state.series)?;
-        let transform = data_render::scatter_transform_from_config(&display_config);
+        let inputs = active_layer_pick_inputs(&displayed, &state.series)?;
+        let (display_config, layer_series) = (&inputs.panel, &inputs.series);
+        let transform = data_render::scatter_transform_from_config(display_config);
+        // The line offset members are the last registered series, each
+        // drawn (and its arc prefix scanned) at its own panel's transform.
+        let members = inputs.members();
+        let first_member = layer_series.len() - members.len();
         // The arc prefix each registered line was drawn with at this
         // transform, by registry position: its dash phase and sketch wobble
         // walk it. The draw's own cache key, so a pick after a frame reuses
@@ -1484,9 +1544,13 @@ impl Renderer {
             }
         })?;
         for series_id in slots.series_ids() {
-            let series = layer_series
+            let position = layer_series
                 .iter()
-                .find(|series| series.series_id == series_id);
+                .position(|series| series.series_id == series_id);
+            let series_transform = position
+                .and_then(|position| position.checked_sub(first_member))
+                .map_or(&transform, |member| &members[member]);
+            let series = position.map(|position| &layer_series[position]);
             let arc = series
                 .filter(|series| line_pick_walks_arc(&display_config.draw_style, series))
                 .and_then(|series| {
@@ -1496,7 +1560,7 @@ impl Renderer {
                         &series.series_id,
                         &series.x_column,
                         &series.y_column,
-                        &transform,
+                        series_transform,
                         None,
                         interpolation,
                     )
@@ -1543,6 +1607,7 @@ impl Renderer {
             query,
             request.display_scale,
             &arcs,
+            members,
             &picker.exact,
         )
     }
@@ -1558,7 +1623,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
-        let (config, series, display_config) = {
+        let (config, series, display_config, members) = {
             let state = self
                 .chart_states
                 .get(&id)
@@ -1571,14 +1636,15 @@ impl Renderer {
             // paint orders agree with the point query's registry. The query
             // geometry is the panel as displayed: the document is scaled and
             // placed first and expanded after, exactly as it is drawn.
-            let (config, series) = active_layer_pick_inputs(&state.config, &state.series)?;
+            let inputs = active_layer_pick_inputs(&state.config, &state.series)?;
             let displayed = place_document(
                 &state.config,
                 request.display_scale,
                 request.display_panel_px,
             );
-            let (display_config, _) = active_layer_pick_inputs(&displayed, &state.series)?;
-            (config, series, display_config)
+            let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
+            let members = inputs.member_count;
+            (inputs.panel, inputs.series, display_config, members)
         };
 
         // Submit the established point/line query first. It stays point-only,
@@ -1937,6 +2003,7 @@ impl Renderer {
             point_ticket,
             data_ticket,
             point_orders,
+            members,
         ))
     }
 }

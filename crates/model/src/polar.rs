@@ -359,6 +359,13 @@ impl PolarOptions {
         if !config.overlays.is_empty() {
             return Err("polar charts have no overlay layers");
         }
+        if config
+            .line_offsets
+            .as_ref()
+            .is_some_and(|offsets| !offsets.series.is_empty())
+        {
+            return Err("polar charts have no line offsets");
+        }
         Ok(())
     }
 }

@@ -191,20 +191,32 @@ impl FiggyChart {
                 return None;
             }
             let request = crate::series_extent_request_from(&self.column_revisions, cfg)?;
-            Some((prepared.extents.get(&request.key).cloned()?, x, y))
+            Some((
+                prepared.extents.get(&request.key).cloned()?,
+                cfg.series_id.as_str(),
+                x,
+                y,
+            ))
         }));
         self.publish_series_extent_cache(prepared);
 
         let mut x_ext = FitExtent::EMPTY;
         let mut y_ext = FitExtent::EMPTY;
-        for (job, x, y) in jobs {
+        for (job, series_id, x, y) in jobs {
             let extent = job.wait().await.map_err(js_err)?;
             if let Some(extent) = extent {
+                // A line offset member fits where it is drawn.
+                let (extent_x, extent_y) = Chart::line_offset_fit_extents(
+                    self.chart_config(),
+                    series_id,
+                    extent.x,
+                    extent.y,
+                );
                 if x {
-                    x_ext.union(&extent.x);
+                    x_ext.union(&extent_x);
                 }
                 if y {
-                    y_ext.union(&extent.y);
+                    y_ext.union(&extent_y);
                 }
             }
         }
