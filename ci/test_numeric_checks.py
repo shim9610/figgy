@@ -9,7 +9,8 @@ import verify
 def _ok(target, name):
     if name is None:
         return "running 3 tests\ntest a ... ok\ntest result: ok. 3 passed\n"
-    return f"running 1 test\ntest {name} ... ok\ntest result: ok. 1 passed\n"
+    # `--nocapture` output lands between the name and the verdict.
+    return f"running 1 test\ntest {name} ... adapter: llvmpipe\nok\ntest result: ok. 1 passed\n"
 
 
 class NumericChecksTests(unittest.TestCase):

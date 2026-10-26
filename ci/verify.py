@@ -141,10 +141,12 @@ def numeric_checks(cwd):
             output = run(args, cwd=cwd, collect=True)
         except subprocess.CalledProcessError as error:
             raise RuntimeError(f"GPU numeric test red: {label} ({error})") from None
+        # `--nocapture` interleaves the test's own output between its name
+        # and its verdict, so the result summary is the line to read.
         if name is None:
             ran = "running 0 tests" not in output and "test result: ok." in output
         else:
-            ran = "running 1 test" in output and f"test {name} ... ok" in output
+            ran = "running 1 test" in output and "test result: ok. 1 passed" in output
         if not ran:
             raise RuntimeError(f"GPU numeric test did not run: {label}")
         report(f"PASS: GPU numeric test {label}")
