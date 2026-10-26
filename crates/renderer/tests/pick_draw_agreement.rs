@@ -3739,10 +3739,12 @@ fn overlapping_offset_members_pick_what_is_painted_on_top() {
             ),
         ])
         .expect("upload");
+    // Far apart in every pair, so a fill painted over its neighbour's
+    // differs by as much ink as one painted over the background.
     let fills = [
-        Color::new(0.55, 0.75, 0.95, 1.0),
-        Color::new(0.95, 0.75, 0.55, 1.0),
-        Color::new(0.65, 0.9, 0.6, 1.0),
+        Color::new(0.1, 0.2, 0.85, 1.0),
+        Color::new(0.95, 0.85, 0.15, 1.0),
+        Color::new(0.15, 0.75, 0.2, 1.0),
     ];
     let series: Vec<SeriesConfig> = ["m0", "m1", "m2"]
         .iter()
