@@ -611,11 +611,13 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   transform, binding or cache of its own. The view counts member panels
   like overlays (`overlay_count()`, `layer_raster_generations()`, the
   refresh rule of `layer_views`), and a member draws no backdrop and
-  reports no tick warnings. A pick on the owner layer tests the member
-  panels from the top of the stack first and the owner's panel last (the
-  approved D7 policy): the point pick tests each member at its own panel's
-  transform and reads back each member's candidate beside the final one; a
-  typed pick lets a member's point hit answer before the data under it.
+  reports no tick warnings. A pick on the owner layer answers with what is
+  painted under the cursor (the approved D7 policy): the point pick tests
+  each member at its own panel's transform and reads back each member's
+  candidate beside the final one; the last member with a hit at distance 0
+  answers first, else the nearest hit of any series; a typed pick lets a
+  member's point hit painted under the cursor answer before the data under
+  it.
   Reported indices and values are the pool's, unshifted.
   `Chart::auto_fit_layer_union` fits every member's extents plus its shift
   (`Chart::line_offset_fit_extents`). A nonresident (streamed) member is
@@ -1482,7 +1484,7 @@ entries above describe the changes.
   line with markers and error bars, a log axis stacked by decades, 1x and
   2x); `line_area_step::offset_lines_report_unshifted_values`, the renderer's
   `offset_lines_export_at_1x_and_2x`, `offset_line_ring_sits_on_the_shifted_point`,
-  `offset_picks_test_the_stack_top_first`, `pan_keeps_offset_picks_on_the_drawn_trace`,
+  `offset_picks_take_the_painted_member_first`, `pan_keeps_offset_picks_on_the_drawn_trace`,
   `offset_members_shift_on_their_overlay_axis`, `auto_fit_includes_member_offsets`,
   `streamed_series_reject_line_offsets`, `polar_rejects_line_offsets` and
   `subplot_members_draw_shifted_in_their_own_area` compare each with a host

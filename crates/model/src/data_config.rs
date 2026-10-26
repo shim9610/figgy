@@ -1722,7 +1722,8 @@ pub const MAX_OFFSET_LINES: usize = 32;
 /// (`Config::expand`), so lines, fills, markers, error bars, dashes and the
 /// picked highlight follow without a transform of their own. Later members
 /// draw over earlier ones, fill included, which gives the ridgeline
-/// occlusion, and a pick tests the members from the top of the stack first.
+/// occlusion, and a pick answers with what is painted under the cursor: the
+/// last member painted there first, else the nearest hit of any series.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "serde",

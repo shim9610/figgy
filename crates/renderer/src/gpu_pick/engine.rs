@@ -1765,10 +1765,11 @@ impl GpuPickEngine {
     ///
     /// The last `member_transforms.len()` registered series are line offset
     /// members (`Config::line_offsets`), each drawn by a panel of its own
-    /// with the transform given for it here, in stacking order. They are
-    /// tested from the top of the stack first: the ticket resolves to the
-    /// last member with a hit, and to the best hit of the other series only
-    /// when no member has one.
+    /// with the transform given for it here, in `line_offsets.series`
+    /// order, so the last one paints on top. The pick resolves to what is
+    /// painted under the cursor: the last member whose hit is at distance 0
+    /// (inside its painted part) answers first; with none, the nearest hit
+    /// within reach of any series does, as for every other chart.
     pub(crate) fn pick_with_arcs(
         &self,
         pool: &ColumnPool,
@@ -2088,12 +2089,17 @@ impl GpuPickTicket {
         let candidate_at = |index: usize| {
             *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size])
         };
-        // The line offset members are tested from the top of the stack: the
-        // last member with a hit (or an overflow) answers before the rest.
+        // Member panels composite in `line_offsets.series` order, so the
+        // last member painted under the cursor (a hit at distance 0) is what
+        // the user sees there; the final candidate's tie rule cannot say so,
+        // since a later member's fill covers an earlier member's line. With
+        // no member painted there, the nearest hit of any series answers.
         let candidate = (1..=members)
             .rev()
             .map(candidate_at)
-            .find(|candidate| candidate.valid != 0)
+            .find(|candidate| {
+                candidate.valid == 2 || (candidate.valid == 1 && candidate.distance_px == 0.0)
+            })
             .unwrap_or_else(|| candidate_at(0));
         drop(mapped);
         readback.unmap();

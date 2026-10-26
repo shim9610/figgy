@@ -1007,35 +1007,54 @@ fn offset_line_ring_sits_on_the_shifted_point() {
     );
 }
 
-// A pick tests the members from the top of the stack first and the base
-// panel last (#50 D7): a hit within reach on a later member wins over a
-// nearer one on an earlier member or on the base series.
+// A pick answers with what is painted under the cursor (#50 D7): the last
+// member painted there (a hit at distance 0) first, since the member panels
+// composite in `line_offsets.series` order; with no member painted there,
+// the nearest hit within reach of any series, members and base alike.
 #[test]
-fn offset_picks_test_the_stack_top_first() {
+fn offset_picks_take_the_painted_member_first() {
     let mut r = offset_renderer();
     let mut config = offset_config();
-    // Four pixels between neighbouring members at this panel height.
+    // Four pixels between neighbouring members at this panel height; the
+    // lines are 2 px wide.
     let da = config.data_area().unwrap().0;
-    let step = 4.0 / f64::from(da.height);
-    config.line_offsets.as_mut().unwrap().step_y = step;
+    let px = 1.0 / f64::from(da.height);
+    config.line_offsets.as_mut().unwrap().step_y = 4.0 * px;
     // `s0` draws `a` too, under `m0`.
     let mut series = offset_series(false);
     series[0] = colored("s0", "x", "a", Color::BLACK);
     let id = r.register_chart(config.clone(), series).unwrap();
-    // Exactly on point 1 of `m0` (and of `s0`).
+    // Exactly on point 1 of `m0` (and of `s0`), with `m1` and `m2` in reach:
+    // `m0` is painted there and on top of `s0`.
     let at = offset_px(&config, 0.3, 0.6, 1.0);
-    let top = offset_pick(&mut r, id, at, 10.0).unwrap();
-    assert_eq!((top.series_id.as_str(), top.point_index), ("m2", 1));
-    assert!(top.distance_px > 4.0, "the top member is the farther one");
+    let on = offset_pick(&mut r, id, at, 10.0).unwrap();
+    assert_eq!((on.series_id.as_str(), on.point_index), ("m0", 1));
+    assert_eq!(on.distance_px, 0.0, "the cursor is on m0's line");
     let near = offset_pick(&mut r, id, at, 1.0).unwrap();
     assert_eq!(near.series_id, "m0", "only the bottom member is in reach");
+    // Between `m0` and `m1`, 2.5 px above `m0`'s peak and 1.5 px below
+    // `m1`'s, painted by neither: the nearest member answers, not the top.
+    let gap = offset_pick(
+        &mut r,
+        id,
+        offset_px(&config, 0.3, 0.6 + 2.5 * px, 1.0),
+        10.0,
+    )
+    .unwrap();
+    assert_eq!(
+        gap.series_id, "m1",
+        "the nearest member answers off the ink"
+    );
     // Without members in reach the base panel answers.
     let mut lifted = config.clone();
     lifted.line_offsets.as_mut().unwrap().series = vec!["m1".into(), "m2".into(), "m0".into()];
     lifted.line_offsets.as_mut().unwrap().step_y = 0.0;
     r.set_chart_config(id, lifted).unwrap();
     let stacked = offset_pick(&mut r, id, at, 1.0).unwrap();
-    assert_eq!(stacked.series_id, "m0", "the last member is the stack top");
+    assert_eq!(
+        stacked.series_id, "m0",
+        "where every member is painted, the last one paints on top"
+    );
     let mut alone = config;
     alone.line_offsets.as_mut().unwrap().series = vec!["m1".into(), "m2".into()];
     alone.line_offsets.as_mut().unwrap().step_y = 0.5;

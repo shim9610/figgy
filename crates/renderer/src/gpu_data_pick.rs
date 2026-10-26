@@ -1553,7 +1553,8 @@ enum GpuDataPickTicketState {
 impl GpuDataPickTicket {
     /// The last `members` entries of `point_orders` are line offset members
     /// (`Config::line_offsets`), drawn by panels above every other series of
-    /// the layer: a point hit on one of them answers before any data hit.
+    /// the layer: a point hit on one of them inside its painted part
+    /// (distance 0) answers before any data hit under it.
     pub(crate) fn new(
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
@@ -1605,8 +1606,12 @@ impl GpuDataPickTicket {
             (None, None) => None,
             (Some(point), None) => Some(point.picked),
             (None, Some(data)) => Some(data.picked),
-            // A line offset member is tested before everything under it.
-            (Some(point), Some(_)) if point.paint_order as usize >= first_member => {
+            // A line offset member painted under the cursor covers every
+            // data hit, whose panels draw below the members'.
+            (Some(point), Some(_))
+                if point.paint_order as usize >= first_member
+                    && point.picked.distance_px() == 0.0 =>
+            {
                 Some(point.picked)
             }
             (Some(point), Some(data)) => {

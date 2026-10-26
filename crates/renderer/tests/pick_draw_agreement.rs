@@ -3714,3 +3714,71 @@ fn offset_lines_pick_where_their_shifted_parts_paint() {
         }
     }
 }
+
+/// Offset spectra (#50) whose members overlap: each member's opaque baseline
+/// fill covers part of the member below it, line included. Every pixel a
+/// member paints and the user can see picks that member, and a covered one
+/// picks the member covering it, at 1x and 2x: the pick answers with what is
+/// painted under the cursor (D7), across the member panels' composite order.
+#[test]
+fn overlapping_offset_members_pick_what_is_painted_on_top() {
+    use renderer::data_config::{LineFill, LineInterpolation, LineOffsets};
+    let mut renderer = renderer();
+    let xs = vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
+    let n = xs.len();
+    upload_xy(&mut renderer, xs, vec![1.0, 1.9, 1.2, 2.0, 1.3, 1.6]);
+    renderer
+        .add_columns(&[
+            (
+                "nan_x",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "nan_y",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let fills = [
+        Color::new(0.55, 0.75, 0.95, 1.0),
+        Color::new(0.95, 0.75, 0.55, 1.0),
+        Color::new(0.65, 0.9, 0.6, 1.0),
+    ];
+    let series: Vec<SeriesConfig> = ["m0", "m1", "m2"]
+        .iter()
+        .zip(fills)
+        .map(|(id, fill)| {
+            filled_line(
+                id,
+                Some(LineFill::ToBaseline(0.6)),
+                LineInterpolation::Linear,
+                fill,
+            )
+        })
+        .collect();
+    let mut chart = bare_chart();
+    chart.set_x_range(0.0, 9.5);
+    chart.set_y_range(0.0, 3.2);
+    // Half a unit apart: member k's line (1.0..2.0 + k / 2) runs inside
+    // member k + 1's fill (1.1 + k / 2 up to its line) wherever the trace
+    // rises less than half a unit over its neighbour's.
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["m0".into(), "m1".into(), "m2".into()],
+        step_y: 0.5,
+        step_x: 0.0,
+    });
+    for scale in [1.0, 2.0] {
+        for subject in ["m0", "m1", "m2"] {
+            let painted = assert_member_pick_matches_paint(
+                &mut renderer,
+                &chart,
+                &series,
+                subject,
+                scale,
+                &format!("overlapping member {subject}"),
+                FILL_EDGE,
+            );
+            assert!(painted > 30, "{subject} at {scale}x: {painted}");
+        }
+    }
+}

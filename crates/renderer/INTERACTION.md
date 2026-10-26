@@ -641,13 +641,15 @@ member panels it moves.
 
 **Picking and selection.** A member panel is not a layer: `active_layer`
 never names one, and `Config::panel_layers()` reports its owner's layer for
-it. A pick on the owner layer tests the member panels from the top of the
-stack first (the last member first), each where its own panel draws it, and
-the owner's own panel last: the topmost member with a hit within
-`max_distance_px` answers, even when an earlier member or a base series is
-nearer, which is what the paint order shows; a typed pick
-(`pick_chart_data`) lets a member's point hit answer before the data under
-it. A pick names the source index; `selection_details` in the WASM wrapper
+it. A pick on the owner layer tests every member where its own panel draws
+it and answers with what is painted under the cursor: the last member in
+`line_offsets.series` order with a hit at distance 0 (inside its painted
+line, marker, error bar or fill) answers first, since the member panels
+composite in that order and a later member's fill covers an earlier
+member's line; with no member painted there, the nearest hit within
+`max_distance_px` of any series answers, as on every chart. A typed pick
+(`pick_chart_data`) lets a member's point hit painted under the cursor
+answer before the data under it. A pick names the source index; `selection_details` in the WASM wrapper
 reads the column's own values from the pool, unshifted, and
 `step_selection` walks the source indices and the series order as without a
 group.
