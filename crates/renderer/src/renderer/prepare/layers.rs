@@ -443,8 +443,33 @@ impl PrepareContext<'_> {
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
                     .map(|arc| arc.prefix.clone());
+                // A streamline series' colour column: its stroke draws through
+                // the mapped line pipeline with the value map
+                // `ensure_value_map_scratch` resolved (precise only, never
+                // streamed).
+                let value_map = match rt.streamlines().and_then(|s| s.color_map) {
+                    Some(map) if styled.is_none() && phase.is_none() => {
+                        let scratch = self
+                            .value_map_cache
+                            .get(cfg.series_id.as_str())
+                            .expect("prepare ensured this streamline colour map's value map");
+                        Some(data_render::LineValueMap {
+                            column: lookup(&map.column)?,
+                            neutral_bg: self.neutral_point_value_map_bg,
+                            value_map_bg: &scratch.bind_group,
+                        })
+                    }
+                    _ => None,
+                };
                 Some(ColumnLineLayer {
-                    pipeline: line_pick.pipeline,
+                    pipeline: if value_map.is_some() {
+                        pipelines
+                            .line_mapped
+                            .as_ref()
+                            .expect("prepare ensured mapped line pipeline")
+                    } else {
+                        line_pick.pipeline
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: column_buffer,
@@ -462,6 +487,7 @@ impl PrepareContext<'_> {
                     ),
                     texture_bg: line_pick.texture_bg,
                     closed,
+                    value_map,
                 })
             } else {
                 None

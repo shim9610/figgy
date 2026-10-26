@@ -183,6 +183,10 @@ pub(super) struct TargetPipelines {
     pub(super) shaders: data_render::ShaderModules,
     pub(super) axis: wgpu::RenderPipeline,
     pub(super) line: Option<wgpu::RenderPipeline>,
+    /// The colour-mapped stroke (`vs_main_mapped` / `fs_main_mapped`) of a
+    /// streamline series with a colour column: the line slots plus the value
+    /// column, group 3 the point value map.
+    pub(super) line_mapped: Option<wgpu::RenderPipeline>,
     /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
     /// series declares a fill. Used in every draw style: the fill is a flat
     /// precise primitive under whatever the style draws for the line.
@@ -294,6 +298,7 @@ impl TargetPipelines {
         let mut need_contour = false;
         let mut need_contour_label = false;
         let mut need_line = false;
+        let mut need_line_mapped = false;
         let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
@@ -365,6 +370,12 @@ impl TargetPipelines {
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
                 need_line |= primitives.line;
+                need_line_mapped |= primitives.line
+                    && series
+                        .config
+                        .render_type
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.color_map.is_some());
                 need_contour_label |=
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 need_scatter |= primitives.scatter;
@@ -431,6 +442,17 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        if need_line_mapped && self.line_mapped.is_none() {
+            self.line_mapped = Some(data_render::create_line_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                point_value_map_bgl,
+                surface_format,
+                self.sample_count,
+            ));
         }
         if need_area && self.area.is_none() {
             self.area = Some(data_render::create_line_area_pipeline_with_sample_count(
@@ -804,6 +826,19 @@ impl TargetPipelines {
                 &self.shaders.line,
                 transform_bgl,
                 style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            line_mapped,
+            "colour-mapped line",
+            data_render::create_line_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                point_value_map_bgl,
                 surface_format,
                 self.sample_count,
             )
@@ -1271,6 +1306,7 @@ pub(super) fn create_target_pipelines_observed(
             },
         ),
         line: None,
+        line_mapped: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -1351,6 +1387,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         vector_points: None,
         vector_grid: None,
         line: None,
+        line_mapped: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -2254,6 +2291,7 @@ impl Renderer {
         // Recreate only the lazy variants that were already live so a format
         // change does not re-eager unused data/mapped/ring pipelines.
         let had_line = self.pipelines.line.is_some();
+        let had_line_mapped = self.pipelines.line_mapped.is_some();
         let had_area = self.pipelines.area.is_some();
         let had_scatter = self.pipelines.scatter.is_some();
         let had_errorbar = self.pipelines.errorbar.is_some();
@@ -2283,6 +2321,18 @@ impl Renderer {
                     target_sample_count,
                 ),
             );
+        }
+        if had_line_mapped {
+            self.pipelines.line_mapped =
+                Some(data_render::create_line_mapped_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.line,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.point_value_map_bgl,
+                    surface_format,
+                    target_sample_count,
+                ));
         }
         if had_area {
             self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(

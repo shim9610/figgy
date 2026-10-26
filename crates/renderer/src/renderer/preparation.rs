@@ -51,6 +51,7 @@ impl PreparationFeature {
             Self::Basic => matches!(
                 field,
                 "line"
+                    | "line_mapped"
                     | "area"
                     | "scatter"
                     | "scatter_mapped"
@@ -280,6 +281,7 @@ impl Renderer {
         match feature {
             PreparationFeature::Basic => {
                 p.line.is_some()
+                    && p.line_mapped.is_some()
                     && p.scatter.is_some()
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
@@ -393,6 +395,7 @@ impl TargetPipelines {
             sample_count: source.sample_count,
             styled: HashMap::new(),
             line: None,
+            line_mapped: None,
             area: None,
             scatter: None,
             scatter_mapped: None,
@@ -424,6 +427,9 @@ impl TargetPipelines {
     fn merge_preparation(&mut self, other: Self) {
         if self.line.is_none() {
             self.line = other.line;
+        }
+        if self.line_mapped.is_none() {
+            self.line_mapped = other.line_mapped;
         }
         if self.area.is_none() {
             self.area = other.area;

@@ -498,6 +498,20 @@ mod tests {
                 }
             ),
             mirror!(
+                "line",
+                "PointValueMapParams",
+                PointValueMapParamsGpu {
+                    z_min,
+                    z_max,
+                    size_domain_min,
+                    size_domain_max,
+                    size_px,
+                    flags,
+                    stop_count,
+                    nan_color_premul,
+                }
+            ),
+            mirror!(
                 "vector_grid",
                 "VectorParams",
                 VectorParamsGpu {

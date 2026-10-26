@@ -37,11 +37,11 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
-| `ramp.wgsl` (§5.4) | field, scatter, vector, bar (read by `marker.wgsl`), the pick marker and vector modules |
+| `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
-| `arc_walk.wgsl` (§5.6 arc slots) | line |
+| `arc_walk.wgsl` (§5.6 arc slots) | line (draw only: the pick walks a segment's arc through `pick_arc`) |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
@@ -437,6 +437,12 @@ point (non-finite size value) carries a negative radius and is masked unless an
 override sets its radius. Nothing derived per point is uploaded: colour and
 radius are computed on every draw from the bound columns.
 
+The colour-mapped stroke of a streamline series (§5.6) binds the same
+group 3 in its mapped line pipeline and reads it in the fragment stage, so
+the layout is visible to both stages. The line module declares its own copy
+of `PointValueMapParams` (held to the Rust struct like the scatter one) and
+its stop lookup `line_value_ramp`; the ramp is the shared one.
+
 ### 5.3 Vector fields — group 2 (assembled vector shader)
 
 The vector shader is not one file: `VECTOR_POINTS_SHADER` /
@@ -593,6 +599,19 @@ drawn segment, the last one too on a closed line; the line and area
 candidates and `pick_segment_endpoint` take their B endpoint from it, and
 a closed line is scanned directly (no gate texture). A closed fill's
 segment count is the vertex count.
+
+**Colour-mapped stroke.** A streamline series with a colour column draws
+its stroke with `vs_main_mapped` / `fs_main_mapped`: the precise stroke of
+`vs_main` (its body is `line_vertex`), with the value column bound as
+vertex slots 6/7 (hi/lo pairs, one value shifted like x / y; eight slots,
+the WebGPU default limit) and the point value map as group 3 (§5.2); the
+pipeline layout holds the value map's layout at group 2 too, bound to the
+renderer's neutral value map, which the shader does not read. Each corner
+carries the value at its position along the unclipped segment (square cap
+and viewport clip included), so the fragment's interpolated value runs
+linearly from A's to B's along the drawn segment, and `line_value_color`
+maps it through the colourbar's ramp (`nan_color` where it cannot be
+placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
 
 **Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
 slot along the polyline's total pixel arc, the count the scan's

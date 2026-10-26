@@ -224,6 +224,9 @@ pub(super) struct PreparedLineLayer {
     pub(super) verts_per_instance: u32,
     pub(super) texture_bg: Option<wgpu::BindGroup>,
     pub(super) closed: bool,
+    /// A colour-mapped stroke: the value column and the groups 2 and 3 of
+    /// the mapped line pipeline.
+    pub(super) value_map: Option<(ColumnHandle, wgpu::BindGroup, wgpu::BindGroup)>,
 }
 
 pub(super) struct PreparedScatterLayer {
@@ -806,6 +809,9 @@ impl PreparedSeries {
                 verts_per_instance: layer.verts_per_instance,
                 texture_bg: layer.texture_bg.cloned(),
                 closed: layer.closed,
+                value_map: layer
+                    .value_map
+                    .map(|map| (map.column, map.neutral_bg.clone(), map.value_map_bg.clone())),
             }),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
@@ -990,6 +996,13 @@ impl PreparedSeries {
                 verts_per_instance: layer.verts_per_instance,
                 texture_bg: layer.texture_bg.as_ref(),
                 closed: layer.closed,
+                value_map: layer.value_map.as_ref().map(|(column, neutral, map)| {
+                    data_render::LineValueMap {
+                        column: *column,
+                        neutral_bg: neutral,
+                        value_map_bg: map,
+                    }
+                }),
             }),
             line_extra: self
                 .line_extra

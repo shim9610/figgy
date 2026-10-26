@@ -81,10 +81,19 @@ impl PrepareContext<'_> {
         cfg: &SeriesConfig,
         scale: f32,
     ) -> Result<()> {
-        let Some(scatter) = extract_scatter(&cfg.render_type) else {
-            return Ok(());
+        // A scatter's value maps, or the colour column a streamline series'
+        // stroke is mapped by (the same colour map, read by the mapped line
+        // pipeline as its group 3).
+        let scatter = extract_scatter(&cfg.render_type);
+        let (color_mapped, size_map) = match (&scatter, cfg.render_type.streamlines()) {
+            (Some(scatter), _) => (
+                scatter.point_color_map.is_some(),
+                scatter.point_size_map.as_ref(),
+            ),
+            (None, Some(streamlines)) => (streamlines.color_map.is_some(), None),
+            (None, None) => return Ok(()),
         };
-        if scatter.point_color_map.is_none() && scatter.point_size_map.is_none() {
+        if !color_mapped && size_map.is_none() {
             return Ok(());
         }
         let pair = |value: f64| {
@@ -93,7 +102,7 @@ impl PrepareContext<'_> {
         };
         let mut params = data_render::PointValueMapParamsGpu::NEUTRAL;
         let mut colormap = None;
-        if scatter.point_color_map.is_some() {
+        if color_mapped {
             let bar =
                 chart_config
                     .colorbar
@@ -115,7 +124,7 @@ impl PrepareContext<'_> {
             params.nan_color_premul = colorbar.nan_color_premul;
             colormap = Some(bar.colormap.clone());
         }
-        if let Some(map) = scatter.point_size_map.as_ref() {
+        if let Some(map) = size_map {
             map.validate()
                 .map_err(|reason| FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),

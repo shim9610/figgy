@@ -3373,14 +3373,19 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
 /// and shapes a point with the draw's code: Marker the scatter's and the
 /// error bars', Line the line's (its fill included), MarkerLine all three,
 /// Vector the point vector's. Only `transform.wgsl`
-/// (its uniform takes the binding the pick's pool holds) and `style.wgsl` (the
-/// pick reads its own style rows) are the draw's alone.
+/// (its uniform takes the binding the pick's pool holds), `style.wgsl` (the
+/// pick reads its own style rows) and `arc_walk.wgsl` (the arc-driven passes'
+/// group 3) are the draw's alone.
 #[test]
 fn pick_modules_splice_their_draw_modules_common_fragments() {
     use std::collections::BTreeSet;
-    const DRAW_ONLY: [&str; 2] = [
+    // `arc_walk.wgsl` is the draw's too: its group-3 bindings are the
+    // arc-driven instance passes' own, and the pick walks a segment's arc
+    // through `pick_arc` instead.
+    const DRAW_ONLY: [&str; 3] = [
         "data_render/common/transform.wgsl",
         "data_render/common/style.wgsl",
+        "data_render/common/arc_walk.wgsl",
     ];
     let common = |fragments: &[&'static str]| -> BTreeSet<&'static str> {
         fragments

@@ -101,6 +101,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "gpu_pick/core.wgsl",
             "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
+            "data_render/common/ramp.wgsl",
             "data_render/common/sketch_noise.wgsl",
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",

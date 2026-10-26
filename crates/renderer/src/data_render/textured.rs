@@ -279,6 +279,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             super::LINE_SHADER.source,
             &[
                 ("precise line", "figgy line columnar pipeline"),
+                ("colour-mapped line", "figgy line mapped pipeline"),
                 ("line area fill", "figgy line area pipeline"),
                 ("hand-drawn line", "figgy line styled pipeline"),
                 ("milkyway ribbon", "figgy milkyway ribbon pipeline"),

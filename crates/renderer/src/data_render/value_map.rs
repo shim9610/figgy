@@ -53,8 +53,10 @@ impl PointValueMapParamsGpu {
     };
 }
 
-/// Bind group layout for a scatter series' continuous value maps (group 3 in
-/// the mapped precise scatter and pick-ring pipelines).
+/// Bind group layout for a series' continuous value maps (group 3 in the
+/// mapped precise scatter and pick-ring pipelines, which read it in the
+/// vertex stage, and in the colour-mapped line pipeline, which maps the
+/// value interpolated along the stroke in the fragment stage).
 /// - binding 0: [`PointValueMapParamsGpu`].
 /// - binding 1: the colourbar's ramp control points, straight RGBA, at least
 ///   one entry (a storage binding cannot be zero-sized).
@@ -66,7 +68,7 @@ pub fn create_point_value_map_bind_group_layout(device: &wgpu::Device) -> wgpu::
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -76,7 +78,7 @@ pub fn create_point_value_map_bind_group_layout(device: &wgpu::Device) -> wgpu::
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
