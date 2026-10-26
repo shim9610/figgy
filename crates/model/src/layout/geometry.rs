@@ -832,7 +832,9 @@ const AUTO_LAYOUT_MAX_DIGITS: usize = 5;
 /// [`auto_layout`], whatever it prints.
 const AUTO_LAYOUT_MAX_LABEL_EMS: f32 = 5.0;
 /// The passes [`auto_layout`] runs at most. A pass that changes nothing ends
-/// it; the scenes and documents it is tested on settle in at most three.
+/// it, so the result is a fixed point (and a second call a no-op) unless
+/// every pass changed something; the idempotence tests cover every
+/// catalogue scene and released config.
 const AUTO_LAYOUT_PASSES: usize = 8;
 
 /// `cfg` with axis bands, axis title offsets and tick-label formats chosen so
