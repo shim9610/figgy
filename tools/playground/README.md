@@ -32,7 +32,8 @@ cargo run --manifest-path tools/playground/Cargo.toml -- --selftest
 
 It registers the lines scene as a chart, applies a sequence of overlay and
 subplot edits with `Renderer::set_chart_config`, and writes a PNG of each step,
-and of every Cartesian scene at 1x and 2x, to `target/playground/selftest/`
+and of every Cartesian scene at 1x and 2x, plus the long-label scene after
+`layout::auto_layout` committed the same way, to `target/playground/selftest/`
 under the working directory. A rejected config or a failed export stops the run
 with exit status 1.
 
@@ -47,7 +48,10 @@ The tabs at the top switch scenes.
   annotations; a one-million-point line; categorical bars and box plots
   (documents opened as Cartesian series on a categorical axis); a radar
   (spider) chart (a document opened as polar radar series on a categorical
-  angle axis).
+  angle axis); long labels (`0.00300` under the Y title, negative decimals, a
+  logarithmic top axis, timestamps and a colourbar, in bands set by hand),
+  which the "Auto layout" button beside "Reset view" fixes through
+  `layout::auto_layout`. The button works on every Cartesian scene.
 - **Radial**: the pie and donut chart (the DataLess chart, its own renderer).
 
 The lines scene's title and Y title, the twin-axes overlay title, a subplot

@@ -77,7 +77,9 @@ pub struct Config {
 Numeric labels that would overlap along an axis are drawn at a coarser label stride;
 the configured ticks and grid lines remain unchanged. Precision changes do not
 automatically enlarge `out_margin` or move titles: increase the explicit margin
-when a deliberately long label needs more room. The same formatting rules apply
+when a deliberately long label needs more room, or call `layout::auto_layout`,
+which grows the bands, moves offset titles and switches too-long decimal labels
+to `Power` in the config it returns. The same formatting rules apply
 to colorbar tick labels.
 
 `LabelFormat::Timestamp` keeps data coordinates numeric. Its default config is
