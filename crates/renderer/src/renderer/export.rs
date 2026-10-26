@@ -154,6 +154,23 @@ impl PanelDrawStorage<'_> {
     }
 }
 
+/// What [`Renderer::prepare_export`] builds for one export: its panels'
+/// prepared draws and the target they render into, with every resource
+/// those draws read kept alive until the export ends.
+pub(super) struct ExportFrame {
+    /// The target size in physical pixels.
+    pub(super) size: (u32, u32),
+    /// One prepared draw per panel, in panel order.
+    pub(super) items: Vec<PreparedItem>,
+    target: TrackedTexture,
+    msaa: Option<MsaaTarget>,
+    _view: ChartView,
+    _styles: Vec<ChartStyle>,
+    _pipelines: TargetPipelines,
+    #[cfg(target_arch = "wasm32")]
+    browser_scopes: Option<BrowserErrorScopes>,
+}
+
 impl Renderer {
     /// Render one chart panel offscreen at `scale × original` pixel
     /// dimensions and return an RGBA buffer. Fonts, line widths, and margins
@@ -355,6 +372,24 @@ impl Renderer {
         clear: crate::color::Color,
         scope: ExportScope,
     ) -> Result<RasterImage> {
+        let mut frame = self.prepare_export(chart, series, scale, scope)?;
+        let panels = 0..frame.items.len();
+        self.paint_export(&mut frame, panels, true, clear).await
+    }
+
+    /// The first half of an export: validate the series, scale and place
+    /// the document at the origin of a `scale ×` target, build its views,
+    /// styles and pipelines, and resolve every panel's prepared draw. Runs
+    /// once per export; [`Self::paint_export`] renders from what it returns.
+    /// Synchronous, so the browser error scopes it pushes are still open
+    /// when the first paint pops them.
+    pub(super) fn prepare_export(
+        &mut self,
+        chart: &Chart,
+        series: &[SeriesConfig],
+        scale: f32,
+        scope: ExportScope,
+    ) -> Result<ExportFrame> {
         #[cfg(target_arch = "wasm32")]
         let browser_scopes = BrowserErrorScopes::push(&self.device, "figgy export target")?;
 
@@ -484,7 +519,6 @@ impl Renderer {
             GpuResourceKind::ExportTarget,
             create_texture_checked(&self.device, &target_desc, "figgy export target")?,
         );
-        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let msaa_export_target = match create_msaa_target(
             &self.device,
             &self.gpu_ledger,
@@ -501,10 +535,6 @@ impl Renderer {
                 None
             }
             Err(e) => return Err(e),
-        };
-        let (render_view, resolve_target, store) = match msaa_export_target.as_ref() {
-            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
-            None => (&target_view, None, wgpu::StoreOp::Store),
         };
         // Per-call set against the export format. The same prepare-phase
         // ensure as `paint` fills the styled cache, so styled variants
@@ -557,6 +587,46 @@ impl Renderer {
             &export_target_pipelines,
         )?;
         lift_annotation_overlays(&mut prepared_items, &group_sizes);
+        Ok(ExportFrame {
+            size: (w, h),
+            items: prepared_items,
+            target: target_tex,
+            msaa: msaa_export_target,
+            _view: view,
+            _styles: scaled_styles,
+            _pipelines: export_target_pipelines,
+            #[cfg(target_arch = "wasm32")]
+            browser_scopes: Some(browser_scopes),
+        })
+    }
+
+    /// The second half of an export: render `panels` of `frame` (a range of
+    /// its panel indices, all of them for a full export) into its target,
+    /// cleared to `clear`, and read the target back as straight-alpha RGBA.
+    /// With `chrome` false only the data slot of each panel is drawn: the
+    /// fills, bodies, picked highlights and value labels, without the grid,
+    /// decoration and annotation textures. The PNG export paints every panel
+    /// with the chrome; the vector export paints each panel group's data.
+    pub(super) async fn paint_export(
+        &self,
+        frame: &mut ExportFrame,
+        panels: std::ops::Range<usize>,
+        chrome: bool,
+        clear: crate::color::Color,
+    ) -> Result<RasterImage> {
+        #[cfg(target_arch = "wasm32")]
+        let browser_scopes = match frame.browser_scopes.take() {
+            Some(scopes) => scopes,
+            None => BrowserErrorScopes::push(&self.device, "figgy export target")?,
+        };
+        let (w, h) = frame.size;
+        let target_tex = &frame.target;
+        let target_view = target_tex.create_view(&wgpu::TextureViewDescriptor::default());
+        let (render_view, resolve_target, store) = match frame.msaa.as_ref() {
+            Some(msaa) => (&msaa.view, Some(&target_view), wgpu::StoreOp::Discard),
+            None => (&target_view, None, wgpu::StoreOp::Store),
+        };
+        let prepared_items = &frame.items[panels];
 
         // 5) Readback buffer. Allocate at most the hardware limit and read rows
         // sequentially if the full image would exceed it.
@@ -631,7 +701,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.paint_prepared_items(&mut pass, (w, h), &prepared_items)?;
+            self.paint_prepared_items(&mut pass, (w, h), prepared_items, chrome)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
 
@@ -664,7 +734,7 @@ impl Renderer {
                     });
             copy_encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
-                    texture: &target_tex,
+                    texture: target_tex,
                     mip_level: 0,
                     origin: wgpu::Origin3d { x: 0, y: y0, z: 0 },
                     aspect: wgpu::TextureAspect::All,

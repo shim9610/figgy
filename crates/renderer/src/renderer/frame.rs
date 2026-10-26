@@ -2466,7 +2466,7 @@ impl Renderer {
         prepared: &PreparedFrame,
     ) -> Result<()> {
         self.validate_prepared(prepared)?;
-        self.paint_prepared_items(pass, target_size, &prepared.items)
+        self.paint_prepared_items(pass, target_size, &prepared.items, true)
     }
 
     /// Serial of the cached series bodies of `view`'s panel, `None` while it
@@ -2672,6 +2672,7 @@ impl Renderer {
         pass: &mut wgpu::RenderPass<'_>,
         target_size: (u32, u32),
         prepared: &'a [PreparedItem],
+        chrome: bool,
     ) -> Result<()> {
         for item in prepared {
             if let Some(display) = &item.stream_display
@@ -2720,8 +2721,12 @@ impl Renderer {
                     }
                     crate::sink::Slot::Above => &[],
                 };
-                let (annotation_underlay, annotation_overlay) =
-                    item.view.annotation_layers(&item.axis_pipeline);
+                // Without the chrome only the data slot is drawn.
+                let (annotation_underlay, annotation_overlay) = if chrome {
+                    item.view.annotation_layers(&item.axis_pipeline)
+                } else {
+                    (None, None)
+                };
 
                 // The single style decision per panel: the chart's `DrawStyle`
                 // resolves to a cached styled pipeline set (compiled by the
@@ -2748,15 +2753,15 @@ impl Renderer {
                     panel_rect,
                     item.data_area,
                     &super::composite::PanelChrome {
-                        below: AxisLayer {
+                        below: chrome.then_some(AxisLayer {
                             pipeline: &item.axis_pipeline,
                             bind_group: &item.view.grid_bind_group,
-                        },
+                        }),
                         annotation_underlay,
-                        above: AxisLayer {
+                        above: chrome.then_some(AxisLayer {
                             pipeline: &item.axis_pipeline,
                             bind_group: &item.view.decoration_bind_group,
-                        },
+                        }),
                         annotation_overlay,
                     },
                     series_layers,
