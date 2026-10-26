@@ -228,6 +228,28 @@ fn intersect(a: Rect, b: Rect) -> Option<Rect> {
     })
 }
 
+/// The pixels of the image a colourbar strip `r` (output pixels) is
+/// written as: the pixels it covers, cut to `clip`.
+fn ramp_area(r: RectF, clip: Rect) -> Option<Rect> {
+    if !has_area(r) {
+        return None;
+    }
+    let x0 = r.x.floor().max(0.0);
+    let y0 = r.y.floor().max(0.0);
+    let x1 = (r.x + r.width).ceil().min(u32::MAX as f32);
+    let y1 = (r.y + r.height).ceil().min(u32::MAX as f32);
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    let covered = Rect {
+        x: x0 as u32,
+        y: y0 as u32,
+        width: (x1 - x0) as u32,
+        height: (y1 - y0) as u32,
+    };
+    intersect(covered, clip)
+}
+
 /// Hands every placed part to a [`VectorOut`]: the vector twin of the
 /// canvas sink (`decoration_render::CanvasSink`), with the same mapping
 /// `(p - origin) * scale`, the same stroke widths, width floors, dashes and
@@ -459,23 +481,7 @@ impl Sink for VectorSink<'_> {
     /// the pixels it covers, cut to the panel, so its bands are the PNG's.
     fn ramp(&mut self, _slot: Slot, rect: RectF, bar: &ColorBarOptions) {
         let r = self.place_rect(rect);
-        if !has_area(r) {
-            return;
-        }
-        let x0 = r.x.floor().max(0.0);
-        let y0 = r.y.floor().max(0.0);
-        let x1 = (r.x + r.width).ceil().min(u32::MAX as f32);
-        let y1 = (r.y + r.height).ceil().min(u32::MAX as f32);
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-        let covered = Rect {
-            x: x0 as u32,
-            y: y0 as u32,
-            width: (x1 - x0) as u32,
-            height: (y1 - y0) as u32,
-        };
-        let Some(area) = intersect(covered, self.clip) else {
+        let Some(area) = ramp_area(r, self.clip) else {
             return;
         };
         let Some(mut canvas) = Canvas::new(area.width, area.height) else {
@@ -605,8 +611,15 @@ fn panel_data_area(panel: &Config) -> Rect {
         .unwrap_or(panel.chart_area.0)
 }
 
+/// How far past its data area a data image reaches: the GPU's coverage at
+/// the data scissor's edge can reach the next pixel (lavapipe paints the
+/// column left of the scissor), and the image keeps every pixel the PNG
+/// export has.
+const DATA_IMAGE_MARGIN: u32 = 1;
+
 /// The pixels of the data image of panels `range`: the union of their data
-/// areas inside the target, `None` when it is empty.
+/// areas, each grown by [`DATA_IMAGE_MARGIN`] inside its panel, inside the
+/// target; `None` when it is empty.
 pub(crate) fn group_image_area(
     panels: &[Config],
     range: Range<usize>,
@@ -620,7 +633,17 @@ pub(crate) fn group_image_area(
     };
     let mut union: Option<Rect> = None;
     for panel in &panels[range] {
-        let Some(area) = intersect(panel_data_area(panel), target) else {
+        let data = panel_data_area(panel);
+        let x0 = data.x.saturating_sub(DATA_IMAGE_MARGIN);
+        let y0 = data.y.saturating_sub(DATA_IMAGE_MARGIN);
+        let grown = Rect {
+            x: x0,
+            y: y0,
+            width: (data.x + data.width).saturating_add(DATA_IMAGE_MARGIN) - x0,
+            height: (data.y + data.height).saturating_add(DATA_IMAGE_MARGIN) - y0,
+        };
+        let Some(area) = intersect(grown, panel.chart_area.0).and_then(|a| intersect(a, target))
+        else {
             continue;
         };
         union = Some(match union {
@@ -942,6 +965,259 @@ pub(crate) async fn document_file<F: VectorFile>(
     write_background(&mut out, frame.size, clear);
     write_document(renderer, frame, &mut out).await?;
     out.finish_file()
+}
+
+// Test support: what the writers are handed, part by part.
+
+/// One part of a vector export, in writing order and output pixels: what
+/// [`written_document_parts`] records from the same passes the writers run,
+/// for the read-back tests of the SVG and PDF (`cpu-twin` only).
+#[cfg(feature = "cpu-twin")]
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum WrittenPart {
+    /// A stroke, a rectangle's fill or border, or a triangle, as
+    /// [`crate::sink::Parts`] stores it (a stroke's width as emitted).
+    Part(crate::sink::DrawnPart),
+    /// The start of a text block: its origin and rotation.
+    Text {
+        origin: [f32; 2],
+        rotation: Option<(f32, [f32; 2])>,
+    },
+    /// A glyph's pen, relative to the text origin.
+    Glyph([f32; 2]),
+    /// A rule, dash, band or underline of the text, relative to its origin.
+    TextRect(RectF),
+    /// The end of a text block.
+    TextEnd,
+    /// An image's pixels: a data image, a ramp or a backdrop.
+    Image(Rect),
+}
+
+/// The recording sink of [`WrittenPart`]s: the parts a [`VectorSink`]
+/// writes, in the same order and mapping, through [`crate::sink::Parts`].
+#[cfg(feature = "cpu-twin")]
+pub(crate) struct PartsTwin<'a> {
+    out: &'a mut dyn FnMut(WrittenPart),
+    policy: FontPolicy,
+    origin: [f32; 2],
+    scale: f32,
+    clip: Rect,
+    text_origin: [f32; 2],
+}
+
+#[cfg(feature = "cpu-twin")]
+impl<'a> PartsTwin<'a> {
+    pub(crate) fn new(
+        out: &'a mut dyn FnMut(WrittenPart),
+        policy: FontPolicy,
+        origin: [f32; 2],
+        scale: f32,
+        clip: Rect,
+    ) -> Self {
+        Self {
+            out,
+            policy,
+            origin,
+            scale,
+            clip,
+            text_origin: [0.0, 0.0],
+        }
+    }
+
+    fn map(&self, p: [f32; 2]) -> [f32; 2] {
+        [
+            (p[0] - self.origin[0]) * self.scale,
+            (p[1] - self.origin[1]) * self.scale,
+        ]
+    }
+
+    /// Record `emit`'s parts as `Parts` stores them, mapped to output pixels.
+    fn parts(&mut self, emit: impl FnOnce(&mut dyn Sink)) {
+        let (origin, scale) = (self.origin, self.scale);
+        let map = |p: [f32; 2]| [(p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale];
+        let out = &mut *self.out;
+        emit(&mut crate::sink::Parts(&mut |part| {
+            use crate::sink::DrawnPart;
+            out(WrittenPart::Part(match part {
+                DrawnPart::Segment { a, b, width } => DrawnPart::Segment {
+                    a: map(a),
+                    b: map(b),
+                    width: width * scale,
+                },
+                DrawnPart::Rect(r) | DrawnPart::Text(r) => {
+                    let o = map([r.x, r.y]);
+                    DrawnPart::Rect(RectF {
+                        x: o[0],
+                        y: o[1],
+                        width: r.width * scale,
+                        height: r.height * scale,
+                    })
+                }
+                DrawnPart::Triangle(t) => DrawnPart::Triangle([map(t[0]), map(t[1]), map(t[2])]),
+            }));
+        }));
+    }
+}
+
+#[cfg(feature = "cpu-twin")]
+impl Sink for PartsTwin<'_> {
+    fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
+        let origin = self.map([text.origin.0, text.origin.1]);
+        let rotation = text
+            .rotation
+            .map(|(degrees, c)| (degrees, self.map([c.0, c.1])));
+        self.text_origin = origin;
+        (self.out)(WrittenPart::Text { origin, rotation });
+        let (scale, policy, pen) = (self.scale, self.policy, (origin[0], origin[1]));
+        match text.text {
+            TextRef::Plain {
+                text,
+                family,
+                size,
+                color,
+            } => place_plain_text(
+                self,
+                text,
+                pen,
+                color,
+                family,
+                size * scale,
+                false,
+                false,
+                policy,
+            ),
+            TextRef::Rich(rich) if scale == 1.0 => place_rich_text(self, rich, pen, policy),
+            TextRef::Rich(rich) => place_rich_text(
+                self,
+                &crate::decoration::scaled_rich_text(rich, scale),
+                pen,
+                policy,
+            ),
+        }
+        (self.out)(WrittenPart::TextEnd);
+    }
+
+    fn stroke(&mut self, slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
+        if style.color.a > 0.0 {
+            self.parts(|sink| sink.stroke(slot, a, b, style));
+        }
+    }
+
+    fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>) {
+        let o = self.map([rect.x, rect.y]);
+        let mapped = RectF {
+            x: o[0],
+            y: o[1],
+            width: rect.width * self.scale,
+            height: rect.height * self.scale,
+        };
+        if !has_area(mapped) {
+            return;
+        }
+        if fill.is_some_and(|c| c.a > 0.0) {
+            self.parts(|sink| sink.rect(slot, rect, fill, None));
+        }
+        if border.is_some() {
+            self.parts(|sink| sink.rect(slot, rect, None, border));
+        }
+    }
+
+    fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color) {
+        if color.a > 0.0 {
+            self.parts(|sink| sink.triangle(slot, points, color));
+        }
+    }
+
+    fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {
+        let o = self.map([rect.x, rect.y]);
+        let r = RectF {
+            x: o[0],
+            y: o[1],
+            width: rect.width * self.scale,
+            height: rect.height * self.scale,
+        };
+        if let Some(area) = ramp_area(r, self.clip) {
+            (self.out)(WrittenPart::Image(area));
+        }
+    }
+}
+
+#[cfg(feature = "cpu-twin")]
+impl GlyphSink for PartsTwin<'_> {
+    fn paints(&self) -> bool {
+        true
+    }
+
+    fn glyph(&mut self, _: FontRef<'static>, _: u16, size: f32, pen: (f32, f32), _: &Color) {
+        let pen = [pen.0 - self.text_origin[0], pen.1 - self.text_origin[1]];
+        if pen[0].is_finite() && pen[1].is_finite() && size.is_finite() && size > 0.0 {
+            (self.out)(WrittenPart::Glyph(pen));
+        }
+    }
+
+    fn rect(&mut self, r: RectF, _: &Color) {
+        let r = RectF {
+            x: r.x - self.text_origin[0],
+            y: r.y - self.text_origin[1],
+            ..r
+        };
+        if has_area(r) {
+            (self.out)(WrittenPart::TextRect(r));
+        }
+    }
+}
+
+/// Every part [`Renderer::export_document_svg_async`] and
+/// [`Renderer::export_document_pdf_async`] write for `chart` at `scale`
+/// (the clear colour's background aside), in writing order: the parts of
+/// the same passes over the same scaled, placed document, recorded through
+/// [`crate::sink::Parts`] instead of written. Test support (`cpu-twin`).
+#[cfg(feature = "cpu-twin")]
+#[doc(hidden)]
+pub fn written_document_parts(
+    chart: &crate::chart::Chart,
+    scale: f32,
+    out: &mut dyn FnMut(WrittenPart),
+) -> Result<()> {
+    let scale = crate::renderer::clamp_export_scale(scale);
+    let orig = chart.config().document_area();
+    let size = (
+        ((orig.width as f32) * scale).round().max(1.0) as u32,
+        ((orig.height as f32) * scale).round().max(1.0) as u32,
+    );
+    let target = Rect {
+        x: 0,
+        y: 0,
+        width: size.0,
+        height: size.1,
+    };
+    let document = crate::renderer::place_document(chart.config(), scale, target);
+    let panels = crate::renderer::expand_for_render(&document)?;
+    let mut passes = Passes::new();
+    while let Some(pass) = passes.next(&document, &panels) {
+        match &pass {
+            Pass::Data(range) => {
+                if let Some(area) = group_image_area(&panels, range.clone(), size) {
+                    out(WrittenPart::Image(area));
+                }
+            }
+            Pass::Below(i) if matches!(panels[*i].draw_style, DrawStyle::Milkyway(_)) => {
+                out(WrittenPart::Image(panels[*i].chart_area.0));
+            }
+            _ => {
+                let style = match pass {
+                    Pass::Below(i) | Pass::Above(i) => &panels[i].draw_style,
+                    _ => &document.draw_style,
+                };
+                let clip = pass_clip(&document, &panels, &pass);
+                let mut twin =
+                    PartsTwin::new(out, FontPolicy::for_style(style), [0.0, 0.0], 1.0, clip);
+                emit_pass(&document, &panels, &pass, &mut twin);
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

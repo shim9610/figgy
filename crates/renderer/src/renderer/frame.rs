@@ -1330,7 +1330,7 @@ pub(super) fn panel_index(config: &Config, count: usize, layer: crate::LayerRef)
 /// overlays and subplots is drawn exactly as it is written (no expansion, no
 /// data-area requirement), so every existing single-layer chart is
 /// unchanged; a layered document goes through `Config::expand`.
-pub(super) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
+pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
     validate_polar_config(config)?;
     for index in 0..config.subplots.len() {
         if let Some(subplot) = config.subplot_config(index) {

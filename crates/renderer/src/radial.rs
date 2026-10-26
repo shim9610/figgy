@@ -1349,6 +1349,57 @@ impl RadialRenderer {
     }
 }
 
+/// Every part [`RadialRenderer::export_svg_async`] and
+/// [`RadialRenderer::export_pdf_async`] write for `chart` at logical `size`
+/// and `scale`, in writing order, recorded through
+/// [`crate::sink::Parts`] from the same label emit: the frame image, then
+/// the title, labels, leader lines, split connectors and the annotation
+/// overlay. Test support (`cpu-twin`).
+#[cfg(feature = "cpu-twin")]
+#[doc(hidden)]
+pub fn written_vector_parts(
+    chart: &RadialChart,
+    size: (u32, u32),
+    scale: f32,
+    out: &mut dyn FnMut(crate::WrittenPart),
+) -> Result<(), RadialError> {
+    let canvas = crate::layout::Rect {
+        x: 0,
+        y: 0,
+        width: (size.0 as f64 * f64::from(scale)).round() as u32,
+        height: (size.1 as f64 * f64::from(scale)).round() as u32,
+    };
+    out(crate::WrittenPart::Image(canvas));
+    let mut twin = crate::vector_export::PartsTwin::new(
+        out,
+        crate::text_render::FontPolicy::Standard,
+        [0.0, 0.0],
+        scale,
+        canvas,
+    );
+    let l = layout::layout(chart, size, scale, layout::Labels::Into(&mut twin))?;
+    if chart.annotations.visible {
+        let request = crate::annotation::RasterRequest {
+            layer: &chart.annotations,
+            space: l.space,
+            origin: [0.0, 0.0],
+            size,
+            scale,
+            selected: None,
+            policy: crate::text_render::FontPolicy::Standard,
+        };
+        crate::annotation::emit_annotation_layer(
+            &request,
+            &mut crate::vector_export::SlotFilter {
+                slot: crate::sink::Slot::Above,
+                inner: &mut twin,
+            },
+            &mut |_| {},
+        );
+    }
+    Ok(())
+}
+
 // Only properties read by annotation/layout generation survive. Appearance and
 // ordinary data selection do not invalidate the rasterized label texture.
 // Edited/selected inside labels are rasterized at their current lifted position.

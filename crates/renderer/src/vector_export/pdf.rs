@@ -405,18 +405,20 @@ impl VectorOut for PdfOut {
                     (r.cos(), r.sin())
                 }
             };
-            push_nums(
-                &mut self.content,
-                &[
-                    cos,
-                    sin,
-                    -sin,
-                    cos,
-                    cx - cos * cx + sin * cy,
-                    cy - sin * cx - cos * cy,
-                ],
-            );
-            self.content.extend_from_slice(b"cm\n");
+            if (cos, sin) != (1.0, 0.0) {
+                push_nums(
+                    &mut self.content,
+                    &[
+                        cos,
+                        sin,
+                        -sin,
+                        cos,
+                        cx - cos * cx + sin * cy,
+                        cy - sin * cx - cos * cy,
+                    ],
+                );
+                self.content.extend_from_slice(b"cm\n");
+            }
         }
         self.content.extend_from_slice(b"1 0 0 1 ");
         push_nums(&mut self.content, &origin);
