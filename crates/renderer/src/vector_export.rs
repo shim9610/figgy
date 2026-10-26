@@ -551,11 +551,22 @@ pub(crate) enum Pass {
 /// the base panel and each subplot, not their overlays or line offset
 /// members.
 fn owns_backdrop(document: &Config, index: usize) -> bool {
-    let layers = document.panel_layers();
-    matches!(
-        layers.get(index),
-        Some(crate::LayerRef::Base | crate::LayerRef::Subplot(_))
-    ) && document.panel_member(index).is_none()
+    let charts = std::iter::once(document).chain(document.subplots.iter().map(|s| &s.config));
+    let mut start = 0;
+    for chart in charts {
+        if index == start {
+            return true;
+        }
+        let members = chart
+            .line_offsets
+            .as_ref()
+            .map_or(0, |offsets| offsets.series.len());
+        start += 1 + chart.overlays.len() + members;
+        if index < start {
+            return false;
+        }
+    }
+    false
 }
 
 /// Whether panel `index`'s `Below` pass places anything: its Milkyway

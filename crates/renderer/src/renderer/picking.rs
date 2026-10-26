@@ -560,12 +560,8 @@ pub(super) fn active_layer_pick_inputs(
         .filter(|item| series_panel_index(config, panels.len(), &item.series_id) == index)
         .cloned()
         .collect();
-    let mut inputs = LayerPickInputs {
-        panel: Config::clone(&panels[index]),
-        series: Vec::new(),
-        member_transforms,
-        member_count: 0,
-    };
+    let mut transforms = member_transforms;
+    let mut member_count = 0;
     // The layer's members, in stacking order, each with its panel's
     // transform.
     for (panel_at, panel) in panels.iter().enumerate() {
@@ -578,15 +574,23 @@ pub(super) fn active_layer_pick_inputs(
         let Some(item) = series.iter().find(|item| item.series_id == member) else {
             continue;
         };
-        let Some(slot) = inputs.member_transforms.get_mut(inputs.member_count) else {
+        let Some(slot) = transforms.get_mut(member_count) else {
             break;
         };
         *slot = data_render::scatter_transform_from_config(panel);
-        inputs.member_count += 1;
+        member_count += 1;
         subset.push(item.clone());
     }
-    inputs.series = subset;
-    Ok(inputs)
+    let panel = panels
+        .into_iter()
+        .nth(index)
+        .expect("expansion yields one panel per layer");
+    Ok(LayerPickInputs {
+        panel,
+        series: subset,
+        member_transforms: transforms,
+        member_count,
+    })
 }
 
 impl PickChartPlan {
