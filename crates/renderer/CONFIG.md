@@ -77,7 +77,10 @@ pub struct Config {
 Numeric labels that would overlap along an axis are drawn at a coarser label stride;
 the configured ticks and grid lines remain unchanged. Precision changes do not
 automatically enlarge `out_margin` or move titles: increase the explicit margin
-when a deliberately long label needs more room. The same formatting rules apply
+when a deliberately long label needs more room, or call `layout::auto_layout`,
+which grows the bands, gives a title that runs into its labels the offset that
+places it beside them, and switches too-long decimal labels to `Power` in the
+config it returns. The same formatting rules apply
 to colorbar tick labels.
 
 `LabelFormat::Timestamp` keeps data coordinates numeric. Its default config is
@@ -945,7 +948,7 @@ pub struct Config {
 | `format` | `LabelFormat` | `Decimal / Power / Scientific / Timestamp / Degrees / Radians / Plain`. `Timestamp`는 선형축의 숫자 좌표를 Unix 시간으로 표시하며 달력 기준 눈금을 지원한다. `Degrees`는 소수에 도(°) 기호를 붙이고, `Radians`는 π의 배수(`π/2`, `3π/4`, `0.4π`)로 적는다. `Plain(PlainNumberFormat { decimals, trim_zeros })`은 축 스케일·눈금 간격·`significant_digits`와 관계없이 값만으로 라벨을 정한다. `decimals: None`(`PlainNumberFormat::AUTO`)이면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6` / `-5.00e-4`처럼 지수 표기로 적고, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0을 지운다(`2.5`, `1000`). `Some(d)`이면 소수 `d`자리로 적고, `trim_zeros`가 켜져 있으면 소수 끝의 0을 지운다. |
 | `significant_digits` | u8 | 숫자 표시에 요청하는 정밀도(소수·과학 표기는 1~15). 선형 소수 라벨은 범위의 크기를 기준으로 소수 자릿수를 통일하고 눈금 간격을 구분하는 데 필요한 만큼만 늘린다. 로그 라벨은 값마다 반올림한다. 눈금 위치는 바뀌지 않는다. |
 
-축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘린다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
+축을 따라 겹치는 숫자 라벨은 일정 간격으로 일부만 표시하며, 눈금과 격자 설정은 바꾸지 않는다. 정밀도를 바꿔도 `out_margin`이나 제목 위치를 자동으로 바꾸지는 않으므로 긴 라벨에는 여백을 직접 늘리거나 `layout::auto_layout`을 호출한다. 이 함수는 여백을 늘리고, 라벨과 겹치는 제목에 라벨 옆으로 옮기는 오프셋을 주고, 너무 긴 소수 라벨을 `Power` 형식으로 바꾼 설정을 반환한다. 색상 막대의 눈금 라벨도 같은 형식 규칙을 사용한다.
 
 `LabelFormat::Timestamp`는 숫자 좌표를 시간으로 표시한다. 기본값은 UTC 기준 Unix 초와 `AutoCalendar` 눈금 배치다. JavaScript 타임스탬프에는 `unit: TimestampUnit::Milliseconds`를, 한국 표준시(UTC+9)처럼 고정 시차를 적용하려면 `timezone: TimestampZone::FixedOffsetMinutes(540)`을 사용한다(타입은 `renderer::format`에 있다).
 `AutoCalendar`는 라벨 너비를 측정해 달력상의 눈금 간격을 조절한다. 큰 Unix 시간 값에서도 작은 시간 차이를 보존하려면 네이티브에서는 `Renderer::add_hilo_column`, 웹에서는 `Float64Array`를 받는 `register_column_f64` / `update_register_column_f64`를 사용한다. GPU에는 `(hi: f32, lo: f32)` 쌍으로 저장된다.

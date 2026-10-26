@@ -8,7 +8,7 @@ mod rect;
 pub use fit::FitStrategy;
 pub use geometry::{
     LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN, TitleBand,
-    TitlePlacement, axis_anchor, axis_cross, axis_fraction, axis_offset,
+    TitlePlacement, auto_layout, axis_anchor, axis_cross, axis_fraction, axis_offset,
     axis_title_offset_to_screen, axis_title_placement, chart_title_placement,
     chart_title_placement_in, colorbar_rect, colorbar_title_placement, fit_chart_title_margin,
     guarded_log_range, label_origin, label_rect, legend_rect, point_on_rect_side,

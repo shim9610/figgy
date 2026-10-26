@@ -155,6 +155,20 @@ pub fn rich_text_from_tex(
     crate::rich_text_json_from_tex(tex, font_size, font, [r, g, b, a]).map_err(js_err)
 }
 
+/// `layout::auto_layout` (#44) on a config JSON: the config with axis
+/// margins, axis title offsets and tick-label formats chosen so its tick
+/// labels, titles, legend and colourbar do not overlap, as the renderer
+/// draws them. Pure: it reads only the JSON and the text measure and
+/// changes no chart; apply the result with `set_config`. Call it again after
+/// an auto-fit or a zoom, which reset a linear axis to decimal labels.
+/// Errors are JSON errors.
+///
+/// JS: `chart.set_config(autoLayout(chart.get_config()));`
+#[wasm_bindgen(js_name = autoLayout)]
+pub fn auto_layout(config_json: &str) -> Result<String, JsValue> {
+    crate::auto_layout_json(config_json).map_err(js_err)
+}
+
 /// Every valid `draw_style` mode tag, as a JSON string array.
 #[wasm_bindgen]
 pub fn draw_style_modes() -> Result<String, JsValue> {

@@ -53,6 +53,19 @@ fn rich_text_json_from_tex(
     serde_json::to_string(&text).map_err(|e| e.to_string())
 }
 
+/// The JSON of [`renderer::layout::auto_layout`] (#44) on the config JSON
+/// `json`, measured with the renderer's text measure for the config's draw
+/// style: what the `autoLayout` binding returns, for `set_config`. Reads
+/// only the JSON and the measure. The error is the JSON parse or write
+/// error.
+#[cfg(any(target_arch = "wasm32", test))]
+fn auto_layout_json(json: &str) -> Result<String, String> {
+    let config: renderer::Config = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+    serde_json::to_string(&renderer::layout::auto_layout(&config, &measure))
+        .map_err(|e| e.to_string())
+}
+
 #[cfg(any(target_arch = "wasm32", test))]
 fn consume_successful_frame(view_dirty: &mut bool, redraw_pending: &mut bool) {
     *view_dirty = false;
@@ -1111,6 +1124,28 @@ mod tests {
     // `get_config`/`set_config` and `get_series`/`set_series`; a malformed
     // tree fails at parse, so `set_config` rejects it before it touches
     // any state; `rich_text_from_tex` writes the JSON a host puts there.
+    // `autoLayout` is `layout::auto_layout` through JSON: the same document
+    // as the Rust call, laid out again it is unchanged, and JSON that is not
+    // a config is rejected without a result.
+    #[test]
+    fn auto_layout_json_is_the_rust_auto_layout() {
+        let mut config = renderer::default::default_config();
+        config.left_y.min = 0.0;
+        config.left_y.max = 0.003;
+        config.left_y.major_spacing = 0.0005;
+        config.left_y.title_option.text =
+            renderer::text::RichText::plain("Optical depth", renderer::Color::BLACK, 22.0, "");
+        let json = serde_json::to_string(&config).unwrap();
+        let out = super::auto_layout_json(&json).unwrap();
+        let measure = renderer::CpuTextMeasure::for_style(&config.draw_style);
+        let expected = renderer::layout::auto_layout(&config, &measure);
+        assert_eq!(out, serde_json::to_string(&expected).unwrap());
+        assert_ne!(expected, config, "the 0.00300 labels need a layout");
+        assert_eq!(super::auto_layout_json(&out).unwrap(), out);
+        assert!(super::auto_layout_json("{\"chart_area\": 1}").is_err());
+        assert!(super::auto_layout_json("not json").is_err());
+    }
+
     #[test]
     fn config_and_series_json_carry_math_nodes_both_ways() {
         let title = super::rich_text_json_from_tex(
@@ -2228,7 +2263,9 @@ mod web {
 
     mod chart;
     use chart::PreparedSeriesExtentCache;
-    pub use chart::{FiggyChart, draw_style_modes, draw_style_param_specs, rich_text_from_tex};
+    pub use chart::{
+        FiggyChart, auto_layout, draw_style_modes, draw_style_param_specs, rich_text_from_tex,
+    };
     mod columns;
     use columns::{VectorColumns, referenced_columns, vector_columns};
     mod convert;

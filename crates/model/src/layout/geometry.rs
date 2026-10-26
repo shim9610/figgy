@@ -1,7 +1,10 @@
+use crate::color::Color;
 use crate::config::{AxisOptions, AxisScale, BarAlign, ColorBarOptions, Config, LegendCorner};
+use crate::format::LabelFormat;
+use crate::sink::{Border, DrawnPart, Parts, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::text::{MeasureText, TextExtents};
 
-use super::{ChartArea, DataArea, RectF, Side};
+use super::{ChartArea, DataArea, Element, RectF, Side, axis_mut, axis_ref, tick_contribution};
 
 /// Minimum gap between a tick end and its label, in pixels.
 pub const LABEL_GAP: f32 = 4.0;
@@ -640,6 +643,549 @@ fn align_offset(available: f32, length: f32, align: &BarAlign) -> f32 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// auto_layout measurement (#44)
+// ---------------------------------------------------------------------------
+
+/// Clearance [`auto_layout`] keeps between an axis title and its tick
+/// labels, and between either and the edges of their band: the label gap.
+const AUTO_LAYOUT_CLEARANCE: f32 = LABEL_GAP;
+
+/// What [`auto_layout`] reads from the parts of one emitted element: the
+/// union of their extents, and of its text blocks the most digits one
+/// prints and the widest one. Kept as numbers, so measuring stores no part.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Probe {
+    bounds: Option<RectF>,
+    digits: usize,
+    widest: f32,
+}
+
+impl Probe {
+    /// Emit `element` of `cfg` into a fresh probe.
+    fn of(cfg: &Config, element: &Element, measure: &dyn MeasureText) -> Self {
+        let mut probe = Self::default();
+        crate::select::emit_element(cfg, element, measure, &mut probe);
+        probe
+    }
+
+    /// The probe of `self` and `other` together.
+    fn with(self, other: Self) -> Self {
+        Self {
+            bounds: match (self.bounds, other.bounds) {
+                (Some(a), Some(b)) => Some(crate::sink::union(a, b)),
+                (a, b) => a.or(b),
+            },
+            digits: self.digits.max(other.digits),
+            widest: self.widest.max(other.widest),
+        }
+    }
+
+    fn add(&mut self, r: RectF) {
+        if [r.x, r.y, r.width, r.height].iter().all(|v| v.is_finite()) {
+            self.bounds = Some(self.bounds.map_or(r, |u| crate::sink::union(u, r)));
+        }
+    }
+}
+
+impl Sink for Probe {
+    fn text(&mut self, _slot: Slot, text: &PlacedText<'_>) {
+        self.add(text.rect());
+        let digits = match text.text {
+            TextRef::Plain { text, .. } => text.chars().filter(char::is_ascii_digit).count(),
+            TextRef::Rich(rich) => rich
+                .segments
+                .iter()
+                .filter(|s| s.text.is_ascii_digit())
+                .count(),
+        };
+        self.digits = self.digits.max(digits);
+        if text.extents.width.is_finite() {
+            self.widest = self.widest.max(text.extents.width);
+        }
+    }
+
+    fn stroke(&mut self, _slot: Slot, a: [f32; 2], b: [f32; 2], style: &StrokeStyle<'_>) {
+        self.add(
+            DrawnPart::Segment {
+                a,
+                b,
+                width: style.width,
+            }
+            .extent(),
+        );
+    }
+
+    fn rect(
+        &mut self,
+        _slot: Slot,
+        rect: RectF,
+        _fill: Option<Color>,
+        _border: Option<Border<'_>>,
+    ) {
+        self.add(rect);
+    }
+
+    fn triangle(&mut self, _slot: Slot, points: [[f32; 2]; 3], _color: Color) {
+        self.add(DrawnPart::Triangle(points).extent());
+    }
+
+    fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {
+        self.add(rect);
+    }
+}
+
+/// Where `r` lies across the band on `side` whose inner edge is `inner`:
+/// its near and far distance from that edge, outward positive. The band
+/// runs from the data area (or the colourbar strip) toward the chart edge.
+fn band_span(side: &Side, inner: f32, r: RectF) -> (f32, f32) {
+    match side {
+        Side::Left => (inner - (r.x + r.width), inner - r.x),
+        Side::Right => (r.x - inner, r.x + r.width - inner),
+        Side::Top => (inner - (r.y + r.height), inner - r.y),
+        Side::Bottom => (r.y - inner, r.y + r.height - inner),
+    }
+}
+
+/// The inner edge of a band on `side` of `rect`: `rect`'s edge on that side
+/// moved `tick` outward.
+fn band_inner_edge(side: &Side, rect: RectF, tick: f32) -> f32 {
+    match side {
+        Side::Left => rect.x - tick,
+        Side::Right => rect.x + rect.width + tick,
+        Side::Top => rect.y - tick,
+        Side::Bottom => rect.y + rect.height + tick,
+    }
+}
+
+/// The +1 or -1 that turns an axis title's `offset_y`, the offset across
+/// its band in the title's rotated frame
+/// ([`axis_title_offset_to_screen`]), into a distance outward from the
+/// data area.
+fn outward_sign(side: &Side) -> f32 {
+    match side {
+        Side::Bottom => 1.0,
+        Side::Top | Side::Left | Side::Right => -1.0,
+    }
+}
+
+/// One band as measured: how far its labels reach past the inner edge, and
+/// the near and far distance of its title, both outward from that edge.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct BandMeasure {
+    reach: Option<f32>,
+    title: Option<(f32, f32)>,
+}
+
+impl BandMeasure {
+    fn of(side: &Side, inner: f32, labels: &Probe, title: &Probe) -> Self {
+        Self {
+            reach: labels.bounds.map(|r| band_span(side, inner, r).1.max(0.0)),
+            title: title.bounds.map(|r| band_span(side, inner, r)),
+        }
+    }
+
+    /// The band the labels and a title placed beside them need: the labels'
+    /// reach, the clearance, the title's thickness and the clearance again
+    /// to the band's outer edge; the reach and the clearance alone without a
+    /// title. `None` for a band with neither.
+    fn required(&self) -> Option<f32> {
+        let reach = self.reach.unwrap_or(0.0);
+        match self.title {
+            Some((near, far)) => {
+                Some(reach + AUTO_LAYOUT_CLEARANCE + (far - near) + AUTO_LAYOUT_CLEARANCE)
+            }
+            None => self.reach.map(|r| r + AUTO_LAYOUT_CLEARANCE),
+        }
+    }
+
+    /// The outward title offset that places the title, in a band `band`
+    /// wide where it is now offset outward by `offset`, beside its labels:
+    /// its inner edge the clearance past their reach, rounded outward to a
+    /// whole pixel. `None` when there is no title, or when the title at
+    /// `offset` already clears the labels by the clearance and stays inside
+    /// the band.
+    fn placed_offset(&self, band: f32, offset: f32) -> Option<f32> {
+        const EPS: f32 = 1e-3;
+        let (near, far) = self.title?;
+        let thickness = far - near;
+        let clear = self.reach.unwrap_or(0.0) + AUTO_LAYOUT_CLEARANCE;
+        // The centred title's inner edge, moved by the offset.
+        let at = (band - thickness) * 0.5 + offset;
+        if at >= clear - EPS && at + thickness <= band + EPS {
+            return None;
+        }
+        let placed = (clear - (band - thickness) * 0.5).ceil();
+        (placed.is_finite() && placed != offset).then_some(placed)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// auto_layout (#44)
+// ---------------------------------------------------------------------------
+
+/// A `Decimal` or `Plain` tick label that prints more digits than this is
+/// too long for [`auto_layout`]: `0.00300` has six.
+const AUTO_LAYOUT_MAX_DIGITS: usize = 5;
+/// A tick label wider than this many ems of its font size is too long for
+/// [`auto_layout`], whatever it prints.
+const AUTO_LAYOUT_MAX_LABEL_EMS: f32 = 5.0;
+/// The passes [`auto_layout`] runs at most. A pass that changes nothing ends
+/// it, so the result is a fixed point (and a second call a no-op) unless
+/// every pass changed something; the idempotence tests cover every
+/// catalogue scene and released config.
+const AUTO_LAYOUT_PASSES: usize = 8;
+
+/// `cfg` with axis bands, axis title offsets and tick-label formats chosen so
+/// that its tick labels, axis titles, chart title, legend and colourbar do
+/// not overlap, as `measure` lays them out.
+///
+/// An explicit call, the same shape as [`fit_chart_title_margin`]: the host
+/// decides when to call it (typically after an auto-fit or a zoom, since the
+/// range helpers reset a linear axis to `LabelFormat::Decimal`) and applies
+/// the result as any other SSOT edit. The renderer never calls it. The input
+/// is not modified, the same input gives the same output, and calling it on
+/// its own result changes nothing. It reads only `cfg` and `measure`, and
+/// changes display parameters only: never an axis range, a tick setting, a
+/// series, an annotation or a pick.
+///
+/// Measured with `measure`'s own layout of each element
+/// ([`MeasureText::emit`] for tick labels, which places the labels the
+/// renderer draws after its pruning), on the panels the renderer draws:
+///
+/// - **Label format.** An axis whose labels are `Decimal` or `Plain` and not
+///   categorical switches to `LabelFormat::Power` when a drawn label prints
+///   more than five digits (`0.00300`) or is wider than five ems of its font
+///   size. Other formats are left alone, and a format never switches back.
+/// - **`out_margin`.** The band of each side grows to hold its labels and,
+///   beside them, its title: the labels' reach past the tick, [`LABEL_GAP`],
+///   the title's thickness and [`LABEL_GAP`] again to the band's outer edge
+///   (there is no separate title gap), or the reach and the gap when the side
+///   has no title. A band that already holds them is kept as it is, a side
+///   without labels or a title keeps its margin, and a band is never shrunk.
+///   A growth that would leave no data area is not made.
+/// - **Title offsets.** A title that does not clear its labels by
+///   [`LABEL_GAP`], or leaves its band, gets the offset across the band
+///   (`title_option.offset_y`) that puts its inner edge [`LABEL_GAP`] past
+///   the labels, rounded outward to a whole pixel. A title that already
+///   clears them inside its band, centred or offset by the host, is left
+///   where it is. The offset is an ordinary SSOT field: drag, hit testing and
+///   selection follow it.
+/// - **Overlays and the colourbar.** Each overlay axis' band grows the same
+///   way (the right margin is the widest band of the group), and so does the
+///   colourbar's `axis.out_margin`, measured from the strip.
+/// - **Chart title and legend.** The title band follows
+///   [`fit_chart_title_margin`]. A legend box over the colourbar moves to the
+///   first corner, with zero offsets, where it clears the bar.
+/// - **Subplots** are laid out as charts of their own.
+///
+/// Not covered: overlay axes drawn over each other or over the parent's
+/// right axis (only `line_offset` separates them), polar angle labels
+/// against radius labels (the angle band is fixed by the font size), and
+/// labels that run past a chart edge along their axis.
+pub fn auto_layout(cfg: &Config, measure: &dyn MeasureText) -> Config {
+    let mut out = cfg.clone();
+    lay_out_chart(&mut out, measure);
+    for index in 0..out.subplots.len() {
+        let Some(mut chart) = out.subplot_config(index) else {
+            continue;
+        };
+        lay_out_chart(&mut chart, measure);
+        adopt_chart_layout(&mut out.subplots[index].config, &chart);
+    }
+    out
+}
+
+/// Run [`auto_layout`]'s passes on one chart until one changes nothing.
+fn lay_out_chart(cfg: &mut Config, measure: &dyn MeasureText) {
+    for _ in 0..AUTO_LAYOUT_PASSES {
+        if !auto_layout_pass(cfg, measure) {
+            break;
+        }
+    }
+}
+
+const SIDES: [Side; 4] = [Side::Top, Side::Bottom, Side::Left, Side::Right];
+
+/// One pass over a chart; returns whether it changed anything.
+fn auto_layout_pass(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
+    let mut changed = switch_long_labels(cfg, measure);
+    for side in &SIDES {
+        let measured =
+            crate::select::on_drawn_panel(cfg, |panel| axis_band_measure(panel, side, measure));
+        if let Some((band, drawn)) = measured {
+            changed |= fit_band(cfg, &band, drawn, side, BandOwner::Axis(side));
+        }
+    }
+    for layer in 0..cfg.overlays.len() {
+        let measured = cfg
+            .overlay_panel(layer)
+            .and_then(|panel| axis_band_measure(&panel, &Side::Right, measure));
+        if let Some((band, drawn)) = measured {
+            changed |= fit_band(cfg, &band, drawn, &Side::Right, BandOwner::Overlay(layer));
+        }
+    }
+    let measured =
+        crate::select::on_drawn_panel(cfg, |panel| colorbar_band_measure(panel, measure));
+    if let Some((side, band, drawn)) = measured {
+        changed |= fit_band(cfg, &band, drawn, &side, BandOwner::ColorBar);
+    }
+    changed |= fit_chart_title_margin(cfg, measure);
+    changed |= clear_legend(cfg, measure);
+    changed
+}
+
+/// Whether `axis`, whose drawn labels are `labels`, prints labels too long
+/// for its format: see [`auto_layout`].
+fn labels_too_long(axis: &AxisOptions, labels: &Probe) -> bool {
+    axis.categories.is_none()
+        && matches!(
+            axis.label_style.format,
+            LabelFormat::Decimal | LabelFormat::Plain(_)
+        )
+        && (labels.digits > AUTO_LAYOUT_MAX_DIGITS
+            || labels.widest > AUTO_LAYOUT_MAX_LABEL_EMS * axis.label_style.font_size)
+}
+
+/// Switch every axis of `cfg` whose labels are too long to
+/// `LabelFormat::Power`; returns whether one switched.
+fn switch_long_labels(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
+    let (sides, bar) = crate::select::on_drawn_panel(cfg, |panel| {
+        let sides = SIDES.map(|side| {
+            let labels = Probe::of(panel, &Element::AxisLabel(side.clone()), measure);
+            labels_too_long(axis_ref(panel, &side), &labels)
+        });
+        let bar = panel.colorbar.as_ref().is_some_and(|bar| {
+            labels_too_long(
+                &bar.axis,
+                &Probe::of(panel, &Element::ColorBarLabel, measure),
+            )
+        });
+        (sides, bar)
+    });
+    let mut changed = false;
+    for (side, long) in SIDES.iter().zip(sides) {
+        if long {
+            axis_mut(cfg, side).label_style.format = LabelFormat::Power;
+            changed = true;
+        }
+    }
+    if bar && let Some(bar) = cfg.colorbar.as_mut() {
+        bar.axis.label_style.format = LabelFormat::Power;
+        changed = true;
+    }
+    for layer in 0..cfg.overlays.len() {
+        let long = cfg.overlay_panel(layer).is_some_and(|panel| {
+            let labels = Probe::of(&panel, &Element::AxisLabel(Side::Right), measure);
+            labels_too_long(&panel.right_y, &labels)
+        });
+        if long {
+            cfg.overlays[layer].y_axis.label_style.format = LabelFormat::Power;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// The band of the axis on `side` of the drawn panel `panel`, and the
+/// `out_margin` it was drawn with. On a polar chart the angle and radius
+/// labels are counted on every side they reach past.
+fn axis_band_measure(
+    panel: &Config,
+    side: &Side,
+    measure: &dyn MeasureText,
+) -> Option<(BandMeasure, f32)> {
+    let da = panel.data_area().ok()?;
+    let axis = axis_ref(panel, side);
+    let inner = band_inner_edge(side, RectF::from_rect(&da), tick_contribution(axis));
+    let labels = if panel.polar.is_some() {
+        Probe::of(panel, &Element::AxisLabel(Side::Bottom), measure).with(Probe::of(
+            panel,
+            &Element::AxisLabel(Side::Left),
+            measure,
+        ))
+    } else {
+        Probe::of(panel, &Element::AxisLabel(side.clone()), measure)
+    };
+    let title = Probe::of(panel, &Element::AxisTitle(side.clone()), measure);
+    Some((
+        BandMeasure::of(side, inner, &labels, &title),
+        axis.out_margin,
+    ))
+}
+
+/// The colourbar's band of the drawn panel `panel`, measured from the strip
+/// and its tick: its side, the band and the `out_margin` it was drawn with.
+fn colorbar_band_measure(
+    panel: &Config,
+    measure: &dyn MeasureText,
+) -> Option<(Side, BandMeasure, f32)> {
+    let (bar, strip) = visible_colorbar_rect(panel)?;
+    let inner = band_inner_edge(&bar.side, strip, bar.axis.major_tick_length.max(0.0));
+    let labels = Probe::of(panel, &Element::ColorBarLabel, measure);
+    let title = Probe::of(panel, &Element::ColorBarTitle, measure);
+    Some((
+        bar.side.clone(),
+        BandMeasure::of(&bar.side, inner, &labels, &title),
+        bar.axis.out_margin,
+    ))
+}
+
+/// The axis whose `out_margin` holds a band.
+#[derive(Clone, Copy)]
+enum BandOwner<'a> {
+    /// One of the chart's four axes.
+    Axis(&'a Side),
+    /// Overlay layer `i`'s Y axis.
+    Overlay(usize),
+    /// The colourbar's axis.
+    ColorBar,
+}
+
+impl BandOwner<'_> {
+    fn axis<'c>(self, cfg: &'c mut Config) -> Option<&'c mut AxisOptions> {
+        match self {
+            BandOwner::Axis(side) => Some(axis_mut(cfg, side)),
+            BandOwner::Overlay(layer) => cfg.overlays.get_mut(layer).map(|o| &mut o.y_axis),
+            BandOwner::ColorBar => cfg.colorbar.as_mut().map(|bar| &mut bar.axis),
+        }
+    }
+}
+
+/// Fit one band of `cfg`: grow the `out_margin` of `owner`'s axis so `band`
+/// fits in it, unless the band it was drawn with (`drawn`; for an overlay
+/// or the parent's right axis, the group's) already holds it or the growth
+/// leaves no data area; then place a title that does not clear its labels
+/// inside the band beside them. Returns whether anything changed.
+fn fit_band(
+    cfg: &mut Config,
+    band: &BandMeasure,
+    drawn: f32,
+    side: &Side,
+    owner: BandOwner<'_>,
+) -> bool {
+    let Some(before) = owner.axis(cfg).map(|axis| axis.out_margin) else {
+        return false;
+    };
+    let mut changed = false;
+    let mut width = drawn;
+    if let Some(required) = band.required()
+        && required.is_finite()
+        && drawn < required
+    {
+        let grown = required.ceil();
+        let had_data_area = cfg.data_area().is_ok();
+        if let Some(axis) = owner.axis(cfg) {
+            axis.out_margin = before.max(grown);
+        }
+        if had_data_area && cfg.data_area().is_err() {
+            if let Some(axis) = owner.axis(cfg) {
+                axis.out_margin = before;
+            }
+        } else {
+            changed = before < grown;
+            width = drawn.max(grown);
+        }
+    }
+    if let Some(axis) = owner.axis(cfg) {
+        let sign = outward_sign(side);
+        if let Some(outward) = band.placed_offset(width, sign * axis.title_option.offset_y) {
+            axis.title_option.offset_y = sign * outward;
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Move a legend box that overlaps the colourbar to the first corner, with
+/// zero offsets, where it clears every colourbar part: its own corner, then
+/// the others. Returns whether it moved.
+fn clear_legend(cfg: &mut Config, measure: &dyn MeasureText) -> bool {
+    let lg = &cfg.legend;
+    if !lg.visible || lg.content.segments.is_empty() || cfg.colorbar.is_none() {
+        return false;
+    }
+    let corner = crate::select::on_drawn_panel(cfg, |panel| {
+        let da = panel.data_area().ok()?;
+        let lg = &panel.legend;
+        let m = measure.measure_rich(&lg.content);
+        let clashes = |corner: LegendCorner, offset: (f32, f32)| {
+            let rect = legend_rect(&da, corner, lg.padding, offset, m);
+            let mut hit = false;
+            for element in [
+                Element::ColorBar,
+                Element::ColorBarAxis,
+                Element::ColorBarLabel,
+                Element::ColorBarTitle,
+            ] {
+                crate::select::emit_element(
+                    panel,
+                    &element,
+                    measure,
+                    &mut Parts(&mut |part| hit |= rects_overlap(rect, part.extent())),
+                );
+            }
+            hit
+        };
+        if !clashes(lg.corner, (lg.offset_x, lg.offset_y)) {
+            return None;
+        }
+        [
+            lg.corner,
+            LegendCorner::TopRight,
+            LegendCorner::TopLeft,
+            LegendCorner::BottomRight,
+            LegendCorner::BottomLeft,
+        ]
+        .into_iter()
+        .find(|corner| !clashes(*corner, (0.0, 0.0)))
+    });
+    let Some(corner) = corner else {
+        return false;
+    };
+    cfg.legend.corner = corner;
+    cfg.legend.offset_x = 0.0;
+    cfg.legend.offset_y = 0.0;
+    true
+}
+
+/// Whether two rectangles share an area.
+fn rects_overlap(a: RectF, b: RectF) -> bool {
+    let w = (a.x + a.width).min(b.x + b.width) - a.x.max(b.x);
+    let h = (a.y + a.height).min(b.y + b.height) - a.y.max(b.y);
+    w > 0.0 && h > 0.0
+}
+
+/// Store what [`auto_layout`] chose for the chart of a subplot, laid out
+/// through `subplot_config`, into its stored config: every field the passes
+/// write and nothing else, so its linked ranges stay their targets'.
+fn adopt_chart_layout(stored: &mut Config, chart: &Config) {
+    adopt_axis_layout(&mut stored.top_x, &chart.top_x);
+    adopt_axis_layout(&mut stored.bottom_x, &chart.bottom_x);
+    adopt_axis_layout(&mut stored.left_y, &chart.left_y);
+    adopt_axis_layout(&mut stored.right_y, &chart.right_y);
+    for (to, from) in stored.overlays.iter_mut().zip(&chart.overlays) {
+        adopt_axis_layout(&mut to.y_axis, &from.y_axis);
+    }
+    if let (Some(to), Some(from)) = (stored.colorbar.as_mut(), chart.colorbar.as_ref()) {
+        adopt_axis_layout(&mut to.axis, &from.axis);
+    }
+    stored.chart_title.top_margin = chart.chart_title.top_margin;
+    stored.legend.corner = chart.legend.corner;
+    stored.legend.offset_x = chart.legend.offset_x;
+    stored.legend.offset_y = chart.legend.offset_y;
+}
+
+/// The fields of one axis [`auto_layout`] writes: its band, its title's
+/// offset across the band and a switch to `LabelFormat::Power`.
+fn adopt_axis_layout(to: &mut AxisOptions, from: &AxisOptions) {
+    to.out_margin = from.out_margin;
+    to.title_option.offset_y = from.title_option.offset_y;
+    if from.label_style.format == LabelFormat::Power {
+        to.label_style.format = LabelFormat::Power;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1208,5 +1754,468 @@ mod tests {
         for side in [Side::Top, Side::Bottom, Side::Left] {
             assert_eq!(cfg.colorbar_band(&side), 0.0);
         }
+    }
+
+    // auto_layout measurement (#44).
+
+    /// Every glyph 8 px wide, 10 px up and 3 px down: the axis titles and
+    /// the chart title.
+    const GLYPH: f32 = 8.0;
+
+    /// A measure that lays out three tick labels per visible axis, at both
+    /// ends and the middle of the data-area edge, as the renderer places
+    /// them (`label_origin`, offsets and `line_offset` included), and the
+    /// colourbar's three labels along the strip. A `Decimal` or `Plain`
+    /// label prints `decimal`, any other format `3×10`.
+    struct Labels {
+        decimal: &'static str,
+    }
+
+    impl Labels {
+        fn text(&self, axis: &AxisOptions) -> &'static str {
+            match axis.label_style.format {
+                LabelFormat::Decimal | LabelFormat::Plain(_) => self.decimal,
+                _ => "3×10",
+            }
+        }
+
+        fn place(&self, axis: &AxisOptions, side: Side, at: [(f32, f32); 3], sink: &mut dyn Sink) {
+            if !(axis.label_style.visible && axis.label_style.label_visible) {
+                return;
+            }
+            let text = self.text(axis);
+            let extents = TextExtents {
+                width: text.chars().count() as f32 * GLYPH,
+                ascent: 10.0,
+                descent: 3.0,
+            };
+            let o = axis_offset(side.clone(), axis.line_offset);
+            for p in at {
+                let origin = label_origin(
+                    side.clone(),
+                    (p.0 + o.0, p.1 + o.1),
+                    axis.major_tick_length,
+                    (
+                        axis.label_style.label_offset_x,
+                        axis.label_style.label_offset_y,
+                    ),
+                    extents,
+                );
+                sink.text(
+                    Slot::Above,
+                    &PlacedText {
+                        text: TextRef::Plain {
+                            text,
+                            family: "",
+                            size: axis.label_style.font_size,
+                            color: Color::BLACK,
+                        },
+                        origin,
+                        extents,
+                        rotation: None,
+                    },
+                );
+            }
+        }
+    }
+
+    fn ends_and_middle(side: &Side, rect: &RectF) -> [(f32, f32); 3] {
+        [0.0, 0.5, 1.0].map(|t| point_on_rect_side(t, side, rect))
+    }
+
+    impl MeasureText for Labels {
+        fn measure_rich(&self, rt: &crate::text::RichText) -> TextExtents {
+            TextExtents {
+                width: rt.segments.len() as f32 * GLYPH,
+                ascent: 10.0,
+                descent: 3.0,
+            }
+        }
+
+        fn emit(&self, cfg: &Config, element: &Element, sink: &mut dyn Sink) -> bool {
+            let Ok(da) = cfg.data_area() else {
+                return true;
+            };
+            let plot = RectF::from_rect(&da);
+            match element {
+                Element::AxisLabel(side) => {
+                    let axis = super::super::axis_ref(cfg, side);
+                    self.place(axis, side.clone(), ends_and_middle(side, &plot), sink);
+                }
+                Element::ColorBarLabel => {
+                    if let Some((bar, strip)) = visible_colorbar_rect(cfg) {
+                        let at = ends_and_middle(&bar.side, &strip);
+                        self.place(&bar.axis, bar.side.clone(), at, sink);
+                    }
+                }
+                _ => {}
+            }
+            true
+        }
+    }
+
+    // A band is measured outward from its inner edge on every side: the
+    // near and the far distance of a rect 10..20 px out.
+    #[test]
+    fn band_span_measures_outward_from_the_inner_edge() {
+        let r = |x, y| RectF {
+            x,
+            y,
+            width: 10.0,
+            height: 10.0,
+        };
+        assert_eq!(band_span(&Side::Left, 100.0, r(80.0, 0.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Right, 100.0, r(110.0, 0.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Top, 100.0, r(0.0, 80.0)), (10.0, 20.0));
+        assert_eq!(band_span(&Side::Bottom, 100.0, r(0.0, 110.0)), (10.0, 20.0));
+        let plot = r(50.0, 50.0);
+        assert_eq!(band_inner_edge(&Side::Left, plot, 5.0), 45.0);
+        assert_eq!(band_inner_edge(&Side::Right, plot, 5.0), 65.0);
+        assert_eq!(band_inner_edge(&Side::Top, plot, 5.0), 45.0);
+        assert_eq!(band_inner_edge(&Side::Bottom, plot, 5.0), 65.0);
+        // `offset_y` moves a title outward on the bottom, inward elsewhere.
+        for side in [Side::Top, Side::Bottom, Side::Left, Side::Right] {
+            let (dx, dy) = axis_title_offset_to_screen(side.clone(), (0.0, 1.0));
+            let outward = match side {
+                Side::Left => -dx,
+                Side::Right => dx,
+                Side::Top => -dy,
+                Side::Bottom => dy,
+            };
+            assert_eq!(outward, outward_sign(&side), "{side:?}");
+        }
+    }
+
+    // A probe keeps the union of the parts, the most digits a label prints
+    // and the widest label: the three `0.00300` labels of the left axis.
+    #[test]
+    fn a_probe_reads_the_drawn_labels_without_storing_them() {
+        let cfg = default_config();
+        let measure = Labels { decimal: "0.00300" };
+        let probe = Probe::of(&cfg, &Element::AxisLabel(Side::Left), &measure);
+        assert_eq!(probe.digits, 6);
+        assert_eq!(probe.widest, 56.0);
+        let da = cfg.data_area().unwrap();
+        let bounds = probe.bounds.expect("drawn labels");
+        assert_eq!(bounds.x, da.x as f32 - 5.0 - LABEL_GAP - 56.0);
+        assert_eq!(bounds.width, 56.0);
+        assert!(bounds.height > da.height as f32);
+        let hidden = Probe::of(&cfg, &Element::AxisLabel(Side::Top), &measure);
+        assert_eq!(hidden, Probe::default());
+        assert_eq!(probe.with(hidden), probe);
+
+        // Measured from the band's inner edge, the tick beyond the data
+        // area: the labels reach the gap and 56 px, the 13 px title sits centred in the 110 px band.
+        let mut titled = default_config();
+        titled.left_y.title_option.text.segments = crate::text::rich_segments_from_text("y");
+        let title = Probe::of(&titled, &Element::AxisTitle(Side::Left), &measure);
+        let inner = band_inner_edge(&Side::Left, RectF::from_rect(&da), 5.0);
+        let band = BandMeasure::of(&Side::Left, inner, &probe, &title);
+        assert_eq!(band.reach, Some(LABEL_GAP + 56.0));
+        assert_eq!(band.title, Some((55.0 - 6.5, 55.0 + 6.5)));
+    }
+
+    // A title placed beside labels reaching `R` needs a band of
+    // `R + gap + t + gap`; a title that does not clear them gets the offset
+    // that puts its inner edge the gap past them.
+    #[test]
+    fn a_band_needs_room_for_its_labels_and_a_title_beside_them() {
+        let both = BandMeasure {
+            reach: Some(30.0),
+            title: Some((40.0, 53.0)),
+        };
+        assert_eq!(both.required(), Some(30.0 + LABEL_GAP + 13.0 + LABEL_GAP));
+        let labels = BandMeasure {
+            reach: Some(30.0),
+            title: None,
+        };
+        assert_eq!(labels.required(), Some(30.0 + LABEL_GAP));
+        assert_eq!(BandMeasure::default().required(), None);
+        // In a 110 px band the centred title's inner edge is at 48.5, clear
+        // of labels reaching 30 + 4: it stays, and so does an offset one that
+        // still clears them inside the band.
+        assert_eq!(both.placed_offset(110.0, 0.0), None);
+        assert_eq!(both.placed_offset(110.0, -14.5), None);
+        assert_eq!(both.placed_offset(110.0, 40.0), None);
+        // Into the labels, or out of the band: placed at 34, i.e. -14.5,
+        // rounded outward.
+        assert_eq!(both.placed_offset(110.0, -20.0), Some(-14.0));
+        assert_eq!(both.placed_offset(110.0, 50.0), Some(-14.0));
+        // A band of exactly 51 px: the title's inner edge goes from 19 to 34.
+        assert_eq!(both.placed_offset(51.0, 0.0), Some(15.0));
+        assert_eq!(both.placed_offset(51.0, 15.0), None);
+        assert_eq!(labels.placed_offset(110.0, -20.0), None, "no title");
+    }
+
+    // auto_layout (#44).
+
+    fn with_titles(left: &str) -> Config {
+        let mut cfg = default_config();
+        cfg.left_y.title_option.text.segments = crate::text::rich_segments_from_text(left);
+        cfg.bottom_x.title_option.text.segments = crate::text::rich_segments_from_text("x");
+        cfg
+    }
+
+    /// The parts of `element` as `measure` and the model place them.
+    fn rects(cfg: &Config, element: Element, measure: &dyn MeasureText) -> Vec<RectF> {
+        let mut out = Vec::new();
+        crate::select::emit_element(
+            cfg,
+            &element,
+            measure,
+            &mut Parts(&mut |part| out.push(part.extent())),
+        );
+        out
+    }
+
+    /// The smallest gap between the title on `side` and any of its labels,
+    /// across the band.
+    fn title_clearance(cfg: &Config, side: Side, measure: &dyn MeasureText) -> f32 {
+        let title = rects(cfg, Element::AxisTitle(side.clone()), measure);
+        let title = title.first().expect("a placed title");
+        rects(cfg, Element::AxisLabel(side.clone()), measure)
+            .iter()
+            .map(|l| match side {
+                Side::Left => l.x - (title.x + title.width),
+                Side::Right => title.x - (l.x + l.width),
+                Side::Top => l.y - (title.y + title.height),
+                Side::Bottom => title.y - (l.y + l.height),
+            })
+            .fold(f32::INFINITY, f32::min)
+    }
+
+    // Short labels beside a short title already clear it, so nothing moves:
+    // the default document stays exactly as it is.
+    #[test]
+    fn auto_layout_keeps_a_document_that_already_clears() {
+        let measure = Labels { decimal: "0.5" };
+        let cfg = with_titles("y");
+        assert!(title_clearance(&cfg, Side::Left, &measure) >= LABEL_GAP);
+        assert_eq!(auto_layout(&cfg, &measure), cfg);
+        assert_eq!(auto_layout(&default_config(), &measure), default_config());
+    }
+
+    /// The gap between the title on `side` and the outer edge of its band.
+    fn title_outer_gap(cfg: &Config, side: Side, measure: &dyn MeasureText) -> f32 {
+        let title = rects(cfg, Element::AxisTitle(side.clone()), measure)[0];
+        let ca = RectF::from_rect(&cfg.chart_area);
+        let inset = cfg.colorbar_band(&side);
+        match side {
+            Side::Left => title.x - (ca.x + inset),
+            Side::Right => ca.x + ca.width - inset - (title.x + title.width),
+            Side::Top => title.y - (ca.y + cfg.chart_title.top_margin + inset),
+            Side::Bottom => ca.y + ca.height - inset - (title.y + title.height),
+        }
+    }
+
+    // `-1.2345` labels (56 px) reach into the centred title of the default
+    // 110 px left band. The band already holds labels, gap, title and gap, so
+    // it is kept and the title gets the offset that puts it the gap past the
+    // labels. In a 60 px band the band grows to exactly that sum and the
+    // title fills it. The input is untouched and a second call changes
+    // nothing.
+    #[test]
+    fn auto_layout_places_a_title_beside_its_labels_in_a_tight_band() {
+        // Five digits: long, but not too long for `Decimal`.
+        let measure = Labels { decimal: "-1.2345" };
+        // Past the tick: the gap and 56 px; the title is 13 px thick.
+        let (reach, title) = (LABEL_GAP + 56.0, 13.0);
+        for (band, grown) in [
+            (110.0, 110.0),
+            (60.0, reach + LABEL_GAP + title + LABEL_GAP),
+        ] {
+            let mut cfg = with_titles("Optical depth");
+            cfg.left_y.out_margin = band;
+            let input = cfg.clone();
+            assert!(
+                title_clearance(&cfg, Side::Left, &measure) < 0.0,
+                "{band}: overlaps as laid out"
+            );
+
+            let out = auto_layout(&cfg, &measure);
+            assert_eq!(cfg, input, "the input is not modified");
+            assert_eq!(out.left_y.out_margin, grown, "{band}");
+            let clearance = title_clearance(&out, Side::Left, &measure);
+            assert!(
+                (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
+                "{band}: {clearance}"
+            );
+            assert!(title_outer_gap(&out, Side::Left, &measure) >= LABEL_GAP - 1.0);
+            let offset = out.left_y.title_option.offset_y;
+            assert!(offset < 0.0 && offset == offset.round(), "{band}: {offset}");
+            // Everything else is the input's.
+            let mut back = out.clone();
+            back.left_y.out_margin = cfg.left_y.out_margin;
+            back.left_y.title_option.offset_y = 0.0;
+            assert_eq!(back, cfg);
+            assert_eq!(auto_layout(&out, &measure), out, "{band}: idempotent");
+        }
+    }
+
+    // A side with no labels and no title keeps its margin, however small,
+    // and a side with labels but no title only needs room for the labels.
+    #[test]
+    fn auto_layout_sizes_a_band_without_a_title_for_its_labels_alone() {
+        let measure = Labels { decimal: "-1.2345" };
+        let mut cfg = default_config();
+        cfg.left_y.out_margin = 20.0;
+        cfg.right_y.out_margin = 1.0;
+        let out = auto_layout(&cfg, &measure);
+        let reach = LABEL_GAP + 56.0;
+        assert_eq!(out.left_y.out_margin, (reach + LABEL_GAP).ceil());
+        assert_eq!(out.right_y.out_margin, 1.0);
+        assert_eq!(out.top_x.out_margin, cfg.top_x.out_margin);
+    }
+
+    // A title the host offset into its labels is placed beside them, by
+    // whole pixels; a title offset the other way, but still clear and inside
+    // its band, is left where it is, as is a centred one that clears.
+    #[test]
+    fn auto_layout_leaves_a_title_that_clears_and_places_one_that_does_not() {
+        let measure = Labels { decimal: "0.5" };
+        let mut cfg = with_titles("y");
+        assert_eq!(auto_layout(&cfg, &measure), cfg, "centred and clear");
+        // Left: offset_y is screen x; +30 moves the title inward.
+        cfg.left_y.title_option.offset_y = 30.0;
+        assert!(title_clearance(&cfg, Side::Left, &measure) < LABEL_GAP);
+        let out = auto_layout(&cfg, &measure);
+        assert_eq!(out.left_y.out_margin, cfg.left_y.out_margin);
+        let moved = out.left_y.title_option.offset_y;
+        assert!(moved < 30.0 && moved == moved.round(), "{moved}");
+        let clearance = title_clearance(&out, Side::Left, &measure);
+        assert!(
+            (LABEL_GAP..LABEL_GAP + 1.0).contains(&clearance),
+            "{clearance}"
+        );
+        assert_eq!(auto_layout(&out, &measure), out);
+
+        let mut outward = with_titles("y");
+        outward.left_y.title_option.offset_y = -10.0;
+        assert_eq!(auto_layout(&outward, &measure), outward);
+    }
+
+    // Labels printing more than five digits switch an axis to `Power`; a
+    // Power, Timestamp or categorical axis and short labels keep theirs.
+    #[test]
+    fn auto_layout_switches_long_decimal_labels_to_power() {
+        let long = Labels { decimal: "0.00300" };
+        let out = auto_layout(&default_config(), &long);
+        assert_eq!(out.left_y.label_style.format, LabelFormat::Power);
+        assert_eq!(out.bottom_x.label_style.format, LabelFormat::Power);
+        // Hidden labels are not drawn, so they are never too long.
+        assert_eq!(out.top_x.label_style.format, LabelFormat::Decimal);
+        assert_eq!(auto_layout(&out, &long), out);
+
+        let short = Labels { decimal: "0.003" };
+        assert_eq!(auto_layout(&default_config(), &short), default_config());
+
+        let mut kept = default_config();
+        kept.left_y.label_style.format =
+            LabelFormat::Timestamp(crate::format::TimestampLabelFormat::default());
+        kept.bottom_x.categories = Some(vec![
+            crate::config::Category::new("a", "A"),
+            crate::config::Category::new("b", "B"),
+        ]);
+        let out = auto_layout(&kept, &long);
+        assert_eq!(
+            out.left_y.label_style.format,
+            kept.left_y.label_style.format
+        );
+        assert_eq!(out.bottom_x.label_style.format, LabelFormat::Decimal);
+    }
+
+    // A band that would leave no data area is not grown.
+    #[test]
+    fn auto_layout_never_grows_a_band_past_the_data_area() {
+        let measure = Labels { decimal: "-1.2345" };
+        let mut cfg = with_titles("Optical depth");
+        // 60 + 5 + 32 + 5 px of margins leave 20 px; the 81 px band the
+        // labels and title need would leave none.
+        cfg.left_y.out_margin = 60.0;
+        cfg.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: 122,
+            height: 400,
+        });
+        assert!(cfg.data_area().is_ok());
+        let out = auto_layout(&cfg, &measure);
+        assert_eq!(out.left_y.out_margin, cfg.left_y.out_margin);
+        assert!(out.data_area().is_ok());
+    }
+
+    // The colourbar's band grows from the strip outward the same way, and a
+    // legend box dragged over the bar goes back to the first corner where it
+    // clears it.
+    #[test]
+    fn auto_layout_fits_the_colorbar_band_and_clears_the_legend_off_it() {
+        let measure = Labels { decimal: "-1.2345" };
+        let mut cfg = default_config();
+        let mut bar = crate::default::default_colorbar_options();
+        bar.axis.title_option.visible = true;
+        bar.axis.title_option.text.segments = crate::text::rich_segments_from_text("z");
+        cfg.colorbar = Some(bar);
+        cfg.legend.visible = true;
+        cfg.legend.content.segments = crate::text::rich_segments_from_text("series");
+        cfg.legend.offset_x = 120.0;
+        cfg.legend.offset_y = 200.0;
+        let out = auto_layout(&cfg, &measure);
+        let bar = out.colorbar.as_ref().unwrap();
+        let reach = LABEL_GAP + 56.0;
+        assert_eq!(bar.axis.out_margin, reach + LABEL_GAP + 13.0 + LABEL_GAP);
+        // The bar's title sits the gap past its labels.
+        let labels = rects(&out, Element::ColorBarLabel, &measure);
+        let title = rects(&out, Element::ColorBarTitle, &measure)[0];
+        let gap = labels
+            .iter()
+            .map(|l| title.x - (l.x + l.width))
+            .fold(f32::INFINITY, f32::min);
+        assert!((LABEL_GAP..LABEL_GAP + 1.0).contains(&gap), "{gap}");
+        assert_eq!((out.legend.offset_x, out.legend.offset_y), (0.0, 0.0));
+        let legend = rects(&out, Element::Legend, &measure)[0];
+        for element in [
+            Element::ColorBar,
+            Element::ColorBarLabel,
+            Element::ColorBarTitle,
+        ] {
+            for r in rects(&out, element, &measure) {
+                assert!(!rects_overlap(legend, r), "{legend:?} {r:?}");
+            }
+        }
+        assert_eq!(auto_layout(&out, &measure), out);
+    }
+
+    // An overlay's labels and title widen the shared right band through the
+    // overlay's own axis, and a subplot is laid out as a chart of its own.
+    #[test]
+    fn auto_layout_fits_overlay_and_subplot_bands() {
+        let measure = Labels { decimal: "-1.2345" };
+        let mut cfg = default_config();
+        let mut overlay = crate::layer::OverlayLayer::default();
+        overlay.y_axis.title_option.visible = true;
+        overlay.y_axis.title_option.text.segments = crate::text::rich_segments_from_text("p");
+        let right = cfg.margins().right;
+        cfg.overlays.push(overlay);
+        let mut sub = crate::layer::Subplot::default();
+        sub.config = with_titles("Optical depth");
+        sub.config.chart_area = ChartArea(Rect {
+            x: 1000,
+            y: 0,
+            width: 600,
+            height: 400,
+        });
+        cfg.subplots.push(sub);
+
+        let out = auto_layout(&cfg, &measure);
+        assert!(out.margins().right > right);
+        let panel = out.overlay_panel(0).unwrap();
+        assert!(title_clearance(&panel, Side::Right, &measure) >= LABEL_GAP - 1e-3);
+        let chart = out.subplot_config(0).unwrap();
+        assert!(title_clearance(&chart, Side::Left, &measure) >= LABEL_GAP - 1e-3);
+        assert_eq!(
+            out.subplots[0].config.chart_area,
+            cfg.subplots[0].config.chart_area
+        );
+        assert_eq!(auto_layout(&out, &measure), out);
     }
 }

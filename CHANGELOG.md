@@ -28,6 +28,29 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **`layout::auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44),
+  #58 item 18). `auto_layout(&cfg, &measure) -> Config` returns the SSOT with
+  axis bands, axis title offsets and tick-label formats chosen so its tick
+  labels, axis titles, chart title, legend and colourbar do not overlap, as
+  `measure` lays them out (the labels the renderer draws, after pruning). It
+  is an explicit call, the shape of `fit_chart_title_margin`: pure,
+  idempotent, and it writes only display parameters, never a range, a tick
+  setting, a series, an annotation or a pick. A `Decimal` or `Plain`,
+  non-categorical axis whose labels print more than five digits (`0.00300`)
+  or are wider than five ems switches to `LabelFormat::Power`; each band's
+  `out_margin` grows, never shrinks, to the labels' reach, `LABEL_GAP`, the
+  title's thickness and `LABEL_GAP` again (a band that already holds them,
+  or a side with neither labels nor a title, is kept); a title that does not
+  clear its labels by `LABEL_GAP` inside its band gets the `offset_y` that
+  puts it `LABEL_GAP` past them, and one that already clears, centred or
+  offset by the host, stays; overlay axes and the colourbar's axis follow the
+  same rule, the title band follows `fit_chart_title_margin`, a
+  legend over the colourbar goes to the first corner that clears it, and
+  each subplot is laid out as its own chart. No serialized field is added.
+  Not covered: overlay axes drawn over each other, polar angle labels against
+  radius labels, and labels at a corner, which run along their axes. Call it
+  again after an auto-fit or a zoom: the range helpers reset a linear axis to
+  `Decimal`.
 - **One placement per element, interchangeable sinks**
   ([#38](https://github.com/shim9610/figgy/issues/38),
   [#46](https://github.com/shim9610/figgy/issues/46) item 12). Every chart
@@ -1122,6 +1145,11 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **`autoLayout(configJson)`** ([#44](https://github.com/shim9610/figgy/issues/44)):
+  a free function that returns the config JSON through `layout::auto_layout`,
+  measured with the renderer's text measure for the config's draw style. It
+  changes no chart; apply the result with `set_config`
+  (`chart.set_config(autoLayout(chart.get_config()))`).
 - **Adaptive log ticks.** `"log_ticks": "Adaptive"` is read and written on
   every axis of `set_config` / `get_config` and on `set_colorbar_axis`
   ([#42](https://github.com/shim9610/figgy/issues/42)); the default
@@ -1336,6 +1364,19 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)). The
+  playground catalogue gains a `LongLabels` scene (`0.00300` labels under a
+  math Y title, negative long decimals, a logarithmic top axis with adaptive
+  labels, timestamps and a colourbar with long labels), which the decoration
+  oracle checks as laid out with its overlap excluded for #44. A second
+  oracle sweep runs every Cartesian scene through `auto_layout` and holds it
+  to I1 to I7 (`auto_layout_i1` … `auto_layout_i7`). `tests/auto_layout.rs`
+  checks purity and idempotence on every scene, untouched data fields, the
+  default config and the released config documents (only the 0.10.0 and
+  0.11.0 edited documents change, listed), a serde round trip and
+  `set_chart_config`; the model unit tests pin the band rule, offsets,
+  formats, the colourbar, the legend, overlays and subplots with a stub
+  measure, and the web crate `autoLayout`.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
   The model pins the plan's golden ladders, majors and minors (with guarded
   and extreme ranges), a sweep where every `Decades(n)` ladder draws the
@@ -1504,6 +1545,12 @@ entries above describe the changes.
 
 ### Documentation
 
+- **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)).
+  `API.md` lists it among the convenience helpers, `CONFIG.md` points the
+  label section to it, `README.md` lists it under embedding, and the
+  playground README describes the scene and the "Auto layout" button. The
+  Korean documents carry the same sentences in Korean: the Korean section of
+  `CONFIG.md`, `WASM.md`, `SCHEMA.md` and `README.ko.md`.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
   `CONFIG.md` describes `AxisOptions::log_ticks` and the `major_spacing`,
   `minor_count` and `link_x` rows that it changes (the Korean section in
