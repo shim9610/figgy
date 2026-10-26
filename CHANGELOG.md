@@ -1547,8 +1547,10 @@ entries above describe the changes.
 
 - **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)).
   `API.md` lists it among the convenience helpers, `CONFIG.md` points the
-  label section to it, and the playground README describes the scene and the
-  "Auto layout" button. The Korean sections are not updated.
+  label section to it, `README.md` lists it under embedding, and the
+  playground README describes the scene and the "Auto layout" button. The
+  Korean documents carry the same sentences in Korean: the Korean section of
+  `CONFIG.md`, `WASM.md`, `SCHEMA.md` and `README.ko.md`.
 - **Adaptive log ticks** ([#42](https://github.com/shim9610/figgy/issues/42)).
   `CONFIG.md` describes `AxisOptions::log_ticks` and the `major_spacing`,
   `minor_count` and `link_x` rows that it changes (the Korean section in

@@ -253,6 +253,7 @@ cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 | 원형 차트 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-examples) |
 | 극좌표로 선·산점도 그리기 | [극좌표 사용법](crates/renderer/POLAR.md#한국어-사용법) |
 | 선택·이동·영역 크기 조정 연결 | [상호작용 사용법](crates/renderer/INTERACTION.md) |
+| 라벨과 제목이 겹치지 않게 여백·제목 오프셋·라벨 형식 맞추기 | [편의 함수](crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers)의 `layout::auto_layout`, 브라우저에서는 `autoLayout(configJson)` |
 | GPU 메모리보다 큰 데이터 그리기 | [스트리밍과 상주 전환](crates/renderer/ARCHITECTURE.md#원본-데이터-스트리밍과-상주-전환) |
 
 기존 프로그램과 GPU 장치를 공유할 때는 **wgpu 30**을 사용합니다.
