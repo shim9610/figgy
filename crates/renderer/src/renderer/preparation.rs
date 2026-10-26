@@ -313,6 +313,7 @@ impl Renderer {
                     && p.contour_label.is_some()
                     && p.vector_points.is_some()
                     && p.vector_grid.is_some()
+                    && p.vector_path.is_some()
                     && self.contour_label_pipelines.is_some()
             }
             PreparationFeature::Picking => matches!(
@@ -422,6 +423,7 @@ impl TargetPipelines {
             contour_label: None,
             vector_points: None,
             vector_grid: None,
+            vector_path: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
@@ -490,6 +492,9 @@ impl TargetPipelines {
         }
         if self.vector_grid.is_none() {
             self.vector_grid = other.vector_grid;
+        }
+        if self.vector_path.is_none() {
+            self.vector_path = other.vector_path;
         }
         if self.field.is_none() {
             self.field = other.field;

@@ -3,7 +3,8 @@
 //
 // No vertex buffers: the column pool is bound whole as storage, the way the
 // field shader binds it, and the per-form input fragment
-// (`vector_input_points.wgsl` / `vector_input_grid.wgsl`) turns an instance
+// (`vector_input_points.wgsl` / `vector_input_grid.wgsl` /
+// `vector_input_path.wgsl`) turns an instance
 // index into one `VectorSample` by reading it. Nothing per arrow is stored
 // anywhere else.
 
@@ -50,7 +51,8 @@ struct VectorParams {
     min_length_px: f32,
     /// Anti-aliasing width in pixels (one logical pixel times the render scale).
     aa_px: f32,
-    pad0: f32,
+    /// Path form: the arc between two arrowheads, render pixels.
+    spacing_px: f32,
     pad1: f32,
     z_min: vec2<f32>,
     z_max: vec2<f32>,

@@ -248,6 +248,7 @@ impl PrepareContext<'_> {
                 let pipeline = match scratch.input {
                     data_render::vector::VectorInput::Points => pipelines.vector_points.as_ref(),
                     data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
+                    data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
                 }
                 .expect("prepare ensured vector pipeline");
                 Some(data_render::vector::ColumnVectorLayer {
@@ -257,7 +258,39 @@ impl PrepareContext<'_> {
                     vector_bg: scratch.vector_bg.clone(),
                     charge: Arc::clone(&scratch.charge),
                     count: scratch.count,
+                    indirect: None,
                 })
+            } else if primitives.line
+                && phase.is_none()
+                && rt
+                    .streamlines()
+                    .is_some_and(|streamlines| streamlines.arrows.is_some())
+            {
+                // Streamline arrowheads: the vector glyph on the arc slots of
+                // the line's arc scan, drawn indirect in the vector slot,
+                // under the stroke (#51, D5). A series too short to scan has
+                // no slots and draws no heads.
+                let scratch = self
+                    .vector_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("prepare ensured this streamline's arrowhead scratch");
+                products
+                    .arcs
+                    .get(idx)
+                    .and_then(|series| series.arc.as_ref())
+                    .and_then(|arc| arc.star.as_ref())
+                    .map(|slots| data_render::vector::ColumnVectorLayer {
+                        pipeline: pipelines
+                            .vector_path
+                            .as_ref()
+                            .expect("prepare ensured the path vector pipeline"),
+                        transform_bg: &view.transform_bg,
+                        style_bg: scratch.style_bg.clone(),
+                        vector_bg: scratch.vector_bg.clone(),
+                        charge: Arc::clone(&scratch.charge),
+                        count: scratch.count,
+                        indirect: Some((&slots.indirect, &slots.vs_bg)),
+                    })
             } else {
                 None
             };

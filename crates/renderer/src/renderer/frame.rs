@@ -312,6 +312,8 @@ pub(super) struct PreparedVectorLayer {
     pub(super) vector_bg: wgpu::BindGroup,
     pub(super) charge: crate::gpu_memory::SharedCharge,
     pub(super) count: u32,
+    /// Streamline arrowheads: the indirect arguments and the arc slot group.
+    pub(super) indirect: Option<(wgpu::Buffer, wgpu::BindGroup)>,
 }
 
 /// Owned contour layer. The group-2 tables, the lump charge and the label state
@@ -771,6 +773,9 @@ impl PreparedSeries {
                 vector_bg: layer.vector_bg,
                 charge: layer.charge,
                 count: layer.count,
+                indirect: layer
+                    .indirect
+                    .map(|(buffer, slots)| (buffer.clone(), slots.clone())),
             }),
             contour: layers.contour.map(|layer| PreparedContourLayer {
                 pipeline: layer.pipeline.clone(),
@@ -952,6 +957,10 @@ impl PreparedSeries {
                     vector_bg: layer.vector_bg.clone(),
                     charge: Arc::clone(&layer.charge),
                     count: layer.count,
+                    indirect: layer
+                        .indirect
+                        .as_ref()
+                        .map(|(buffer, slots)| (buffer, slots)),
                 }),
             contour: self
                 .contour

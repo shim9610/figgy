@@ -41,7 +41,8 @@ To change shared shader code:
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
-| `arc_walk.wgsl` (§5.6 arc slots) | line (draw only: the pick walks a segment's arc through `pick_arc`) |
+| `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
+| `path_arrow.wgsl` (§5.3 path form) | the path vector module |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
@@ -454,6 +455,29 @@ The vector shader is not one file: `VECTOR_POINTS_SHADER` /
 the `grid_pair` and `data_pick` fragments), `common/arrow.wgsl` and
 `vector/vector_entry.wgsl`, in that order. The grid input places an `Edges`
 arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
+
+**Path form.** `VECTOR_PATH_SHADER` draws a streamline series' arrowheads
+(`DataRenderType::Streamlines` with `arrows`): the point form's fragments
+with `vector/vector_input_path.wgsl` as the input, which splices
+`common/arc_walk.wgsl` (§5.6 arc slots) and `common/path_arrow.wgsl`. The
+pipeline layout adds group 3, the arc slot data of the line's arc scan
+(the arc prefix, the pool and `StarVsParams`), and the draw is indirect:
+the scan runs with the arrow spacing in render pixels as its slot pitch,
+and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (at
+most `STAR_MAX_SLOTS`). Slot `i` sits at arc `(i + 0.5) * spacing`
+(`VectorParams.spacing_px`): `arc_walk_segment` finds its segment (a slot
+past the arc, on a NaN gap, on a segment with an invalid sample or past
+`count`, the shortest of the coordinate and colour columns, draws nothing),
+and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)` gives the
+data-space point at the arc fraction (hi/lo pairs through `pair_add`), the
+unit data-space tangent of the segment and the fraction. The colour value
+is interpolated between the two samples as the colour-mapped stroke
+interpolates it (§5.6). The projection runs in pixel mode with
+`scale = head_length_px`, so the arrow is one head long along the tangent,
+and the glyph places it with the middle pivot and no shaft: a head centred
+on its slot. On linear axes the point lies on the drawn segment; on a
+logarithmic axis the data-space interpolation is a sub-pixel off the drawn
+chord, and the pick follows the same function (§5.8).
 
 Group 2 is the series' data. Binding 0 is the column pool as read-only
 storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the

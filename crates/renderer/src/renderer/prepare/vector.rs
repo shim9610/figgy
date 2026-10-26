@@ -48,9 +48,15 @@ impl PrepareContext<'_> {
         for item in items {
             for series in item.series {
                 let cfg = series.config;
-                if !effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type)
-                    .vector
-                {
+                let primitives =
+                    effective_series_primitives(&item.chart_config.draw_style, &cfg.render_type);
+                // A streamline series' arrowheads draw with its line.
+                let heads = primitives.line
+                    && cfg
+                        .render_type
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.arrows.is_some());
+                if !primitives.vector && !heads {
                     continue;
                 }
                 let Some(sources) = self.ensure_vector_scratch(item.chart_config, cfg, scale)?
@@ -84,14 +90,27 @@ impl PrepareContext<'_> {
     ) -> Result<Option<Arc<GridSources>>> {
         use crate::data_config::{VectorColorMap, VectorComponents, VectorPivot, VectorScale};
         use data_render::vector as vector_render;
-        let Some((components, style)) = extract_vector(&cfg.render_type) else {
+        // A vector series, or the arrowheads along a streamline series'
+        // drawn path (the path form: heads only, pixel-scaled to one head
+        // length, centred on their arc slots).
+        let vector = extract_vector(&cfg.render_type);
+        let streamline = cfg
+            .render_type
+            .streamlines()
+            .and_then(|streamlines| streamlines.arrows.map(|arrows| (streamlines, arrows)));
+        if vector.is_none() && streamline.is_none() {
             return Ok(None);
-        };
+        }
         let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
             series_id: cfg.series_id.clone(),
             reason,
         };
-        style.validate().map_err(|reason| invalid(reason.into()))?;
+        if let Some((_, style)) = vector {
+            style.validate().map_err(|reason| invalid(reason.into()))?;
+        }
+        if let Some((_, arrows)) = streamline {
+            arrows.validate().map_err(|reason| invalid(reason.into()))?;
+        }
         let alloc = |resource: &'static str| {
             move |error: std::collections::TryReserveError| FiggyError::StateAllocationFailed {
                 resource,
@@ -132,36 +151,80 @@ impl PrepareContext<'_> {
             flags: 0,
             count: 0,
             stop_count: 0,
-            pivot: match style.pivot {
-                VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
-                VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
-                VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
-            },
+            pivot: vector_render::VECTOR_PIVOT_MIDDLE,
             scale: 0.0,
-            width_px: style.width_px * scale,
-            head_length_px: style.head_length_px * scale,
-            head_width_px: style.head_width_px * scale,
-            min_length_px: style.min_length_px * scale,
+            width_px: 0.0,
+            head_length_px: 0.0,
+            head_width_px: 0.0,
+            min_length_px: 0.0,
             aa_px: scale,
-            pad0: 0.0,
+            spacing_px: 0.0,
             pad1: 0.0,
             z_min: [0.0; 2],
             z_max: [0.0; 2],
             nan_color_premul: [0.0; 4],
         };
-        match style.scale {
-            VectorScale::Data { factor } => params.scale = factor as f32,
-            VectorScale::Pixels { px_per_unit } => {
-                params.scale = px_per_unit as f32 * scale;
-                params.flags |= vector_render::VECTOR_FLAG_SCALE_PIXELS;
+        if let Some((_, style)) = vector {
+            params.pivot = match style.pivot {
+                VectorPivot::Tail => vector_render::VECTOR_PIVOT_TAIL,
+                VectorPivot::Middle => vector_render::VECTOR_PIVOT_MIDDLE,
+                VectorPivot::Tip => vector_render::VECTOR_PIVOT_TIP,
+            };
+            params.width_px = style.width_px * scale;
+            params.head_length_px = style.head_length_px * scale;
+            params.head_width_px = style.head_width_px * scale;
+            params.min_length_px = style.min_length_px * scale;
+            match style.scale {
+                VectorScale::Data { factor } => params.scale = factor as f32,
+                VectorScale::Pixels { px_per_unit } => {
+                    params.scale = px_per_unit as f32 * scale;
+                    params.flags |= vector_render::VECTOR_FLAG_SCALE_PIXELS;
+                }
             }
         }
+        if let Some((_, arrows)) = streamline {
+            // A head with no shaft: the arrow is one head length long along
+            // the unit tangent, centred on its slot.
+            params.head_length_px = arrows.head_length_px * scale;
+            params.head_width_px = arrows.head_width_px * scale;
+            params.scale = params.head_length_px;
+            params.spacing_px = arrows.spacing_px * scale;
+            params.flags |= vector_render::VECTOR_FLAG_SCALE_PIXELS;
+        }
+        let color_map = match (vector, streamline) {
+            (Some((_, style)), _) => style.color_map.is_some(),
+            (None, Some((streamlines, _))) => streamlines.color_map.is_some(),
+            (None, None) => false,
+        };
 
         let mut grid = Vec::new();
         let mut ids = Vec::new();
         let mut epochs = Vec::new();
-        let input = match components {
-            VectorComponents::Points { u, v } => {
+        let input = match vector {
+            // The arrowheads read the coordinates and the colour column
+            // index-aligned; the arc slot data (group 3) is the line's arc
+            // scan, bound at draw time.
+            None => {
+                let mut count = x.len_values.min(y.len_values);
+                ids.try_reserve_exact(1)
+                    .map_err(alloc("vector source ids"))?;
+                epochs
+                    .try_reserve_exact(1)
+                    .map_err(alloc("vector source epochs"))?;
+                if let Some(map) = streamline.and_then(|(streamlines, _)| streamlines.color_map) {
+                    let c_h = handle(&map.column)?;
+                    params.c_base = lane(&c_h)?;
+                    params.c_len = len32(&c_h);
+                    count = count.min(c_h.len_values);
+                    ids.push(map.column.clone());
+                    epochs.push(epoch(&map.column)?);
+                }
+                params.count = u32::try_from(count).unwrap_or(u32::MAX);
+                // A storage binding cannot be zero-sized: one padding entry.
+                grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
+                vector_render::VectorInput::Path
+            }
+            Some((VectorComponents::Points { u, v }, style)) => {
                 let u_h = handle(u)?;
                 let v_h = handle(v)?;
                 params.u_base = lane(&u_h)?;
@@ -195,7 +258,7 @@ impl PrepareContext<'_> {
                 grid.push(data_render::GridColumnGpu { base: 0, len: 0 });
                 vector_render::VectorInput::Points
             }
-            VectorComponents::Grid { u, v } => {
+            Some((VectorComponents::Grid { u, v }, style)) => {
                 let mut extent: Option<(usize, usize)> = None;
                 let mut append = |matrix: &crate::data_config::MatrixRef,
                                   grid: &mut Vec<data_render::GridColumnGpu>,
@@ -254,7 +317,7 @@ impl PrepareContext<'_> {
         };
 
         let mut stops = Vec::new();
-        if style.color_map.is_some() {
+        if color_map {
             let bar = chart_config.colorbar.as_ref().ok_or_else(|| {
                 invalid(
                     "a colour-mapped vector needs Config.colorbar: it owns the z range and \
@@ -279,6 +342,12 @@ impl PrepareContext<'_> {
             stops.push([0.0; 4]);
         }
 
+        // The heads take the line colour without a colour map.
+        let color = match (vector, streamline) {
+            (Some((_, style)), _) => style.color,
+            (None, Some((streamlines, _))) => streamlines.line.line_color,
+            (None, None) => Color::BLACK,
+        };
         let signature = VectorSignature {
             pool_layout_generation: self.pool.layout_generation(),
             input,
@@ -287,10 +356,10 @@ impl PrepareContext<'_> {
             epochs,
             stops,
             color: [
-                style.color.r.to_bits(),
-                style.color.g.to_bits(),
-                style.color.b.to_bits(),
-                style.color.a.to_bits(),
+                color.r.to_bits(),
+                color.g.to_bits(),
+                color.b.to_bits(),
+                color.a.to_bits(),
             ],
         };
         if let Some(scratch) = self.vector_cache.get(cfg.series_id.as_str())

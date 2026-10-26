@@ -73,6 +73,10 @@ pub const MODULES: &[(&str, Assembled)] = &[
         "vector_grid",
         crate::data_render::vector::VECTOR_GRID_SHADER,
     ),
+    (
+        "vector_path",
+        crate::data_render::vector::VECTOR_PATH_SHADER,
+    ),
     ("pick_gate", crate::gpu_pick::PickShader::Gate.assembled()),
     (
         "pick_marker",
@@ -537,7 +541,7 @@ mod tests {
                     head_width_px,
                     min_length_px,
                     aa_px,
-                    pad0,
+                    spacing_px,
                     pad1,
                     z_min,
                     z_max,

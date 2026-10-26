@@ -237,6 +237,9 @@ pub(super) struct TargetPipelines {
     /// The assembled vector pipelines, one per input form (`vector.rs`).
     pub(super) vector_points: Option<wgpu::RenderPipeline>,
     pub(super) vector_grid: Option<wgpu::RenderPipeline>,
+    /// The streamline arrowheads (`VectorInput::Path`), drawn indirect over
+    /// the arc slots.
+    pub(super) vector_path: Option<wgpu::RenderPipeline>,
     pub(super) sample_count: u32,
     pub(super) styled: HashMap<StyleKey, StyleSet>,
 }
@@ -287,6 +290,7 @@ impl TargetPipelines {
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        star_data_bgl: &wgpu::BindGroupLayout,
         category_bar_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
@@ -294,6 +298,7 @@ impl TargetPipelines {
     ) {
         let mut need_vector_points = false;
         let mut need_vector_grid = false;
+        let mut need_vector_path = false;
         let mut need_field = false;
         let mut need_contour = false;
         let mut need_contour_label = false;
@@ -370,6 +375,13 @@ impl TargetPipelines {
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
                 need_line |= primitives.line;
+                // Streamline arrowheads draw through the path vector pipeline.
+                need_vector_path |= primitives.line
+                    && series
+                        .config
+                        .render_type
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.arrows.is_some());
                 need_line_mapped |= primitives.line
                     && series
                         .config
@@ -659,10 +671,12 @@ impl TargetPipelines {
         for (need, input) in [
             (need_vector_points, data_render::vector::VectorInput::Points),
             (need_vector_grid, data_render::vector::VectorInput::Grid),
+            (need_vector_path, data_render::vector::VectorInput::Path),
         ] {
             let slot = match input {
                 data_render::vector::VectorInput::Points => &mut self.vector_points,
                 data_render::vector::VectorInput::Grid => &mut self.vector_grid,
+                data_render::vector::VectorInput::Path => &mut self.vector_path,
             };
             if need && slot.is_none() {
                 *slot = Some(
@@ -672,6 +686,7 @@ impl TargetPipelines {
                         transform_bgl,
                         style_bgl,
                         vector_bgl,
+                        star_data_bgl,
                         surface_format,
                         self.sample_count,
                         input,
@@ -1129,9 +1144,25 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 vector_bgl,
+                star_data_bgl,
                 surface_format,
                 self.sample_count,
                 data_render::vector::VectorInput::Points,
+            )
+        );
+        ensure!(
+            vector_path,
+            "vector path",
+            data_render::vector::create_vector_pipeline_with_sample_count(
+                device,
+                &self.shaders.vector_path,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                star_data_bgl,
+                surface_format,
+                self.sample_count,
+                data_render::vector::VectorInput::Path,
             )
         );
         ensure!(
@@ -1143,6 +1174,7 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 vector_bgl,
+                star_data_bgl,
                 surface_format,
                 self.sample_count,
                 data_render::vector::VectorInput::Grid,
@@ -1291,6 +1323,7 @@ pub(super) fn create_target_pipelines_observed(
     TargetPipelines {
         vector_points: None,
         vector_grid: None,
+        vector_path: None,
         axis: observe_value(
             observer,
             "renderer",
@@ -1386,6 +1419,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         axis,
         vector_points: None,
         vector_grid: None,
+        vector_path: None,
         line: None,
         line_mapped: None,
         area: None,
