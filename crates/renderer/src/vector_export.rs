@@ -548,19 +548,14 @@ pub(crate) enum Pass {
 
 /// Whether panel `index` of `document` (in [`Config::panel_layers`] order)
 /// is the first panel of its area, the one that owns the Milkyway backdrop:
-/// the base panel and each subplot, not their overlays.
+/// the base panel and each subplot, not their overlays or line offset
+/// members.
 fn owns_backdrop(document: &Config, index: usize) -> bool {
-    if index == 0 {
-        return true;
-    }
-    let mut next = 1 + document.overlays.len();
-    for subplot in &document.subplots {
-        if index == next {
-            return true;
-        }
-        next += 1 + subplot.config.overlays.len();
-    }
-    false
+    let layers = document.panel_layers();
+    matches!(
+        layers.get(index),
+        Some(crate::LayerRef::Base | crate::LayerRef::Subplot(_))
+    ) && document.panel_member(index).is_none()
 }
 
 /// Whether panel `index`'s `Below` pass places anything: its Milkyway

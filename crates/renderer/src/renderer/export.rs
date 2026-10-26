@@ -91,8 +91,9 @@ impl<'a> PanelDrawStorage<'a> {
             let panel_views = layer_views(item.view, panels.len())?;
             let mut partition: Vec<Vec<Series<'a>>> = vec![Vec::new(); panels.len()];
             for entry in item.series {
-                let layer = item.chart_config.layer_of_series(&entry.config.series_id);
-                partition[panel_index(item.chart_config, panels.len(), layer)].push(*entry);
+                let index =
+                    series_panel_index(item.chart_config, panels.len(), &entry.config.series_id);
+                partition[index].push(*entry);
             }
             counts.push(panels.len());
             configs.extend(panels);

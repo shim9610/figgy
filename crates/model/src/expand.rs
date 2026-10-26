@@ -29,6 +29,15 @@
 //! - Expansion ignores `active_layer`; the panels always carry `Base`. The
 //!   document's one annotation layer stays on the base panel, anchored in
 //!   the parent's axes; overlay panels carry an empty one.
+//! - Each member of `Config::line_offsets` (offset spectra) is a panel of its
+//!   own, after the overlay panels and in stacking order: the panel of the
+//!   layer that scales it (the base panel or an overlay's) with `bottom_x`
+//!   moved by the member's x shift and the Y axis the transform reads
+//!   (`left_y`) by its y shift (decades on a logarithmic axis), every axis
+//!   element, the title, the grid, the legend and the colourbar hidden, and
+//!   only that member's picked references. The base and overlay panels draw
+//!   no member. A member panel is not a layer of its own: it reports its
+//!   owner's layer, which is what receives the pointer for it.
 //!
 //! Subplots (`Config::subplots`) are charts of their own. Each expands by
 //! the same rules from its resolved config ([`Config::subplot_config`]: the
@@ -52,7 +61,9 @@ use crate::layout::{DataArea, LayoutError, Margins, Rect, Side};
 #[derive(Clone, Debug, PartialEq)]
 pub struct ExpandedPanel {
     /// The layer this panel draws: `Base` first, then `Overlay(i)` in order,
-    /// then per subplot `Subplot(i)` and its `SubplotOverlay(i, j)`.
+    /// then the line offset members' panels, each reporting the layer that
+    /// scales its member, then per subplot `Subplot(i)`, its
+    /// `SubplotOverlay(i, j)` and its own members' panels.
     pub layer: LayerRef,
     /// A single-layer config (no overlays, `active_layer == Base`) whose
     /// `data_area()` is the group data area.
@@ -62,8 +73,9 @@ pub struct ExpandedPanel {
 /// The panels of a document plus the data area they all share.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Expansion {
-    /// Base panel first, then one panel per overlay in index order, then each
-    /// subplot's panels in the same shape.
+    /// Base panel first, then one panel per overlay in index order, then one
+    /// per line offset member in stacking order, then each subplot's panels
+    /// in the same shape.
     pub panels: Vec<ExpandedPanel>,
     /// The group data area; equal to the parent's `data_area()`.
     pub data_area: DataArea,
@@ -71,7 +83,8 @@ pub struct Expansion {
 
 impl Expansion {
     /// The panel of `layer`, or `None` for an overlay index past the end and
-    /// for the annotation layer, which has no panel of its own.
+    /// for the annotation layer, which has no panel of its own. A layer with
+    /// line offset members names its own panel, never a member's.
     pub fn panel(&self, layer: LayerRef) -> Option<&ExpandedPanel> {
         self.panels.iter().find(|panel| panel.layer == layer)
     }
@@ -413,16 +426,20 @@ impl Config {
     }
 
     /// Expand the document into its internal panels. See the module
-    /// documentation for the rules. Fails when the layout has no data area or
-    /// when overlays share a series id.
+    /// documentation for the rules. Fails when the layout has no data area,
+    /// when overlays share a series id or when the line offsets break
+    /// [`Self::validate_line_offset_layout`].
     pub fn expand(&self) -> Result<Expansion, LayoutError> {
         self.validate_overlays()
             .map_err(|_| LayoutError::Infeasible)?;
         self.validate_subplots()
             .map_err(|_| LayoutError::Infeasible)?;
+        self.validate_line_offset_layout()
+            .map_err(|_| LayoutError::Infeasible)?;
         let data_area = self.data_area()?;
         let group = self.margins();
-        let mut panels = Vec::with_capacity(1 + self.overlays.len());
+        let members = self.offset_members();
+        let mut panels = Vec::with_capacity(1 + self.overlays.len() + members.len());
         panels.push(ExpandedPanel {
             layer: LayerRef::Base,
             config: self.base_panel(&group, &data_area)?,
@@ -432,6 +449,16 @@ impl Config {
                 layer: LayerRef::Overlay(index),
                 config: self.overlay_panel_with(index, &group, &data_area)?,
             });
+        }
+        for (k, id) in members.iter().enumerate() {
+            let layer = self.member_owner(id);
+            let owner = match layer {
+                LayerRef::Overlay(index) => 1 + index,
+                _ => 0,
+            };
+            let config =
+                self.member_panel_with(&panels[owner].config, id, k, &group, &data_area)?;
+            panels.push(ExpandedPanel { layer, config });
         }
         for index in 0..self.subplots.len() {
             let mut subplot = self.subplot_config(index).ok_or(LayoutError::Infeasible)?;
@@ -450,18 +477,109 @@ impl Config {
     }
 
     /// The layer of every panel [`Self::expand`] returns, in the same order,
-    /// computed without expanding.
+    /// computed without expanding. A line offset member's panel reports the
+    /// layer that scales its member, so a layer appears once more per member
+    /// it scales, after its own panel.
     pub fn panel_layers(&self) -> Vec<LayerRef> {
         let mut layers = vec![LayerRef::Base];
         layers.extend((0..self.overlays.len()).map(LayerRef::Overlay));
+        layers.extend(self.offset_members().iter().map(|id| self.member_owner(id)));
         for (index, subplot) in self.subplots.iter().enumerate() {
+            let chart = &subplot.config;
             layers.push(LayerRef::Subplot(index));
             layers.extend(
-                (0..subplot.config.overlays.len())
-                    .map(|overlay| LayerRef::SubplotOverlay(index, overlay)),
+                (0..chart.overlays.len()).map(|overlay| LayerRef::SubplotOverlay(index, overlay)),
+            );
+            layers.extend(
+                chart
+                    .offset_members()
+                    .iter()
+                    .map(|id| match chart.member_owner(id) {
+                        LayerRef::Overlay(overlay) => LayerRef::SubplotOverlay(index, overlay),
+                        _ => LayerRef::Subplot(index),
+                    }),
             );
         }
         layers
+    }
+
+    /// Whether this chart's own line offset group has a member, so it draws
+    /// as more than one panel.
+    pub fn has_offset_members(&self) -> bool {
+        !self.offset_members().is_empty()
+    }
+
+    /// The member series ids of this chart's own line offset group, in
+    /// stacking order; empty without one. A subplot's group is its own.
+    fn offset_members(&self) -> &[String] {
+        self.line_offsets
+            .as_ref()
+            .map_or(&[][..], |offsets| offsets.series.as_slice())
+    }
+
+    /// The layer of this chart that scales member `series_id`: an overlay
+    /// that lists it, else the base layer.
+    fn member_owner(&self, series_id: &str) -> LayerRef {
+        match self.layer_of_series(series_id) {
+            LayerRef::Overlay(index) => LayerRef::Overlay(index),
+            _ => LayerRef::Base,
+        }
+    }
+
+    /// How many panels this chart draws as, without its subplots: its base
+    /// panel, one per overlay and one per line offset member.
+    fn own_panel_count(&self) -> usize {
+        1 + self.overlays.len() + self.offset_members().len()
+    }
+
+    /// The line offset member that panel `index` (in [`Self::panel_layers`]
+    /// order) draws, `None` for a base, overlay or subplot panel and for an
+    /// index past the end.
+    pub fn panel_member(&self, index: usize) -> Option<&str> {
+        let charts = std::iter::once(self).chain(self.subplots.iter().map(|s| &s.config));
+        let mut start = 0;
+        for chart in charts {
+            let count = chart.own_panel_count();
+            if index < start + count {
+                let first = start + 1 + chart.overlays.len();
+                return index
+                    .checked_sub(first)
+                    .and_then(|k| chart.offset_members().get(k))
+                    .map(String::as_str);
+            }
+            start += count;
+        }
+        None
+    }
+
+    /// The panel that draws `series_id`, as an index in
+    /// [`Self::panel_layers`] order: a line offset member's own panel, else
+    /// the panel of [`Self::layer_of_series`].
+    pub fn panel_of_series(&self, series_id: &str) -> usize {
+        let (start, chart, layer) = match self.layer_of_series(series_id) {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                let start = self.own_panel_count()
+                    + self.subplots[..index]
+                        .iter()
+                        .map(|subplot| subplot.config.own_panel_count())
+                        .sum::<usize>();
+                let chart = &self.subplots[index].config;
+                (start, chart, chart.layer_of_series(series_id))
+            }
+            layer => (0, self, layer),
+        };
+        if let Some(k) = chart
+            .line_offsets
+            .as_ref()
+            .and_then(|offsets| offsets.member(series_id))
+        {
+            return start + 1 + chart.overlays.len() + k;
+        }
+        start
+            + match layer {
+                LayerRef::Overlay(index) => 1 + index,
+                _ => 0,
+            }
     }
 
     /// The internal panel of one overlay layer, or `None` when `index` is out
@@ -480,6 +598,8 @@ impl Config {
         let mut panel = self.clone();
         panel.overlays.clear();
         panel.subplots.clear();
+        // The members are drawn by panels of their own.
+        panel.line_offsets = None;
         panel.active_layer = LayerRef::Base;
         // The document's one annotation layer is drawn with the base panel.
         retain_layer_picks(&mut panel, self, LayerRef::Base);
@@ -564,25 +684,9 @@ impl Config {
             left.major_tick_length = *major_tick_length;
             left
         };
-        let mut grid = default_grid_options();
-        grid.show_major_x = false;
-        grid.show_major_y = false;
-        grid.show_minor_x = false;
-        grid.show_minor_y = false;
+        let grid = hidden_grid();
         // The title is hidden and keeps only the parent's band height.
-        let title = {
-            let ChartTitleOptions {
-                text: _,
-                visible: _,
-                offset_x: _,
-                offset_y: _,
-                top_margin,
-            } = chart_title;
-            let mut title = default_chart_title_options();
-            title.visible = false;
-            title.top_margin = *top_margin;
-            title
-        };
+        let title = hidden_title(chart_title);
         let legend = match overlay_legend {
             Some(legend) => legend.clone(),
             None => {
@@ -593,57 +697,7 @@ impl Config {
         };
         // The colourbar is drawn once, by the base panel; the overlay panel
         // keeps only the z mapping its field series read.
-        let colorbar = colorbar.as_ref().map(|bar| {
-            let ColorBarOptions {
-                visible: _,
-                side: _,
-                thickness_px: _,
-                gap_px: _,
-                length_frac: _,
-                align: _,
-                offset_x: _,
-                offset_y: _,
-                colormap,
-                nan_color,
-                border_color: _,
-                border_width: _,
-                axis,
-            } = bar;
-            let AxisOptions {
-                scale,
-                min,
-                max,
-                major_spacing: _,
-                minor_count: _,
-                // The ramp does not depend on the direction of the z axis.
-                inverted: _,
-                label_style: _,
-                tick: _,
-                title_option: _,
-                out_margin: _,
-                line_offset: _,
-                line_visible: _,
-                line_color: _,
-                line_width: _,
-                line_style: _,
-                major_tick_length: _,
-                minor_tick_length: _,
-                // A colourbar axis is never categorical.
-                categories: _,
-                // The hidden colourbar draws no axis line.
-                cross_at: _,
-                // The hidden colourbar draws no ticks.
-                log_ticks: _,
-            } = axis;
-            let mut hidden = default_colorbar_options();
-            hidden.visible = false;
-            hidden.axis.scale = scale.clone();
-            hidden.axis.min = *min;
-            hidden.axis.max = *max;
-            hidden.colormap = colormap.clone();
-            hidden.nan_color = *nan_color;
-            hidden
-        });
+        let colorbar = colorbar.as_ref().map(hidden_colorbar);
         let mut panel = Config {
             chart_area: chart_area.clone(),
             // The X range stays for the transform; the axes are drawn once,
@@ -671,6 +725,184 @@ impl Config {
         align_margins(&mut panel, group, data_area)?;
         Ok(panel)
     }
+
+    /// The panel of line offset member `k`, `series_id`: `owner` (the panel
+    /// of the layer that scales it) with the transform's axes moved by the
+    /// member's shift and everything but its data hidden.
+    fn member_panel_with(
+        &self,
+        owner: &Config,
+        series_id: &str,
+        k: usize,
+        group: &Margins,
+        data_area: &DataArea,
+    ) -> Result<Config, LayoutError> {
+        // Every field of the owner panel is named: a new one is a decision
+        // here, carried into the member panel or left at its hidden default.
+        let Config {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            right_y,
+            chart_title,
+            // Grid and legend are drawn by the owner's chain of panels.
+            grid: _,
+            legend: _,
+            // The member's references are taken from the document below.
+            picked_points: _,
+            picked_data: _,
+            colorbar,
+            draw_style,
+            polar,
+            // A panel is a single chart without layers of its own.
+            overlays: _,
+            subplots: _,
+            active_layer: _,
+            annotations: _,
+            bar_groups,
+            line_offsets: _,
+        } = owner;
+        let [dx, dy] = self
+            .line_offsets
+            .as_ref()
+            .map_or([0.0, 0.0], |offsets| offsets.shift(k));
+        let hidden = |axis: &AxisOptions, template: AxisOptions, by: f64| {
+            let mut axis = hidden_axis(axis, template);
+            shift_axis(&mut axis, by);
+            axis.out_margin = 0.0;
+            axis
+        };
+        let mut legend = default_legend();
+        legend.visible = false;
+        let mut panel = Config {
+            chart_area: chart_area.clone(),
+            top_x: hidden(top_x, default_axis_options_x(), 0.0),
+            // The transform reads `bottom_x` and `left_y`.
+            bottom_x: hidden(bottom_x, default_axis_options_x(), dx),
+            left_y: hidden(left_y, default_axis_options_y(), dy),
+            right_y: hidden(right_y, default_axis_options_y(), 0.0),
+            chart_title: hidden_title(chart_title),
+            grid: hidden_grid(),
+            legend,
+            picked_points: self.picked_points.clone(),
+            picked_data: self.picked_data.clone(),
+            colorbar: colorbar.as_ref().map(hidden_colorbar),
+            draw_style: *draw_style,
+            polar: polar.clone(),
+            overlays: Vec::new(),
+            subplots: Vec::new(),
+            active_layer: LayerRef::Base,
+            annotations: AnnotationLayer::default(),
+            bar_groups: bar_groups.clone(),
+            line_offsets: None,
+        };
+        retain_picks(&mut panel, |id| id == series_id);
+        align_margins(&mut panel, group, data_area)?;
+        Ok(panel)
+    }
+}
+
+/// Move `axis`' range by `by`: `by` data units on a linear axis and `by`
+/// decades on a logarithmic one, so a value `v` lands where `v + by` (or
+/// `v · 10^by`) did. A categorical axis becomes the numeric axis of its
+/// range. Zero leaves the axis as it is.
+fn shift_axis(axis: &mut AxisOptions, by: f64) {
+    if by == 0.0 {
+        return;
+    }
+    let (min, max) = axis.data_range();
+    axis.categories = None;
+    match axis.scale {
+        AxisScale::Linear => {
+            axis.min = min - by;
+            axis.max = max - by;
+        }
+        AxisScale::Logarithmic => {
+            let factor = 10f64.powf(by);
+            axis.min = min / factor;
+            axis.max = max / factor;
+        }
+    }
+}
+
+/// A grid that draws nothing.
+fn hidden_grid() -> crate::config::GridOptions {
+    let mut grid = default_grid_options();
+    grid.show_major_x = false;
+    grid.show_major_y = false;
+    grid.show_minor_x = false;
+    grid.show_minor_y = false;
+    grid
+}
+
+/// A hidden title that keeps only `title`'s band height.
+fn hidden_title(title: &ChartTitleOptions) -> ChartTitleOptions {
+    let ChartTitleOptions {
+        text: _,
+        visible: _,
+        offset_x: _,
+        offset_y: _,
+        top_margin,
+    } = title;
+    let mut hidden = default_chart_title_options();
+    hidden.visible = false;
+    hidden.top_margin = *top_margin;
+    hidden
+}
+
+/// A hidden colourbar that keeps only `bar`'s z mapping, which a panel's
+/// field and colour-mapped series read.
+fn hidden_colorbar(bar: &ColorBarOptions) -> ColorBarOptions {
+    let ColorBarOptions {
+        visible: _,
+        side: _,
+        thickness_px: _,
+        gap_px: _,
+        length_frac: _,
+        align: _,
+        offset_x: _,
+        offset_y: _,
+        colormap,
+        nan_color,
+        border_color: _,
+        border_width: _,
+        axis,
+    } = bar;
+    let AxisOptions {
+        scale,
+        min,
+        max,
+        major_spacing: _,
+        minor_count: _,
+        // The ramp does not depend on the direction of the z axis.
+        inverted: _,
+        label_style: _,
+        tick: _,
+        title_option: _,
+        out_margin: _,
+        line_offset: _,
+        line_visible: _,
+        line_color: _,
+        line_width: _,
+        line_style: _,
+        major_tick_length: _,
+        minor_tick_length: _,
+        // A colourbar axis is never categorical.
+        categories: _,
+        // The hidden colourbar draws no axis line.
+        cross_at: _,
+        // The hidden colourbar draws no ticks.
+        log_ticks: _,
+    } = axis;
+    let mut hidden = default_colorbar_options();
+    hidden.visible = false;
+    hidden.axis.scale = scale.clone();
+    hidden.axis.min = *min;
+    hidden.axis.max = *max;
+    hidden.colormap = colormap.clone();
+    hidden.nan_color = *nan_color;
+    hidden
 }
 
 /// The linked part of an axis: range, scale, direction and tick spacing
@@ -893,9 +1125,23 @@ impl Config {
     }
 }
 
-/// Keep only the picked references of the series `layer` draws; the other
+/// Keep only the picked references of the series `layer`'s own panel draws
+/// (not its line offset members, whose panels draw theirs); the other
 /// layers' selections are drawn by their own panels.
 fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
+    let member = |id: &str| {
+        parent
+            .line_offsets
+            .as_ref()
+            .is_some_and(|offsets| offsets.member(id).is_some())
+    };
+    retain_picks(panel, |id| {
+        parent.layer_of_series(id) == layer && !member(id)
+    });
+}
+
+/// Keep only the picked references whose series `keep` accepts.
+fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
     // Only the two selections are filtered by layer; every other field is
     // the panel's as built.
     let Config {
@@ -920,14 +1166,10 @@ fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
         line_offsets: _,
     } = panel;
     if let Some(picked) = picked_points.as_mut() {
-        picked
-            .refs
-            .retain(|reference| parent.layer_of_series(&reference.series_id) == layer);
+        picked.refs.retain(|reference| keep(&reference.series_id));
     }
     if let Some(picked) = picked_data.as_mut() {
-        picked
-            .refs
-            .retain(|reference| parent.layer_of_series(reference.series_id()) == layer);
+        picked.refs.retain(|reference| keep(reference.series_id()));
     }
 }
 
