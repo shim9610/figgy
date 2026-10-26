@@ -47,7 +47,9 @@ use crate::sink::{Border, PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::sketch::{DecoStroker, PathSegment};
 use crate::text_render::{FontPolicy, GlyphSink, place_plain_text, place_rich_text};
 
+mod pdf;
 mod svg;
+pub(crate) use pdf::PdfOut;
 pub(crate) use svg::SvgOut;
 
 /// The page size in points of a `logical` pixel size: 1 px = 0.75 pt.
@@ -914,6 +916,18 @@ pub(crate) async fn document_svg(
     Ok(out.finish())
 }
 
+/// The PDF of `frame`'s document, over `clear`.
+pub(crate) async fn document_pdf(
+    renderer: &Renderer,
+    frame: &mut ExportFrame,
+    clear: Color,
+) -> Result<Vec<u8>> {
+    let mut out = PdfOut::new(frame.size, page_points(frame.logical));
+    write_background(&mut out, frame.size, clear);
+    write_document(renderer, frame, &mut out).await?;
+    out.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -949,6 +963,61 @@ mod tests {
             uses > 0 && defs > 0 && defs <= uses,
             "{defs} defs, {uses} uses"
         );
+    }
+
+    // The default chart's chrome as a PDF: the header, every object at the
+    // offset its cross-reference entry names, and the trailer's root.
+    #[test]
+    fn the_chrome_passes_write_a_well_formed_pdf() {
+        let config = default_config();
+        let area = config.chart_area.0;
+        let size = (area.x + area.width, area.y + area.height);
+        let mut out = PdfOut::new(size, page_points(size));
+        let panels = std::slice::from_ref(&config);
+        let mut passes = Passes::new();
+        while let Some(pass) = passes.next(&config, panels) {
+            if !matches!(pass, Pass::Data(_)) {
+                write_pass(&mut out, &config, panels, &pass).unwrap();
+            }
+        }
+        let pdf = out.finish().unwrap();
+        assert!(pdf.starts_with(b"%PDF-1.4\n"));
+        assert!(pdf.ends_with(b"%%EOF\n"));
+        let find = |needle: &[u8], from: usize| {
+            pdf[from..]
+                .windows(needle.len())
+                .position(|w| w == needle)
+                .map(|i| i + from)
+        };
+        let tail = find(b"startxref\n", 0).unwrap() + 10;
+        let digits = pdf[tail..]
+            .iter()
+            .take_while(|b| b.is_ascii_digit())
+            .count();
+        let xref: usize = std::str::from_utf8(&pdf[tail..tail + digits])
+            .unwrap()
+            .parse()
+            .unwrap();
+        let table = std::str::from_utf8(&pdf[xref..tail - 10]).unwrap();
+        assert!(table.starts_with("xref\n0 "));
+        let offsets: Vec<usize> = table
+            .lines()
+            .skip(3)
+            .take_while(|l| l.ends_with(" n "))
+            .map(|l| l[..10].parse().unwrap())
+            .collect();
+        assert!(!offsets.is_empty());
+        for (i, offset) in offsets.iter().enumerate() {
+            let head = format!("{} 0 obj\n", i + 1);
+            assert!(
+                pdf[*offset..].starts_with(head.as_bytes()),
+                "object {}",
+                i + 1
+            );
+        }
+        let text = String::from_utf8_lossy(&pdf[xref..]);
+        assert!(text.contains("/Root"));
+        assert!(find(b"/Type /Catalog", 0).is_some());
     }
 
     // Every pass of a single panel comes once, in compositor order.
