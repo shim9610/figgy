@@ -46,13 +46,15 @@ pub(crate) const FRAME_SLOTS: [Slot; 2] = [Slot::Below, Slot::Above];
 /// A full-screen textured layer of one slot: the pipeline that blits a
 /// panel-sized texture and the texture's bind group.
 pub(crate) struct PanelChrome<'a> {
-    /// The grid texture: what the chart emits into [`crate::sink::Slot::Below`].
-    pub below: AxisLayer<'a>,
+    /// The grid texture: what the chart emits into [`crate::sink::Slot::Below`];
+    /// `None` draws the slot's data without it (the vector export's data
+    /// image).
+    pub below: Option<AxisLayer<'a>>,
     /// The annotation spans, when the layer draws any.
     pub annotation_underlay: Option<AxisLayer<'a>>,
     /// The decoration texture: what the chart emits into
-    /// [`crate::sink::Slot::Above`].
-    pub above: AxisLayer<'a>,
+    /// [`crate::sink::Slot::Above`]; `None` when the chrome is not drawn.
+    pub above: Option<AxisLayer<'a>>,
     /// The annotation lines, arrows and text, when the layer draws any.
     pub annotation_overlay: Option<AxisLayer<'a>>,
 }
@@ -124,7 +126,9 @@ pub(crate) fn draw_chart_panel(
         Slot::Below => {
             // Slot::Below: the grid, then the annotation spans over it.
             panel_scissor(pass);
-            blit(pass, &chrome.below);
+            if let Some(layer) = &chrome.below {
+                blit(pass, layer);
+            }
             if let Some(layer) = &chrome.annotation_underlay {
                 blit(pass, layer);
             }
@@ -159,7 +163,9 @@ pub(crate) fn draw_chart_panel(
             // Slot::Above: the decoration, then the annotation overlay on top
             // of everything.
             panel_scissor(pass);
-            blit(pass, &chrome.above);
+            if let Some(layer) = &chrome.above {
+                blit(pass, layer);
+            }
             if let Some(layer) = &chrome.annotation_overlay {
                 blit(pass, layer);
             }
@@ -182,9 +188,9 @@ pub fn draw_chart_panel_columnar(
     annotation_overlay: Option<AxisLayer<'_>>,
 ) {
     let chrome = PanelChrome {
-        below: grid,
+        below: Some(grid),
         annotation_underlay,
-        above: decoration,
+        above: Some(decoration),
         annotation_overlay,
     };
     for slot in FRAME_SLOTS {

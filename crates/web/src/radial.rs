@@ -230,6 +230,25 @@ impl FiggyRadialChart {
         let bytes = renderer::encode_png(&image).map_err(js_err)?;
         Ok(js_sys::Uint8Array::from(bytes.as_slice()))
     }
+    /// The chart as an SVG document at `scale ×` resolution: the slices and
+    /// background as one image, the title, labels, leader lines and
+    /// annotations as vector content.
+    pub async fn export_svg(&mut self, scale: f32) -> Result<String, JsValue> {
+        self.renderer
+            .export_svg_async(&self.chart, self.size, scale)
+            .await
+            .map_err(js_err)
+    }
+
+    /// [`Self::export_svg`] as one-page PDF bytes.
+    pub async fn export_pdf(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
+        let bytes = self
+            .renderer
+            .export_pdf_async(&self.chart, self.size, scale)
+            .await
+            .map_err(js_err)?;
+        Ok(js_sys::Uint8Array::from(bytes.as_slice()))
+    }
     /// Renderer-measured logical pixel bounds and resize handles.
     pub fn decorations(&self) -> Result<String, JsValue> {
         let entry = |id: &DecorationId, b: renderer::SelectionBox| {

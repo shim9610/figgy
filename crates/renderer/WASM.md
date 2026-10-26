@@ -407,6 +407,18 @@ const png = await withKernelOperation((chart) => chart.export_png(2.0));
 
 동기 출력 함수 `export_panel_png_bytes`는 웹 빌드에서 제외된다. 웹에서는 비동기 버전을 사용해야 한다.
 
+#### SVG와 PDF 내보내기
+
+`FiggyChart::export_svg(scale)`는 SVG 문서를 `String`으로, `export_pdf(scale)`는 PDF를 `Uint8Array`로 비동기 반환한다. 둘 다 `export_png`와 같은 문서를 차트의 배경색 위에 그린다. 장식 요소와 주석은 벡터로, 글자는 글리프 윤곽선으로 기록하고, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 넣는다(자세한 내용은 [USAGE.md](USAGE.md)의 SVG와 PDF 내보내기). 빌림 규칙과 작업 게이트는 `export_png`와 같다.
+
+```js
+const svg = await chart.export_svg(1.0);   // String
+const pdf = await chart.export_pdf(1.0);   // Uint8Array
+const url = URL.createObjectURL(new Blob([svg], { type: "image/svg+xml" }));
+```
+
+`<figgy-chart>` 래퍼의 `export_svg(scale)` / `export_pdf(scale)`도 `export_png`처럼 `"export"` 작업 게이트를 거친다. 스트리밍으로 표시 중인 차트에서는 커널을 호출하기 전에 거부한다. 스트리밍은 SVG·PDF 출력으로 확장하지 않는다.
+
 <a id="37-프리셋--fieldless-enum-그대로-노출"></a>
 
 ### 3.7 축·색상 프리셋
@@ -685,6 +697,7 @@ renderer.request_auto_streaming_chart(chart_id, &view, options)?;
 - 완료된 패킹 캐시가 있으면 `pick_point` / `pick_data`가 GPU의 점·선에서 원본 행 인덱스를 반환한다. 원본을 다시 읽지 않는다. `next_view_point_index(sourceId, seriesId, current, forward)`는 캐시에 남아 있는 행 중 다음·이전 원본 인덱스를 동기적으로 반환하며, 대상이 없으면 `null`이다. 이 조회로 GPU 피킹이나 공급자 요청을 다시 실행하지 않는다.
 - 패킹 캐시가 없거나 아직 준비 중인 비상주 스트림의 피킹은 즉시 `null`을 반환한다. 저수준 WASM의 `begin_stream_pick_*` / `finish_stream_pick_*`는 호환성을 위해 함수 형식만 남겨 두며, 반환하는 Promise는 즉시 거부된다. 상주 차트의 피킹은 계속 지원한다. 이미 아는 인덱스의 선택 표시는 필요한 원본 구간만 읽어 처리한다.
 - `export_png`는 문서 크기와 출력 배율에 맞춰 원본을 다시 그린다. 화면 텍스처를 늘리지 않으며 화면 작업의 처리 위치나 누적 이미지는 바꾸지 않는다.
+- `export_svg` / `export_pdf`는 스트리밍으로 표시 중인 차트를 거부한다. 상주 차트에서만 사용할 수 있다.
 
 ### GPU 캐시와 메모리 한도
 
@@ -846,6 +859,7 @@ After the first fit, the source of the same revision must remain available: redr
 - With a completed packed cache, `pick_point` / `pick_data` return original row indices from the points and lines on the GPU, without rereading the source. `next_view_point_index(sourceId, seriesId, current, forward)` synchronously returns the next or previous original index among the rows in the cache, or `null` when there is none. This lookup runs no GPU picking and no provider request.
 - On nonresident streams without a packed cache, or while it is still being prepared, picking returns `null` immediately. The raw WASM `begin_stream_pick_*` / `finish_stream_pick_*` keep only their signatures for compatibility, and the Promises they return reject immediately. Picking on resident charts remains supported. Highlighting an index that is already known reads only the needed original ranges.
 - `export_png` redraws the source at the document size and the export scale. It does not stretch the screen texture and does not change the processing position or the accumulation image of the on-screen job.
+- `export_svg` / `export_pdf` reject a chart shown from a stream; they export resident charts only.
 
 ### GPU caches and memory limits
 
@@ -1042,8 +1056,12 @@ The interactive editing and export methods are:
   next call on the object.
 - `step_selection(backwards)` takes one boolean, unlike the Cartesian two-axis
   navigation method.
-- `get_document()`, `clear_selection()`, `resize(width, height)`, `frame()` and
-  async `export_png(scale)` (scale 0.5 to 4) complete the set.
+- `get_document()`, `clear_selection()`, `resize(width, height)`, `frame()`,
+  async `export_png(scale)` (scale 0.5 to 4), and async `export_svg(scale)`
+  (a `String`) and `export_pdf(scale)` (a `Uint8Array`) complete the set. The
+  SVG and PDF hold the slices and background as one image and the title,
+  labels, leader lines and annotations as vector content, with every inside
+  label above every slice and no selection box.
 
 Coordinates and drag deltas are document logical pixels; canvas resize does not
 change export size. Keep the object alive until all async calls finish;

@@ -789,6 +789,27 @@ The WASM wrappers expose the layer on both classes (`FiggyChart`,
 `select_decoration`, `resize_handle` and `drag` on `FiggyBoundedChart`) follow
 the route above and name items as `"annotation_<n>"`.
 
+## SVG and PDF export
+
+`export_document_svg_async` / `export_document_pdf_async` (and the radial
+`export_svg_async` / `export_pdf_async`) write the document a PNG export of
+the same arguments draws ([#48](https://github.com/shim9610/figgy/issues/48)).
+The decorations come from the same emit the raster, the hit map and the
+selection box answer from, so every element a user can select or drag is in
+the file where it is drawn: titles, axes, tick labels, axis titles, legend,
+colourbar, polar chrome, annotations, and on the radial chart its title,
+labels and leader lines. Picked highlights and value labels are part of the
+data image of their panel group. Overlays and subplots export as on screen:
+the panels' `Below` parts and data first, then their `Above` parts, with the
+annotation overlay above the parent area's decorations.
+
+The export reads the document and caches nothing, so hover, click selection,
+`step_selection`, drag, resize and SSOT invalidation do not apply to the
+file: edit the model, then export again. No selection box is drawn, as in the
+Cartesian PNG export; the radial export also draws none (its PNG draws the
+selected decoration's box) and draws every inside label above every slice.
+A chart with a streamed source is rejected.
+
 ## Area fill and step lines on Cartesian line series
 
 A Cartesian line series can fill the area under its line or between its line

@@ -29,6 +29,7 @@ JavaScript API for every renderer. [Browser product scope](https://github.com/sh
 - **Layered compositing**: grid → annotation underlay → data → axis/label/legend → annotation overlay, so grid never covers the data. A layered document draws the grid and data of every panel before the decoration of any panel, so on every layer the decoration is above the data. Axis raster can be produced as `Grid` and `Decoration` layers; `AxisLayerKind::All` remains a legacy single-pass helper.
 - **Data fidelity contract**: renderer/web consume the model contract without silently changing original coordinates, provenance, or axis↔data correspondence. Explicit clipping, log-domain skips, NaN skips, and antialiasing limits are rendering contracts rather than data rewrites.
 - **Headless PNG export**: GPU offscreen raster at `scale` 0.25–8.0 (about 24–768 DPI; `clamp_export_scale` clamps other values, and the scaled target must fit the device texture limit) → RGBA / PNG bytes in memory (async-first; blocking wrappers on native).
+- **SVG and PDF export**: the same document with its decorations as vector content (glyphs as outlines) and each panel group's data as an image of the PNG export's pixels; a hand-written PDF writer over `flate2`.
 - **Interaction layer (opt-in)**: hit-testing, selection boxes, drag (axes constrained to their perpendicular, detached-axis `line_offset`), PPT-style 8-handle resize of the data area — all policy in `model`, fed by host pointer events; never runs if you don't wire it.
 - **Data picking (opt-in)**: `pick_point` retains the point/line compatibility contract, while `pick_data` additionally returns tagged histogram-bin, canonical matrix-cell, and contour-level identities. Resident picking evaluates bar rectangles and field/contour geometry on the GPU from the same transform, pool, style, lattice, and level tables used to draw them. A completed chart-local packed view supports GPU point/line picking with original row indices and no source replay; other nonresident streams return `null`. Low-level WASM stream-pick replay entry points reject immediately. Hosts may still feed known stable refs through `Config.picked_data` or `Config.picked_points` for bounded selection highlighting.
 - **Per-point style mapping (opt-in)**: precise scatter can bind `point_style_table` / `point_style_index_column` / `point_style_overrides`; precise errorbars can independently bind `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`. Styled modes keep their own visual shaders and ignore these mappings.
@@ -462,6 +463,49 @@ area (`Config::document_area`): the document is placed at the target's
 origin (`place_document`) and each subplot's panels are drawn at its own
 area, while `export_panel_*` keeps the parent's area.
 
+The pipeline is two functions: `prepare_export` (the checks, the scaled and
+placed document, its view, styles, pipelines and resolved panel draws, once
+per export) and `paint_export(frame, panels, chrome, clear)` (one render of a
+range of panels into the target, then the row-chunked readback). The PNG
+export paints every panel with the chrome.
+
+The SVG and PDF export ([#48](https://github.com/shim9610/figgy/issues/48),
+`vector_export.rs`) prepare the same frame and write the decorations as
+vector content from the same emit, over a raster data layer:
+
+```
+export_document_svg_async / export_document_pdf_async(chart, &[SeriesConfig], scale):
+    require_resident_series(each)              // streamed sources rejected
+    frame ← prepare_export(chart, series, scale, Document)
+        ↓
+    for each pass, in the compositor's order (Passes):
+      panel group (a panel + the following panels whose Below pass places nothing):
+        Below(i)    emit_chart_chrome(panel i) → SlotFilter(Below) → VectorSink
+                    (Milkyway: the backdrop, painted by draw_space_background, as an image)
+        Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
+        Data(group) paint_export(frame, group, chrome = false) → crop to the
+                    group's data areas (+1 px) → image
+      Above(i)      emit_chart_chrome(panel i) → SlotFilter(Above) → VectorSink
+      Overlay       after the topmost panel of the parent's area
+        ↓
+    VectorSink: the canvas sink's mapping, widths, dashes and sketch curves
+                (smooth_cubics); text through place_rich_text / place_plain_text
+                with glyph_outline at exact pens; the colourbar ramp painted by
+                draw_colorbar_strip into an image
+        ↓
+    VectorOut: SvgOut (viewBox in pixels, <defs> + <use> per glyph, PNG data URIs)
+               PdfOut (one page, deflated content, ExtGState per alpha byte,
+                       RGB XObjects with soft masks, inline glyph outlines)
+```
+
+The page is the logical size at 1 px = 0.75 pt. Each pass is clipped to the
+raster it stands for (the panel, or the parent's area for the annotation
+layer). The Milkyway glow is raster-only and omitted; no selection box is
+drawn. The radial chart writes its frame without labels as one image
+(`layout(.., Labels::None)`, built uncached) and its title, labels, leader
+lines, split connectors and annotation overlay through the same sink
+(`layout(.., Labels::Into(sink))`).
+
 ---
 
 ---
@@ -477,6 +521,7 @@ area, while `export_panel_*` keeps the parent's area.
 - **레이어 합성**: 격자, 주석 아래층, 데이터, 축·라벨·범례, 주석 위층 순서로 그려 격자가 데이터를 가리지 않게 한다. 레이어가 있는 문서는 모든 패널의 격자와 데이터를 먼저 그리고 그다음 모든 패널의 장식을 그리므로, 어느 레이어에서든 장식이 데이터 위에 놓인다. 축 이미지는 기본적으로 `Grid`와 `Decoration` 레이어로 나눈다. 기존 단일 패스 방식은 `AxisLayerKind::All`로 사용할 수 있다.
 - **원본 데이터 보존**: 렌더러와 웹 래퍼는 모델의 설정을 따르며 원본 좌표, 데이터 출처, 축과 데이터의 대응 관계를 임의로 바꾸지 않는다. 화면 밖 자르기, 로그축에서 0 이하 값 제외, NaN 제외, 안티앨리어싱은 표시 과정에만 적용한다.
 - **창 없이 PNG 출력**: 배율 0.25~8.0(약 24~768 DPI)으로 GPU에서 그린 뒤 RGBA 또는 PNG 바이트를 반환한다. 범위를 벗어난 배율은 `clamp_export_scale`이 범위 안으로 제한하며, 배율을 적용한 렌더 타깃은 장치의 텍스처 크기 한도 안에 들어와야 한다. 비동기 API를 기본으로 제공하며 네이티브에서는 동기 래퍼도 쓸 수 있다.
+- **SVG·PDF 출력**: 같은 문서를 장식 요소는 벡터(글자는 글리프 윤곽선)로, 패널 묶음의 데이터는 PNG 출력과 같은 픽셀의 이미지로 기록한다. PDF는 `flate2` 위에 직접 작성한 기록기로 만든다.
 - **선택·드래그·크기 조절**: 마우스 위치 판정, 선택 상자, 축에 수직인 방향으로 드래그, `line_offset`을 이용한 축 이동, 데이터 영역의 8개 조절점을 지원한다. 정책은 `model`에 정의돼 있으며 호스트가 포인터 이벤트를 전달할 때만 동작한다.
 - **데이터 피킹**: `pick_point`는 점·선 선택을, `pick_data`는 여기에 히스토그램 구간·행렬 셀·등고선 레벨 선택을 더한다. 상주 데이터는 그리기와 같은 좌표 변환·풀·스타일·격자·레벨 표를 GPU에서 읽어 판정한다. 완료된 차트별 패킹 캐시는 원본을 다시 읽지 않고 점·선을 선택하며 원본 행 인덱스를 반환한다. 그 밖의 비상주 스트림은 `null`을 반환하고 저수준 WASM 스트림 피킹 호출은 즉시 거부한다. 이미 알고 있는 데이터 참조를 `Config.picked_data` 또는 `Config.picked_points`에 지정하면 필요한 행만 읽어 강조할 수 있다.
 - **점별 스타일**: 정밀 모드의 산점도는 `point_style_table` / `point_style_index_column` / `point_style_overrides`로, 오차 막대는 별도의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`로 스타일을 지정한다. 스케치·은하수·별자리 모드는 전용 셰이더를 사용하므로 이 매핑을 적용하지 않는다.
@@ -721,5 +766,35 @@ export_panel_rgba_async(chart, &[SeriesConfig], scale).await:
         ↓
     호출자가 std::fs::write / clipboard / 네트워크 등 자유 처리
 ```
+
+이 과정은 두 함수로 나뉜다. `prepare_export`는 출력 한 번에 한 번 실행되며 검사, 배율을 적용해 배치한 문서, 뷰·스타일·파이프라인, 패널별 그리기 준비를 만든다. `paint_export(frame, panels, chrome, clear)`는 패널 구간 하나를 렌더 타깃에 그리고 행 청크 단위로 읽어 온다. PNG 출력은 모든 패널을 장식과 함께 그린다.
+
+SVG와 PDF 출력([#48](https://github.com/shim9610/figgy/issues/48), `vector_export.rs`)은 같은 프레임을 준비하고, 장식 요소는 같은 배치 함수에서 벡터로 기록하며, 데이터 층은 이미지로 넣는다.
+
+```
+export_document_svg_async / export_document_pdf_async(chart, &[SeriesConfig], scale):
+    시리즈마다 require_resident_series      // 스트리밍 원본은 거부
+    frame ← prepare_export(chart, series, scale, Document)
+        ↓
+    합성 순서대로 각 단계 실행 (Passes):
+      패널 묶음 (패널 하나 + Below 단계에 아무것도 놓지 않는 뒤따르는 패널):
+        Below(i)    패널 i의 emit_chart_chrome → SlotFilter(Below) → VectorSink
+                    (Milkyway: draw_space_background로 그린 배경을 이미지로)
+        Underlay    emit_annotation_layer → SlotFilter(Below) → VectorSink
+        Data(묶음)  paint_export(frame, 묶음, chrome = false) → 묶음의 데이터 영역(+1 px)으로
+                    잘라 이미지로
+      Above(i)      패널 i의 emit_chart_chrome → SlotFilter(Above) → VectorSink
+      Overlay       부모 영역의 맨 위 패널 다음
+        ↓
+    VectorSink: 캔버스 싱크와 같은 좌표 변환·선 두께·점선·스케치 곡선(smooth_cubics).
+                글자는 place_rich_text / place_plain_text와 glyph_outline으로 정확한 펜 위치에 기록.
+                색상 막대의 색 띠는 draw_colorbar_strip으로 그려 이미지로
+        ↓
+    VectorOut: SvgOut (픽셀 단위 viewBox, 글리프마다 <defs> + <use>, PNG data URI)
+               PdfOut (페이지 하나, 압축한 콘텐츠, 알파 바이트마다 ExtGState,
+                       소프트 마스크가 있는 RGB XObject, 본문에 넣는 글리프 윤곽선)
+```
+
+페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다. 각 단계는 PNG에서 대응하는 래스터의 범위(패널, 주석 층은 부모 영역)로 잘라 그린다. Milkyway의 발광 효과는 래스터 전용이므로 생략하며, 선택 상자는 그리지 않는다. 원형 차트는 라벨 없이 배치한 프레임(`layout(.., Labels::None)`, 캐시 없이 생성)을 이미지 한 장으로 넣고, 제목·라벨과 지시선·분할 원을 잇는 선·주석 오버레이를 같은 싱크로 기록한다(`layout(.., Labels::Into(sink))`).
 
 ---

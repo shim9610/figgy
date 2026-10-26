@@ -1313,6 +1313,18 @@ export class FiggyChartElement extends HTMLElement {
     return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
   }
 
+  // The SVG document (a string) and the PDF bytes of a resident chart.
+  // Streaming is not extended to them: a chart shown from a stream rejects.
+  async export_svg(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("SVG export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_svg(scale));
+  }
+
+  async export_pdf(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("PDF export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_pdf(scale));
+  }
+
   async #waitStreamOperation(token, pending, timeoutMs) {
     let timer = 0;
     try {
