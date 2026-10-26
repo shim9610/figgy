@@ -40,6 +40,9 @@ pub mod streaming_source;
 mod streaming_upload;
 pub mod text_render;
 mod time_axis;
+// Called by the public SVG / PDF export API of #48, added in a later step.
+#[allow(dead_code)]
+mod vector_export;
 
 // Model layer (chart option SSoT, data containers, preset policies) lives in
 // the sibling `model` crate. Re-exported module-by-module so every path keeps

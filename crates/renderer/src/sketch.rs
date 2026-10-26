@@ -219,6 +219,8 @@ pub(crate) enum PathSegment {
     Line((f32, f32)),
     /// A cubic Bézier segment: two control points, then the end point.
     Cubic((f32, f32), (f32, f32), (f32, f32)),
+    /// Close the subpath (glyph outlines; a smoothed stroke never closes).
+    Close,
 }
 
 /// The smooth path through `points`: a uniform Catmull–Rom spline as cubic
@@ -289,7 +291,7 @@ pub(crate) fn sketch_rect_outline(
 /// 50/50-blurred AA coverage — it reads as a broken line. Hand-drawn pen
 /// strokes have body; this floor restores it without touching user widths
 /// that are already thicker.
-const SKETCH_MIN_STROKE_PX: f32 = 1.4;
+pub(crate) const SKETCH_MIN_STROKE_PX: f32 = 1.4;
 
 /// Decoration-layer stroke strategy, derived once per raster pass from the
 /// chart's [`DrawStyle`]. `Precise` is a pure passthrough to the plain canvas

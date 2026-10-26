@@ -56,7 +56,7 @@ pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
 
 /// What an export renders: one panel or the whole layered document.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum ExportScope {
+pub(crate) enum ExportScope {
     Panel,
     Document,
 }
@@ -157,9 +157,16 @@ impl PanelDrawStorage<'_> {
 /// What [`Renderer::prepare_export`] builds for one export: its panels'
 /// prepared draws and the target they render into, with every resource
 /// those draws read kept alive until the export ends.
-pub(super) struct ExportFrame {
+pub(crate) struct ExportFrame {
     /// The target size in physical pixels.
-    pub(super) size: (u32, u32),
+    pub(crate) size: (u32, u32),
+    /// The exported area's size in logical pixels.
+    pub(crate) logical: (u32, u32),
+    /// The scaled document, placed at the target's origin.
+    pub(crate) chart: Chart,
+    /// The expanded panels of a layered document; empty for a single-layer
+    /// one, whose only panel is `chart`'s config.
+    panel_configs: Vec<Config>,
     /// One prepared draw per panel, in panel order.
     pub(super) items: Vec<PreparedItem>,
     target: TrackedTexture,
@@ -169,6 +176,18 @@ pub(super) struct ExportFrame {
     _pipelines: TargetPipelines,
     #[cfg(target_arch = "wasm32")]
     browser_scopes: Option<BrowserErrorScopes>,
+}
+
+impl ExportFrame {
+    /// Every panel's config in the scaled document's frame, in panel order:
+    /// the order of [`Self::paint_export`]'s panel indices.
+    pub(crate) fn panels(&self) -> &[Config] {
+        if self.panel_configs.is_empty() {
+            std::slice::from_ref(self.chart.config())
+        } else {
+            &self.panel_configs
+        }
+    }
 }
 
 impl Renderer {
@@ -383,7 +402,7 @@ impl Renderer {
     /// once per export; [`Self::paint_export`] renders from what it returns.
     /// Synchronous, so the browser error scopes it pushes are still open
     /// when the first paint pops them.
-    pub(super) fn prepare_export(
+    pub(crate) fn prepare_export(
         &mut self,
         chart: &Chart,
         series: &[SeriesConfig],
@@ -587,8 +606,15 @@ impl Renderer {
             &export_target_pipelines,
         )?;
         lift_annotation_overlays(&mut prepared_items, &group_sizes);
+        let PanelDrawStorage {
+            configs: panel_configs,
+            ..
+        } = storage;
         Ok(ExportFrame {
             size: (w, h),
+            logical: (orig.width, orig.height),
+            chart: scaled_chart,
+            panel_configs,
             items: prepared_items,
             target: target_tex,
             msaa: msaa_export_target,
@@ -607,7 +633,7 @@ impl Renderer {
     /// fills, bodies, picked highlights and value labels, without the grid,
     /// decoration and annotation textures. The PNG export paints every panel
     /// with the chrome; the vector export paints each panel group's data.
-    pub(super) async fn paint_export(
+    pub(crate) async fn paint_export(
         &self,
         frame: &mut ExportFrame,
         panels: std::ops::Range<usize>,

@@ -746,6 +746,81 @@ fn with_glyph_mask_id(
     });
 }
 
+/// The outline of glyph id `glyph` of `font` at `size`, in pixels relative
+/// to its pen, y down, handed to `out` segment by segment: what the mask of
+/// [`with_glyph_mask_id`] covers, from the same scaler with the same hinting
+/// and synthetic embolden, without the mask's subpixel phase. Quadratic
+/// segments come out as the equal cubics. A glyph without an outline hands
+/// out nothing.
+pub(crate) fn glyph_outline(
+    font: FontRef<'static>,
+    glyph: u16,
+    size: f32,
+    out: &mut dyn FnMut(crate::sketch::PathSegment),
+) {
+    use crate::sketch::PathSegment;
+    use swash::zeno::Verb;
+    SCALE_CTX.with(|cx| {
+        let mut cx = cx.borrow_mut();
+        let mut scaler = cx
+            .builder(font)
+            .size(size)
+            .hint(font_hinting(font, size))
+            .build();
+        let Some(mut outline) = scaler.scale_outline(glyph) else {
+            return;
+        };
+        let embolden = font_embolden(font, size);
+        if embolden > 0.0 {
+            outline.embolden(embolden, embolden);
+        }
+        // zeno outlines are y-up; flip into the y-down pixel convention.
+        let flip = |p: &swash::zeno::Point| (p.x, -p.y);
+        let points = outline.points();
+        let mut next = 0;
+        let mut current = (0.0f32, 0.0f32);
+        for verb in outline.verbs() {
+            match verb {
+                Verb::MoveTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Move(current));
+                }
+                Verb::LineTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Line(current));
+                }
+                Verb::CurveTo => {
+                    let (c1, c2, p) = (
+                        flip(&points[next]),
+                        flip(&points[next + 1]),
+                        flip(&points[next + 2]),
+                    );
+                    next += 3;
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::QuadTo => {
+                    let (q, p) = (flip(&points[next]), flip(&points[next + 1]));
+                    next += 2;
+                    let c1 = (
+                        current.0 + (q.0 - current.0) * (2.0 / 3.0),
+                        current.1 + (q.1 - current.1) * (2.0 / 3.0),
+                    );
+                    let c2 = (
+                        p.0 + (q.0 - p.0) * (2.0 / 3.0),
+                        p.1 + (q.1 - p.1) * (2.0 / 3.0),
+                    );
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::Close => out(PathSegment::Close),
+            }
+        }
+    });
+}
+
 /// Rasterize glyph id `glyph` of `font` and blit it with `color` at
 /// (`pen_x`, `baseline`).
 fn draw_glyph(

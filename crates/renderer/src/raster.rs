@@ -258,6 +258,7 @@ impl Canvas {
             crate::sketch::PathSegment::Cubic(c1, c2, p) => {
                 pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1)
             }
+            crate::sketch::PathSegment::Close => pb.close(),
         });
         let Some(path) = pb.finish() else { return };
         self.pix.stroke_path(
