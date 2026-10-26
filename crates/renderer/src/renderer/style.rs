@@ -680,9 +680,12 @@ pub(super) fn effective_series_primitives(
         contour: matches!(draw_style, DrawStyle::Precise) && has_contour(render_type),
         // A radar polygon is a precise-mode primitive like the bars: its
         // closing segment has no styled entry, so a stylized chart draws no
-        // radar series at all.
+        // radar series at all. Streamlines are precise like vectors: their
+        // arrowheads have no stylized entry, and a stylized line under
+        // precise heads would mix two visual languages.
         line: has_line(render_type)
-            && (matches!(draw_style, DrawStyle::Precise) || render_type.radar().is_none()),
+            && (matches!(draw_style, DrawStyle::Precise)
+                || (render_type.radar().is_none() && render_type.streamlines().is_none())),
         scatter: has_scatter(render_type)
             && (matches!(draw_style, DrawStyle::Precise) || render_type.radar().is_none()),
         // Bars are a precise-mode primitive. A stylized mode has no bar entry
@@ -758,7 +761,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => false,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => false,
     }
 }
 

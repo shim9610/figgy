@@ -75,7 +75,7 @@ pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, RadarRef,
-    RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef,
+    RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, StreamlineArrows,
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,

@@ -105,7 +105,10 @@ impl PreparationFeature {
                 DataRenderType::Heatmap { .. }
                 | DataRenderType::Contour { .. }
                 | DataRenderType::HeatmapContour { .. }
-                | DataRenderType::Vector { .. } => Self::Fields,
+                | DataRenderType::Vector { .. }
+                // Streamline lines draw through the line pipelines (always
+                // prepared) and their arrowheads through a vector pipeline.
+                | DataRenderType::Streamlines { .. } => Self::Fields,
                 DataRenderType::Scatter { .. }
                 | DataRenderType::Line { .. }
                 | DataRenderType::ScatterLine { .. }

@@ -6460,6 +6460,130 @@ fn streamed_series_reject_radar() {
     ));
 }
 
+fn streamline_series(id: &str, color: Option<&str>) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Streamlines {
+            line: crate::data_config::DataLineStyleConfig::default(),
+            arrows: Some(crate::data_config::StreamlineArrows::default()),
+            color_map: color.map(|column| crate::data_config::PointColorMap {
+                column: column.into(),
+            }),
+        },
+    }
+}
+
+/// Streaming is not extended to streamlines (CLAUDE.md rule 8): a streamed
+/// streamline series is rejected with an explicit reason, with or without
+/// arrowheads and a colour map.
+#[test]
+fn streamed_sources_reject_streamlines() {
+    let config = basic_errorbar_chart().config().clone();
+    for mut series in [
+        streamline_series("stream", None),
+        streamline_series("stream", Some("c")),
+    ] {
+        for arrows in [true, false] {
+            if let DataRenderType::Streamlines { arrows: a, .. } = &mut series.render_type
+                && !arrows
+            {
+                *a = None;
+            }
+            assert!(matches!(
+                PrepareContext::validate_stream_series(&config, &series),
+                Err(FiggyError::InvalidSeriesConfig { reason, .. })
+                    if reason.contains("streamline")
+                        && reason.contains("streamed sources are not supported")
+            ));
+        }
+    }
+}
+
+/// A polar chart rejects streamlines; a rectangular chart takes them, and
+/// rejects a step interpolation, a fill, a head longer than its spacing and
+/// a colour map without a colourbar, each atomically.
+#[test]
+fn polar_rejects_streamlines() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer
+        .add_column("x", &col_f64(vec![0.0, 1.0, f64::NAN, 0.0, 1.0]))
+        .unwrap();
+    renderer
+        .add_column("y", &col_f64(vec![0.0, 1.0, f64::NAN, 1.0, 0.0]))
+        .unwrap();
+    renderer
+        .add_column("c", &col_f64(vec![1.0, 2.0, f64::NAN, 3.0, 4.0]))
+        .unwrap();
+    let mut polar = crate::default::default_config();
+    polar.polar = Some(crate::polar::PolarOptions::default());
+    let chart = renderer.register_chart(polar, Vec::new()).unwrap();
+    let before = renderer.visual_revision();
+    assert!(matches!(
+        renderer.set_chart_series(chart, vec![streamline_series("flow", None)]),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. }) if reason.contains("polar")
+    ));
+    assert!(renderer.chart_series(chart).unwrap().is_empty());
+    assert_eq!(renderer.visual_revision(), before);
+
+    let chart = renderer
+        .register_chart(crate::default::default_config(), Vec::new())
+        .unwrap();
+    renderer
+        .set_chart_series(chart, vec![streamline_series("flow", None)])
+        .unwrap();
+    let rejected = |edit: fn(&mut SeriesConfig)| {
+        let mut series = streamline_series("flow", None);
+        edit(&mut series);
+        series
+    };
+    for series in [
+        rejected(|s| {
+            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+                line.interpolation = LineInterpolation::StepPost;
+            }
+        }),
+        rejected(|s| {
+            if let DataRenderType::Streamlines { line, .. } = &mut s.render_type {
+                line.fill = Some(LineFill::ToBaseline(0.0));
+            }
+        }),
+        rejected(|s| {
+            if let DataRenderType::Streamlines {
+                arrows: Some(arrows),
+                ..
+            } = &mut s.render_type
+            {
+                arrows.spacing_px = arrows.head_length_px * 0.5;
+            }
+        }),
+        streamline_series("flow", Some("c")),
+        streamline_series("flow", Some("missing")),
+    ] {
+        assert!(
+            renderer
+                .set_chart_series(chart, vec![series.clone()])
+                .is_err(),
+            "{series:?}"
+        );
+        assert_eq!(
+            renderer.chart_series(chart).unwrap(),
+            [streamline_series("flow", None)]
+        );
+    }
+    // A colour map with a colourbar is accepted.
+    let mut config = crate::default::default_config();
+    config.colorbar = Some(crate::default::default_colorbar_options());
+    renderer
+        .set_chart_state(chart, config, vec![streamline_series("flow", Some("c"))])
+        .unwrap();
+}
+
 /// Streaming is not extended to polar charts: a streamed series on one
 /// is rejected with an explicit reason.
 #[test]

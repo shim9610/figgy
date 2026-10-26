@@ -294,6 +294,156 @@ pub enum DataRenderType {
         #[cfg_attr(feature = "serde", serde(default))]
         labels: RadarSeriesLabels,
     },
+    /// Streamlines of a flow, electric or magnetic field: polylines the
+    /// host integrated from its field, drawn by the line path, with
+    /// arrowheads along each drawn line and an optional colour column.
+    ///
+    /// The renderer draws the paths it is given; integrating the field
+    /// into paths is the host's job. `x_column` / `y_column` hold every
+    /// streamline of the series one after another, separated by a row of
+    /// NaN, which breaks a line as it does in any line series. The line
+    /// is drawn with `line` (dash presets included), linearly
+    /// interpolated and without a fill.
+    ///
+    /// With `arrows`, an arrowhead (the vector glyph's head) sits every
+    /// `spacing_px` along the drawn path, measured over the whole series
+    /// as one arc in pixels, pointing along the drawn path's tangent.
+    /// Arrowheads are an appearance of the drawn line, like its dash
+    /// phase: their positions follow the view, so a pan or a zoom moves
+    /// them along the path and they keep their pixel spacing at every
+    /// export scale. A NaN gap holds no arrowhead.
+    ///
+    /// With `color_map`, the line and its arrowheads take the colour of a
+    /// host column (a speed, say), index-aligned with the coordinates,
+    /// through `Config.colorbar`; the colourbar is the only authority on
+    /// the range, scale, ramp and `nan_color`, as for a colour-mapped
+    /// scatter, and a series with a colour map and no colourbar is
+    /// rejected. The colour varies along each segment between its two
+    /// samples' values. The renderer never computes a magnitude.
+    ///
+    /// Drawn in the precise draw style only. The columns must be GPU
+    /// resident; a streamed source is rejected with an error. Polar charts
+    /// (`Config.polar`) reject streamlines.
+    Streamlines {
+        /// The line the streamlines are drawn with. `interpolation` must
+        /// be `Linear` and `fill` `None`.
+        line: DataLineStyleConfig,
+        /// Arrowheads along the drawn lines, or none.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        arrows: Option<StreamlineArrows>,
+        /// Colour the lines and arrowheads by a host column through
+        /// `Config.colorbar`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        color_map: Option<PointColorMap>,
+    },
+}
+
+/// The arrowheads of a [`DataRenderType::Streamlines`] series: the vector
+/// glyph's head, every `spacing_px` along the drawn path. Logical pixels,
+/// like `point_size`; an export at a larger scale scales them with it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct StreamlineArrows {
+    /// The arc length between two arrowheads along the drawn path. The
+    /// first sits half a spacing from the start of the series.
+    pub spacing_px: f32,
+    /// Head length along the path; the head is centred on its position.
+    pub head_length_px: f32,
+    /// Full head width across the path.
+    pub head_width_px: f32,
+}
+
+impl Default for StreamlineArrows {
+    /// A head 8 px long and 7 px wide every 80 px.
+    fn default() -> Self {
+        Self {
+            spacing_px: 80.0,
+            head_length_px: 8.0,
+            head_width_px: 7.0,
+        }
+    }
+}
+
+impl StreamlineArrows {
+    /// The validation reason for a bad arrow size or spacing.
+    pub const INVALID_REASON: &'static str = "streamline arrows need a finite spacing_px > 0, finite non-negative \
+         head_length_px and head_width_px, and spacing_px >= head_length_px";
+
+    /// Validate invariants owned by the arrows themselves: finite sizes, a
+    /// positive spacing and no head longer than the spacing, so two heads
+    /// never overlap along a straight path.
+    pub fn validate(&self) -> Result<(), &'static str> {
+        let finite_non_negative = |v: f32| v.is_finite() && v >= 0.0;
+        if !(self.spacing_px.is_finite() && self.spacing_px > 0.0)
+            || !finite_non_negative(self.head_length_px)
+            || !finite_non_negative(self.head_width_px)
+            || self.spacing_px < self.head_length_px
+        {
+            return Err(Self::INVALID_REASON);
+        }
+        Ok(())
+    }
+}
+
+/// The fields of a [`DataRenderType::Streamlines`] series, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct StreamlinesRef<'a> {
+    pub line: &'a DataLineStyleConfig,
+    pub arrows: Option<&'a StreamlineArrows>,
+    pub color_map: Option<&'a PointColorMap>,
+}
+
+impl DataRenderType {
+    /// The fields of a streamline series, or `None` for every other kind.
+    pub fn streamlines(&self) -> Option<StreamlinesRef<'_>> {
+        match self {
+            DataRenderType::Streamlines {
+                line,
+                arrows,
+                color_map,
+            } => Some(StreamlinesRef {
+                line,
+                arrows: arrows.as_ref(),
+                color_map: color_map.as_ref(),
+            }),
+            _ => None,
+        }
+    }
+}
+
+/// The rules one streamline series is held to on its own: a linearly
+/// interpolated line without a fill, valid arrows, and named coordinate and
+/// colour columns. The chart rules (no polar chart, a colourbar for a
+/// colour map) are checked with the chart.
+pub fn validate_streamline_series(series: &SeriesConfig) -> Result<(), &'static str> {
+    let Some(streamlines) = series.render_type.streamlines() else {
+        return Ok(());
+    };
+    if !streamlines.line.interpolation.is_linear() {
+        return Err("streamlines are polylines: the line interpolation must be Linear");
+    }
+    if streamlines.line.fill.is_some() {
+        return Err("streamlines have no fill");
+    }
+    if let Some(arrows) = streamlines.arrows {
+        arrows.validate()?;
+    }
+    if series.x_column.is_empty() || series.y_column.is_empty() {
+        return Err("a streamline series names its x_column and y_column");
+    }
+    if streamlines
+        .color_map
+        .is_some_and(|map| map.column.is_empty())
+    {
+        return Err("a streamline colour map names its column");
+    }
+    Ok(())
 }
 
 /// Where a vector series' components come from.
@@ -2930,8 +3080,8 @@ impl DataRenderType {
     /// index, the selection [`crate::config::Config::step_selection`] steps
     /// a [`PickedDataRef::Point`](crate::config::PickedDataRef::Point)
     /// across: every kind with a line or markers, a radar series (its
-    /// vertices) and a point vector (its anchors, which pick and highlight
-    /// like markers).
+    /// vertices), a streamline series (its vertices) and a point vector (its
+    /// anchors, which pick and highlight like markers).
     fn steps_points(&self) -> bool {
         match self {
             DataRenderType::Scatter { .. }
@@ -2943,7 +3093,9 @@ impl DataRenderType {
             | DataRenderType::LineScatterErrorbarX { .. }
             | DataRenderType::LineScatterErrorbarY { .. }
             | DataRenderType::LineScatterErrorbarXY { .. }
-            | DataRenderType::Radar { .. } => true,
+            | DataRenderType::Radar { .. }
+            // Its vertices, NaN separators included, as a line's (D4).
+            | DataRenderType::Streamlines { .. } => true,
             DataRenderType::Vector { components, .. } => {
                 matches!(components, VectorComponents::Points { .. })
             }
@@ -2966,8 +3118,9 @@ impl crate::config::Config {
     /// wraps.
     ///
     /// - A point (of a series that draws points: lines, markers, radar
-    ///   vertices and point vectors) moves along its series by `dx`, and
-    ///   `dy` moves to another point-drawing series, in series order. A
+    ///   vertices, streamline vertices and point vectors) moves along its
+    ///   series by `dx`, and `dy` moves to another point-drawing series, in
+    ///   series order. A streamline's NaN separator rows count as points. A
     ///   point vector counts only the points where its `u` and `v` columns
     ///   have a value too.
     /// - A category bar moves along its categories by the delta of the
@@ -5697,5 +5850,179 @@ mod step_selection_tests {
             step(&mut config, &series, &HashMap::new(), 1, 0),
             Some(point("a", 0))
         );
+    }
+
+    /// D4: a streamline vertex steps like a line's, the NaN separator rows
+    /// included, and across to the other point-drawing series.
+    #[test]
+    fn step_selection_walks_streamline_vertices() {
+        let streamlines = DataRenderType::Streamlines {
+            line: DataLineStyleConfig::default(),
+            arrows: Some(StreamlineArrows::default()),
+            color_map: Some(PointColorMap {
+                column: "speed".into(),
+            }),
+        };
+        let series = [
+            entry("a", "x", "ya", line()),
+            entry("flow", "sx", "sy", streamlines),
+        ];
+        // Two streamlines of three points with one NaN row between them.
+        let columns = HashMap::from([("x", 3), ("ya", 3), ("sx", 7), ("sy", 7), ("speed", 7)]);
+        let mut config = selected(point("flow", 2));
+        // Onto the separator row and past it, then clamped at the end.
+        assert_eq!(
+            step(&mut config, &series, &columns, 1, 0),
+            Some(point("flow", 3))
+        );
+        assert_eq!(
+            step(&mut config, &series, &columns, 1, 0),
+            Some(point("flow", 4))
+        );
+        assert_eq!(
+            step(&mut config, &series, &columns, 9, 0),
+            Some(point("flow", 6))
+        );
+        // Across to the line, clamped to its length.
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, -1),
+            Some(point("a", 2))
+        );
+        assert_eq!(
+            step(&mut config, &series, &columns, 0, 1),
+            Some(point("flow", 2))
+        );
+    }
+}
+
+#[cfg(test)]
+mod streamline_tests {
+    use super::*;
+
+    fn streamlines(arrows: Option<StreamlineArrows>, color: Option<&str>) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "flow".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type: DataRenderType::Streamlines {
+                line: DataLineStyleConfig {
+                    line_width: 1.5,
+                    ..DataLineStyleConfig::default()
+                },
+                arrows,
+                color_map: color.map(|column| PointColorMap {
+                    column: column.into(),
+                }),
+            },
+        }
+    }
+
+    #[test]
+    fn streamline_rules_hold_the_line_and_the_arrows() {
+        assert_eq!(validate_streamline_series(&streamlines(None, None)), Ok(()));
+        let full = streamlines(Some(StreamlineArrows::default()), Some("speed"));
+        assert_eq!(validate_streamline_series(&full), Ok(()));
+        let edit = |f: fn(&mut DataLineStyleConfig)| {
+            let mut series = full.clone();
+            let DataRenderType::Streamlines { line, .. } = &mut series.render_type else {
+                unreachable!()
+            };
+            f(line);
+            validate_streamline_series(&series)
+        };
+        assert!(edit(|line| line.interpolation = LineInterpolation::StepMid).is_err());
+        assert!(edit(|line| line.fill = Some(LineFill::ToBaseline(0.0))).is_err());
+        for arrows in [
+            StreamlineArrows {
+                spacing_px: 0.0,
+                ..StreamlineArrows::default()
+            },
+            StreamlineArrows {
+                spacing_px: f32::NAN,
+                ..StreamlineArrows::default()
+            },
+            StreamlineArrows {
+                head_length_px: -1.0,
+                ..StreamlineArrows::default()
+            },
+            StreamlineArrows {
+                head_width_px: f32::INFINITY,
+                ..StreamlineArrows::default()
+            },
+            // A head longer than the spacing would overlap the next.
+            StreamlineArrows {
+                spacing_px: 6.0,
+                head_length_px: 8.0,
+                head_width_px: 7.0,
+            },
+        ] {
+            assert_eq!(
+                validate_streamline_series(&streamlines(Some(arrows), None)),
+                Err(StreamlineArrows::INVALID_REASON),
+                "{arrows:?}"
+            );
+        }
+        assert!(validate_streamline_series(&streamlines(None, Some(""))).is_err());
+        let mut unnamed = full.clone();
+        unnamed.y_column.clear();
+        assert!(validate_streamline_series(&unnamed).is_err());
+        // Other kinds pass untouched.
+        let mut line = full;
+        line.render_type = DataRenderType::Line {
+            line: DataLineStyleConfig::default(),
+        };
+        assert_eq!(validate_streamline_series(&line), Ok(()));
+    }
+
+    #[test]
+    fn a_streamline_series_draws_its_line_in_the_line_colour() {
+        let series = streamlines(Some(StreamlineArrows::default()), None);
+        let flow = series.render_type.streamlines().unwrap();
+        assert_eq!(flow.line.line_width, 1.5);
+        assert_eq!(flow.arrows, Some(&StreamlineArrows::default()));
+        assert_eq!(flow.color_map, None);
+        let mut cycled = series.clone();
+        crate::preset::ColorCycle::Vivid.apply_to_series(&mut cycled, 1);
+        let DataRenderType::Streamlines { line, .. } = &cycled.render_type else {
+            unreachable!()
+        };
+        assert_ne!(line.line_color, flow.line.line_color);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn streamlines_round_trip() {
+        for series in [
+            streamlines(None, None),
+            streamlines(Some(StreamlineArrows::default()), None),
+            streamlines(
+                Some(StreamlineArrows {
+                    spacing_px: 64.5,
+                    head_length_px: 9.0,
+                    head_width_px: 6.25,
+                }),
+                Some("speed"),
+            ),
+        ] {
+            let json = serde_json::to_string(&series).unwrap();
+            assert!(json.contains("\"Streamlines\""));
+            assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), series);
+            assert_eq!(
+                serde_json::to_string(&serde_json::from_str::<SeriesConfig>(&json).unwrap())
+                    .unwrap(),
+                json
+            );
+        }
+        // The optional fields are omitted when absent and default on read.
+        let bare = serde_json::to_string(&streamlines(None, None)).unwrap();
+        assert!(!bare.contains("arrows"));
+        assert!(!bare.contains("color_map"));
+        let minimal = r#"{"series_id":"flow","label":null,"x_column":"x","y_column":"y","render_type":{"Streamlines":{"line":{"line_style":"Solid","line_color":{"r":0.0,"g":0.0,"b":0.0,"a":1.0},"line_width":1.0}}}}"#;
+        let parsed: SeriesConfig = serde_json::from_str(minimal).unwrap();
+        let flow = parsed.render_type.streamlines().unwrap();
+        assert_eq!((flow.arrows, flow.color_map), (None, None));
+        assert_eq!(serde_json::to_string(&parsed).unwrap(), minimal);
     }
 }

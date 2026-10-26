@@ -271,8 +271,8 @@ impl FiggyChart {
     }
 
     /// Fit the shared z axis to every column the colourbar maps: matrix
-    /// value columns, scatter `point_color_map` columns and vector colour
-    /// maps. A chart without a colourbar is left unchanged.
+    /// value columns, scatter `point_color_map` columns, vector colour
+    /// maps and streamline colour columns. A chart without a colourbar is left unchanged.
     pub fn auto_fit_colorbar(&mut self, padding: f64) -> Result<(), JsValue> {
         let mut z_extent = FitExtent::EMPTY;
         for cfg in self.chart_series() {
@@ -316,6 +316,11 @@ impl FiggyChart {
                     }
                     None => {}
                 },
+                DataRenderType::Streamlines { color_map, .. } => {
+                    if let Some(map) = color_map {
+                        union(&map.column)?;
+                    }
+                }
                 DataRenderType::Line { .. }
                 | DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }

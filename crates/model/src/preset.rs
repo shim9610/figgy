@@ -327,6 +327,11 @@ impl ColorCycle {
             DataRenderType::Radar { color, .. } => {
                 *color = c;
             }
+            // The line and its arrowheads join the cycle; a colour map, when
+            // set, still draws from the colourbar.
+            DataRenderType::Streamlines { line, .. } => {
+                line.line_color = c;
+            }
         }
     }
 

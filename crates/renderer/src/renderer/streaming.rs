@@ -169,6 +169,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::Radar { .. }
+            // Never streamed: a streamed streamline series is rejected.
+            | DataRenderType::Streamlines { .. }
             | DataRenderType::Contour { .. } => false,
         })
             || match (&left.colorbar, &right.colorbar) {

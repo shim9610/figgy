@@ -143,6 +143,12 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         DataRenderType::BoxPlot { .. } => {}
         // A radar series reads its category indices and values only.
         DataRenderType::Radar { .. } => {}
+        // Streamlines read their polylines and, mapped, a colour column.
+        DataRenderType::Streamlines { color_map, .. } => {
+            if let Some(map) = color_map {
+                ids.push(&map.column);
+            }
+        }
         // The grid's constituent columns are referenced columns: a matrix
         // series' derived identity has to change when any of them does, or a
         // replaced grid column would keep serving a stale cache entry.
