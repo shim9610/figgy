@@ -746,20 +746,79 @@ fn with_glyph_mask_id(
     });
 }
 
-/// Rasterize one character and blit it with `color` at (`pen_x`,
-/// `baseline`). Returns the advance.
-fn draw_char(
-    canvas: &mut Canvas,
+/// The outline of glyph id `glyph` of `font` at `size`, in pixels relative
+/// to its pen, y down, handed to `out` segment by segment: what the mask of
+/// [`with_glyph_mask_id`] covers, from the same scaler with the same hinting
+/// and synthetic embolden, without the mask's subpixel phase. Quadratic
+/// segments come out as the equal cubics. A glyph without an outline hands
+/// out nothing.
+pub(crate) fn glyph_outline(
     font: FontRef<'static>,
+    glyph: u16,
     size: f32,
-    ch: char,
-    pen_x: f32,
-    baseline: f32,
-    color: &Color,
-) -> f32 {
-    let glyph = font.charmap().map(ch);
-    draw_glyph(canvas, font, size, glyph, pen_x, baseline, color);
-    glyph_extents_id(font, size, glyph).advance
+    out: &mut dyn FnMut(crate::sketch::PathSegment),
+) {
+    use crate::sketch::PathSegment;
+    use swash::zeno::Verb;
+    SCALE_CTX.with(|cx| {
+        let mut cx = cx.borrow_mut();
+        let mut scaler = cx
+            .builder(font)
+            .size(size)
+            .hint(font_hinting(font, size))
+            .build();
+        let Some(mut outline) = scaler.scale_outline(glyph) else {
+            return;
+        };
+        let embolden = font_embolden(font, size);
+        if embolden > 0.0 {
+            outline.embolden(embolden, embolden);
+        }
+        // zeno outlines are y-up; flip into the y-down pixel convention.
+        let flip = |p: &swash::zeno::Point| (p.x, -p.y);
+        let points = outline.points();
+        let mut next = 0;
+        let mut current = (0.0f32, 0.0f32);
+        for verb in outline.verbs() {
+            match verb {
+                Verb::MoveTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Move(current));
+                }
+                Verb::LineTo => {
+                    current = flip(&points[next]);
+                    next += 1;
+                    out(PathSegment::Line(current));
+                }
+                Verb::CurveTo => {
+                    let (c1, c2, p) = (
+                        flip(&points[next]),
+                        flip(&points[next + 1]),
+                        flip(&points[next + 2]),
+                    );
+                    next += 3;
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::QuadTo => {
+                    let (q, p) = (flip(&points[next]), flip(&points[next + 1]));
+                    next += 2;
+                    let c1 = (
+                        current.0 + (q.0 - current.0) * (2.0 / 3.0),
+                        current.1 + (q.1 - current.1) * (2.0 / 3.0),
+                    );
+                    let c2 = (
+                        p.0 + (q.0 - p.0) * (2.0 / 3.0),
+                        p.1 + (q.1 - p.1) * (2.0 / 3.0),
+                    );
+                    current = p;
+                    out(PathSegment::Cubic(c1, c2, p));
+                }
+                Verb::Close => out(PathSegment::Close),
+            }
+        }
+    });
 }
 
 /// Rasterize glyph id `glyph` of `font` and blit it with `color` at
@@ -1332,6 +1391,19 @@ mod dashed_rule_tests {
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
 pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
+    place_rich_text(&mut CanvasSink(canvas), rt, origin, policy);
+}
+
+/// The placement of [`draw_rich_text`]: every glyph and rule of `rt` at
+/// `origin` (left edge of the block, baseline of the first line) handed to
+/// `sink`. The canvas paints through it and the vector export writes from
+/// it, so both place the same glyphs at the same pens.
+pub(crate) fn place_rich_text(
+    sink: &mut dyn GlyphSink,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) {
     let doc = layout_doc(rt, policy);
     let (x, mut baseline) = origin;
     let block_width = block_width(&doc.line_metrics);
@@ -1343,7 +1415,7 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
         let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
             place_cell(
-                &mut CanvasSink(canvas),
+                sink,
                 cell,
                 rt,
                 (line_x + doc.col_starts[k], baseline),
@@ -1553,10 +1625,39 @@ pub fn draw_plain_text(
     italic: bool,
     policy: FontPolicy,
 ) {
+    place_plain_text(
+        &mut CanvasSink(canvas),
+        text,
+        origin,
+        color,
+        family,
+        size,
+        bold,
+        italic,
+        policy,
+    );
+}
+
+/// The placement of [`draw_plain_text`]: each character's glyph, from the
+/// face the policy resolves for it, at its pen, handed to `sink`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_plain_text(
+    sink: &mut dyn GlyphSink,
+    text: &str,
+    origin: (f32, f32),
+    color: Color,
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+) {
     let (mut pen_x, baseline) = origin;
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
-        pen_x += draw_char(canvas, font, size, ch, pen_x, baseline, &color);
+        let glyph = font.charmap().map(ch);
+        sink.glyph(font, glyph, size, (pen_x, baseline), &color);
+        pen_x += glyph_extents_id(font, size, glyph).advance;
     }
 }
 

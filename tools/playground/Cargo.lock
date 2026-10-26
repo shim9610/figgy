@@ -653,6 +653,7 @@ dependencies = [
  "bytemuck",
  "concurrent-queue",
  "figgy-model",
+ "flate2",
  "fontdb",
  "futures-channel",
  "js-sys",

@@ -33,6 +33,9 @@ concurrent-queue = "2.5"
 # Awaitable buffer-map signal for the async export path (works on wasm too).
 futures-channel = "0.3"
 png = "0.18"
+# Deflates the PDF export's content and image streams (#48); already in the
+# graph through png.
+flate2 = "1"
 wgpu = "30"
 
 # Pure-Rust CPU raster stack (axis chrome + text) — compiles on every target

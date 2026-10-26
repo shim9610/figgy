@@ -573,6 +573,48 @@ When scaling, every pixel-based dimension (font, line, margin, grid, legend)
 scales by the same factor, so the layout matches the on-screen chart at a
 higher pixel density (or a lower one below 1.0).
 
+### SVG and PDF export
+
+```rust
+let svg: String = renderer
+    .export_document_svg_async(&chart, &series_configs, scale)
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_document_pdf_async(&chart, &series_configs, scale)
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+The two documents hold the same picture as `export_document_png_bytes_async`
+with the same arguments ([#48](https://github.com/shim9610/figgy/issues/48)).
+The decorations are vector content, written from the placement the PNG
+draws with: axes, ticks, tick labels, grid, polar rings and spokes, axis and
+chart titles, legend, the colourbar's border, axis and labels, and the
+annotation layer. Text is written as glyph outlines, so no font is embedded
+and the text cannot be selected or searched. The data layer (fills, lines,
+markers, bars, fields, contours, vectors, picked highlights and value
+labels) is drawn by the GPU, so each panel group's data is one image at
+`scale ×` resolution, the PNG export's own pixels: one image for a chart and
+its overlays, one more for each subplot. The colourbar ramp and the
+Milkyway backdrop are images too; the Milkyway glow is not drawn. Selection
+boxes are never drawn, as in the PNG export.
+
+The SVG's `viewBox` is in physical pixels and its `width` / `height`, like
+the PDF page, are the logical size in points (1 px = 0.75 pt), so a 2x export
+has the same page size with twice the image resolution. `scale` is clamped
+as for the PNG export, the `_with_clear_async` variants paint the clear
+colour as a rectangle under everything, and the native blocking wrappers are
+`export_document_svg` / `export_document_pdf`. `WindowedRenderer` has the same
+six methods. A series with a streamed source is rejected with
+`FiggyError::ColumnNotResident`, as by the PNG export.
+
+The radial chart exports with `RadialRenderer::export_svg_async(&chart, size,
+scale)` and `export_pdf_async` (blocking: `export_svg` / `export_pdf`): the
+slices and background are one image, the title, labels, leader lines, split
+connectors and annotations are vector content. Every inside label is drawn
+above every slice at its place in the PNG, and no selection box is drawn.
+
 ---
 
 ---
@@ -1032,5 +1074,26 @@ let img = renderer
 `scale`의 범위는 `renderer::MIN_EXPORT_SCALE`(0.25)부터 `renderer::MAX_EXPORT_SCALE`(8.0)까지다. 범위를 벗어난 값은 오류 없이 가까운 경계값으로 바꾸고, NaN이나 0 이하의 값은 0.25로 바꾼다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
 폰트, 선, 여백, 격자, 범례의 픽셀 크기가 모두 같은 비율로 바뀌므로 화면과 같은 배치를 더 높은 해상도로 얻는다. 1.0보다 작은 배율은 해상도를 낮춘다.
+
+### SVG와 PDF 내보내기
+
+```rust
+let svg: String = renderer
+    .export_document_svg_async(&chart, &series_configs, scale)
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_document_pdf_async(&chart, &series_configs, scale)
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+두 문서에는 같은 인자로 `export_document_png_bytes_async`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
+장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
+데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
+
+SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그리고, 네이티브 동기 래퍼의 이름은 `export_document_svg` / `export_document_pdf`다. `WindowedRenderer`에도 같은 메서드 여섯 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
+
+원형 차트는 `RadialRenderer::export_svg_async(&chart, size, scale)`와 `export_pdf_async`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 
 ---

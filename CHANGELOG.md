@@ -1141,6 +1141,45 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
   spans under one decade, logarithmic with the adaptive policy (1..9 ladder,
   Decimal labels).
 
+- **SVG and PDF export** ([#48](https://github.com/shim9610/figgy/issues/48),
+  [#58](https://github.com/shim9610/figgy/issues/58) item 21). Additive API:
+  `Renderer::export_document_svg_async(chart, series, scale) -> String` and
+  `export_document_pdf_async(..) -> Vec<u8>`, their `_with_clear_async`
+  variants (the clear colour as a background rectangle), the blocking native
+  `export_document_svg` / `export_document_pdf`, the same six methods on
+  `WindowedRenderer`, and `RadialRenderer::export_svg_async(chart, size,
+  scale)` / `export_pdf_async` with blocking `export_svg` / `export_pdf`. The
+  decorations are vector content written from the emit the raster draws
+  with, at the PNG export's scaled and placed document, so the file's
+  decorations are the drawn ones: strokes with the raster's widths, width
+  floors, dashes and sketch curves, text as glyph outlines from the mask's
+  scaler, hinting and embolden (no font embedded; the text is not
+  searchable), the annotation layer, polar chrome. The data layer is drawn by
+  the GPU, so each panel group (a chart and its overlays, each subplot) is one
+  image of its data areas, the PNG export's own pixels; the colourbar ramp and
+  the Milkyway backdrop are images too. The SVG's `viewBox` is in physical
+  pixels and its size, like the PDF page, the logical size in points
+  (1 px = 0.75 pt); `scale` is clamped as for the PNG, and a streamed source
+  is rejected with `ColumnNotResident`. The PDF is written by hand (objects,
+  cross-reference table, deflated content, one ExtGState per alpha byte, RGB
+  image XObjects with soft masks).
+  - **Documented omissions** (D5): the Milkyway glow is raster-only and not
+    drawn; no selection box is drawn (as in the Cartesian PNG; the radial PNG
+    draws the selected decoration's box, its SVG and PDF do not); the radial
+    export draws every inside label above every slice, where the PNG can hide
+    one under a lifted neighbour.
+  - **New direct dependency**: `flate2 = "1"` (1.1.10, MIT OR Apache-2.0),
+    already in the lockfile through `png`; `Cargo.lock` gains only the
+    renderer's dependency line.
+  - Internals, no pixel change (the 17 catalogue scenes and the radial scene
+    export the same RGBA at 1x and 2x): the text placement is
+    `place_rich_text` / `place_plain_text` over the glyph sink, the sketch
+    curve `sketch::smooth_cubics`, the annotation item loop
+    `emit_annotation_layer`, the radial split connectors strokes into the
+    label sink (`emit_split_connectors`; the guard's `draw_line` allowance for
+    `radial_layout.rs` is removed), and the export `prepare_export` /
+    `paint_export`.
+
 <a id="unreleased-web"></a>
 
 ### Browser product (`figgy` 0.16.0)
@@ -1244,6 +1283,15 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
     `Config::step_selection` (see [Model](#unreleased-model)); it steps as
     before, except that a column the wrapper has not registered counts as
     empty instead of trapping.
+
+- **SVG and PDF export** ([#48](https://github.com/shim9610/figgy/issues/48)).
+  `FiggyChart::export_svg(scale) -> String` and `export_pdf(scale) ->
+  Uint8Array` export the document over the chart's clear colour, as
+  `export_png`; `FiggyBoundedChart` (the radial chart) has the same two. The
+  `<figgy-chart>` facade's `export_svg` / `export_pdf` hold the `"export"`
+  operation gate and reject a chart shown from a stream before calling the
+  kernel. The web demo (`index.html`) has SVG and PDF buttons beside the PNG
+  one.
 
 <a id="unreleased-bounded-migration"></a>
 
@@ -1543,6 +1591,25 @@ entries above describe the changes.
     grid vector cells, no selection, labels); the tests of the removed
     helpers and underlay go with them.
 
+- **SVG and PDF export** ([#48](https://github.com/shim9610/figgy/issues/48)).
+  `tests/vector_export.rs` with `support/svg_parts.rs` and
+  `support/pdf_structure.rs`: every catalogue scene at 1x and 2x in both
+  formats reads back, element by element and in order, as the parts the
+  export was handed (a `Parts` recording of the same passes, within
+  0.01 px, text by its block origin and rotation and each glyph pen); the
+  PDF's header, cross-reference offsets, trailer, object graph,
+  ExtGStates, soft masks and inflated content are checked, and its images
+  are the SVG's pixels. With every decoration hidden each data image is the
+  PNG export's crop byte for byte; with decorations shown the grid raster,
+  data image and decoration raster composite to the PNG export within 1/255
+  but for at most 0.05 % of the channels (8-bit blend rounding, under
+  3/255). Size budgets (256 KiB SVG and 128 KiB PDF outside the images,
+  images within 1.05 times the PNG), determinism, the clear colour, a
+  streamed source, the sketch and Milkyway styles and the radial chart are
+  covered. Node tests cover the facade's two methods and their rejection
+  during stream replay; the playground has SVG and PDF export buttons and
+  its selftest exports every scene in the three formats.
+
 ### Documentation
 
 - **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)).
@@ -1627,6 +1694,15 @@ entries above describe the changes.
     `CONFIG.md`, `RADIAL.md`, `RADAR.md`, `BOXPLOT.md` and `WASM.md`,
     `CATEGORICAL.md`, `SCHEMA.md` and `examples/README.md`) is edited in
     Korean.
+
+- **SVG and PDF export** ([#48](https://github.com/shim9610/figgy/issues/48)).
+  `USAGE.md` (both languages) describes the API, the page size and the
+  omissions, `ARCHITECTURE.md` (both languages) the export pipeline's two
+  halves and the vector passes, `WASM.md` the browser methods and their
+  streaming rejection, `INTERACTION.md` what the files hold of each
+  interaction, `RADIAL.md` the radial export, `API.md` the return types. The
+  Korean text (the Korean sections of `USAGE.md` and `ARCHITECTURE.md`, and
+  `WASM.md` and `RADIAL.md`) is written in Korean.
 
 <a id="release-0181"></a>
 

@@ -484,7 +484,12 @@ Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
 contract differs from the radial chart contract.
 
-RGBA export returns pixels; PNG encoding returns bytes. The caller decides where
+RGBA export returns pixels; PNG encoding returns bytes. The SVG export
+(`export_document_svg_async`, `RadialRenderer::export_svg_async`) returns a
+`String` and the PDF export (`export_document_pdf_async`,
+`RadialRenderer::export_pdf_async`) bytes: decorations as vector content, the
+data layer as images of the PNG export's pixels (see the
+[usage guide](USAGE.md#svg-and-pdf-export)). The caller decides where
 to send or store them. Native blocking helpers and async variants are both
 available. No project file persistence or application event loop is required.
 
