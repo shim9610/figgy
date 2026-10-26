@@ -41,6 +41,7 @@ To change shared shader code:
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
+| `arc_walk.wgsl` (§5.6 arc slots) | line |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector module |
@@ -592,6 +593,22 @@ drawn segment, the last one too on a closed line; the line and area
 candidates and `pick_segment_endpoint` take their B endpoint from it, and
 a closed line is scanned directly (no gate texture). A closed fill's
 segment count is the vertex count.
+
+**Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
+slot along the polyline's total pixel arc, the count the scan's
+`star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
+ceil(total / pitch))`, at most `STAR_MAX_SLOTS`). Its vertex stage binds
+no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
+(`n_points`, the x / y lane bases and the step mode word; CPU twin
+`line_arc.rs::StarVsParams`, layout
+`stylized.rs::create_star_data_bind_group_layout`), and
+`arc_walk_segment(n, arc)` finds the segment holding a slot's arc
+position by binary search over the prefix: the last `g` with
+`star_arc[g] <= arc`, at most `n - 2`. A NaN gap adds nothing to the
+prefix, so a slot on a gap's boundary lands on a zero-length segment or
+on the drawn one after it, and a caller drops a slot whose segment has no
+arc length. The declarations and the search are the fragment
+[`data_render/common/arc_walk.wgsl`](common/arc_walk.wgsl).
 
 The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
 

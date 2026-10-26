@@ -12,6 +12,7 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/line_stroke.wgsl",
     "data_render/common/line_step.wgsl",
     "data_render/common/area_piece.wgsl",
+    "data_render/common/arc_walk.wgsl",
     "data_render/line_columnar.wgsl",
 );
 
@@ -443,4 +444,25 @@ pub(super) fn draw_area_closing(
     pass.set_vertex_buffer(4, a.pool_buffer.slice(at_last(base.clone())));
     pass.set_vertex_buffer(5, a.pool_buffer.slice(base));
     pass.draw(0..a.verts_per_instance, 0..1);
+}
+
+#[cfg(test)]
+mod arc_walk_tests {
+    /// The star pass's slot search moved, unchanged, into the shared
+    /// `common/arc_walk.wgsl`: the line module splices it once, before the
+    /// line shader, and the line shader declares no group-3 binding and no
+    /// search of its own.
+    #[test]
+    fn star_pass_walks_the_shared_arc_slots() {
+        let walk = include_str!("common/arc_walk.wgsl");
+        let line = include_str!("line_columnar.wgsl");
+        let module = super::LINE_SHADER;
+        assert_eq!(module.source.matches(walk).count(), 1);
+        let at = |name: &str| module.fragments.iter().position(|f| f.ends_with(name));
+        assert!(at("common/arc_walk.wgsl") < at("line_columnar.wgsl"));
+        assert!(walk.contains("fn arc_walk_segment(n: u32, arc_here: f32) -> u32"));
+        assert!(line.contains("let lo = arc_walk_segment(n, arc_here);"));
+        assert!(!line.contains("@group(3)"));
+        assert!(!line.contains("loop {\n        if (hi - lo <= 1u)"));
+    }
 }

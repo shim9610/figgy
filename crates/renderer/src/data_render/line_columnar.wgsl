@@ -544,29 +544,8 @@ fn cons_h(id: u32, salt: u32, seed: u32) -> f32 {
     return sketch_hash01(id, seed ^ salt);
 }
 
-// Arc-driven star pass data (group 3). The star pass binds NO vertex
-// buffers: each instance is one candidate slot along the polyline's TOTAL
-// arc, and the VS locates its segment by binary search over the arc-length
-// prefix, fetching endpoints straight from the column pool. Star density is
-// therefore independent of how densely the data samples the line — the old
-// per-segment quad budget saturated on sparse polylines (a single long
-// segment capped at 24 stars no matter the requested density).
-struct StarVsParams {
-    n_points: u32,
-    x_base: u32,
-    y_base: u32,
-    // Step interpolation mode of the polyline (LINE_STEP_*), so a star's arc
-    // position lands on the same stepped piece the ribbon and scan used.
-    mode: u32,
-};
-@group(3) @binding(0) var<storage, read> star_arc: array<f32>;
-@group(3) @binding(1) var<storage, read> star_pool: array<f32>;
-@group(3) @binding(2) var<uniform> star_vsp: StarVsParams;
-
-fn star_pool_pair(base: u32, i: u32) -> vec2<f32> {
-    let j = base + i * 2u;
-    return vec2<f32>(star_pool[j], star_pool[j + 1u]);
-}
+// The star pass reads its arc slots through `common/arc_walk.wgsl` (group
+// 3: the arc prefix, the pool and `StarVsParams`).
 
 // Candidate slot pitch in arc px. CPU twin: line_arc.rs
 // STAR_SLOT_PITCH_FACTOR sizes the indirect dispatch with the same formula —
@@ -614,13 +593,7 @@ fn vs_stars(
     var alive = cons_h(slot, 0x0E15u, seed) < p_exist && arc_here < total;
 
     // Binary search: greatest g with prefix[g] <= arc_here; segment (g, g+1).
-    var lo = 0u;
-    var hi = n - 1u;
-    loop {
-        if (hi - lo <= 1u) { break; }
-        let mid = (lo + hi) >> 1u;
-        if (star_arc[mid] <= arc_here) { lo = mid; } else { hi = mid; }
-    }
+    let lo = arc_walk_segment(n, arc_here);
     let seg_a = star_arc[lo];
     let seg_len = star_arc[lo + 1u] - seg_a;
     // NaN-gap segments contribute zero prefix advance — a slot landing on a
