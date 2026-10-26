@@ -106,15 +106,20 @@ def audit_archive(archive, source):
 # The GPU numeric tests (#47): the CPU and GPU place points and lines alike
 # at every magnitude, the f64 residual pick selects the right index, the
 # projection oracles match bit for bit, and the shared shader blocks agree
-# with their CPU twins. `None` runs the whole binary.
+# with their CPU twins. Each entry names the renderer features it needs
+# (the placement agreement compares against the `cpu-twin` picker, which a
+# packaged crate does not enable by itself), the test target and the test;
+# `None` runs the whole binary.
 NUMERIC_TESTS = (
-    (["--test", "pick_draw_agreement"], "cpu_and_gpu_place_points_alike_at_every_magnitude"),
-    (["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
-    (["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
-    (["--lib"], "gpu_pick::tests::split_linear_projection_preserves_independent_hi_lo_subtraction"),
-    (["--lib"], "renderer::tests::contour_projection_matches_fixed_four_step_gpu_oracle"),
-    (["--lib"], "data_render::tests::gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit"),
-    (["--test", "shader_consistency"], None),
+    ("serde,cpu-twin", ["--test", "pick_draw_agreement"],
+     "cpu_and_gpu_place_points_alike_at_every_magnitude"),
+    ("serde", ["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
+    ("serde", ["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
+    ("serde", ["--lib"],
+     "gpu_pick::tests::split_linear_projection_preserves_independent_hi_lo_subtraction"),
+    ("serde", ["--lib"], "renderer::tests::contour_projection_matches_fixed_four_step_gpu_oracle"),
+    ("serde", ["--lib"], "data_render::tests::gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit"),
+    ("serde", ["--test", "shader_consistency"], None),
 )
 
 
@@ -123,10 +128,10 @@ def numeric_checks(cwd):
     precision regression is not qualified by the hour of tests that follows,
     so this step is the exception to the policy that a failed binary must
     not hide the others. Every listed name must produce its result line, so
-    a renamed test cannot drop out of the set silently."""
-    for target, name in NUMERIC_TESTS:
+    a renamed or feature-gated test cannot drop out of the set silently."""
+    for features, target, name in NUMERIC_TESTS:
         args = ["cargo", "test", "--offline", "--locked", "-p", "figgy-renderer",
-                "--features", "serde", *target]
+                "--features", features, *target]
         if name is None:
             args += ["--", "--nocapture", "--test-threads=1"]
         else:

@@ -18,7 +18,7 @@ class NumericChecksTests(unittest.TestCase):
 
         def fake_run(args, *, cwd=None, collect=False, **_):
             calls.append(args)
-            target = args[args.index("--features") + 2]
+            target = args[args.index("--features") + 3]
             name = None if args[args.index("--") - 1] == target else args[args.index("--") - 1]
             return _ok(target, name)
 
@@ -28,6 +28,7 @@ class NumericChecksTests(unittest.TestCase):
         for args in calls:
             self.assertIn("--locked", args)
             self.assertIn("--test-threads=1", args)
+        self.assertIn("serde,cpu-twin", calls[0])
 
     def test_a_red_test_raises_at_once(self):
         calls = []
