@@ -18,8 +18,9 @@ class NumericChecksTests(unittest.TestCase):
 
         def fake_run(args, *, cwd=None, collect=False, **_):
             calls.append(args)
-            target = args[args.index("--features") + 3]
-            name = None if args[args.index("--") - 1] == target else args[args.index("--") - 1]
+            features, target, name = verify.NUMERIC_TESTS[len(calls) - 1]
+            self.assertEqual(args[args.index("--features") + 1], features)
+            self.assertEqual(args[args.index("--features") + 2:][:len(target)], target)
             return _ok(target, name)
 
         with mock.patch.object(verify, "run", fake_run), mock.patch.object(verify, "report"):
