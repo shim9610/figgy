@@ -104,6 +104,8 @@ pub(super) struct PickSeriesResource {
     pub(super) area: Option<crate::gpu_pick::GpuPickArea>,
     /// Whether the line is a closed polygon (a radar outline).
     pub(super) line_closed: bool,
+    /// A streamline series' arrowheads along its line.
+    pub(super) path_arrows: Option<crate::data_config::StreamlineArrows>,
 }
 
 /// A series' error bars in the plan (`GpuPickErrorBar` without its rows,
@@ -134,6 +136,7 @@ impl PartialEq for PickSeriesResource {
             errorbar,
             area,
             line_closed,
+            path_arrows,
         } = self;
         let Self {
             x_column: other_x_column,
@@ -146,8 +149,19 @@ impl PartialEq for PickSeriesResource {
             errorbar: other_errorbar,
             area: other_area,
             line_closed: other_line_closed,
+            path_arrows: other_path_arrows,
         } = other;
+        let arrow_bits = |arrows: &Option<crate::data_config::StreamlineArrows>| {
+            arrows.map(|arrows| {
+                [
+                    arrows.spacing_px.to_bits(),
+                    arrows.head_length_px.to_bits(),
+                    arrows.head_width_px.to_bits(),
+                ]
+            })
+        };
         line_closed == other_line_closed
+            && arrow_bits(path_arrows) == arrow_bits(other_path_arrows)
             && x_column == other_x_column
             && y_column == other_y_column
             && scatter == other_scatter
@@ -185,6 +199,7 @@ impl PickSeriesResource {
             errorbar,
             area,
             line_closed: _,
+            path_arrows: _,
         } = self;
         x_column == id
             || y_column == id
@@ -448,6 +463,7 @@ impl OwnedGpuPickSeriesDescriptor {
             errorbar,
             area,
             line_closed,
+            path_arrows,
         } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
             source_id: source_id.clone(),
@@ -496,6 +512,7 @@ impl OwnedGpuPickSeriesDescriptor {
             }),
             area: area.clone(),
             line_closed: *line_closed,
+            path_arrows: *path_arrows,
         }
     }
 }
@@ -776,6 +793,13 @@ impl PickChartPlan {
                     errorbar,
                     area,
                     line_closed,
+                    // A streamline's arrowheads pick with its line.
+                    path_arrows: line.and_then(|_| {
+                        series
+                            .render_type
+                            .streamlines()
+                            .and_then(|streamlines| streamlines.arrows.copied())
+                    }),
                 },
             });
         }
@@ -1556,12 +1580,17 @@ impl Renderer {
                 .and_then(|series| {
                     let interpolation = extract_line(&series.render_type)
                         .map_or(LineInterpolation::Linear, |line| line.interpolation);
+                    // A streamline's arrowheads scan with their slot pitch,
+                    // the draw's key at the same display scale.
                     self.preparation_parts().1.ensure_arc_prefix(
                         &series.series_id,
                         &series.x_column,
                         &series.y_column,
                         series_transform,
-                        None,
+                        super::prepare::streamline_arrow_pitch(
+                            &series.render_type,
+                            request.display_scale,
+                        ),
                         interpolation,
                     )
                 })

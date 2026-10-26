@@ -314,11 +314,13 @@ fn err_refs(
         | DataRenderType::LineScatterErrorbarY { err_y, .. } => (None, Some(err_y)),
         DataRenderType::ScatterErrorbarXY { err_x, err_y, .. }
         | DataRenderType::LineScatterErrorbarXY { err_x, err_y, .. } => (Some(err_x), Some(err_y)),
-        // Bars, fields, vectors and radar polygons carry no error columns.
+        // Bars, fields, vectors, radar polygons and streamlines carry no
+        // error columns.
         DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -445,7 +447,8 @@ fn series_extent_request_from(
         | renderer::DataRenderType::Histogram { .. }
         | renderer::DataRenderType::CategoryBars { .. }
         | renderer::DataRenderType::BoxPlot { .. }
-        | renderer::DataRenderType::Radar { .. } => (Vec::new(), None),
+        | renderer::DataRenderType::Radar { .. }
+        | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
     let vector_factor_bits = match &cfg.render_type {
         renderer::DataRenderType::Vector {
@@ -860,6 +863,7 @@ fn prepare_demo_declarations(
                 // this demo could reuse.
                 DataRenderType::Heatmap { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,
+                DataRenderType::Streamlines { line, .. } => line.line_color,
             },
             None => cycle.color(next_color_seq),
         };

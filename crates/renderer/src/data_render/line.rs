@@ -8,10 +8,12 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
+    "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
     "data_render/common/line_stroke.wgsl",
     "data_render/common/line_step.wgsl",
     "data_render/common/area_piece.wgsl",
+    "data_render/common/arc_walk.wgsl",
     "data_render/line_columnar.wgsl",
 );
 
@@ -182,22 +184,127 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
     texture_bgl: Option<&wgpu::BindGroupLayout>,
     label: &str,
 ) -> wgpu::RenderPipeline {
-    let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
-    if let Some(t) = texture_bgl {
-        bgls.push(Some(t));
+    let layouts = [Some(transform_bgl), Some(style_bgl), texture_bgl];
+    let groups = if texture_bgl.is_some() { 3 } else { 2 };
+    line_slot_pipeline(
+        device,
+        shader,
+        &layouts[..groups],
+        LINE_SLOTS,
+        target_format,
+        sample_count,
+        vs_entry,
+        fs_entry,
+        blend,
+        topology,
+        label,
+    )
+}
+
+/// The colour-mapped stroke of a streamline series: `vs_main_mapped` /
+/// `fs_main_mapped` over the six line slots plus the value column in
+/// slots 6/7 (eight, the WebGPU default limit), with the point value map
+/// (SHADER_COMMON.md §5.2) as group 3. The shader reads no group 2; the
+/// layout holds the value map's layout there too, bound to the renderer's
+/// neutral value map, so no new layout is needed.
+pub(crate) fn create_line_mapped_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    value_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    line_slot_pipeline(
+        device,
+        shader,
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            Some(value_map_bgl),
+            Some(value_map_bgl),
+        ],
+        LINE_MAPPED_SLOTS,
+        target_format,
+        sample_count,
+        "vs_main_mapped",
+        "fs_main_mapped",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        "figgy line mapped pipeline",
+    )
+}
+
+/// Vertex slots of the line entries: x_a, y_a, x_b, y_b and the arc prefix
+/// at A and B.
+const LINE_SLOTS: usize = 6;
+/// Vertex slots of the colour-mapped stroke: the line's and the colour
+/// value at A and B.
+const LINE_MAPPED_SLOTS: usize = 8;
+
+/// The attribute of each per-instance vertex slot the line entries read, in
+/// slot order: the X / Y columns bound twice (the second pair starts one
+/// logical value later, so instance i sees points [i] and [i+1] together),
+/// the arc prefix bound twice with a one-f32 shift (f32 lanes), and for the
+/// colour-mapped stroke the value column bound twice like X / Y.
+const LINE_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; LINE_MAPPED_SLOTS] = {
+    let mut attrs = [[wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x2,
+        offset: 0,
+        shader_location: 0,
+    }]; LINE_MAPPED_SLOTS];
+    let mut i = 0;
+    while i < LINE_MAPPED_SLOTS {
+        attrs[i][0].shader_location = i as u32;
+        if i == 4 || i == 5 {
+            attrs[i][0].format = wgpu::VertexFormat::Float32;
+        }
+        i += 1;
     }
+    attrs
+};
+
+/// A line pipeline over the first `slots` vertex slots of
+/// [`LINE_SLOT_ATTRIBUTES`] and the bind group `layouts`.
+#[allow(clippy::too_many_arguments)]
+fn line_slot_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    layouts: &[Option<&wgpu::BindGroupLayout>],
+    slots: usize,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vs_entry: &str,
+    fs_entry: &str,
+    blend: wgpu::BlendState,
+    topology: wgpu::PrimitiveTopology,
+    label: &str,
+) -> wgpu::RenderPipeline {
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
             label: Some("figgy line columnar layout"),
-            bind_group_layouts: &bgls,
+            bind_group_layouts: layouts,
             immediate_size: 0,
         },
     );
-
     let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
-
+    let buffers: [Option<wgpu::VertexBufferLayout<'_>>; LINE_MAPPED_SLOTS] =
+        std::array::from_fn(|slot| {
+            Some(wgpu::VertexBufferLayout {
+                // Slots 4/5 are the arc prefix's f32 lanes; every other slot
+                // is a column of (hi, lo) pairs.
+                array_stride: if slot == 4 || slot == 5 {
+                    f32_stride
+                } else {
+                    column_stride
+                },
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &LINE_SLOT_ATTRIBUTES[slot],
+            })
+        });
     crate::gpu_compile::render_pipeline(
         &device,
         &wgpu::RenderPipelineDescriptor {
@@ -207,74 +314,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
                 module: shader,
                 entry_point: Some(vs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                // 4 per-instance f32 slots: x_a, y_a, x_b, y_b. The same X/Y
-                // columns are bound twice; the second pair starts one logical
-                // value later, so instance i sees points [i] and [i+1] together.
-                // Each instance emits a 4-vertex quad strip for one segment.
-                buffers: &[
-                    // slot 0: x_a (X column from offset 0)
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 0,
-                        }],
-                    }),
-                    // slot 1: y_a
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 1,
-                        }],
-                    }),
-                    // slot 2: x_b (X column from the next value)
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 2,
-                        }],
-                    }),
-                    // slot 3: y_b
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: column_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32x2,
-                            offset: 0,
-                            shader_location: 3,
-                        }],
-                    }),
-                    // slots 4/5: cumulative arc length (px) at A and B — the
-                    // same prefix buffer bound twice with a one-f32 shift, like
-                    // x/y. Solid lines bind the X column here as inert filler
-                    // (the fragment stage ignores it when dash_len == 0).
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: f32_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32,
-                            offset: 0,
-                            shader_location: 4,
-                        }],
-                    }),
-                    Some(wgpu::VertexBufferLayout {
-                        array_stride: f32_stride,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &[wgpu::VertexAttribute {
-                            format: wgpu::VertexFormat::Float32,
-                            offset: 0,
-                            shader_location: 5,
-                        }],
-                    }),
-                ],
+                buffers: &buffers[..slots],
             },
             primitive: wgpu::PrimitiveState {
                 // Strip per instance for the line entries (4 vertices for
@@ -333,6 +373,22 @@ pub struct ColumnLineLayer<'a> {
     /// segment, from the last point back to the first, drawn with the same
     /// pipeline (`draw_line_layer`).
     pub closed: bool,
+    /// A colour-mapped stroke (a streamline series with a colour column):
+    /// `pipeline` is the mapped line pipeline, the value column is bound as
+    /// slots 6/7 and the [`LineValueMap`] groups as 2 and 3. `None` for every
+    /// other line.
+    pub value_map: Option<LineValueMap<'a>>,
+}
+
+/// The colour value of a colour-mapped stroke (`vs_main_mapped`): the value
+/// column, index-aligned with x and y, and the bind groups of the mapped
+/// line pipeline's groups 2 (the renderer's neutral value map, which the
+/// shader does not read) and 3 (the series' point value map).
+#[derive(Clone, Copy)]
+pub struct LineValueMap<'a> {
+    pub column: ColumnHandle,
+    pub neutral_bg: &'a wgpu::BindGroup,
+    pub value_map_bg: &'a wgpu::BindGroup,
 }
 
 /// The area fill of one columnar line series: under the line to a baseline,
@@ -361,7 +417,13 @@ pub struct ColumnAreaLayer<'a> {
 /// Issue one line-slot draw (the shared 6-slot binding scheme). Used for the
 /// main line layer and the constellation star pass.
 pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
-    let count = l.x.len_values.min(l.y.len_values) as u32;
+    // A colour column is index-aligned with the coordinates and bounds the
+    // segments too.
+    let count = l
+        .value_map
+        .map_or(usize::MAX, |map| map.column.len_values)
+        .min(l.x.len_values)
+        .min(l.y.len_values) as u32;
     if count < 2 {
         return;
     }
@@ -370,6 +432,14 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     pass.set_bind_group(1, l.style_bg, &[]);
     if let Some(tex) = l.texture_bg {
         pass.set_bind_group(2, tex, &[]);
+    }
+    if let Some(map) = l.value_map {
+        pass.set_bind_group(2, map.neutral_bg, &[]);
+        pass.set_bind_group(3, map.value_map_bg, &[]);
+        let value = map.column.byte_range();
+        let value_next = (value.start + crate::data::COLUMN_VALUE_BYTES as u64)..value.end;
+        pass.set_vertex_buffer(6, l.pool_buffer.slice(value));
+        pass.set_vertex_buffer(7, l.pool_buffer.slice(value_next));
     }
     let x_full = l.x.byte_range();
     let y_full = l.y.byte_range();
@@ -443,4 +513,25 @@ pub(super) fn draw_area_closing(
     pass.set_vertex_buffer(4, a.pool_buffer.slice(at_last(base.clone())));
     pass.set_vertex_buffer(5, a.pool_buffer.slice(base));
     pass.draw(0..a.verts_per_instance, 0..1);
+}
+
+#[cfg(test)]
+mod arc_walk_tests {
+    /// The star pass's slot search moved, unchanged, into the shared
+    /// `common/arc_walk.wgsl`: the line module splices it once, before the
+    /// line shader, and the line shader declares no group-3 binding and no
+    /// search of its own.
+    #[test]
+    fn star_pass_walks_the_shared_arc_slots() {
+        let walk = include_str!("common/arc_walk.wgsl");
+        let line = include_str!("line_columnar.wgsl");
+        let module = super::LINE_SHADER;
+        assert_eq!(module.source.matches(walk).count(), 1);
+        let at = |name: &str| module.fragments.iter().position(|f| f.ends_with(name));
+        assert!(at("common/arc_walk.wgsl") < at("line_columnar.wgsl"));
+        assert!(walk.contains("fn arc_walk_segment(n: u32, arc_here: f32) -> u32"));
+        assert!(line.contains("let lo = arc_walk_segment(n, arc_here);"));
+        assert!(!line.contains("var<storage, read> star_arc"));
+        assert!(!line.contains("loop {\n        if (hi - lo <= 1u)"));
+    }
 }

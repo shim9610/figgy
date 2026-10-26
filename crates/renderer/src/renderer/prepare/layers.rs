@@ -248,6 +248,7 @@ impl PrepareContext<'_> {
                 let pipeline = match scratch.input {
                     data_render::vector::VectorInput::Points => pipelines.vector_points.as_ref(),
                     data_render::vector::VectorInput::Grid => pipelines.vector_grid.as_ref(),
+                    data_render::vector::VectorInput::Path => pipelines.vector_path.as_ref(),
                 }
                 .expect("prepare ensured vector pipeline");
                 Some(data_render::vector::ColumnVectorLayer {
@@ -257,7 +258,39 @@ impl PrepareContext<'_> {
                     vector_bg: scratch.vector_bg.clone(),
                     charge: Arc::clone(&scratch.charge),
                     count: scratch.count,
+                    indirect: None,
                 })
+            } else if primitives.line
+                && phase.is_none()
+                && rt
+                    .streamlines()
+                    .is_some_and(|streamlines| streamlines.arrows.is_some())
+            {
+                // Streamline arrowheads: the vector glyph on the arc slots of
+                // the line's arc scan, drawn indirect in the vector slot,
+                // under the stroke (#51, D5). A series too short to scan has
+                // no slots and draws no heads.
+                let scratch = self
+                    .vector_cache
+                    .get(cfg.series_id.as_str())
+                    .expect("prepare ensured this streamline's arrowhead scratch");
+                products
+                    .arcs
+                    .get(idx)
+                    .and_then(|series| series.arc.as_ref())
+                    .and_then(|arc| arc.star.as_ref())
+                    .map(|slots| data_render::vector::ColumnVectorLayer {
+                        pipeline: pipelines
+                            .vector_path
+                            .as_ref()
+                            .expect("prepare ensured the path vector pipeline"),
+                        transform_bg: &view.transform_bg,
+                        style_bg: scratch.style_bg.clone(),
+                        vector_bg: scratch.vector_bg.clone(),
+                        charge: Arc::clone(&scratch.charge),
+                        count: scratch.count,
+                        indirect: Some((&slots.indirect, &slots.vs_bg)),
+                    })
             } else {
                 None
             };
@@ -443,8 +476,33 @@ impl PrepareContext<'_> {
                     .get(idx)
                     .and_then(|series| series.arc.as_ref())
                     .map(|arc| arc.prefix.clone());
+                // A streamline series' colour column: its stroke draws through
+                // the mapped line pipeline with the value map
+                // `ensure_value_map_scratch` resolved (precise only, never
+                // streamed).
+                let value_map = match rt.streamlines().and_then(|s| s.color_map) {
+                    Some(map) if styled.is_none() && phase.is_none() => {
+                        let scratch = self
+                            .value_map_cache
+                            .get(cfg.series_id.as_str())
+                            .expect("prepare ensured this streamline colour map's value map");
+                        Some(data_render::LineValueMap {
+                            column: lookup(&map.column)?,
+                            neutral_bg: self.neutral_point_value_map_bg,
+                            value_map_bg: &scratch.bind_group,
+                        })
+                    }
+                    _ => None,
+                };
                 Some(ColumnLineLayer {
-                    pipeline: line_pick.pipeline,
+                    pipeline: if value_map.is_some() {
+                        pipelines
+                            .line_mapped
+                            .as_ref()
+                            .expect("prepare ensured mapped line pipeline")
+                    } else {
+                        line_pick.pipeline
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: column_buffer,
@@ -462,6 +520,7 @@ impl PrepareContext<'_> {
                     ),
                     texture_bg: line_pick.texture_bg,
                     closed,
+                    value_map,
                 })
             } else {
                 None

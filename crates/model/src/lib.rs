@@ -49,7 +49,8 @@ pub use data_config::{
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
     LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LEVELS, MAX_OFFSET_LINES, PointColorMap,
     PointSizeMap, RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, SizeScale,
-    VectorColorMap, VectorComponents, VectorPivot, VectorScale, VectorStyle,
+    StreamlineArrows, StreamlinesRef, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    VectorStyle,
 };
 pub use drag::Draggable;
 pub use preset::{AxisPreset, ColorCycle};

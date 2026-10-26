@@ -11,6 +11,17 @@ pub(in crate::renderer) const ARC_PREFIX_CACHE_LIMIT: usize = 256;
 
 pub(in crate::renderer) const ARC_RESULT_CACHE_LIMIT_PER_SERIES: usize = 8;
 
+/// The arc slot pitch of a streamline series' arrowheads in render pixels:
+/// their spacing at `display_scale`, or `None` without arrowheads. The draw
+/// and the pick scan the arc with it, so they share the cache entry.
+pub(in crate::renderer) fn streamline_arrow_pitch(
+    render_type: &DataRenderType,
+    display_scale: f32,
+) -> Option<f32> {
+    let arrows = render_type.streamlines()?.arrows?;
+    Some((arrows.spacing_px * display_scale).max(1e-3))
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(in crate::renderer) struct ArcResultKey {
     pub(in crate::renderer) n: u32,
@@ -69,14 +80,26 @@ impl PrepareContext<'_> {
                 let dashed = line
                     && extract_line(&cfg.render_type)
                         .is_some_and(|l| !matches!(l.line_style, LineStylePreset::Solid));
-                let arc_wanted = dashed || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
+                // Streamline arrowheads sit on arc slots: the scan runs with
+                // their spacing in render pixels as the slot pitch, and its
+                // indirect kernel counts the slots.
+                let arrow_pitch = line
+                    .then(|| streamline_arrow_pitch(&cfg.render_type, series.style.display_scale))
+                    .flatten();
+                let arc_wanted = dashed
+                    || arrow_pitch.is_some()
+                    || (variant.is_some_and(|v| v.needs_arc_prefix) && line);
                 let arc = if arc_wanted {
                     self.ensure_arc_prefix(
                         &cfg.series_id,
                         &cfg.x_column,
                         &cfg.y_column,
                         &t,
-                        if line { star_pitch } else { None },
+                        if line {
+                            arrow_pitch.or(star_pitch)
+                        } else {
+                            None
+                        },
                         extract_line(&cfg.render_type)
                             .map_or(LineInterpolation::Linear, |l| l.interpolation),
                     )

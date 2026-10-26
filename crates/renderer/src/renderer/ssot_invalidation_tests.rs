@@ -1832,6 +1832,94 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
     );
 }
 
+/// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
+/// edit is a data declaration change whose first frame matches a fresh
+/// renderer's, is visible, re-uploads nothing, and an identical
+/// re-declaration keeps the frame.
+#[test]
+fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{DataLineStyleConfig, PointColorMap, StreamlineArrows};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline_with_colorbar();
+    config.legend.visible = false;
+    let mut series = declaration("s", "x", "a");
+    series.render_type = DataRenderType::Streamlines {
+        line: DataLineStyleConfig {
+            line_width: 1.5,
+            ..DataLineStyleConfig::default()
+        },
+        arrows: None,
+        color_map: None,
+    };
+    let (mut r, id) = fixture(&config, true, false);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    type Edit = fn(&mut Option<StreamlineArrows>, &mut Option<PointColorMap>);
+    let edits: [(&str, Edit); 6] = [
+        ("arrows", |arrows, _| {
+            *arrows = Some(StreamlineArrows {
+                spacing_px: 40.0,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+            });
+        }),
+        ("arrow spacing", |arrows, _| {
+            if let Some(arrows) = arrows {
+                arrows.spacing_px = 25.0;
+            }
+        }),
+        ("head width", |arrows, _| {
+            if let Some(arrows) = arrows {
+                arrows.head_width_px = 12.0;
+            }
+        }),
+        ("colour map", |_, color_map| {
+            *color_map = Some(PointColorMap { column: "a".into() });
+        }),
+        ("no arrows", |arrows, _| *arrows = None),
+        ("no colour map", |_, color_map| *color_map = None),
+    ];
+    for (name, apply) in edits {
+        let DataRenderType::Streamlines {
+            arrows, color_map, ..
+        } = &mut series.render_type
+        else {
+            unreachable!()
+        };
+        apply(arrows, color_map);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a render_type edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
+        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+    }
+}
+
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);

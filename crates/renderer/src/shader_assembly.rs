@@ -73,6 +73,10 @@ pub const MODULES: &[(&str, Assembled)] = &[
         "vector_grid",
         crate::data_render::vector::VECTOR_GRID_SHADER,
     ),
+    (
+        "vector_path",
+        crate::data_render::vector::VECTOR_PATH_SHADER,
+    ),
     ("pick_gate", crate::gpu_pick::PickShader::Gate.assembled()),
     (
         "pick_marker",
@@ -194,6 +198,10 @@ mod tests {
                 crate::gpu_pick::exact_variant::STYLED_LINE,
             ),
             ("PICK_VARIANT_POLAR", crate::gpu_pick::exact_variant::POLAR),
+            (
+                "PICK_VARIANT_PATH_ARROWS",
+                crate::gpu_pick::exact_variant::PATH_ARROWS,
+            ),
             ("STYLE_MASK_COLOR", dr::STYLE_MASK_COLOR),
             ("STYLE_MASK_RADIUS", dr::STYLE_MASK_RADIUS),
             ("STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),
@@ -498,6 +506,20 @@ mod tests {
                 }
             ),
             mirror!(
+                "line",
+                "PointValueMapParams",
+                PointValueMapParamsGpu {
+                    z_min,
+                    z_max,
+                    size_domain_min,
+                    size_domain_max,
+                    size_px,
+                    flags,
+                    stop_count,
+                    nan_color_premul,
+                }
+            ),
+            mirror!(
                 "vector_grid",
                 "VectorParams",
                 VectorParamsGpu {
@@ -523,7 +545,7 @@ mod tests {
                     head_width_px,
                     min_length_px,
                     aa_px,
-                    pad0,
+                    spacing_px,
                     pad1,
                     z_min,
                     z_max,

@@ -51,6 +51,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - **시리즈의 스타일 매핑 키 6개**도 `None`이면 생략한다. `DataScatterStyleConfig`의 `point_style_table` / `point_style_index_column` / `point_style_overrides`와 `DataErrorBarStyleConfig`의 `error_bar_style_table` / `error_bar_style_index_column` / `error_bar_style_overrides`가 해당한다.
 - **연속 값 매핑 키 2개**인 `DataScatterStyleConfig.point_color_map` / `point_size_map`도 `None`이면 생략한다. `point_color_map`은 `{ "column": "<id>" }`이며 색은 `Config.colorbar`가 정하므로 `colorbar`가 있어야 한다. `point_size_map`은 `{ "column": "<id>", "domain_min": 0.0, "domain_max": 10.0, "min_px": 2.0, "max_px": 12.0, "scale": "Area" }`이다. `scale`은 `"Area"`(기본값) 또는 `"Radius"`이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. 두 컬럼 모두 등록돼 있어야 하고 시리즈의 x/y 컬럼과 인덱스가 맞아야 한다. 자세한 내용은 [점 색·크기 매핑](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#점-색과-크기-매핑)을 참고한다.
 - **벡터 시리즈**의 `render_type`은 `{ "Vector": { "components": ..., "style": ... } }`이다. `components`는 `{ "Points": { "u": "<id>", "v": "<id>" } }` 또는 `{ "Grid": { "u": MatrixRef, "v": MatrixRef } }`이며, 격자 형식의 두 행렬은 `orientation`과 `grid_layout`이 같아야 한다. `style`(`VectorStyle`)의 필수 키는 `color`, `width_px`, `scale`, `head_length_px`, `head_width_px`다. `scale`은 `{ "Pixels": { "px_per_unit": 1.0 } }` 또는 `{ "Data": { "factor": 0.5 } }`다. `pivot`은 `"Tail"`(기본값)·`"Middle"`·`"Tip"` 중 하나이며, 입력에서는 생략할 수 있지만 출력에는 항상 들어 있다. `min_length_px`는 `0.0`이면, `color_map`은 `None`이면 생략한다. `color_map`은 점 형식에서 `{ "Column": "<id>" }`, 격자 형식에서 `{ "Grid": { "columns": [...], "orientation": "...", "grid_layout": "..." } }`이며 `Config.colorbar`가 있어야 한다. 전체 예는 [`Vector` render_type의 전체 형식](#vector-render_type의-전체-형식), 필드 의미는 [벡터장](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#벡터장)을 참고한다.
+- **유선 시리즈**의 `render_type`은 `{ "Streamlines": { "line": DataLineStyleConfig } }`이다. `arrows`(`{ "spacing_px": 70.0, "head_length_px": 9.0, "head_width_px": 8.0 }`)와 `color_map`(`{ "column": "<id>" }`)은 `None`이면 생략한다. `line.interpolation`은 `"Linear"`, `line.fill`은 없어야 하고, `color_map`이 있으면 `Config.colorbar`가 있어야 한다. 전체 예는 [`Streamlines` render_type](#streamlines-render_type), 필드 의미는 [유선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#유선)을 참고한다.
 - **개별 데이터의 스타일 키 7개**도 `None`이면 생략한다. `DataScatterPointStyleConfig`의 `point_color` / `point_shape` / `point_size`와 `DataErrorBarPointStyleConfig`의 `error_bar_color` / `error_bar_width` / `error_bar_cap_size` / `cap_width`가 해당한다. 모두 비어 있으면 `{}`로 직렬화한다. 개별 덮어쓰기 항목의 `style`은 한 단계 풀어서 저장하므로 같은 생략 규칙을 따른다.
 - `SeriesConfig.label`은 위 선택 키들과 달리 항상 존재하며 값으로 `null`을 가질 수 있다.
 - **선 스타일의 선택 키 3개**인 `DataLineStyleConfig.fill` / `fill_color` / `interpolation`은 기본값이면 생략한다. `fill`은 `{ "ToBaseline": 0.0 }` 또는 `{ "ToSeries": "<series_id>" }`이고, `fill_color`는 `Color`(생략하면 `line_color`의 알파를 0.25배 한 색), `interpolation`은 `"Linear"`(기본)·`"StepPre"`·`"StepPost"`·`"StepMid"`다. `ToSeries`는 같은 차트에서 같은 `x_column`을 쓰는 다른 시리즈를 가리켜야 하며, 두 시리즈 모두 상주 컬럼이어야 한다. 자세한 의미는 [면 채움과 계단선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#면-채움과-계단선)을 참고한다.
@@ -138,7 +139,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -697,7 +698,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 
 색상 막대는 다음 규칙을 따른다.
 
-- `Heatmap` / `Contour` / `HeatmapContour`, `point_color_map`이 있는 산점도 계열 시리즈, `color_map`이 있는 `Vector`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
+- `Heatmap` / `Contour` / `HeatmapContour`, `point_color_map`이 있는 산점도 계열 시리즈, `color_map`이 있는 `Vector`와 `Streamlines`에는 이 설정이 반드시 필요하다. Z축 범위와 색상표를 여기에서 읽으므로 없으면 시리즈를 거부한다.
 - 차트당 Z축 스케일은 하나이며 색상 막대를 쓰는 모든 시리즈(행렬, 색상 매핑 산점도, 색상 매핑 벡터)가 같은 범위와 색상표를 공유한다. 웹의 `auto_fit_colorbar(pad)`는 이 시리즈들이 매핑하는 모든 컬럼(행렬 값 컬럼, `point_color_map` 컬럼, 점 벡터 `color_map`의 컬럼, 격자 벡터 `color_map`의 모든 컬럼) 통계의 합집합으로 Z축을 맞춘다.
 - 색상 막대의 영역은 `gap_px + thickness_px + axis.out_margin + axis.major_tick_length`이며 해당 방향의 여백에 추가된다. Rust 모델의 `Config::fit_to_data_area`(`FitStrategy::ProportionalScale`)와 `Config::resize_chart_area_scaled`는 이 가운데 라벨 여백인 `axis.out_margin`만 비율에 맞춰 조절하고 `thickness_px`, `gap_px`, 눈금 길이는 유지한다.
 - 일반 축과 다른 기본값은 `line_visible: false`, `tick: "Outside"`, `title_option.visible: false`, `out_margin: 60.0`이다. 막대 테두리가 축선 역할을 하고 눈금은 라벨 공간에 놓이며, 기본 여백에는 제목 없이 눈금 라벨만 들어간다. `tick`은 `None` / `Outside` / `Inside` / `Both`로 눈금 방향을, `inverted`는 화면상의 값 증가 방향을 정한다. 눈금 모양은 축선의 `line_color` / `line_width` / `line_style`을 따른다.
@@ -1241,6 +1242,26 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 ```
 
 <a id="get_series-전체-형태--최대-변형-예시"></a>
+
+## `Streamlines` render_type
+
+호스트가 적분한 유선의 `render_type` 값 예다. 시리즈의 `x_column` / `y_column`에 모든 유선을 담고 유선 사이에 NaN 행을 둔다. `color_map`의 컬럼은 좌표 컬럼과 인덱스가 맞아야 한다. `arrows`와 `color_map`이 없는 문서는 두 키를 생략한 채 그대로 읽고 쓴다. 유선은 정밀 모드에서만 그리며, 극좌표 차트와 스트리밍 소스는 오류로 거부한다. 필드 의미는 [유선](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#유선)을 참고한다.
+
+```json
+{
+  "Streamlines": {
+    "line": {
+      "line_style": "Solid",
+      "line_color": { "r": 0.16, "g": 0.16, "b": 0.16, "a": 1.0 },
+      "line_width": 1.4
+    },
+    "arrows": { "spacing_px": 70.0, "head_length_px": 9.0, "head_width_px": 8.0 },
+    "color_map": { "column": "speed" }
+  }
+}
+```
+
+`step_selection(dx, dy)`는 선 시리즈처럼 꼭짓점을 옮기며 NaN 구분 행도 꼭짓점으로 센다. 선이나 머리를 `pick_point`로 누르면 그 선분의 가까운 끝점이 돌아온다.
 
 ## 모든 오차 방향을 포함한 `get_series()` 전체 형식
 

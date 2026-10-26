@@ -17,8 +17,8 @@ use renderer::data_config::{
     BarOrientation, ContourConfig, ContourLabelConfig, DataBarStyleConfig, DataErrorBarStyleConfig,
     DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, ErrorRef, FieldFillConfig,
     FillMode, GridLayout, LineFill, LineInterpolation, MatrixOrientation, MatrixRef, PointColorMap,
-    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, VectorColorMap, VectorComponents,
-    VectorPivot, VectorScale, VectorStyle,
+    PointSizeMap, ScatterShape, SeriesConfig, Shading, SizeScale, StreamlineArrows, VectorColorMap,
+    VectorComponents, VectorPivot, VectorScale, VectorStyle,
 };
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
@@ -43,6 +43,7 @@ pub enum SceneKind {
     Histogram,
     Field,
     VectorField,
+    Streamlines,
     LogAxes,
     TwinAxes,
     Subplots,
@@ -59,13 +60,14 @@ pub enum SceneKind {
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 19] = [
+    pub const ALL: [SceneKind; 20] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
         SceneKind::Histogram,
         SceneKind::Field,
         SceneKind::VectorField,
+        SceneKind::Streamlines,
         SceneKind::LogAxes,
         SceneKind::TwinAxes,
         SceneKind::Subplots,
@@ -89,6 +91,7 @@ impl SceneKind {
             SceneKind::Histogram => "Histogram",
             SceneKind::Field => "Heatmap · contours",
             SceneKind::VectorField => "Vector field (quiver)",
+            SceneKind::Streamlines => "Streamlines (dipole)",
             SceneKind::LogAxes => "Log axes",
             SceneKind::TwinAxes => "Twin Y axes (overlay)",
             SceneKind::Subplots => "Subplots (linked X)",
@@ -119,6 +122,12 @@ impl SceneKind {
                 "Arrows from (u, v) grids over a speed heatmap, coloured through the \
                  colourbar, plus pixel-scaled probe arrows. Pick an arrow or a cell to \
                  read u / v."
+            }
+            SceneKind::Streamlines => {
+                "Field lines of an electric dipole, integrated by the host and drawn as \
+                 NaN-separated polylines with arrowheads every 70 px, coloured by |E| \
+                 through a logarithmic colourbar. Pan or zoom: the heads keep their pixel \
+                 spacing. Pick a line or a head to read the vertex."
             }
             SceneKind::LogAxes => {
                 "Logarithmic Y with decade ticks, a logarithmic X under one decade with \
@@ -344,6 +353,7 @@ pub fn build(
         SceneKind::Histogram => histogram(r),
         SceneKind::Field => field(r),
         SceneKind::VectorField => vector_field(r),
+        SceneKind::Streamlines => streamlines(r),
         SceneKind::LogAxes => log_axes(r),
         SceneKind::TwinAxes => twin_axes(r),
         SceneKind::Subplots => subplots(r),
@@ -976,6 +986,104 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.set_y_range(0.0, 6.0);
     let speed_refs: Vec<&str> = s_ids.iter().map(String::as_str).collect();
     chart.auto_fit_colorbar_union(r.pool(), &speed_refs, 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+/// The electric field of a dipole, `+1` at `(-1, 0)` and `-1` at `(1, 0)`.
+fn dipole_field(x: f64, y: f64) -> (f64, f64) {
+    let mut e = (0.0, 0.0);
+    for (cx, q) in [(-1.0, 1.0), (1.0, -1.0)] {
+        let (dx, dy) = (x - cx, y);
+        let r3 = (dx * dx + dy * dy).powf(1.5).max(1e-9);
+        e.0 += q * dx / r3;
+        e.1 += q * dy / r3;
+    }
+    e
+}
+
+/// Field lines integrated by the host (the scene stands in for the host
+/// application; the renderer draws the paths it is given): RK4 steps along
+/// the unit field direction from seeds around the positive charge, until a
+/// line leaves the view or reaches the negative charge. Each streamline is
+/// followed by a NaN row in all three columns, which breaks the line.
+fn streamlines(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    let (mut xs, mut ys, mut speed) = (Vec::new(), Vec::new(), Vec::new());
+    let unit = |x: f64, y: f64| {
+        let (ex, ey) = dipole_field(x, y);
+        let l = ex.hypot(ey).max(1e-12);
+        (ex / l, ey / l)
+    };
+    let seeds = 16;
+    for k in 0..seeds {
+        let angle = (k as f64 + 0.5) / seeds as f64 * std::f64::consts::TAU;
+        let (mut x, mut y) = (-1.0 + 0.12 * angle.cos(), 0.12 * angle.sin());
+        let h = 0.02;
+        for _ in 0..1200 {
+            let (ex, ey) = dipole_field(x, y);
+            xs.push(x);
+            ys.push(y);
+            speed.push(ex.hypot(ey));
+            if !(-3.0..=3.0).contains(&x) || !(-2.0..=2.0).contains(&y) || (x - 1.0).hypot(y) < 0.1
+            {
+                break;
+            }
+            let k1 = unit(x, y);
+            let k2 = unit(x + 0.5 * h * k1.0, y + 0.5 * h * k1.1);
+            let k3 = unit(x + 0.5 * h * k2.0, y + 0.5 * h * k2.1);
+            let k4 = unit(x + h * k3.0, y + h * k3.1);
+            x += h / 6.0 * (k1.0 + 2.0 * k2.0 + 2.0 * k3.0 + k4.0);
+            y += h / 6.0 * (k1.1 + 2.0 * k2.1 + 2.0 * k3.1 + k4.1);
+        }
+        xs.push(f64::NAN);
+        ys.push(f64::NAN);
+        speed.push(f64::NAN);
+    }
+    let finite = |data: &[f64]| {
+        data.iter()
+            .filter(|v| v.is_finite())
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(*v), hi.max(*v))
+            })
+    };
+    for (id, data) in [("sl_x", xs), ("sl_y", ys), ("sl_speed", speed)] {
+        if r.handle_for(id).is_ok() {
+            continue;
+        }
+        let (min, max) = finite(&data);
+        r.add_column(id, &Column { data, min, max })?;
+    }
+    let field_lines = series(
+        "field lines",
+        "sl_x",
+        "sl_y",
+        DataRenderType::Streamlines {
+            line: line_style(Color::from_rgb8(40, 40, 40), 1.4),
+            arrows: Some(StreamlineArrows {
+                spacing_px: 70.0,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+            }),
+            color_map: Some(PointColorMap {
+                column: "sl_speed".into(),
+            }),
+        },
+    );
+    let series = vec![field_lines];
+    let mut config = base_config("Electric dipole: field lines", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.scale = renderer::config::AxisScale::Logarithmic;
+    bar.axis.title_option.text = RichText::plain("|E|", Color::BLACK, 12.0, "");
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(-3.0, 3.0);
+    chart.set_y_range(-2.0, 2.0);
+    chart.auto_fit_colorbar_union(r.pool(), &["sl_speed"], 0.0)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,

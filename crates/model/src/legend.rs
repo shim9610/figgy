@@ -368,6 +368,12 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),
+        // Streamlines read as their line; with arrowheads, as an arrow in
+        // the line colour. A colour map's colours belong to the colourbar.
+        DataRenderType::Streamlines { line, arrows, .. } => match arrows {
+            Some(_) => vector_symbol(line.line_color),
+            None => line_symbol(line.line_color, line.line_style, None),
+        },
         // A category bar is a filled swatch like a histogram bar.
         DataRenderType::CategoryBars { color, .. } => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)

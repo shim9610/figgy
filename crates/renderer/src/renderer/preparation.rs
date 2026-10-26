@@ -51,6 +51,7 @@ impl PreparationFeature {
             Self::Basic => matches!(
                 field,
                 "line"
+                    | "line_mapped"
                     | "area"
                     | "scatter"
                     | "scatter_mapped"
@@ -105,7 +106,10 @@ impl PreparationFeature {
                 DataRenderType::Heatmap { .. }
                 | DataRenderType::Contour { .. }
                 | DataRenderType::HeatmapContour { .. }
-                | DataRenderType::Vector { .. } => Self::Fields,
+                | DataRenderType::Vector { .. }
+                // Streamline lines draw through the line pipelines (always
+                // prepared) and their arrowheads through a vector pipeline.
+                | DataRenderType::Streamlines { .. } => Self::Fields,
                 DataRenderType::Scatter { .. }
                 | DataRenderType::Line { .. }
                 | DataRenderType::ScatterLine { .. }
@@ -277,6 +281,7 @@ impl Renderer {
         match feature {
             PreparationFeature::Basic => {
                 p.line.is_some()
+                    && p.line_mapped.is_some()
                     && p.scatter.is_some()
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
@@ -308,6 +313,7 @@ impl Renderer {
                     && p.contour_label.is_some()
                     && p.vector_points.is_some()
                     && p.vector_grid.is_some()
+                    && p.vector_path.is_some()
                     && self.contour_label_pipelines.is_some()
             }
             PreparationFeature::Picking => matches!(
@@ -390,6 +396,7 @@ impl TargetPipelines {
             sample_count: source.sample_count,
             styled: HashMap::new(),
             line: None,
+            line_mapped: None,
             area: None,
             scatter: None,
             scatter_mapped: None,
@@ -416,11 +423,15 @@ impl TargetPipelines {
             contour_label: None,
             vector_points: None,
             vector_grid: None,
+            vector_path: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
         if self.line.is_none() {
             self.line = other.line;
+        }
+        if self.line_mapped.is_none() {
+            self.line_mapped = other.line_mapped;
         }
         if self.area.is_none() {
             self.area = other.area;
@@ -481,6 +492,9 @@ impl TargetPipelines {
         }
         if self.vector_grid.is_none() {
             self.vector_grid = other.vector_grid;
+        }
+        if self.vector_path.is_none() {
+            self.vector_path = other.vector_path;
         }
         if self.field.is_none() {
             self.field = other.field;

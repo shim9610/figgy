@@ -183,6 +183,10 @@ pub(super) struct TargetPipelines {
     pub(super) shaders: data_render::ShaderModules,
     pub(super) axis: wgpu::RenderPipeline,
     pub(super) line: Option<wgpu::RenderPipeline>,
+    /// The colour-mapped stroke (`vs_main_mapped` / `fs_main_mapped`) of a
+    /// streamline series with a colour column: the line slots plus the value
+    /// column, group 3 the point value map.
+    pub(super) line_mapped: Option<wgpu::RenderPipeline>,
     /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
     /// series declares a fill. Used in every draw style: the fill is a flat
     /// precise primitive under whatever the style draws for the line.
@@ -233,6 +237,9 @@ pub(super) struct TargetPipelines {
     /// The assembled vector pipelines, one per input form (`vector.rs`).
     pub(super) vector_points: Option<wgpu::RenderPipeline>,
     pub(super) vector_grid: Option<wgpu::RenderPipeline>,
+    /// The streamline arrowheads (`VectorInput::Path`), drawn indirect over
+    /// the arc slots.
+    pub(super) vector_path: Option<wgpu::RenderPipeline>,
     pub(super) sample_count: u32,
     pub(super) styled: HashMap<StyleKey, StyleSet>,
 }
@@ -283,6 +290,7 @@ impl TargetPipelines {
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        star_data_bgl: &wgpu::BindGroupLayout,
         category_bar_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
@@ -290,10 +298,12 @@ impl TargetPipelines {
     ) {
         let mut need_vector_points = false;
         let mut need_vector_grid = false;
+        let mut need_vector_path = false;
         let mut need_field = false;
         let mut need_contour = false;
         let mut need_contour_label = false;
         let mut need_line = false;
+        let mut need_line_mapped = false;
         let mut need_area = false;
         let mut need_scatter = false;
         let mut need_errorbar = false;
@@ -365,6 +375,19 @@ impl TargetPipelines {
                 // point, so it needs no line pipeline at all any more.
                 need_contour |= primitives.contour;
                 need_line |= primitives.line;
+                // Streamline arrowheads draw through the path vector pipeline.
+                need_vector_path |= primitives.line
+                    && series
+                        .config
+                        .render_type
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.arrows.is_some());
+                need_line_mapped |= primitives.line
+                    && series
+                        .config
+                        .render_type
+                        .streamlines()
+                        .is_some_and(|streamlines| streamlines.color_map.is_some());
                 need_contour_label |=
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
                 need_scatter |= primitives.scatter;
@@ -431,6 +454,17 @@ impl TargetPipelines {
                     self.sample_count,
                 ),
             );
+        }
+        if need_line_mapped && self.line_mapped.is_none() {
+            self.line_mapped = Some(data_render::create_line_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                point_value_map_bgl,
+                surface_format,
+                self.sample_count,
+            ));
         }
         if need_area && self.area.is_none() {
             self.area = Some(data_render::create_line_area_pipeline_with_sample_count(
@@ -637,10 +671,12 @@ impl TargetPipelines {
         for (need, input) in [
             (need_vector_points, data_render::vector::VectorInput::Points),
             (need_vector_grid, data_render::vector::VectorInput::Grid),
+            (need_vector_path, data_render::vector::VectorInput::Path),
         ] {
             let slot = match input {
                 data_render::vector::VectorInput::Points => &mut self.vector_points,
                 data_render::vector::VectorInput::Grid => &mut self.vector_grid,
+                data_render::vector::VectorInput::Path => &mut self.vector_path,
             };
             if need && slot.is_none() {
                 *slot = Some(
@@ -650,6 +686,7 @@ impl TargetPipelines {
                         transform_bgl,
                         style_bgl,
                         vector_bgl,
+                        star_data_bgl,
                         surface_format,
                         self.sample_count,
                         input,
@@ -804,6 +841,19 @@ impl TargetPipelines {
                 &self.shaders.line,
                 transform_bgl,
                 style_bgl,
+                surface_format,
+                self.sample_count,
+            )
+        );
+        ensure!(
+            line_mapped,
+            "colour-mapped line",
+            data_render::create_line_mapped_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                point_value_map_bgl,
                 surface_format,
                 self.sample_count,
             )
@@ -1094,9 +1144,25 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 vector_bgl,
+                star_data_bgl,
                 surface_format,
                 self.sample_count,
                 data_render::vector::VectorInput::Points,
+            )
+        );
+        ensure!(
+            vector_path,
+            "vector path",
+            data_render::vector::create_vector_pipeline_with_sample_count(
+                device,
+                &self.shaders.vector_path,
+                transform_bgl,
+                style_bgl,
+                vector_bgl,
+                star_data_bgl,
+                surface_format,
+                self.sample_count,
+                data_render::vector::VectorInput::Path,
             )
         );
         ensure!(
@@ -1108,6 +1174,7 @@ impl TargetPipelines {
                 transform_bgl,
                 style_bgl,
                 vector_bgl,
+                star_data_bgl,
                 surface_format,
                 self.sample_count,
                 data_render::vector::VectorInput::Grid,
@@ -1256,6 +1323,7 @@ pub(super) fn create_target_pipelines_observed(
     TargetPipelines {
         vector_points: None,
         vector_grid: None,
+        vector_path: None,
         axis: observe_value(
             observer,
             "renderer",
@@ -1271,6 +1339,7 @@ pub(super) fn create_target_pipelines_observed(
             },
         ),
         line: None,
+        line_mapped: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -1350,7 +1419,9 @@ pub(super) async fn create_target_pipelines_observed_async(
         axis,
         vector_points: None,
         vector_grid: None,
+        vector_path: None,
         line: None,
+        line_mapped: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -2254,6 +2325,7 @@ impl Renderer {
         // Recreate only the lazy variants that were already live so a format
         // change does not re-eager unused data/mapped/ring pipelines.
         let had_line = self.pipelines.line.is_some();
+        let had_line_mapped = self.pipelines.line_mapped.is_some();
         let had_area = self.pipelines.area.is_some();
         let had_scatter = self.pipelines.scatter.is_some();
         let had_errorbar = self.pipelines.errorbar.is_some();
@@ -2283,6 +2355,18 @@ impl Renderer {
                     target_sample_count,
                 ),
             );
+        }
+        if had_line_mapped {
+            self.pipelines.line_mapped =
+                Some(data_render::create_line_mapped_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.line,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.point_value_map_bgl,
+                    surface_format,
+                    target_sample_count,
+                ));
         }
         if had_area {
             self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(

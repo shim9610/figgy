@@ -1336,6 +1336,13 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::CategoryBars { .. }
         // Category indices and values too.
         | DataRenderType::Radar { .. } => {}
+        // The polylines are its x and y columns; the colour column is
+        // referenced like a scatter's colour map.
+        DataRenderType::Streamlines { color_map, .. } => {
+            if let Some(map) = color_map {
+                visit(&map.column);
+            }
+        }
         // Its positions are its x column and its record its y column; the
         // outliers are a referenced ragged column like a matrix' columns, so
         // replacing or removing them invalidates the series.
@@ -1522,6 +1529,35 @@ pub(super) fn validate_renderer_series(
         if let Some((components, style)) = extract_vector(&item.render_type) {
             validate_vector_series(pool, config, item, components, style)?;
         }
+        validate_streamline_series(pool, config, item)?;
+    }
+    Ok(())
+}
+
+/// A streamline series' rules: its own (`data_config::validate_streamline_series`:
+/// a linear line without a fill and valid arrows), a registered colour
+/// column, and the colourbar a colour map maps through.
+pub(super) fn validate_streamline_series(
+    pool: &impl ColumnRegistration,
+    config: &Config,
+    item: &SeriesConfig,
+) -> Result<()> {
+    let Some(streamlines) = item.render_type.streamlines() else {
+        return Ok(());
+    };
+    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+        series_id: item.series_id.clone(),
+        reason: reason.to_owned(),
+    };
+    crate::data_config::validate_streamline_series(item).map_err(invalid)?;
+    if let Some(map) = streamlines.color_map {
+        validate_registered_column(pool, &map.column)?;
+        if config.colorbar.is_none() {
+            return Err(invalid(
+                "colour-mapped streamlines need Config.colorbar: it owns the z range and \
+                 colormap, so without it there is no colour to draw",
+            ));
+        }
     }
     Ok(())
 }
@@ -1538,7 +1574,7 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
 
 /// The series a polar chart draws: scatter markers, lines (with fills) and
 /// radar polygons. Histograms, fields, contours, error bars, vectors,
-/// category bars and box plots have no polar form and are rejected rather
+/// category bars, box plots and streamlines have no polar form and are rejected rather
 /// than drawn on the wrong axes; an arc interpolation needs a linearly
 /// interpolated line.
 /// The radar rules of a chart, at registration and at export: a polar chart
@@ -1595,6 +1631,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::BoxPlot { .. } => {
             return Err(invalid("box plots are not drawn on polar axes"));
+        }
+        DataRenderType::Streamlines { .. } => {
+            return Err(invalid("streamlines are not drawn on polar axes"));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

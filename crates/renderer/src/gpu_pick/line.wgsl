@@ -250,10 +250,107 @@ fn pick_stroke_candidate(
     );
 }
 
+// The arrowheads a streamline series draws on segment `segment_index`
+// (SHADER_COMMON.md §5.3 path form, §5.8): the slots nearest the cursor's
+// arc position on the segment, each placed by the draw's
+// `path_arrow_on_segment`, projected in pixel mode one head long along the
+// tangent through the axes' pixel-per-unit Jacobian and measured by the
+// glyph's `arrow_place` / `arrow_distance`. A hit is the segment's line
+// candidate naming its nearer endpoint, as the stroke's does; it is drawn
+// under the stroke, so it only wins where the stroke is farther.
+fn pick_path_arrow_candidate(
+    segment_index: u32,
+    ax: vec2<f32>,
+    ay: vec2<f32>,
+    bx: vec2<f32>,
+    by: vec2<f32>,
+) -> PickCandidate {
+    let series_order = pick_query_params.series.y;
+    let spacing = pick_query_params.vector_min.y;
+    let next = segment_index + 1u;
+    if !(spacing > 0.0) || pick_query_params.line.y == 0u || next >= pick_query_params.data.x {
+        return pick_invalid_candidate(series_order);
+    }
+    if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
+        return pick_invalid_candidate(series_order);
+    }
+    let arc_a = pick_arc[segment_index];
+    let arc_b = pick_arc[next];
+    if !(arc_b > arc_a) {
+        return pick_invalid_candidate(series_order);
+    }
+    let a_px = pick_project_pair(ax, ay);
+    let b_px = pick_project_pair(bx, by);
+    let segment = b_px - a_px;
+    let length_sq = dot(segment, segment);
+    if !pick_is_finite(length_sq) || !(length_sq > 0.0) {
+        return pick_invalid_candidate(series_order);
+    }
+    let cursor = pick_query_params.cursor_chart.xy;
+    let position = clamp(dot(cursor - a_px, segment) / length_sq, 0.0, 1.0);
+    let cursor_arc = arc_a + position * (arc_b - arc_a);
+    let px = pick_query_params.vector_px;
+    let tr = pick_query_params.transform;
+    let range_x = fma(1.0, tr.data_max.x - tr.data_min.x, tr.data_max_lo.x - tr.data_min_lo.x);
+    let range_y = fma(1.0, tr.data_max.y - tr.data_min.y, tr.data_max_lo.y - tr.data_min_lo.y);
+    let nearest = round(cursor_arc / spacing - 0.5);
+    var best = PICK_F32_MAX;
+    for (var k = -1; k <= 1; k = k + 1) {
+        let slot = nearest + f32(k);
+        if slot < 0.0 {
+            continue;
+        }
+        let head = path_arrow_on_segment(ax, ay, bx, by, arc_a, arc_b, (slot + 0.5) * spacing);
+        if !head.valid {
+            continue;
+        }
+        // `project_arrow`'s pixel mode at the head's point, in this
+        // shader's y-up frame.
+        let tail = pick_flip(pick_project_pair(head.x, head.y));
+        let direction = vec2<f32>(
+            axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x, tr.scale_log.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
+            axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y, tr.scale_log.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
+        );
+        let direction_len = length(direction);
+        let len_px = px.x * length(head.tangent);
+        if !pick_is_finite(tail.x) || !pick_is_finite(tail.y) || !pick_is_finite(direction_len) || !(direction_len > 0.0) || !pick_is_finite(len_px) {
+            continue;
+        }
+        let tip = tail + direction * (len_px / direction_len);
+        let placed = arrow_place(tail, tip, ArrowStyle(0.0, px.z, px.w, 0.0, ARROW_PIVOT_MIDDLE));
+        if !placed.valid {
+            continue;
+        }
+        best = min(best, max(arrow_distance(pick_flip(cursor), placed, 0.0), 0.0));
+    }
+    let distance = max(best, pick_polar_clip_distance());
+    let distance_sq = distance * distance;
+    let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
+    if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {
+        return pick_invalid_candidate(series_order);
+    }
+    let coordinate_scale = max(max(max(abs(a_px.x), abs(a_px.y)), max(abs(b_px.x), abs(b_px.y))), 1.0);
+    let point_index = pick_segment_endpoint(segment_index, position, coordinate_scale, sqrt(length_sq));
+    return PickCandidate(
+        1u,
+        series_order,
+        pick_source_row(point_index),
+        PICK_KIND_LINE,
+        pick_source_row(segment_index),
+        distance_sq,
+        distance,
+        0u,
+    );
+}
+
 // A line series' segment primitive: the stroke and, when the line has a fill
 // (`PICK_VARIANT_AREA`, a non-zero filled segment count), the fill under the
-// segment. The fill only picks inside it, at distance zero, and loses every
-// tie (`pick_candidate_is_better`), so a stroke over it keeps picking.
+// segment, and a streamline series' arrowheads on it
+// (`PICK_VARIANT_PATH_ARROWS`, a non-zero spacing). The fill only picks
+// inside it, at distance zero, and loses every tie
+// (`pick_candidate_is_better`), so a stroke over it keeps picking; an
+// arrowhead is the stroke's kind and segment, so it wins only where it is
+// nearer than the stroke.
 fn pick_line_candidate(
     segment_index: u32,
     ax: vec2<f32>,
@@ -261,13 +358,19 @@ fn pick_line_candidate(
     bx: vec2<f32>,
     by: vec2<f32>,
 ) -> PickCandidate {
-    let stroke = pick_stroke_candidate(segment_index, ax, ay, bx, by);
+    var best = pick_stroke_candidate(segment_index, ax, ay, bx, by);
+    if pick_variant(PICK_VARIANT_PATH_ARROWS) && pick_query_params.vector_min.y > 0.0 {
+        let heads = pick_path_arrow_candidate(segment_index, ax, ay, bx, by);
+        if pick_candidate_is_better(heads, best) {
+            best = heads;
+        }
+    }
     if !pick_variant(PICK_VARIANT_AREA) || pick_query_params.area.y == 0u {
-        return stroke;
+        return best;
     }
     let fill = pick_area_candidate(segment_index, ax, ay, bx, by);
-    if pick_candidate_is_better(fill, stroke) {
+    if pick_candidate_is_better(fill, best) {
         return fill;
     }
-    return stroke;
+    return best;
 }

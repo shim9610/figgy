@@ -217,6 +217,10 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// from the last point back to the first is a candidate too, naming its
     /// nearer endpoint. Such a series scans every point directly.
     pub(crate) line_closed: bool,
+    /// A streamline series' arrowheads along its line (`line_width_px` must
+    /// be set too: they are part of the line primitive), in logical pixels.
+    /// The exact pass binds the line's arc prefix for them.
+    pub(crate) path_arrows: Option<crate::data_config::StreamlineArrows>,
 }
 
 /// The error bars of a marker series as the error-bar shader draws them
@@ -826,6 +830,8 @@ pub(super) struct PickSeriesGpu {
     pub(super) line_step_mode: u32,
     /// [`GpuPickSeriesDescriptor::line_closed`].
     pub(super) line_closed: bool,
+    /// [`GpuPickSeriesDescriptor::path_arrows`].
+    pub(super) path_arrows: Option<crate::data_config::StreamlineArrows>,
     /// The dash pattern in logical pixels and how many of its lengths count.
     pub(super) line_dash: [f32; 8],
     pub(super) line_dash_len: u32,

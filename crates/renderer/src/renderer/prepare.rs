@@ -133,6 +133,7 @@ impl PrepareContext<'_> {
             &self.data_selection_bgl,
             &self.field_bgl,
             self.vector_bgl,
+            self.star_data_bgl,
             self.category_bar_data_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,

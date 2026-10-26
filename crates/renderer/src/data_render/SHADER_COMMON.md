@@ -37,13 +37,15 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
-| `ramp.wgsl` (§5.4) | field, scatter, vector, bar (read by `marker.wgsl`), the pick marker and vector modules |
+| `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
+| `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
+| `path_arrow.wgsl` (§5.3 path form) | the path vector module, the pick line modules |
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
-| `arrow.wgsl` (§5.8) | vector, the pick vector module |
+| `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector |
 | `material.wgsl` (§5.9) | bar (category bars, box plots), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
@@ -436,6 +438,12 @@ point (non-finite size value) carries a negative radius and is masked unless an
 override sets its radius. Nothing derived per point is uploaded: colour and
 radius are computed on every draw from the bound columns.
 
+The colour-mapped stroke of a streamline series (§5.6) binds the same
+group 3 in its mapped line pipeline and reads it in the fragment stage, so
+the layout is visible to both stages. The line module declares its own copy
+of `PointValueMapParams` (held to the Rust struct like the scatter one) and
+its stop lookup `line_value_ramp`; the ramp is the shared one.
+
 ### 5.3 Vector fields — group 2 (assembled vector shader)
 
 The vector shader is not one file: `VECTOR_POINTS_SHADER` /
@@ -447,6 +455,29 @@ The vector shader is not one file: `VECTOR_POINTS_SHADER` /
 the `grid_pair` and `data_pick` fragments), `common/arrow.wgsl` and
 `vector/vector_entry.wgsl`, in that order. The grid input places an `Edges`
 arrow on the field's cell centre with the field's own `midpoint_grid_pair`.
+
+**Path form.** `VECTOR_PATH_SHADER` draws a streamline series' arrowheads
+(`DataRenderType::Streamlines` with `arrows`): the point form's fragments
+with `vector/vector_input_path.wgsl` as the input, which splices
+`common/arc_walk.wgsl` (§5.6 arc slots) and `common/path_arrow.wgsl`. The
+pipeline layout adds group 3, the arc slot data of the line's arc scan
+(the arc prefix, the pool and `StarVsParams`), and the draw is indirect:
+the scan runs with the arrow spacing in render pixels as its slot pitch,
+and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (at
+most `STAR_MAX_SLOTS`). Slot `i` sits at arc `(i + 0.5) * spacing`
+(`VectorParams.spacing_px`): `arc_walk_segment` finds its segment (a slot
+past the arc, on a NaN gap, on a segment with an invalid sample or past
+`count`, the shortest of the coordinate and colour columns, draws nothing),
+and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)` gives the
+data-space point at the arc fraction (hi/lo pairs through `pair_add`), the
+unit data-space tangent of the segment and the fraction. The colour value
+is interpolated between the two samples as the colour-mapped stroke
+interpolates it (§5.6). The projection runs in pixel mode with
+`scale = head_length_px`, so the arrow is one head long along the tangent,
+and the glyph places it with the middle pivot and no shaft: a head centred
+on its slot. On linear axes the point lies on the drawn segment; on a
+logarithmic axis the data-space interpolation is a sub-pixel off the drawn
+chord, and the pick follows the same function (§5.8).
 
 Group 2 is the series' data. Binding 0 is the column pool as read-only
 storage (hi/lo pairs, like the field shader's binding 0). Binding 1 is the
@@ -593,6 +624,35 @@ candidates and `pick_segment_endpoint` take their B endpoint from it, and
 a closed line is scanned directly (no gate texture). A closed fill's
 segment count is the vertex count.
 
+**Colour-mapped stroke.** A streamline series with a colour column draws
+its stroke with `vs_main_mapped` / `fs_main_mapped`: the precise stroke of
+`vs_main` (its body is `line_vertex`), with the value column bound as
+vertex slots 6/7 (hi/lo pairs, one value shifted like x / y; eight slots,
+the WebGPU default limit) and the point value map as group 3 (§5.2); the
+pipeline layout holds the value map's layout at group 2 too, bound to the
+renderer's neutral value map, which the shader does not read. Each corner
+carries the value at its position along the unclipped segment (square cap
+and viewport clip included), so the fragment's interpolated value runs
+linearly from A's to B's along the drawn segment, and `line_value_color`
+maps it through the colourbar's ramp (`nan_color` where it cannot be
+placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
+
+**Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
+slot along the polyline's total pixel arc, the count the scan's
+`star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
+ceil(total / pitch))`, at most `STAR_MAX_SLOTS`). Its vertex stage binds
+no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
+(`n_points`, the x / y lane bases and the step mode word; CPU twin
+`line_arc.rs::StarVsParams`, layout
+`stylized.rs::create_star_data_bind_group_layout`), and
+`arc_walk_segment(n, arc)` finds the segment holding a slot's arc
+position by binary search over the prefix: the last `g` with
+`star_arc[g] <= arc`, at most `n - 2`. A NaN gap adds nothing to the
+prefix, so a slot on a gap's boundary lands on a zero-length segment or
+on the drawn one after it, and a caller drops a slot whose segment has no
+arc length. The declarations and the search are the fragment
+[`data_render/common/arc_walk.wgsl`](common/arc_walk.wgsl).
+
 The stroke constants, `line_stroke_distance`, `dash_pattern_on` and `sketch_line_offset` are the fragment [`data_render/common/line_stroke.wgsl`](common/line_stroke.wgsl), spliced into the line and pick modules by `wgsl_module!` (`shader_assembly.rs`). The noise they use is [`data_render/common/sketch_noise.wgsl`](common/sketch_noise.wgsl).
 
 ### 5.7 Styled markers
@@ -644,6 +704,24 @@ few ulps whose round end the draw painted and the pick did not.
 
 CPU twin: `cpu_twin::vector_arrow_distance` with `arrow_place` /
 `arrow_distance`.
+
+**Streamline arrowheads** pick with their line: under
+`PICK_VARIANT_PATH_ARROWS` (128), `pick_line_candidate` also runs
+`pick_path_arrow_candidate` for the segment. The exact pass binds the
+line's arc prefix (`pick_arc`, scanned with the arrow pitch, the draw's
+cache key), and `PickQueryParams.vector_min.y` is the spacing in canvas
+pixels and `vector_px` the head (length, 0, length, width). The segment
+tests the three slots nearest the cursor's arc position on it (the
+cursor projected onto the segment), each through the draw's
+`path_arrow_on_segment`, the pixel-mode projection one head long along
+the tangent through `axis_px_per_unit_at`, `arrow_place` with the middle
+pivot and no shaft, and `arrow_distance`. A hit is the segment's
+`PICK_KIND_LINE` candidate naming its nearer endpoint by the stroke's
+rule; the heads are drawn under the stroke, so an exact tie keeps the
+stroke. The per-axis gate reach (`line_px.z`) grows by a head's half
+diagonal, since a head is centred on the path. The pick line modules
+splice `arrow.wgsl` and `path_arrow.wgsl` for it; the CPU twin does not
+model the heads, which `pick_draw_agreement` holds to the paint.
 
 The glyph (the `ARROW_*` constants, `ArrowStyle`, `ArrowPlacement` and the `arrow_*` functions), `pair_add` and `axis_px_per_unit_at` are the fragment [`data_render/common/arrow.wgsl`](common/arrow.wgsl), spliced into the vector modules and the pick vector module by `wgsl_module!` (`shader_assembly.rs`).
 

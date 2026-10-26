@@ -880,6 +880,7 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
     (
         &[
             "data_render/vector/vector_input_grid.wgsl",
+            "data_render/vector/vector_input_path.wgsl",
             "data_render/vector/vector_input_points.wgsl",
         ],
         &["vector_sample"],

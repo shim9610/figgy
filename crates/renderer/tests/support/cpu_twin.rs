@@ -570,8 +570,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         // A vector series is picked at its anchors through `extract_vector`.
         | DataRenderType::Vector { .. }
         // The twin does not model the closed radar outline; its GPU pick is
-        // held to the painted pixels by `pick_draw_agreement`.
-        | DataRenderType::Radar { .. } => None,
+        // held to the painted pixels by `pick_draw_agreement`. Nor the
+        // arrowheads along streamlines, held to the paint the same way.
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -594,7 +596,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::Vector { .. }
         // Radar vertex markers: see `extract_line`.
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 

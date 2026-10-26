@@ -5,12 +5,20 @@
 use super::*;
 
 /// Whether the line `series` draws under `draw_style` walks its arc prefix:
-/// a dashed stroke takes its dash phase from it and a sketch stroke its
-/// wobble. A Milkyway ribbon is never dashed and its stars are picked by
-/// their envelope, so it needs none.
+/// a dashed stroke takes its dash phase from it, a sketch stroke its wobble
+/// and a streamline series' arrowheads their slots. A Milkyway ribbon is
+/// never dashed and its stars are picked by their envelope, so it needs
+/// none.
 pub(super) fn line_pick_walks_arc(draw_style: &DrawStyle, series: &SeriesConfig) -> bool {
     if !effective_series_primitives(draw_style, &series.render_type).line {
         return false;
+    }
+    if series
+        .render_type
+        .streamlines()
+        .is_some_and(|streamlines| streamlines.arrows.is_some())
+    {
+        return true;
     }
     let Some(line) = extract_line(&series.render_type) else {
         return false;
@@ -69,6 +77,9 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         | DataRenderType::LineScatterErrorbarY { line, .. }
         | DataRenderType::LineScatterErrorbarXY { line, .. } => Some(Cow::Borrowed(line)),
         DataRenderType::Radar { .. } => rt.radar().map(|radar| Cow::Owned(radar.line_style())),
+        // Streamlines are drawn by the line path: their polylines, NaN rows
+        // breaking them, are this line.
+        DataRenderType::Streamlines { line, .. } => Some(Cow::Borrowed(line)),
         DataRenderType::Scatter { .. }
         | DataRenderType::ScatterErrorbarX { .. }
         | DataRenderType::ScatterErrorbarY { .. }
@@ -116,7 +127,10 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         // and legend mark (`extract_vector`).
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        // Arrowheads are not markers either; they are drawn along the line
+        // by the vector glyph (`DataRenderType::streamlines`).
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -168,7 +182,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -203,7 +218,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -237,7 +253,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -268,7 +285,8 @@ pub(super) fn extract_vector(
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -299,6 +317,25 @@ pub(super) fn series_draw_info_from_pool(
         // A polyline draws one segment between adjacent points.
         DataRenderType::Line { .. } => {
             let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count.saturating_sub(1),
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        // Streamlines are a polyline too, NaN separators included; a colour
+        // column is index-aligned with the coordinates and bounds them.
+        DataRenderType::Streamlines { color_map, .. } => {
+            let mut lengths = [x, y, 0];
+            let used = match color_map {
+                Some(map) => {
+                    lengths[2] = len(&map.column);
+                    3
+                }
+                None => 2,
+            };
+            let (count, truncated) = paired(&lengths[..used]);
             SeriesDrawInfo {
                 drawn_count: count.saturating_sub(1),
                 cols: None,
@@ -482,7 +519,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -513,7 +551,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -535,7 +574,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 
@@ -557,7 +597,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => None,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => None,
     }
 }
 

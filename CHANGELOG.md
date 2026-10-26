@@ -22,12 +22,29 @@ new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection and
-the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
+the `CategoryBars`, `BoxPlot`, `Radar` and `Streamlines` series kinds) are
+additive.
 
 <a id="unreleased-model"></a>
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
+  item 22b). `DataRenderType::Streamlines { line, arrows, color_map }`
+  declares host-integrated field lines: every streamline of the series in
+  its `x_column` / `y_column`, one after another, separated by a NaN row.
+  `arrows: Option<StreamlineArrows { spacing_px, head_length_px,
+  head_width_px }>` puts an arrowhead every `spacing_px` along the drawn
+  path; `color_map: Option<PointColorMap>` colours the line and the heads by
+  a host column through `Config.colorbar`. The host integrates the field and
+  supplies any magnitude: the renderer computes neither. Both options are
+  skipped when `None`, so the variant is additive on the wire.
+  `validate_streamline_series` holds a series to a linear line without a
+  fill and finite arrows with `spacing_px >= head_length_px`;
+  `DataRenderType::streamlines()` borrows the fields. `step_selection`
+  walks the vertices, NaN separators included; the legend shows an arrow in
+  the line colour; `ColorCycle` recolours the line. Migration: an exhaustive
+  `match` on `DataRenderType` needs a `Streamlines` arm.
 - **`layout::auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44),
   #58 item 18). `auto_layout(&cfg, &measure) -> Config` returns the SSOT with
   axis bands, axis title offsets and tick-label formats chosen so its tick
@@ -602,6 +619,33 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 <a id="unreleased-renderer"></a>
 
 ### Renderer (`figgy-renderer` 0.19.0)
+
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
+  item 22b). A `Streamlines` series draws its polylines through the line
+  path (dashes, picking and the picked ring included) and its arrowheads
+  through the vector glyph (rule 9): the line's arc prefix is scanned with
+  the arrow spacing as the slot pitch, the scan's indirect kernel counts the
+  slots, and the new path input of the vector shader
+  (`VectorInput::Path`, `VECTOR_PATH_SHADER`, `vector/vector_input_path.wgsl`)
+  places a head centred on each slot at `(k + 0.5) * spacing` of drawn arc,
+  along the segment's tangent, through `common/arc_walk.wgsl` (the star
+  pass's slot search, moved there unchanged) and `common/path_arrow.wgsl`.
+  The heads keep their pixel spacing under pans, zooms and every export
+  scale, skip NaN gaps and draw under the stroke. A colour column draws the
+  stroke through the new mapped line pipeline (`vs_main_mapped` /
+  `fs_main_mapped`, the value column in vertex slots 6/7, the point value
+  map as group 3) and colours the heads through the vector colour map; the
+  value is interpolated along each segment. Heads pick with their line
+  (`PICK_VARIANT_PATH_ARROWS`), naming the segment's nearer endpoint.
+  Precise draw style only; polar charts and streamed sources are rejected
+  with `InvalidSeriesConfig`. Placement is in data space: exact on linear
+  axes, a sub-pixel off the drawn chord on a logarithmic one, the pick
+  following the draw. The point value map layout is now visible to the
+  fragment stage. Migration: an exhaustive `match` on
+  `data_render::vector::VectorInput` needs a `Path` arm;
+  `ColumnVectorLayer` literals gain `indirect: None`, `ColumnLineLayer`
+  literals `value_map: None`; `VectorParamsGpu::pad0` is now `spacing_px`
+  (zero for the point and grid forms).
 
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50),
   #58 item 22a). A document with `line_offsets` draws each member as an
@@ -1237,6 +1281,12 @@ the `CategoryBars`, `BoxPlot` and `Radar` series kinds) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
+  `set_series` / `get_series` read and write the `"Streamlines"` render
+  type; `pick_point`, `step_selection`, the column references and
+  `auto_fit_colorbar` (the colour column) cover it. No new binding;
+  `SCHEMA.md` gives the form.
+
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
   `"line_offsets"` is read and written by `set_config` / `get_config` (on a
   subplot's `config` too) and omitted when absent; `pick_point`,
@@ -1474,6 +1524,20 @@ entries above describe the changes.
 
 ### Tests and guards
 
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
+  `vector_render` places the heads at fixed arc spacing along the tangent,
+  skips NaN gaps, keeps their pixel spacing at 1x and 2x and under pans,
+  colours line and heads through the colourbar, holds the slot draw to
+  `ARROW_VERTICES`, draws the picked ring, and scales streamlines by an
+  overlay axis and inside a subplot; `pick_draw_agreement` holds stroke and
+  heads to their paint (solid and dashed, plain and colour-mapped, linear
+  and logarithmic y); the model, the registration and SSOT tests cover the
+  rules, the round trip, `step_selection`, the polar and streaming
+  rejections and edits of `arrows` and `color_map`. The playground catalogue
+  gains a `Streamlines` scene (a host-integrated dipole with a logarithmic
+  speed colourbar), which the decoration oracle sweeps in both passes with
+  no exclusion.
+
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
   The playground catalogue gains an `OffsetSpectra` scene (twelve stacked
   Gaussian spectra, the first filled to its baseline, a skew along x and a
@@ -1695,6 +1759,12 @@ entries above describe the changes.
   its selftest exports every scene in the three formats.
 
 ### Documentation
+
+- **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
+  `CONFIG.md` (in Korean) gains the streamline section next to the vector
+  field one, `SCHEMA.md` (in Korean) the render type's form and its serde
+  rules, and `SHADER_COMMON.md` the arc slots, the mapped stroke, the path
+  form and the arrowhead pick.
 
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
   `CONFIG.md` describes `LineOffsets` (the Korean section in Korean),

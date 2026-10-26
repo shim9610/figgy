@@ -176,12 +176,27 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
 
     // Arrows: over the field and contours, under errorbars, lines and markers.
     // No vertex buffers; `vs_main` reads sample `instance_index` from group 2.
-    if let Some(v) = series.vector.as_ref().filter(|v| v.count > 0) {
-        pass.set_pipeline(v.pipeline);
-        pass.set_bind_group(0, v.transform_bg, &[]);
-        pass.set_bind_group(1, &v.style_bg, &[]);
-        pass.set_bind_group(2, &v.vector_bg, &[]);
-        pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
+    // Streamline arrowheads draw indirect: one instance per arc slot, the
+    // count the arc scan wrote on the GPU, group 3 the slots' arc data.
+    if let Some(v) = series.vector.as_ref() {
+        match v.indirect {
+            Some((args, slots)) => {
+                pass.set_pipeline(v.pipeline);
+                pass.set_bind_group(0, v.transform_bg, &[]);
+                pass.set_bind_group(1, &v.style_bg, &[]);
+                pass.set_bind_group(2, &v.vector_bg, &[]);
+                pass.set_bind_group(3, slots, &[]);
+                pass.draw_indirect(args, 0);
+            }
+            None if v.count > 0 => {
+                pass.set_pipeline(v.pipeline);
+                pass.set_bind_group(0, v.transform_bg, &[]);
+                pass.set_bind_group(1, &v.style_bg, &[]);
+                pass.set_bind_group(2, &v.vector_bg, &[]);
+                pass.draw(0..vector::ARROW_VERTICES, 0..v.count);
+            }
+            None => {}
+        }
     }
 
     if let Some(eb) = series.errorbar.as_ref() {

@@ -30,6 +30,13 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Streaming is not extended to streamlines (rule 8).
+        if series.render_type.streamlines().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_STREAMLINES_REASON.into(),
+            });
+        }
         // Streaming is not extended to polar charts.
         if config.polar.is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

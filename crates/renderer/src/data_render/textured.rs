@@ -183,6 +183,8 @@ pub(crate) struct ShaderModules {
     /// The two assembled vector modules (`vector.rs`): one per input form.
     pub vector_points: wgpu::ShaderModule,
     pub vector_grid: wgpu::ShaderModule,
+    /// The streamline arrowheads' vector module (`VectorInput::Path`).
+    pub vector_path: wgpu::ShaderModule,
 }
 
 impl ShaderModules {
@@ -196,6 +198,7 @@ impl ShaderModules {
             field: Self::field(device),
             vector_points: vector::shader_module(device, vector::VectorInput::Points),
             vector_grid: vector::shader_module(device, vector::VectorInput::Grid),
+            vector_path: vector::shader_module(device, vector::VectorInput::Path),
         }
     }
 
@@ -204,6 +207,7 @@ impl ShaderModules {
         match input {
             vector::VectorInput::Points => &self.vector_points,
             vector::VectorInput::Grid => &self.vector_grid,
+            vector::VectorInput::Path => &self.vector_path,
         }
     }
     pub(super) fn fullscreen(device: &wgpu::Device) -> wgpu::ShaderModule {
@@ -279,6 +283,7 @@ pub(crate) async fn prewarm_browser_render_feature(
             super::LINE_SHADER.source,
             &[
                 ("precise line", "figgy line columnar pipeline"),
+                ("colour-mapped line", "figgy line mapped pipeline"),
                 ("line area fill", "figgy line area pipeline"),
                 ("hand-drawn line", "figgy line styled pipeline"),
                 ("milkyway ribbon", "figgy milkyway ribbon pipeline"),

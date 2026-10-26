@@ -12,12 +12,15 @@
 //!   scale mode;
 //! - `vector/vector_input_common.wgsl`: the group-2 bindings (the column pool
 //!   as storage, the grid table, the colourmap stops, `VectorParams`);
-//! - `vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl`:
-//!   `vector_sample`, one `VectorSample` per instance index from
-//!   index-aligned columns or from a grid declaration;
+//! - `vector/vector_input_points.wgsl` / `vector/vector_input_grid.wgsl` /
+//!   `vector/vector_input_path.wgsl`: `vector_sample`, one `VectorSample`
+//!   per instance index from index-aligned columns, from a grid
+//!   declaration, or from an arc slot along a streamline series' drawn path
+//!   (with `common/arc_walk.wgsl`'s group 3 and `common/path_arrow.wgsl`);
 //! - `vector/vector_entry.wgsl`: `vs_main` / `fs_main`.
 //!
-//! [`VECTOR_POINTS_SHADER`] and [`VECTOR_GRID_SHADER`] splice the fragments
+//! [`VECTOR_POINTS_SHADER`], [`VECTOR_GRID_SHADER`] and
+//! [`VECTOR_PATH_SHADER`] splice the fragments
 //! in that order at compile time (`assembled!`); the list is the module's
 //! identity and there is no runtime templating. Every assembled combination
 //! is listed in [`VectorInput::ALL`], compiled by the shader compilation
@@ -33,17 +36,22 @@ pub enum VectorInput {
     Points,
     /// `VectorComponents::Grid`: `u` / `v` grids over the coordinate columns.
     Grid,
+    /// `DataRenderType::Streamlines` arrowheads: one head per arc slot along
+    /// the drawn path, group 3 the arc slot data (`common/arc_walk.wgsl`),
+    /// drawn indirect.
+    Path,
 }
 
 impl VectorInput {
     /// Every assembled combination, so coverage can enumerate them.
-    pub const ALL: [VectorInput; 2] = [VectorInput::Points, VectorInput::Grid];
+    pub const ALL: [VectorInput; 3] = [VectorInput::Points, VectorInput::Grid, VectorInput::Path];
 
     /// The shader module label, as the compile contract records it.
     pub fn label(self) -> &'static str {
         match self {
             VectorInput::Points => "figgy vector points shader",
             VectorInput::Grid => "figgy vector grid shader",
+            VectorInput::Path => "figgy vector path shader",
         }
     }
 }
@@ -78,6 +86,23 @@ pub const VECTOR_GRID_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/vector/vector_entry.wgsl",
 );
 
+/// The assembled vector module for [`VectorInput::Path`]: the streamline
+/// arrowheads. The glyph and projection fragments are the point form's.
+pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/style.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/ramp.wgsl",
+    "data_render/common/arrow.wgsl",
+    "data_render/common/arc_walk.wgsl",
+    "data_render/common/path_arrow.wgsl",
+    "data_render/vector/project_cartesian2d.wgsl",
+    "data_render/vector/vector_input_common.wgsl",
+    "data_render/vector/vector_input_path.wgsl",
+    "data_render/vector/vector_entry.wgsl",
+);
+
 /// The assembled WGSL source of one input form, spliced at compile time.
 /// `shader_assembly`'s `every_module_is_its_fragments_concatenated` holds it
 /// to its fragment list.
@@ -85,6 +110,7 @@ pub const fn assemble(input: VectorInput) -> &'static str {
     match input {
         VectorInput::Points => VECTOR_POINTS_SHADER.source,
         VectorInput::Grid => VECTOR_GRID_SHADER.source,
+        VectorInput::Path => VECTOR_PATH_SHADER.source,
     }
 }
 
@@ -185,8 +211,9 @@ pub struct VectorParamsGpu {
     pub min_length_px: f32,
     /// Anti-aliasing width: one logical pixel times the render scale.
     pub aa_px: f32,
-    /// Alignment padding.
-    pub pad0: f32,
+    /// Path form: the arc length between two arrowheads along the drawn
+    /// path, in render pixels; zero for the other forms.
+    pub spacing_px: f32,
     /// Alignment padding.
     pub pad1: f32,
     /// The colourbar's minimum as a `(hi, lo)` pair.
@@ -339,7 +366,10 @@ pub fn create_vector_data_bind_group(
 }
 
 /// The vector pipeline for one input form. No vertex buffers: the quad is
-/// emitted from `vertex_index` and every data read goes through group 2.
+/// emitted from `vertex_index` and every data read goes through group 2
+/// (and, for [`VectorInput::Path`], the arc slot data of group 3, whose
+/// layout `stylized.rs::create_star_data_bind_group_layout` describes and
+/// this creates an equal one of).
 pub fn create_vector_pipeline(
     device: &wgpu::Device,
     transform_bgl: &wgpu::BindGroupLayout,
@@ -349,12 +379,14 @@ pub fn create_vector_pipeline(
     input: VectorInput,
 ) -> wgpu::RenderPipeline {
     let shader = shader_module(device, input);
+    let star_data_bgl = super::create_star_data_bind_group_layout(device);
     create_vector_pipeline_with_sample_count(
         device,
         &shader,
         transform_bgl,
         style_bgl,
         vector_bgl,
+        &star_data_bgl,
         target_format,
         1,
         input,
@@ -368,21 +400,31 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
     transform_bgl: &wgpu::BindGroupLayout,
     style_bgl: &wgpu::BindGroupLayout,
     vector_bgl: &wgpu::BindGroupLayout,
+    star_data_bgl: &wgpu::BindGroupLayout,
     target_format: wgpu::TextureFormat,
     sample_count: u32,
     input: VectorInput,
 ) -> wgpu::RenderPipeline {
+    let layouts = [
+        Some(transform_bgl),
+        Some(style_bgl),
+        Some(vector_bgl),
+        Some(star_data_bgl),
+    ];
+    // Only the path form reads group 3, the arc slots.
+    let groups = if input == VectorInput::Path { 4 } else { 3 };
     let layout = crate::gpu_compile::pipeline_layout(
         device,
         &wgpu::PipelineLayoutDescriptor {
             label: Some("figgy vector layout"),
-            bind_group_layouts: &[Some(transform_bgl), Some(style_bgl), Some(vector_bgl)],
+            bind_group_layouts: &layouts[..groups],
             immediate_size: 0,
         },
     );
     let label = match input {
         VectorInput::Points => "figgy vector points pipeline",
         VectorInput::Grid => "figgy vector grid pipeline",
+        VectorInput::Path => "figgy vector path pipeline",
     };
     crate::gpu_compile::render_pipeline(
         device,
@@ -424,7 +466,8 @@ pub(crate) fn create_vector_pipeline_with_sample_count(
 
 /// One vector series' draw: `draw(0..ARROW_VERTICES, 0..count)` with group 2
 /// bound to the whole column pool, the series' tables and its params (which
-/// carry the lane bases).
+/// carry the lane bases). The streamline arrowheads draw indirect instead:
+/// one instance per arc slot, the count the arc scan wrote.
 pub struct ColumnVectorLayer<'a> {
     /// The assembled pipeline for the series' input form.
     pub pipeline: &'a wgpu::RenderPipeline,
@@ -437,8 +480,13 @@ pub struct ColumnVectorLayer<'a> {
     pub vector_bg: wgpu::BindGroup,
     /// Keeps the group-2 buffers' lump charge alive while anything can draw.
     pub charge: crate::gpu_memory::SharedCharge,
-    /// Arrows to issue; zero skips the draw.
+    /// Arrows to issue; zero skips the draw. Unread with `indirect`.
     pub count: u32,
+    /// [`VectorInput::Path`]: the `DrawIndirect` arguments the arc scan's
+    /// `star_indirect` kernel wrote (`(ARROW_VERTICES, slots, 0, 0)`), and
+    /// group 3, the arc slot data the path input walks (the arc prefix, the
+    /// pool and `StarVsParams`). `None` for the other forms.
+    pub indirect: Option<(&'a wgpu::Buffer, &'a wgpu::BindGroup)>,
 }
 
 #[cfg(test)]
@@ -451,6 +499,7 @@ mod tests {
         match input {
             VectorInput::Points => VECTOR_POINTS_SHADER.fragments,
             VectorInput::Grid => VECTOR_GRID_SHADER.fragments,
+            VectorInput::Path => VECTOR_PATH_SHADER.fragments,
         }
     }
 
@@ -465,6 +514,30 @@ mod tests {
             );
         }
         assert_ne!(assemble(VectorInput::Points), assemble(VectorInput::Grid));
+        assert_ne!(assemble(VectorInput::Points), assemble(VectorInput::Path));
+    }
+
+    /// The path form reuses the point form's glyph, projection and entry
+    /// unchanged (rule 9): it differs only by its input layer and the arc
+    /// slot fragments the input reads.
+    #[test]
+    fn the_path_form_reuses_the_glyph_projection_and_entry() {
+        let path = fragments(VectorInput::Path);
+        let points = fragments(VectorInput::Points);
+        for fragment in points {
+            if *fragment != "data_render/vector/vector_input_points.wgsl" {
+                assert!(path.contains(fragment), "{fragment}");
+            }
+        }
+        let extra: Vec<_> = path.iter().filter(|f| !points.contains(f)).collect();
+        assert_eq!(
+            extra,
+            [
+                &"data_render/common/arc_walk.wgsl",
+                &"data_render/common/path_arrow.wgsl",
+                &"data_render/vector/vector_input_path.wgsl",
+            ]
+        );
     }
 
     #[test]

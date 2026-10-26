@@ -821,6 +821,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Histogram => "Histogram",
         SceneKind::Field => "Field",
         SceneKind::VectorField => "VectorField",
+        SceneKind::Streamlines => "Streamlines",
         SceneKind::LogAxes => "LogAxes",
         SceneKind::TwinAxes => "TwinAxes",
         SceneKind::Subplots => "Subplots",

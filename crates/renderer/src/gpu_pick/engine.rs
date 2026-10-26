@@ -77,6 +77,19 @@ pub(super) fn query_params(
     } else {
         series.line_dash_len
     };
+    // Streamline arrowheads (`pick_path_arrow_candidate`): the head in
+    // canvas pixels through the vector lanes, and the gate's reach past the
+    // centreline grows by a head's half diagonal, since a head is centred on
+    // the path.
+    let heads = series.path_arrows.map(|arrows| {
+        let length = arrows.head_length_px * display_scale;
+        let width = arrows.head_width_px * display_scale;
+        (
+            [length, 0.0, length, width],
+            arrows.spacing_px * display_scale,
+            (length * 0.5).hypot(width * 0.5),
+        )
+    });
     PickQueryParamsGpu {
         transform: query.transform,
         cursor_chart: [cursor_x, cursor_y, chart_x, chart_y],
@@ -120,7 +133,7 @@ pub(super) fn query_params(
         line_px: [
             half_width,
             ribbon,
-            line_extent * std::f32::consts::SQRT_2,
+            line_extent * std::f32::consts::SQRT_2 + heads.map_or(0.0, |(_, _, reach)| reach),
             0.0,
         ],
         line_dash,
@@ -143,24 +156,27 @@ pub(super) fn query_params(
                     }
             }),
         ],
-        vector_px: series.vector.as_ref().map_or([0.0; 4], |vector| {
-            [
-                if vector.scale_pixels {
-                    vector.scale * display_scale
-                } else {
-                    vector.scale
-                },
-                vector.width_px * display_scale,
-                vector.head_length_px * display_scale,
-                vector.head_width_px * display_scale,
-            ]
-        }),
+        vector_px: series
+            .vector
+            .as_ref()
+            .map_or(heads.map_or([0.0; 4], |(px, ..)| px), |vector| {
+                [
+                    if vector.scale_pixels {
+                        vector.scale * display_scale
+                    } else {
+                        vector.scale
+                    },
+                    vector.width_px * display_scale,
+                    vector.head_length_px * display_scale,
+                    vector.head_width_px * display_scale,
+                ]
+            }),
         vector_min: [
             series
                 .vector
                 .as_ref()
                 .map_or(0.0, |vector| vector.min_length_px * display_scale),
-            0.0,
+            heads.map_or(0.0, |(_, spacing, _)| spacing),
             0.0,
             0.0,
         ],
@@ -1108,6 +1124,9 @@ impl GpuPickEngine {
                 line_half_width_px,
                 line_step_mode,
                 line_closed: descriptor.line_closed && descriptor.line_width_px.is_some(),
+                path_arrows: descriptor
+                    .path_arrows
+                    .filter(|_| descriptor.line_width_px.is_some()),
                 line_dash,
                 line_dash_len,
                 max_extent_px,
@@ -1121,6 +1140,7 @@ impl GpuPickEngine {
                     base_shape_id,
                     errorbar.is_some(),
                     area.is_some(),
+                    descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
                 ),
                 errorbar,
                 area,

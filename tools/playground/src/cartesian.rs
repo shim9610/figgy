@@ -1505,6 +1505,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
         DataRenderType::Vector { .. } => "vector",
+        DataRenderType::Streamlines { .. } => "streamlines",
     }
 }
 
@@ -1924,6 +1925,23 @@ fn series_controls(
         }
         DataRenderType::Vector { components, style } => {
             vector_controls(ui, components, style, columns);
+        }
+        // The paths are the host's; the look is the line's and the heads'.
+        // Interpolation and fill stay off: streamlines are plain polylines.
+        DataRenderType::Streamlines { line, arrows, .. } => {
+            color(ui, "line colour", &mut line.line_color);
+            slider(ui, "line width", &mut line.line_width, 0.5..=10.0);
+            choice(ui, "dash", &mut line.line_style, widgets::LINE_STYLES);
+            let mut heads = arrows.is_some();
+            if ui.checkbox(&mut heads, "arrowheads").changed() {
+                *arrows = heads.then(renderer::StreamlineArrows::default);
+            }
+            if let Some(arrows) = arrows {
+                slider(ui, "head length", &mut arrows.head_length_px, 0.0..=24.0);
+                slider(ui, "head width", &mut arrows.head_width_px, 0.0..=24.0);
+                slider(ui, "spacing", &mut arrows.spacing_px, 8.0..=240.0);
+                arrows.spacing_px = arrows.spacing_px.max(arrows.head_length_px);
+            }
         }
     }
 }

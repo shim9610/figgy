@@ -152,6 +152,12 @@ fn clip_solid_segment(first: vec2<f32>, second: vec2<f32>, pad: vec2<f32>) -> ma
 
 @vertex
 fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
+    return line_vertex(in, arc, vid);
+}
+
+// The precise stroke's vertex: `vs_main`, and `vs_main_mapped` under its
+// colour value.
+fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     if (!sample_valid(transform, in.x_a, in.y_a) || !sample_valid(transform, in.x_b, in.y_b)) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -246,6 +252,124 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         discard;
     }
     return line_fragment_color(in, style.color_premul);
+}
+
+// ───────────── colour-mapped stroke ─────────────
+// `vs_main_mapped` / `fs_main_mapped` draw the precise stroke of a
+// streamline series with a colour column (SHADER_COMMON.md §5.6): the same
+// geometry as `vs_main`, and the colour of the value interpolated along the
+// segment through the colourbar ramp, which a colour-mapped marker or a
+// heatmap cell of that value takes too. The value column is bound as slots
+// 6/7 (hi/lo pairs, one value shifted like x/y) and the colourbar as
+// group 3, the point value map (`PointValueMapParams`, §5.2); group 2 is
+// left unread. Nothing per point is stored: the colour is computed on every
+// draw.
+struct VsValue {
+    @location(6) value_a: vec2<f32>,
+    @location(7) value_b: vec2<f32>,
+};
+
+struct MappedVsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) dist_px: f32,
+    @location(1) along_px: f32,
+    @location(2) side_px: f32,
+    @location(3) segment_len_px: f32,
+    @location(4) polar_px: vec2<f32>,
+    @location(5) @interpolate(flat) polar_limits: vec4<f32>,
+    @location(6) @interpolate(flat) polar_sector: vec4<f32>,
+    // The colour value as a hi/lo pair, interpolated along the stroke.
+    @location(7) value: vec2<f32>,
+};
+
+// The colourbar of a colour-mapped stroke. CPU twin:
+// `data_render/value_map.rs::PointValueMapParamsGpu`, 64 B (the scatter
+// shader's struct; this line module binds the same group).
+struct PointValueMapParams {
+    z_min: vec2<f32>,
+    z_max: vec2<f32>,
+    size_domain_min: vec2<f32>,
+    size_domain_max: vec2<f32>,
+    size_px: vec2<f32>,
+    flags: u32,
+    stop_count: u32,
+    nan_color_premul: vec4<f32>,
+};
+
+const VALUE_MAP_COLOR: u32 = 1u;
+const VALUE_MAP_LOG_Z: u32 = 4u;
+
+@group(3) @binding(0) var<uniform> line_value_map: PointValueMapParams;
+@group(3) @binding(1) var<storage, read> line_value_stops: array<vec4<f32>>;
+
+// The colourbar's ramp at `t`, through the shared `ramp_segment` /
+// `ramp_blend`; only the stop lookup is this shader's.
+fn line_value_ramp(t: f32) -> vec4<f32> {
+    let n = line_value_map.stop_count;
+    if (n == 0u) {
+        return vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    }
+    if (n == 1u) {
+        return line_value_stops[0];
+    }
+    let segment = ramp_segment(t, n);
+    let index = u32(segment.x);
+    return ramp_blend(line_value_stops[index], line_value_stops[index + 1u], segment.y);
+}
+
+// Premultiplied stroke colour for a colour value: the series colour without
+// a colour map, `nan_color` where the ramp cannot place the value.
+fn line_value_color(zv: vec2<f32>) -> vec4<f32> {
+    if ((line_value_map.flags & VALUE_MAP_COLOR) == 0u) {
+        return style.color_premul;
+    }
+    let t = ramp_t(zv, line_value_map.z_min, line_value_map.z_max, (line_value_map.flags & VALUE_MAP_LOG_Z) != 0u);
+    if (t < 0.0) {
+        return line_value_map.nan_color_premul;
+    }
+    let c = line_value_ramp(t);
+    return vec4<f32>(c.rgb * c.a, c.a);
+}
+
+@vertex
+fn vs_main_mapped(in: VsIn, arc: VsArc, value: VsValue, @builtin(vertex_index) vid: u32) -> MappedVsOut {
+    let base = line_vertex(in, arc, vid);
+    var out: MappedVsOut;
+    out.pos = base.pos;
+    out.dist_px = base.dist_px;
+    out.along_px = base.along_px;
+    out.side_px = base.side_px;
+    out.segment_len_px = base.segment_len_px;
+    out.polar_px = base.polar_px;
+    out.polar_limits = base.polar_limits;
+    out.polar_sector = base.polar_sector;
+    // The corner's position along the unclipped segment, square cap and
+    // viewport clip included, so the interpolated value is A's to B's
+    // linearly along the drawn segment, as an arrowhead on it reads it.
+    let a_px = data_to_ndc(transform, in.x_a, in.y_a) / transform.pixel_to_ndc;
+    let b_px = data_to_ndc(transform, in.x_b, in.y_b) / transform.pixel_to_ndc;
+    let d = b_px - a_px;
+    let d2 = dot(d, d);
+    let f = select(0.0, dot(base.pos.xy / transform.pixel_to_ndc - a_px, d) / d2, d2 > 1e-12);
+    out.value = value.value_a + (value.value_b - value.value_a) * f;
+    return out;
+}
+
+@fragment
+fn fs_main_mapped(in: MappedVsOut) -> @location(0) vec4<f32> {
+    if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
+        discard;
+    }
+    var stroke: VsOut;
+    stroke.pos = in.pos;
+    stroke.dist_px = in.dist_px;
+    stroke.along_px = in.along_px;
+    stroke.side_px = in.side_px;
+    stroke.segment_len_px = in.segment_len_px;
+    stroke.polar_px = in.polar_px;
+    stroke.polar_limits = in.polar_limits;
+    stroke.polar_sector = in.polar_sector;
+    return line_fragment_color(stroke, line_value_color(in.value));
 }
 
 @fragment
@@ -544,29 +668,8 @@ fn cons_h(id: u32, salt: u32, seed: u32) -> f32 {
     return sketch_hash01(id, seed ^ salt);
 }
 
-// Arc-driven star pass data (group 3). The star pass binds NO vertex
-// buffers: each instance is one candidate slot along the polyline's TOTAL
-// arc, and the VS locates its segment by binary search over the arc-length
-// prefix, fetching endpoints straight from the column pool. Star density is
-// therefore independent of how densely the data samples the line — the old
-// per-segment quad budget saturated on sparse polylines (a single long
-// segment capped at 24 stars no matter the requested density).
-struct StarVsParams {
-    n_points: u32,
-    x_base: u32,
-    y_base: u32,
-    // Step interpolation mode of the polyline (LINE_STEP_*), so a star's arc
-    // position lands on the same stepped piece the ribbon and scan used.
-    mode: u32,
-};
-@group(3) @binding(0) var<storage, read> star_arc: array<f32>;
-@group(3) @binding(1) var<storage, read> star_pool: array<f32>;
-@group(3) @binding(2) var<uniform> star_vsp: StarVsParams;
-
-fn star_pool_pair(base: u32, i: u32) -> vec2<f32> {
-    let j = base + i * 2u;
-    return vec2<f32>(star_pool[j], star_pool[j + 1u]);
-}
+// The star pass reads its arc slots through `common/arc_walk.wgsl` (group
+// 3: the arc prefix, the pool and `StarVsParams`).
 
 // Candidate slot pitch in arc px. CPU twin: line_arc.rs
 // STAR_SLOT_PITCH_FACTOR sizes the indirect dispatch with the same formula —
@@ -614,13 +717,7 @@ fn vs_stars(
     var alive = cons_h(slot, 0x0E15u, seed) < p_exist && arc_here < total;
 
     // Binary search: greatest g with prefix[g] <= arc_here; segment (g, g+1).
-    var lo = 0u;
-    var hi = n - 1u;
-    loop {
-        if (hi - lo <= 1u) { break; }
-        let mid = (lo + hi) >> 1u;
-        if (star_arc[mid] <= arc_here) { lo = mid; } else { hi = mid; }
-    }
+    let lo = arc_walk_segment(n, arc_here);
     let seg_a = star_arc[lo];
     let seg_len = star_arc[lo + 1u] - seg_a;
     // NaN-gap segments contribute zero prefix advance — a slot landing on a

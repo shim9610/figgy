@@ -20,6 +20,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::BoxPlot { .. }
         // A radar vertex maps no value to its marker.
         | DataRenderType::Radar { .. }
+        // A streamline has no markers; its colour column colours the line.
+        | DataRenderType::Streamlines { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }

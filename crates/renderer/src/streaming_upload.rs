@@ -1071,6 +1071,7 @@ mod tests {
                                     verts_per_instance: 4,
                                     texture_bg: None,
                                     closed: false,
+                                    value_map: None,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,

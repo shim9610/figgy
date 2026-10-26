@@ -1,6 +1,7 @@
 //! End-to-end verification of the vector field (quiver) render path through
 //! the public renderer API: the headless `export_panel_rgba`, the GPU pickers,
-//! the selection highlights and the series extent engine.
+//! the selection highlights and the series extent engine, and of the
+//! streamline arrowheads the vector glyph draws along a line.
 //!
 //! House pattern (mirrors `heatmap_render.rs`): one process-wide device, a
 //! renderer per test, and assertions that name the pixel a data coordinate
@@ -15,8 +16,8 @@ use renderer::config::{AxisOptions, AxisScale, PickedPointRef, PickedPointsConfi
 use renderer::data::Column;
 use renderer::data_config::{
     ContourConfig, DataLineStyleConfig, FieldFillConfig, FillMode, GridLayout, LineInterpolation,
-    MatrixOrientation, MatrixRef, Shading, VectorColorMap, VectorComponents, VectorPivot,
-    VectorScale, VectorStyle,
+    MatrixOrientation, MatrixRef, PointColorMap, Shading, StreamlineArrows, VectorColorMap,
+    VectorComponents, VectorPivot, VectorScale, VectorStyle,
 };
 use renderer::gpu_errorbar::GpuSeriesExtent;
 use renderer::layout::{ChartArea, Rect};
@@ -1515,4 +1516,454 @@ fn removing_a_component_column_removes_the_series() {
         renderer.chart_series(grid_chart_id).unwrap().is_empty(),
         "the grid series read the removed v column"
     );
+}
+
+// ── Streamlines ──────────────────────────────────────────────────────────────
+
+fn streamline_style(arrows: Option<StreamlineArrows>, color: Option<&str>) -> DataRenderType {
+    DataRenderType::Streamlines {
+        line: DataLineStyleConfig {
+            line_style: LineStylePreset::Solid,
+            line_color: RED,
+            line_width: 4.0,
+            fill: None,
+            fill_color: None,
+            interpolation: LineInterpolation::Linear,
+        },
+        arrows,
+        color_map: color.map(|column| PointColorMap {
+            column: column.into(),
+        }),
+    }
+}
+
+fn streamlines(arrows: Option<StreamlineArrows>, color: Option<&str>) -> SeriesConfig {
+    SeriesConfig {
+        series_id: "flow".into(),
+        source_id: None,
+        label: None,
+        x_column: "sx".into(),
+        y_column: "sy".into(),
+        render_type: streamline_style(arrows, color),
+    }
+}
+
+/// Host-integrated paths: one series, streamlines separated by NaN rows.
+fn streamline_fixture(renderer: &mut Renderer, points: &[(f64, f64)]) {
+    renderer
+        .add_columns(&[
+            (
+                "sx",
+                &col_f64(points.iter().map(|p| p.0).collect()) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "sy",
+                &col_f64(points.iter().map(|p| p.1).collect()) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("streamline upload");
+}
+
+/// The line of a colour-mapped streamline series takes the colourbar's
+/// colour of the value interpolated between its samples, as a colour-mapped
+/// marker of that value would; `nan_color` where a sample has no value; and
+/// its arrowheads take the colour of the value at their position.
+#[test]
+fn colour_mapped_streamlines_follow_the_colourbar_ramp() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    // Two horizontal streamlines, the second with a missing colour value.
+    streamline_fixture(
+        &mut renderer,
+        &[
+            (0.5, 1.0),
+            (3.5, 1.0),
+            (f64::NAN, f64::NAN),
+            (0.5, 3.0),
+            (3.5, 3.0),
+        ],
+    );
+    renderer
+        .add_column("speed", &col_f64(vec![0.0, 10.0, f64::NAN, 4.0, f64::NAN]))
+        .unwrap();
+    let mut chart = bare_chart();
+    let bar = two_stop_colorbar(AxisScale::Linear, 0.0, 10.0);
+    chart.config_mut().colorbar = Some(bar.clone());
+    let series = [streamlines(None, Some("speed"))];
+    let img = export(&mut renderer, &chart, &series);
+    for x in [1.0, 2.0, 3.0] {
+        let z = (x - 0.5) / 3.0 * 10.0;
+        let px = data_to_px(&chart, x, 1.0);
+        let p = at(&img, px, 0.0, 0.0);
+        let want = bar.color_for_z(z);
+        assert!(
+            (p[0] as i32 - to8(want.r)).abs() <= 6 && (p[1] as i32 - to8(want.g)).abs() <= 6,
+            "x = {x}: got {p:?}, expected {want:?}"
+        );
+    }
+    assert_colour_at(&img, data_to_px(&chart, 2.0, 3.0), BLUE, "missing value");
+    // With arrowheads, a head takes the colour of the value at its centre:
+    // slot 1 sits 60 px along the first streamline, its base behind.
+    let series = [streamlines(Some(ARROWS), Some("speed"))];
+    let img = export(&mut renderer, &chart, &series);
+    let a = data_to_px(&chart, 0.5, 1.0);
+    let b = data_to_px(&chart, 3.5, 1.0);
+    let z = 55.0 / (b.0 - a.0) * 10.0;
+    let p = at(&img, (a.0 + 55.0, a.1 - 3.5), 0.0, 0.0);
+    let want = bar.color_for_z(z);
+    assert!(
+        (p[0] as i32 - to8(want.r)).abs() <= 6 && (p[1] as i32 - to8(want.g)).abs() <= 6,
+        "head: got {p:?}, expected {want:?}"
+    );
+    // The separator draws nothing between the two lines.
+    assert_clear(
+        &img,
+        data_to_px(&chart, 2.0, 2.0),
+        0.0,
+        0.0,
+        "between streamlines",
+    );
+}
+
+/// 12 px long, 10 px wide heads every 40 px of drawn arc.
+const ARROWS: StreamlineArrows = StreamlineArrows {
+    spacing_px: 40.0,
+    head_length_px: 12.0,
+    head_width_px: 10.0,
+};
+
+/// Head ink beside a 1 px line: a pixel 3 px off the path is inked only
+/// inside a head (10 px wide).
+fn thin_streamlines(arrows: Option<StreamlineArrows>) -> SeriesConfig {
+    let mut series = streamlines(arrows, None);
+    if let DataRenderType::Streamlines { line, .. } = &mut series.render_type {
+        line.line_width = 1.0;
+    }
+    series
+}
+
+/// The inked pixels across the path `s` px along it from `start` in the
+/// unit screen direction `dir`, within `reach` px to either side.
+fn ink_across(img: &RasterImage, start: (f64, f64), dir: (f64, f64), s: f64, reach: i32) -> usize {
+    let normal = (-dir.1, dir.0);
+    (-reach..=reach)
+        .filter(|side| {
+            let side = f64::from(*side);
+            let q = (
+                start.0 + dir.0 * s + normal.0 * side,
+                start.1 + dir.1 * s + normal.1 * side,
+            );
+            is_red(at(img, q, 0.0, 0.0))
+        })
+        .count()
+}
+
+/// Whether a head is centred `s` px along the path from `start` in the unit
+/// screen direction `dir`, pointing along `dir`: wide near its base behind
+/// the centre (10 px across), narrow near its tip ahead of it. `scale` is
+/// the export scale.
+fn head_at_scaled(
+    img: &RasterImage,
+    start: (f64, f64),
+    dir: (f64, f64),
+    s: f64,
+    scale: f64,
+) -> bool {
+    let reach = (8.0 * scale) as i32;
+    let base = ink_across(img, start, dir, s - 4.0 * scale, reach);
+    let tip = ink_across(img, start, dir, s + 4.0 * scale, reach);
+    base as f64 >= 6.0 * scale && (tip as f64) <= 3.0 * scale
+}
+
+fn head_at(img: &RasterImage, start: (f64, f64), dir: (f64, f64), s: f64) -> bool {
+    head_at_scaled(img, start, dir, s, 1.0)
+}
+
+/// No head across the path there: at most the 1 px line's ink.
+fn no_head_at(img: &RasterImage, start: (f64, f64), dir: (f64, f64), s: f64) -> bool {
+    ink_across(img, start, dir, s, 8) <= 3
+}
+
+fn unit(a: (f64, f64), b: (f64, f64)) -> (f64, f64) {
+    let d = (b.0 - a.0, b.1 - a.1);
+    let l = (d.0 * d.0 + d.1 * d.1).sqrt();
+    (d.0 / l, d.1 / l)
+}
+
+/// Arrowheads sit at `(k + 0.5) * spacing_px` of drawn arc from the first
+/// point, centred on the path and pointing along its tangent: along a
+/// horizontal streamline, against it when the path runs backwards, and
+/// along a diagonal one. Between two slots there is no head.
+#[test]
+fn arrowheads_sit_at_fixed_arc_spacing_and_follow_the_tangent() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let chart = bare_chart();
+    for (from, to) in [
+        ((0.5, 2.0), (3.5, 2.0)),
+        ((3.5, 2.0), (0.5, 2.0)),
+        ((0.5, 0.5), (3.5, 3.5)),
+    ] {
+        streamline_fixture(&mut renderer, &[from, to]);
+        let img = export(&mut renderer, &chart, &[thin_streamlines(Some(ARROWS))]);
+        let a = data_to_px(&chart, from.0, from.1);
+        let b = data_to_px(&chart, to.0, to.1);
+        let dir = unit(a, b);
+        let len = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let mut k = 0.0;
+        while (k + 0.5) * 40.0 < len - 8.0 {
+            let s = (k + 0.5) * 40.0;
+            assert!(head_at(&img, a, dir, s), "{from:?} -> {to:?}: head at {s}");
+            assert!(
+                no_head_at(&img, a, dir, s + 20.0),
+                "{from:?} -> {to:?}: gap at {}",
+                s + 20.0
+            );
+            k += 1.0;
+        }
+        assert!(k >= 3.0, "{from:?} -> {to:?}: {k} heads checked");
+        renderer.remove_column("sx").unwrap();
+        renderer.remove_column("sy").unwrap();
+    }
+    // Without arrows the same path draws no head.
+    streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
+    let img = export(&mut renderer, &chart, &[thin_streamlines(None)]);
+    let a = data_to_px(&chart, 0.5, 2.0);
+    assert!(no_head_at(&img, a, (1.0, 0.0), 20.0));
+}
+
+/// The arrowheads count the drawn arc only: a NaN row breaks the line and
+/// adds no arc, so no head is drawn across the gap and the slots go on along
+/// the next streamline where the arc left off.
+#[test]
+fn arrowheads_skip_nan_gaps() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let chart = bare_chart();
+    streamline_fixture(
+        &mut renderer,
+        &[
+            (0.5, 1.0),
+            (3.5, 1.0),
+            (f64::NAN, f64::NAN),
+            (0.5, 3.0),
+            (3.5, 3.0),
+        ],
+    );
+    let img = export(&mut renderer, &chart, &[thin_streamlines(Some(ARROWS))]);
+    let a1 = data_to_px(&chart, 0.5, 1.0);
+    let b1 = data_to_px(&chart, 3.5, 1.0);
+    let a2 = data_to_px(&chart, 0.5, 3.0);
+    let len = b1.0 - a1.0;
+    // Nothing between the two streamlines.
+    for t in [0.25, 0.5, 0.75] {
+        let mid = (a1.0 + len * t, (a1.1 + a2.1) * 0.5);
+        assert_clear(&img, mid, 0.0, 0.0, "in the gap");
+    }
+    // The first slot past the first streamline's arc sits on the second.
+    let first = ((len / 40.0 - 0.5).floor() + 1.0 + 0.5) * 40.0;
+    let s = first - len;
+    assert!(s > 6.0 && s < len - 8.0, "slot at {s}");
+    assert!(head_at(&img, a2, (1.0, 0.0), s), "continued head at {s}");
+    assert!(
+        head_at(&img, a2, (1.0, 0.0), s + 40.0),
+        "next head at {}",
+        s + 40.0
+    );
+}
+
+/// The arrowheads' slot pitch is their spacing in render pixels: at a 2x
+/// export every head and gap doubles with the image, so the heads keep their
+/// logical spacing.
+#[test]
+fn streamline_arrowheads_keep_pixel_spacing_at_1x_and_2x() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    let chart = bare_chart();
+    streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
+    let series = [thin_streamlines(Some(ARROWS))];
+    let img = export(&mut renderer, &chart, &series);
+    let a = data_to_px(&chart, 0.5, 2.0);
+    assert!(head_at(&img, a, (1.0, 0.0), 60.0));
+    assert!(no_head_at(&img, a, (1.0, 0.0), 80.0));
+    let img2 = renderer.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    let a2 = data_to_px_scaled(&chart, 0.5, 2.0, 2.0);
+    for s in [40.0, 120.0, 200.0] {
+        assert!(
+            head_at_scaled(&img2, a2, (1.0, 0.0), s, 2.0),
+            "2x head at {s}"
+        );
+        assert!(
+            ink_across(&img2, a2, (1.0, 0.0), s + 40.0, 16) <= 4,
+            "2x gap at {}",
+            s + 40.0
+        );
+    }
+}
+
+/// A zoom or a pan changes the drawn arc, and the heads follow it: they keep
+/// their pixel spacing from the first point rather than their data
+/// positions.
+#[test]
+fn pan_respaces_arrowheads_in_pixels() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
+    let series = [thin_streamlines(Some(ARROWS))];
+    let mut chart = bare_chart();
+    for (min, max) in [(0.0, 4.0), (-1.0, 3.0), (0.0, 6.0)] {
+        chart.set_x_range(min, max);
+        let img = export(&mut renderer, &chart, &series);
+        let a = data_to_px(&chart, 0.5, 2.0);
+        assert!(head_at(&img, a, (1.0, 0.0), 20.0), "x {min}..{max}");
+        assert!(head_at(&img, a, (1.0, 0.0), 60.0), "x {min}..{max}");
+        assert!(no_head_at(&img, a, (1.0, 0.0), 40.0), "x {min}..{max}");
+    }
+}
+
+/// The indirect draw the arc scan writes for the slots issues one glyph quad
+/// per slot: its vertex count is the vector glyph's.
+#[test]
+fn arrowhead_slot_vertex_count_equals_arrow_vertices() {
+    let scan = include_str!("../src/data_render/line_arc.wgsl");
+    let vertices = renderer::data_render::vector::ARROW_VERTICES;
+    assert!(
+        scan.contains(&format!("star_args[0] = {vertices}u;")),
+        "the slot kernel's vertex count is not ARROW_VERTICES = {vertices}"
+    );
+    let glyph = include_str!("../src/data_render/common/arrow.wgsl");
+    assert!(glyph.contains(&format!("const ARROW_VERTICES: u32 = {vertices}u;")));
+}
+
+/// A picked streamline vertex draws the picked ring around it, as a line's
+/// vertex does: `radius_extra_px` out from the vertex (a line has no
+/// marker), nowhere else.
+#[test]
+fn picked_streamline_point_draws_the_ring() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(
+        &mut renderer,
+        &[
+            (0.5, 1.0),
+            (2.0, 1.5),
+            (3.5, 1.0),
+            (f64::NAN, f64::NAN),
+            (0.5, 3.0),
+            (3.5, 3.0),
+        ],
+    );
+    let mut chart = bare_chart();
+    chart.config_mut().picked_points = Some(PickedPointsConfig {
+        visible: true,
+        refs: vec![PickedPointRef {
+            source_id: None,
+            series_id: "flow".into(),
+            point_index: 4,
+        }],
+        ring_color: GREEN,
+        ring_width_px: 3.0,
+        radius_extra_px: 8.0,
+    });
+    let img = export(&mut renderer, &chart, &[thin_streamlines(Some(ARROWS))]);
+    let a = data_to_px(&chart, 0.5, 3.0);
+    for (dx, dy) in [(0.0, -8.0), (0.0, 8.0), (-8.0, 0.0)] {
+        let p = at(&img, a, dx, dy);
+        assert!(is_green(p), "ring at ({dx}, {dy}): {p:?}");
+    }
+    let other = data_to_px(&chart, 2.0, 1.5);
+    assert!(
+        !is_green(at(&img, other, 0.0, -8.0)),
+        "no ring at an unpicked vertex"
+    );
+    let green = count(&img, is_green);
+    assert!((60..400).contains(&green), "{green} ring pixels");
+}
+
+/// Streamlines on an overlay layer scale by the overlay's Y axis, heads
+/// included: a path at y = 4 on an overlay axis running 0..8 draws halfway
+/// up the data area, with its heads on it. A document export draws every
+/// layer.
+#[test]
+fn streamlines_scale_by_their_overlay_axis() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(&mut renderer, &[(0.5, 4.0), (3.5, 4.0)]);
+    let mut chart = bare_chart();
+    let mut overlay = OverlayLayer::default();
+    overlay.y_axis.min = 0.0;
+    overlay.y_axis.max = 8.0;
+    overlay.y_axis.major_spacing = 2.0;
+    overlay.series = vec!["flow".into()];
+    chart.config_mut().overlays.push(overlay);
+    let series = [thin_streamlines(Some(ARROWS))];
+    let img = renderer.export_document_rgba(&chart, &series, 1.0).unwrap();
+    let cfg = chart.config();
+    let da = cfg.data_area().expect("data area");
+    let y = (da.y + da.height) as f64 - axis_t(&cfg.overlays[0].y_axis, 4.0) * da.height as f64;
+    let x = da.x as f64 + axis_t(&cfg.bottom_x, 0.5) * da.width as f64;
+    assert!(y > da.y as f64 + 40.0, "the path sits mid-panel");
+    assert!(
+        head_at(&img, (x, y), (1.0, 0.0), 60.0),
+        "overlay-scaled head"
+    );
+    assert!(
+        no_head_at(&img, (x, y), (1.0, 0.0), 80.0),
+        "between overlay heads"
+    );
+    // On the base axis y = 4 is the top edge: nothing is drawn there.
+    let top = (x + 60.0, da.y as f64 + 1.0);
+    assert_clear(&img, top, 0.0, 0.0, "the base axis position");
+}
+
+/// Streamlines assigned to a subplot draw inside its data area, through its
+/// axes, heads included, and nowhere in the parent.
+#[test]
+fn streamlines_draw_inside_their_subplot() {
+    let Some(mut renderer) = try_renderer() else {
+        return;
+    };
+    streamline_fixture(&mut renderer, &[(0.5, 2.0), (3.5, 2.0)]);
+    let mut chart = bare_chart();
+    let mut sub = bare_chart();
+    sub.config_mut().chart_area = ChartArea(Rect {
+        x: WIDTH,
+        y: 0,
+        width: WIDTH,
+        height: HEIGHT,
+    });
+    chart.config_mut().subplots.push(Subplot {
+        config: sub.config().clone(),
+        series: vec!["flow".into()],
+        link_x: None,
+        link_y: None,
+    });
+    let series = [thin_streamlines(Some(ARROWS))];
+    let img = renderer.export_document_rgba(&chart, &series, 1.0).unwrap();
+    assert_eq!((img.width, img.height), (WIDTH * 2, HEIGHT));
+    let a = data_to_px(&sub, 0.5, 2.0);
+    assert!(
+        a.0 >= WIDTH as f64,
+        "the subplot's path lies in the right half"
+    );
+    assert!(
+        head_at(&img, a, (1.0, 0.0), 20.0),
+        "head inside the subplot"
+    );
+    assert!(
+        head_at(&img, a, (1.0, 0.0), 60.0),
+        "head inside the subplot"
+    );
+    let parent_red = (0..img.height)
+        .flat_map(|y| (0..WIDTH).map(move |x| (x, y)))
+        .filter(|(x, y)| is_red(pixel(&img, *x, *y)))
+        .count();
+    assert_eq!(parent_red, 0, "the parent draws no streamline");
 }

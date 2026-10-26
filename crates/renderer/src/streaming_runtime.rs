@@ -36,6 +36,11 @@ mod source_cache;
 mod view_residency;
 pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
+/// Why a streamed streamline series is rejected: streaming is not extended
+/// to them (CLAUDE.md rule 8).
+pub(crate) const STREAMED_STREAMLINES_REASON: &str =
+    "streamline series require GPU-resident columns; streamed sources are not supported";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Heatmap { .. } => true,
@@ -54,7 +59,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
-        | DataRenderType::Radar { .. } => false,
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. } => false,
     }
 }
 
@@ -655,6 +661,17 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Radar { .. } => Ok(&[]),
+        // Nor to streamlines: their arrowheads walk the resident arc prefix
+        // and their colour column is read index-aligned. Rejected before a
+        // cursor exists; this is a backstop.
+        DataRenderType::Streamlines { .. } if primitives.line => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_STREAMLINES_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Streamlines { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {
@@ -4087,6 +4104,7 @@ impl Renderer {
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.star_data_bgl,
                 &self.category_bar_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
