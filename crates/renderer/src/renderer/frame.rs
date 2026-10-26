@@ -56,6 +56,9 @@ pub(super) fn annotation_raster_for_chart(
         active_layer: _,
         annotations,
         bar_groups: _,
+        // The members draw no annotations; the layer is anchored in the
+        // base panel's axes.
+        line_offsets: _,
     } = config;
     let area = chart_area.0;
     crate::annotation::rasterize(&crate::annotation::RasterRequest {

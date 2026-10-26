@@ -520,6 +520,9 @@ impl Config {
             // An overlay's category bar series form a group of their own
             // with the parent's options.
             bar_groups,
+            // The members an overlay scales are drawn by member panels of
+            // their own; the overlay panel draws none of them.
+            line_offsets: _,
         } = self;
         let OverlayLayer {
             y_axis,
@@ -662,6 +665,7 @@ impl Config {
             active_layer: LayerRef::Base,
             annotations: AnnotationLayer::default(),
             bar_groups: bar_groups.clone(),
+            line_offsets: None,
         };
         retain_layer_picks(&mut panel, self, LayerRef::Overlay(index));
         align_margins(&mut panel, group, data_area)?;
@@ -868,6 +872,7 @@ impl Config {
             active_layer: _,
             annotations: _,
             bar_groups: _,
+            line_offsets: _,
         } = self;
         let owned = |id: &str| {
             matches!(
@@ -912,6 +917,7 @@ fn retain_layer_picks(panel: &mut Config, parent: &Config, layer: LayerRef) {
         active_layer: _,
         annotations: _,
         bar_groups: _,
+        line_offsets: _,
     } = panel;
     if let Some(picked) = picked_points.as_mut() {
         picked

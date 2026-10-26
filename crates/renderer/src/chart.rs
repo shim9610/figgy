@@ -269,6 +269,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field: "annotations",
             reason,
         })?;
+    config
+        .validate_line_offset_layout()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "line_offsets",
+            reason,
+        })?;
     if !config.overlays.is_empty() {
         config.expand().map_err(|_| FiggyError::InvalidConfig {
             field: "overlays",

@@ -1485,6 +1485,7 @@ fn config_fields_are_classified() {
         active_layer: _,  // layer only: no raster, no pixels
         annotations: _,   // annotation_edits(): annotation revision only
         bar_groups: _,    // "bar_groups (None -> Some)" + resident display mutations
+        line_offsets: _,  // "line_offsets (None -> Some)" + resident display mutations
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,

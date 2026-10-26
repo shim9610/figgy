@@ -964,6 +964,19 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub bar_groups: Option<crate::data_config::BarGroups>,
+    /// Offset spectra: line series drawn shifted from each other by a step
+    /// per member, in stacking order
+    /// ([`LineOffsets`](crate::data_config::LineOffsets)). `None` (key
+    /// absent in JSON) draws every series where its values are. The members
+    /// are series of this chart's base layer or of its overlays; a subplot
+    /// has its own field. The renderer draws each member as an internal
+    /// panel of its own ([`Config::expand`]); the shift is a display
+    /// parameter and reported values stay unshifted.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub line_offsets: Option<crate::data_config::LineOffsets>,
 }
 
 impl Config {
@@ -999,6 +1012,9 @@ impl Config {
             active_layer: _,
             annotations,
             bar_groups,
+            // Steps in data units (or decades) and series ids: not a
+            // dimension.
+            line_offsets: _,
         } = self;
 
         let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;

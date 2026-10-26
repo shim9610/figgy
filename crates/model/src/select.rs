@@ -652,6 +652,7 @@ impl SubplotElement {
                 active_layer: _,
                 annotations: _,
                 bar_groups,
+                line_offsets,
             } = chart;
             *stored = Config {
                 chart_area,
@@ -672,6 +673,7 @@ impl SubplotElement {
                 active_layer: stored.active_layer,
                 annotations: std::mem::take(&mut stored.annotations),
                 bar_groups,
+                line_offsets,
             };
         }
         result
