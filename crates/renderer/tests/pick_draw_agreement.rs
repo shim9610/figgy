@@ -3613,3 +3613,289 @@ fn streamline_strokes_and_arrowheads_pick_where_they_paint() {
         "the NaN gap",
     );
 }
+
+/// [`assert_pick_matches_paint_with`] for a line offset member
+/// (`Config::line_offsets`): the document export draws each member in a panel
+/// of its own (the panel export keeps the base panel), and the comparison
+/// image keeps the member in the group, drawing nothing, so every other
+/// member keeps its shift. The subject's columns are swapped for the
+/// all-NaN `nan_x` / `nan_y`.
+#[allow(clippy::too_many_arguments)]
+fn assert_member_pick_matches_paint(
+    renderer: &mut Renderer,
+    chart: &Chart,
+    series: &[SeriesConfig],
+    subject: &str,
+    scale: f32,
+    what: &str,
+    tolerance: Tolerance,
+) -> usize {
+    let with = renderer.export_document_rgba(chart, series, scale).unwrap();
+    let blank: Vec<SeriesConfig> = series
+        .iter()
+        .cloned()
+        .map(|mut s| {
+            if s.series_id == subject {
+                s.x_column = "nan_x".into();
+                s.y_column = "nan_y".into();
+            }
+            s
+        })
+        .collect();
+    let without = renderer.export_document_rgba(chart, &blank, scale).unwrap();
+    let window = ink_window(&with, &without, 4);
+    let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
+    let painted = count_painted(window, is_painted);
+    let probe = Probe::register(renderer, chart, series, scale);
+    let mut failures = Vec::new();
+    for (x, y) in edge_band(window, is_painted) {
+        let ink = difference(&with, &without, x, y);
+        let hit = probe
+            .pick(renderer, x, y, tolerance.fringe)
+            .filter(|hit| hit.series_id == subject);
+        if ink >= tolerance.painted && hit.is_none() {
+            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+        }
+        if let Some(hit) = hit
+            && hit.distance_px == 0.0
+            && ink < tolerance.zero_ink
+        {
+            failures.push(format!(
+                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
+                hit.point_index
+            ));
+        }
+    }
+    // The typed pick names the member too, at the centre of its ink.
+    let (cx, cy) = {
+        let (mut sx, mut sy, mut n) = (0u64, 0u64, 0u64);
+        for y in window.1..window.3 {
+            for x in window.0..window.2 {
+                if difference(&with, &without, x, y) >= 192 {
+                    sx += u64::from(x);
+                    sy += u64::from(y);
+                    n += 1;
+                }
+            }
+        }
+        assert!(n > 0, "{what}: no opaque ink");
+        // The opaque pixel nearest the centroid.
+        let (mx, my) = ((sx / n) as u32, (sy / n) as u32);
+        (window.1..window.3)
+            .flat_map(|y| (window.0..window.2).map(move |x| (x, y)))
+            .filter(|&(x, y)| difference(&with, &without, x, y) >= 192)
+            .min_by_key(|&(x, y)| x.abs_diff(mx).pow(2) + y.abs_diff(my).pow(2))
+            .unwrap()
+    };
+    match probe.pick_data(renderer, cx, cy, tolerance.fringe) {
+        Some(renderer::PickedData::Point { series_id, .. }) if series_id == subject => {}
+        other => failures.push(format!("typed pick at ({cx}, {cy}): {other:?}")),
+    }
+    renderer.remove_chart(probe.id).unwrap();
+    assert!(
+        failures.is_empty(),
+        "{what} at {scale}x: {} disagreements, first {:?}",
+        failures.len(),
+        &failures[..failures.len().min(12)]
+    );
+    painted
+}
+
+/// Offset spectra (#50): every member picks exactly where its shifted parts
+/// paint and nothing unpainted picks: a solid line with a baseline fill, a
+/// dashed line with markers and error bars, a plain line two steps up, and
+/// the members of a logarithmic axis stacked by decades, at 1x and 2x.
+#[test]
+fn offset_lines_pick_where_their_shifted_parts_paint() {
+    use renderer::config::AxisScale;
+    use renderer::data_config::{ErrorRef, LineFill, LineInterpolation, LineOffsets};
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    let xs = vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
+    let n = xs.len();
+    upload_xy(&mut renderer, xs, vec![1.0, 1.8, 1.2, 2.0, 1.4, 1.6]);
+    renderer
+        .add_columns(&[
+            (
+                "ey",
+                &col(vec![0.4, 0.3, 0.5, 0.3, 0.4, 0.2]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "nan_x",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "nan_y",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    let filled = filled_line(
+        "filled",
+        Some(LineFill::ToBaseline(0.4)),
+        LineInterpolation::Linear,
+        Color::new(0.5, 0.8, 0.5, 1.0),
+    );
+    let DataRenderType::Scatter { scatter: markers } =
+        scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE).render_type
+    else {
+        unreachable!()
+    };
+    let dashed = SeriesConfig {
+        render_type: DataRenderType::LineScatterErrorbarY {
+            scatter: markers,
+            line: renderer::DataLineStyleConfig {
+                line_style: LineStylePreset::Dash,
+                line_color: BLUE,
+                line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: LineInterpolation::Linear,
+            },
+            err_y: ErrorRef::Symmetric {
+                column: "ey".into(),
+            },
+            err_style: errorbar_style(GREEN, 1.5, 6.0, 1.5),
+        },
+        ..scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE)
+    };
+    let plain = line(
+        "plain",
+        2.0,
+        LineStylePreset::Solid,
+        LineInterpolation::Linear,
+    );
+    let series = [filled, dashed, plain];
+    let mut chart = bare_chart();
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["filled".into(), "dashed".into(), "plain".into()],
+        step_y: 3.0,
+        step_x: 0.0,
+    });
+    for scale in [1.0, 2.0] {
+        for (subject, tolerance) in [
+            ("filled", FILL_EDGE),
+            ("dashed", MSAA_EDGE),
+            ("plain", STRICT),
+        ] {
+            let painted = assert_member_pick_matches_paint(
+                &mut renderer,
+                &chart,
+                &series,
+                subject,
+                scale,
+                &format!("offset member {subject}"),
+                tolerance,
+            );
+            assert!(painted > 30, "{subject} at {scale}x: {painted}");
+        }
+    }
+    // A logarithmic axis stacks by decades; a skew moves the second member
+    // along x too.
+    let mut log = bare_chart();
+    log.config_mut().left_y.scale = AxisScale::Logarithmic;
+    log.set_y_range(0.1, 1000.0);
+    log.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["low".into(), "high".into()],
+        step_y: 1.5,
+        step_x: 0.5,
+    });
+    let series = [
+        line(
+            "low",
+            2.0,
+            LineStylePreset::Solid,
+            LineInterpolation::Linear,
+        ),
+        line(
+            "high",
+            2.0,
+            LineStylePreset::Solid,
+            LineInterpolation::Linear,
+        ),
+    ];
+    for scale in [1.0, 2.0] {
+        for subject in ["low", "high"] {
+            let painted = assert_member_pick_matches_paint(
+                &mut renderer,
+                &log,
+                &series,
+                subject,
+                scale,
+                &format!("log offset member {subject}"),
+                STRICT,
+            );
+            assert!(painted > 30, "{subject} at {scale}x: {painted}");
+        }
+    }
+}
+
+/// Offset spectra (#50) whose members overlap: each member's opaque baseline
+/// fill covers part of the member below it, line included. Every pixel a
+/// member paints and the user can see picks that member, and a covered one
+/// picks the member covering it, at 1x and 2x: the pick answers with what is
+/// painted under the cursor (D7), across the member panels' composite order.
+#[test]
+fn overlapping_offset_members_pick_what_is_painted_on_top() {
+    use renderer::data_config::{LineFill, LineInterpolation, LineOffsets};
+    let mut renderer = renderer();
+    let xs = vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
+    let n = xs.len();
+    upload_xy(&mut renderer, xs, vec![1.0, 1.9, 1.2, 2.0, 1.3, 1.6]);
+    renderer
+        .add_columns(&[
+            (
+                "nan_x",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+            (
+                "nan_y",
+                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
+            ),
+        ])
+        .expect("upload");
+    // Far apart in every pair, so a fill painted over its neighbour's
+    // differs by as much ink as one painted over the background.
+    let fills = [
+        Color::new(0.1, 0.2, 0.85, 1.0),
+        Color::new(0.95, 0.85, 0.15, 1.0),
+        Color::new(0.15, 0.75, 0.2, 1.0),
+    ];
+    let series: Vec<SeriesConfig> = ["m0", "m1", "m2"]
+        .iter()
+        .zip(fills)
+        .map(|(id, fill)| {
+            filled_line(
+                id,
+                Some(LineFill::ToBaseline(0.6)),
+                LineInterpolation::Linear,
+                fill,
+            )
+        })
+        .collect();
+    let mut chart = bare_chart();
+    chart.set_x_range(0.0, 9.5);
+    chart.set_y_range(0.0, 3.2);
+    // Half a unit apart: member k's line (1.0..2.0 + k / 2) runs inside
+    // member k + 1's fill (1.1 + k / 2 up to its line) wherever the trace
+    // rises less than half a unit over its neighbour's.
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["m0".into(), "m1".into(), "m2".into()],
+        step_y: 0.5,
+        step_x: 0.0,
+    });
+    for scale in [1.0, 2.0] {
+        for subject in ["m0", "m1", "m2"] {
+            let painted = assert_member_pick_matches_paint(
+                &mut renderer,
+                &chart,
+                &series,
+                subject,
+                scale,
+                &format!("overlapping member {subject}"),
+                FILL_EDGE,
+            );
+            assert!(painted > 30, "{subject} at {scale}x: {painted}");
+        }
+    }
+}

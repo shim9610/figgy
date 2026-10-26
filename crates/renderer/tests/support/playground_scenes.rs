@@ -56,10 +56,11 @@ pub enum SceneKind {
     BoxPlot,
     Radar,
     LongLabels,
+    OffsetSpectra,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 19] = [
+    pub const ALL: [SceneKind; 20] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -79,6 +80,7 @@ impl SceneKind {
         SceneKind::BoxPlot,
         SceneKind::Radar,
         SceneKind::LongLabels,
+        SceneKind::OffsetSpectra,
     ];
 
     pub fn label(self) -> &'static str {
@@ -102,6 +104,7 @@ impl SceneKind {
             SceneKind::BoxPlot => "Box plot",
             SceneKind::Radar => "Radar (spider)",
             SceneKind::LongLabels => "Long labels (auto layout)",
+            SceneKind::OffsetSpectra => "Offset spectra (waterfall)",
         }
     }
 
@@ -170,6 +173,11 @@ impl SceneKind {
                 "A radar document opened as radar series on a polar chart whose \
                  angle axis holds the categories: pick a vertex, an edge or a \
                  fill, step with the arrows; grid shape, markers and fill."
+            }
+            SceneKind::OffsetSpectra => {
+                "Twelve spectra stacked by line_offsets with a skew along x: pick \
+                 a trace (values stay unshifted), step with the arrows; the \
+                 labels are annotations."
             }
         }
     }
@@ -356,6 +364,7 @@ pub fn build(
         SceneKind::BoxPlot => box_plot(r),
         SceneKind::Radar => radar(r),
         SceneKind::LongLabels => long_labels(r),
+        SceneKind::OffsetSpectra => offset_spectra(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -1542,6 +1551,83 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     Ok(CartesianScene {
         config: with_legend(config, &series),
         series,
+    })
+}
+
+/// Offset spectra (#50): twelve Gaussian bands drifting with temperature,
+/// drawn stacked by `Config::line_offsets` with a skew along x. The host
+/// uploads each spectrum as measured; the shift is a display parameter, so
+/// picks and selection details report the measured values. The first trace
+/// is filled to its baseline, and each trace's label is an annotation at its
+/// start.
+fn offset_spectra(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const TRACES: usize = 12;
+    const STEP_Y: f64 = 0.55;
+    const STEP_X: f64 = 6.0;
+    let x = linspace(200.0, 800.0, 301);
+    upload(r, "os_x", x.clone())?;
+    let gauss = |v: f64, center: f64, width: f64| (-0.5 * ((v - center) / width).powi(2)).exp();
+    let mut traces = Vec::new();
+    let mut members = Vec::new();
+    for k in 0..TRACES {
+        let t = k as f64 / (TRACES - 1) as f64;
+        let column = format!("os_y{k}");
+        upload(
+            r,
+            &column,
+            x.iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    (1.0 - 0.3 * t) * gauss(*v, 420.0 + 120.0 * t, 38.0 + 10.0 * t)
+                        + 0.35 * gauss(*v, 650.0, 24.0)
+                        + 0.012 * noise(40 + k as u64, i)
+                })
+                .collect(),
+        )?;
+        let color = Color::new(
+            (0.15 + 0.75 * t) as f32,
+            (0.35 - 0.2 * t) as f32,
+            (0.85 - 0.7 * t) as f32,
+            1.0,
+        );
+        let mut line = line_style(color, 1.8);
+        if k == 0 {
+            line.fill = Some(LineFill::ToBaseline(0.0));
+            line.fill_color = Some(Color::new(color.r, color.g, color.b, 0.3));
+        }
+        let id = format!("T{}", 300 + 25 * k);
+        members.push(id.clone());
+        traces.push(series(&id, "os_x", &column, DataRenderType::Line { line }));
+    }
+    let mut config = base_config(
+        "Offset spectra: band drift with temperature",
+        "Raman shift (cm⁻¹)",
+        "Intensity (offset)",
+    );
+    config.line_offsets = Some(renderer::data_config::LineOffsets {
+        series: members,
+        step_y: STEP_Y,
+        step_x: STEP_X,
+    });
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &traces, 0.04)?;
+    let mut config = chart.config().clone();
+    // A trace label at each trace's start, through the annotation layer.
+    config.annotations.items = (0..TRACES)
+        .map(|k| {
+            Annotation::new(AnnotationKind::Text {
+                anchor: Anchor::Data {
+                    x: 205.0 + k as f64 * STEP_X,
+                    y: 0.12 + k as f64 * STEP_Y,
+                },
+                text: RichText::plain(&format!("{} K", 300 + 25 * k), Color::BLACK, 12.0, ""),
+                box_style: None,
+            })
+        })
+        .collect();
+    Ok(CartesianScene {
+        config,
+        series: traces,
     })
 }
 

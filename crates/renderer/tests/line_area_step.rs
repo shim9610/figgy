@@ -1112,3 +1112,123 @@ fn log_axis_places_lines_at_every_magnitude() {
         );
     }
 }
+
+/// The values a pool column holds at `indices`, read back from the GPU pool
+/// the way a host's selection details read them (hi + lo pairs).
+fn pool_values(r: &Renderer, column: &str, indices: &[usize]) -> Vec<f64> {
+    let handle = r.pool().handle_for(column).expect("resident column");
+    let buffer = r.device().create_buffer(&wgpu::BufferDescriptor {
+        label: Some("selected values"),
+        size: indices.len() as u64 * 8,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = r.device().create_command_encoder(&Default::default());
+    for (slot, index) in indices.iter().enumerate() {
+        encoder.copy_buffer_to_buffer(
+            r.pool().buffer(),
+            handle.offset + *index as u64 * 8,
+            &buffer,
+            slot as u64 * 8,
+            8,
+        );
+    }
+    r.queue().submit([encoder.finish()]);
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |result| result.unwrap());
+    r.device()
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    let values = slice
+        .get_mapped_range()
+        .unwrap()
+        .chunks_exact(8)
+        .map(|pair| {
+            f64::from(f32::from_le_bytes(pair[..4].try_into().unwrap()))
+                + f64::from(f32::from_le_bytes(pair[4..].try_into().unwrap()))
+        })
+        .collect();
+    buffer.unmap();
+    values
+}
+
+/// Offset spectra (#50): a member is drawn shifted, but a pick on the
+/// shifted trace names the source index, and the values a host reads for it
+/// are the column's own, unshifted; the column statistics and an export of
+/// the same document without the group are unchanged.
+#[test]
+fn offset_lines_report_unshifted_values() {
+    use renderer::data_config::LineOffsets;
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let xs = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let ys = vec![2.0, 3.5, 2.5, 4.0, 3.0];
+    r.add_column("x", &col_f64(xs.clone())).unwrap();
+    r.add_column("y", &col_f64(ys.clone())).unwrap();
+    let mut chart = bare_chart(240, 180);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 12.0);
+    let plain = chart.config().clone();
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: vec!["low".into(), "high".into()],
+        step_y: 5.0,
+        step_x: 0.5,
+    });
+    let declared = [
+        series("low", "x", "y", line(None, None, LineInterpolation::Linear)),
+        series(
+            "high",
+            "x",
+            "y",
+            line(None, None, LineInterpolation::Linear),
+        ),
+    ];
+    let id = r
+        .register_chart(chart.config().clone(), declared.to_vec())
+        .unwrap();
+    let image = r.export_document_rgba(&chart, &declared, 1.0).unwrap();
+    for index in 0..xs.len() {
+        // `high` is drawn half a unit right and five up.
+        let (x, y) = (
+            data_x_to_px(&chart, xs[index] + 0.5),
+            data_y_to_px(&chart, ys[index] + 5.0),
+        );
+        assert!(
+            is_red(&pixel(&image, x, y)),
+            "point {index} is not drawn shifted"
+        );
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [x, y],
+            display_panel_px: chart.config().chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 2.0,
+        };
+        let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+            .unwrap()
+            .expect("the shifted point picks");
+        assert_eq!((hit.series_id.as_str(), hit.point_index), ("high", index));
+        let values = pool_values(&r, "x", &[index])
+            .into_iter()
+            .chain(pool_values(&r, "y", &[index]))
+            .collect::<Vec<_>>();
+        assert_eq!(values, [xs[index], ys[index]], "point {index}");
+        // The unshifted place of the point is not `high`'s.
+        let unshifted = renderer::GpuPickRequest {
+            canvas_position_px: [
+                data_x_to_px(&chart, xs[index]),
+                data_y_to_px(&chart, ys[index]),
+            ],
+            ..request
+        };
+        let low = pollster::block_on(r.pick_chart(id, unshifted).unwrap().resolve())
+            .unwrap()
+            .expect("the first member is unshifted");
+        assert_eq!((low.series_id.as_str(), low.point_index), ("low", index));
+    }
+    let slot = r.pool().slot("y").expect("resident column");
+    assert_eq!((slot.min, slot.max), (2.0, 4.0));
+    assert_eq!(chart.config().left_y.max, plain.left_y.max);
+}

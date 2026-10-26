@@ -174,6 +174,19 @@ fn overlay_config() -> Config {
     c
 }
 
+/// The panel with the filled line and the error-bar line stacked as offset
+/// spectra (`Config::line_offsets`): each member is a panel of its own with
+/// its own cached bodies, drawn at its shift.
+fn offset_config() -> Config {
+    let mut c = chart_config();
+    c.line_offsets = Some(crate::data_config::LineOffsets {
+        series: vec!["err".into(), "line".into()],
+        step_y: 0.1,
+        step_x: 0.05,
+    });
+    c
+}
+
 /// The panel in the upper half of a taller surface and a subplot in the
 /// lower half drawing the histogram on its own axes.
 fn subplot_config() -> (Config, (u32, u32)) {
@@ -757,6 +770,7 @@ fn every_leaf_that_changes_the_resident_bodies_changes_the_key() {
     register_comic_neue();
     let mut tally = run_suite("panel", chart_config(), chart_series(), SIZE);
     tally.absorb(run_suite("overlay", overlay_config(), chart_series(), SIZE));
+    tally.absorb(run_suite("offsets", offset_config(), chart_series(), SIZE));
     let (config, size) = subplot_config();
     tally.absorb(run_suite("subplot", config, chart_series(), size));
     tally.absorb(run_suite(

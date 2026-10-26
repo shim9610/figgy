@@ -19,7 +19,7 @@ Collected on `integration/0.19`; the release entry replaces this section.
 Every breaking change below carries its migration. Serialized documents
 written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
-`categories`, `cross_at`, `bar_groups`, `log_ticks`,
+`categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection and
 the `CategoryBars`, `BoxPlot`, `Radar` and `Streamlines` series kinds) are
@@ -587,6 +587,34 @@ additive.
   `Adaptive` is written, so released documents re-serialize byte for byte.
   Migration: an `AxisOptions { .. }` literal or exhaustive destructuring
   names `log_ticks` (`LogTickPolicy::Decades` keeps the former ticks).
+- **Offset spectra: `Config::line_offsets`**
+  ([#50](https://github.com/shim9610/figgy/issues/50),
+  [#58](https://github.com/shim9610/figgy/issues/58) item 22a). The
+  additive `line_offsets: Option<LineOffsets { series, step_y, step_x }>`
+  draws line series stacked: member `k` (stacking order) shifted by
+  `k * step_y` and `k * step_x`, in data units or decades on a logarithmic
+  axis. A subplot's chart has its own field. `Config::line_offset_of(id)`
+  returns a member's shift; `LineOffsets::validate`,
+  `Config::validate_line_offset_layout` and
+  `Config::validate_line_offsets(series)` reject non-finite steps, unknown or
+  duplicate ids, non-line members (`Line`, `ScatterLine` and
+  `LineScatterErrorbar*` are accepted), members another chart draws, polar
+  charts, more than `MAX_OFFSET_LINES` (32) members and a `ToSeries` fill
+  across members. `Config::expand` appends one panel per member after the
+  overlay panels (the panel of the layer that scales it with `bottom_x` and
+  the transform's `left_y` moved by the shift, every axis element hidden,
+  the title, grid, legend and colourbar hidden, only the member's picks);
+  the base and overlay panels draw no member. A member panel is not a layer:
+  `panel_layers()` reports its owner's layer for it, `panel_member(index)`
+  names the member a panel draws, `panel_of_series(id)` routes a series to
+  its panel and `has_offset_members()` says whether a chart has any.
+  `scale_in_place` keeps the steps. The field and `step_x` are omitted at
+  their defaults, so released documents re-serialize byte for byte.
+  Migration: a `Config { .. }` literal or exhaustive destructuring names
+  `line_offsets` (`None` keeps the former drawing); a subplot's chart is a
+  `Config` and does the same. A caller that zipped `panel_layers()` with
+  `Expansion::panels` keeps working; one that assumed each layer appears
+  once checks `panel_member(index)`.
 
 <a id="unreleased-renderer"></a>
 
@@ -618,6 +646,32 @@ additive.
   `ColumnVectorLayer` literals gain `indirect: None`, `ColumnLineLayer`
   literals `value_map: None`; `VectorParamsGpu::pad0` is now `spacing_px`
   (zero for the point and grid forms).
+
+- **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50),
+  #58 item 22a). A document with `line_offsets` draws each member as an
+  internal panel of its own through the existing per-panel path: lines,
+  fills, markers, error bars, dashes, the picked ring and the PNG, SVG and
+  PDF exports follow the member's panel, with no shader change and no
+  transform, binding or cache of its own. The view counts member panels
+  like overlays (`overlay_count()`, `layer_raster_generations()`, the
+  refresh rule of `layer_views`), and a member draws no backdrop and
+  reports no tick warnings. A pick on the owner layer answers with what is
+  painted under the cursor (the approved D7 policy): the point pick tests
+  each member at its own panel's transform and reads back each member's
+  candidate beside the final one; the last member with a hit at distance 0
+  answers first, else the nearest hit of any series; a typed pick lets a
+  member's point hit painted under the cursor answer before the data under
+  it.
+  Reported indices and values are the pool's, unshifted.
+  `Chart::auto_fit_layer_union` fits every member's extents plus its shift
+  (`Chart::line_offset_fit_extents`). A nonresident (streamed) member is
+  rejected with `FiggyError::InvalidSeriesConfig`, and the stream request
+  paths reject a document with members (`InvalidConfig { field:
+  "line_offsets" }`). The registry classifies `line_offsets` as a raster and
+  geometry edit. Migration: `GpuDataPickTicket` and the internal pick entry
+  points changed only inside the crate; the public API adds
+  `Chart::line_offset_fit_extents`.
+
 - **Math layout from the OpenType MATH table**
   ([#45](https://github.com/shim9610/figgy/issues/45), #58 item 19). A
   `Math` node in any rich text (titles, axis titles, legend labels,
@@ -1232,6 +1286,15 @@ additive.
   type; `pick_point`, `step_selection`, the column references and
   `auto_fit_colorbar` (the colour column) cover it. No new binding;
   `SCHEMA.md` gives the form.
+
+- **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
+  `"line_offsets"` is read and written by `set_config` / `get_config` (on a
+  subplot's `config` too) and omitted when absent; `pick_point`,
+  `pick_data`, `selection_details` and `step_selection` report the
+  unshifted values, `auto_fit_all` fits the members where they are drawn,
+  and `hit_test` answers with the base layer's elements. No new binding;
+  `SCHEMA.md` describes the key.
+
 - **`autoLayout(configJson)`** ([#44](https://github.com/shim9610/figgy/issues/44)):
   a free function that returns the config JSON through `layout::auto_layout`,
   measured with the renderer's text measure for the config's draw style. It
@@ -1404,7 +1467,8 @@ entries above describe the changes.
   - Draw the annotation layer after the frame with `draw_overlay` alone;
     drop `set_background(FrameBackground::HostClear)` and `draw_underlay`.
     The radial chart has no value axes, so a span was never drawn on it.
-- **Rust literals and matches.** `Config { .. }` adds `bar_groups: None`;
+- **Rust literals and matches.** `Config { .. }` adds `bar_groups: None`
+  and `line_offsets: None` (a subplot's `config` likewise);
   `AxisOptions { .. }` adds `categories: None` and `cross_at: None` (an
   exhaustive destructuring names both); `PolarOptions { .. }` adds
   `grid_shape: None`; a `RadarSeriesStyle` literal that names every field
@@ -1473,6 +1537,29 @@ entries above describe the changes.
   gains a `Streamlines` scene (a host-integrated dipole with a logarithmic
   speed colourbar), which the decoration oracle sweeps in both passes with
   no exclusion.
+
+- **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
+  The playground catalogue gains an `OffsetSpectra` scene (twelve stacked
+  Gaussian spectra, the first filled to its baseline, a skew along x and a
+  label per trace as an annotation), which the decoration oracle checks on
+  both sweeps with no exclusion row and the playground selftest exports
+  and edits. `pick_draw_agreement::offset_lines_pick_where_their_shifted_parts_paint`
+  holds every member's painted pixels to its picks (a filled line, a dashed
+  line with markers and error bars, a log axis stacked by decades, 1x and
+  2x); `line_area_step::offset_lines_report_unshifted_values`, the renderer's
+  `offset_lines_export_at_1x_and_2x`, `offset_line_ring_sits_on_the_shifted_point`,
+  `offset_picks_take_the_painted_member_first`, `pan_keeps_offset_picks_on_the_drawn_trace`,
+  `offset_members_shift_on_their_overlay_axis`, `auto_fit_includes_member_offsets`,
+  `streamed_series_reject_line_offsets`, `polar_rejects_line_offsets` and
+  `subplot_members_draw_shifted_in_their_own_area` compare each with a host
+  that shifted the data itself; the model's `step_selection_ignores_line_offsets`,
+  `line_offsets_round_trip_and_old_documents_unchanged`,
+  `line_offset_members_expand_into_shifted_panels` and
+  `subplot_line_offsets_are_its_own`; the SSOT case
+  `"line_offsets (None -> Some)"`, an `offsets` suite of the resident display
+  key mutations, and a browser test of the round trip, hit test, pick and
+  selection details.
+
 - **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)). The
   playground catalogue gains a `LongLabels` scene (`0.00300` labels under a
   math Y title, negative long decimals, a logarithmic top axis with adaptive
@@ -1678,6 +1765,12 @@ entries above describe the changes.
   field one, `SCHEMA.md` (in Korean) the render type's form and its serde
   rules, and `SHADER_COMMON.md` the arc slots, the mapped stroke, the path
   form and the arrowhead pick.
+
+- **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50)).
+  `CONFIG.md` describes `LineOffsets` (the Korean section in Korean),
+  `INTERACTION.md` the panels, the pick order, selection, fit and export, and
+  `SCHEMA.md` (in Korean) the `line_offsets` key.
+
 - **`auto_layout`** ([#44](https://github.com/shim9610/figgy/issues/44)).
   `API.md` lists it among the convenience helpers, `CONFIG.md` points the
   label section to it, `README.md` lists it under embedding, and the

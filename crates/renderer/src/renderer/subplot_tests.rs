@@ -786,3 +786,86 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         assert!(inside > 20, "{series_id}: {inside} highlighted pixels");
     }
 }
+
+// A subplot's line offsets are its own (#50): its members draw in its own
+// area, shifted on its own axes, exactly where a host-shifted copy of the
+// data draws, while the parent's group stays in the parent's area; the view
+// holds a panel view per member, and a pick in the subplot finds the member
+// where it is drawn.
+#[test]
+fn subplot_members_draw_shifted_in_their_own_area() {
+    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut r = renderer();
+    r.add_column("b20", &column(vec![30.0, 50.0, 40.0, 70.0, 60.0]))
+        .unwrap();
+    r.add_column("a3", &column(vec![0.5, 0.9, 0.6, 1.1, 0.7]))
+        .unwrap();
+    let group = |ids: &[&str], step_y: f64| crate::data_config::LineOffsets {
+        series: ids.iter().map(|id| (*id).into()).collect(),
+        step_y,
+        step_x: 0.0,
+    };
+    let host = |shifted: bool| {
+        let mut list = series();
+        list.push(declaration("s3", "x", if shifted { "a3" } else { "a" }));
+        list.push(declaration("t1", "x", if shifted { "b20" } else { "b" }));
+        list
+    };
+    let mut plain = document();
+    plain.subplots[0].series.push("t1".into());
+    let mut offset = plain.clone();
+    offset.line_offsets = Some(group(&["s0", "s3"], 0.3));
+    offset.subplots[0].config.line_offsets = Some(group(&["s1", "t1"], 20.0));
+    let drawn = r
+        .export_document_rgba(&Chart::new(offset.clone()), &host(false), 1.0)
+        .unwrap();
+    let expected = r
+        .export_document_rgba(&Chart::new(plain.clone()), &host(true), 1.0)
+        .unwrap();
+    drop(fonts);
+    let (largest, count) = drawn
+        .rgba
+        .chunks_exact(4)
+        .zip(expected.rgba.chunks_exact(4))
+        .map(|(p, q)| p.iter().zip(q).map(|(a, b)| a.abs_diff(*b)).max().unwrap())
+        .fold((0u8, 0usize), |(largest, count), d| {
+            (largest.max(d), count + usize::from(d > 0))
+        });
+    assert!(largest <= 2, "{count} pixels differ by up to {largest}");
+    assert_ne!(
+        drawn.rgba,
+        r.export_document_rgba(&Chart::new(plain), &host(false), 1.0)
+            .unwrap()
+            .rgba
+    );
+    let view = r
+        .create_chart_view(&Chart::new(offset.clone()), UPPER)
+        .unwrap();
+    // Base, its two members, then subplot 0 with its overlay and two
+    // members, then subplot 1.
+    assert_eq!(view.overlay_count(), 7);
+    let mut active = offset;
+    active.set_active_layer(LayerRef::Subplot(0));
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(active.clone(), host(false)).unwrap();
+    let panel = active.subplot_config(0).unwrap();
+    let da = panel.data_area().unwrap().0;
+    // Point 0 of `t1` (x 0.1 on the -0.5..1 axis, y 10) is drawn at 30 on
+    // the subplot's 0..60 axis.
+    let at = [
+        da.x as f32 + (0.1 + 0.5) / 1.5 * da.width as f32,
+        (da.y + da.height) as f32 - 30.0 / 60.0 * da.height as f32,
+    ];
+    let request = GpuPickRequest {
+        canvas_position_px: at,
+        display_panel_px: active.document_area(),
+        display_scale: 1.0,
+        max_distance_px: 3.0,
+    };
+    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        .unwrap()
+        .expect("the shifted subplot member picks");
+    assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));
+}

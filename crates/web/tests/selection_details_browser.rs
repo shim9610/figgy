@@ -212,3 +212,99 @@ async fn point_vector_selection_steps_along_its_anchors() {
     assert!(chart.step_selection(-1, 0).unwrap());
     assert_eq!(point_index(&chart), 1);
 }
+
+fn trace(id: &str) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: Some(format!("source-{id}")),
+        label: None,
+        x_column: "ox".into(),
+        y_column: "oy".into(),
+        render_type: DataRenderType::Line {
+            line: renderer::DataLineStyleConfig {
+                line_width: 2.0,
+                ..Default::default()
+            },
+        },
+    }
+}
+
+/// Offset spectra (#50) through the wrapper: `line_offsets` round-trips
+/// through `set_config` / `get_config`, the hit map registers only the base
+/// layer's elements (a member panel has none), a pick on a member's shifted
+/// trace names the member, and its selection details report the column's
+/// own, unshifted values.
+#[wasm_bindgen_test(async)]
+async fn offset_lines_round_trip_hit_test_and_report_unshifted_values() {
+    use renderer::data_config::LineOffsets;
+    let mut chart = FiggyChart::create(canvas()).await.unwrap();
+    chart
+        .register_column_f64("ox", &[1.0, 3.0, 5.0, 7.0, 9.0])
+        .unwrap();
+    chart
+        .register_column_f64("oy", &[2.0, 3.5, 2.5, 4.0, 3.0])
+        .unwrap();
+    chart
+        .set_series(&serde_json::to_string(&vec![trace("low"), trace("high")]).unwrap())
+        .unwrap();
+    let mut config: renderer::Config = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    for (axis, max) in [(&mut config.bottom_x, 10.0), (&mut config.left_y, 12.0)] {
+        axis.min = 0.0;
+        axis.max = max;
+    }
+    config.line_offsets = Some(LineOffsets {
+        series: vec!["low".into(), "high".into()],
+        step_y: 5.0,
+        step_x: 0.5,
+    });
+    let json = serde_json::to_string(&config).unwrap();
+    chart.set_config(&json).unwrap();
+    let back: serde_json::Value = serde_json::from_str(&chart.get_config().unwrap()).unwrap();
+    assert_eq!(
+        back["line_offsets"],
+        serde_json::json!({ "series": ["low", "high"], "step_y": 5.0, "step_x": 0.5 })
+    );
+    assert_eq!(
+        serde_json::from_value::<renderer::Config>(back).unwrap(),
+        config
+    );
+    chart.frame().unwrap();
+
+    // Data (x, y) to canvas pixels through the displayed base panel.
+    let (display, _, _) = renderer::display_config_for_surface(&config, (480, 320));
+    let area = display.data_area().unwrap().0;
+    let px = |x: f64, y: f64| {
+        (
+            area.x as f32 + (x / 10.0) as f32 * area.width as f32,
+            (area.y + area.height) as f32 - (y / 12.0) as f32 * area.height as f32,
+        )
+    };
+    // The data area answers for every panel; no member element exists.
+    let (cx, cy) = px(5.0, 6.0);
+    assert_eq!(chart.hit_test(cx, cy).as_deref(), Some("data_area"));
+
+    // Point 3 of `high` is drawn half a unit right and five up.
+    let (x, y) = px(7.5, 9.0);
+    let picked = chart.pick_point(x, y, 3.0).await.unwrap();
+    let picked: serde_json::Value = serde_json::from_str(&picked.as_string().unwrap()).unwrap();
+    assert_eq!(picked["series_id"], "high");
+    assert_eq!(picked["point_index"], 3);
+    select(
+        &mut chart,
+        PickedDataRef::Point {
+            source_id: Some("source-high".into()),
+            series_id: "high".into(),
+            point_index: 3,
+        },
+    );
+    let selected = details(&chart).await;
+    assert_eq!(selected["x"], 7.0);
+    assert_eq!(selected["y"], 4.0);
+    // Stepping walks the source indices, unshifted.
+    assert!(chart.step_selection(-1, 0).unwrap());
+    let selected = details(&chart).await;
+    assert_eq!(
+        (selected["index"].clone(), selected["y"].clone()),
+        (2.into(), 2.5.into())
+    );
+}

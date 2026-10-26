@@ -108,6 +108,38 @@ impl FitExtent {
     fn is_fittable(&self) -> bool {
         self.min.is_finite() && self.max.is_finite() && self.max > self.min
     }
+
+    /// The extent of the same values drawn `by` further along the axis: `by`
+    /// data units on a linear axis, `by` decades (a factor of `10^by`) on a
+    /// logarithmic one. A display shift of a line offset member
+    /// (`Config::line_offset_of`); the values themselves are not moved.
+    fn shifted(&self, by: f64, logarithmic: bool) -> Self {
+        if by == 0.0 {
+            return *self;
+        }
+        if logarithmic {
+            let factor = 10f64.powf(by);
+            return Self {
+                min: self.min * factor,
+                max: self.max * factor,
+                min_positive: self.min_positive.map(|value| value * factor),
+            };
+        }
+        let min = self.min + by;
+        Self {
+            min,
+            max: self.max + by,
+            // A positive bound the shifted values keep: the shifted minimum,
+            // else the shifted floor.
+            min_positive: if min > 0.0 {
+                Some(min)
+            } else {
+                self.min_positive
+                    .map(|value| value + by)
+                    .filter(|value| *value > 0.0)
+            },
+        }
+    }
 }
 
 /// Validate the invariants required before a `Config` becomes renderer-owned.
@@ -267,6 +299,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         .validate()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "annotations",
+            reason,
+        })?;
+    config
+        .validate_line_offset_layout()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "line_offsets",
             reason,
         })?;
     if !config.overlays.is_empty() {
@@ -1020,6 +1058,9 @@ impl Chart {
     /// tips are not in the column statistics: for those, measure the series
     /// with `Renderer::begin_series_fit_extent` and fit with
     /// [`Self::auto_fit_layer_extent`].
+    ///
+    /// A line offset member (`Config::line_offsets`) contributes its extents
+    /// as it is drawn, moved by its shift ([`Self::line_offset_fit_extents`]).
     pub fn auto_fit_layer_union(
         &mut self,
         pool: &ColumnPool,
@@ -1061,11 +1102,26 @@ impl Chart {
                 }
                 continue;
             }
-            if fit_x {
-                x.union(&Self::slot_extent(pool, &cfg.x_column)?);
-            }
-            if fit_y {
-                y.union(&Self::slot_extent(pool, &cfg.y_column)?);
+            if fit_x || fit_y {
+                let extent = |fit: bool, column: &str| {
+                    if fit {
+                        Self::slot_extent(pool, column)
+                    } else {
+                        Ok(FitExtent::EMPTY)
+                    }
+                };
+                let (member_x, member_y) = Self::line_offset_fit_extents(
+                    &self.config,
+                    &cfg.series_id,
+                    extent(fit_x, &cfg.x_column)?,
+                    extent(fit_y, &cfg.y_column)?,
+                );
+                if fit_x {
+                    x.union(&member_x);
+                }
+                if fit_y {
+                    y.union(&member_y);
+                }
             }
             if let DataRenderType::Histogram { bar } = &cfg.render_type {
                 let baseline = FitExtent {
@@ -1082,6 +1138,39 @@ impl Chart {
         }
         self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
         Ok(())
+    }
+
+    /// The `x` and `y` extents of series `series_id` of `config` as they are
+    /// drawn: moved by its line offset (`Config::line_offset_of`) on the axes
+    /// that draw it, a factor of `10^shift` on a logarithmic axis. A series
+    /// that is not a member keeps both. The fit of a layer unions these, so
+    /// the base range covers every member where it is drawn.
+    pub fn line_offset_fit_extents(
+        config: &Config,
+        series_id: &str,
+        x: FitExtent,
+        y: FitExtent,
+    ) -> (FitExtent, FitExtent) {
+        let Some([dx, dy]) = config.line_offset_of(series_id) else {
+            return (x, y);
+        };
+        let log = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Logarithmic);
+        let (chart, y_axis) = match config.layer_of_series(series_id) {
+            LayerRef::Subplot(index) => {
+                let chart = &config.subplots[index].config;
+                (chart, &chart.left_y)
+            }
+            LayerRef::SubplotOverlay(index, overlay) => {
+                let chart = &config.subplots[index].config;
+                (chart, &chart.overlays[overlay].y_axis)
+            }
+            LayerRef::Overlay(overlay) => (config, &config.overlays[overlay].y_axis),
+            LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
+        };
+        (
+            x.shifted(dx, log(&chart.bottom_x)),
+            y.shifted(dy, log(y_axis)),
+        )
     }
 }
 

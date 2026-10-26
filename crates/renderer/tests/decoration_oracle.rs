@@ -834,6 +834,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::BoxPlot => "BoxPlot",
         SceneKind::Radar => "Radar",
         SceneKind::LongLabels => "LongLabels",
+        SceneKind::OffsetSpectra => "OffsetSpectra",
     }
 }
 
@@ -1474,17 +1475,19 @@ fn palette(config: &Config) -> (Config, Vec<Code>) {
 }
 
 /// The panels the renderer draws a document as, base first: the document
-/// itself without layers, else its expansion, else (no data area at this
-/// size) its base panel alone; the renderer's own `expand_for_render`.
+/// itself without layers, else its expansion (line offset members included),
+/// else (no data area at this size) its base panel alone; the renderer's own
+/// `expand_for_render`.
 fn render_panels(doc: &Config) -> Vec<(LayerRef, Config)> {
     let alone = || {
         let mut panel = doc.clone();
         panel.overlays.clear();
         panel.subplots.clear();
+        panel.line_offsets = None;
         panel.active_layer = LayerRef::Base;
         vec![(LayerRef::Base, panel)]
     };
-    if doc.overlays.is_empty() && doc.subplots.is_empty() {
+    if doc.overlays.is_empty() && doc.subplots.is_empty() && !doc.has_offset_members() {
         return alone();
     }
     match doc.expand() {

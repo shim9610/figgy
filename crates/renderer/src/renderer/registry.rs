@@ -113,6 +113,9 @@ impl ChartViewState {
             annotations: _,
             // How bars share a slot, not how data maps to the screen.
             bar_groups: _,
+            // The member shifts are display parameters of the group, kept
+            // as they are when a view state moves the ranges.
+            line_offsets: _,
         } = config;
         Self {
             chart_area: chart_area.0,
@@ -170,6 +173,7 @@ impl ChartViewState {
             active_layer: _,
             annotations: _,
             bar_groups: _,
+            line_offsets: _,
         } = config;
         config_area.0 = *chart_area;
         top_x.apply_to(config_top_x);
@@ -239,6 +243,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         annotations: _,
         // The bars' layout is drawn by the GPU pass, not rasterized.
         bar_groups: _,
+        line_offsets,
     } = left;
     chart_area == &right.chart_area
         && top_x == &right.top_x
@@ -258,6 +263,10 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         // A subplot is a chart of its own: every field is its panels' chrome,
         // its series list or its links.
         && subplots == &right.subplots
+        // Each member is a panel of its own with textures of its own, like
+        // an overlay: the group decides how many panels the view holds and
+        // which panel draws a series.
+        && line_offsets == &right.line_offsets
 }
 
 /// Whether two configs map data to the same pixels on every layer: the
@@ -1412,6 +1421,14 @@ pub(super) fn validate_renderer_series(
         });
     }
     validate_radar_rules(config, series)?;
+    // The line offset group is the chart's too: its members, their kinds
+    // and the fills between them.
+    config
+        .validate_line_offsets(series)
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "line_offsets",
+            reason,
+        })?;
     for (index, item) in series.iter().enumerate() {
         if item.series_id.is_empty() {
             return Err(FiggyError::InvalidSeriesConfig {
@@ -2284,13 +2301,24 @@ impl Renderer {
     /// A series an overlay layer scales or a subplot draws must be resident:
     /// the nonresident stream pass draws one panel, so a streamed series on
     /// another panel is an explicit error rather than a silently mis-scaled
-    /// drawing.
+    /// drawing. A line offset member is new and not streamed at all (rule
+    /// 8): a nonresident member is an explicit error too.
     pub(super) fn require_resident_overlay_series(
         &self,
         config: &Config,
         series: &[SeriesConfig],
     ) -> Result<()> {
         for item in series {
+            if config.line_offset_of(&item.series_id).is_some()
+                && self.require_resident_series(item).is_err()
+            {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: "a line offset member must be resident: streamed sources are not \
+                             drawn with line offsets"
+                        .into(),
+                });
+            }
             let layer = config.layer_of_series(&item.series_id);
             if !matches!(layer, crate::LayerRef::Base)
                 && self.require_resident_series(item).is_err()

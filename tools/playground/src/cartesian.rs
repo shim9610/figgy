@@ -2595,6 +2595,41 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
         println!("ok  scene {kind:?} (PNG, SVG, PDF)");
     }
 
+    // The offset spectra with their group edited through the registry: a
+    // larger step, no skew and the stack reversed, each exported; a member
+    // without a line is refused.
+    {
+        let scene =
+            scenes::build(r, SceneKind::OffsetSpectra, big_data::START_POINTS).map_err(e)?;
+        let id = r
+            .register_chart(scene.config.clone(), scene.series.clone())
+            .map_err(e)?;
+        let mut c = scene.config.clone();
+        let edits: [(&str, fn(&mut renderer::data_config::LineOffsets)); 3] = [
+            ("offsets_step", |o| o.step_y *= 1.5),
+            ("offsets_no_skew", |o| o.step_x = 0.0),
+            ("offsets_reversed", |o| o.series.reverse()),
+        ];
+        for (name, edit) in edits {
+            edit(c.line_offsets.as_mut().expect("the scene has a group"));
+            r.set_chart_config(id, c.clone())
+                .map_err(|e| format!("{name}: {e}"))?;
+            let png = r
+                .export_document_png_bytes(&Chart::new(c.clone()), &scene.series, 1.0)
+                .map_err(e)?;
+            std::fs::write(dir.join(format!("{name}.png")), png).map_err(|e| e.to_string())?;
+        }
+        let mut scatter = scene.series.clone();
+        scatter[0].render_type = DataRenderType::Scatter {
+            scatter: scenes::scatter_style(renderer::Color::BLACK, ScatterShape::Circle, 3.0),
+        };
+        if r.set_chart_series(id, scatter).is_ok() {
+            return Err("a line offset member without a line was accepted".into());
+        }
+        r.remove_chart(id).map_err(e)?;
+        println!("ok  offset spectra edits");
+    }
+
     // The long-label scene as the "Auto layout" button leaves it, committed
     // through the registry like any edit, at 1x and 2x; a second press
     // changes nothing.

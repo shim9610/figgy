@@ -147,6 +147,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             == right.data_area().ok().map(|area| area.0)
         && overlay_geometry_equal(left, right)
         && subplot_geometry_equal(left, right, series)
+        // A member's shift moves every one of its samples.
+        && left.line_offsets == right.line_offsets
         && left.draw_style == right.draw_style
         // The coordinate system maps every sample to its pixel.
         && left.polar == right.polar

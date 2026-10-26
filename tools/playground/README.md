@@ -33,7 +33,9 @@ cargo run --manifest-path tools/playground/Cargo.toml -- --selftest
 It registers the lines scene as a chart, applies a sequence of overlay and
 subplot edits with `Renderer::set_chart_config`, and writes a PNG of each step,
 and of every Cartesian scene at 1x and 2x, plus the long-label scene after
-`layout::auto_layout` committed the same way, to `target/playground/selftest/`
+`layout::auto_layout` committed the same way and the offset spectra with
+their group edited (a larger step, no skew, the stack reversed), to
+`target/playground/selftest/`
 under the working directory. A rejected config or a failed export stops the run
 with exit status 1.
 
@@ -52,6 +54,10 @@ The tabs at the top switch scenes.
   logarithmic top axis, timestamps and a colourbar, in bands set by hand),
   which the "Auto layout" button beside "Reset view" fixes through
   `layout::auto_layout`. The button works on every Cartesian scene.
+  Offset spectra: twelve spectra stacked by `Config::line_offsets` with a
+  skew along x, the first filled to its baseline and each labelled by an
+  annotation at its start; a pick on a shifted trace reports its measured
+  values.
 - **Radial**: the pie and donut chart (the DataLess chart, its own renderer).
 
 The lines scene's title and Y title, the twin-axes overlay title, a subplot
