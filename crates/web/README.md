@@ -62,7 +62,7 @@ Run them locally with [`ci/wasm_browser_test.cjs`](../../ci/wasm_browser_test.cj
 
 | Source / guide | Purpose |
 |---|---|
-| [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG output |
+| [index.html](index.html) | Interactive histogram, bin/stroke controls and PNG, SVG and PDF output |
 | [timestamp-demo.html](timestamp-demo.html) | Timestamp data and axis formatting |
 | [figgy-chart.js](figgy-chart.js) | `<figgy-chart>` element: host lifecycle, events and Promise adaptation |
 | [src/lib.rs](src/lib.rs), [src/web/](src/web/chart.rs) and [src/radial.rs](src/radial.rs) | wasm-bindgen bridge to the renderer: `FiggyChart` in `src/web/` (one file per concern, `chart.rs` first), `FiggyBoundedChart` (the radial chart host) in `src/radial.rs` |

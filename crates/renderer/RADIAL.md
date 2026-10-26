@@ -314,6 +314,14 @@ let png = renderer::encode_png(&image)?;
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
 
+`export_svg_async(&chart, size, scale)`와 `export_pdf_async`(네이티브 동기 버전 `export_svg` /
+`export_pdf`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다([#48](https://github.com/shim9610/figgy/issues/48)).
+크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 라벨 없이 배치한 프레임을 캐시 없이
+만들어 이미지 한 장으로 넣는다. 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 라벨 텍스처를
+그리는 배치 함수에서 벡터로 기록하며 글자는 글리프 윤곽선으로 남긴다. PNG와 다른 점은 두 가지다.
+내부 라벨은 모두 들린 위치에서 모든 조각 위에 그린다(PNG에서는 들린 이웃 조각이 라벨을 가릴 수 있다).
+선택한 장식의 선택 상자는 그리지 않는다. 페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다.
+
 
 `style.outline`의 `rim`(바깥·구멍 윤곽), `separators`(조각 경계), `emphasis`(호버·선택 강조)는
 각각 켜고 끌 수 있다. 입체 차트의 `rim`은 보이는 윗면과 바깥·안쪽 벽 사이의 경계도 포함한다.
