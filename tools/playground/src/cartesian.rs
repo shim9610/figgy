@@ -1156,23 +1156,41 @@ impl CartesianHost {
 
         section(ui, "Export", false, |ui| {
             slider(ui, "scale", &mut self.export_scale, 1.0..=4.0);
-            if ui.button("Export document PNG").clicked() {
-                let chart = Chart::new(config.clone());
-                match r.export_document_png_bytes(&chart, &series, self.export_scale) {
-                    Ok(bytes) => {
-                        let dir = std::path::Path::new("target/playground");
-                        let path = dir.join(format!("{:?}.png", self.kind).to_lowercase());
-                        let result = std::fs::create_dir_all(dir)
-                            .and_then(|_| std::fs::write(&path, &bytes));
-                        *host.status = match result {
-                            Ok(()) => {
-                                format!("Saved {} ({} KiB)", path.display(), bytes.len() / 1024)
-                            }
-                            Err(e) => format!("Write failed: {e}"),
-                        };
-                    }
-                    Err(e) => *host.status = format!("Export failed: {e}"),
+            let chart = Chart::new(config.clone());
+            let exported = if ui.button("Export document PNG").clicked() {
+                Some((
+                    "png",
+                    r.export_document_png_bytes(&chart, &series, self.export_scale),
+                ))
+            } else if ui.button("Export document SVG").clicked() {
+                Some((
+                    "svg",
+                    r.export_document_svg(&chart, &series, self.export_scale)
+                        .map(String::into_bytes),
+                ))
+            } else if ui.button("Export document PDF").clicked() {
+                Some((
+                    "pdf",
+                    r.export_document_pdf(&chart, &series, self.export_scale),
+                ))
+            } else {
+                None
+            };
+            match exported {
+                Some((extension, Ok(bytes))) => {
+                    let dir = std::path::Path::new("target/playground");
+                    let path = dir.join(format!("{:?}.{extension}", self.kind).to_lowercase());
+                    let result =
+                        std::fs::create_dir_all(dir).and_then(|_| std::fs::write(&path, &bytes));
+                    *host.status = match result {
+                        Ok(()) => {
+                            format!("Saved {} ({} KiB)", path.display(), bytes.len() / 1024)
+                        }
+                        Err(e) => format!("Write failed: {e}"),
+                    };
                 }
+                Some((_, Err(e))) => *host.status = format!("Export failed: {e}"),
+                None => {}
             }
         });
 
@@ -2545,8 +2563,18 @@ pub fn selftest(r: &mut Renderer) -> Result<(), String> {
                 .map_err(e)?;
             let path = dir.join(format!("scene_{kind:?}_{scale}x.png").to_lowercase());
             std::fs::write(&path, png).map_err(|e| e.to_string())?;
+            let svg = r
+                .export_document_svg(&chart, &scene.series, scale)
+                .map_err(e)?;
+            let path = dir.join(format!("scene_{kind:?}_{scale}x.svg").to_lowercase());
+            std::fs::write(&path, svg).map_err(|e| e.to_string())?;
+            let pdf = r
+                .export_document_pdf(&chart, &scene.series, scale)
+                .map_err(e)?;
+            let path = dir.join(format!("scene_{kind:?}_{scale}x.pdf").to_lowercase());
+            std::fs::write(&path, pdf).map_err(|e| e.to_string())?;
         }
-        println!("ok  scene {kind:?}");
+        println!("ok  scene {kind:?} (PNG, SVG, PDF)");
     }
 
     // The long-label scene as the "Auto layout" button leaves it, committed
