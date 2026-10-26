@@ -746,22 +746,6 @@ fn with_glyph_mask_id(
     });
 }
 
-/// Rasterize one character and blit it with `color` at (`pen_x`,
-/// `baseline`). Returns the advance.
-fn draw_char(
-    canvas: &mut Canvas,
-    font: FontRef<'static>,
-    size: f32,
-    ch: char,
-    pen_x: f32,
-    baseline: f32,
-    color: &Color,
-) -> f32 {
-    let glyph = font.charmap().map(ch);
-    draw_glyph(canvas, font, size, glyph, pen_x, baseline, color);
-    glyph_extents_id(font, size, glyph).advance
-}
-
 /// Rasterize glyph id `glyph` of `font` and blit it with `color` at
 /// (`pen_x`, `baseline`).
 fn draw_glyph(
@@ -1332,6 +1316,19 @@ mod dashed_rule_tests {
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
 pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
+    place_rich_text(&mut CanvasSink(canvas), rt, origin, policy);
+}
+
+/// The placement of [`draw_rich_text`]: every glyph and rule of `rt` at
+/// `origin` (left edge of the block, baseline of the first line) handed to
+/// `sink`. The canvas paints through it and the vector export writes from
+/// it, so both place the same glyphs at the same pens.
+pub(crate) fn place_rich_text(
+    sink: &mut dyn GlyphSink,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) {
     let doc = layout_doc(rt, policy);
     let (x, mut baseline) = origin;
     let block_width = block_width(&doc.line_metrics);
@@ -1343,7 +1340,7 @@ pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), po
         let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
             place_cell(
-                &mut CanvasSink(canvas),
+                sink,
                 cell,
                 rt,
                 (line_x + doc.col_starts[k], baseline),
@@ -1553,10 +1550,39 @@ pub fn draw_plain_text(
     italic: bool,
     policy: FontPolicy,
 ) {
+    place_plain_text(
+        &mut CanvasSink(canvas),
+        text,
+        origin,
+        color,
+        family,
+        size,
+        bold,
+        italic,
+        policy,
+    );
+}
+
+/// The placement of [`draw_plain_text`]: each character's glyph, from the
+/// face the policy resolves for it, at its pen, handed to `sink`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn place_plain_text(
+    sink: &mut dyn GlyphSink,
+    text: &str,
+    origin: (f32, f32),
+    color: Color,
+    family: &str,
+    size: f32,
+    bold: bool,
+    italic: bool,
+    policy: FontPolicy,
+) {
     let (mut pen_x, baseline) = origin;
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
-        pen_x += draw_char(canvas, font, size, ch, pen_x, baseline, &color);
+        let glyph = font.charmap().map(ch);
+        sink.glyph(font, glyph, size, (pen_x, baseline), &color);
+        pen_x += glyph_extents_id(font, size, glyph).advance;
     }
 }
 

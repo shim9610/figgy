@@ -7,7 +7,7 @@ use super::*;
 use crate::data_render::MaterialGpu;
 use crate::decoration::scaled_rich_text;
 use crate::decoration_render::CanvasSink;
-use crate::raster::{Canvas, Paint};
+use crate::raster::Canvas;
 use crate::sketch::DecoStroker;
 use crate::text_render::{FontPolicy, measure_plain_text, measure_rich_text};
 use model::layout::{NudgeReject, NudgeResult, RectF};
@@ -747,6 +747,55 @@ impl Resizable<RadialChart> for RadialDecoration {
     }
 }
 
+/// The colour of the split connectors.
+const CONNECTOR: Color = Color {
+    r: 0.55,
+    g: 0.58,
+    b: 0.62,
+    a: 0.65,
+};
+
+/// Chrome, no element: the two connectors from the split slice of a split
+/// chart to its detail circle `other` (centre, radius and tilt, physical
+/// pixels), from the frame's `sectors`. Nothing without a split.
+pub(super) fn emit_split_connectors(
+    chart: &RadialChart,
+    sectors: &[Sector],
+    other: [f32; 4],
+    scale: f32,
+    sink: &mut dyn Sink,
+) {
+    let Some(split) = &chart.split else {
+        return;
+    };
+    let parent = chart.slices[..split.slice_index]
+        .iter()
+        .filter(|s| s.value > 0.0)
+        .count();
+    let Some(sector) = sectors.get(parent) else {
+        return;
+    };
+    let style = StrokeStyle {
+        width: 1.0,
+        color: CONNECTOR,
+        dash: &[],
+        tag: "radial_split_connector",
+    };
+    for (a, dy) in [(sector.arc[0], -0.8), (sector.arc[0] + sector.arc[1], 0.8)] {
+        let from = projected(sector, a, 1.025);
+        let to = (
+            other[0] - other[2] * 0.6,
+            other[1] + other[2] * other[3] * dy,
+        );
+        sink.stroke(
+            Slot::Above,
+            [from.0 / scale, from.1 / scale],
+            [to.0 / scale, to.1 / scale],
+            &style,
+        );
+    }
+}
+
 pub(super) fn layout(
     chart: &RadialChart,
     size: (u32, u32),
@@ -855,29 +904,11 @@ pub(super) fn layout(
             }
         }
     }
+    if annotate {
+        emit_split_connectors(chart, &out.sectors, out.groups[1], scale, &mut paint);
+    }
     drop(paint);
     if annotate {
-        if let Some(split) = &chart.split {
-            // Chrome, no element: the connectors from the split slice to the
-            // detail circle.
-            let parent = chart.slices[..split.slice_index]
-                .iter()
-                .filter(|s| s.value > 0.0)
-                .count();
-            let sector = &out.sectors[parent];
-            let other = out.groups[1];
-            let paint = Paint::stroke(&crate::Color::new(0.55, 0.58, 0.62, 0.65), scale);
-            for (a, dy) in [(sector.arc[0], -0.8), (sector.arc[0] + sector.arc[1], 0.8)] {
-                canvas.draw_line(
-                    projected(sector, a, 1.025),
-                    (
-                        other[0] - other[2] * 0.6,
-                        other[1] + other[2] * other[3] * dy,
-                    ),
-                    &paint,
-                );
-            }
-        }
         // The highlight of the selected decoration is its selection box,
         // from the same parts its hit test answers from.
         if let Some(selected) = &chart.decorations.selected

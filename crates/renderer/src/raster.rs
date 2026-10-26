@@ -252,43 +252,13 @@ impl Canvas {
     /// curve continuously.
     pub fn draw_polyline_smooth(&mut self, points: &[(f32, f32)], paint: &Paint) {
         let mut pb = PathBuilder::new();
-        let mut run: Vec<(f32, f32)> = Vec::new();
-        let flush = |pb: &mut PathBuilder, run: &mut Vec<(f32, f32)>| {
-            match run.len() {
-                0 => {}
-                1 => {
-                    pb.move_to(run[0].0, run[0].1);
-                    pb.line_to(run[0].0, run[0].1);
-                }
-                2 => {
-                    pb.move_to(run[0].0, run[0].1);
-                    pb.line_to(run[1].0, run[1].1);
-                }
-                n => {
-                    pb.move_to(run[0].0, run[0].1);
-                    for i in 0..n - 1 {
-                        // Uniform Catmull–Rom: tangents from the neighbors,
-                        // end tangents from the duplicated end points.
-                        let p0 = run[i.saturating_sub(1)];
-                        let p1 = run[i];
-                        let p2 = run[i + 1];
-                        let p3 = run[(i + 2).min(n - 1)];
-                        let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
-                        let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
-                        pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p2.0, p2.1);
-                    }
-                }
+        crate::sketch::smooth_cubics(points, |segment| match segment {
+            crate::sketch::PathSegment::Move(p) => pb.move_to(p.0, p.1),
+            crate::sketch::PathSegment::Line(p) => pb.line_to(p.0, p.1),
+            crate::sketch::PathSegment::Cubic(c1, c2, p) => {
+                pb.cubic_to(c1.0, c1.1, c2.0, c2.1, p.0, p.1)
             }
-            run.clear();
-        };
-        for &(x, y) in points {
-            if !x.is_finite() || !y.is_finite() {
-                flush(&mut pb, &mut run);
-            } else {
-                run.push((x, y));
-            }
-        }
-        flush(&mut pb, &mut run);
+        });
         let Some(path) = pb.finish() else { return };
         self.pix.stroke_path(
             &path,

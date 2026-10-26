@@ -209,6 +209,54 @@ pub(crate) fn sketch_line(
     sketch_polyline(&[p0, p1], amplitude_px, wavelength_px, seed)
 }
 
+/// One segment of a smoothed path: [`smooth_cubics`] hands these out in
+/// path order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PathSegment {
+    /// Start a subpath.
+    Move((f32, f32)),
+    /// A straight segment to the point.
+    Line((f32, f32)),
+    /// A cubic Bézier segment: two control points, then the end point.
+    Cubic((f32, f32), (f32, f32), (f32, f32)),
+}
+
+/// The smooth path through `points`: a uniform Catmull–Rom spline as cubic
+/// Bézier segments, the pen-stroke look of the sketch stroker. Non-finite
+/// points split the path into subpaths; a run of one point is a zero-length
+/// segment and a run of two a straight one. The canvas strokes this path
+/// and the vector export writes it, so both draw the same curve.
+pub(crate) fn smooth_cubics(points: &[(f32, f32)], mut out: impl FnMut(PathSegment)) {
+    let finite = |p: &(f32, f32)| p.0.is_finite() && p.1.is_finite();
+    for run in points.split(|p| !finite(p)) {
+        match run.len() {
+            0 => {}
+            1 => {
+                out(PathSegment::Move(run[0]));
+                out(PathSegment::Line(run[0]));
+            }
+            2 => {
+                out(PathSegment::Move(run[0]));
+                out(PathSegment::Line(run[1]));
+            }
+            n => {
+                out(PathSegment::Move(run[0]));
+                for i in 0..n - 1 {
+                    // Uniform Catmull–Rom: tangents from the neighbors,
+                    // end tangents from the duplicated end points.
+                    let p0 = run[i.saturating_sub(1)];
+                    let p1 = run[i];
+                    let p2 = run[i + 1];
+                    let p3 = run[(i + 2).min(n - 1)];
+                    let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
+                    let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
+                    out(PathSegment::Cubic(c1, c2, p2));
+                }
+            }
+        }
+    }
+}
+
 /// Closed rectangle outline as one continuous sketched polyline.
 ///
 /// The four edges are chained into a single path that revisits the starting
