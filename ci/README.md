@@ -157,7 +157,9 @@ placement agreement at every magnitude, the f64 residual pick, the projection
 oracles and the shader consistency suite (`NUMERIC_TESTS` in `verify.py`). A red
 one fails the job at once, so a precision regression shows within minutes instead
 of after the hour of remaining tests; every listed test must produce its result
-line, so a renamed test cannot drop out of the set. After that step, independent
+line, so a renamed test cannot drop out of the set. The extracted tests run with
+the renderer's `cpu-twin` feature named explicitly, because `cargo package` strips
+the path dev-dependency that enables it in the workspace. After that step, independent
 test binaries, doctests and missing-adapter checks continue after a test failure,
 while the final job still fails. This prevents one failing suite from hiding the
 rest of the backend results.

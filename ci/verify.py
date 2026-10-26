@@ -106,20 +106,21 @@ def audit_archive(archive, source):
 # The GPU numeric tests (#47): the CPU and GPU place points and lines alike
 # at every magnitude, the f64 residual pick selects the right index, the
 # projection oracles match bit for bit, and the shared shader blocks agree
-# with their CPU twins. Each entry names the renderer features it needs
-# (the placement agreement compares against the `cpu-twin` picker, which a
-# packaged crate does not enable by itself), the test target and the test;
-# `None` runs the whole binary.
+# with their CPU twins. Each entry names the renderer features it runs with
+# (the full run's, so the binaries are shared), the test target and the
+# test; `None` runs the whole binary.
 NUMERIC_TESTS = (
     ("serde,cpu-twin", ["--test", "pick_draw_agreement"],
      "cpu_and_gpu_place_points_alike_at_every_magnitude"),
-    ("serde", ["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
-    ("serde", ["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
-    ("serde", ["--lib"],
+    ("serde,cpu-twin", ["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
+    ("serde,cpu-twin", ["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
+    ("serde,cpu-twin", ["--lib"],
      "gpu_pick::tests::split_linear_projection_preserves_independent_hi_lo_subtraction"),
-    ("serde", ["--lib"], "renderer::tests::contour_projection_matches_fixed_four_step_gpu_oracle"),
-    ("serde", ["--lib"], "data_render::tests::gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit"),
-    ("serde", ["--test", "shader_consistency"], None),
+    ("serde,cpu-twin", ["--lib"],
+     "renderer::tests::contour_projection_matches_fixed_four_step_gpu_oracle"),
+    ("serde,cpu-twin", ["--lib"],
+     "data_render::tests::gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit"),
+    ("serde,cpu-twin", ["--test", "shader_consistency"], None),
 )
 
 
@@ -228,7 +229,11 @@ def packages(allow_dirty):
         added = locked_external_packages(extracted / "Cargo.lock") - locked_external_packages(ROOT / "Cargo.lock")
         if added:
             raise RuntimeError(f"extracted tests changed locked dependencies: {added}")
-        features = "figgy-model/serde,figgy-renderer/serde"
+        # The renderer's own tests enable `cpu-twin` through a path
+        # dev-dependency on itself, which `cargo package` strips, so the
+        # extracted tests name the feature; otherwise the CPU-twin tests
+        # silently drop out of the packaged run (#47).
+        features = "figgy-model/serde,figgy-renderer/serde,figgy-renderer/cpu-twin"
         base = ["cargo", "test", "--offline", "--locked", "--workspace", "--features", features]
         # Record the actual backend and adapter even when all tests pass.
         run(["cargo", "test", "--offline", "--locked", "-p", "figgy-renderer",
