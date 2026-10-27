@@ -9655,7 +9655,12 @@ fn log_auto_fit_clamps_to_smallest_positive_uploaded_value() {
     let min = chart.config().left_y.min;
     let (hi, lo) = crate::data::split_f64_to_f32_pair(0.04);
     let uploaded_min = f64::from(hi) + f64::from(lo);
-    assert_eq!(min, uploaded_min);
+    // The log range round trip may move the last ulps; the f32 cast this
+    // replaced sits about 1e-9 away, far outside that.
+    assert!(
+        (min - uploaded_min).abs() <= uploaded_min * 1e-14,
+        "{min} vs the uploaded {uploaded_min}"
+    );
     assert_ne!(uploaded_min, 0.04_f64);
     assert!((uploaded_min - 0.04).abs() < (f64::from(0.04_f64 as f32) - 0.04).abs());
     assert!(chart.config().left_y.max >= 1000.0);
