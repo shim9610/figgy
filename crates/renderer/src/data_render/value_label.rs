@@ -14,12 +14,13 @@
 use super::*;
 use crate::data_config::{BoxPlotLabels, CategoryBarLabels, DataRenderType, RadarLabels};
 
-/// Labels one series can hold: one per category of its axis (the model's
-/// `MAX_CATEGORIES` and `MAX_RADAR_CATEGORIES`). GPU twin:
-/// `value_label.wgsl::VALUE_LABEL_CAPACITY`.
+/// Labels one series draws: one per category of its axis, for the first
+/// `VALUE_LABEL_CAPACITY` categories. A categorical axis has no category
+/// cap (#107), so an axis with more categories draws its series in full
+/// and labels the first 64 only; the labels past the uniform's cells move
+/// to a storage buffer sized by the labels in a later change (#107 R11).
+/// GPU twin: `value_label.wgsl::VALUE_LABEL_CAPACITY`.
 pub const VALUE_LABEL_CAPACITY: usize = 64;
-const _: () = assert!(VALUE_LABEL_CAPACITY == crate::categorical::MAX_CATEGORIES);
-const _: () = assert!(VALUE_LABEL_CAPACITY == crate::radar::MAX_RADAR_CATEGORIES);
 
 /// Vertices per label: one quad (`VALUE_LABEL_VERTICES`).
 pub const VALUE_LABEL_VERTICES: u32 = 6;

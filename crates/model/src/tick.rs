@@ -909,10 +909,12 @@ impl Iterator for MajorTicks {
 /// [`LogLadder::Decades`] (the [`effective_log_decade_step`] under the
 /// default policy), the ladder's multiples of every decade otherwise.
 pub fn major_ticks(axis: &AxisOptions) -> MajorTicks {
-    if axis.categories.is_some() {
+    if let Some(categories) = &axis.categories {
+        // One tick per category: the walk is bounded by the category count,
+        // which has no cap (#107), not by the numeric tick budget.
         let (min, max) = axis.data_range();
         return MajorTicks(
-            LinearGrid::new(min, max, 1.0, MAX_MAJOR_INTERVALS)
+            LinearGrid::new(min, max, 1.0, categories.len())
                 .map_or(MajorWalk::Empty, |grid| MajorWalk::Linear(grid.iter())),
         );
     }

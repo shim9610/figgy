@@ -1147,3 +1147,108 @@ fn a_2x_export_is_the_1x_layout_doubled() {
         }
     }
 }
+
+/// A categorical axis has no category cap (#107): 300 categories, past the
+/// old 64, draw a bar in every slot at 1x and 2x, the last bar picks as its
+/// own row and its picked highlight outlines it. Its value labels are
+/// written for every category; the first 64 draw (#107 R11).
+#[test]
+fn three_hundred_categories_draw_pick_and_highlight() {
+    const N: usize = 300;
+    const WIDE: u32 = 1800;
+    let one: Vec<f64> = (0..N).map(|k| 1.0 + (k % 10) as f64).collect();
+    let two = vec![0.0; N];
+    let mut r = renderer(&one, &two);
+    let direction = CategoryBarDirection::Vertical;
+    let mut chart = chart(CategoryBarMode::Grouped, direction, (0.0, 12.0));
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(
+            (0..N)
+                .map(|k| Category::new(format!("c{k}"), format!("{k}")))
+                .collect(),
+        );
+    }
+    let mut series = bars("one", RED, direction);
+    if let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type {
+        labels.text = (0..N).map(|k| format!("{k}")).collect();
+    }
+    let series = [series];
+    // The export-pixel region of category `k`'s slot.
+    let region = |chart: &Chart, k: usize, scale: f32| {
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let x0 = da.x as f32 + w * k as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        (
+            s(x0),
+            s(da.y as f32),
+            s(x0 + w),
+            s((da.y + da.height) as f32),
+        )
+    };
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        for k in [0, 63, 64, 150, N - 1] {
+            let bar = bbox(&img, region(&chart, k, scale), is_red)
+                .unwrap_or_else(|| panic!("{scale}x: no bar in category {k}"));
+            let (_, top) = value_span(bar, direction);
+            let want = value_px(&chart, direction, one[k], scale);
+            assert!(
+                (top - want).abs() <= 2.0 * scale,
+                "{scale}x category {k}: top {top} want {want}"
+            );
+        }
+    }
+    // The picked highlight outlines the last bar and no other.
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "one".into(),
+            bin_index: N - 1,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 1.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let outlined = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
+    assert_eq!(bbox(&outlined, region(&chart, 0, 1.0), is_magenta), None);
+    chart.config_mut().picked_data = None;
+    // A pick inside the last bar names its row.
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let bar = bbox(&img, region(&chart, N - 1, 1.0), is_red).unwrap();
+    let (x, y) = ((bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index, .. })
+                if series_id == "one" && *bin_index == N - 1
+        ),
+        "{hit:?}"
+    );
+}
