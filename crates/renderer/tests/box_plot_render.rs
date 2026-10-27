@@ -1230,3 +1230,74 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
         "{hit:?}"
     );
 }
+
+/// Box overrides are not sized by a category table (#107 R5): a style and
+/// a colour override on every one of 100 boxes are 300 override rows, past
+/// the old 64-category table, and every box past the old 64th still takes
+/// its override at 1x and 2x.
+#[test]
+fn overrides_on_a_hundred_boxes_all_apply() {
+    const N: usize = 100;
+    const WIDE: u32 = 2000;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("pos", &col((0..N).map(|k| k as f64).collect()))
+        .unwrap();
+    let stats: Vec<Stats> = vec![[10.0, 20.0, 50.0, 80.0, 90.0, NAN, NAN, NAN]; N];
+    upload_record(&mut r, "s.record", &stats);
+    let mut series = boxes("s", RED);
+    style(&mut series).show_mean = false;
+    let restyled = BoxPlotStyle {
+        median_color: YELLOW,
+        show_mean: false,
+        ..flat_style()
+    };
+    *overrides(&mut series) = (0..N)
+        .map(|k| BoxPlotOverride {
+            color: Some(BLUE),
+            style: Some(restyled.clone()),
+            ..BoxPlotOverride::new(BoxPlotTarget::new(format!("c{k}"), "s"))
+        })
+        .collect();
+    let mut chart = chart(CategoryBarDirection::Vertical);
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(
+            (0..N)
+                .map(|k| Category::new(format!("c{k}"), format!("{k}")))
+                .collect(),
+        );
+    }
+    let series = [series];
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        for k in [0, 63, 64, 99] {
+            let x0 = da.x as f32 + w * k as f32;
+            let at = (
+                s(x0),
+                s(da.y as f32),
+                s(x0 + w),
+                s((da.y + da.height) as f32),
+            );
+            assert!(bbox(&img, at, is_blue).is_some(), "{scale}x box {k}");
+            assert_eq!(bbox(&img, at, is_red), None, "{scale}x box {k}");
+            // The override's style restyles the median too.
+            assert!(bbox(&img, at, is_yellow).is_some(), "{scale}x median {k}");
+            assert_eq!(bbox(&img, at, is_green), None, "{scale}x median {k}");
+        }
+    }
+}

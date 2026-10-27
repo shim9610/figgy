@@ -435,8 +435,10 @@ pub(super) fn category_bar_style_map(
 /// overridden box at `row * BOX_PLOT_PARTS + part`, its category id looked up
 /// in `categories` (the axis' categories). An override's colour sets the
 /// body's fill; its style replaces every part. An override whose category is
-/// not on the axis is skipped (the gate rejects it). Fixed-size rows, no
-/// allocation: a series has at most one override per category.
+/// not on the axis is skipped (the gate rejects it). The rows are written
+/// straight into the mapped override buffer, sized by the series'
+/// overrides (at most `BOX_PLOT_PARTS` rows each), so any number of
+/// categories carries overrides (#107) and nothing is staged on the CPU.
 pub(super) fn box_plot_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
@@ -445,63 +447,65 @@ pub(super) fn box_plot_style_map(
     scale: f32,
 ) -> data_render::BarStyleMap {
     use data_render::{BOX_PLOT_PARTS, BarStyleOverrideGpu, BarStyleSlotGpu};
-    const ROWS: usize = crate::boxplot::MAX_BOX_CATEGORIES * BOX_PLOT_PARTS as usize;
     let slots = box_plot_part_slots(boxes.style, scale);
-    let mut rows = [<BarStyleOverrideGpu as bytemuck::Zeroable>::zeroed(); ROWS];
-    let mut count = 0usize;
-    for o in boxes.overrides {
-        let Some(row) = categories
-            .iter()
-            .position(|c| c.id == o.target.category_id)
-            .and_then(|row| u32::try_from(row).ok())
-        else {
-            continue;
-        };
-        let parts = o
-            .style
-            .as_ref()
-            .map(|style| box_plot_part_slots(style, scale));
-        for part in 0..BOX_PLOT_PARTS {
-            let mut slot: BarStyleSlotGpu = match &parts {
-                Some(parts) => parts[part as usize],
-                None => bytemuck::Zeroable::zeroed(),
-            };
-            if part == data_render::BOX_PART_BODY {
-                // The body takes the whole style's outline as well.
-                if let Some(style) = &o.style {
-                    slot.border_color_premul = premul_rgba(style.outline_color);
-                    slot.params[0] = if style.outline {
-                        style.outline_width.max(0.0) * scale
-                    } else {
-                        0.0
-                    };
-                    slot.params[3] = (data_render::BAR_STYLE_MASK_BORDER_COLOR
-                        | data_render::BAR_STYLE_MASK_BORDER_WIDTH
-                        | data_render::BAR_STYLE_MASK_MATERIAL)
-                        as f32;
-                }
-                if let Some(color) = o.color {
-                    slot.fill_color_premul = premul_rgba(color);
-                    slot.params[3] =
-                        (slot.params[3] as u32 | data_render::BAR_STYLE_MASK_FILL) as f32;
-                }
-            }
-            if slot.params[3] == 0.0 || count == ROWS {
+    let capacity = boxes
+        .overrides
+        .len()
+        .saturating_mul(BOX_PLOT_PARTS as usize);
+    let write = |push: &mut dyn FnMut(&BarStyleOverrideGpu)| {
+        for o in boxes.overrides {
+            let Some(row) = categories
+                .iter()
+                .position(|c| c.id == o.target.category_id)
+                .and_then(|row| u32::try_from(row).ok())
+            else {
                 continue;
-            }
-            rows[count] = BarStyleOverrideGpu {
-                bin_index: row * BOX_PLOT_PARTS + part,
-                _pad: [0; 3],
-                fill_color_premul: slot.fill_color_premul,
-                border_color_premul: slot.border_color_premul,
-                params: slot.params,
-                material: slot.material,
-                finish: slot.finish,
             };
-            count += 1;
+            let parts = o
+                .style
+                .as_ref()
+                .map(|style| box_plot_part_slots(style, scale));
+            for part in 0..BOX_PLOT_PARTS {
+                let mut slot: BarStyleSlotGpu = match &parts {
+                    Some(parts) => parts[part as usize],
+                    None => bytemuck::Zeroable::zeroed(),
+                };
+                if part == data_render::BOX_PART_BODY {
+                    // The body takes the whole style's outline as well.
+                    if let Some(style) = &o.style {
+                        slot.border_color_premul = premul_rgba(style.outline_color);
+                        slot.params[0] = if style.outline {
+                            style.outline_width.max(0.0) * scale
+                        } else {
+                            0.0
+                        };
+                        slot.params[3] = (data_render::BAR_STYLE_MASK_BORDER_COLOR
+                            | data_render::BAR_STYLE_MASK_BORDER_WIDTH
+                            | data_render::BAR_STYLE_MASK_MATERIAL)
+                            as f32;
+                    }
+                    if let Some(color) = o.color {
+                        slot.fill_color_premul = premul_rgba(color);
+                        slot.params[3] =
+                            (slot.params[3] as u32 | data_render::BAR_STYLE_MASK_FILL) as f32;
+                    }
+                }
+                if slot.params[3] == 0.0 {
+                    continue;
+                }
+                push(&BarStyleOverrideGpu {
+                    bin_index: row * BOX_PLOT_PARTS + part,
+                    _pad: [0; 3],
+                    fill_color_premul: slot.fill_color_premul,
+                    border_color_premul: slot.border_color_premul,
+                    params: slot.params,
+                    material: slot.material,
+                    finish: slot.finish,
+                });
+            }
         }
-    }
-    data_render::create_bar_style_map_with_slots(device, layout, &slots, &rows[..count])
+    };
+    data_render::create_bar_style_map_writing(device, layout, &slots, capacity, write)
 }
 
 /// The three part slots of `style` (SHADER_COMMON.md §5.15): the body's
