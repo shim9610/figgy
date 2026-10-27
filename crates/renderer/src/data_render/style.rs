@@ -689,23 +689,33 @@ pub fn create_bar_style_map_with_slots(
     slots: &[BarStyleSlotGpu],
     overrides: &[BarStyleOverrideGpu],
 ) -> BarStyleMap {
+    create_bar_style_map_writing(device, layout, slots, overrides.len(), |push| {
+        for row in overrides {
+            push(row);
+        }
+    })
+}
+
+/// [`create_bar_style_map_with_slots`] with the override rows written
+/// straight into the override buffer's mapping at creation: `write` pushes
+/// each row, up to `capacity` of them (rows past it are dropped), and the
+/// rows it pushes are the ones the map reads. Nothing is staged on the
+/// CPU, so the row count is the caller's, not a fixed table's. No rows (or
+/// a zero capacity) binds one padding row, as WebGPU has no zero-size
+/// binding.
+pub(crate) fn create_bar_style_map_writing(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slots: &[BarStyleSlotGpu],
+    capacity: usize,
+    write: impl FnOnce(&mut dyn FnMut(&BarStyleOverrideGpu)),
+) -> BarStyleMap {
+    const ROW: usize = std::mem::size_of::<BarStyleOverrideGpu>();
     let dummy_style = [<BarStyleSlotGpu as bytemuck::Zeroable>::zeroed()];
-    let dummy_override = [<BarStyleOverrideGpu as bytemuck::Zeroable>::zeroed()];
     let style_rows = if slots.is_empty() {
         &dummy_style[..]
     } else {
         slots
-    };
-    let override_rows = if overrides.is_empty() {
-        &dummy_override[..]
-    } else {
-        overrides
-    };
-    let meta = BarStyleMapMeta {
-        style_count: slots.len().min(u32::MAX as usize) as u32,
-        override_count: overrides.len().min(u32::MAX as usize) as u32,
-        has_index: 0,
-        _pad: 0,
     };
     // gpu-alloc: caller
     let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -714,11 +724,34 @@ pub fn create_bar_style_map_with_slots(
         usage: wgpu::BufferUsages::STORAGE,
     });
     // gpu-alloc: caller
-    let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let override_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("figgy histogram style override rows"),
-        contents: bytemuck::cast_slice(override_rows),
+        size: (capacity.max(1) as u64).saturating_mul(ROW as u64),
         usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: true,
     });
+    let mut written = 0usize;
+    {
+        let mut view = override_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the override rows are mapped at creation");
+        write(&mut |row| {
+            if written < capacity {
+                let at = written * ROW;
+                view.slice(at..at + ROW)
+                    .copy_from_slice(bytemuck::bytes_of(row));
+                written += 1;
+            }
+        });
+    }
+    override_buf.unmap();
+    let meta = BarStyleMapMeta {
+        style_count: slots.len().min(u32::MAX as usize) as u32,
+        override_count: written.min(u32::MAX as usize) as u32,
+        has_index: 0,
+        _pad: 0,
+    };
     // gpu-alloc: caller
     let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy histogram style map meta"),

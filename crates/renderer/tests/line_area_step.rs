@@ -1279,3 +1279,71 @@ fn offset_lines_report_unshifted_values() {
     assert_eq!((slot.min, slot.max), (2.0, 4.0));
     assert_eq!(chart.config().left_y.max, plain.left_y.max);
 }
+
+/// Offset spectra have no member cap (#107): 40 members, past the old 32,
+/// each draw shifted at 1x and 2x, and a pick on a member past the old cap
+/// names that member and the source index.
+#[test]
+fn forty_offset_members_draw_and_pick() {
+    use renderer::data_config::LineOffsets;
+    const MEMBERS: usize = 40;
+    const STEP: f64 = 2.0;
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    let xs = vec![1.0, 3.0, 5.0, 7.0, 9.0];
+    let ys = vec![2.0, 3.5, 2.5, 4.0, 3.0];
+    r.add_column("x", &col_f64(xs.clone())).unwrap();
+    r.add_column("y", &col_f64(ys.clone())).unwrap();
+    let mut chart = bare_chart(240, 640);
+    chart.set_x_range(0.0, 10.0);
+    chart.set_y_range(0.0, 5.0 + STEP * MEMBERS as f64);
+    let ids: Vec<String> = (0..MEMBERS).map(|k| format!("m{k}")).collect();
+    chart.config_mut().line_offsets = Some(LineOffsets {
+        series: ids.clone(),
+        step_y: STEP,
+        step_x: 0.0,
+    });
+    let declared: Vec<SeriesConfig> = ids
+        .iter()
+        .map(|id| series(id, "x", "y", line(None, None, LineInterpolation::Linear)))
+        .collect();
+    let id = r
+        .register_chart(chart.config().clone(), declared.clone())
+        .unwrap();
+    for scale in [1.0f32, 2.0] {
+        let image = r.export_document_rgba(&chart, &declared, scale).unwrap();
+        for k in [0, 31, 32, MEMBERS - 1] {
+            let shift = STEP * k as f64;
+            for index in [0, 3] {
+                let (x, y) = (
+                    data_x_to_px(&chart, xs[index]) * scale,
+                    data_y_to_px(&chart, ys[index] + shift) * scale,
+                );
+                assert!(
+                    is_red(&pixel(&image, x, y)),
+                    "{scale}x: member {k} point {index} is not drawn shifted"
+                );
+            }
+        }
+    }
+    for k in [32, MEMBERS - 1] {
+        let shift = STEP * k as f64;
+        let index = 3;
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [
+                data_x_to_px(&chart, xs[index]),
+                data_y_to_px(&chart, ys[index] + shift),
+            ],
+            display_panel_px: chart.config().chart_area.0,
+            display_scale: 1.0,
+            max_distance_px: 2.0,
+        };
+        let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+            .unwrap()
+            .expect("the shifted member picks");
+        assert_eq!(
+            (hit.series_id.as_str(), hit.point_index),
+            (ids[k].as_str(), index)
+        );
+    }
+}

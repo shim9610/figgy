@@ -1213,7 +1213,7 @@ Bindings 0 to 3 of group 1 are the module's `Style` and typed pick query.
 | Member | Meaning |
 |---|---|
 | `atlas` | the atlas geometry (§5.16) |
-| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count, one per category in axis order, at most `VALUE_LABEL_CAPACITY` (64) |
+| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count, one per category in axis order for the first `VALUE_LABEL_CAPACITY` (64) categories; an axis with more categories labels the first 64 (#107 R11) |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
 | `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
 | `cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |

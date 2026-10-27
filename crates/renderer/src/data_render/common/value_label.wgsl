@@ -50,8 +50,8 @@ const VALUE_LABEL_KIND_RADAR: u32 = 2u;
 const VALUE_LABEL_OUTSIDE: u32 = 0u;
 const VALUE_LABEL_INSIDE: u32 = 1u;
 const VALUE_LABEL_AUTO: u32 = 2u;
-/// Labels one series can hold: one per category. CPU twin:
-/// `value_label.rs::VALUE_LABEL_CAPACITY`.
+/// Labels one series draws: one per category, for the first 64
+/// categories (#107 R11). CPU twin: `value_label.rs::VALUE_LABEL_CAPACITY`.
 const VALUE_LABEL_CAPACITY: u32 = 64u;
 /// Vertices per label: one quad.
 const VALUE_LABEL_VERTICES: u32 = 6u;

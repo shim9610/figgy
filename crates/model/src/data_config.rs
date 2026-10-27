@@ -1850,11 +1850,6 @@ impl BarGroups {
     }
 }
 
-/// The most series one [`LineOffsets`] group may hold. Each member is drawn
-/// as an internal panel of its own (`Config::expand`), with the textures of
-/// an overlay layer, so a document with more traces uses two charts.
-pub const MAX_OFFSET_LINES: usize = 32;
-
 /// Offset spectra (a ridgeline or waterfall of curves): line series drawn
 /// shifted from each other so their traces separate instead of overlapping,
 /// `Config::line_offsets`.
@@ -1883,8 +1878,11 @@ pub const MAX_OFFSET_LINES: usize = 32;
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
     /// `k` steps. Line kinds only (`Line`, `ScatterLine` and the
-    /// `LineScatterErrorbar*` kinds), each id once, at most
-    /// [`MAX_OFFSET_LINES`].
+    /// `LineScatterErrorbar*` kinds), each id once, with no cap on the
+    /// number of members (#107): each is drawn as an internal panel of its
+    /// own (`Config::expand`) with the textures of an overlay layer, and a
+    /// member whose textures cannot be allocated fails with the GPU
+    /// allocation error.
     pub series: Vec<SeriesRef>,
     /// The step along y between consecutive members: data units, or decades
     /// on a logarithmic axis.
@@ -1913,13 +1911,10 @@ impl Default for LineOffsets {
 
 impl LineOffsets {
     /// The rules that do not depend on the series list: finite steps, each
-    /// member id once and non-empty, at most [`MAX_OFFSET_LINES`] members.
+    /// member id once and non-empty, any number of members.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.step_y.is_finite() || !self.step_x.is_finite() {
             return Err("line offset steps must be finite");
-        }
-        if self.series.len() > MAX_OFFSET_LINES {
-            return Err("a line offset group holds at most 32 series");
         }
         for (index, id) in self.series.iter().enumerate() {
             if id.is_empty() || self.series[..index].contains(id) {
@@ -2209,15 +2204,14 @@ impl crate::config::Config {
     /// [`MAX_BAR_SERIES`](crate::categorical::MAX_BAR_SERIES) of them, each
     /// with its own value column, drawn against a categorical axis
     /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
-    /// linear numeric value axis, with at most
-    /// [`MAX_CATEGORY_BARS`](crate::categorical::MAX_CATEGORY_BARS) bars, and
-    /// each series passes [`validate_category_bar_series`] against the
+    /// linear numeric value axis, with no cap on the number of bars (#107),
+    /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
     /// whose own axis is a value axis on y, and a polar chart draws no
     /// category bars. Whether a column holds one value per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+        use crate::categorical::MAX_BAR_SERIES;
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
             groups.validate()?;
@@ -2280,9 +2274,6 @@ impl crate::config::Config {
                     "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
                 );
             };
-            if categories.len().saturating_mul(count) > MAX_CATEGORY_BARS {
-                return Err("a bar group draws at most 512 bars");
-            }
             if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
                 return Err("category bars need a linear numeric value axis");
             }
@@ -2753,15 +2744,15 @@ impl crate::config::Config {
     /// [`CategoryBarMode::Grouped`] (boxes do not stack). At most
     /// [`MAX_BOX_SERIES`](crate::boxplot::MAX_BOX_SERIES) of them, drawn
     /// against a categorical axis (`bottom_x` for vertical boxes, `left_y`
-    /// for horizontal ones) and a linear numeric value axis, with at most
-    /// [`MAX_BOXES`](crate::boxplot::MAX_BOXES) boxes; a layer draws either
+    /// for horizontal ones) and a linear numeric value axis, with no cap on
+    /// the number of boxes (#107); a layer draws either
     /// category bars or box plots. Each series passes
     /// [`validate_box_plot_series`] against the axis' categories.
     /// Horizontal boxes cannot sit on an overlay layer, and a polar chart
     /// draws no box plots. Whether the record holds one row per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+        use crate::boxplot::MAX_BOX_SERIES;
         use crate::layer::LayerRef;
         let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
         if boxes().next().is_none() {
@@ -2823,9 +2814,6 @@ impl crate::config::Config {
                     "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
                 );
             };
-            if categories.len().saturating_mul(count) > MAX_BOXES {
-                return Err("a box group draws at most 512 boxes");
-            }
             if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
                 return Err("box plots need a linear numeric value axis");
             }
@@ -4524,7 +4512,7 @@ mod contour_level_tests {
 #[cfg(test)]
 mod category_bar_tests {
     use super::*;
-    use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+    use crate::categorical::MAX_BAR_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -4617,9 +4605,11 @@ mod category_bar_tests {
             config.validate_category_bars(&many[..MAX_BAR_SERIES]),
             Ok(())
         );
-        let config = chart(MAX_CATEGORY_BARS / 8 + 1);
+        // No bar cap (#107): 8 series over 65 categories (520 bars, past
+        // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| bars(&format!("s{i}"))).collect();
-        assert!(config.validate_category_bars(&eight).is_err());
+        assert_eq!(chart(65).validate_category_bars(&eight), Ok(()));
+        assert_eq!(chart(600).validate_category_bars(&eight[..1]), Ok(()));
         let mut shared = bars("b");
         shared.y_column = "a.values".into();
         assert!(
@@ -5073,7 +5063,7 @@ mod category_bar_tests {
 #[cfg(test)]
 mod box_plot_tests {
     use super::*;
-    use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+    use crate::boxplot::MAX_BOX_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -5192,19 +5182,18 @@ mod box_plot_tests {
     }
 
     #[test]
-    fn group_size_and_box_count_are_bounded() {
+    fn group_size_is_bounded_and_box_count_is_not() {
         let config = chart(2);
         let many: Vec<_> = (0..=MAX_BOX_SERIES)
             .map(|i| boxes(&format!("s{i}")))
             .collect();
         assert!(config.validate_box_plots(&many).is_err());
         assert_eq!(config.validate_box_plots(&many[..MAX_BOX_SERIES]), Ok(()));
-        let config = chart(MAX_BOXES / 8 + 1);
+        // No box cap (#107): 8 series over 65 categories (520 boxes, past
+        // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| boxes(&format!("s{i}"))).collect();
-        assert_eq!(
-            config.validate_box_plots(&eight),
-            Err("a box group draws at most 512 boxes")
-        );
+        assert_eq!(chart(65).validate_box_plots(&eight), Ok(()));
+        assert_eq!(chart(600).validate_box_plots(&eight[..1]), Ok(()));
     }
 
     #[test]
@@ -6193,14 +6182,15 @@ mod step_selection_tests {
         let mut nan = group(&["a"]);
         nan.step_y = f64::INFINITY;
         assert!(rejected(nan, |_| {}), "non-finite");
-        let many: Vec<String> = (0..=MAX_OFFSET_LINES).map(|i| format!("s{i}")).collect();
-        assert!(
+        // No member cap (#107): 40 members, past the old 32, are accepted.
+        let many: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
+        assert_eq!(
             LineOffsets {
                 series: many,
                 ..Default::default()
             }
-            .validate()
-            .is_err()
+            .validate(),
+            Ok(())
         );
         assert!(
             rejected(group(&["a"]), |c| {

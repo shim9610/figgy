@@ -17,9 +17,7 @@ use crate::Color;
 use crate::Material;
 use std::collections::HashSet;
 
-pub const MAX_CATEGORIES: usize = 64;
 pub const MAX_BAR_SERIES: usize = 16;
-pub const MAX_CATEGORY_BARS: usize = 512;
 
 /// The category type lives with the axis options now
 /// ([`crate::config::AxisOptions::categories`]); this path keeps working.
@@ -220,9 +218,8 @@ impl CategoricalChart {
         self.resolved_title().validate()?;
         let n = self.categories.len();
         let m = self.series.len();
-        if n == 0 || n > MAX_CATEGORIES || m == 0 || m > MAX_BAR_SERIES || n * m > MAX_CATEGORY_BARS
-        {
-            return Err("categorical limits: 1..64 categories, 1..16 series, at most 512 entries");
+        if n == 0 || m == 0 || m > MAX_BAR_SERIES {
+            return Err("categorical limits: at least 1 category and 1..16 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -414,10 +411,20 @@ mod tests {
                 .collect(),
             ..Default::default()
         };
-        for (n, m) in [(64, 8), (32, 16), (1, 1)] {
-            assert!(make(n, m).validate().is_ok());
+        // No category cap (#107): 65 and 300 categories are accepted.
+        // No bar cap either: 33 x 16 and 64 x 9 pass the old 512 entries.
+        for (n, m) in [
+            (64, 8),
+            (32, 16),
+            (1, 1),
+            (65, 1),
+            (300, 1),
+            (33, 16),
+            (64, 9),
+        ] {
+            assert!(make(n, m).validate().is_ok(), "{n} categories / {m} series");
         }
-        for (n, m) in [(65, 1), (1, 17), (33, 16), (64, 9), (0, 1), (1, 0)] {
+        for (n, m) in [(1, 17), (0, 1), (1, 0)] {
             assert!(
                 make(n, m).validate().is_err(),
                 "accepted {n} categories / {m} series"

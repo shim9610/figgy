@@ -276,16 +276,16 @@ impl AxisOptions {
     }
 
     /// The rules a categorical axis is held to; a numeric axis always passes.
-    /// 1 to [`crate::categorical::MAX_CATEGORIES`] categories, ids non-empty
-    /// and unique, ids and labels single-line and at most
+    /// At least one category, with no upper count (#107), ids non-empty and
+    /// unique, ids and labels single-line and at most
     /// [`MAX_CATEGORY_TEXT_CHARS`] characters, and a linear scale. An
     /// inverted categorical axis is valid.
     pub fn validate_categories(&self) -> Result<(), &'static str> {
         let Some(categories) = &self.categories else {
             return Ok(());
         };
-        if categories.is_empty() || categories.len() > crate::categorical::MAX_CATEGORIES {
-            return Err("a categorical axis needs 1 to 64 categories");
+        if categories.is_empty() {
+            return Err("a categorical axis needs at least one category");
         }
         for (index, category) in categories.iter().enumerate() {
             if category.id.is_empty()
@@ -2013,7 +2013,6 @@ mod draw_style_serde_tests {
 #[cfg(test)]
 mod category_axis_tests {
     use super::{AxisOptions, AxisScale, Category};
-    use crate::categorical::MAX_CATEGORIES;
     use crate::default::{default_axis_options_x, default_config};
     use crate::layout::axis_fraction;
     use crate::tick::{major_ticks, minor_ticks};
@@ -2048,17 +2047,19 @@ mod category_axis_tests {
     }
 
     #[test]
-    fn category_counts_inside_the_limits_pass() {
-        for n in [1, 2, 7, MAX_CATEGORIES] {
+    fn any_nonzero_category_count_passes() {
+        // No upper count (#107): the old 64-category cap is gone.
+        for n in [1, 2, 7, 64, 65, 300, 5000] {
             assert_eq!(categorical(n).validate_categories(), Ok(()), "{n}");
         }
-        for n in [0, MAX_CATEGORIES + 1] {
-            assert_eq!(
-                categorical(n).validate_categories(),
-                Err("a categorical axis needs 1 to 64 categories"),
-                "{n}"
-            );
-        }
+        assert_eq!(
+            categorical(0).validate_categories(),
+            Err("a categorical axis needs at least one category")
+        );
+        // Every category keeps its tick past the numeric tick budget.
+        let ticks: Vec<f64> = major_ticks(&categorical(5000)).collect();
+        assert_eq!(ticks.len(), 5000);
+        assert_eq!(ticks.last(), Some(&4999.0));
     }
 
     #[test]

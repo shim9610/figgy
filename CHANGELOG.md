@@ -29,6 +29,34 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **No count caps on column-backed series**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R4, R10).
+  A series backed by `ColumnSource` has no count limit; the only failure
+  left is allocation when its columns are registered.
+  `AxisOptions::validate_categories` takes any nonzero number of
+  categories (ids, text and the linear scale are still checked), and a
+  categorical axis walks one tick per category however many there are.
+  `Config::validate_category_bars` and `validate_box_plots` no longer cap
+  the bars or boxes of a group, and `LineOffsets::validate` no longer caps
+  its members. The legacy readers follow, so a document they accept is one
+  the series draws: `CategoricalChart::validate` and
+  `BoxPlotChart::validate` take any number of categories and entries,
+  `BoxPlotChart::validate` any number of outliers (each still finite and
+  outside its whiskers), and `RadarChart::validate` any number of spokes
+  from three up. The 16-series group caps (`MAX_BAR_SERIES`,
+  `MAX_BOX_SERIES`, `MAX_RADAR_SERIES`) stay for now. Migration: the public
+  constants `categorical::MAX_CATEGORIES`, `categorical::MAX_CATEGORY_BARS`,
+  `boxplot::MAX_BOX_CATEGORIES`, `boxplot::MAX_BOXES`,
+  `boxplot::MAX_BOX_OUTLIERS`, `boxplot::MAX_BOXPLOT_OUTLIERS`,
+  `radar::MAX_RADAR_CATEGORIES` and `MAX_OFFSET_LINES` (also
+  `data_config::MAX_OFFSET_LINES`) are removed; code that named them picks
+  its own bound if it wants one. Code that matched the removed error
+  strings ("a categorical axis needs 1 to 64 categories", "a bar group
+  draws at most 512 bars", "a box group draws at most 512 boxes", "a line
+  offset group holds at most 32 series", the legacy readers' "limits"
+  strings) no longer sees them; an empty categorical axis now fails with
+  "a categorical axis needs at least one category".
+
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). `DataRenderType::Streamlines { line, arrows, color_map }`
   declares host-integrated field lines: every streamline of the series in
@@ -630,6 +658,19 @@ additive.
   Migration: code that names `renderer::MAX_EXPORT_SCALE` picks its own
   bound; code that relied on a scale above 8 being clamped now gets that
   scale, or the `GpuResourceLimit` error when it does not fit the device.
+
+- **Column-backed series past the old caps draw and pick**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R5, R10). A box
+  plot's override rows were built in a stack table of 64 categories' rows
+  and the rows past it were dropped; they are now written straight into
+  the override buffer's mapping at creation, sized by the series'
+  overrides. A layer's pick kept its
+  line offset members' transforms in a 32-entry array and skipped members
+  past it; it now keeps the members' panels from the expansion and the
+  engine asks for each member's transform. The value label uniform still
+  holds 64 cells: a bar, box or radar series over more categories draws in
+  full and labels its first 64 until the labels move to a storage buffer
+  (#107 R11). Migration: none; `VALUE_LABEL_CAPACITY` keeps its value.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line

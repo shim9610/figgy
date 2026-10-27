@@ -669,7 +669,9 @@ logarithmic axis, `Chart::line_offset_fit_extents`), and the WASM
 (PNG at any scale, SVG and PDF) draws every member; `export_panel_*` keeps
 the base panel.
 
-**Limits.** Line kinds only, at most 32 members per chart, no polar chart,
+**Limits.** Line kinds only, any number of members (each is a panel of its
+own, so a member whose textures cannot be allocated fails with the GPU
+allocation error), no polar chart,
 no `ToSeries` fill across members, and a nonresident streaming member is
 rejected by every registry entry point; the stream request paths reject a
 document with members as a whole.

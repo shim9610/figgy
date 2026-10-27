@@ -897,3 +897,106 @@ fn a_released_radar_document_draws_through_the_reader() {
         }
     }
 }
+
+/// A radar chart has no spoke cap (#107): 100 categories, past the old 64,
+/// close their outline with every edge drawn at 1x and 2x, the last vertex
+/// picks as its own point and its picked ring draws. The value labels are
+/// written for every vertex; the first 64 draw (#107 R11).
+#[test]
+fn a_hundred_spokes_draw_pick_and_highlight() {
+    const N: usize = 100;
+    const SIDE: u32 = 800;
+    let values: Vec<f64> = (0..N).map(|i| 0.7 + 0.2 * (i as f64 * 0.3).cos()).collect();
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("cat", &col((0..N).map(|i| i as f64).collect()))
+        .unwrap();
+    r.add_column("many", &col(values.clone())).unwrap();
+    let mut chart = chart(up_clockwise());
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: SIDE,
+            height: SIDE,
+        });
+        config.bottom_x.categories = Some(categories(N));
+    }
+    let mut series = radar(
+        "many",
+        "many",
+        RED,
+        RadarSeriesStyle {
+            fill: Some(CLEAR),
+            marker: Some(RadarMarker::Circle),
+            marker_size_px: Some(6.0),
+            ..outline_and_fill()
+        },
+    );
+    if let DataRenderType::Radar { labels, .. } = &mut series.render_type {
+        labels.text = (0..N).map(|i| format!("{i}")).collect();
+    }
+    let series = [series];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &series, scale);
+        let v = |i: usize| vertex(&chart, scale, i as f64, values[i]);
+        // Every sampled edge, the closing one from the last vertex back to
+        // the first included, is red at its middle.
+        for i in [0, 31, 63, 64, 80, N - 1] {
+            let mid = lerp(v(i), v((i + 1) % N), 0.5);
+            assert!(near(&img, mid, is_red), "{scale}x: edge {i} at {mid:?}");
+        }
+    }
+    // A pick at the last vertex names it.
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let at = vertex(&chart, 1.0, (N - 1) as f64, values[N - 1]);
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0 as f32, at.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: SIDE,
+            height: SIDE,
+        },
+        display_scale: 1.0,
+        max_distance_px: 2.0,
+    };
+    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        .unwrap()
+        .expect("the last vertex picks");
+    assert_eq!((hit.series_id.as_str(), hit.point_index), ("many", N - 1));
+    // Its picked ring draws outside the marker, and nowhere near vertex 0.
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
+            source_id: None,
+            series_id: "many".into(),
+            point_index: N - 1,
+        }],
+        highlight_color: BLUE,
+        ..Default::default()
+    });
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &series, scale);
+        save(&format!("radar-hundred-{scale}x"), &img);
+        let at = vertex(&chart, scale, (N - 1) as f64, values[N - 1]);
+        let s = f64::from(scale);
+        let ring = (4..=12)
+            .map(|d| (at.0 + d as f64 * s * 0.5, at.1))
+            .any(|p| is_blue(pixel(&img, p)));
+        assert!(ring, "{scale}x: no ring right of vertex {}", N - 1);
+        let first = vertex(&chart, scale, 0.0, values[0]);
+        assert!(
+            !near(&img, (first.0 + 4.0 * s, first.1), is_blue),
+            "{scale}x"
+        );
+    }
+}

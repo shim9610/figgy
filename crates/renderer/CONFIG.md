@@ -531,9 +531,9 @@ Consequences:
 | `bar_gap` | f32 | Logical pixels between grouped bars, `0..=24` (default 3) |
 
 The `CategoryBars` series of one layer (the base chart, an overlay, a
-subplot) form its bar group, at most 16 series and 512 bars. A subplot reads
+subplot) form its bar group, at most 16 series and any number of bars. A subplot reads
 its own `bar_groups`; an overlay its chart's. The `BoxPlot` series of a layer
-form its box group the same way (at most 16 series and 512 boxes); their mode
+form its box group the same way (at most 16 series and any number of boxes); their mode
 must be `Grouped` and `bar_gap` is the gap between boxes. A layer holds
 category bars or box plots, not both.
 
@@ -546,7 +546,7 @@ curve as measured; the shift is a display parameter, like an axis range.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `series` | `Vec<String>` | The member series ids in stacking order. Member `k` is drawn shifted by `k` steps, so the first member is unshifted. Line kinds only (`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`), each id once, at most `MAX_OFFSET_LINES` (32) members |
+| `series` | `Vec<String>` | The member series ids in stacking order. Member `k` is drawn shifted by `k` steps, so the first member is unshifted. Line kinds only (`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`), each id once, any number of members |
 | `step_y` | f64 | The step along y between consecutive members, in data units; on a logarithmic Y axis in decades (a factor of `10^step_y`) |
 | `step_x` | f64 | The step along x for a skewed waterfall, in the same units on `bottom_x`. Omitted from JSON at `0.0` |
 
@@ -1276,9 +1276,9 @@ pub struct Config {
 | `group_width` | f32 | 범주 칸에서 막대 묶음이 차지하는 비율, `0.1..=0.95`(기본 0.7) |
 | `bar_gap` | f32 | 묶음 안 막대 사이의 논리 픽셀, `0..=24`(기본 3) |
 
-한 레이어(기본 차트, 오버레이, 서브플롯)의 `CategoryBars` 시리즈가 그 레이어의 묶음이며 최대 16개 시리즈,
-512개 막대까지 둘 수 있다. 서브플롯은 자기 `bar_groups`를, 오버레이는 부모 차트의 것을 쓴다.
-`BoxPlot` 시리즈도 같은 방식으로 레이어의 상자 묶음(최대 16개 시리즈, 512개 상자)을 이루며 `mode`는
+한 레이어(기본 차트, 오버레이, 서브플롯)의 `CategoryBars` 시리즈가 그 레이어의 묶음이며 최대 16개 시리즈를
+둘 수 있고 막대 수에는 상한이 없다. 서브플롯은 자기 `bar_groups`를, 오버레이는 부모 차트의 것을 쓴다.
+`BoxPlot` 시리즈도 같은 방식으로 레이어의 상자 묶음(최대 16개 시리즈, 상자 수 상한 없음)을 이루며 `mode`는
 `Grouped`여야 하고 `bar_gap`은 상자 사이 간격이다. 한 레이어에는 범주형 막대와 박스플롯 중 하나만 둔다.
 
 ### `LineOffsets` (`Config::line_offsets`)
@@ -1289,14 +1289,14 @@ pub struct Config {
 
 | 필드 | 타입 | 의미 |
 |---|---|---|
-| `series` | `Vec<String>` | 쌓는 순서대로 적은 구성원 시리즈 id. `k`번째 구성원을 `k`칸만큼 밀어 그리므로 첫 구성원은 제자리에 있다. 선 종류(`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`)만 받고, id마다 한 번씩, 최대 `MAX_OFFSET_LINES`(32)개 |
+| `series` | `Vec<String>` | 쌓는 순서대로 적은 구성원 시리즈 id. `k`번째 구성원을 `k`칸만큼 밀어 그리므로 첫 구성원은 제자리에 있다. 선 종류(`Line`, `ScatterLine`, `LineScatterErrorbarX/Y/XY`)만 받고, id마다 한 번씩 적으며 구성원 수에는 상한이 없다 |
 | `step_y` | f64 | 이웃한 구성원 사이의 y 간격(데이터 단위). 로그 Y 축에서는 데케이드 단위다(`10^step_y`배) |
 | `step_x` | f64 | 비스듬한 폭포형 그래프를 위한 x 간격. `bottom_x`에서 같은 단위를 쓰며 `0.0`이면 JSON에서 생략한다 |
 
 구성원은 차트의 기본 레이어나 오버레이의 시리즈다. 오버레이가 스케일하는 구성원은 그 오버레이의
 Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_offsets`를 둔다.
 `Config::line_offset_of(id)`는 구성원이 밀린 양을 `[dx, dy]`로 돌려준다. 레지스트리는 모르는 id나
-중복 id, 다른 종류의 구성원, 유한하지 않은 간격, 극좌표 차트, 32개를 넘는 구성원, 다른 차트가
+중복 id, 다른 종류의 구성원, 유한하지 않은 간격, 극좌표 차트, 다른 차트가
 그리는 구성원, 구성원과 다른 시리즈를 잇는 `ToSeries` 채우기, 스트리밍(비상주) 구성원을
 `FiggyError`로 거부한다(규칙 8). 간격은 데이터 단위이므로 `Config::scaled`는 그대로 둔다.
 
