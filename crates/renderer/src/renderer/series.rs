@@ -678,11 +678,97 @@ pub(super) fn category_bar_categories(config: &Config) -> Option<&[crate::config
     }
 }
 
+/// The categories of `series`' bar axis, or the error a category bar series
+/// without a categorical axis fails with.
+fn category_bar_count(config: &Config, series: &SeriesConfig) -> Result<usize> {
+    category_bar_categories(config)
+        .map(<[_]>::len)
+        .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason:
+                "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones"
+                    .into(),
+        })
+}
+
+/// The pool lane of a category bar column of `series` over `n` categories:
+/// checked to hold one value per category.
+fn category_bar_lane(
+    series: &SeriesConfig,
+    handle: &ColumnHandle,
+    id: &str,
+    n: usize,
+) -> Result<u32> {
+    if handle.len_values != n {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: format!(
+                "category bar column {id:?} has {} values for {n} categories; it needs one per category",
+                handle.len_values
+            ),
+        });
+    }
+    u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+        resource: "category bar column lane",
+        requested: handle.offset / 4,
+        limit: u64::from(u32::MAX),
+    })
+}
+
+/// Walk the members of `series`' bar group `group` (its category bar series,
+/// in order): `visit(index, member, value column id, value column lane)`
+/// for each, the lane checked by [`category_bar_lane`]. Any number of
+/// members (#107 R3). Returns the member count.
+fn visit_category_bar_members<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    lookup: &mut impl FnMut(&str) -> Result<ColumnHandle>,
+    mut visit: impl FnMut(usize, &'c SeriesConfig, &str, u32) -> Result<()>,
+) -> Result<usize> {
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    let n = category_bar_count(config, series)?;
+    let mut members = 0usize;
+    for item in group {
+        if item.render_type.category_bars().is_none() {
+            continue;
+        }
+        let (_, values) = item.category_bar_columns(groups.direction);
+        let lane = category_bar_lane(series, &lookup(values)?, values, n)?;
+        visit(members, item, values, lane)?;
+        members += 1;
+    }
+    Ok(members)
+}
+
+/// Push the lane table of `series`, a category bar series of the panel
+/// `config` whose bar group is `group`: every member's value column lane in
+/// group order, `params.members` entries
+/// ([`data_render::create_category_bar_data_bind_group`] writes them into
+/// the table's mapping). [`category_bar_params`] has checked the same
+/// members.
+pub(super) fn category_bar_lanes<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+    push: &mut dyn FnMut(u32),
+) -> Result<()> {
+    visit_category_bar_members(config, group, series, &mut lookup, |_, _, _, lane| {
+        push(lane);
+        Ok(())
+    })
+    .map(|_| ())
+}
+
 /// The params `series`, a category bar series of the panel `config` whose
 /// bar group is `group` (the panel's category bar series in order), draws
-/// with: every member's value column lane, its own position column lane,
-/// the group layout of `config.bar_groups` (already in render pixels) and
-/// its corner radius and emphasis at `display_scale`.
+/// with: its place in the group and the group's size, its own position
+/// column lane, the group layout of `config.bar_groups` (already in render
+/// pixels) and its corner radius and emphasis at `display_scale`. The
+/// members' value column lanes are the series' lane table
+/// ([`category_bar_lanes`]), sized by the group: a group holds any number
+/// of series (#107 R3).
 ///
 /// The columns are data, so they are checked here against the pool's
 /// statistics: every column holds one value per category, and a percent
@@ -707,69 +793,48 @@ pub(super) fn category_bar_params<'c>(
         .category_bars()
         .ok_or_else(|| invalid("not a category bar series".into()))?;
     let groups = config.bar_groups.clone().unwrap_or_default();
-    let n = category_bar_categories(config)
-        .map(<[_]>::len)
-        .ok_or_else(|| {
-            invalid(
-                "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones"
-                    .into(),
-            )
-        })?;
-    let lane = |handle: &ColumnHandle, id: &str| -> Result<u32> {
-        if handle.len_values != n {
-            return Err(invalid(format!(
-                "category bar column {id:?} has {} values for {n} categories; it needs one per category",
-                handle.len_values
-            )));
-        }
-        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
-            resource: "category bar column lane",
-            requested: handle.offset / 4,
-            limit: u64::from(u32::MAX),
-        })
-    };
+    let n = category_bar_count(config, series)?;
     let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
     let mut member = None;
-    let mut members = 0usize;
-    for item in group {
-        if item.render_type.category_bars().is_none() {
-            continue;
-        }
-        if members >= crate::categorical::MAX_BAR_SERIES {
-            return Err(invalid(
-                "a bar group holds at most 16 category bar series".into(),
-            ));
-        }
-        let (_, values) = item.category_bar_columns(groups.direction);
-        let handle = lookup(values)?;
-        params.values[members / 4][members % 4] = lane(&handle, values)?;
-        // The shader stacks a category's positive shares of its total; a
-        // negative value would enter the total but not the stack and push
-        // the shares past 100, so the pool's minimum refuses it here.
-        if groups.mode == CategoryBarMode::PercentStacked
-            && min_of(values).is_some_and(|min| min < 0.0)
-        {
-            return Err(FiggyError::InvalidSeriesConfig {
-                series_id: item.series_id.clone(),
-                reason: format!(
-                    "a PercentStacked bar group needs non-negative values: the value column \
-                     {values:?} of series {:?} has a negative value; draw it Stacked or \
-                     Grouped instead",
-                    item.series_id
-                ),
-            });
-        }
-        if item.series_id == series.series_id {
-            member = Some(members);
-        }
-        members += 1;
-    }
+    let members = visit_category_bar_members(
+        config,
+        group,
+        series,
+        &mut lookup,
+        |index, item, values, _| {
+            // The shader stacks a category's positive shares of its total; a
+            // negative value would enter the total but not the stack and push
+            // the shares past 100, so the pool's minimum refuses it here.
+            if groups.mode == CategoryBarMode::PercentStacked
+                && min_of(values).is_some_and(|min| min < 0.0)
+            {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "a PercentStacked bar group needs non-negative values: the value column \
+                         {values:?} of series {:?} has a negative value; draw it Stacked or \
+                         Grouped instead",
+                        item.series_id
+                    ),
+                });
+            }
+            if item.series_id == series.series_id {
+                member = Some(index);
+            }
+            Ok(())
+        },
+    )?;
     let member = member.ok_or_else(|| invalid("the series is not in its bar group".into()))?;
+    let members = u32::try_from(members).map_err(|_| FiggyError::GpuResourceLimit {
+        resource: "category bar group members",
+        requested: members as u64,
+        limit: u64::from(u32::MAX),
+    })?;
     let (positions, _) = series.category_bar_columns(groups.direction);
-    params.positions = lane(&lookup(positions)?, positions)?;
+    params.positions = category_bar_lane(series, &lookup(positions)?, positions, n)?;
     params.count = n as u32;
     params.member = member as u32;
-    params.members = members as u32;
+    params.members = members;
     params.mode = match groups.mode {
         CategoryBarMode::Grouped => data_render::CATEGORY_BAR_MODE_GROUPED,
         CategoryBarMode::Stacked => data_render::CATEGORY_BAR_MODE_STACKED,
@@ -785,8 +850,8 @@ pub(super) fn category_bar_params<'c>(
     Ok(params)
 }
 
-/// The params and the vertex count a box plot series of the panel `config`
-/// draws with: `group` is the panel's box plot series in order, `pool` the
+/// The params, the lane table and the vertex count a box plot series of the
+/// panel `config` draws with: `group` is the panel's box plot series in order, `pool` the
 /// column pool its record and outlier column live in, `lookup` resolves a
 /// member column to its handle (so the panel's column fingerprint covers
 /// them).
@@ -794,10 +859,11 @@ pub(super) fn category_bar_params<'c>(
 /// The record is data, so it is checked here against the pool: it is a
 /// box plot record with one row per category, and the outlier column, when
 /// the series names one, is a ragged column with one group per category.
-/// The params' `values` lanes are the record's field lanes in schema order
+/// The lane table is the record's field lanes in schema order
 /// (`BOX_LANE_ABSENT` for an absent optional field), the outlier values and
 /// offsets lanes, the group count and the longest group
-/// (SHADER_COMMON.md §5.15); the group layout of `config.bar_groups` is
+/// (SHADER_COMMON.md §5.15); the box group holds any number of series
+/// (#107 R3), each reading only its own record; the group layout of `config.bar_groups` is
 /// already in render pixels (the display config is scaled) and the corner
 /// radius is scaled to `display_scale`.
 pub(super) fn box_plot_params<'c>(
@@ -807,11 +873,15 @@ pub(super) fn box_plot_params<'c>(
     display_scale: f32,
     pool: &ColumnPool,
     mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
-) -> Result<(data_render::CategoryBarParamsGpu, u32)> {
+) -> Result<(
+    data_render::CategoryBarParamsGpu,
+    [u32; data_render::BOX_PLOT_LANES],
+    u32,
+)> {
     use crate::data_config::CategoryBarDirection;
     use data_render::{
         BOX_LANE_ABSENT, BOX_LANE_MAX_GROUP, BOX_LANE_OUTLIER_GROUPS, BOX_LANE_OUTLIER_OFFSETS,
-        BOX_LANE_OUTLIER_VALUES, BOX_PLOT_BASE_VERTICES, BOX_PLOT_QUAD_VERTICES,
+        BOX_LANE_OUTLIER_VALUES, BOX_PLOT_BASE_VERTICES, BOX_PLOT_LANES, BOX_PLOT_QUAD_VERTICES,
     };
     let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
@@ -838,8 +908,9 @@ pub(super) fn box_plot_params<'c>(
         })
     };
     let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
-    fn set(params: &mut data_render::CategoryBarParamsGpu, k: u32, value: u32) {
-        params.values[k as usize / 4][k as usize % 4] = value;
+    let mut lanes = [0u32; BOX_PLOT_LANES];
+    fn set(lanes: &mut [u32; BOX_PLOT_LANES], k: u32, value: u32) {
+        lanes[k as usize] = value;
     }
     let (positions, record_id) = series.box_plot_columns();
     let record = pool.record(record_id).ok_or_else(|| {
@@ -863,7 +934,7 @@ pub(super) fn box_plot_params<'c>(
             Some(member) => lane(&lookup(member)?)?,
             None => BOX_LANE_ABSENT,
         };
-        set(&mut params, k as u32, value);
+        set(&mut lanes, k as u32, value);
     }
     let mut max_group = 0u32;
     match boxes.outliers {
@@ -880,22 +951,22 @@ pub(super) fn box_plot_params<'c>(
                 )));
             }
             set(
-                &mut params,
+                &mut lanes,
                 BOX_LANE_OUTLIER_VALUES,
                 lane(&lookup(&ragged.slot().values)?)?,
             );
             set(
-                &mut params,
+                &mut lanes,
                 BOX_LANE_OUTLIER_OFFSETS,
                 lane(&lookup(&ragged.slot().offsets)?)?,
             );
-            set(&mut params, BOX_LANE_OUTLIER_GROUPS, ragged.slot().groups);
+            set(&mut lanes, BOX_LANE_OUTLIER_GROUPS, ragged.slot().groups);
             max_group = ragged.stats().max_group;
-            set(&mut params, BOX_LANE_MAX_GROUP, max_group);
+            set(&mut lanes, BOX_LANE_MAX_GROUP, max_group);
         }
         None => {
-            set(&mut params, BOX_LANE_OUTLIER_VALUES, BOX_LANE_ABSENT);
-            set(&mut params, BOX_LANE_OUTLIER_OFFSETS, BOX_LANE_ABSENT);
+            set(&mut lanes, BOX_LANE_OUTLIER_VALUES, BOX_LANE_ABSENT);
+            set(&mut lanes, BOX_LANE_OUTLIER_OFFSETS, BOX_LANE_ABSENT);
         }
     }
     let mut member = None;
@@ -935,5 +1006,5 @@ pub(super) fn box_plot_params<'c>(
         .checked_mul(BOX_PLOT_QUAD_VERTICES)
         .and_then(|v| v.checked_add(BOX_PLOT_BASE_VERTICES))
         .ok_or_else(|| invalid("a box plot outlier group is too long to draw".into()))?;
-    Ok((params, vertices))
+    Ok((params, lanes, vertices))
 }

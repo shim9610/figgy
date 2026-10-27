@@ -343,8 +343,8 @@ pub const BOX_PLOT_QUAD_VERTICES: u32 = 6;
 pub const BOX_PLOT_PARTS: u32 = 3;
 /// The body's part (`BOX_PART_BODY`).
 pub(crate) const BOX_PART_BODY: u32 = 0;
-/// `CategoryBarParamsGpu::values` lane of a box plot's outlier values
-/// (`BOX_LANE_OUTLIER_VALUES`); lanes 0..9 are the record's fields in
+/// Lane table entry of a box plot's outlier values
+/// (`BOX_LANE_OUTLIER_VALUES`); entries 0..9 are the record's fields in
 /// `BOX_PLOT_RECORD` order.
 pub(crate) const BOX_LANE_OUTLIER_VALUES: u32 = 9;
 /// The lane of the outlier offsets (`BOX_LANE_OUTLIER_OFFSETS`).
@@ -356,6 +356,9 @@ pub(crate) const BOX_LANE_MAX_GROUP: u32 = 12;
 /// A lane with no column: an absent optional record field, or no outlier
 /// column (`BOX_LANE_ABSENT`).
 pub(crate) const BOX_LANE_ABSENT: u32 = u32::MAX;
+/// Entries of a box plot's lane table: the record schema's fields and the
+/// outlier column's four lanes, a fixed schema rather than a count of data.
+pub(crate) const BOX_PLOT_LANES: usize = BOX_LANE_MAX_GROUP as usize + 1;
 
 /// `CategoryBarParamsGpu::mode`: bars stand side by side.
 pub(crate) const CATEGORY_BAR_MODE_GROUPED: u32 = 0;
@@ -366,23 +369,24 @@ pub(crate) const CATEGORY_BAR_MODE_STACKED: u32 = 1;
 pub(crate) const CATEGORY_BAR_MODE_PERCENT: u32 = 2;
 
 /// The group one category bar series belongs to and its layout: what the
-/// category bar fragment reads beside `Transform`, `Style` and the override
-/// table. Lane bases are f32 indices into the pool; nothing per bar is here.
+/// category bar fragment reads beside `Transform`, `Style`, the override
+/// table and the series' lane table. Lane bases are f32 indices into the
+/// pool; nothing per bar is here. The group's value column lanes are the
+/// lane table's (group 3 binding 10), sized by the group, so no field here
+/// bounds the number of series (#107 R3).
 ///
-/// GPU twin: `category_bars.wgsl::CategoryBarParams`, 112 B.
+/// GPU twin: `category_bars.wgsl::CategoryBarParams`, 48 B.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CategoryBarParamsGpu {
-    /// Lane bases of the group's value columns in group order: member `k`
-    /// is `values[k / 4][k % 4]`.
-    pub values: [[u32; 4]; 4],
     /// Lane base of this series' category position column.
     pub positions: u32,
     /// Bars of this series: one per category.
     pub count: u32,
     /// This series' place in its group.
     pub member: u32,
-    /// Series in the group.
+    /// Series in the group: the lane table's entries for a category bar
+    /// series.
     pub members: u32,
     /// One of the `CATEGORY_BAR_MODE_*` values.
     pub mode: u32,
@@ -402,11 +406,12 @@ pub struct CategoryBarParamsGpu {
     pub seed: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<CategoryBarParamsGpu>() == 112);
+const _: () = assert!(std::mem::size_of::<CategoryBarParamsGpu>() == 48);
 
 /// Bind group layout of a category bar series' own data (group 3): the column
-/// pool as read-only storage (binding 8) and its params (binding 9). Bindings
-/// 0..6 of group 3 are the histogram envelope's in the same module. The pick
+/// pool as read-only storage (binding 8), its params (binding 9) and its lane
+/// table as read-only storage (binding 10, `array<u32>`). Bindings 0..6 of
+/// group 3 are the histogram envelope's in the same module. The pick
 /// (`pick_category_bar`) binds the same group.
 pub fn create_category_bar_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     let visibility = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
@@ -435,6 +440,16 @@ pub fn create_category_bar_data_bind_group_layout(device: &wgpu::Device) -> wgpu
                     },
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         },
     )
@@ -442,7 +457,7 @@ pub fn create_category_bar_data_bind_group_layout(device: &wgpu::Device) -> wgpu
 
 /// What a category bar series draws with besides its style: its group 3,
 /// its override table (group 2, resolved against its axis) and the charge
-/// of its params buffer.
+/// of its params and lane table buffers.
 #[derive(Clone)]
 pub struct CategoryBarData {
     pub bind_group: wgpu::BindGroup,
@@ -450,18 +465,29 @@ pub struct CategoryBarData {
     pub charge: crate::gpu_memory::SharedCharge,
 }
 
-/// Bind the pool and `params` into the category bar data layout, next to the
-/// series' override table. The params buffer is owned by the bind group and
-/// charged as a uniform.
+/// Bind the pool, `params` and the series' lane table into the category bar
+/// data layout, next to the series' override table.
+///
+/// The lane table holds `lanes` entries: `write` pushes them in order and
+/// they go straight into the mapping of the table's buffer at creation, so
+/// nothing is staged on the CPU and the table is sized by what it holds (a
+/// bar group's members, a box plot's 13 record and outlier lanes, a radar
+/// label's one value column). Entries `write` does not push read as zero; pushes
+/// past `lanes` are dropped. An error from `write` is returned as is. The
+/// buffers are owned by the bind group and charged as a uniform.
+#[allow(clippy::too_many_arguments)]
 pub fn create_category_bar_data_bind_group(
     device: &wgpu::Device,
     ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
     layout: &wgpu::BindGroupLayout,
     pool_buffer: &wgpu::Buffer,
     params: &CategoryBarParamsGpu,
+    lanes: usize,
+    write: impl FnOnce(&mut dyn FnMut(u32)) -> crate::Result<()>,
     style_map: BarStyleMap,
-) -> CategoryBarData {
-    use crate::gpu_memory::{ChargeTally, charged_buffer_init};
+) -> crate::Result<CategoryBarData> {
+    use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
+    const LANE: usize = std::mem::size_of::<u32>();
     let tally = ChargeTally::new();
     let params_buf = charged_buffer_init(
         &tally,
@@ -472,6 +498,41 @@ pub fn create_category_bar_data_bind_group(
             usage: wgpu::BufferUsages::UNIFORM,
         },
     );
+    let lane_bytes = (lanes.max(1) as u64).checked_mul(LANE as u64).ok_or(
+        crate::FiggyError::GpuResourceLimit {
+            resource: "category lane table",
+            requested: lanes as u64,
+            limit: u64::MAX / LANE as u64,
+        },
+    )?;
+    let lane_buf = charged_buffer(
+        &tally,
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some("figgy category lane table"),
+            size: lane_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+    );
+    let written = {
+        let mut view = lane_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the lane table is mapped at creation");
+        let mut written = 0usize;
+        let result = write(&mut |lane| {
+            if written < lanes {
+                let at = written * LANE;
+                view.slice(at..at + LANE)
+                    .copy_from_slice(bytemuck::bytes_of(&lane));
+                written += 1;
+            }
+        });
+        result.map(|()| written)
+    };
+    lane_buf.unmap();
+    written?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -489,13 +550,17 @@ pub fn create_category_bar_data_bind_group(
                 binding: 9,
                 resource: params_buf.as_entire_binding(),
             },
+            wgpu::BindGroupEntry {
+                binding: 10,
+                resource: lane_buf.as_entire_binding(),
+            },
         ],
     });
-    CategoryBarData {
+    Ok(CategoryBarData {
         bind_group,
         style_map: style_map.bind_group,
         charge,
-    }
+    })
 }
 
 /// A category bar pipeline: groups 0 transform, 1 style, 2 the series' bar

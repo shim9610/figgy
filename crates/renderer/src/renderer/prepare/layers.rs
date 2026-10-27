@@ -303,18 +303,16 @@ impl PrepareContext<'_> {
                 let bars = rt
                     .category_bars()
                     .expect("the category bar primitive has a category bar config");
+                let group = series_specs
+                    .iter()
+                    .filter(|s| {
+                        effective_series_primitives(&chart_config.draw_style, &s.config.render_type)
+                            .category_bars
+                    })
+                    .map(|s| s.config);
                 let params = category_bar_params(
                     chart_config,
-                    series_specs
-                        .iter()
-                        .filter(|s| {
-                            effective_series_primitives(
-                                &chart_config.draw_style,
-                                &s.config.render_type,
-                            )
-                            .category_bars
-                        })
-                        .map(|s| s.config),
+                    group.clone(),
                     cfg,
                     series.style.display_scale,
                     &mut lookup,
@@ -333,8 +331,10 @@ impl PrepareContext<'_> {
                     self.category_bar_data_bgl,
                     column_buffer,
                     &params,
+                    params.members as usize,
+                    |push| category_bar_lanes(chart_config, group, cfg, &mut lookup, push),
                     style_map,
-                );
+                )?;
                 Some((
                     data,
                     params.count,
@@ -352,7 +352,7 @@ impl PrepareContext<'_> {
                 let boxes = rt
                     .box_plot()
                     .expect("the box plot primitive has a box plot config");
-                let (params, vertices) = box_plot_params(
+                let (params, lanes, vertices) = box_plot_params(
                     chart_config,
                     series_specs
                         .iter()
@@ -382,8 +382,13 @@ impl PrepareContext<'_> {
                     self.category_bar_data_bgl,
                     column_buffer,
                     &params,
+                    lanes.len(),
+                    |push| {
+                        lanes.iter().for_each(|&lane| push(lane));
+                        Ok(())
+                    },
                     style_map,
-                );
+                )?;
                 Some((
                     data,
                     params.count,
@@ -839,7 +844,12 @@ impl PrepareContext<'_> {
                     };
                     match (
                         data,
-                        self.value_label_data(chart_config, cfg, atlas, series.style.display_scale),
+                        self.value_label_data(
+                            chart_config,
+                            cfg,
+                            atlas,
+                            series.style.display_scale,
+                        )?,
                         pipelines.bar_value_label.as_ref(),
                     ) {
                         (Some(data), Some(labels), Some(pipeline)) => {

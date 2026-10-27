@@ -1170,7 +1170,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 `marker_size_px`는 값이 없으면 `null`로 기록하고 기본값(선 굵기 2, 색의 25% 불투명 채움, `"Circle"` 표식,
 표식 크기 7)을 쓴다. `fill_opacity`는 없으면 생략한다. `marker`는 `"None"`, `"Circle"`,
 `"Square"`, `labels.placement`는 `"None"`, `"Values"`, `"Emphasized"`이며 `labels.text`와 `labels.offsets`는 비어 있으면 생략한다.
-극좌표의 `interpolation`은 `"Chord"`여야 하고 레이어마다 레이더 시리즈는 16개까지다.
+극좌표의 `interpolation`은 `"Chord"`여야 하고 레이어마다 둘 수 있는 레이더 시리즈 수에는 상한이 없다.
 
 ```json
 {

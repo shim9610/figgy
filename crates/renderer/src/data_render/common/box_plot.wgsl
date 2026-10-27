@@ -15,11 +15,11 @@
 // drawn: the box spans min(q1, q3)..max(q1, q3), the median is held inside
 // it, and a whisker never reaches into it.
 //
-// `CategoryBarParams` holds the box plot's lanes (SHADER_COMMON.md §5.15):
-// `values` carries the f32 lane bases of the nine record fields in
+// The lane table (`category_lanes`, SHADER_COMMON.md §5.15) holds the box
+// plot's lanes: the f32 lane bases of the nine record fields in
 // `BOX_PLOT_RECORD` order (`BOX_LANE_ABSENT` for an absent optional
 // field), then the outlier values and offsets lanes, the outlier group
-// count and the longest group; `mode` is grouped. The series' part styles
+// count and the longest group; `CategoryBarParams.mode` is grouped. The series' part styles
 // are the bar style map's style slots, one per `BOX_PART_*`, and a per-box
 // override is one override row per part at `row * BOX_PLOT_PARTS + part`.
 
@@ -74,7 +74,7 @@ const BOX_MARKER_SQUARE: u32 = 1u;
 const BOX_MARKER_DIAMOND: u32 = 3u;
 
 fn box_lane(k: u32) -> u32 {
-    return category_params.values[k / 4u][k % 4u];
+    return category_lanes[k];
 }
 
 /// Field `k` of row `row`, or `ok == false` when the field is absent or the

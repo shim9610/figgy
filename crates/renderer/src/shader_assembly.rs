@@ -277,7 +277,6 @@ mod tests {
             ("VALUE_LABEL_OUTSIDE", dr::VALUE_LABEL_OUTSIDE),
             ("VALUE_LABEL_INSIDE", dr::VALUE_LABEL_INSIDE),
             ("VALUE_LABEL_AUTO", dr::VALUE_LABEL_AUTO),
-            ("VALUE_LABEL_CAPACITY", dr::VALUE_LABEL_CAPACITY as u32),
             ("VALUE_LABEL_VERTICES", dr::VALUE_LABEL_VERTICES),
             ("MODE_FIELD_EDGES_CELLS", fit::FIELD_EDGES_CELLS_MODE),
             ("MODE_FIELD_EDGES_SAMPLES", fit::FIELD_EDGES_SAMPLES_MODE),
@@ -602,7 +601,6 @@ mod tests {
                 "bar",
                 "CategoryBarParams",
                 CategoryBarParamsGpu {
-                    values,
                     positions,
                     count,
                     member,
@@ -730,7 +728,6 @@ mod tests {
                     metrics,
                     selection_color,
                     selection,
-                    cells,
                 }
             ),
             mirror!(

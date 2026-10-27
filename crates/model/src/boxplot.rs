@@ -23,8 +23,6 @@ pub use crate::data_config::{
 };
 use std::collections::HashSet;
 
-pub const MAX_BOX_SERIES: usize = 16;
-
 /// Actual whisker endpoints, not the theoretical IQR fences. CI endpoints may
 /// extend outside Q1/Q3. No sample statistics are inferred by the renderer.
 #[derive(Clone, Debug, PartialEq)]
@@ -265,8 +263,8 @@ impl BoxPlotChart {
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
-        if n == 0 || m == 0 || m > MAX_BOX_SERIES {
-            return Err("boxplot limits: at least 1 category and 1..16 series");
+        if n == 0 || m == 0 {
+            return Err("boxplot limits: at least 1 category and 1 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -466,7 +464,7 @@ mod tests {
         assert!(c.validate().is_ok());
     }
     #[test]
-    fn series_are_bounded_and_categories_boxes_and_outliers_are_not() {
+    fn series_categories_boxes_and_outliers_are_not_bounded() {
         for (n, m, valid) in [
             (64, 8, true),
             (32, 16, true),
@@ -474,7 +472,9 @@ mod tests {
             // 33 x 16 past the old 512 entries, are accepted.
             (65, 1, true),
             (300, 1, true),
-            (1, 17, false),
+            // No series cap (#107 R3): 17 and 20 series are accepted.
+            (1, 17, true),
+            (4, 20, true),
             (33, 16, true),
             (0, 1, false),
         ] {

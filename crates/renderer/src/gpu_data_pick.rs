@@ -602,8 +602,8 @@ pub(crate) struct DataPickPipelineBundle {
     vector_cell: wgpu::ComputePipeline,
     category_bar: wgpu::ComputePipeline,
     box_plot: wgpu::ComputePipeline,
-    /// Group 1 of the value label pick: the query (1, 2, 3) and the
-    /// series' label uniform (4).
+    /// Group 1 of the value label pick: the query (1, 2, 3), the series'
+    /// label uniform (4) and its label cells (7).
     value_label_query_bgl: wgpu::BindGroupLayout,
     value_labels: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
@@ -701,6 +701,7 @@ impl DataPickPipelineBundle {
                     compute_storage_entry(2, true),
                     compute_storage_entry(3, false),
                     compute_uniform_entry(4),
+                    compute_storage_entry(7, true),
                 ],
             },
         );
@@ -1190,7 +1191,7 @@ impl DataPickPipelineBundle {
                         _charge: Arc::clone(&labels.charge),
                         _label: None,
                     });
-                    label_params = Some(Arc::clone(&labels.params));
+                    label_params = Some((Arc::clone(&labels.params), Arc::clone(&labels.cells)));
                     (
                         category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
                         PreparedKind::ValueLabels(data),
@@ -1236,7 +1237,7 @@ impl DataPickPipelineBundle {
                     layout: &self.query_bgl,
                     entries: &query_entries,
                 }),
-                Some(params) => {
+                Some((params, cells)) => {
                     let [query_entry, pool_entry, output_entry] = query_entries;
                     self.device.create_bind_group(&wgpu::BindGroupDescriptor {
                         label: Some("figgy value label pick query bg"),
@@ -1248,6 +1249,10 @@ impl DataPickPipelineBundle {
                             wgpu::BindGroupEntry {
                                 binding: 4,
                                 resource: params.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 7,
+                                resource: cells.as_entire_binding(),
                             },
                         ],
                     })

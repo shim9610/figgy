@@ -590,15 +590,6 @@ fn radar_series_are_validated_against_their_chart_and_columns() {
     });
     let reason = invalid(r.export_panel_rgba(&arcs, &series, 1.0), "arcs");
     assert!(reason.contains("Chord"), "{reason}");
-    // More than sixteen series.
-    let many: Vec<_> = (0..17)
-        .map(|i| radar(&format!("s{i}"), "one", RED, outline_and_fill()))
-        .collect();
-    let reason = invalid(
-        r.export_panel_rgba(&chart(up_clockwise()), &many, 1.0),
-        "17",
-    );
-    assert!(reason.contains("16"), "{reason}");
     // A column that does not hold one value per category.
     r.add_column("short", &col(vec![0.5, 0.5, 0.5])).unwrap();
     let short = [radar("short", "short", RED, outline_and_fill())];
@@ -901,7 +892,8 @@ fn a_released_radar_document_draws_through_the_reader() {
 /// A radar chart has no spoke cap (#107): 100 categories, past the old 64,
 /// close their outline with every edge drawn at 1x and 2x, the last vertex
 /// picks as its own point and its picked ring draws. The value labels are
-/// written for every vertex; the first 64 draw (#107 R11).
+/// written for every vertex (`value_labels_render` draws 300 bar labels,
+/// #107 R11).
 #[test]
 fn a_hundred_spokes_draw_pick_and_highlight() {
     const N: usize = 100;
@@ -997,6 +989,114 @@ fn a_hundred_spokes_draw_pick_and_highlight() {
         assert!(
             !near(&img, (first.0 + 4.0 * s, first.1), is_blue),
             "{scale}x"
+        );
+    }
+}
+
+/// A radar chart has no series cap (#107 R3): 20 series, past the old 16,
+/// draw as nested outlines. The innermost (blue) and the outermost (red,
+/// the last) outline at 1x and 2x, a pick at the last series' vertex names
+/// it, and its picked ring draws there and not at its first vertex.
+#[test]
+fn twenty_radar_series_draw_pick_and_highlight() {
+    const M: usize = 20;
+    let radius = |k: usize| 0.05 + 0.045 * k as f64;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("cat", &col(vec![0.0, 1.0, 2.0, 3.0, 4.0]))
+        .unwrap();
+    let style = RadarSeriesStyle {
+        line_width_px: Some(2.0),
+        fill: Some(CLEAR),
+        marker: Some(RadarMarker::Circle),
+        marker_size_px: Some(4.0),
+        ..Default::default()
+    };
+    let mut series = Vec::new();
+    for k in 0..M {
+        let id = format!("s{k}");
+        r.add_column(&id, &col(vec![radius(k); 5])).unwrap();
+        let color = if k == M - 1 { RED } else { BLUE };
+        series.push(radar(&id, &id, color, style.clone()));
+    }
+    let mut chart = chart(up_clockwise());
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &series, scale);
+        for i in 0..5 {
+            let edge = |k: usize| {
+                lerp(
+                    vertex(&chart, scale, i as f64, radius(k)),
+                    vertex(&chart, scale, ((i + 1) % 5) as f64, radius(k)),
+                    0.5,
+                )
+            };
+            assert!(
+                near(&img, edge(M - 1), is_red),
+                "{scale}x: last series edge {i}"
+            );
+            assert!(
+                near(&img, edge(0), is_blue),
+                "{scale}x: first series edge {i}"
+            );
+        }
+    }
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.clone())
+        .unwrap();
+    let at = vertex(&chart, 1.0, 3.0, radius(M - 1));
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [at.0 as f32, at.1 as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 2.0,
+    };
+    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
+        .unwrap()
+        .expect("the last series' vertex picks");
+    assert_eq!((hit.series_id.as_str(), hit.point_index), ("s19", 3));
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
+            source_id: None,
+            series_id: "s19".into(),
+            point_index: 3,
+        }],
+        highlight_color: GREEN,
+        ..Default::default()
+    });
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &chart, &series, scale);
+        let s = f64::from(scale);
+        let ring = |at: (f64, f64)| {
+            (-12..=12).any(|dy: i32| {
+                (-12..=12).any(|dx: i32| {
+                    is_green(pixel(
+                        &img,
+                        (
+                            at.0 + f64::from(dx) * s * 0.5,
+                            at.1 + f64::from(dy) * s * 0.5,
+                        ),
+                    ))
+                })
+            })
+        };
+        assert!(
+            ring(vertex(&chart, scale, 3.0, radius(M - 1))),
+            "{scale}x: no ring at vertex 3"
+        );
+        assert!(
+            !ring(vertex(&chart, scale, 0.0, radius(M - 1))),
+            "{scale}x: a ring at vertex 0"
         );
     }
 }

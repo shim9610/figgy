@@ -30,31 +30,37 @@ additive.
 ### Model (`figgy-model` 0.13.0)
 
 - **No count caps on column-backed series**
-  ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R4, R10).
+  ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R3, R4,
+  R10).
   A series backed by `ColumnSource` has no count limit; the only failure
   left is allocation when its columns are registered.
   `AxisOptions::validate_categories` takes any nonzero number of
   categories (ids, text and the linear scale are still checked), and a
   categorical axis walks one tick per category however many there are.
   `Config::validate_category_bars` and `validate_box_plots` no longer cap
-  the bars or boxes of a group, and `LineOffsets::validate` no longer caps
-  its members. The legacy readers follow, so a document they accept is one
+  the series, bars or boxes of a group, `Config::validate_radar` no longer
+  caps the radar series of a layer, and `LineOffsets::validate` no longer
+  caps its members. The legacy readers follow, so a document they accept is one
   the series draws: `CategoricalChart::validate` and
   `BoxPlotChart::validate` take any number of categories and entries,
   `BoxPlotChart::validate` any number of outliers (each still finite and
   outside its whiskers), and `RadarChart::validate` any number of spokes
-  from three up. The 16-series group caps (`MAX_BAR_SERIES`,
-  `MAX_BOX_SERIES`, `MAX_RADAR_SERIES`) stay for now. Migration: the public
+  from three up; all three take any number of series. Migration: the public
   constants `categorical::MAX_CATEGORIES`, `categorical::MAX_CATEGORY_BARS`,
+  `categorical::MAX_BAR_SERIES`, `boxplot::MAX_BOX_SERIES`,
+  `radar::MAX_RADAR_SERIES`,
   `boxplot::MAX_BOX_CATEGORIES`, `boxplot::MAX_BOXES`,
   `boxplot::MAX_BOX_OUTLIERS`, `boxplot::MAX_BOXPLOT_OUTLIERS`,
   `radar::MAX_RADAR_CATEGORIES` and `MAX_OFFSET_LINES` (also
   `data_config::MAX_OFFSET_LINES`) are removed; code that named them picks
   its own bound if it wants one. Code that matched the removed error
   strings ("a categorical axis needs 1 to 64 categories", "a bar group
-  draws at most 512 bars", "a box group draws at most 512 boxes", "a line
-  offset group holds at most 32 series", the legacy readers' "limits"
-  strings) no longer sees them; an empty categorical axis now fails with
+  draws at most 512 bars", "a box group draws at most 512 boxes", "a bar
+  group holds at most 16 category bar series", "a box group holds at most
+  16 box plot series", "a radar chart draws at most 16 radar series", "a
+  line offset group holds at most 32 series", the legacy readers' "limits"
+  strings, which now read "at least 1 category and 1 series" and "at least
+  3 categories and 1 series") no longer sees them; an empty categorical axis now fails with
   "a categorical axis needs at least one category".
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
@@ -659,6 +665,43 @@ additive.
   bound; code that relied on a scale above 8 being clamped now gets that
   scale, or the `GpuResourceLimit` error when it does not fit the device.
 
+- **No value label cap**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R11). The value
+  label uniform held 64 label cells (`ValueLabelParamsGpu::cells`, 1120 B)
+  and the atlas 64 widths, so a bar, box or radar series over more
+  categories labelled its first 64 only. The cells are now a read-only
+  storage array bound at group 1 binding 7 of the value label draw and
+  pick, one per label, written straight into its buffer's mapping at
+  prepare; the atlas keeps its bake's cell widths. Every category is
+  labelled, drawn, picked and dragged: 300 labels in `value_labels_render`.
+  No policy cap replaces it: the label count is the host's to budget.
+  Images of up to 64 labels are byte-identical; a series over more
+  categories now also draws the labels past the 64th. Migration: the public
+  `VALUE_LABEL_CAPACITY` is removed; `ValueLabelParamsGpu` loses `cells` and
+  is 96 B; `ValueLabelData` gains `cells`; a custom value label layout adds
+  binding 7 (read-only storage).
+
+- **No series cap on bar, box and radar groups**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R3). A category
+  bar group kept its members' value column lanes in a 16-entry table in
+  the params uniform (`CategoryBarParamsGpu::values`, 112 B). The lanes are
+  now the series' lane table, a read-only storage array bound at group 3
+  binding 10 beside the pool and the params and sized by what it holds: a
+  bar group's members, a box plot's 13 record and outlier lanes, a radar
+  label's value column. The table is written straight into its buffer's
+  mapping at creation; nothing is staged on the CPU. A group of 40 series
+  stacks and picks like a group of two; the stack and percent loops read
+  every member at each bar, so a draw costs `O(members² · categories)`
+  pool reads, measured in `category_bars_render` and documented in
+  SHADER_COMMON §5.13, never capped. The renderer's 16-member check is
+  gone; existing category bar, box plot and radar images are
+  byte-identical. Migration:
+  `CategoryBarParamsGpu` loses `values` and is 48 B;
+  `create_category_bar_data_bind_group` takes the lane count and a writer
+  (`lanes, write: impl FnOnce(&mut dyn FnMut(u32)) -> Result<()>`) before
+  the style map and returns `Result<CategoryBarData>`; a custom layout
+  built for the category bar group 3 adds binding 10 (read-only storage).
+
 - **Column-backed series past the old caps draw and pick**
   ([#107](https://github.com/shim9610/figgy/issues/107) R5, R10). A box
   plot's override rows were built in a stack table of 64 categories' rows
@@ -667,10 +710,7 @@ additive.
   overrides. A layer's pick kept its
   line offset members' transforms in a 32-entry array and skipped members
   past it; it now keeps the members' panels from the expansion and the
-  engine asks for each member's transform. The value label uniform still
-  holds 64 cells: a bar, box or radar series over more categories draws in
-  full and labels its first 64 until the labels move to a storage buffer
-  (#107 R11). Migration: none; `VALUE_LABEL_CAPACITY` keeps its value.
+  engine asks for each member's transform. Migration: none.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line
@@ -1001,8 +1041,8 @@ additive.
     into `bar.rs::BAR_SHADER` beside the histogram entries, one instance per
     category, the rect built on every draw from the positions, the group
     layout and, for a stack, the other series' values read by their pool
-    lanes in a fixed loop of at most 16 (group 3, bindings 8 and 9:
-    `CategoryBarParamsGpu`). The bars are shaded by `bar_surface` with their
+    lanes from the series' lane table (group 3, bindings 8 to 10: the pool,
+    `CategoryBarParamsGpu` and the lane table, #107 R3). The bars are shaded by `bar_surface` with their
     material; the histogram's override table carries the per-bar overrides
     (`BarStyleSlotGpu` / `BarStyleOverrideGpu` gain the `material` and
     `finish` lanes, `BAR_STYLE_MASK_MATERIAL`). The typed data pick

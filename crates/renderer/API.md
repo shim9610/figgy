@@ -182,9 +182,8 @@ the data of a categorical axis as category indices `0..n`. `min`, `max`,
 and `set_x_range` / `set_y_range`, the `auto_fit_*` helpers and view states
 leave the axis unchanged. A categorical axis must be linear; `inverted` walks
 its categories from the far end (the first category at the top of a `left_y`),
-with at least one category and no upper count, whose ids are unique (value
-labels draw for the first 64 categories until #107 moves them to a storage
-buffer); polar axes and the colourbar
+with at least one category and no upper count, whose ids are unique (every
+category draws its value labels); polar axes and the colourbar
 axis cannot be categorical yet, and streamed series are rejected on a chart
 with a categorical axis.
 

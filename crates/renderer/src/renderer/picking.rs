@@ -1373,11 +1373,12 @@ impl Renderer {
         if primitives.category_bars
             && let Some(bars) = cfg.render_type.category_bars()
         {
+            let group = series.iter().filter(|s| {
+                effective_series_primitives(&config.draw_style, &s.render_type).category_bars
+            });
             let params = category_bar_params(
                 display_config,
-                series.iter().filter(|s| {
-                    effective_series_primitives(&config.draw_style, &s.render_type).category_bars
-                }),
+                group.clone(),
                 cfg,
                 scale,
                 |id| lookup(&self.pool, id),
@@ -1390,19 +1391,30 @@ impl Renderer {
                 bars,
                 scale,
             );
-            return Ok(Some(data_render::create_category_bar_data_bind_group(
+            return data_render::create_category_bar_data_bind_group(
                 &self.device,
                 &self.gpu_ledger,
                 &self.category_bar_data_bgl,
                 self.pool.buffer(),
                 &params,
+                params.members as usize,
+                |push| {
+                    category_bar_lanes(
+                        display_config,
+                        group,
+                        cfg,
+                        |id| lookup(&self.pool, id),
+                        push,
+                    )
+                },
                 style_map,
-            )));
+            )
+            .map(Some);
         }
         if primitives.box_plot
             && let Some(boxes) = cfg.render_type.box_plot()
         {
-            let (params, _) = box_plot_params(
+            let (params, lanes, _) = box_plot_params(
                 display_config,
                 series.iter().filter(|s| {
                     effective_series_primitives(&config.draw_style, &s.render_type).box_plot
@@ -1419,14 +1431,20 @@ impl Renderer {
                 boxes,
                 scale,
             );
-            return Ok(Some(data_render::create_category_bar_data_bind_group(
+            return data_render::create_category_bar_data_bind_group(
                 &self.device,
                 &self.gpu_ledger,
                 &self.category_bar_data_bgl,
                 self.pool.buffer(),
                 &params,
+                lanes.len(),
+                |push| {
+                    lanes.iter().for_each(|&lane| push(lane));
+                    Ok(())
+                },
                 style_map,
-            )));
+            )
+            .map(Some);
         }
         if primitives.line && cfg.render_type.radar().is_some() {
             let pool_buffer = self.pool.buffer().clone();
@@ -1766,7 +1784,7 @@ impl Renderer {
                     .render_type
                     .box_plot()
                     .expect("the box plot primitive has a box plot config");
-                let (params, _) = box_plot_params(
+                let (params, lanes, _) = box_plot_params(
                     &display_config,
                     series.iter().filter(|s| {
                         effective_series_primitives(&config.draw_style, &s.render_type).box_plot
@@ -1799,8 +1817,13 @@ impl Renderer {
                                 &self.category_bar_data_bgl,
                                 self.pool.buffer(),
                                 &params,
+                                lanes.len(),
+                                |push| {
+                                    lanes.iter().for_each(|&lane| push(lane));
+                                    Ok(())
+                                },
                                 style_map,
-                            ),
+                            )?,
                         },
                     });
                 }
@@ -1814,19 +1837,20 @@ impl Renderer {
                     .render_type
                     .category_bars()
                     .expect("the category bar primitive has a category bar config");
+                let group = series.iter().filter(|s| {
+                    effective_series_primitives(&config.draw_style, &s.render_type).category_bars
+                });
+                let lookup = |id: &str| {
+                    self.pool
+                        .handle_for(id)
+                        .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                };
                 let params = category_bar_params(
                     &display_config,
-                    series.iter().filter(|s| {
-                        effective_series_primitives(&config.draw_style, &s.render_type)
-                            .category_bars
-                    }),
+                    group.clone(),
                     cfg,
                     request.display_scale,
-                    |id| {
-                        self.pool
-                            .handle_for(id)
-                            .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
-                    },
+                    lookup,
                     |id| self.pool.slot(id).map(|slot| slot.min),
                 )?;
                 if params.count != 0 {
@@ -1848,8 +1872,12 @@ impl Renderer {
                                 &self.category_bar_data_bgl,
                                 self.pool.buffer(),
                                 &params,
+                                params.members as usize,
+                                |push| {
+                                    category_bar_lanes(&display_config, group, cfg, lookup, push)
+                                },
                                 style_map,
-                            ),
+                            )?,
                         },
                     });
                 }
@@ -1977,7 +2005,8 @@ impl Renderer {
                 cfg,
                 &atlas,
                 request.display_scale,
-            ) else {
+            )?
+            else {
                 continue;
             };
             if labels.count == 0 {

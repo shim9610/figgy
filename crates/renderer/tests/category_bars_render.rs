@@ -1152,7 +1152,8 @@ fn a_2x_export_is_the_1x_layout_doubled() {
 /// (#107): two series over 300 categories, past the old 64, are 600 bars,
 /// past the old 512. Every sampled bar paints at 1x and 2x, the last bar
 /// picks as its own row and its picked highlight outlines it. The value
-/// labels are written for every category; the first 64 draw (#107 R11).
+/// labels are written for every category (`value_labels_render` draws
+/// 300 of them, #107 R11).
 #[test]
 fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     const N: usize = 300;
@@ -1259,4 +1260,216 @@ fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
         ),
         "{hit:?}"
     );
+}
+
+/// A bar group has no series cap (#107 R3): 40 series, past the old 16,
+/// over 50 categories, grouped and stacked. The member lane bases are the
+/// series' lane table, a storage array sized by the group, so every member
+/// is read: in a stack, series 20 (blue) spans 20..21 and series 39 (red)
+/// 39..40 of every category; grouped, series 39 stands at the right edge
+/// of its group. Both draw at 1x and 2x, the last member's bar picks as its
+/// own row and its picked highlight outlines it. The stack walks every
+/// member per bar (`O(members)` per bar, `O(members² · categories)` per
+/// draw); the draw and pick times at 4 and 40 members are printed, not
+/// capped (SHADER_COMMON.md §5.13).
+#[test]
+fn a_forty_series_group_over_fifty_categories_draws_and_picks() {
+    const N: usize = 50;
+    const M: usize = 40;
+    // 8000 export pixels at 2x: the device's texture limit.
+    const WIDE: u32 = 4000;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("pos", &col((0..N).map(|i| i as f64).collect()))
+        .unwrap();
+    for k in 0..M {
+        r.add_column(&format!("v{k}"), &col(vec![1.0; N])).unwrap();
+    }
+    let direction = CategoryBarDirection::Vertical;
+    let series: Vec<SeriesConfig> = (0..M)
+        .map(|k| {
+            let color = match k {
+                20 => BLUE,
+                39 => RED,
+                _ => GREEN,
+            };
+            let mut s = bars(&format!("v{k}"), color, direction);
+            s.series_id = format!("s{k}");
+            s
+        })
+        .collect();
+    let wide_chart = |mode: CategoryBarMode, value: (f64, f64)| {
+        let mut chart = chart(mode, direction, value);
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(
+            (0..N)
+                .map(|k| Category::new(format!("c{k}"), format!("{k}")))
+                .collect(),
+        );
+        let groups = config.bar_groups.as_mut().unwrap();
+        groups.bar_gap = 0.0;
+        groups.group_width = 0.95;
+        chart
+    };
+    // The export-pixel region of category `k`'s slot and its centre.
+    let region = |chart: &Chart, k: usize, scale: f32| {
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let x0 = da.x as f32 + w * k as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        (
+            s(x0),
+            s(da.y as f32),
+            s(x0 + w),
+            s((da.y + da.height) as f32),
+        )
+    };
+    let pick_at = |r: &mut Renderer, chart: &Chart, x: u32, y: u32| {
+        let id = r
+            .register_chart(chart.config().clone(), series.clone())
+            .unwrap();
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: WIDE,
+                height: HEIGHT,
+            },
+            display_scale: 1.0,
+            max_distance_px: 0.0,
+        };
+        pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+    };
+    r.enable_gpu_picking().unwrap();
+
+    // Stacked: every member stacks on the earlier ones.
+    let mut stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&stacked, &series, scale).unwrap();
+        for k in [0, 25, N - 1] {
+            for (pred, low, name) in [
+                (is_blue as fn(&[u8]) -> bool, 20.0, "s20"),
+                (is_red, 39.0, "s39"),
+            ] {
+                let bar = bbox(&img, region(&stacked, k, scale), pred)
+                    .unwrap_or_else(|| panic!("{scale}x stacked: no {name} bar in category {k}"));
+                let (start, end) = value_span(bar, direction);
+                let (want_start, want_end) = (
+                    value_px(&stacked, direction, low, scale),
+                    value_px(&stacked, direction, low + 1.0, scale),
+                );
+                assert!(
+                    (start - want_start).abs() <= 2.0 * scale
+                        && (end - want_end).abs() <= 2.0 * scale,
+                    "{scale}x stacked {name} category {k}: {start}..{end} want {want_start}..{want_end}"
+                );
+            }
+        }
+    }
+    let img = r.export_panel_rgba(&stacked, &series, 1.0).unwrap();
+    let bar = bbox(&img, region(&stacked, N - 1, 1.0), is_red).unwrap();
+    let hit = pick_at(&mut r, &stacked, (bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index, .. })
+                if series_id == "s39" && *bin_index == N - 1
+        ),
+        "stacked pick: {hit:?}"
+    );
+    stacked.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "s39".into(),
+            bin_index: N - 1,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 1.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let outlined = r.export_panel_rgba(&stacked, &series, 2.0).unwrap();
+    assert!(bbox(&outlined, region(&stacked, N - 1, 2.0), is_magenta).is_some());
+    assert_eq!(bbox(&outlined, region(&stacked, 0, 2.0), is_magenta), None);
+
+    // Grouped: series 39 is the last bar of its group.
+    let grouped = wide_chart(CategoryBarMode::Grouped, (0.0, 2.0));
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&grouped, &series, scale).unwrap();
+        for k in [0, 25, N - 1] {
+            let slot = region(&grouped, k, scale);
+            let bar = bbox(&img, slot, is_red)
+                .unwrap_or_else(|| panic!("{scale}x grouped: no s39 bar in category {k}"));
+            let (_, top) = value_span(bar, direction);
+            let want = value_px(&grouped, direction, 1.0, scale);
+            assert!(
+                (top - want).abs() <= 2.0 * scale,
+                "{scale}x grouped top {top} want {want}"
+            );
+            // The group covers 0.95 of the slot, centred: its right edge.
+            let width = (slot.2 - slot.0) as f32;
+            let right = slot.0 as f32 + width * 0.5 + width * 0.475;
+            let (_, high) = across_span(bar, direction);
+            assert!(
+                (high as f32 + 1.0 - right).abs() <= 2.0 * scale,
+                "{scale}x grouped category {k}: right edge {high} want {right}"
+            );
+            let blue = bbox(&img, slot, is_blue).expect("the s20 bar");
+            assert!(across_span(blue, direction).1 < across_span(bar, direction).0);
+        }
+    }
+    let img = r.export_panel_rgba(&grouped, &series, 1.0).unwrap();
+    let bar = bbox(&img, region(&grouped, N - 1, 1.0), is_red).unwrap();
+    let hit = pick_at(&mut r, &grouped, (bar.0 + bar.2) / 2, (bar.1 + bar.3) / 2);
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index, .. })
+                if series_id == "s39" && *bin_index == N - 1
+        ),
+        "grouped pick: {hit:?}"
+    );
+
+    // The cost grows with the group; it is measured, never capped.
+    let stacked = wide_chart(CategoryBarMode::Stacked, (0.0, 41.0));
+    for members in [4, M] {
+        let group = &series[..members];
+        let _ = r.export_panel_rgba(&stacked, group, 1.0).unwrap();
+        let start = std::time::Instant::now();
+        let _ = r.export_panel_rgba(&stacked, group, 1.0).unwrap();
+        let draw = start.elapsed();
+        let id = r
+            .register_chart(stacked.config().clone(), group.to_vec())
+            .unwrap();
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [100.5, 100.5],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: WIDE,
+                height: HEIGHT,
+            },
+            display_scale: 1.0,
+            max_distance_px: 0.0,
+        };
+        let start = std::time::Instant::now();
+        let _ = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        let pick = start.elapsed();
+        eprintln!(
+            "stacked group of {members} series over {N} categories: export {draw:?}, pick {pick:?}"
+        );
+    }
 }

@@ -13,20 +13,23 @@
 // - a radar vertex's label sits outside the vertex along its spoke: the
 //   vertex is the pair `(category, value)` of the series' columns through
 //   the polar projection, read through the category bar group 3
-//   (`positions` the category column, `values[0][0]` the value column).
+//   (`positions` the category column, `category_lanes[0]` the value
+//   column).
 //
 // The CPU bakes the strings (SSOT configuration, `labels.text`) into the
 // atlas with the one text stack and writes each label's content width,
-// placement and drag offset into `ValueLabelParams`; nothing per label is
-// computed or stored on the CPU from the data. The same placement feeds the
+// placement and drag offset into the series' label cells
+// (`value_label_cells`, a storage array sized by its labels); nothing per
+// label is computed or stored on the CPU from the data. The same placement feeds the
 // draw, the selection box (`vs_value_label_selection`) and the pick
 // (`pick_value_labels`), so a label is picked and outlined where it is
 // drawn. Labels never move each other.
 
-/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (1120 B).
+/// CPU twin: `data_render/value_label.rs::ValueLabelParamsGpu` (96 B).
 struct ValueLabelParams {
     atlas: LabelParams,
-    /// x = `VALUE_LABEL_KIND_*`, y = labels (one per category), zw = 0.
+    /// x = `VALUE_LABEL_KIND_*`, y = labels (one per category, any
+    /// number: the entries of `value_label_cells`), zw = 0.
     shape: vec4<u32>,
     /// x = the gap between the anchor and the label, y = the text
     /// baseline's height above the content's bottom edge, z = the font size,
@@ -37,11 +40,6 @@ struct ValueLabelParams {
     /// x = the selection box stroke width, y = its padding around the
     /// label's frame, both in render pixels; zw = 0.
     selection: vec4<f32>,
-    /// One per label: x = the content width in render pixels (0 draws
-    /// nothing: an empty string, or a label its placement hides), y = the
-    /// placement (`VALUE_LABEL_OUTSIDE` / `_INSIDE` / `_AUTO`), zw = the drag
-    /// offset in render pixels, x right and y down.
-    cells: array<vec4<f32>, 64>,
 };
 
 const VALUE_LABEL_KIND_BARS: u32 = 0u;
@@ -50,9 +48,6 @@ const VALUE_LABEL_KIND_RADAR: u32 = 2u;
 const VALUE_LABEL_OUTSIDE: u32 = 0u;
 const VALUE_LABEL_INSIDE: u32 = 1u;
 const VALUE_LABEL_AUTO: u32 = 2u;
-/// Labels one series draws: one per category, for the first 64
-/// categories (#107 R11). CPU twin: `value_label.rs::VALUE_LABEL_CAPACITY`.
-const VALUE_LABEL_CAPACITY: u32 = 64u;
 /// Vertices per label: one quad.
 const VALUE_LABEL_VERTICES: u32 = 6u;
 /// The typed pick kind of a value label (`gpu_data_pick.rs`).
@@ -73,6 +68,12 @@ const VALUE_LABEL_FLIP_EPSILON: f32 = 0.001;
 @group(1) @binding(4) var<uniform> value_label: ValueLabelParams;
 @group(1) @binding(5) var value_label_atlas: texture_2d<f32>;
 @group(1) @binding(6) var value_label_sampler: sampler;
+/// One cell per label, `shape.y` of them, sized by the series' labels
+/// (#107 R11): x = the content width in render pixels (0 draws nothing: an
+/// empty string, or a label its placement hides), y = the placement
+/// (`VALUE_LABEL_OUTSIDE` / `_INSIDE` / `_AUTO`), zw = the drag offset in
+/// render pixels, x right and y down.
+@group(1) @binding(7) var<storage, read> value_label_cells: array<vec4<f32>>;
 
 /// Where one label goes: its content box in chart-area render pixels, y
 /// down, `(x0, y0, x1, y1)`, its left and top edge on the pixel grid.
@@ -89,7 +90,7 @@ fn value_label_hidden() -> ValueLabelBox {
 /// drag offset, its origin snapped to the pixel grid so the atlas is
 /// sampled texel for texel.
 fn value_label_box_at(row: u32, centre: vec2<f32>, size: vec2<f32>) -> ValueLabelBox {
-    let origin = floor(centre + value_label.cells[row].zw - size * 0.5 + vec2<f32>(0.5));
+    let origin = floor(centre + value_label_cells[row].zw - size * 0.5 + vec2<f32>(0.5));
     if (!bar_finite(origin.x) || !bar_finite(origin.y)) {
         return value_label_hidden();
     }
@@ -306,10 +307,10 @@ fn value_label_on_spoke(vertex: vec2<f32>, d: vec2<f32>, gap: f32, font: f32, si
 /// see it: its content box, or hidden for an empty string, a label its
 /// placement hides, or a bar, box or vertex that is not drawn.
 fn value_label_place(row: u32) -> ValueLabelBox {
-    if (row >= min(value_label.shape.y, VALUE_LABEL_CAPACITY)) {
+    if (row >= value_label.shape.y) {
         return value_label_hidden();
     }
-    let cell = value_label.cells[row];
+    let cell = value_label_cells[row];
     let size = vec2<f32>(cell.x, value_label.atlas.cell_stride_h - 2.0 * value_label.atlas.gutter);
     if (!(size.x > 0.0) || !(size.y > 0.0)) {
         return value_label_hidden();
@@ -456,7 +457,7 @@ fn pick_value_labels(@builtin(local_invocation_index) local_index: u32) {
     figgy_zero_workgroup(local_index);
     var best = data_pick_invalid();
     var row = local_index;
-    while (row < min(value_label.shape.y, VALUE_LABEL_CAPACITY)) {
+    while (row < value_label.shape.y) {
         let candidate = value_label_pick(row);
         if (data_pick_better(candidate, best)) {
             best = candidate;
