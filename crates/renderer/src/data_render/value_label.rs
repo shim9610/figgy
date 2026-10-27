@@ -7,20 +7,14 @@
 //! GPU places each label from the pool on every draw, through the bar
 //! module's value label entries. What the CPU writes per label is
 //! configuration only: the measured width of its string's atlas cell, its
-//! placement and its drag offset (`labels.offsets`), in one fixed-size
-//! uniform. Nothing is computed from the data on the CPU and nothing per
-//! label is stored beyond the atlas.
+//! placement and its drag offset (`labels.offsets`), one cell per label
+//! written straight into the mapping of a storage buffer sized by the
+//! labels (group 1 binding 7, #107 R11). Nothing is computed from the data
+//! on the CPU and nothing per label is stored beyond the atlas and its
+//! bake's cell widths.
 
 use super::*;
 use crate::data_config::{BoxPlotLabels, CategoryBarLabels, DataRenderType, RadarLabels};
-
-/// Labels one series draws: one per category of its axis, for the first
-/// `VALUE_LABEL_CAPACITY` categories. A categorical axis has no category
-/// cap (#107), so an axis with more categories draws its series in full
-/// and labels the first 64 only; the labels past the uniform's cells move
-/// to a storage buffer sized by the labels in a later change (#107 R11).
-/// GPU twin: `value_label.wgsl::VALUE_LABEL_CAPACITY`.
-pub const VALUE_LABEL_CAPACITY: usize = 64;
 
 /// Vertices per label: one quad (`VALUE_LABEL_VERTICES`).
 pub const VALUE_LABEL_VERTICES: u32 = 6;
@@ -45,11 +39,12 @@ pub(crate) const BOX_LABEL_GAP: f32 = 10.0;
 pub(crate) const RADAR_LABEL_GAP: f32 = 9.0;
 
 /// Everything the bar module's value label entries read besides the
-/// transform, the series' bar style map and its category bar group 3: the
-/// atlas geometry, the kind, and per label its content width, placement
-/// and drag offset.
+/// transform, the series' bar style map, its category bar group 3 and its
+/// label cells (one per label: content width, placement and drag offset,
+/// `value_label_cells`): the atlas geometry, the kind and the label
+/// count.
 ///
-/// GPU twin: `value_label.wgsl::ValueLabelParams`, 1120 B.
+/// GPU twin: `value_label.wgsl::ValueLabelParams`, 96 B.
 #[repr(C)]
 #[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ValueLabelParamsGpu {
@@ -62,11 +57,9 @@ pub struct ValueLabelParamsGpu {
     pub selection_color: [f32; 4],
     /// `[stroke width px, padding px, 0, 0]`.
     pub selection: [f32; 4],
-    /// Per label `[content width px, placement, offset x px, offset y px]`.
-    pub cells: [[f32; 4]; VALUE_LABEL_CAPACITY],
 }
 
-const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 1120);
+const _: () = assert!(std::mem::size_of::<ValueLabelParamsGpu>() == 96);
 
 /// One series' baked value label atlas on the GPU: the texture its labels
 /// sample, its cell geometry, and each string's measured cell width.
@@ -74,21 +67,23 @@ pub struct ValueLabelAtlas {
     pub(crate) view: wgpu::TextureView,
     pub(crate) texture: crate::gpu_memory::TrackedTexture,
     pub(crate) geometry: crate::gpu_contour::LabelParamsGpu,
-    /// Content width of each string's cell in texels (render pixels).
-    pub(crate) widths: [f32; VALUE_LABEL_CAPACITY],
+    /// Content width of each string's cell in texels (render pixels), one
+    /// per string: the bake's own cells, kept with the atlas they measure
+    /// (configuration, not data).
+    pub(crate) cells: Vec<LabelAtlasCell>,
     /// The text baseline's height above the cell content's bottom edge.
     pub(crate) baseline_px: f32,
 }
 
 impl ValueLabelAtlas {
     /// Upload `baked`, the series' strings as `bake_contour_label_atlas`
-    /// baked them.
+    /// baked them; the atlas keeps the bake's cell widths.
     pub(crate) fn upload(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
         max_texture_dimension_2d: u32,
-        baked: &BakedLabelAtlas,
+        baked: BakedLabelAtlas,
     ) -> crate::Result<Self> {
         let texture = crate::gpu_memory::TrackedTexture::new(
             ledger,
@@ -103,10 +98,6 @@ impl ValueLabelAtlas {
             )?,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut widths = [0.0; VALUE_LABEL_CAPACITY];
-        for (width, cell) in widths.iter_mut().zip(&baked.cells) {
-            *width = cell.width;
-        }
         Ok(Self {
             view,
             texture,
@@ -120,8 +111,8 @@ impl ValueLabelAtlas {
                 gutter: baked.gutter as f32,
                 level_count: u32::try_from(baked.cells.len()).unwrap_or(u32::MAX),
             },
-            widths,
             baseline_px: baked.baseline,
+            cells: baked.cells,
         })
     }
 }
@@ -219,17 +210,15 @@ fn selection_policy(scale: f32) -> ([f32; 4], f32, f32) {
     )
 }
 
-/// The value label uniform of one series: the atlas geometry, its kind,
-/// and per label the width of its string's cell (zero for an empty string
-/// or a label its placement hides), its placement and its drag offset at
-/// `scale` render pixels per logical pixel. `categories` are the category
-/// ids of the series' axis in order.
-pub(crate) fn value_label_params<'c>(
-    render_type: &DataRenderType,
+/// The value label uniform of one series: the atlas geometry, its kind and
+/// its label count, one per category of `categories` (the series' axis in
+/// order) that has a string of `text`, any number (#107 R11), at `scale`
+/// render pixels per logical pixel. The labels' cells are
+/// [`value_label_cells`].
+pub(crate) fn value_label_params(
     kind: u32,
     text: &[String],
-    offsets: &[[f32; 2]],
-    categories: impl IntoIterator<Item = &'c str>,
+    categories: &[crate::config::Category],
     atlas: &ValueLabelAtlas,
     font_px: f32,
     scale: f32,
@@ -240,42 +229,50 @@ pub(crate) fn value_label_params<'c>(
         _ => RADAR_LABEL_GAP,
     };
     let (color, stroke, padding) = selection_policy(scale);
-    let mut params = ValueLabelParamsGpu {
+    let count = categories.len().min(text.len());
+    ValueLabelParamsGpu {
         atlas: atlas.geometry,
-        shape: [kind, 0, 0, 0],
+        shape: [kind, u32::try_from(count).unwrap_or(u32::MAX), 0, 0],
         metrics: [gap * scale, atlas.baseline_px, font_px, scale],
         selection_color: color,
         selection: [stroke, padding, 0.0, 0.0],
-        cells: [[0.0; 4]; VALUE_LABEL_CAPACITY],
-    };
-    let mut count = 0;
-    for (index, category) in categories
-        .into_iter()
-        .enumerate()
-        .take(text.len().min(VALUE_LABEL_CAPACITY))
-    {
-        count = index + 1;
-        let Some(placement) = label_placement(render_type, category) else {
-            continue;
-        };
-        if text[index].is_empty() {
-            continue;
-        }
-        let [dx, dy] = offsets.get(index).copied().unwrap_or([0.0; 2]);
-        params.cells[index] = [
-            atlas.widths[index],
-            placement as f32,
-            dx * scale,
-            dy * scale,
-        ];
     }
-    params.shape[1] = count as u32;
-    params
+}
+
+/// Push the label cells of one series, one per label of
+/// [`value_label_params`] in category order: the width of its string's
+/// cell (zero for an empty string or a label its placement hides), its
+/// placement and its drag offset (`offsets`) at `scale` render pixels per
+/// logical pixel. [`create_value_label_data`] writes them into the cells'
+/// mapping.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn value_label_cells(
+    render_type: &DataRenderType,
+    text: &[String],
+    offsets: &[[f32; 2]],
+    categories: &[crate::config::Category],
+    atlas: &ValueLabelAtlas,
+    scale: f32,
+    push: &mut dyn FnMut([f32; 4]),
+) {
+    for (index, (category, text)) in categories.iter().zip(text).enumerate() {
+        let placement = label_placement(render_type, &category.id);
+        let width = atlas.cells.get(index).map_or(0.0, |cell| cell.width);
+        let cell = match placement {
+            Some(placement) if !text.is_empty() => {
+                let [dx, dy] = offsets.get(index).copied().unwrap_or([0.0; 2]);
+                [width, placement as f32, dx * scale, dy * scale]
+            }
+            _ => [0.0; 4],
+        };
+        push(cell);
+    }
 }
 
 /// Group 1 of the value label draw and selection pipelines: the label
-/// uniform (binding 4), the atlas (5) and its sampler (6). Bindings 0..3
-/// of group 1 are the bar module's `Style` and typed pick query.
+/// uniform (binding 4), the atlas (5), its sampler (6) and the label cells
+/// as read-only storage (7, `array<vec4<f32>>`, one per label). Bindings
+/// 0..3 of group 1 are the bar module's `Style` and typed pick query.
 pub fn create_value_label_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     crate::gpu_compile::bind_group_layout(
         device,
@@ -308,26 +305,44 @@ pub fn create_value_label_bind_group_layout(device: &wgpu::Device) -> wgpu::Bind
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
             ],
         },
     )
 }
 
-/// One series' value label uniform, charged as a uniform, and the group 1
-/// that binds it with the series' atlas.
+/// One series' value label uniform and cells, charged as a uniform, and
+/// the group 1 that binds them with the series' atlas.
 #[derive(Clone)]
 pub struct ValueLabelData {
     pub bind_group: wgpu::BindGroup,
     /// The uniform alone: the typed pick binds it into its own group 1.
     pub params: std::sync::Arc<wgpu::Buffer>,
+    /// The label cells alone, which the typed pick binds beside it.
+    pub cells: std::sync::Arc<wgpu::Buffer>,
     pub count: u32,
     pub charge: crate::gpu_memory::SharedCharge,
     /// Keeps the atlas texture's ledger charge alive with the bind group.
     pub atlas_charge: crate::gpu_memory::SharedCharge,
 }
 
-/// Upload `params` and bind it with `atlas` and `sampler` into `layout`
-/// ([`create_value_label_bind_group_layout`]).
+/// Upload `params` and the series' label cells and bind them with `atlas`
+/// and `sampler` into `layout` ([`create_value_label_bind_group_layout`]).
+///
+/// The cells buffer holds `params.shape[1]` cells, sized by the labels:
+/// `write` pushes them in order ([`value_label_cells`]) and they go
+/// straight into its mapping at creation, nothing staged on the CPU; cells
+/// it does not push read as zero (no label), pushes past the count are
+/// dropped.
 pub(crate) fn create_value_label_data(
     device: &wgpu::Device,
     ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
@@ -335,9 +350,45 @@ pub(crate) fn create_value_label_data(
     atlas: &ValueLabelAtlas,
     sampler: &wgpu::Sampler,
     params: &ValueLabelParamsGpu,
-) -> ValueLabelData {
-    use crate::gpu_memory::{ChargeTally, charged_buffer_init};
+    write: impl FnOnce(&mut dyn FnMut([f32; 4])),
+) -> crate::Result<ValueLabelData> {
+    use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
+    const CELL: usize = std::mem::size_of::<[f32; 4]>();
     let tally = ChargeTally::new();
+    let count = params.shape[1] as usize;
+    let cell_bytes = (count.max(1) as u64).checked_mul(CELL as u64).ok_or(
+        crate::FiggyError::GpuResourceLimit {
+            resource: "value label cells",
+            requested: count as u64,
+            limit: u64::MAX / CELL as u64,
+        },
+    )?;
+    let cells = charged_buffer(
+        &tally,
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some("figgy value label cells"),
+            size: cell_bytes,
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+    );
+    {
+        let mut view = cells
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the value label cells are mapped at creation");
+        let mut written = 0usize;
+        write(&mut |cell| {
+            if written < count {
+                let at = written * CELL;
+                view.slice(at..at + CELL)
+                    .copy_from_slice(bytemuck::bytes_of(&cell));
+                written += 1;
+            }
+        });
+    }
+    cells.unmap();
     let buffer = charged_buffer_init(
         &tally,
         device,
@@ -368,15 +419,20 @@ pub(crate) fn create_value_label_data(
                 binding: 6,
                 resource: wgpu::BindingResource::Sampler(sampler),
             },
+            wgpu::BindGroupEntry {
+                binding: 7,
+                resource: cells.as_entire_binding(),
+            },
         ],
     });
-    ValueLabelData {
+    Ok(ValueLabelData {
         bind_group,
         params: std::sync::Arc::new(buffer),
+        cells: std::sync::Arc::new(cells),
         count: params.shape[1],
         charge,
         atlas_charge: atlas.texture.shared_charge(),
-    }
+    })
 }
 
 /// A value label pipeline of the bar module: groups 0 transform, 1 the

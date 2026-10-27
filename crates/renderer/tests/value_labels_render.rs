@@ -1431,3 +1431,109 @@ fn an_edge_radar_label_flips_inward() {
         );
     }
 }
+
+/// Value labels have no count cap (#107 R11): a bar series over 300
+/// categories, past the old 64 cells of the label uniform, labels every
+/// category. The cells are a storage array sized by the labels, so every
+/// sampled label (the first, the 64th and 65th, the last) draws above its
+/// bar at 1x and 2x, picks as its own category, and a drag of the last
+/// label moves it by its offset and nothing else.
+#[test]
+fn three_hundred_value_labels_draw_pick_and_drag() {
+    const N: usize = 300;
+    // 8000 export pixels at 2x: the device's texture limit.
+    const WIDE: u32 = 4000;
+    let mut r = renderer();
+    r.add_column("pos300", &col((0..N).map(|k| k as f64).collect()))
+        .unwrap();
+    r.add_column("v300", &col(vec![10.0; N])).unwrap();
+    let direction = CategoryBarDirection::Vertical;
+    let mut chart = bar_chart(CategoryBarMode::Grouped, direction, (0.0, 25.0));
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(categories(N));
+    }
+    // One digit per label, so a label fits its 13 px slot.
+    let text: Vec<String> = (0..N).map(|k| format!("{}", k % 10)).collect();
+    let text: Vec<&str> = text.iter().map(String::as_str).collect();
+    let mut series = bars("v300", RED, direction, CategoryBarLabels::Outside, &text);
+    series.x_column = "pos300".into();
+    let still = [series];
+    // Category `k`'s slot, the whole panel across it.
+    let region = |k: usize, scale: f32| {
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let x0 = da.x as f32 + w * k as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        (s(x0), 0, s(x0 + w), s(HEIGHT as f32))
+    };
+    let sampled = [0, 63, 64, 150, N - 1];
+    for scale in SCALES {
+        let img = r.export_panel_rgba(&chart, &still, scale).unwrap();
+        for k in sampled {
+            let bar = bbox(&img, region(k, scale), is_red)
+                .unwrap_or_else(|| panic!("{scale}x: no bar in category {k}"));
+            let ink = bbox(
+                &img,
+                (region(k, scale).0, 0, region(k, scale).2, bar.1),
+                is_label,
+            )
+            .unwrap_or_else(|| panic!("{scale}x: no label above bar {k}"));
+            // Centred across the bar, above its value end.
+            let (cx, _) = centre(ink);
+            let (bx, _) = centre(bar);
+            assert!(
+                (cx - bx).abs() <= 2.0 * scale,
+                "{scale}x label {k}: {cx} over {bx}"
+            );
+            assert!(ink.3 < bar.1, "{scale}x label {k} sits above its bar");
+        }
+        // Each sampled label picks as its own category.
+        for k in [64, N - 1] {
+            let bar = bbox(&img, region(k, scale), is_red).unwrap();
+            let ink = bbox(
+                &img,
+                (region(k, scale).0, 0, region(k, scale).2, bar.1),
+                is_label,
+            )
+            .unwrap();
+            assert_picks(
+                pick_at(&mut r, &chart, &still, &img, scale, centre(ink)),
+                "v300",
+                k,
+                &format!("{scale}x label {k}"),
+            );
+        }
+    }
+    // The last label drags up by its offset; the label of category 0
+    // stays.
+    let mut dragged = still.clone();
+    assert_eq!(
+        dragged[0].drag_value_label(N - 1, N, 0.0, -30.0),
+        renderer::layout::NudgeResult::Moved
+    );
+    for scale in SCALES {
+        let before = r.export_panel_rgba(&chart, &still, scale).unwrap();
+        let after = r.export_panel_rgba(&chart, &dragged, scale).unwrap();
+        let band = |k: usize| region(k, scale);
+        let (a, b) = (
+            bbox(&before, band(N - 1), is_label).unwrap(),
+            bbox(&after, band(N - 1), is_label).unwrap(),
+        );
+        assert_eq!(
+            (b.0 as i64 - a.0 as i64, b.1 as i64 - a.1 as i64),
+            (0, (-30.0 * scale) as i64),
+            "{scale}x: the last label moves by its offset"
+        );
+        assert_eq!(
+            bbox(&before, band(0), is_label),
+            bbox(&after, band(0), is_label)
+        );
+    }
+}

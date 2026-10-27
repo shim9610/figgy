@@ -79,8 +79,8 @@ A radar series is held to these rules (`Config::validate_radar` and
 `data_config::validate_radar_series`, checked when the series are set):
 
 - It is drawn on a polar chart, the parent's or a subplot's own, whose angle
-  axis is categorical (any number of categories; value labels draw for the
-  first 64 until #107 moves them to a storage buffer), with chord segments
+  axis is categorical (any number of categories, each with its value
+  label), with chord segments
   (`PolarInterpolation::Chord`): a polygon's edges are straight.
 - Any number of radar series share one chart (#107).
 - Its colour has channels in `0..=1`, its style passes

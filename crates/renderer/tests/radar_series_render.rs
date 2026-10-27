@@ -892,7 +892,8 @@ fn a_released_radar_document_draws_through_the_reader() {
 /// A radar chart has no spoke cap (#107): 100 categories, past the old 64,
 /// close their outline with every edge drawn at 1x and 2x, the last vertex
 /// picks as its own point and its picked ring draws. The value labels are
-/// written for every vertex; the first 64 draw (#107 R11).
+/// written for every vertex (`value_labels_render` draws 300 bar labels,
+/// #107 R11).
 #[test]
 fn a_hundred_spokes_draw_pick_and_highlight() {
     const N: usize = 100;

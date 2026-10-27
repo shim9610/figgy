@@ -844,7 +844,12 @@ impl PrepareContext<'_> {
                     };
                     match (
                         data,
-                        self.value_label_data(chart_config, cfg, atlas, series.style.display_scale),
+                        self.value_label_data(
+                            chart_config,
+                            cfg,
+                            atlas,
+                            series.style.display_scale,
+                        )?,
                         pipelines.bar_value_label.as_ref(),
                     ) {
                         (Some(data), Some(labels), Some(pipeline)) => {

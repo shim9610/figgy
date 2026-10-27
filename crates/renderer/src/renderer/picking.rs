@@ -2005,7 +2005,8 @@ impl Renderer {
                 cfg,
                 &atlas,
                 request.display_scale,
-            ) else {
+            )?
+            else {
                 continue;
             };
             if labels.count == 0 {

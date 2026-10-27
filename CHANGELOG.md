@@ -665,6 +665,22 @@ additive.
   bound; code that relied on a scale above 8 being clamped now gets that
   scale, or the `GpuResourceLimit` error when it does not fit the device.
 
+- **No value label cap**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R11). The value
+  label uniform held 64 label cells (`ValueLabelParamsGpu::cells`, 1120 B)
+  and the atlas 64 widths, so a bar, box or radar series over more
+  categories labelled its first 64 only. The cells are now a read-only
+  storage array bound at group 1 binding 7 of the value label draw and
+  pick, one per label, written straight into its buffer's mapping at
+  prepare; the atlas keeps its bake's cell widths. Every category is
+  labelled, drawn, picked and dragged: 300 labels in `value_labels_render`.
+  No policy cap replaces it: the label count is the host's to budget.
+  Images of up to 64 labels are byte-identical; a series over more
+  categories now also draws the labels past the 64th. Migration: the public
+  `VALUE_LABEL_CAPACITY` is removed; `ValueLabelParamsGpu` loses `cells` and
+  is 96 B; `ValueLabelData` gains `cells`; a custom value label layout adds
+  binding 7 (read-only storage).
+
 - **No series cap on bar, box and radar groups**
   ([#107](https://github.com/shim9610/figgy/issues/107) R3). A category
   bar group kept its members' value column lanes in a 16-entry table in
@@ -694,10 +710,7 @@ additive.
   overrides. A layer's pick kept its
   line offset members' transforms in a 32-entry array and skipped members
   past it; it now keeps the members' panels from the expansion and the
-  engine asks for each member's transform. The value label uniform still
-  holds 64 cells: a bar, box or radar series over more categories draws in
-  full and labels its first 64 until the labels move to a storage buffer
-  (#107 R11). Migration: none; `VALUE_LABEL_CAPACITY` keeps its value.
+  engine asks for each member's transform. Migration: none.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line

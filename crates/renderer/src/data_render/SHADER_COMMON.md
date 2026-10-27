@@ -1208,7 +1208,7 @@ The fragment is
 after `contour_label_box.wgsl` into the contour label module and the bar
 module.
 
-### 5.17 Value labels (group 1, bindings 4 to 6)
+### 5.17 Value labels (group 1, bindings 4 to 7)
 
 The value label of each category of a `CategoryBars`, `BoxPlot` or `Radar`
 series: `labels.text[i]` (SSOT configuration; the renderer never formats a
@@ -1226,19 +1226,23 @@ style map (an empty one for a radar series), group 3 its category bar data
 
 | Binding | Contents |
 |---|---|
-| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 1120 B) |
+| 4 | `ValueLabelParams` uniform (CPU twin `data_render/value_label.rs::ValueLabelParamsGpu`, 96 B) |
 | 5 | the atlas texture |
 | 6 | its filtering sampler |
+| 7 | `value_label_cells: array<vec4<f32>>`, read-only storage: one cell per label, sized by the series' labels (#107 R11) and written straight into its mapping at prepare (`data_render::value_label_cells`, `create_value_label_data`); the cell widths are the atlas bake's |
 
-Bindings 0 to 3 of group 1 are the module's `Style` and typed pick query.
+Bindings 0 to 3 of group 1 are the module's `Style` and typed pick query;
+the pick's group 1 binds the same uniform and cells at 4 and 7 beside its
+query. Each label loop runs to `shape.y`: nothing in the layout bounds the
+labels.
 
-| Member | Meaning |
+| Member (binding 4, and binding 7's cells) | Meaning |
 |---|---|
 | `atlas` | the atlas geometry (§5.16) |
-| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count, one per category in axis order for the first `VALUE_LABEL_CAPACITY` (64) categories; an axis with more categories labels the first 64 (#107 R11) |
+| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, any number; binding 7 holds that many cells |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
 | `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
-| `cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
+| `value_label_cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
 
 `value_label_place(row)` is the content box of label `row` in chart-area
 render pixels (y down), shared by the draw, the selection box and the

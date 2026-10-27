@@ -1152,7 +1152,8 @@ fn a_2x_export_is_the_1x_layout_doubled() {
 /// (#107): two series over 300 categories, past the old 64, are 600 bars,
 /// past the old 512. Every sampled bar paints at 1x and 2x, the last bar
 /// picks as its own row and its picked highlight outlines it. The value
-/// labels are written for every category; the first 64 draw (#107 R11).
+/// labels are written for every category (`value_labels_render` draws
+/// 300 of them, #107 R11).
 #[test]
 fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     const N: usize = 300;

@@ -132,11 +132,10 @@ pub(in crate::renderer) fn value_label_atlas_input(
     let (_, text) = data_render::value_label_kind(&cfg.render_type, selected)?;
     let axis = value_label_axis(config, &cfg.render_type);
     let color = value_label_color(config, &cfg.render_type, axis);
-    // The atlas holds a cell per category the labels can show, in axis
-    // order: label `i` samples cell `i`.
-    let count = text.len().min(data_render::VALUE_LABEL_CAPACITY);
-    // The SSOT strings themselves are the key, as a contour's are.
-    let texts = text[..count].to_vec();
+    // The atlas holds a cell per string, in axis order: label `i` samples
+    // cell `i`. The SSOT strings themselves are the key, as a contour's
+    // are; any number of them (#107 R11).
+    let texts = text.to_vec();
     data_render::ContourLabelAtlasInput::for_value_labels(config, axis, texts, color)
 }
 
@@ -171,7 +170,7 @@ impl PrepareContext<'_> {
                 self.queue,
                 self.gpu_ledger,
                 self.caps.max_texture_dimension_2d,
-                &baked,
+                baked,
             )?)),
             None => None,
         };
@@ -199,38 +198,49 @@ impl PrepareContext<'_> {
     }
 
     /// Series `cfg`'s value label layer data in the panel `config` at
-    /// `scale` render pixels per logical pixel: its label uniform and group
-    /// 1 over `atlas`.
+    /// `scale` render pixels per logical pixel: its label uniform, its
+    /// label cells (one per label, any number) and group 1 over `atlas`.
     pub(in crate::renderer) fn value_label_data(
         &self,
         config: &Config,
         cfg: &SeriesConfig,
         atlas: &data_render::ValueLabelAtlas,
         scale: f32,
-    ) -> Option<data_render::ValueLabelData> {
+    ) -> Result<Option<data_render::ValueLabelData>> {
         let selected = series_selected(config, cfg);
-        let (kind, text) = data_render::value_label_kind(&cfg.render_type, selected)?;
+        let Some((kind, text)) = data_render::value_label_kind(&cfg.render_type, selected) else {
+            return Ok(None);
+        };
         let axis = value_label_axis(config, &cfg.render_type);
+        let categories = value_label_categories(config, &cfg.render_type);
         let params = data_render::value_label_params(
-            &cfg.render_type,
             kind,
             text,
-            cfg.value_label_offsets().unwrap_or(&[]),
-            value_label_categories(config, &cfg.render_type)
-                .iter()
-                .map(|c| c.id.as_str()),
+            categories,
             atlas,
             axis.label_style.font_size,
             scale,
         );
-        Some(data_render::create_value_label_data(
+        data_render::create_value_label_data(
             self.device,
             self.gpu_ledger,
             self.value_label_bgl,
             atlas,
             self.sampler,
             &params,
-        ))
+            |push| {
+                data_render::value_label_cells(
+                    &cfg.render_type,
+                    text,
+                    cfg.value_label_offsets().unwrap_or(&[]),
+                    categories,
+                    atlas,
+                    scale,
+                    push,
+                )
+            },
+        )
+        .map(Some)
     }
 
     /// The category bar group 3 a radar series' value labels read: its
