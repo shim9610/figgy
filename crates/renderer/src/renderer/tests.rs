@@ -2203,14 +2203,14 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
         (0.0, 1.0),
     );
     let huge = f32::MAX;
+    // `huge * 2.0` overflows to infinity: the automatic labels' spacing
+    // product is checked, the explicit and hidden ones never multiply.
+    let scale = 2.0;
     let automatic = [state_test_labelled_contour(huge, Vec::new())];
     let before = renderer
         .gpu_memory_usage()
         .creations_of(GpuResourceKind::ContourScratch);
-    assert_contour_spacing_error(
-        renderer.export_panel_rgba(&chart, &automatic, f32::INFINITY),
-        true,
-    );
+    assert_contour_spacing_error(renderer.export_panel_rgba(&chart, &automatic, scale), true);
     assert_eq!(
         renderer
             .gpu_memory_usage()
@@ -2227,14 +2227,19 @@ fn export_checks_clamped_automatic_spacing_product_only_for_automatic_labels() {
     };
     let explicit = [state_test_labelled_contour(huge, vec![anchor])];
     renderer
-        .export_panel_rgba(&chart, &explicit, f32::INFINITY)
+        .export_panel_rgba(&chart, &explicit, scale)
         .expect("explicit placement must not multiply spacing by export scale");
 
     let mut hidden = state_test_labelled_contour(huge, Vec::new());
     state_test_contour_labels_mut(&mut hidden).visible = false;
     renderer
-        .export_panel_rgba(&chart, &[hidden], f32::INFINITY)
+        .export_panel_rgba(&chart, &[hidden], scale)
         .expect("hidden labels must not multiply spacing by export scale");
+    // An infinite scale is no longer clamped: it cannot fit the device.
+    assert!(matches!(
+        renderer.export_panel_rgba(&chart, &explicit, f32::INFINITY),
+        Err(FiggyError::GpuResourceLimit { .. })
+    ));
 }
 
 #[test]
