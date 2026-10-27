@@ -1116,3 +1116,117 @@ fn a_2x_export_is_the_1x_layout_doubled() {
         }
     }
 }
+
+/// A box group has no box cap (#107): four series over 150 categories are
+/// 600 boxes, past the old 512 (and the categories past the old 64). Every
+/// sampled box paints at 1x and 2x, the last box picks as its own series
+/// and row, and its picked highlight outlines it.
+#[test]
+fn six_hundred_boxes_draw_pick_and_highlight() {
+    const N: usize = 150;
+    const M: usize = 4;
+    const WIDE: u32 = 3000;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("pos", &col((0..N).map(|k| k as f64).collect()))
+        .unwrap();
+    let stats: Vec<Stats> = vec![[10.0, 20.0, 50.0, 80.0, 90.0, NAN, NAN, NAN]; N];
+    let mut series = Vec::new();
+    for s in 0..M {
+        let id = format!("s{s}");
+        upload_record(&mut r, &format!("{id}.record"), &stats);
+        let mut item = boxes(&id, if s % 2 == 0 { RED } else { BLUE });
+        style(&mut item).show_mean = false;
+        series.push(item);
+    }
+    let mut chart = chart(CategoryBarDirection::Vertical);
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(
+            (0..N)
+                .map(|k| Category::new(format!("c{k}"), format!("{k}")))
+                .collect(),
+        );
+        config.bar_groups.as_mut().unwrap().bar_gap = 0.0;
+    }
+    let region = |chart: &Chart, k: usize, scale: f32| -> Region {
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let x0 = da.x as f32 + w * k as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        (
+            s(x0),
+            s(da.y as f32),
+            s(x0 + w),
+            s((da.y + da.height) as f32),
+        )
+    };
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        for k in [0, 63, 64, 100, N - 1] {
+            let at = region(&chart, k, scale);
+            assert!(bbox(&img, at, is_red).is_some(), "{scale}x red box {k}");
+            assert!(bbox(&img, at, is_blue).is_some(), "{scale}x blue box {k}");
+        }
+    }
+    // The picked highlight outlines the last box and no other.
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: format!("s{}", M - 1),
+            bin_index: N - 1,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 1.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let outlined = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
+    assert_eq!(bbox(&outlined, region(&chart, 0, 1.0), is_magenta), None);
+    chart.config_mut().picked_data = None;
+    // A pick inside the last box's body names its series and row.
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let body = bbox(&img, region(&chart, N - 1, 1.0), is_blue).unwrap();
+    let da = chart.config().data_area().expect("data area");
+    // The rightmost blue box of the slot is the last series'.
+    let x = body.2 - 1;
+    let y = (da.y as f32 + da.height as f32 * 0.7).round() as u32;
+    assert!(is_blue(pixel(&img, x, y)), "{body:?}");
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index, .. })
+                if *series_id == format!("s{}", M - 1) && *bin_index == N - 1
+        ),
+        "{hit:?}"
+    );
+}

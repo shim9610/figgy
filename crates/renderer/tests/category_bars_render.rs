@@ -1148,16 +1148,17 @@ fn a_2x_export_is_the_1x_layout_doubled() {
     }
 }
 
-/// A categorical axis has no category cap (#107): 300 categories, past the
-/// old 64, draw a bar in every slot at 1x and 2x, the last bar picks as its
-/// own row and its picked highlight outlines it. Its value labels are
-/// written for every category; the first 64 draw (#107 R11).
+/// A categorical axis has no category cap and a bar group no bar cap
+/// (#107): two series over 300 categories, past the old 64, are 600 bars,
+/// past the old 512. Every sampled bar paints at 1x and 2x, the last bar
+/// picks as its own row and its picked highlight outlines it. The value
+/// labels are written for every category; the first 64 draw (#107 R11).
 #[test]
-fn three_hundred_categories_draw_pick_and_highlight() {
+fn six_hundred_bars_over_three_hundred_categories_draw_pick_and_highlight() {
     const N: usize = 300;
-    const WIDE: u32 = 1800;
+    const WIDE: u32 = 3000;
     let one: Vec<f64> = (0..N).map(|k| 1.0 + (k % 10) as f64).collect();
-    let two = vec![0.0; N];
+    let two: Vec<f64> = (0..N).map(|k| 1.0 + ((k + 5) % 10) as f64).collect();
     let mut r = renderer(&one, &two);
     let direction = CategoryBarDirection::Vertical;
     let mut chart = chart(CategoryBarMode::Grouped, direction, (0.0, 12.0));
@@ -1174,12 +1175,13 @@ fn three_hundred_categories_draw_pick_and_highlight() {
                 .map(|k| Category::new(format!("c{k}"), format!("{k}")))
                 .collect(),
         );
+        config.bar_groups.as_mut().unwrap().bar_gap = 0.0;
     }
     let mut series = bars("one", RED, direction);
     if let DataRenderType::CategoryBars { labels, .. } = &mut series.render_type {
         labels.text = (0..N).map(|k| format!("{k}")).collect();
     }
-    let series = [series];
+    let series = [series, bars("two", BLUE, direction)];
     // The export-pixel region of category `k`'s slot.
     let region = |chart: &Chart, k: usize, scale: f32| {
         let da = chart.config().data_area().expect("data area");
@@ -1204,6 +1206,11 @@ fn three_hundred_categories_draw_pick_and_highlight() {
                 (top - want).abs() <= 2.0 * scale,
                 "{scale}x category {k}: top {top} want {want}"
             );
+            let blue = bbox(&img, region(&chart, k, scale), is_blue)
+                .unwrap_or_else(|| panic!("{scale}x: no second bar in category {k}"));
+            let (_, top) = value_span(blue, direction);
+            let want = value_px(&chart, direction, two[k], scale);
+            assert!((top - want).abs() <= 2.0 * scale, "{scale}x category {k}");
         }
     }
     // The picked highlight outlines the last bar and no other.
@@ -1219,9 +1226,10 @@ fn three_hundred_categories_draw_pick_and_highlight() {
         point_radius_extra_px: 0.0,
         contour_width_extra_px: 0.0,
     });
-    let outlined = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
-    assert_eq!(bbox(&outlined, region(&chart, 0, 1.0), is_magenta), None);
+    // At 2x, where a bar is wide enough for a solid outline.
+    let outlined = r.export_panel_rgba(&chart, &series, 2.0).unwrap();
+    assert!(bbox(&outlined, region(&chart, N - 1, 2.0), is_magenta).is_some());
+    assert_eq!(bbox(&outlined, region(&chart, 0, 2.0), is_magenta), None);
     chart.config_mut().picked_data = None;
     // A pick inside the last bar names its row.
     r.enable_gpu_picking().unwrap();

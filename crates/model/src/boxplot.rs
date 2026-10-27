@@ -25,7 +25,6 @@ use std::collections::HashSet;
 
 pub const MAX_BOX_CATEGORIES: usize = 64;
 pub const MAX_BOX_SERIES: usize = 16;
-pub const MAX_BOXES: usize = 512;
 pub const MAX_BOX_OUTLIERS: usize = 128;
 pub const MAX_BOXPLOT_OUTLIERS: usize = 4096;
 
@@ -270,8 +269,8 @@ impl BoxPlotChart {
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
-        if n == 0 || n > MAX_BOX_CATEGORIES || m == 0 || m > MAX_BOX_SERIES || n * m > MAX_BOXES {
-            return Err("boxplot limits: 1..64 categories, 1..16 series, at most 512 entries");
+        if n == 0 || n > MAX_BOX_CATEGORIES || m == 0 || m > MAX_BOX_SERIES {
+            return Err("boxplot limits: 1..64 categories and 1..16 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -482,7 +481,8 @@ mod tests {
             (32, 16, true),
             (65, 1, false),
             (1, 17, false),
-            (33, 16, false),
+            // No box cap (#107): 33 x 16 passes the old 512 entries.
+            (33, 16, true),
             (0, 1, false),
         ] {
             let mut c = chart();

@@ -2209,15 +2209,14 @@ impl crate::config::Config {
     /// [`MAX_BAR_SERIES`](crate::categorical::MAX_BAR_SERIES) of them, each
     /// with its own value column, drawn against a categorical axis
     /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
-    /// linear numeric value axis, with at most
-    /// [`MAX_CATEGORY_BARS`](crate::categorical::MAX_CATEGORY_BARS) bars, and
-    /// each series passes [`validate_category_bar_series`] against the
+    /// linear numeric value axis, with no cap on the number of bars (#107),
+    /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
     /// whose own axis is a value axis on y, and a polar chart draws no
     /// category bars. Whether a column holds one value per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+        use crate::categorical::MAX_BAR_SERIES;
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
             groups.validate()?;
@@ -2280,9 +2279,6 @@ impl crate::config::Config {
                     "category bars need a categorical axis: bottom_x for vertical bars, left_y for horizontal ones",
                 );
             };
-            if categories.len().saturating_mul(count) > MAX_CATEGORY_BARS {
-                return Err("a bar group draws at most 512 bars");
-            }
             if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
                 return Err("category bars need a linear numeric value axis");
             }
@@ -2753,15 +2749,15 @@ impl crate::config::Config {
     /// [`CategoryBarMode::Grouped`] (boxes do not stack). At most
     /// [`MAX_BOX_SERIES`](crate::boxplot::MAX_BOX_SERIES) of them, drawn
     /// against a categorical axis (`bottom_x` for vertical boxes, `left_y`
-    /// for horizontal ones) and a linear numeric value axis, with at most
-    /// [`MAX_BOXES`](crate::boxplot::MAX_BOXES) boxes; a layer draws either
+    /// for horizontal ones) and a linear numeric value axis, with no cap on
+    /// the number of boxes (#107); a layer draws either
     /// category bars or box plots. Each series passes
     /// [`validate_box_plot_series`] against the axis' categories.
     /// Horizontal boxes cannot sit on an overlay layer, and a polar chart
     /// draws no box plots. Whether the record holds one row per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+        use crate::boxplot::MAX_BOX_SERIES;
         use crate::layer::LayerRef;
         let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
         if boxes().next().is_none() {
@@ -2823,9 +2819,6 @@ impl crate::config::Config {
                     "box plots need a categorical axis: bottom_x for vertical boxes, left_y for horizontal ones",
                 );
             };
-            if categories.len().saturating_mul(count) > MAX_BOXES {
-                return Err("a box group draws at most 512 boxes");
-            }
             if value_axis.categories.is_some() || value_axis.scale == AxisScale::Logarithmic {
                 return Err("box plots need a linear numeric value axis");
             }
@@ -4524,7 +4517,7 @@ mod contour_level_tests {
 #[cfg(test)]
 mod category_bar_tests {
     use super::*;
-    use crate::categorical::{MAX_BAR_SERIES, MAX_CATEGORY_BARS};
+    use crate::categorical::MAX_BAR_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -4617,9 +4610,11 @@ mod category_bar_tests {
             config.validate_category_bars(&many[..MAX_BAR_SERIES]),
             Ok(())
         );
-        let config = chart(MAX_CATEGORY_BARS / 8 + 1);
+        // No bar cap (#107): 8 series over 65 categories (520 bars, past
+        // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| bars(&format!("s{i}"))).collect();
-        assert!(config.validate_category_bars(&eight).is_err());
+        assert_eq!(chart(65).validate_category_bars(&eight), Ok(()));
+        assert_eq!(chart(600).validate_category_bars(&eight[..1]), Ok(()));
         let mut shared = bars("b");
         shared.y_column = "a.values".into();
         assert!(
@@ -5073,7 +5068,7 @@ mod category_bar_tests {
 #[cfg(test)]
 mod box_plot_tests {
     use super::*;
-    use crate::boxplot::{MAX_BOX_SERIES, MAX_BOXES};
+    use crate::boxplot::MAX_BOX_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -5192,19 +5187,18 @@ mod box_plot_tests {
     }
 
     #[test]
-    fn group_size_and_box_count_are_bounded() {
+    fn group_size_is_bounded_and_box_count_is_not() {
         let config = chart(2);
         let many: Vec<_> = (0..=MAX_BOX_SERIES)
             .map(|i| boxes(&format!("s{i}")))
             .collect();
         assert!(config.validate_box_plots(&many).is_err());
         assert_eq!(config.validate_box_plots(&many[..MAX_BOX_SERIES]), Ok(()));
-        let config = chart(MAX_BOXES / 8 + 1);
+        // No box cap (#107): 8 series over 65 categories (520 boxes, past
+        // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| boxes(&format!("s{i}"))).collect();
-        assert_eq!(
-            config.validate_box_plots(&eight),
-            Err("a box group draws at most 512 boxes")
-        );
+        assert_eq!(chart(65).validate_box_plots(&eight), Ok(()));
+        assert_eq!(chart(600).validate_box_plots(&eight[..1]), Ok(()));
     }
 
     #[test]
