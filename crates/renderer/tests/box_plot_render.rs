@@ -1301,3 +1301,140 @@ fn overrides_on_a_hundred_boxes_all_apply() {
         }
     }
 }
+
+/// A box group has no series cap (#107 R3): 20 series, past the old 16,
+/// stand side by side in every category. The last series (red, its box
+/// 60..80 where the others span 20..50) draws in its own place at the right
+/// of each group at 1x and 2x, picks as its own series and row, and its
+/// picked highlight outlines it.
+#[test]
+fn a_twenty_series_box_group_draws_picks_and_highlights() {
+    const N: usize = 5;
+    const M: usize = 20;
+    const WIDE: u32 = 4000;
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    r.add_column("pos", &col((0..N).map(|k| k as f64).collect()))
+        .unwrap();
+    let low: Vec<Stats> = vec![[10.0, 20.0, 35.0, 50.0, 55.0, NAN, NAN, NAN]; N];
+    let high: Vec<Stats> = vec![[55.0, 60.0, 70.0, 80.0, 90.0, NAN, NAN, NAN]; N];
+    let mut series = Vec::new();
+    for s in 0..M {
+        let id = format!("s{s}");
+        let last = s == M - 1;
+        upload_record(
+            &mut r,
+            &format!("{id}.record"),
+            if last { &high } else { &low },
+        );
+        let mut item = boxes(&id, if last { RED } else { BLUE });
+        style(&mut item).show_mean = false;
+        series.push(item);
+    }
+    let mut chart = chart(CategoryBarDirection::Vertical);
+    {
+        let config = chart.config_mut();
+        config.chart_area = ChartArea(Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        });
+        config.bottom_x.categories = Some(
+            (0..N)
+                .map(|k| Category::new(format!("c{k}"), format!("{k}")))
+                .collect(),
+        );
+        config.bar_groups.as_mut().unwrap().bar_gap = 0.0;
+    }
+    let region = |chart: &Chart, k: usize, scale: f32| -> Region {
+        let da = chart.config().data_area().expect("data area");
+        let w = da.width as f32 / N as f32;
+        let x0 = da.x as f32 + w * k as f32;
+        let s = |v: f32| (v * scale).round() as u32;
+        (
+            s(x0),
+            s(da.y as f32),
+            s(x0 + w),
+            s((da.y + da.height) as f32),
+        )
+    };
+    let direction = CategoryBarDirection::Vertical;
+    for scale in [1.0f32, 2.0] {
+        let img = r.export_panel_rgba(&chart, &series, scale).unwrap();
+        for k in 0..N {
+            let at = region(&chart, k, scale);
+            let red = bbox(&img, at, is_red).unwrap_or_else(|| panic!("{scale}x red box {k}"));
+            let (start, end) = value_span(red, direction);
+            let (want_start, want_end) = (
+                value_px(&chart, direction, 60.0, scale),
+                value_px(&chart, direction, 80.0, scale),
+            );
+            assert!(
+                (start - want_start).abs() <= 2.0 * scale && (end - want_end).abs() <= 2.0 * scale,
+                "{scale}x box {k}: {start}..{end} want {want_start}..{want_end}"
+            );
+            // The group covers 0.8 of the slot, centred; the last box ends
+            // at its right edge, right of every blue box.
+            let width = (at.2 - at.0) as f32;
+            let right = at.0 as f32 + width * 0.9;
+            let (_, high) = across_span(red, direction);
+            assert!(
+                (high as f32 + 1.0 - right).abs() <= 2.0 * scale,
+                "{scale}x box {k}: right edge {high} want {right}"
+            );
+            let blue = bbox(&img, at, is_blue).expect("the blue boxes");
+            assert!(across_span(blue, direction).1 < across_span(red, direction).0);
+        }
+    }
+    chart.config_mut().picked_data = Some(DataSelectionsConfig {
+        visible: true,
+        refs: vec![PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: format!("s{}", M - 1),
+            bin_index: N - 1,
+        }],
+        highlight_color: MAGENTA,
+        outline_width_px: 1.0,
+        point_radius_extra_px: 0.0,
+        contour_width_extra_px: 0.0,
+    });
+    let outlined = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    assert!(bbox(&outlined, region(&chart, N - 1, 1.0), is_magenta).is_some());
+    assert_eq!(bbox(&outlined, region(&chart, 0, 1.0), is_magenta), None);
+    chart.config_mut().picked_data = None;
+    r.enable_gpu_picking().unwrap();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let body = bbox(&img, region(&chart, N - 1, 1.0), is_red).unwrap();
+    let x = (body.0 + body.2) / 2;
+    let y = value_px(&chart, direction, 65.0, 1.0).round() as u32;
+    assert!(is_red(pixel(&img, x, y)), "{body:?}");
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [x as f32 + 0.5, y as f32 + 0.5],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDE,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin { series_id, bin_index, .. })
+                if *series_id == format!("s{}", M - 1) && *bin_index == N - 1
+        ),
+        "{hit:?}"
+    );
+}

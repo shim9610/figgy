@@ -990,7 +990,7 @@ spliced after `material.wgsl` into the radial draw module and the radial
 pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
 block was taken from with a one-line comment.
 
-### 5.13 Category bars (group 3, bindings 8 and 9)
+### 5.13 Category bars (group 3, bindings 8 to 10)
 
 The bars of a `DataRenderType::CategoryBars` series: one instance per
 category (a row of the series' columns), six vertices each
@@ -1001,22 +1001,29 @@ bar module (`bar.rs::BAR_SHADER`) before `bar_columnar.wgsl` and after
 histogram and the category bar entries and a category bar resolves its
 overrides through the histogram's `resolve_bar_style` over the same group 2
 bar style table (bindings 5–7), with the row as the bin index. A histogram
-pipeline never reads group 3 bindings 8 and 9.
+pipeline never reads group 3 bindings 8 to 10.
 
 ```wgsl
-struct CategoryBarParams { values: array<vec4<u32>, 4>, positions, count,
-    member, members, mode, horizontal: u32, gap_px, group_width,
-    corner_radius_px, emphasis, scale: f32, seed: u32 };   // 112 bytes
+struct CategoryBarParams { positions, count, member, members, mode,
+    horizontal: u32, gap_px, group_width, corner_radius_px, emphasis,
+    scale: f32, seed: u32 };   // 48 bytes
 @group(3) @binding(8) var<storage, read> category_pool: array<f32>;
 @group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
+@group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
 ```
+
+`category_lanes` is the series' lane table, a storage array sized by what
+it holds (#107 R3): for a category bar series the f32 lane bases of the
+group's value columns in group order, entry `k` member `k`'s, `members`
+entries; a box plot (§5.15) and a radar series' labels (§5.17) keep their
+own lanes there. No count in the layout bounds the group: a group of any
+number of series is one storage array of that many `u32`s.
 
 | Member | Meaning |
 |---|---|
-| `values` | the f32 lane bases of the group's value columns in group order; member `k` is `values[k / 4][k % 4]`, at most 16 (`MAX_BAR_SERIES`) |
 | `positions` | the lane base of the series' category position column (0..n-1) |
 | `count` | bars of the series: the category count |
-| `member`, `members` | the series' place in its group, the group's size |
+| `member`, `members` | the series' place in its group, the group's size: the entries of `category_lanes` |
 | `mode` | `CATEGORY_BAR_MODE_GROUPED` (0), `_STACKED` (1), `_PERCENT` (2) |
 | `horizontal` | 1 when categories run along y |
 | `gap_px`, `group_width` | `Config::bar_groups`' gap in render pixels and the share of a slot the group covers |
@@ -1025,7 +1032,10 @@ struct CategoryBarParams { values: array<vec4<u32>, 4>, positions, count,
 | `seed` | the series salt; the grain seed of a bar is `(seed ^ row · 2654435761) % 4096` |
 
 Rust twin: `data_render::CategoryBarParamsGpu` (`bar.rs`), written by
-`renderer/series.rs::category_bar_params`;
+`renderer/series.rs::category_bar_params`; the lane table is written by
+`renderer/series.rs::category_bar_lanes` straight into the mapping of its
+buffer at creation (`create_category_bar_data_bind_group`), nothing staged
+on the CPU;
 `mirrored_struct_layouts_match_their_rust_twins` holds the bar module's
 `CategoryBarParams`, `BarStyleSlot` and `BarStyleOverride` (with the
 category bar lanes `material` and `finish`, read under
@@ -1040,7 +1050,7 @@ the selection and the pick all call it:
   share of the category slot (position ± 0.5).
 - Stacked: positive and negative values stack away from zero separately,
   each from the sum of the earlier members' values of the same sign at the
-  same row, read by their lanes in a fixed loop over `members`.
+  same row, read by their lanes in a loop over `members`.
 - Percent: every value is divided by the row's total of positive values,
   normalized by the largest value first so the total stays finite; the
   top of a stack is exactly 100. A row without a positive total, or a
@@ -1060,6 +1070,13 @@ nearest bar within the pick distance by the rounded rect's distance, as a
 `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the row; it reads
 the geometry from `CategoryBarParams` and the overrides' gap and width
 (`category_geometry_style`), never a `Style`.
+
+Cost: a stacked or percent bar reads every member's value at its row (the
+percent one three times), so one draw, pick or label pass over a group of
+`m` series and `n` categories reads `O(m² · n)` pool pairs per vertex set;
+a grouped bar reads its own value only. The renderer does not cap it; the
+host budgets it (`category_bars_render`'s
+`a_forty_series_group_over_fifty_categories_draws_and_picks` measures it).
 
 Nothing per bar is stored anywhere: the CPU keeps the pool lane bases and
 the group layout. The value axis fit reads only the value columns' own
@@ -1083,7 +1100,7 @@ The box plot entries (§5.15) read them; the convention is also held by
 the pool test
 `a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset`.
 
-### 5.15 Box plots (group 3, bindings 8 and 9)
+### 5.15 Box plots (group 3, bindings 8 to 10)
 
 The boxes of a `DataRenderType::BoxPlot` series: one instance per category
 (a row of the series' record, §5.14), drawn by the input fragment
@@ -1091,16 +1108,21 @@ The boxes of a `DataRenderType::BoxPlot` series: one instance per category
 after `category_bars.wgsl`, `ramp.wgsl`, `sketch_noise.wgsl`, `marker.wgsl`
 and `errorbar_segment.wgsl` and before `bar_columnar.wgsl`. The entries use
 the category bar pipeline layout and group 3 unchanged: the pool at binding
-8 and a `CategoryBarParams` (§5.13) at binding 9, whose lanes a box plot
-reads as follows (CPU writer: `renderer/series.rs::box_plot_params`).
+8, a `CategoryBarParams` (§5.13) at binding 9 and the lane table at binding
+10, which a box plot reads as follows (CPU writer:
+`renderer/series.rs::box_plot_params`; `BOX_PLOT_LANES`, 13 entries, the
+record schema's fields and the outlier column, not a count of data).
 
-| Member | Meaning for a box plot |
+| Entry of `category_lanes` | Meaning for a box plot |
 |---|---|
-| `values[0..9]` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
-| `values[9]`, `values[10]` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
-| `values[11]`, `values[12]` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
+| `0..9` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
+| `9`, `10` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
+| `11`, `12` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
+
+| Member of `CategoryBarParams` | Meaning for a box plot |
+|---|---|
 | `positions`, `count` | the category position column's lane base and the category count |
-| `member`, `members` | the series' place among the layer's box plot series and their count |
+| `member`, `members` | the series' place among the layer's box plot series and their count, any number (a box reads only its own record) |
 | `mode` | `CATEGORY_BAR_MODE_GROUPED`: boxes stand side by side |
 | `horizontal`, `gap_px`, `group_width` | as §5.13, from `Config::bar_groups`; the gap is in render pixels (the display config is scaled) |
 | `corner_radius_px`, `emphasis`, `scale`, `seed` | as §5.13 |
@@ -1200,7 +1222,7 @@ The pipelines use the category bar layout with group 1 replaced: group 0
 the transform, group 1 the series' value label group, group 2 its bar
 style map (an empty one for a radar series), group 3 its category bar data
 (§5.13; for a radar series `positions` is its category column,
-`values[0][0]` its value column and `count` its rows).
+`category_lanes[0]` its value column and `count` its rows).
 
 | Binding | Contents |
 |---|---|

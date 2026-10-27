@@ -252,17 +252,23 @@ impl PrepareContext<'_> {
             })
         };
         let count = u32::try_from(x.len_values.min(y.len_values)).unwrap_or(u32::MAX);
-        let params = data_render::radar_label_params(lane(&x)?, lane(&y)?, count, scale);
+        let params = data_render::radar_label_params(lane(&x)?, count, scale);
+        let values = lane(&y)?;
         let style_map =
             data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[]);
-        Ok(data_render::create_category_bar_data_bind_group(
+        data_render::create_category_bar_data_bind_group(
             self.device,
             self.gpu_ledger,
             self.category_bar_data_bgl,
             column_buffer,
             &params,
+            1,
+            |push| {
+                push(values);
+                Ok(())
+            },
             style_map,
-        ))
+        )
     }
 }
 

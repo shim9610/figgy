@@ -13,7 +13,8 @@
 // - a radar vertex's label sits outside the vertex along its spoke: the
 //   vertex is the pair `(category, value)` of the series' columns through
 //   the polar projection, read through the category bar group 3
-//   (`positions` the category column, `values[0][0]` the value column).
+//   (`positions` the category column, `category_lanes[0]` the value
+//   column).
 //
 // The CPU bakes the strings (SSOT configuration, `labels.text`) into the
 // atlas with the one text stack and writes each label's content width,

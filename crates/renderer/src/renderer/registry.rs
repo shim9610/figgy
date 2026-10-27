@@ -1578,7 +1578,7 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
 /// than drawn on the wrong axes; an arc interpolation needs a linearly
 /// interpolated line.
 /// The radar rules of a chart, at registration and at export: a polar chart
-/// with a categorical angle axis, chord edges, at most 16 series per layer
+/// with a categorical angle axis, chord edges, any number of series (#107)
 /// and every series' style and labels (`Config::validate_radar`).
 pub(super) fn validate_radar_rules(config: &Config, series: &[SeriesConfig]) -> Result<()> {
     config

@@ -2200,8 +2200,7 @@ impl crate::config::Config {
     ///
     /// Every `bar_groups` (the chart's and each subplot's) passes
     /// [`BarGroups::validate`]. The [`DataRenderType::CategoryBars`] series
-    /// of one layer are its bar group: at most
-    /// [`MAX_BAR_SERIES`](crate::categorical::MAX_BAR_SERIES) of them, each
+    /// of one layer are its bar group: any number of them (#107), each
     /// with its own value column, drawn against a categorical axis
     /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) and a
     /// linear numeric value axis, with no cap on the number of bars (#107),
@@ -2211,7 +2210,6 @@ impl crate::config::Config {
     /// category bars. Whether a column holds one value per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::categorical::MAX_BAR_SERIES;
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
             groups.validate()?;
@@ -2234,12 +2232,8 @@ impl crate::config::Config {
         }
         for layer in self.panel_layers() {
             let members = || bars().filter(|s| self.layer_of_series(&s.series_id) == layer);
-            let count = members().count();
-            if count == 0 {
+            if members().next().is_none() {
                 continue;
-            }
-            if count > MAX_BAR_SERIES {
-                return Err("a bar group holds at most 16 category bar series");
             }
             let groups = self.bar_groups_of(layer);
             let horizontal = groups.direction == CategoryBarDirection::Horizontal;
@@ -2741,9 +2735,8 @@ impl crate::config::Config {
     /// The [`DataRenderType::BoxPlot`] series of one layer are its box
     /// group: they stand side by side in series order, laid out by the
     /// layer's `bar_groups` ([`crate::config::Config::bar_groups_of`]), whose mode must be
-    /// [`CategoryBarMode::Grouped`] (boxes do not stack). At most
-    /// [`MAX_BOX_SERIES`](crate::boxplot::MAX_BOX_SERIES) of them, drawn
-    /// against a categorical axis (`bottom_x` for vertical boxes, `left_y`
+    /// [`CategoryBarMode::Grouped`] (boxes do not stack). Any number of
+    /// them (#107), drawn against a categorical axis (`bottom_x` for vertical boxes, `left_y`
     /// for horizontal ones) and a linear numeric value axis, with no cap on
     /// the number of boxes (#107); a layer draws either
     /// category bars or box plots. Each series passes
@@ -2752,7 +2745,6 @@ impl crate::config::Config {
     /// draws no box plots. Whether the record holds one row per category is
     /// data: the renderer checks it against the pool when it prepares.
     pub fn validate_box_plots(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
-        use crate::boxplot::MAX_BOX_SERIES;
         use crate::layer::LayerRef;
         let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
         if boxes().next().is_none() {
@@ -2763,12 +2755,8 @@ impl crate::config::Config {
         }
         for layer in self.panel_layers() {
             let members = || boxes().filter(|s| self.layer_of_series(&s.series_id) == layer);
-            let count = members().count();
-            if count == 0 {
+            if members().next().is_none() {
                 continue;
-            }
-            if count > MAX_BOX_SERIES {
-                return Err("a box group holds at most 16 box plot series");
             }
             if series.iter().any(|s| {
                 s.render_type.category_bars().is_some()
@@ -3183,23 +3171,20 @@ impl crate::config::Config {
     /// parent's or a subplot's own) whose angle axis (`bottom_x`) is
     /// categorical, with chord segments
     /// ([`PolarInterpolation::Chord`](crate::polar::PolarInterpolation)):
-    /// a polygon's edges are straight. At most
-    /// [`MAX_RADAR_SERIES`](crate::radar::MAX_RADAR_SERIES) radar series
-    /// share one chart, and each passes [`validate_radar_series`] against
+    /// a polygon's edges are straight. Any number of radar series share
+    /// one chart (#107), and each passes [`validate_radar_series`] against
     /// the angle axis' categories. Whether a column holds one value per
     /// category is data: the renderer checks it against the pool when it
     /// prepares.
     pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         use crate::layer::LayerRef;
-        use crate::radar::MAX_RADAR_SERIES;
         let radars = || series.iter().filter(|s| s.render_type.radar().is_some());
         if radars().next().is_none() {
             return Ok(());
         }
         for layer in self.panel_layers() {
             let members = || radars().filter(|s| self.layer_of_series(&s.series_id) == layer);
-            let count = members().count();
-            if count == 0 {
+            if members().next().is_none() {
                 continue;
             }
             let subplot = match layer {
@@ -3212,9 +3197,6 @@ impl crate::config::Config {
             let Some(polar) = &chart.polar else {
                 return Err("radar series are drawn on a polar chart (Config.polar)");
             };
-            if count > MAX_RADAR_SERIES {
-                return Err("a radar chart draws at most 16 radar series");
-            }
             let Some(categories) = chart.bottom_x.categories.as_deref() else {
                 return Err(
                     "radar series need a categorical angle axis: bottom_x.categories on the \
@@ -4512,7 +4494,6 @@ mod contour_level_tests {
 #[cfg(test)]
 mod category_bar_tests {
     use super::*;
-    use crate::categorical::MAX_BAR_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -4597,14 +4578,10 @@ mod category_bar_tests {
     #[test]
     fn group_limits_and_columns_are_checked() {
         let config = chart(4);
-        let many: Vec<_> = (0..=MAX_BAR_SERIES)
-            .map(|i| bars(&format!("s{i}")))
-            .collect();
-        assert!(config.validate_category_bars(&many).is_err());
-        assert_eq!(
-            config.validate_category_bars(&many[..MAX_BAR_SERIES]),
-            Ok(())
-        );
+        // No series cap (#107 R3): 40 series, past the old 16, are one
+        // group.
+        let many: Vec<_> = (0..40).map(|i| bars(&format!("s{i}"))).collect();
+        assert_eq!(config.validate_category_bars(&many), Ok(()));
         // No bar cap (#107): 8 series over 65 categories (520 bars, past
         // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| bars(&format!("s{i}"))).collect();
@@ -5063,7 +5040,6 @@ mod category_bar_tests {
 #[cfg(test)]
 mod box_plot_tests {
     use super::*;
-    use crate::boxplot::MAX_BOX_SERIES;
     use crate::config::Config;
     use crate::layer::{OverlayLayer, Subplot};
 
@@ -5182,13 +5158,11 @@ mod box_plot_tests {
     }
 
     #[test]
-    fn group_size_is_bounded_and_box_count_is_not() {
+    fn neither_group_size_nor_box_count_is_bounded() {
         let config = chart(2);
-        let many: Vec<_> = (0..=MAX_BOX_SERIES)
-            .map(|i| boxes(&format!("s{i}")))
-            .collect();
-        assert!(config.validate_box_plots(&many).is_err());
-        assert_eq!(config.validate_box_plots(&many[..MAX_BOX_SERIES]), Ok(()));
+        // No series cap (#107 R3): 20 series, past the old 16.
+        let many: Vec<_> = (0..20).map(|i| boxes(&format!("s{i}"))).collect();
+        assert_eq!(config.validate_box_plots(&many), Ok(()));
         // No box cap (#107): 8 series over 65 categories (520 boxes, past
         // the old 512) and 1 series over 600 categories are accepted.
         let eight: Vec<_> = (0..8).map(|i| boxes(&format!("s{i}"))).collect();
@@ -5398,7 +5372,6 @@ mod radar_tests {
     use crate::config::Config;
     use crate::layer::Subplot;
     use crate::polar::{PolarInterpolation, PolarOptions};
-    use crate::radar::MAX_RADAR_SERIES;
 
     fn categories(n: usize) -> Vec<Category> {
         (0..n)
@@ -5481,13 +5454,11 @@ mod radar_tests {
     }
 
     #[test]
-    fn a_chart_draws_at_most_sixteen_radar_series() {
+    fn a_chart_draws_any_number_of_radar_series() {
+        // No series cap (#107 R3): 20 series, past the old 16.
         let config = polar_config(4);
-        let many: Vec<_> = (0..=MAX_RADAR_SERIES)
-            .map(|i| radar(&format!("s{i}")))
-            .collect();
-        assert!(config.validate_radar(&many).is_err());
-        assert_eq!(config.validate_radar(&many[..MAX_RADAR_SERIES]), Ok(()));
+        let many: Vec<_> = (0..20).map(|i| radar(&format!("s{i}"))).collect();
+        assert_eq!(config.validate_radar(&many), Ok(()));
     }
 
     #[test]

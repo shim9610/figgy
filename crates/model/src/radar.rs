@@ -22,8 +22,6 @@ pub use crate::data_config::{RadarLabels, RadarMarker, RadarSeriesStyle};
 
 /// The fewest categories (spokes) a radar chart draws.
 pub const MIN_RADAR_CATEGORIES: usize = 3;
-/// The most series a radar chart draws.
-pub const MAX_RADAR_SERIES: usize = 16;
 
 /// One vertex of one series (`category_id` set) or a whole series polygon
 /// (`category_id` absent): what hover, selection and hit testing address.
@@ -311,8 +309,8 @@ impl RadarChart {
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
-        if n < MIN_RADAR_CATEGORIES || m == 0 || m > MAX_RADAR_SERIES {
-            return Err("radar limits: at least 3 categories and 1..16 series");
+        if n < MIN_RADAR_CATEGORIES || m == 0 {
+            return Err("radar limits: at least 3 categories and 1 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -423,12 +421,15 @@ mod tests {
         }
         c.categories.truncate(64);
         c.series[0].values.truncate(64);
-        c.series = (0..17)
-            .map(|i| RadarSeries::new(i.to_string(), "S", vec![1.0; 64], Color::WHITE))
-            .collect();
-        assert!(c.validate().is_err());
-        c.series.pop();
-        assert!(c.validate().is_ok());
+        // No series cap (#107 R3): 17 and 20 series are accepted.
+        for m in [17, 20] {
+            c.series = (0..m)
+                .map(|i| RadarSeries::new(i.to_string(), "S", vec![1.0; 64], Color::WHITE))
+                .collect();
+            assert!(c.validate().is_ok(), "{m} series");
+        }
+        c.series.clear();
+        assert!(c.validate().is_err(), "no series");
     }
     #[test]
     fn non_finite_values_are_allowed_as_gaps() {

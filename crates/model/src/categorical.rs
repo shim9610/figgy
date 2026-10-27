@@ -17,8 +17,6 @@ use crate::Color;
 use crate::Material;
 use std::collections::HashSet;
 
-pub const MAX_BAR_SERIES: usize = 16;
-
 /// The category type lives with the axis options now
 /// ([`crate::config::AxisOptions::categories`]); this path keeps working.
 pub use crate::config::Category;
@@ -218,8 +216,8 @@ impl CategoricalChart {
         self.resolved_title().validate()?;
         let n = self.categories.len();
         let m = self.series.len();
-        if n == 0 || m == 0 || m > MAX_BAR_SERIES {
-            return Err("categorical limits: at least 1 category and 1..16 series");
+        if n == 0 || m == 0 {
+            return Err("categorical limits: at least 1 category and 1 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -421,10 +419,13 @@ mod tests {
             (300, 1),
             (33, 16),
             (64, 9),
+            // No series cap (#107 R3): 17 and 40 series are accepted.
+            (1, 17),
+            (50, 40),
         ] {
             assert!(make(n, m).validate().is_ok(), "{n} categories / {m} series");
         }
-        for (n, m) in [(1, 17), (0, 1), (1, 0)] {
+        for (n, m) in [(0, 1), (1, 0)] {
             assert!(
                 make(n, m).validate().is_err(),
                 "accepted {n} categories / {m} series"

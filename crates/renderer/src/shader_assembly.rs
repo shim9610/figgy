@@ -602,7 +602,6 @@ mod tests {
                 "bar",
                 "CategoryBarParams",
                 CategoryBarParamsGpu {
-                    values,
                     positions,
                     count,
                     member,

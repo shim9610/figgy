@@ -8,25 +8,23 @@
 // vector shader binds it, and the bar's rect is built here on every draw from
 // the category position, the group layout, the direction, the value and, for
 // a stack, the values of the earlier series of the group at the same row,
-// read by their pool lanes in a fixed loop. Nothing per bar is stored
+// read by their pool lanes from the series' lane table (`category_lanes`,
+// sized by the group) in a loop over the members. Nothing per bar is stored
 // anywhere else. The draw, the pick and the selection all build the rect
 // through `category_bar`.
 
 /// The group a series' bars belong to and how they are laid out.
 ///
 /// CPU twin: `data_render/bar.rs::CategoryBarParamsGpu`
-/// (`#[repr(C)]`, 112 B).
+/// (`#[repr(C)]`, 48 B).
 struct CategoryBarParams {
-    /// f32 lane bases of the group's value columns, in group order: member
-    /// `k` is `values[k / 4][k % 4]`.
-    values: array<vec4<u32>, 4>,
     /// f32 lane base of this series' category position column.
     positions: u32,
     /// Bars of this series: one per category.
     count: u32,
     /// This series' place in its group.
     member: u32,
-    /// Series in the group, at most 16.
+    /// Series in the group: the entries of `category_lanes`, any number.
     members: u32,
     /// `CATEGORY_BAR_MODE_*`.
     mode: u32,
@@ -59,6 +57,11 @@ const CATEGORY_EDGE_BOTTOM: u32 = 8u;
 
 @group(3) @binding(8) var<storage, read> category_pool: array<f32>;
 @group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
+/// The series' lane table, sized by what it holds (SHADER_COMMON.md §5.13):
+/// a category bar series' group value column lane bases in group order
+/// (entry `k` member `k`'s), a box plot's record and outlier lanes (§5.15),
+/// a radar series' value column (§5.17).
+@group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
 
 /// The `(hi, lo)` pair of row `row` in the column at lane `base`.
 fn category_pair(base: u32, row: u32) -> vec2<f32> {
@@ -67,7 +70,7 @@ fn category_pair(base: u32, row: u32) -> vec2<f32> {
 }
 
 fn category_value(member: u32, row: u32) -> vec2<f32> {
-    return category_pair(category_params.values[member / 4u][member % 4u], row);
+    return category_pair(category_lanes[member], row);
 }
 
 fn category_finite(v: vec2<f32>) -> bool {

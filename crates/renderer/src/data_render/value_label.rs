@@ -455,16 +455,11 @@ pub(crate) fn issue_value_labels(
 }
 
 /// The category bar group 3 params of a radar series' value labels: the
-/// category column as `positions` and the value column as `values[0][0]`,
-/// one label per row, a group of one. The radar entries read nothing else.
-pub(crate) fn radar_label_params(
-    positions: u32,
-    values: u32,
-    count: u32,
-    scale: f32,
-) -> CategoryBarParamsGpu {
+/// category column as `positions`, one label per row, a group of one; the
+/// value column is the lane table's one entry. The radar entries read
+/// nothing else.
+pub(crate) fn radar_label_params(positions: u32, count: u32, scale: f32) -> CategoryBarParamsGpu {
     let mut params: CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
-    params.values[0][0] = values;
     params.positions = positions;
     params.count = count;
     params.members = 1;
