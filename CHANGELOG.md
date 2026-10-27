@@ -712,6 +712,23 @@ additive.
   past it; it now keeps the members' panels from the expansion and the
   engine asks for each member's transform. Migration: none.
 
+- **No ragged value cap**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R6). A ragged
+  column's offsets were `(hi, lo)` f32 pairs read as `u32(hi + lo)`, exact
+  only to 2^24, so a ragged column (a box plot's outliers) held at most
+  2^24 values. The pool now stores the offsets as `u32` index lanes: the
+  integer `hi + lo` of the pair the source writes, summed in f64, as `u32`
+  bits in the pair's first lane and 0 in the second, read with
+  `bitcast<u32>` (SHADER_COMMON §5.14). Every offset up to `u32::MAX` is
+  exact: the encoding is tested on the CPU write and a GPU read-back at
+  2^24 - 1, 2^24, 2^24 + 1, `u32::MAX - 1` and `u32::MAX`, where the
+  former read loses 2^24 + 1. The only bound left is the `u32` index space
+  (`u32::MAX` values); box plot images are byte-identical. An offset is the
+  integer its source writes, so offsets past 2^24 come from a source that
+  writes the `(hi, lo)` split, as `Config::from_boxplot`'s uploads and the
+  WASM `register_ragged` do; `Column<f64>` writes `(value as f32, 0)`,
+  exact to 2^24. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
+
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line
   path (dashes, picking and the picked ring included) and its arrowheads
@@ -1102,8 +1119,8 @@ additive.
     fields per row checked by name against a static `RecordSchema` such as
     `BOX_PLOT_RECORD`, at most `MAX_RECORD_FIELDS` = 12) and a ragged column
     (`RaggedSource { values, offsets }`, group `g` being
-    `values[offsets[g]..offsets[g + 1]]`, at most `MAX_RAGGED_VALUES` = 2^24
-    values). `ColumnPool::upsert_record` / `upsert_ragged` upload the members
+    `values[offsets[g]..offsets[g + 1]]`, its offsets stored as `u32` index
+    lanes). `ColumnPool::upsert_record` / `upsert_ragged` upload the members
     as one batch transaction (one region, one staging buffer) and measure
     `RecordStats` (per field: presence, finite range, finite and NaN counts)
     and `RaggedStats` (the values' range and counts, the offsets'
