@@ -380,8 +380,8 @@ impl ColumnSource for Column<f64> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        // The exact (hi, lo) split, written straight into the destination:
-        // an f64 column keeps its precision on the GPU (#107).
+        // The (hi, lo) split, written straight into the destination: an f64
+        // column keeps about 48 bits on the GPU, not f32's 24 (#107).
         for (index, &value) in self.data.iter().enumerate() {
             let (hi, lo) = split_f64_to_f32_pair(value);
             dst.write_pair(index, hi, lo);
@@ -397,7 +397,7 @@ impl ColumnSource for Column<f64> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
-        // The exact split for streamed windows too (#107, the maintainer's
+        // The same split for streamed windows (#107, the maintainer's
         // exception to rule 8 for upload precision).
         for (index, &value) in self.data[range].iter().enumerate() {
             let (hi, lo) = split_f64_to_f32_pair(value);
@@ -636,8 +636,8 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        // The exact (hi, lo) split, written straight into the destination;
-        // a missing value is NaN (#107).
+        // The (hi, lo) split, written straight into the destination (about
+        // 48 bits); a missing value is NaN (#107).
         for (index, value) in self.data.iter().enumerate() {
             let value = value.unwrap_or(f64::NAN);
             let (hi, lo) = split_f64_to_f32_pair(value);
@@ -654,7 +654,7 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
-        // The exact split for streamed windows too (#107, the maintainer's
+        // The same split for streamed windows (#107, the maintainer's
         // exception to rule 8 for upload precision); a missing value is NaN.
         for (index, value) in self.data[range].iter().enumerate() {
             let (hi, lo) = split_f64_to_f32_pair(value.unwrap_or(f64::NAN));
