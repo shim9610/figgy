@@ -1850,11 +1850,6 @@ impl BarGroups {
     }
 }
 
-/// The most series one [`LineOffsets`] group may hold. Each member is drawn
-/// as an internal panel of its own (`Config::expand`), with the textures of
-/// an overlay layer, so a document with more traces uses two charts.
-pub const MAX_OFFSET_LINES: usize = 32;
-
 /// Offset spectra (a ridgeline or waterfall of curves): line series drawn
 /// shifted from each other so their traces separate instead of overlapping,
 /// `Config::line_offsets`.
@@ -1883,8 +1878,11 @@ pub const MAX_OFFSET_LINES: usize = 32;
 pub struct LineOffsets {
     /// The member series ids in stacking order: member `k` is shifted by
     /// `k` steps. Line kinds only (`Line`, `ScatterLine` and the
-    /// `LineScatterErrorbar*` kinds), each id once, at most
-    /// [`MAX_OFFSET_LINES`].
+    /// `LineScatterErrorbar*` kinds), each id once, with no cap on the
+    /// number of members (#107): each is drawn as an internal panel of its
+    /// own (`Config::expand`) with the textures of an overlay layer, and a
+    /// member whose textures cannot be allocated fails with the GPU
+    /// allocation error.
     pub series: Vec<SeriesRef>,
     /// The step along y between consecutive members: data units, or decades
     /// on a logarithmic axis.
@@ -1913,13 +1911,10 @@ impl Default for LineOffsets {
 
 impl LineOffsets {
     /// The rules that do not depend on the series list: finite steps, each
-    /// member id once and non-empty, at most [`MAX_OFFSET_LINES`] members.
+    /// member id once and non-empty, any number of members.
     pub fn validate(&self) -> Result<(), &'static str> {
         if !self.step_y.is_finite() || !self.step_x.is_finite() {
             return Err("line offset steps must be finite");
-        }
-        if self.series.len() > MAX_OFFSET_LINES {
-            return Err("a line offset group holds at most 32 series");
         }
         for (index, id) in self.series.iter().enumerate() {
             if id.is_empty() || self.series[..index].contains(id) {
@@ -6187,14 +6182,15 @@ mod step_selection_tests {
         let mut nan = group(&["a"]);
         nan.step_y = f64::INFINITY;
         assert!(rejected(nan, |_| {}), "non-finite");
-        let many: Vec<String> = (0..=MAX_OFFSET_LINES).map(|i| format!("s{i}")).collect();
-        assert!(
+        // No member cap (#107): 40 members, past the old 32, are accepted.
+        let many: Vec<String> = (0..40).map(|i| format!("s{i}")).collect();
+        assert_eq!(
             LineOffsets {
                 series: many,
                 ..Default::default()
             }
-            .validate()
-            .is_err()
+            .validate(),
+            Ok(())
         );
         assert!(
             rejected(group(&["a"]), |c| {

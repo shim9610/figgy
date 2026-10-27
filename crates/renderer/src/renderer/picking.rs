@@ -529,22 +529,25 @@ pub(super) struct PickChartPlan {
 ///
 /// The line offset members the layer scales are drawn by panels of their
 /// own (`Config::expand`). They follow the layer's other series, in stacking
-/// order, and `member_transforms` holds the transform of each one's panel:
-/// the pick tests each member where its panel draws it, from the top of the
-/// stack first, and the layer's own panel last
-/// (`GpuPickEngine::pick_with_arcs`).
+/// order, and `member_panels` holds each one's panel, the expansion's own
+/// panels kept in place, however many members there are (#107): the pick
+/// tests each member where its panel draws it, from the top of the stack
+/// first, and the layer's own panel last (`GpuPickEngine::pick_with_arcs`).
 pub(super) struct LayerPickInputs {
     pub(super) panel: Config,
     pub(super) series: Vec<SeriesConfig>,
-    pub(super) member_transforms:
-        [data_render::ScatterTransform; crate::data_config::MAX_OFFSET_LINES],
-    pub(super) member_count: usize,
+    pub(super) member_panels: Vec<Config>,
 }
 
 impl LayerPickInputs {
-    /// The transforms of the members at the end of `series`.
-    pub(super) fn members(&self) -> &[data_render::ScatterTransform] {
-        &self.member_transforms[..self.member_count]
+    /// The number of members at the end of `series`.
+    pub(super) fn member_count(&self) -> usize {
+        self.member_panels.len()
+    }
+
+    /// The transform of member `k`'s panel.
+    pub(super) fn member_transform(&self, k: usize) -> data_render::ScatterTransform {
+        data_render::scatter_transform_from_config(&self.member_panels[k])
     }
 }
 
@@ -552,20 +555,18 @@ pub(super) fn active_layer_pick_inputs(
     config: &Config,
     series: &[SeriesConfig],
 ) -> std::result::Result<LayerPickInputs, crate::gpu_pick::GpuPickError> {
-    let member_transforms = [bytemuck::Zeroable::zeroed(); crate::data_config::MAX_OFFSET_LINES];
     if !is_layered(config) {
         return Ok(LayerPickInputs {
             panel: config.clone(),
             series: series.to_vec(),
-            member_transforms,
-            member_count: 0,
+            member_panels: Vec::new(),
         });
     }
     let layer = match config.active_layer() {
         crate::LayerRef::Annotations => crate::LayerRef::Base,
         layer => layer,
     };
-    let panels =
+    let mut panels =
         expand_for_render(config).map_err(|_| crate::gpu_pick::GpuPickError::AllocationFailed {
             resource: "renderer pick layer expansion",
         })?;
@@ -577,36 +578,29 @@ pub(super) fn active_layer_pick_inputs(
         .filter(|item| series_panel_index(config, panels.len(), &item.series_id) == index)
         .cloned()
         .collect();
-    let mut transforms = member_transforms;
-    let mut member_count = 0;
-    // The layer's members, in stacking order, each with its panel's
-    // transform.
-    for (panel_at, panel) in panels.iter().enumerate() {
+    // The layer's own panel, then its members' panels in stacking order,
+    // kept in the expansion's list (the layer's panel is not a member).
+    let panel = panels.remove(index);
+    let mut kept = 0usize;
+    panels.retain(|_| {
+        let panel_at = if kept < index { kept } else { kept + 1 };
+        kept += 1;
         if layers.get(panel_at) != Some(&layer) {
-            continue;
+            return false;
         }
         let Some(member) = config.panel_member(panel_at) else {
-            continue;
+            return false;
         };
         let Some(item) = series.iter().find(|item| item.series_id == member) else {
-            continue;
+            return false;
         };
-        let Some(slot) = transforms.get_mut(member_count) else {
-            break;
-        };
-        *slot = data_render::scatter_transform_from_config(panel);
-        member_count += 1;
         subset.push(item.clone());
-    }
-    let panel = panels
-        .into_iter()
-        .nth(index)
-        .expect("expansion yields one panel per layer");
+        true
+    });
     Ok(LayerPickInputs {
         panel,
         series: subset,
-        member_transforms: transforms,
-        member_count,
+        member_panels: panels,
     })
 }
 
@@ -1548,8 +1542,7 @@ impl Renderer {
         let transform = data_render::scatter_transform_from_config(display_config);
         // The line offset members are the last registered series, each
         // drawn (and its arc prefix scanned) at its own panel's transform.
-        let members = inputs.members();
-        let first_member = layer_series.len() - members.len();
+        let first_member = layer_series.len() - inputs.member_count();
         // The arc prefix each registered line was drawn with at this
         // transform, by registry position: its dash phase and sketch wobble
         // walk it. The draw's own cache key, so a pick after a frame reuses
@@ -1571,9 +1564,10 @@ impl Renderer {
             let position = layer_series
                 .iter()
                 .position(|series| series.series_id == series_id);
-            let series_transform = position
+            let member_transform = position
                 .and_then(|position| position.checked_sub(first_member))
-                .map_or(&transform, |member| &members[member]);
+                .map(|member| inputs.member_transform(member));
+            let series_transform = member_transform.as_ref().unwrap_or(&transform);
             let series = position.map(|position| &layer_series[position]);
             let arc = series
                 .filter(|series| line_pick_walks_arc(&display_config.draw_style, series))
@@ -1636,7 +1630,8 @@ impl Renderer {
             query,
             request.display_scale,
             &arcs,
-            members,
+            inputs.member_count(),
+            &|member| inputs.member_transform(member),
             &picker.exact,
         )
     }
@@ -1672,7 +1667,7 @@ impl Renderer {
                 request.display_panel_px,
             );
             let display_config = active_layer_pick_inputs(&displayed, &state.series)?.panel;
-            let members = inputs.member_count;
+            let members = inputs.member_count();
             (inputs.panel, inputs.series, display_config, members)
         };
 

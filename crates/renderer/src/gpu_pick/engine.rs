@@ -1755,7 +1755,9 @@ impl GpuPickEngine {
         for key in self.exact_variants(&query) {
             exact.ensure(&self.bundle, key)?;
         }
-        self.pick_with_arcs(pool, query, display_scale, &[], &[], &exact)
+        // No line offset members: the member transform is never asked for.
+        let transform = query.transform;
+        self.pick_with_arcs(pool, query, display_scale, &[], 0, &|_| transform, &exact)
     }
 
     /// The exact module and variant each registered series needs under
@@ -1783,9 +1785,9 @@ impl GpuPickEngine {
     /// entry, or a buffer too short for the series, picks without it.
     /// `exact` must hold every variant [`Self::exact_variants`] names.
     ///
-    /// The last `member_transforms.len()` registered series are line offset
-    /// members (`Config::line_offsets`), each drawn by a panel of its own
-    /// with the transform given for it here, in `line_offsets.series`
+    /// The last `members` registered series are line offset members
+    /// (`Config::line_offsets`), each drawn by a panel of its own with the
+    /// transform `member_transform` gives for it, in `line_offsets.series`
     /// order, so the last one paints on top. The pick resolves to what is
     /// painted under the cursor: the last member whose hit is at distance 0
     /// (inside its painted part) answers first; with none, the nearest hit
@@ -1796,7 +1798,8 @@ impl GpuPickEngine {
         query: GpuPickQuery,
         display_scale: f32,
         arcs: &[Option<Arc<wgpu::Buffer>>],
-        member_transforms: &[ScatterTransform],
+        members: usize,
+        member_transform: &dyn Fn(usize) -> ScatterTransform,
         exact: &PickExactPipelines,
     ) -> Result<GpuPickTicket, GpuPickError> {
         let [cursor_x, cursor_y] = query.canvas_position_px;
@@ -1850,7 +1853,7 @@ impl GpuPickEngine {
             });
         }
 
-        let members = member_transforms.len().min(self.registry.slots.len());
+        let members = members.min(self.registry.slots.len());
         let first_member = self.registry.slots.len() - members;
         for (series_order, slot) in self.registry.slots.iter().enumerate() {
             Self::validate_series_columns(pool, slot)?;
@@ -1882,7 +1885,7 @@ impl GpuPickEngine {
             );
             // A line offset member is tested where its own panel draws it.
             if let Some(member) = series_order.checked_sub(first_member) {
-                params.transform = member_transforms[member];
+                params.transform = member_transform(member);
             }
             self.bundle
                 .queue
