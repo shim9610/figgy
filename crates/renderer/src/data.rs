@@ -397,10 +397,12 @@ impl ColumnSource for Column<f64> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The exact split for streamed windows too (#107, the maintainer's
+        // exception to rule 8 for upload precision).
         for (index, &value) in self.data[range].iter().enumerate() {
-            let hi = value as f32;
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }
@@ -652,10 +654,12 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The exact split for streamed windows too (#107, the maintainer's
+        // exception to rule 8 for upload precision); a missing value is NaN.
         for (index, value) in self.data[range].iter().enumerate() {
-            let hi = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value.unwrap_or(f64::NAN));
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }

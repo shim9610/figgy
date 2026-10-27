@@ -4023,6 +4023,32 @@ impl ColumnSource for SplitPairSource<'_> {
 /// stored as its exact `u32` bits and a zero lane, where the f32 read it
 /// replaces, `u32(hi + lo)`, loses 2^24 + 1 and saturates at `u32::MAX - 1`.
 /// Without index lanes the writer still stores the f32 pair.
+/// A `Column<f64>` registered through `ColumnSource` writes its exact
+/// (hi, lo) split (#107): an odd offset past 2^24 reaches the index lane
+/// exactly, as it does from a hi/lo source, and a value that is not an f32
+/// keeps its low part.
+#[test]
+fn f64_columns_upload_their_exact_split() {
+    let probes: [f64; 4] = [f64::from((1u32 << 24) + 1), f64::from(u32::MAX - 1), 0.1, -1.0e10 + 0.25];
+    let column = col_f64(probes.to_vec());
+    let mut lanes = [0u8; 4 * COLUMN_VALUE_BYTES];
+    write_scalar_source_as_pairs(
+        &column,
+        ColumnPairWriter::from_bytes_for_test(&mut lanes).with_index_lanes(true),
+    );
+    let word = |bytes: &[u8], k: usize| u32::from_le_bytes(bytes[4 * k..4 * k + 4].try_into().unwrap());
+    assert_eq!(word(&lanes, 0), (1 << 24) + 1, "an odd offset past 2^24 is exact");
+    assert_eq!(word(&lanes, 2), u32::MAX - 1);
+    let mut pairs = [0u8; 4 * COLUMN_VALUE_BYTES];
+    write_scalar_source_as_pairs(&column, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    let float = |k: usize| f32::from_bits(word(&pairs, k));
+    for (k, &probe) in probes.iter().enumerate() {
+        let (hi, lo) = (float(2 * k), float(2 * k + 1));
+        assert_eq!(f64::from(hi) + f64::from(lo), probe, "probe {k}: hi {hi}, lo {lo}");
+    }
+    assert_ne!(float(5), 0.0, "0.1 keeps a low part");
+}
+
 #[test]
 fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     let values = INDEX_LANE_PROBES.map(f64::from);

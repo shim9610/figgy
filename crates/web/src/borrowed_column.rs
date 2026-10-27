@@ -293,10 +293,11 @@ impl ColumnSource for BorrowedF64Column<'_> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The exact (hi, lo) split, as the hi/lo path writes it (#107).
         for (index, &value) in self.data.iter().enumerate() {
-            let value = value as f32;
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
