@@ -776,7 +776,7 @@ impl RadialRenderer {
             Ok(())
         }
     }
-    /// `size` is logical pixels. `scale` (0.5..4) increases actual geometry AND
+    /// `size` is logical pixels. `scale` (at least 0.5) increases actual geometry AND
     /// glyph resolution without changing the layout. Invalid edits do not evict
     /// the last valid snapshot. All chart/model fields participate in reuse.
     /// Each logical dimension must be at least 160; physical output must fit the
@@ -982,7 +982,7 @@ impl RadialRenderer {
 
     /// The physical size of `chart`'s frame at logical `size` and `scale`,
     /// after the checks every frame passes: a valid chart whose shown
-    /// labels have text, a canvas of at least 160x160 at a scale of 0.5..4,
+    /// labels have text, a canvas of at least 160x160 at a scale of at least 0.5,
     /// inside the device's texture limit.
     fn frame_size(
         &self,
@@ -996,9 +996,9 @@ impl RadialRenderer {
                 "a shown radial label has no text; call RadialChart::format_labels after editing slices, or normalize_labels on a loaded document",
             ));
         }
-        if size.0 < 160 || size.1 < 160 || !scale.is_finite() || !(0.5..=4.0).contains(&scale) {
+        if size.0 < 160 || size.1 < 160 || !scale.is_finite() || scale < 0.5 {
             return Err(RadialError::Invalid(
-                "radial canvas must be at least 160x160; scale must be 0.5..4",
+                "radial canvas must be at least 160x160; scale must be at least 0.5",
             ));
         }
         let width = (size.0 as f64 * f64::from(scale)).round();

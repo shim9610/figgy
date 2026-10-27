@@ -566,7 +566,7 @@ colour as a fourth argument, for example
 `subplots`, `export_document_png_bytes_async` / `export_document_rgba_async`
 (and their `_with_clear` and blocking variants) take the same arguments and
 draw every layer and subplot into one image covering all chart areas.
-`scale` bounds: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0), automatically clamped.
+`scale` is at least `renderer::MIN_EXPORT_SCALE` (0.25; NaN and values at or below zero become it) and has no upper bound: the scaled image must fit the device's texture limit (`max_texture_dimension_2d`, commonly 8192 or 16384 px per side), and a larger export fails with `FiggyError::GpuResourceLimit` before anything is allocated.
 Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font, line, margin, grid, legend)
@@ -1071,7 +1071,7 @@ let img = renderer
 `export_panel_*`는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
 `export_document_png_bytes_async` / `export_document_rgba_async`(`_with_clear` 버전과 동기 버전 포함)로
 레이어와 서브플롯을 이미지 한 장에 모두 그린다. 이 이미지는 모든 차트 영역을 합친 크기다.
-`scale`의 범위는 `renderer::MIN_EXPORT_SCALE`(0.25)부터 `renderer::MAX_EXPORT_SCALE`(8.0)까지다. 범위를 벗어난 값은 오류 없이 가까운 경계값으로 바꾸고, NaN이나 0 이하의 값은 0.25로 바꾼다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
+`scale`의 최솟값은 `renderer::MIN_EXPORT_SCALE`(0.25)이고 NaN이나 0 이하의 값은 0.25로 바꾼다. 상한은 없다. 배율을 적용한 이미지가 장치의 텍스처 크기 한도(`max_texture_dimension_2d`, 보통 한 변 8192 또는 16384픽셀) 안에 들어와야 하며, 넘으면 메모리를 잡기 전에 `FiggyError::GpuResourceLimit` 오류를 돌려준다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
 폰트, 선, 여백, 격자, 범례의 픽셀 크기가 모두 같은 비율로 바뀌므로 화면과 같은 배치를 더 높은 해상도로 얻는다. 1.0보다 작은 배율은 해상도를 낮춘다.
 

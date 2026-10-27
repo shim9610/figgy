@@ -957,6 +957,53 @@ fn dashed_step_lines_keep_their_pattern_along_the_stepped_path() {
     }
 }
 
+/// The export scale has no upper bound of its own: a 16× export of a
+/// 400×300 panel is 6400×4800 px with the fill covering 256 times the pixels,
+/// and a scale whose target passes the device's texture limit fails with
+/// `GpuResourceLimit` instead of being clamped, for PNG, SVG and PDF alike.
+#[test]
+fn export_scale_is_bounded_by_the_device_texture_limit_only() {
+    let mut r = renderer();
+    let (chart, x, y) = two_point_chart(&mut r, "s16");
+    let series = [series(
+        "step",
+        &x,
+        &y,
+        line(
+            Some(LineFill::ToBaseline(0.0)),
+            Some(GREEN),
+            LineInterpolation::StepPost,
+        ),
+    )];
+    let one = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let sixteen = r.export_panel_rgba(&chart, &series, 16.0).unwrap();
+    assert_eq!(
+        (sixteen.width, sixteen.height),
+        (one.width * 16, one.height * 16)
+    );
+    let (g1, g16) = (count(&one, is_green), count(&sixteen, is_green));
+    assert!(
+        (g16 as f64 / g1 as f64 / 256.0 - 1.0).abs() < 0.05,
+        "fill ink scales by area: {g1} → {g16}"
+    );
+    let svg = r.export_document_svg(&chart, &series, 16.0).unwrap();
+    assert!(
+        svg.contains(r#"viewBox="0 0 6400 4800""#),
+        "the SVG is 16× too"
+    );
+    let too_big = 1.0e4;
+    for result in [
+        r.export_panel_rgba(&chart, &series, too_big).map(|_| ()),
+        r.export_document_svg(&chart, &series, too_big).map(|_| ()),
+        r.export_document_pdf(&chart, &series, too_big).map(|_| ()),
+    ] {
+        assert!(
+            matches!(result, Err(FiggyError::GpuResourceLimit { .. })),
+            "{result:?}"
+        );
+    }
+}
+
 /// The fill and the step geometry scale with the export: a 2× export covers
 /// four times the pixels and the same data probes land on the same classes.
 #[test]

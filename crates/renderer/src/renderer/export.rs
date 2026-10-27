@@ -7,22 +7,21 @@ use super::*;
 /// `scale = dpi / 96`); 0.25 corresponds to ~24 DPI (thumbnails).
 pub const MIN_EXPORT_SCALE: f32 = 0.25;
 
-/// Upper bound. 8.0 corresponds to ~768 DPI; we clamp instead of erroring
-/// because anything bigger explodes memory and time
-/// (an 8× export of a 1920×1080 panel is 15360×8640 RGBA ≈ 530 MB).
-pub const MAX_EXPORT_SCALE: f32 = 8.0;
-
 /// Convert DPI to a `scale` value relative to the 96 DPI baseline.
 pub fn dpi_to_scale(dpi: f32) -> f32 {
     clamp_export_scale(dpi / 96.0)
 }
 
-/// Clamp `scale` to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
+/// Raise `scale` to at least [`MIN_EXPORT_SCALE`] (NaN and values at or
+/// below zero become it). There is no upper bound: the scaled target must fit
+/// the device's texture limit (`max_texture_dimension_2d`), and an export
+/// past it fails with [`FiggyError::GpuResourceLimit`] before anything is
+/// allocated.
 pub fn clamp_export_scale(scale: f32) -> f32 {
     if scale.is_nan() || scale <= 0.0 {
         return MIN_EXPORT_SCALE;
     }
-    scale.clamp(MIN_EXPORT_SCALE, MAX_EXPORT_SCALE)
+    scale.max(MIN_EXPORT_SCALE)
 }
 
 /// In-memory RGBA8 image (straight alpha).
@@ -196,7 +195,9 @@ impl Renderer {
     /// dimensions and return an RGBA buffer. Fonts, line widths, and margins
     /// are all scaled proportionally so the result is visually consistent.
     ///
-    /// - `scale` is clamped to [`MIN_EXPORT_SCALE`] .. [`MAX_EXPORT_SCALE`].
+    /// - `scale` is raised to at least [`MIN_EXPORT_SCALE`]; past the
+    ///   device's texture limit the export fails with
+    ///   [`FiggyError::GpuResourceLimit`].
     /// - Background is fully transparent (alpha 0).
     /// - Output size is `chart_area × scale`.
     /// - Encoding / saving the PNG is the caller's responsibility — use
