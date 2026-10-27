@@ -22,8 +22,6 @@ pub use crate::data_config::{RadarLabels, RadarMarker, RadarSeriesStyle};
 
 /// The fewest categories (spokes) a radar chart draws.
 pub const MIN_RADAR_CATEGORIES: usize = 3;
-/// The most categories (spokes) a radar chart draws.
-pub const MAX_RADAR_CATEGORIES: usize = 64;
 /// The most series a radar chart draws.
 pub const MAX_RADAR_SERIES: usize = 16;
 
@@ -313,11 +311,8 @@ impl RadarChart {
         self.annotations.validate()?;
         self.resolved_title().validate()?;
         let (n, m) = (self.categories.len(), self.series.len());
-        if !(MIN_RADAR_CATEGORIES..=MAX_RADAR_CATEGORIES).contains(&n)
-            || m == 0
-            || m > MAX_RADAR_SERIES
-        {
-            return Err("radar limits: 3..64 categories and 1..16 series");
+        if n < MIN_RADAR_CATEGORIES || m == 0 || m > MAX_RADAR_SERIES {
+            return Err("radar limits: at least 3 categories and 1..16 series");
         }
         let mut ids = HashSet::new();
         for c in &self.categories {
@@ -420,12 +415,14 @@ mod tests {
         c.series[0].values.pop();
         assert!(c.validate().is_err(), "one value per category");
         c = chart();
-        c.categories = (0..65).map(|i| Category::new(i.to_string(), "A")).collect();
-        c.series[0].values = vec![1.0; 65];
-        assert!(c.validate().is_err());
-        c.categories.pop();
-        c.series[0].values.pop();
-        assert!(c.validate().is_ok());
+        // No category cap (#107): 65 and 100 spokes are accepted.
+        for n in [64, 65, 100] {
+            c.categories = (0..n).map(|i| Category::new(i.to_string(), "A")).collect();
+            c.series[0].values = vec![1.0; n];
+            assert!(c.validate().is_ok(), "{n} categories");
+        }
+        c.categories.truncate(64);
+        c.series[0].values.truncate(64);
         c.series = (0..17)
             .map(|i| RadarSeries::new(i.to_string(), "S", vec![1.0; 64], Color::WHITE))
             .collect();
