@@ -946,18 +946,21 @@ impl ColumnPool {
         columns: &[(&str, &dyn ColumnSource)],
         ctx: GpuAllocCtx<'_>,
     ) -> Result<ColumnBatchInsert<'a>, AllocError> {
-        self.begin_add_columns_observed(columns, ctx, None)
+        self.begin_add_columns_observed(columns, ctx, None, None)
     }
 
     /// [`Self::begin_add_columns`] with an observer of every written pair:
     /// `observe(column, row, hi, lo)`, `column` being the index into
     /// `columns`. Records and ragged columns measure their statistics through
-    /// it while the staging write happens.
+    /// it while the staging write happens. `index_column` names the column
+    /// whose pairs are stored as `u32` index lanes
+    /// ([`ColumnPairWriter::with_index_lanes`]): a ragged column's offsets.
     pub(super) fn begin_add_columns_observed<'a>(
         &'a mut self,
         columns: &[(&str, &dyn ColumnSource)],
         ctx: GpuAllocCtx<'_>,
         mut observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
+        index_column: Option<usize>,
     ) -> Result<ColumnBatchInsert<'a>, AllocError> {
         if columns.is_empty() {
             return Ok(ColumnBatchInsert {
@@ -1064,15 +1067,20 @@ impl ColumnPool {
                 let byte_size = column_region_bytes(source.len()).expect("sized in step 2");
                 let local = chunk.column_offsets[index - chunk.columns.start];
                 let dst = view.slice(local..local + raw_bytes as usize);
+                let index_lanes = index_column == Some(index);
                 let stats = if let Some(observe) = observe.as_mut() {
                     let mut per_column =
                         |row: usize, hi: f32, lo: f32| (*observe)(index, row, hi, lo);
                     write_scalar_source_as_pairs(
                         source,
-                        ColumnPairWriter::new_observed(dst, &mut per_column),
+                        ColumnPairWriter::new_observed(dst, &mut per_column)
+                            .with_index_lanes(index_lanes),
                     )
                 } else {
-                    write_scalar_source_as_pairs(source, ColumnPairWriter::new(dst))
+                    write_scalar_source_as_pairs(
+                        source,
+                        ColumnPairWriter::new(dst).with_index_lanes(index_lanes),
+                    )
                 };
                 epoch += 1;
                 self.allocation_epochs.insert(id.to_string(), epoch);
@@ -2422,7 +2430,8 @@ impl ColumnPool {
             tallies[column].record(hi, lo);
         };
         let observer: &mut dyn FnMut(usize, usize, f32, f32) = &mut observe;
-        let batch = self.begin_add_columns_observed(&columns[..count], ctx, Some(observer))?;
+        let batch =
+            self.begin_add_columns_observed(&columns[..count], ctx, Some(observer), None)?;
         let relocated = batch.pool.layout_generation != layout_before;
         let epoch = batch
             .pool
@@ -2503,15 +2512,18 @@ impl ColumnPool {
                 "a ragged column needs at least one value; register none when every group is empty",
             ));
         }
-        if total > MAX_RAGGED_VALUES {
-            return Err(composite_error(
+        // Offsets index the values as `u32`: the GPU's index space, as a
+        // column's lane base.
+        let total32 = u32::try_from(total).map_err(|_| {
+            composite_error(
                 &id,
                 format!(
-                    "a ragged column holds at most {MAX_RAGGED_VALUES} values (2^24, exact as \
-                     f32 offsets), got {total}"
+                    "a ragged column indexes its values with u32 offsets, at most {} values, \
+                     got {total}",
+                    u32::MAX
                 ),
-            ));
-        }
+            )
+        })?;
         let offsets_len = source.offsets.len();
         if offsets_len < 2 {
             return Err(composite_error(
@@ -2528,7 +2540,6 @@ impl ColumnPool {
                 format!("a ragged column holds at most {} groups", u32::MAX),
             )
         })?;
-        let total32 = total as u32;
 
         let token = self.member_token()?;
         let values_id = format!("{id}{MEMBER_SEPARATOR}{token}{MEMBER_SEPARATOR}values");
@@ -2571,7 +2582,9 @@ impl ColumnPool {
             }
         };
         let observer: &mut dyn FnMut(usize, usize, f32, f32) = &mut observe;
-        let batch = self.begin_add_columns_observed(&columns, ctx, Some(observer))?;
+        // The offsets (column 1) are indices: stored as `u32` lanes, exact up
+        // to `u32::MAX` (SHADER_COMMON.md §5.14).
+        let batch = self.begin_add_columns_observed(&columns, ctx, Some(observer), Some(1))?;
         // Rejections below drop `batch`, which un-inserts both members; their
         // bytes went to regions that were free, so nothing live changed.
         if !offsets.in_order || offsets.next_row != offsets_len {

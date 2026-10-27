@@ -79,9 +79,8 @@ pub use data_config::{
 };
 pub use data_render::{
     AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
-    GpuBudget, GrowthPolicy, MAX_RAGGED_VALUES, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot,
-    RaggedSource, RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource,
-    RecordStats,
+    GpuBudget, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource,
+    RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};

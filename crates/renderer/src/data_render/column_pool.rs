@@ -32,11 +32,14 @@
 //!   and keeps the [`RaggedStats`], measured while the offsets are written
 //!   (a non-monotone offsets column is rejected).
 //!
-//! The pool has no integer column type, so ragged offsets are `(hi, lo)` f32
-//! pairs like every other column; offsets up to 2^24 are exact in the high
-//! lane, which is why a ragged column holds at most 2^24 values. A shader
-//! reads a record field or a ragged column by its pool lane base
-//! (`handle.offset / 4`), as every column (`SHADER_COMMON.md`).
+//! A ragged column's offsets are indices, so the pool stores them as `u32`
+//! lanes: the source writes `(hi, lo)` pairs like every column, and the pool
+//! writes each offset's integer `hi + lo` (summed in f64) as `u32` bits in
+//! the pair's first lane, read with `bitcast<u32>`. Every offset up to
+//! `u32::MAX` is exact, so a ragged column has no value cap below the `u32`
+//! index space. A shader reads a record field or a ragged column by its pool
+//! lane base (`handle.offset / 4`), as every column (`SHADER_COMMON.md`
+//! §5.14).
 //!
 //! The member columns of a record or ragged column are owned by it: their ids
 //! are internal, the host cannot replace, remove or stream them, and deleting
@@ -118,10 +121,6 @@ pub struct ColumnSlot {
 /// uniform.
 pub const MAX_RECORD_FIELDS: usize = 12;
 
-/// The most values one ragged column holds: its offsets are f32 pairs, and
-/// every integer up to 2^24 is exact in the high lane.
-pub const MAX_RAGGED_VALUES: usize = 1 << 24;
-
 /// Separates a record or ragged column id from its member column ids. Record
 /// and ragged ids may not contain it.
 const MEMBER_SEPARATOR: char = '\u{1f}';
@@ -175,7 +174,12 @@ pub struct RecordSource<'a> {
 /// `values.len()`. Both sources are non-empty: a host whose every group is
 /// empty registers no ragged column. [`ColumnPool::upsert_ragged`] checks the
 /// offsets while it writes them and rejects anything else with an explicit
-/// error.
+/// error. There is no value cap below the `u32` index space: the pool stores
+/// the offsets as `u32` lanes. An offset is the integer its source writes as
+/// `hi + lo`, so a source that writes offsets past 2^24 writes the
+/// `(hi, lo)` split ([`split_f64_to_f32_pair`](crate::data::split_f64_to_f32_pair)),
+/// as the document conversion and the WASM wrapper do; `Column<f64>` writes
+/// `(value as f32, 0)`, exact to 2^24 only.
 #[derive(Clone, Copy)]
 pub struct RaggedSource<'a> {
     pub values: &'a dyn ColumnSource,
