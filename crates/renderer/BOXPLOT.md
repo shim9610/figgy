@@ -109,7 +109,7 @@ in each category slot in series order, laid out by `Config.bar_groups`:
 
 `Config::validate_box_plots` (applied by the renderer) requires the
 categorical axis of the direction and a linear value axis, and allows at most
-16 box plot series per layer and 512 boxes. A layer draws either category bars
+16 box plot series per layer and any number of boxes. A layer draws either category bars
 or box plots, not both. Horizontal box groups stand on the base panel only;
 polar charts reject box plots.
 
@@ -297,9 +297,8 @@ endpoints**. `mean`, `sample_count`, `median_ci` and `outliers` are optional.
 whisker_high`, all finite; outliers finite and strictly outside the whiskers;
 a CI that contains the median (it may extend beyond the body); an explicit CI
 for every box of a notched series; positive counts. `None` is a missing box
-that leaves its group slot empty. Limits: 1–64 categories, 1–16 series, at
-most 512 boxes including missing ones, at most 128 outliers per box and 4096
-in all.
+that leaves its group slot empty. Limits: at least one category and 1–16
+series; the number of categories, boxes and outliers has no cap.
 
 ## Examples and tests
 
@@ -352,7 +351,7 @@ document in `FiggyChart`.
 `labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
 그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
 `labels.offsets`에 기록된다.
-입력 상한은 64범주·16시리즈·총 512항목이며, 문서는 상자 하나에 이상치를 최대 128개, 모두 4096개 받는다.
+시리즈는 16개까지 둘 수 있고, 범주·상자·이상치 수에는 상한이 없다.
 
 ## 제목·축·라벨·범례 선택과 이동
 

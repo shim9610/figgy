@@ -703,7 +703,7 @@ pub fn create_bar_style_map_with_slots(
 /// CPU, so the row count is the caller's, not a fixed table's. No rows (or
 /// a zero capacity) binds one padding row, as WebGPU has no zero-size
 /// binding.
-pub fn create_bar_style_map_writing(
+pub(crate) fn create_bar_style_map_writing(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     slots: &[BarStyleSlotGpu],

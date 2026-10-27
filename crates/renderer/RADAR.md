@@ -79,7 +79,8 @@ A radar series is held to these rules (`Config::validate_radar` and
 `data_config::validate_radar_series`, checked when the series are set):
 
 - It is drawn on a polar chart, the parent's or a subplot's own, whose angle
-  axis is categorical (1 to 64 categories), with chord segments
+  axis is categorical (any number of categories; value labels draw for the
+  first 64 until #107 moves them to a storage buffer), with chord segments
   (`PolarInterpolation::Chord`): a polygon's edges are straight.
 - At most 16 radar series share one chart.
 - Its colour has channels in `0..=1`, its style passes
@@ -252,7 +253,7 @@ cargo test --locked -p figgy-renderer --features serde --test radar_series_rende
 
 `Radar` 시리즈의 `x_column`은 범주 번호 열(`0, 1, …, n - 1`), `y_column`은 범주별 반지름 축
 (`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가
-준비 단계에서 풀의 길이로 확인한다. 레이더 시리즈는 각도 축이 범주형(1~64개)이고 보간이
+준비 단계에서 풀의 길이로 확인한다. 레이더 시리즈는 각도 축이 범주형(범주 수 상한 없음)이고 보간이
 `PolarInterpolation::Chord`인 극좌표 차트(부모 차트나 서브플롯 자신의 차트)에서만 그리며, 한
 차트에 16개까지 둘 수 있다. 정밀(precise) 스타일에서만 그리고, 스타일 모드에서는
 `draw_style_supports`가 `false`를 돌려준다.
