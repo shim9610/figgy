@@ -24,8 +24,6 @@ pub use crate::data_config::{
 use std::collections::HashSet;
 
 pub const MAX_BOX_SERIES: usize = 16;
-pub const MAX_BOX_OUTLIERS: usize = 128;
-pub const MAX_BOXPLOT_OUTLIERS: usize = 4096;
 
 /// Actual whisker endpoints, not the theoretical IQR fences. CI endpoints may
 /// extend outside Q1/Q3. No sample statistics are inferred by the renderer.
@@ -76,13 +74,12 @@ impl BoxSummary {
         }) {
             return Err("median CI must be finite and contain the median");
         }
-        if self.outliers.len() > MAX_BOX_OUTLIERS
-            || self
-                .outliers
-                .iter()
-                .any(|v| !v.is_finite() || (*v >= self.whisker_low && *v <= self.whisker_high))
+        if self
+            .outliers
+            .iter()
+            .any(|v| !v.is_finite() || (*v >= self.whisker_low && *v <= self.whisker_high))
         {
-            return Err("at most 128 finite outliers per box, strictly outside the whiskers");
+            return Err("outliers must be finite and strictly outside the whiskers");
         }
         Ok(())
     }
@@ -278,7 +275,6 @@ impl BoxPlotChart {
             }
         }
         ids.clear();
-        let mut outliers = 0;
         for s in &self.series {
             if s.id.is_empty()
                 || !text(&s.id, 80)
@@ -294,11 +290,7 @@ impl BoxPlotChart {
             }
             for v in s.values.iter().flatten() {
                 v.validate()?;
-                outliers += v.outliers.len();
             }
-        }
-        if outliers > MAX_BOXPLOT_OUTLIERS {
-            return Err("at most 4096 outliers per chart");
         }
         self.style.validate()?;
         if !range(self.font_size, 8.0, 32.0)
@@ -474,7 +466,7 @@ mod tests {
         assert!(c.validate().is_ok());
     }
     #[test]
-    fn bounds_are_independent_and_total_outliers_are_bounded() {
+    fn series_are_bounded_and_categories_boxes_and_outliers_are_not() {
         for (n, m, valid) in [
             (64, 8, true),
             (32, 16, true),
@@ -500,20 +492,23 @@ mod tests {
                 .collect();
             assert_eq!(c.validate().is_ok(), valid, "{n}x{m}");
         }
+        // The outliers become a ragged column (`Config::from_boxplot`), so
+        // they have no count cap either (#107): 129 per box and 33 x 128 =
+        // 4224 per chart, past the old 128 and 4096, are accepted.
         let mut c = chart();
         let v = c.series[0].values[0].as_mut().unwrap();
-        v.outliers = vec![9.; 128];
+        v.outliers = vec![9.; 129];
         assert!(c.validate().is_ok());
-        c.series[0].values[0].as_mut().unwrap().outliers.push(9.);
-        assert!(c.validate().is_err());
         c.categories = (0..33).map(|i| Category::new(i.to_string(), "A")).collect();
         let mut v = BoxSummary::new(1., 2., 3., 4., 5.);
         v.outliers = vec![9.; 128];
         c.series[0].values = vec![Some(v); 33];
-        assert!(c.validate().is_err());
-        c.categories.pop();
-        c.series[0].values.pop();
         assert!(c.validate().is_ok());
+        // The other outlier rules stay.
+        c.series[0].values[0].as_mut().unwrap().outliers[0] = 4.5;
+        assert!(c.validate().is_err(), "an outlier inside the whiskers");
+        c.series[0].values[0].as_mut().unwrap().outliers[0] = f64::NAN;
+        assert!(c.validate().is_err(), "a non-finite outlier");
     }
     #[test]
     fn style_ranges_and_override_targets_are_validated() {
