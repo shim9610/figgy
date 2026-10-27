@@ -44,6 +44,19 @@ break one of them, stop and ask instead of working around it.
 9. **Vector fields use a layered shader assembled in Rust** (glyph, input,
    projection and entry fragments), so a later 3D projection can reuse the
    glyph (#25).
+10. **Column-backed series have no count limits.** A series whose data
+    comes through `ColumnSource` draws every registered value. There is no cap
+    on rows, groups, categories, series in a group, members, labels, slots or
+    any other count, and no fixed-size array, uniform or loop bound sized by
+    one. The only failure allowed is at column registration, when the memory
+    cannot be allocated or the device cannot hold the buffer. A cost that
+    grows with the data (vertices, pick work) is the host's to budget: the
+    renderer measures it in tests and documents it, and never caps it. A
+    DataLess chart (defined by the SSOT alone, no `ColumnSource`, such as the
+    radial chart) may have a limit only with the maintainer's approval in the
+    issue before it is written. Limits on things that are not data counts
+    (text length, nesting depth, tick counts) are not covered by this rule,
+    and a new one still needs the plan to name it (#107).
 
 ## Before calling a change done
 
@@ -67,6 +80,12 @@ follow-up.
   CPU, the renderer produces no value the user reads as data (rule 1:
   appearance and display parameters only), and new per-point input enters
   through `ColumnSource`.
+- **Limits (rule 10).** The diff adds no count limit on a column-backed
+  series: no `MAX_*` check, fixed-size array, uniform array or loop bound
+  sized by a count of data, categories, series or labels, and no cap that
+  fails or stops drawing after registration. Each test that adds a
+  column-backed feature registers past any size the code once capped and
+  draws. A limit on a DataLess chart cites the issue that approved it.
 - **Streaming and new paths (rules 7 and 8).** Streamed sources are rejected
   with an explicit error, and every new path, binding, cache or module has the
   maintainer's approval in the issue.
