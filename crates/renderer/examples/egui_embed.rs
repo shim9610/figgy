@@ -37,8 +37,8 @@ use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
 use renderer::{
     Chart, ChartDrawItem, ChartStyle, ChartView, CpuTextMeasure, DataLineStyleConfig,
-    DataRenderType, HitId, HitMap, MAX_EXPORT_SCALE, MIN_EXPORT_SCALE, PreparedFrame, Renderer,
-    RendererDevice, ResizeHandle, Series, SeriesConfig, dpi_to_scale,
+    DataRenderType, HitId, HitMap, MIN_EXPORT_SCALE, PreparedFrame, Renderer, RendererDevice,
+    ResizeHandle, Series, SeriesConfig, dpi_to_scale,
 };
 
 const POOL_CAPACITY: u64 = 16 * 1024 * 1024;
@@ -702,7 +702,8 @@ impl eframe::App for DemoApp {
                     // DPI input — figgy maps dpi/96 → scale → clamp internally.
                     ui.label("DPI:");
                     let dpi_min = (MIN_EXPORT_SCALE * 96.0).round() as u32;
-                    let dpi_max = (MAX_EXPORT_SCALE * 96.0).round() as u32;
+                    // No renderer bound: the device texture limit decides; 16x here.
+                    let dpi_max = 16 * 96;
                     ui.add(
                         egui::DragValue::new(&mut self.export_dpi)
                             .range(dpi_min..=dpi_max)

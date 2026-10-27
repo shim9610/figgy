@@ -620,6 +620,17 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **No export scale cap.** `MAX_EXPORT_SCALE` (8.0) is removed and
+  `clamp_export_scale` only raises a scale to `MIN_EXPORT_SCALE` (0.25); the
+  radial chart's 0.5..4 range keeps only its lower bound. The scaled target
+  must fit the device's texture limit (`max_texture_dimension_2d`); past it
+  the PNG, SVG and PDF exports fail with `FiggyError::GpuResourceLimit`
+  before anything is allocated, as a target past the limit already did.
+  Streamed charts keep their 8× bound (streaming is not extended).
+  Migration: code that names `renderer::MAX_EXPORT_SCALE` picks its own
+  bound; code that relied on a scale above 8 being clamped now gets that
+  scale, or the `GpuResourceLimit` error when it does not fit the device.
+
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line
   path (dashes, picking and the picked ring included) and its arrowheads

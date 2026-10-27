@@ -76,7 +76,7 @@ renderer.end_frame();
 화면에 그릴 때는 `prepare(&chart, logical_size, scale)`로 `Arc<RadialFrame>`을 받은 뒤,
 호스트의 render pass 안에서 `frame.draw(&mut pass)`를 호출한다. 타깃은 생성자에 지정한
 RGBA8/BGRA8 포맷, `frame.size()` 크기, sample count 1이어야 한다. 가장자리 AA는 셰이더가
-픽셀당 네 위치를 평가해 처리한다. `scale`은 0.5~4이며 타깃의 실제 크기도 함께 맞춘다.
+픽셀당 네 위치를 평가해 처리한다. `scale`은 0.5 이상이며 타깃의 실제 크기도 함께 맞춘다. 상한은 없고, 실제 크기가 장치의 텍스처 크기 한도를 넘으면 오류를 돌려준다.
 호스트 render pass의 clear/load 정책은 호스트가 정한다. 투명 배경도 지원한다.
 논리 크기는 가로·세로 각각 최소 160픽셀이다. 실제 크기는 `round(논리 크기 × scale)`이며
 장치의 텍스처 크기 한도를 넘을 수 없다. `draw`는 viewport와 scissor를 타깃 전체로 설정한다.

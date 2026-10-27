@@ -1,6 +1,10 @@
 //! Exact, bounded replay operations independent of the displayed stream.
 use super::*;
 
+/// The upper export scale of a streamed chart, which keeps the bound every
+/// export had before 0.19 (streaming is not extended, rule 8).
+const STREAM_EXPORT_MAX_SCALE: f32 = 8.0;
+
 #[cfg(test)]
 #[path = "streaming_auxiliary_tests.rs"]
 mod tests;
@@ -988,7 +992,8 @@ impl Renderer {
         let completed = self
             .auto_stream_snapshot(completed_job)
             .ok_or(StreamError::WrongState)?;
-        let scale = clamp_export_scale(scale);
+        // Streaming is frozen (rule 8): its export keeps the 0.18 bound.
+        let scale = clamp_export_scale(scale).min(STREAM_EXPORT_MAX_SCALE);
         let state = &self.chart_states[&chart];
         let document_config = if state.revisions.data == completed.data_revision
             && state.revisions.series == completed.series_revision

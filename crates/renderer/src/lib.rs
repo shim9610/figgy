@@ -104,13 +104,13 @@ pub use render_warning::{
 };
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView,
-    ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE,
-    MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines,
-    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
-    RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
-    StreamingSelectionRequest, StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, clamp_export_scale, display_config_for_surface, dpi_to_scale,
-    draw_style_supports, encode_png, fit_display_panel, place_document,
+    ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE,
+    PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage,
+    RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
+    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
+    StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer,
+    clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
+    fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
