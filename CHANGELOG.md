@@ -736,9 +736,23 @@ additive.
   former read loses 2^24 + 1. The only bound left is the `u32` index space
   (`u32::MAX` values); box plot images are byte-identical. An offset is the
   integer its source writes, so offsets past 2^24 come from a source that
-  writes the `(hi, lo)` split, as `Config::from_boxplot`'s uploads and the
-  WASM `register_ragged` do; `Column<f64>` writes `(value as f32, 0)`,
-  exact to 2^24. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
+  writes the `(hi, lo)` split, as `Config::from_boxplot`'s uploads, the
+  WASM `register_ragged` and now `Column<f64>` (see "f64 columns upload
+  exactly") do. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
+
+- **No star slot cap**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R7). The arc scan's
+  `star_indirect` kernel capped the candidate slots of a Milkyway star pass
+  and a streamline's arrowheads at `STAR_MAX_SLOTS` (2 000 000) per series,
+  so a series whose drawn arc ran past 1 M px (at the default 0.5 px pitch)
+  drew no stars or arrowheads past that point. Every slot of the arc now
+  draws, up to the `u32` instance count a draw can name. The cost grows with
+  the drawn arc: one 6-vertex instance per slot, each a binary search over
+  the arc prefix (`O(slots · log n)`), measured in
+  `milkyway_stars_draw_past_two_million_arc_slots` and documented in
+  SHADER_COMMON §5.6, never capped. Images of series under the old cap are
+  byte-identical. Migration: the public `line_arc::STAR_MAX_SLOTS` is
+  removed.
 
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line

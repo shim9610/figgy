@@ -224,8 +224,8 @@ struct StarIndirectParams {
     // shader derives (0.5 · structure_scale; see line_columnar.wgsl
     // cons_star_pitch), or slot positions and the dispatch count disagree.
     slot_pitch_px: f32,
-    // Runaway backstop for degenerate pitch / pathological arc lengths.
-    max_slots: u32,
+    // Padding to the uniform's 8-byte layout; no slot cap (#107).
+    _pad: u32,
 };
 
 @group(2) @binding(0) var<storage, read_write> star_args: array<u32>;
@@ -236,7 +236,9 @@ fn star_indirect() {
     let total = dst[params.start + params.len - 1u];
     var slots = 0u;
     if (total > 0.0 && total < 1e30 && star_params.slot_pitch_px > 0.0) {
-        slots = min(u32(ceil(total / star_params.slot_pitch_px)), star_params.max_slots);
+        // Every slot of the arc draws (#107). 4294967040 is the largest f32
+        // below 2^32, so the conversion stays inside the u32 instance count.
+        slots = u32(min(ceil(total / star_params.slot_pitch_px), 4294967040.0));
     }
     star_args[0] = 6u;    // vertex_count: one quad per slot
     star_args[1] = slots; // instance_count: candidate star slots

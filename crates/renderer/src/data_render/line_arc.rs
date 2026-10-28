@@ -219,11 +219,6 @@ pub struct ArcScanPipelines {
 /// dispatch count and the VS slot mapping must agree on the pitch.
 pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
 
-/// Hard ceiling on candidate star slots per series — a render budget
-/// backstop (≈12M quad vertices), far above any chart-scale arc, NOT a data
-/// limit: the polyline itself stays unlimited-n via the chunked scan.
-pub const STAR_MAX_SLOTS: u32 = 2_000_000;
-
 pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     let mut noop = |_| {};
     create_arc_scan_pipelines_observed(device, &mut noop)
@@ -764,7 +759,7 @@ pub(crate) struct ArcReplayParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct StarIndirectParams {
     slot_pitch_px: f32,
-    max_slots: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -1163,7 +1158,7 @@ impl ArcScratch {
                 0,
                 bytemuck::bytes_of(&StarIndirectParams {
                     slot_pitch_px: pitch.max(1e-3),
-                    max_slots: STAR_MAX_SLOTS,
+                    _pad: 0,
                 }),
             );
         }
