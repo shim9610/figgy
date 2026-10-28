@@ -11175,6 +11175,72 @@ fn a_renderer_batch_rejects_repeated_ids_and_accepts_an_empty_one() {
     );
 }
 
+/// The pool grows by default (#107 R8): a column far past the capacity the
+/// renderer was created with registers without the host opting in, and the
+/// values past the initial capacity draw.
+#[test]
+fn the_default_pool_grows_to_hold_and_draw_a_column_past_its_capacity() {
+    let Some(mut r) = state_test_renderer_with_capacity(64 * 1024) else {
+        return;
+    };
+    assert_eq!(
+        r.pool_growth_policy(),
+        data_render::GrowthPolicy::OnAllocFailure
+    );
+    // 100 000 values are 800 kB of pairs per column, twelve times the pool.
+    let n = 100_000usize;
+    r.add_column(
+        "grow_x",
+        &col_f64((0..n).map(|i| i as f64 / (n - 1) as f64).collect()),
+    )
+    .expect("the default pool grows to fit");
+    r.add_column("grow_y", &col_f64(vec![50.0; n]))
+        .expect("the default pool grows to fit");
+    assert!(r.pool.capacity() >= 2 * 8 * n as u64, "the pool grew");
+
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 320,
+        height: 200,
+    });
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 100.0);
+    let series = [SeriesConfig {
+        series_id: "grow".into(),
+        source_id: None,
+        label: None,
+        x_column: "grow_x".into(),
+        y_column: "grow_y".into(),
+        render_type: DataRenderType::Line {
+            line: crate::data_config::DataLineStyleConfig {
+                line_style: crate::line::LineStylePreset::Solid,
+                line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
+            },
+        },
+    }];
+    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let width = img.width as usize;
+    // Red ink in the right fifth: values from index 80 000 on, far past the
+    // 8 192 the initial pool held.
+    let red_right = img
+        .rgba
+        .chunks_exact(4)
+        .enumerate()
+        .filter(|(i, p)| i % width > width * 4 / 5 && p[0] > 200 && p[1] < 80 && p[2] < 80)
+        .count();
+    assert!(
+        red_right > 20,
+        "the tail of the grown column draws ({red_right} px)"
+    );
+}
+
 /// A batch that has to grow the pool relocates every column, so the active
 /// picker is rebound in the same call and the maintenance bit is cleared —
 /// the same contract the single-column upsert has.
@@ -13411,6 +13477,7 @@ fn resident_admission_mirrors_fixed_and_growing_pool_policies_without_mutation()
     };
     let before_capacity = renderer.pool.capacity();
     assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+    renderer.set_pool_growth_policy(data_render::GrowthPolicy::Fixed);
     let fixed = renderer.resident_admission(request);
     assert_eq!(
         fixed.status,

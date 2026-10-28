@@ -427,7 +427,7 @@ pub struct ColumnPool {
     /// Whether to auto-defrag on alloc failure. Default `Manual`.
     pub defrag_policy: DefragPolicy,
     /// Whether an upload that does not fit may enlarge the pool.
-    /// Default `Fixed` — released hosts read `OutOfSpace` as final.
+    /// Default `OnAllocFailure`: the pool grows to the device's limit (#107).
     pub growth_policy: GrowthPolicy,
     /// Bytes whose buffer handle this pool has already dropped but whose
     /// device memory the queue may not have released yet. A budget must keep
@@ -493,7 +493,7 @@ impl ColumnPool {
             layout_generation: 0,
             backup: None,
             defrag_policy: DefragPolicy::Manual,
-            growth_policy: GrowthPolicy::Fixed,
+            growth_policy: GrowthPolicy::OnAllocFailure,
             retired_bytes: Arc::default(),
             peak_bytes: capacity,
             buffer_creations: 1,

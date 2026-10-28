@@ -194,11 +194,12 @@ pub enum DefragPolicy {
 
 /// Whether the pool may enlarge itself when an upload does not fit.
 ///
-/// Default is [`GrowthPolicy::Fixed`]: `OutOfSpace` stays the final answer,
-/// which is the meaning released hosts already depend on. Growth is opt-in.
+/// Default is [`GrowthPolicy::OnAllocFailure`]: a registered column is
+/// refused only when the device or the budget cannot hold it (#107, rule 10).
+/// [`GrowthPolicy::Fixed`] keeps a fixed capacity for hosts that want it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GrowthPolicy {
-    /// Never enlarge. A full pool reports `OutOfSpace` as before.
+    /// Never enlarge. A full pool reports `OutOfSpace`.
     Fixed,
     /// After a defrag retry still does not fit, relayout into a larger buffer
     /// and retry once. Bounded by the device ceiling and the caller's budget;

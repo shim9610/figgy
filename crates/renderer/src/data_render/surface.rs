@@ -68,14 +68,16 @@ pub fn request_adapter_for_surface(
     pollster::block_on(request_adapter_for_surface_async(instance, surface))
 }
 
-/// Open a logical device and its queue with WebGPU baseline limits.
+/// Open a logical device and its queue with the adapter's supported limits,
+/// so the largest column the pool can hold is the hardware's, not the WebGPU
+/// baseline's 128 MiB binding (#107).
 pub async fn request_device_async(
     adapter: &wgpu::Adapter,
 ) -> Result<(wgpu::Device, wgpu::Queue), wgpu::RequestDeviceError> {
     let descriptor = wgpu::DeviceDescriptor {
         label: Some("figgy main device"),
         required_features: wgpu::Features::empty(),
-        required_limits: wgpu::Limits::default(),
+        required_limits: adapter.limits(),
         experimental_features: wgpu::ExperimentalFeatures::disabled(),
         memory_hints: wgpu::MemoryHints::Performance,
         trace: wgpu::Trace::Off,

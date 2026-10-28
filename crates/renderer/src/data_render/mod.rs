@@ -652,4 +652,26 @@ mod tests {
             Err(e) => panic!("request_device failed on available adapter: {e}"),
         }
     }
+
+    /// The device asks for what the adapter supports, not the WebGPU
+    /// baseline (#107 R9): the largest column the pool can hold is the
+    /// hardware's.
+    #[test]
+    fn request_device_takes_the_adapters_limits() {
+        let instance = create_instance();
+        let adapter =
+            request_adapter(&instance).expect("required GPU test: adapter initialization failed");
+        let (device, _queue) =
+            request_device(&adapter).expect("required GPU test: device initialization failed");
+        let (supported, granted) = (adapter.limits(), device.limits());
+        assert_eq!(granted.max_buffer_size, supported.max_buffer_size);
+        assert_eq!(
+            granted.max_storage_buffer_binding_size,
+            supported.max_storage_buffer_binding_size
+        );
+        assert_eq!(
+            granted.max_texture_dimension_2d,
+            supported.max_texture_dimension_2d
+        );
+    }
 }
