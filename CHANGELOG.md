@@ -740,6 +740,49 @@ additive.
   WASM `register_ragged` and now `Column<f64>` (see "f64 columns upload
   exactly") do. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
 
+- **The picker measures in the draw's own pixel frame**
+  ([#114](https://github.com/shim9610/figgy/issues/114)). The exact
+  picker projected every vertex to canvas pixels with its own function
+  while the draw projects through `data_to_ndc / pixel_to_ndc`, and the two
+  rounded apart: a step riser of 1e-5 px had zero length in the pick and
+  its square caps in the draw, so the caps' dash was painted but not
+  picked. The new shared `data_to_px` (projection.wgsl) is that projection
+  in one place: the line vertex stages and the arc scan call it, and the
+  exact pass measures every primitive in its frame (`pick_data_px`, with
+  the cursor mapped in once by `pick_cursor_px`). The sketch stroke's pick
+  also stopped clamping its knot weight, since a multisampled fragment
+  past a strip's square cap extrapolates its end span to the pixel centre
+  (a faint dash sliver at a joint was painted but not picked). New
+  property tests draw seeded random compositions of elementary functions
+  under random styles, dashes, widths, step modes, gaps and off-screen
+  leads (`random_composite_lines_pick_where_they_draw`,
+  `random_composite_markers_and_star_lines_pick_where_they_draw`), which
+  found both. Migration: none.
+
+- **Line arcs stay exact past 2^24 px**
+  ([#107](https://github.com/shim9610/figgy/issues/107)). The arc prefix of
+  a dashed, sketched, Milkyway or streamline line held one f32 per point, so
+  past 2^24 px of drawn arc (16.7 M px) its positions rounded to whole
+  pixels and beyond: a dashed line drew solid, and the sketch wobble, the
+  Milkyway clump noise, the star slots and the streamline arrowheads moved
+  to the rounded positions. Each point's arc is now a 64-bit fixed-point
+  integer of 1/65536 px held as two `u32` words, summed exactly with integer
+  adds (SHADER_COMMON §5.6 arc pairs). Every reader takes a segment's arc as
+  the pair at its start plus a small offset, and reduces the start exactly
+  (integer long division) for the dash phase, the noise cell and the slot
+  index, so the pattern far along the arc is the pattern at its start:
+  `dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc` drew
+  a solid stroke before and draws [8, 4] dashes now, and
+  `gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels` holds a
+  3.9e7 px prefix to 0.05 px of the f64 sum. Picking reads the same pairs,
+  and the streamed arc replay writes them too (upload precision, the
+  maintainer's exception to rule 8). The prefix is 8 bytes per point
+  instead of 4; a dash period, noise wavelength or slot pitch is rounded to
+  1/65536 px. The star pass skips slots its existence gate drops before
+  any arc arithmetic. Migration: a custom line pipeline binds the arc
+  slots 4/5 as `Uint32x2` with an 8-byte stride, and a custom reader of
+  the prefix decodes `(low + high * 2^32) / 65536` px.
+
 - **No star slot cap**
   ([#107](https://github.com/shim9610/figgy/issues/107) R7). The arc scan's
   `star_indirect` kernel capped the candidate slots of a Milkyway star pass

@@ -13,6 +13,8 @@
 
 #[path = "support/edge_band.rs"]
 mod edge_band;
+#[path = "support/random_curves.rs"]
+mod random_curves;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
@@ -903,6 +905,291 @@ fn sketch_markers_and_strokes_pick_where_the_wobble_draws_them() {
                 MSAA_EDGE,
             );
             assert!(painted > 30, "{painted}");
+        }
+    }
+}
+
+/// Far along the arc (#107, SHADER_COMMON.md §5.6 arc pairs): the line first
+/// zig-zags 301 times off-screen, about 1e8 px of arc, so its visible
+/// segments start past 2^26 px, where an f32 arc lands on multiples of 8 px.
+/// The dash phase and the sketch wobble the picker derives from the arc
+/// prefix are still the drawn ones, precise and sketched, at 1x and 2x. The
+/// off-screen points stay within 2e5 px of the view, so the pick's f32 pixel
+/// geometry is exact there. 301 points put the dash phase off the few phases
+/// where a sketched dash paints a sub-pixel sliver at a joint that the
+/// picker misses whatever the arc's length (#114).
+/// Random composite lines (#114): every case draws a seeded random
+/// composition of elementary functions (`support/random_curves.rs`): a graph
+/// or a parametric curve, sampled unevenly, sometimes with a NaN gap and
+/// sometimes after a long off-screen lead that puts it far along the arc. A
+/// random draw style (precise or sketched with random wobble), dash preset,
+/// width, step mode and export scale complete it, and every painted pixel
+/// must pick and every zero-distance pick must be painted. A failure names
+/// the seed; `FIGGY_RANDOM_SEED=<seed>` replays that case alone and
+/// `FIGGY_RANDOM_CASES=<n>` runs more.
+#[test]
+fn random_composite_lines_pick_where_they_draw() {
+    use random_curves::{Curve, Rng};
+    use renderer::config::{DrawStyle, SketchOptions};
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    const PRESETS: [LineStylePreset; 11] = [
+        LineStylePreset::Solid,
+        LineStylePreset::Dash,
+        LineStylePreset::Dot,
+        LineStylePreset::DashDot,
+        LineStylePreset::DashDotDot,
+        LineStylePreset::ShortDash,
+        LineStylePreset::ShortDot,
+        LineStylePreset::ShortDashDot,
+        LineStylePreset::LongDash,
+        LineStylePreset::LongDashDot,
+        LineStylePreset::LongDashDotDot,
+    ];
+    const STEPS: [LineInterpolation; 4] = [
+        LineInterpolation::Linear,
+        LineInterpolation::StepPre,
+        LineInterpolation::StepPost,
+        LineInterpolation::StepMid,
+    ];
+    let seeds: Vec<u64> = match std::env::var("FIGGY_RANDOM_SEED") {
+        Ok(seed) => vec![seed.parse().expect("FIGGY_RANDOM_SEED is a u64")],
+        Err(_) => {
+            let cases = std::env::var("FIGGY_RANDOM_CASES")
+                .map_or(12, |n| n.parse().expect("FIGGY_RANDOM_CASES is a count"));
+            (0..cases).map(|case| 0x5EED_0000 + case).collect()
+        }
+    };
+    let mut failures = Vec::new();
+    for seed in seeds {
+        let mut rng = Rng::new(seed.rotate_left(17));
+        let lead = [0, 0, 2, 301, 601][rng.index(5)];
+        let curve = Curve::random(seed, lead);
+        let style = if rng.chance(0.5) {
+            DrawStyle::Precise
+        } else {
+            DrawStyle::Sketch(SketchOptions {
+                amplitude_px: rng.range(0.0, 5.0) as f32,
+                wavelength_px: rng.range(6.0, 30.0) as f32,
+                seed: rng.next_u64() as u32,
+            })
+        };
+        let preset = PRESETS[rng.index(PRESETS.len())];
+        let width = rng.range(0.3, 5.0) as f32;
+        let step = STEPS[rng.index(STEPS.len())];
+        let scale = if rng.chance(0.5) { 1.0 } else { 2.0 };
+        let what = format!(
+            "{}; {style:?}, {preset:?}, width {width:.2}, {step:?}",
+            curve.what
+        );
+        let mut renderer = renderer();
+        upload_xy(&mut renderer, curve.xs, curve.ys);
+        let chart = styled_chart(style);
+        let series = [line("random", width, preset, step)];
+        let tolerance = if matches!(preset, LineStylePreset::Solid) {
+            STRICT
+        } else {
+            MSAA_EDGE
+        };
+        // Inside the frame: a lead enters across the plot edge, where the
+        // frame's own ink covers the stroke.
+        let window = Some((
+            (4.0 * scale) as u32,
+            0,
+            (WIDTH as f32 * scale) as u32,
+            (HEIGHT as f32 * scale) as u32,
+        ));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            assert_pick_matches_paint_with(
+                &mut renderer,
+                &chart,
+                &series,
+                "random",
+                scale,
+                window,
+                &what,
+                tolerance,
+            )
+        }));
+        if let Err(panic) = outcome {
+            let message = panic
+                .downcast_ref::<String>()
+                .cloned()
+                .unwrap_or_else(|| "non-string panic".into());
+            failures.push(message);
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} random cases disagree:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+/// Random composite curves under the marker and star styles (#114): the
+/// same seeded curves as `random_composite_lines_pick_where_they_draw`, drawn
+/// as a precise scatter-line with a random marker shape and size (every
+/// painted pixel picks and every zero-distance pick is painted), or as a
+/// Milkyway ribbon or a Constellation chain, whose hashed stars pick as their
+/// envelope (every painted pixel picks). A failure names the seed;
+/// `FIGGY_RANDOM_SEED` and `FIGGY_RANDOM_CASES` work as there.
+#[test]
+fn random_composite_markers_and_star_lines_pick_where_they_draw() {
+    use random_curves::{Curve, Rng};
+    use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions};
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    let seeds: Vec<u64> = match std::env::var("FIGGY_RANDOM_SEED") {
+        Ok(seed) => vec![seed.parse().expect("FIGGY_RANDOM_SEED is a u64")],
+        Err(_) => {
+            let cases = std::env::var("FIGGY_RANDOM_CASES")
+                .map_or(9, |n| n.parse().expect("FIGGY_RANDOM_CASES is a count"));
+            (0..cases).map(|case| 0x57A2_0000 + case).collect()
+        }
+    };
+    let mut failures = Vec::new();
+    for seed in seeds {
+        let mut rng = Rng::new(seed.rotate_left(29));
+        let lead = [0, 0, 2, 301][rng.index(4)];
+        let curve = Curve::random(seed, lead);
+        let scale = if rng.chance(0.5) { 1.0 } else { 2.0 };
+        let kind = seed % 3;
+        let shape = ALL_SHAPES[rng.index(ALL_SHAPES.len())].clone();
+        let size = rng.range(2.0, 12.0) as f32;
+        let width = rng.range(0.5, 3.0) as f32;
+        let scatter_line = SeriesConfig {
+            render_type: DataRenderType::ScatterLine {
+                scatter: DataScatterStyleConfig {
+                    point_color: BLUE,
+                    point_shape: shape.clone(),
+                    point_size: size,
+                    point_style_table: None,
+                    point_style_index_column: None,
+                    point_style_overrides: None,
+                    point_color_map: None,
+                    point_size_map: None,
+                },
+                line: renderer::DataLineStyleConfig {
+                    line_style: LineStylePreset::Solid,
+                    line_color: RED,
+                    line_width: width,
+                    fill: None,
+                    fill_color: None,
+                    interpolation: LineInterpolation::Linear,
+                },
+            },
+            ..scatter("random", shape.clone(), size, BLUE)
+        };
+        let (chart, series, what) = match kind {
+            0 => (
+                bare_chart(),
+                scatter_line,
+                format!("precise scatter-line {shape:?} size {size:.1} width {width:.2}"),
+            ),
+            1 => (
+                styled_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
+                line(
+                    "random",
+                    width,
+                    LineStylePreset::Solid,
+                    LineInterpolation::Linear,
+                ),
+                "milkyway ribbon".to_string(),
+            ),
+            _ => (
+                styled_chart(DrawStyle::Constellation(ConstellationOptions::default())),
+                scatter_line,
+                format!("constellation chain size {size:.1} width {width:.2}"),
+            ),
+        };
+        let what = format!("{}; {what} at {scale}x", curve.what);
+        let mut renderer = renderer();
+        upload_xy(&mut renderer, curve.xs, curve.ys);
+        let series = [series];
+        let window = Some((
+            (4.0 * scale) as u32,
+            0,
+            (WIDTH as f32 * scale) as u32,
+            (HEIGHT as f32 * scale) as u32,
+        ));
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if kind == 0 {
+                assert_pick_matches_paint_with(
+                    &mut renderer,
+                    &chart,
+                    &series,
+                    "random",
+                    scale,
+                    window,
+                    &what,
+                    STRICT,
+                );
+            } else {
+                assert_painted_pixels_pick(&mut renderer, &chart, &series, "random", scale, &what);
+            }
+        }));
+        if let Err(panic) = outcome {
+            failures.push(
+                panic
+                    .downcast_ref::<String>()
+                    .cloned()
+                    .unwrap_or_else(|| "non-string panic".into()),
+            );
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} random cases disagree:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn far_along_the_arc_dashes_and_wobble_pick_where_they_draw() {
+    use renderer::config::{DrawStyle, SketchOptions};
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    let far = 301;
+    let xs: Vec<f64> = std::iter::repeat_n(-1.0, far)
+        .chain([-0.5, 4.0, 4.9, 5.4, 6.1, 7.0])
+        .collect();
+    let ys: Vec<f64> = (0..far)
+        .map(|i| if i % 2 == 0 { 1.0e4 } else { -1.0e4 })
+        .chain([5.0, 4.2, 5.6, 4.6, 5.9, 5.2])
+        .collect();
+    upload_xy(&mut renderer, xs, ys);
+    let precise = bare_chart();
+    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+        amplitude_px: 4.0,
+        wavelength_px: 12.0,
+        seed: 7,
+    }));
+    for (what, chart) in [("precise", &precise), ("sketch", &sketch)] {
+        for style in [LineStylePreset::Dash, LineStylePreset::DashDotDot] {
+            for scale in [1.0, 2.0] {
+                let series = [line("far", 2.0, style, LineInterpolation::Linear)];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "far",
+                    scale,
+                    // Inside the frame: the line enters across the plot
+                    // edge, where the frame's own ink covers the stroke.
+                    Some((
+                        (4.0 * scale) as u32,
+                        0,
+                        (WIDTH as f32 * scale) as u32,
+                        (HEIGHT as f32 * scale) as u32,
+                    )),
+                    &format!("{what} {style:?} far along the arc"),
+                    MSAA_EDGE,
+                );
+                assert!(painted > 30, "{what} {style:?} at {scale}x: {painted}");
+            }
         }
     }
 }

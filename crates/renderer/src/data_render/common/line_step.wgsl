@@ -86,8 +86,6 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
 
 // Pixel length of one piece, with the arc scan's projection.
 fn step_piece_len_px(t: Transform, p: StepPiece) -> f32 {
-    let a_px = data_to_ndc(t, p.x0, p.y0) / t.pixel_to_ndc;
-    let b_px = data_to_ndc(t, p.x1, p.y1) / t.pixel_to_ndc;
-    return distance(a_px, b_px);
+    return distance(data_to_px(t, p.x0, p.y0), data_to_px(t, p.x1, p.y1));
 }
 // ─────────────────────── end step interpolation ───────────────────────

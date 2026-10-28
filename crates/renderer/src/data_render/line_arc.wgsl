@@ -27,6 +27,11 @@
 // SEQUENTIAL chunks in one encoder with the carry chain linking them — n is
 // bounded only by pool memory, never by dispatch limits. The result buffer
 // doubles as the line pipeline's vertex slots 4/5.
+//
+// Every arc value (the prefix, the block sums, the carry and the replay
+// sums) is an arc pair: a 64-bit fixed-point integer of 1/65536 px, added
+// with `arc_add`, so the prefix stays exact past 2^24 px and the sums are
+// the same in any order (SHADER_COMMON.md §5.6 arc pairs, #107).
 
 struct ArcParams {
     // Element count of this dispatch's window into `dst`.
@@ -47,15 +52,15 @@ struct ArcParams {
 };
 
 @group(1) @binding(0) var<storage, read> pool: array<f32>;
-@group(1) @binding(1) var<storage, read_write> dst: array<f32>;
-@group(1) @binding(2) var<storage, read_write> sums: array<f32>;
+@group(1) @binding(1) var<storage, read_write> dst: array<vec2<u32>>;
+@group(1) @binding(2) var<storage, read_write> sums: array<vec2<u32>>;
 @group(1) @binding(3) var<uniform> params: ArcParams;
-// Running total across chunks — one f32, zeroed before the first chunk.
-@group(1) @binding(4) var<storage, read_write> carry: array<f32>;
+// Running total across chunks — one arc pair, zeroed before the first chunk.
+@group(1) @binding(4) var<storage, read_write> carry: array<vec2<u32>>;
 
 const WG: u32 = 256u;
 
-var<workgroup> scan_shared: array<f32, 256>;
+var<workgroup> scan_shared: array<vec2<u32>, 256>;
 
 // Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
 // Keep this override paired with gpu_compile::workgroup_options.
@@ -63,7 +68,7 @@ override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
 
 fn figgy_zero_workgroup(local_index: u32) {
     if FIGGY_EXPLICIT_WORKGROUP_ZERO {
-        scan_shared[local_index] = f32();
+        scan_shared[local_index] = vec2<u32>();
         workgroupBarrier();
     }
 }
@@ -103,16 +108,16 @@ fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
     let g = params.start + i;
     if (g == 0u) {
-        dst[0] = 0.0;
+        dst[0] = vec2<u32>(0u, 0u);
         return;
     }
     if (!point_valid(g - 1u) || !point_valid(g)) {
-        dst[g] = 0.0;
+        dst[g] = vec2<u32>(0u, 0u);
         return;
     }
     let d = segment_px(g - 1u, g);
     // Finite guard: NaN fails `d == d`, infinities fail the magnitude check.
-    dst[g] = select(0.0, d, d == d && d < 1e30);
+    dst[g] = arc_from_px(select(0.0, d, d == d && d < 1e30));
 }
 
 @compute @workgroup_size(256)
@@ -124,7 +129,7 @@ fn scan_block(
     figgy_zero_workgroup(lid_v.x);
     let i = gid.x;
     let lid = lid_v.x;
-    var v = 0.0;
+    var v = vec2<u32>(0u, 0u);
     if (i < params.len) {
         v = dst[params.start + i];
     }
@@ -136,12 +141,12 @@ fn scan_block(
         if (offset >= WG) {
             break;
         }
-        var add = 0.0;
+        var add = vec2<u32>(0u, 0u);
         if (lid >= offset) {
             add = scan_shared[lid - offset];
         }
         workgroupBarrier();
-        scan_shared[lid] = scan_shared[lid] + add;
+        scan_shared[lid] = arc_add(scan_shared[lid], add);
         workgroupBarrier();
         offset = offset << 1u;
     }
@@ -163,7 +168,7 @@ fn add_offsets(
     if (i >= params.len || wid.x == 0u) {
         return;
     }
-    dst[params.start + i] = dst[params.start + i] + sums[wid.x - 1u];
+    dst[params.start + i] = arc_add(dst[params.start + i], sums[wid.x - 1u]);
 }
 
 @compute @workgroup_size(256)
@@ -172,7 +177,7 @@ fn apply_carry(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.len) {
         return;
     }
-    dst[params.start + i] = dst[params.start + i] + carry[0];
+    dst[params.start + i] = arc_add(dst[params.start + i], carry[0]);
 }
 
 @compute @workgroup_size(256)
@@ -194,7 +199,7 @@ struct ArcReplayParams {
     _pad1: u32,
 };
 
-@group(2) @binding(0) var<storage, read_write> replay_sums0: array<f32>;
+@group(2) @binding(0) var<storage, read_write> replay_sums0: array<vec2<u32>>;
 @group(2) @binding(2) var<uniform> replay: ArcReplayParams;
 
 @compute @workgroup_size(1)
@@ -208,7 +213,7 @@ fn add_global_offset(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (i >= params.len || replay.block == 0u) {
         return;
     }
-    dst[params.start + i] = dst[params.start + i] + replay_sums0[replay.block - 1u];
+    dst[params.start + i] = arc_add(dst[params.start + i], replay_sums0[replay.block - 1u]);
 }
 
 // ── Constellation star-pass indirect args ──
@@ -235,10 +240,18 @@ struct StarIndirectParams {
 fn star_indirect() {
     let total = dst[params.start + params.len - 1u];
     var slots = 0u;
-    if (total > 0.0 && total < 1e30 && star_params.slot_pitch_px > 0.0) {
-        // Every slot of the arc draws (#107). 4294967040 is the largest f32
-        // below 2^32, so the conversion stays inside the u32 instance count.
-        slots = u32(min(ceil(total / star_params.slot_pitch_px), 4294967040.0));
+    if (star_params.slot_pitch_px > 0.0) {
+        // Every slot of the arc draws (#107): ceil(total / pitch) in arc
+        // units, the step `arc_slot_position` places slots at; past the u32
+        // instance count a draw can name, every slot it can name.
+        let division = arc_divide(total, arc_divisor(star_params.slot_pitch_px));
+        let whole = division.quotient;
+        let more = select(0u, 1u, division.remainder > 0u);
+        if (whole.y > 0u || whole.x > 0xFFFFFFFFu - more) {
+            slots = 0xFFFFFFFFu;
+        } else {
+            slots = whole.x + more;
+        }
     }
     star_args[0] = 6u;    // vertex_count: one quad per slot
     star_args[1] = slots; // instance_count: candidate star slots

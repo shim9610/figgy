@@ -95,6 +95,7 @@ pub const VECTOR_PATH_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/sample_validity.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/arrow.wgsl",
+    "data_render/common/arc_pair.wgsl",
     "data_render/common/arc_walk.wgsl",
     "data_render/common/path_arrow.wgsl",
     "data_render/vector/project_cartesian2d.wgsl",

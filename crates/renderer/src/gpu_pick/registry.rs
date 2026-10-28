@@ -162,9 +162,9 @@ pub(super) fn series_arc(
     index: usize,
     point_count: u32,
 ) -> Option<&wgpu::Buffer> {
-    arcs.get(index)
-        .and_then(Option::as_deref)
-        .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
+    arcs.get(index).and_then(Option::as_deref).filter(|buffer| {
+        buffer.size() >= u64::from(point_count) * crate::data_render::line_arc::ARC_PAIR_BYTES
+    })
 }
 
 /// The identities of a registry's series in registry order.

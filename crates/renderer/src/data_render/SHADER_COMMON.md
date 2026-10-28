@@ -37,6 +37,7 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
+| `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
 | `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
@@ -75,6 +76,18 @@ The fragments that read the transform (`projection.wgsl`,
 `transform` uniform, a pick module `pick_query_params.transform`. So the
 pick modules, which bind no `transform` uniform, splice the same projection
 the draw runs.
+
+**The draw's pixel frame.** `data_to_px(t, x, y)` (`projection.wgsl`) is a
+data point in render pixels from the target's centre, y up: `data_to_ndc /
+pixel_to_ndc`, what every vertex stage computes. The exact picker measures
+every primitive there: it maps the cursor into that frame once
+(`pick_cursor_px`, `gpu_pick/core.wgsl`) and projects every vertex with
+`data_to_px` (`pick_data_px`), so a primitive's pixels are the very values
+the draw computed, not a second projection of the same data. A separate
+canvas projection once rounded a 1e-5 px step riser to zero length where the
+draw kept it and its square caps (#114). The axis gates
+(`pick_*_may_hit`) still test canvas pixels per axis: they only prefilter,
+with a conservative pad, and the exact pass decides.
 
 ### Module notes
 
@@ -232,9 +245,9 @@ CPU's `split_f64_to_f32_pair`.
 **Picking.** The fill picks as part of its line: `gpu_pick/area.wgsl`'s
 `pick_area_candidate`, called inside `pick_line_candidate` under
 `PICK_VARIANT_AREA` (8), walks the same pieces through `area_segment_drawn`,
-`area_piece` and `area_corner_ndc`, maps the four corners from NDC to
-canvas pixels and tests the cursor against the two triangles the strip
-draws, edges included. A fill hit has distance zero and nothing else picks;
+`area_piece` and `area_corner_ndc`, takes the four corners into the draw's
+pixel frame (§ The draw's pixel frame) and tests the cursor against the two
+triangles the strip draws, edges included. A fill hit has distance zero and nothing else picks;
 the polar fragment clip applies as to every primitive. It is candidate kind
 3 (`PICK_KIND_FILL`) and loses every exact tie in
 `pick_candidate_is_better`, since fills are drawn before every series body;
@@ -465,10 +478,13 @@ pipeline layout adds group 3, the arc slot data of the line's arc scan
 the scan runs with the arrow spacing in render pixels as its slot pitch,
 and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (no
 slot cap, #107; only the `u32` instance count bounds it). Slot `i` sits at arc `(i + 0.5) * spacing`
-(`VectorParams.spacing_px`): `arc_walk_segment` finds its segment (a slot
+(`VectorParams.spacing_px`, the arc pair `arc_slot_position(i, 0.5, spacing)`,
+§5.6 arc pairs): `arc_walk_segment` finds its segment (a slot
 past the arc, on a NaN gap, on a segment with an invalid sample or past
 `count`, the shortest of the coordinate and colour columns, draws nothing),
-and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)` gives the
+and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)`, called with
+the segment's local arc (0 at A, the segment's length at B and the slot's
+offset from A), gives the
 data-space point at the arc fraction (hi/lo pairs through `pair_add`), the
 unit data-space tangent of the segment and the fraction. The colour value
 is interpolated between the two samples as the colour-mapped stroke
@@ -588,13 +604,47 @@ the interpolated arc position, which is the cumulative arc prefix of
 `line_arc.wgsl` at the piece's ends (`arc_start - half_w` at the A-side
 corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides
 each piece into `SKETCH_SUBDIV` spans whose knots are displaced along the
-normal by `sketch_line_offset` at their arc position, and the fragment
+normal by `sketch_line_offset_from` at their arc position, and the fragment
 evaluates the same rectangle in the undisplaced `(along, side)` frame.
+
+**Arc pairs.** The prefix holds each point's cumulative arc as a 64-bit
+fixed-point integer of `ARC_UNITS_PER_PX` (65536) units per pixel, stored as
+`vec2<u32>(low word, high word)` (8 bytes per point; #107). Integer sums are
+exact and associative, so the prefix keeps 1/65536 px resolution up to 2^48
+px in any order a scan adds (the resident scan and the streamed replay give
+the same words), and no compiler can fold them the way it may fold an
+error-free float sum: an f32 `(hi, lo)` two-sum lost its low part on
+lavapipe. `line_arc.wgsl` rounds each segment's f32 length to units
+(`arc_from_px`) and adds them with `arc_add`. Every reader takes a
+segment's arc as an origin, the pair at A, plus a small f32 offset along
+it: the segment's length is `arc_delta(arc_b, arc_a)`. A value the reader
+derives from the absolute arc reduces the origin exactly first, by integer
+long division (`arc_divide`) by a step rounded to units (`arc_divisor`).
+`arc_dash_phase(origin, period)` is the origin modulo the dash period, so
+`dist_px` is that phase plus the offset; `arc_noise(origin, offset,
+wavelength, seed)` takes the noise lattice cell of the origin (`arc_cell`,
+the quotient wrapped into `u32` as `sketch_noise` wraps its index, and the
+fraction) and walks the offset from there, which is the sketch wobble
+(`sketch_line_offset_from`) and the Milkyway clump and population noise. An
+arc slot's position is `slot` whole pitch steps in units plus its offset
+(`arc_slot_position`), compared with the prefix by `arc_less`, and
+`star_indirect` counts slots in the same units. A period or a wavelength is
+thereby rounded to 1/65536 px, which moves a pattern by less than 2e-5 px
+per repetition. The fragment is
+[`data_render/common/arc_pair.wgsl`](common/arc_pair.wgsl); every module
+that splices `line_stroke.wgsl` or `arc_walk.wgsl` splices it before them.
+The cost per reader is one 64-step integer division per vertex that reduces
+an origin (the dash phase, a noise cell) and per surviving star.
 
 The picker inverts that extrusion at the cursor: it projects the cursor onto
 the piece, removes the knot displacement interpolated at that position, and
-evaluates `line_stroke_distance` and `dash_pattern_on` there. Its exact pass
-binds the line's arc prefix (group 2, `pick_arc`) — the buffer the line was
+evaluates `line_stroke_distance` and `dash_pattern_on` there. The knot weight
+is not clamped to its span: a multisampled pixel whose centre lies past a
+strip's square cap but whose sample lies inside it is shaded with the end
+span's attributes extrapolated to the centre (`dist_px` and the displaced
+side), so the picker extrapolates the same span the same way, as the
+precise stroke's straight `dist_px` does (#114). Its exact pass
+binds the line's arc prefix (group 2, `pick_arc`, the same arc pairs) — the buffer the line was
 drawn with, from the renderer's arc cache under the same key — so the dash
 phase and the wobble are the drawn ones. A streamed series is picked without
 it (streaming is not extended): its dashes pick as a solid stroke and its
@@ -640,8 +690,8 @@ placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
 **Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
 slot along the polyline's total pixel arc, the count the scan's
 `star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
-ceil(total / pitch))`, no slot cap, #107; only the `u32` instance count
-bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
+ceil(total / pitch))`, counted in arc units, no slot cap, #107;
+only the `u32` instance count bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
 instance per slot, each a binary search over the prefix, so a draw is
 `O(slots · log n)`; `milkyway_stars_draw_past_two_million_arc_slots`
 measures a 2.8 M-slot series, and the host budgets it (rule 10). Its vertex stage binds
@@ -650,7 +700,7 @@ no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
 `line_arc.rs::StarVsParams`, layout
 `stylized.rs::create_star_data_bind_group_layout`), and
 `arc_walk_segment(n, arc)` finds the segment holding a slot's arc
-position by binary search over the prefix: the last `g` with
+position (an arc pair) by binary search over the prefix: the last `g` with
 `star_arc[g] <= arc`, at most `n - 2`. A NaN gap adds nothing to the
 prefix, so a slot on a gap's boundary lands on a zero-length segment or
 on the drawn one after it, and a caller drops a slot whose segment has no
@@ -696,9 +746,8 @@ The pick shader's `pick_vector_candidate` repeats the draw's `vector_sample`
 count; a non-finite component draws nothing) and `project_arrow` (the `Data`
 tip through the axes, or the `Pixels` direction through
 `axis_px_per_unit_at`), then calls the glyph's own `arrow_place` and
-`arrow_distance`. The draw frame is y-up framebuffer pixels; the picker works
-in canvas pixels flipped up (`pick_flip`), a translation of it, so distances
-agree. A zero vector, an arrow under `min_length_px` and an arrow with a
+`arrow_distance`. The draw frame is y-up framebuffer pixels, and the picker
+works in it too (`pick_data_px`, `pick_cursor_px`). A zero vector, an arrow under `min_length_px` and an arrow with a
 non-finite end are not drawn and do not pick.
 
 `ARROW_SHAFT_MIN_PX` keeps the head-only arrow (shorter than its head) from
@@ -716,7 +765,8 @@ line's arc prefix (`pick_arc`, scanned with the arrow pitch, the draw's
 cache key), and `PickQueryParams.vector_min.y` is the spacing in canvas
 pixels and `vector_px` the head (length, 0, length, width). The segment
 tests the three slots nearest the cursor's arc position on it (the
-cursor projected onto the segment), each through the draw's
+cursor projected onto the segment, the slot index taken from its arc pair
+by `arc_cell`), each through the draw's
 `path_arrow_on_segment`, the pixel-mode projection one head long along
 the tangent through `axis_px_per_unit_at`, `arrow_place` with the middle
 pivot and no shaft, and `arrow_distance`. A hit is the segment's

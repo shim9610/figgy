@@ -41,3 +41,11 @@ fn data_to_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     }
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
+
+/// A data point in the draw's pixel frame: render pixels from the target's
+/// centre, y up, as every vertex stage computes it. The exact picker
+/// measures every primitive in this frame (SHADER_COMMON.md, the draw's
+/// pixel frame).
+fn data_to_px(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
+    return data_to_ndc(t, xv, yv) / t.pixel_to_ndc;
+}

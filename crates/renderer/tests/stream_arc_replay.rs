@@ -28,7 +28,8 @@ fn gather_checkpoint(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
     if (i >= params.len) { return; }
     let g = replay.global_start + i;
-    let bits = bitcast<u32>(dst[params.start + i]);
+    let v = dst[params.start + i];
+    let bits = v.x ^ ((v.y << 16u) | (v.y >> 16u));
     if (g == 0u) { gathered[0] = bits; }
     if (g == 255u) { gathered[1] = bits; }
     if (g == 256u) { gathered[2] = bits; }
@@ -50,7 +51,8 @@ fn test_shader() -> String {
         "\n@compute @workgroup_size(256)\nfn gather_chunk_checkpoint(@builtin(global_invocation_id) gid: vec3<u32>) {\n\
          let i = gid.x; if (i >= params.len) { return; }\n\
          let g = replay.global_start + i;\n\
-         let bits = bitcast<u32>(dst[params.start + i]);\n",
+         let v = dst[params.start + i];\n\
+         let bits = v.x ^ ((v.y << 16u) | (v.y >> 16u));\n",
     );
     for (slot, index) in CHUNK_CHECKS.iter().enumerate() {
         source.push_str(&format!(
@@ -59,6 +61,17 @@ fn test_shader() -> String {
     }
     source.push_str("}\n");
     source
+}
+
+/// Bytes of one arc pair: a fixed-point arc as (low, high) words.
+const ARC: u64 = 8;
+
+/// One word per arc pair, as the gather entries fold it.
+fn fold(words: Vec<u32>) -> Vec<u32> {
+    words
+        .chunks_exact(2)
+        .map(|w| w[0] ^ w[1].rotate_left(16))
+        .collect()
 }
 
 fn buffer(
@@ -365,31 +378,31 @@ fn oracle(gpu: &Gpu, n: u32) -> Vec<u32> {
     let arc = buffer(
         &gpu.device,
         "P-00 full arc oracle",
-        n as u64 * 4,
+        n as u64 * ARC,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     );
     let sums0 = buffer(
         &gpu.device,
         "P-00 oracle sums0",
-        blocks as u64 * 4,
+        blocks as u64 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let sums1 = buffer(
         &gpu.device,
         "P-00 oracle sums1",
-        upper as u64 * 4,
+        upper as u64 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let sink = buffer(
         &gpu.device,
         "P-00 oracle sink",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let carry = buffer(
         &gpu.device,
         "P-00 unused carry",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let p_arc = gpu.params(n, 0, n * 2, 0);
@@ -440,7 +453,7 @@ fn oracle(gpu: &Gpu, n: u32) -> Vec<u32> {
     }
     gpu.submit(encoder);
     // Readback is test validation only, not a renderer display path.
-    gpu.read_u32(&arc, n as usize)
+    fold(gpu.read_u32(&arc, 2 * n as usize))
 }
 
 fn oracle_with_explicit_chunks(gpu: &Gpu, n: u32, cap: u32) -> (Vec<u32>, u32) {
@@ -461,28 +474,28 @@ fn oracle_with_explicit_chunks(gpu: &Gpu, n: u32, cap: u32) -> (Vec<u32>, u32) {
     let arc = buffer(
         &gpu.device,
         "P-00 cross-chunk resident arc",
-        n as u64 * 4,
+        n as u64 * ARC,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
     );
     let sums0 = buffer(
         &gpu.device,
         "P-00 resident chunk sums0",
-        8,
+        2 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let sums1 = buffer(
         &gpu.device,
         "P-00 resident chunk sums1",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let carry = buffer(
         &gpu.device,
         "P-00 resident running carry",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     );
-    gpu.queue.write_buffer(&carry, 0, &0f32.to_le_bytes());
+    gpu.queue.write_buffer(&carry, 0, &[0u8; ARC as usize]);
     let dummy_gather = buffer(
         &gpu.device,
         "P-00 oracle dummy gather",
@@ -537,8 +550,8 @@ fn oracle_with_explicit_chunks(gpu: &Gpu, n: u32, cap: u32) -> (Vec<u32>, u32) {
         start += len;
     }
     gpu.submit(encoder);
-    let bits = gpu.read_u32(&arc, n as usize);
-    let saved_carry = gpu.read_u32(&carry, 1)[0];
+    let bits = fold(gpu.read_u32(&arc, 2 * n as usize));
+    let saved_carry = fold(gpu.read_u32(&carry, 2))[0];
     (bits, saved_carry)
 }
 
@@ -583,37 +596,37 @@ fn replay(gpu: &Gpu, n: u32, io: u32) -> Vec<u32> {
     let leaf = buffer(
         &gpu.device,
         "P-00 bounded 256-lane arc leaf",
-        INPUT_POINTS as u64 * 4,
+        INPUT_POINTS as u64 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let leaf_total = buffer(
         &gpu.device,
         "P-00 leaf total",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let top = buffer(
         &gpu.device,
         "P-00 bounded canonical sums0",
-        257 * 4,
+        257 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let top_sums = buffer(
         &gpu.device,
         "P-00 bounded canonical sums1",
-        2 * 4,
+        2 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let sink = buffer(
         &gpu.device,
         "P-00 bounded top sink",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let carry = buffer(
         &gpu.device,
         "P-00 unused carry",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let gathered = initialized(
@@ -745,34 +758,34 @@ fn replay_with_explicit_chunks(gpu: &Gpu, n: u32, cap: u32, io: u32) -> (Vec<u32
     let leaf = buffer(
         &gpu.device,
         "P-00 cross-chunk bounded arc leaf",
-        INPUT_POINTS as u64 * 4,
+        INPUT_POINTS as u64 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let leaf_total = buffer(
         &gpu.device,
         "P-00 cross-chunk leaf total",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let top = buffer(
         &gpu.device,
         "P-00 cross-chunk sums0",
-        8,
+        2 * ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let top_sink = buffer(
         &gpu.device,
         "P-00 cross-chunk sums1",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE,
     );
     let carry = buffer(
         &gpu.device,
         "P-00 cross-chunk bounded carry",
-        4,
+        ARC,
         wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
     );
-    gpu.queue.write_buffer(&carry, 0, &0f32.to_le_bytes());
+    gpu.queue.write_buffer(&carry, 0, &[0u8; ARC as usize]);
     let gathered = initialized(
         &gpu.device,
         "P-00 cross-chunk bounded checkpoint gather",
@@ -891,7 +904,7 @@ fn replay_with_explicit_chunks(gpu: &Gpu, n: u32, cap: u32, io: u32) -> (Vec<u32
     }
     (
         gpu.read_u32(&gathered, CHUNK_CHECKS.len()),
-        gpu.read_u32(&carry, 1)[0],
+        fold(gpu.read_u32(&carry, 2))[0],
     )
 }
 

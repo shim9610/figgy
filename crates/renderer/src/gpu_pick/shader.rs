@@ -85,6 +85,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
+            "data_render/common/arc_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
             "data_render/common/errorbar_segment.wgsl",
             "data_render/common/line_stroke.wgsl",
@@ -107,6 +108,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/projection.wgsl",
             "data_render/common/sample_validity.wgsl",
             "data_render/common/ramp.wgsl",
+            "data_render/common/arc_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",
@@ -471,7 +473,7 @@ pub(super) fn create_pipeline_bundle_observed(
     })
 }
 
-/// The exact pass's group 2 for a series without an arc prefix: a one-value
+/// The exact pass's group 2 for a series without an arc prefix: a one-pair
 /// storage buffer the shader never reads (`line.y` is zero).
 pub(super) fn create_arc_placeholder(
     device: &wgpu::Device,
@@ -485,7 +487,7 @@ pub(super) fn create_arc_placeholder(
         device,
         &wgpu::util::BufferInitDescriptor {
             label: Some("figgy GPU pick arc placeholder"),
-            contents: bytemuck::bytes_of(&0.0f32),
+            contents: bytemuck::bytes_of(&[0u32; 2]),
             usage: wgpu::BufferUsages::STORAGE,
         },
     );

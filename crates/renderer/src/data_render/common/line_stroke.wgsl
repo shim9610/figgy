@@ -32,10 +32,7 @@ fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool 
     // index past the array.
     var spans = dash;
     let n = min(count, 8u);
-    var period = 0.0;
-    for (var i = 0u; i < n; i = i + 1u) {
-        period = period + max(spans[i / 4u][i % 4u], 0.0);
-    }
+    let period = dash_period(dash, count);
     if period <= 0.0 {
         return true;
     }
@@ -58,11 +55,45 @@ fn dash_pattern_on(dist_px: f32, dash: array<vec4<f32>, 2>, count: u32) -> bool 
     return true;
 }
 
-/// The sketch line's perpendicular displacement at arc position `arc_px`:
-/// `amplitude_px · noise(arc / wavelength)`. A wavelength <= 0 disables the
-/// wobble — mirrors the CPU stroker's guard (sketch.rs) so GPU and deco
-/// layers degrade identically.
-fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
-    let wobble = max(amplitude_px, 0.0) * sketch_noise(arc_px / max(wavelength_px, 1e-6), seed);
-    return select(0.0, wobble, wavelength_px > 0.0);
+/// The length of one repetition of the dash pattern, the sum of its
+/// positive spans; zero for a solid line.
+fn dash_period(dash: array<vec4<f32>, 2>, count: u32) -> f32 {
+    var spans = dash;
+    let n = min(count, 8u);
+    var period = 0.0;
+    for (var i = 0u; i < n; i = i + 1u) {
+        period = period + max(spans[i / 4u][i % 4u], 0.0);
+    }
+    return period;
+}
+
+/// Arc pair `origin` modulo the dash `period` (zero for a solid line): the
+/// dash position a segment's `dist_px` starts from (§5.6 arc pairs).
+fn arc_dash_phase(origin: vec2<u32>, period: f32) -> f32 {
+    if !(period > 0.0) {
+        return 0.0;
+    }
+    return f32(arc_divide(origin, arc_divisor(period)).remainder) / ARC_UNITS_PER_PX;
+}
+
+/// Value noise `sketch_noise((origin + offset_px) / wavelength_px)` for an
+/// arc pair `origin` and a small `offset_px` along the segment: the lattice
+/// cell of the origin is taken from the pair, so the noise keeps its scale
+/// past 2^24 px of arc. `wavelength_px` > 0.
+fn arc_noise(origin: vec2<u32>, offset_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    let cell = arc_cell(origin, wavelength_px);
+    let t = cell.fraction + offset_px / wavelength_px;
+    let k = floor(t);
+    return sketch_noise_lattice(cell.index + u32(i32(k)), t - k, seed);
+}
+
+/// The sketch line's perpendicular displacement at arc `origin + offset_px`
+/// (an arc pair and a small offset): `amplitude_px · noise(arc /
+/// wavelength)`. A wavelength <= 0 disables the wobble — mirrors the CPU
+/// stroker's guard (sketch.rs) so GPU and deco layers degrade identically.
+fn sketch_line_offset_from(origin: vec2<u32>, offset_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
+    if !(wavelength_px > 0.0) {
+        return 0.0;
+    }
+    return max(amplitude_px, 0.0) * arc_noise(origin, offset_px, wavelength_px, seed);
 }
