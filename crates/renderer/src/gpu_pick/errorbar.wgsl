@@ -18,7 +18,7 @@ fn pick_errorbar_quad_distance(a_up: vec2<f32>, b_up: vec2<f32>, perp: vec2<f32>
         return PICK_F32_MAX;
     }
     let dir = delta / len;
-    let rel = pick_flip(pick_query_params.cursor_chart.xy) - a_up;
+    let rel = pick_cursor_px() - a_up;
     let along = dot(rel, dir);
     let shift = mix(disp_a, disp_b, clamp(along / len, 0.0, 1.0));
     let side = dot(rel, perp) - shift;
@@ -106,15 +106,15 @@ fn pick_errorbar_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> Pick
             continue;
         }
         let g = errorbar_segment(seg, sample, stroke);
-        let a_up = pick_flip(pick_project_pair(g.a.x, g.a.y)) + g.a_px;
-        let b_up = pick_flip(pick_project_pair(g.b.x, g.b.y)) + g.b_px;
+        let a_up = pick_data_px(g.a.x, g.a.y) + g.a_px;
+        let b_up = pick_data_px(g.b.x, g.b.y) + g.b_px;
         if !pick_is_finite(a_up.x) || !pick_is_finite(a_up.y) || !pick_is_finite(b_up.x) || !pick_is_finite(b_up.y) {
             continue;
         }
         var d = PICK_F32_MAX;
         if jet && seg != 0u && seg != 3u {
             // A knot fades to zero at the disc its square quad inscribes.
-            d = max(length(pick_flip(pick_query_params.cursor_chart.xy) - (a_up + b_up) * 0.5) - g.half_stroke, 0.0);
+            d = max(length(pick_cursor_px() - (a_up + b_up) * 0.5) - g.half_stroke, 0.0);
         } else if styled && mode == PICK_MARKER_SKETCH {
             d = pick_errorbar_quad_distance(a_up, b_up, g.perp, g.half_stroke,
                 errorbar_sketch_offset(amp, seed, seg, true), errorbar_sketch_offset(amp, seed, seg, false));

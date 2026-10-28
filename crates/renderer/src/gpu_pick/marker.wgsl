@@ -149,8 +149,8 @@ fn pick_marker_distance(marker_in: PickMarker, center_px: vec2<f32>, point_index
     if PICK_SHAPE != PICK_SHAPE_ANY {
         marker.shape = PICK_SHAPE;
     }
-    let delta = pick_query_params.cursor_chart.xy - center_px;
-    let p = vec2<f32>(delta.x, -delta.y);
+    // Both in the draw's pixel frame, y up (`pick_data_px`).
+    let p = pick_cursor_px() - center_px;
     let mode = pick_query_params.styled.x;
     let style_params = pick_query_params.transform.style_params;
     let styled = pick_variant(PICK_VARIANT_STYLED_MARKER);
@@ -199,7 +199,7 @@ fn pick_marker_candidate(
     if marker.hidden || !pick_is_finite(marker.radius) {
         return pick_invalid_candidate(series_order);
     }
-    let point_px = pick_project_pair(x, y);
+    let point_px = pick_data_px(x, y);
     if !pick_is_finite(point_px.x) || !pick_is_finite(point_px.y) {
         return pick_invalid_candidate(series_order);
     }

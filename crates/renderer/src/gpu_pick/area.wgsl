@@ -54,7 +54,7 @@ fn pick_area_candidate(
         || pick_polar_clip_distance() > 0.0 {
         return pick_invalid_candidate(series_order);
     }
-    let cursor = pick_query_params.cursor_chart.xy;
+    let cursor = pick_cursor_px();
     let mode = pick_line_mode();
     let pieces = step_piece_count(mode);
     var coordinate_scale = 1.0;
@@ -65,10 +65,10 @@ fn pick_area_candidate(
     var hit_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = area_piece(ax, ay, bx, by, base_a, base_b, to_series, baseline, mode, k);
-        let top_a = pick_ndc_to_canvas(area_corner_ndc(t, piece, false, false, to_series));
-        let base_a_px = pick_ndc_to_canvas(area_corner_ndc(t, piece, false, true, to_series));
-        let top_b = pick_ndc_to_canvas(area_corner_ndc(t, piece, true, false, to_series));
-        let base_b_px = pick_ndc_to_canvas(area_corner_ndc(t, piece, true, true, to_series));
+        let top_a = area_corner_ndc(t, piece, false, false, to_series) / t.pixel_to_ndc;
+        let base_a_px = area_corner_ndc(t, piece, false, true, to_series) / t.pixel_to_ndc;
+        let top_b = area_corner_ndc(t, piece, true, false, to_series) / t.pixel_to_ndc;
+        let base_b_px = area_corner_ndc(t, piece, true, true, to_series) / t.pixel_to_ndc;
         let top = top_b - top_a;
         let length_sq = fma(top.x, top.x, top.y * top.y);
         let length = sqrt(length_sq);

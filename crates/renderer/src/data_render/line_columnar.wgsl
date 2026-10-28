@@ -185,9 +185,7 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let delta = b_px - a_px;
     let len = length(delta);
     // Zero-length guard — normal=0 makes corner=center, collapsing the quad.
-    // A negligible piece collapses, as the pick drops it (#114).
-    let drawn = len > 1e-6 && !step_piece_negligible(transform, piece);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), drawn);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -351,8 +349,8 @@ fn vs_main_mapped(in: VsIn, arc: VsArc, value: VsValue, @builtin(vertex_index) v
     // The corner's position along the unclipped segment, square cap and
     // viewport clip included, so the interpolated value is A's to B's
     // linearly along the drawn segment, as an arrowhead on it reads it.
-    let a_px = data_to_ndc(transform, in.x_a, in.y_a) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(transform, in.x_b, in.y_b) / transform.pixel_to_ndc;
+    let a_px = data_to_px(transform, in.x_a, in.y_a);
+    let b_px = data_to_px(transform, in.x_b, in.y_b);
     let d = b_px - a_px;
     let d2 = dot(d, d);
     let f = select(0.0, dot(base.pos.xy / transform.pixel_to_ndc - a_px, d) / d2, d2 > 1e-12);
@@ -476,9 +474,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 
     let delta = b_px - a_px;
     let len = length(delta);
-    // A negligible piece collapses, as the pick drops it (#114).
-    let drawn = len > 1e-6 && !step_piece_negligible(transform, piece);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), drawn);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -603,13 +599,11 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let slot = strip_slot(vid, 2u * (CONS_RIBBON_SUBDIV + 1u));
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
-    let a_px = data_to_ndc(transform, piece.x0, piece.y0) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(transform, piece.x1, piece.y1) / transform.pixel_to_ndc;
+    let a_px = data_to_px(transform, piece.x0, piece.y0);
+    let b_px = data_to_px(transform, piece.x1, piece.y1);
     let delta = b_px - a_px;
     let len = length(delta);
-    // A negligible piece collapses, as the pick drops it (#114).
-    let drawn = len > 1e-6 && !step_piece_negligible(transform, piece);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), drawn);
+    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     // Geometric half-extent = one FULL ribbon width: the gaussian profile in
@@ -782,8 +776,8 @@ fn vs_stars(
             k = k + 1u;
         }
     }
-    let a_px = data_to_ndc(transform, piece.x0, piece.y0) / transform.pixel_to_ndc;
-    let b_px = data_to_ndc(transform, piece.x1, piece.y1) / transform.pixel_to_ndc;
+    let a_px = data_to_px(transform, piece.x0, piece.y0);
+    let b_px = data_to_px(transform, piece.x1, piece.y1);
     let delta = b_px - a_px;
     let len = length(delta);
     let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);

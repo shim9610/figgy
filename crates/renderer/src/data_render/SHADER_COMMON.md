@@ -77,6 +77,18 @@ The fragments that read the transform (`projection.wgsl`,
 pick modules, which bind no `transform` uniform, splice the same projection
 the draw runs.
 
+**The draw's pixel frame.** `data_to_px(t, x, y)` (`projection.wgsl`) is a
+data point in render pixels from the target's centre, y up: `data_to_ndc /
+pixel_to_ndc`, what every vertex stage computes. The exact picker measures
+every primitive there: it maps the cursor into that frame once
+(`pick_cursor_px`, `gpu_pick/core.wgsl`) and projects every vertex with
+`data_to_px` (`pick_data_px`), so a primitive's pixels are the very values
+the draw computed, not a second projection of the same data. A separate
+canvas projection once rounded a 1e-5 px step riser to zero length where the
+draw kept it and its square caps (#114). The axis gates
+(`pick_*_may_hit`) still test canvas pixels per axis: they only prefilter,
+with a conservative pad, and the exact pass decides.
+
 ### Module notes
 
 `field_columnar.wgsl::fs_contour`가 격자에서 등고선을 직접 그리고, `contour_anchor.wgsl`이 뉴턴 투영으로 앵커를 구한다. 따라서 두 셰이더가 격자 샘플링 블록을 공유한다.
@@ -233,9 +245,9 @@ CPU's `split_f64_to_f32_pair`.
 **Picking.** The fill picks as part of its line: `gpu_pick/area.wgsl`'s
 `pick_area_candidate`, called inside `pick_line_candidate` under
 `PICK_VARIANT_AREA` (8), walks the same pieces through `area_segment_drawn`,
-`area_piece` and `area_corner_ndc`, maps the four corners from NDC to
-canvas pixels and tests the cursor against the two triangles the strip
-draws, edges included. A fill hit has distance zero and nothing else picks;
+`area_piece` and `area_corner_ndc`, takes the four corners into the draw's
+pixel frame (§ The draw's pixel frame) and tests the cursor against the two
+triangles the strip draws, edges included. A fill hit has distance zero and nothing else picks;
 the polar fragment clip applies as to every primitive. It is candidate kind
 3 (`PICK_KIND_FILL`) and loses every exact tie in
 `pick_candidate_is_better`, since fills are drawn before every series body;
@@ -587,14 +599,7 @@ answer the same question per pixel. Every step piece of a segment is
 extruded into a rectangle with square caps, `max(line_width_px, 1) / 2` wide
 either side: `line_stroke_distance` is its signed distance in the piece's
 `(along, side)` frame, and the stroke covers a pixel where it is below the
-anti-aliasing width. A piece shorter than `STEP_PIECE_MIN_PX` (1e-3 render px) in
-either axis' panel extent (`step_piece_negligible`, `line_step.wgsl`) draws
-and picks as nothing: below f32 pixel resolution its direction is rounding
-noise, and the draw (pixels from NDC) and the pick (canvas pixels) would
-round a 1e-5 px riser differently, so one drew its square caps with their
-own dash phase where the other saw nothing (#114). Both decide from the same
-panel `t` values, so they drop the same pieces; the arc scan still counts
-them. A dashed stroke is on where `dash_pattern_on` says so at
+anti-aliasing width. A dashed stroke is on where `dash_pattern_on` says so at
 the interpolated arc position, which is the cumulative arc prefix of
 `line_arc.wgsl` at the piece's ends (`arc_start - half_w` at the A-side
 corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides
@@ -741,9 +746,8 @@ The pick shader's `pick_vector_candidate` repeats the draw's `vector_sample`
 count; a non-finite component draws nothing) and `project_arrow` (the `Data`
 tip through the axes, or the `Pixels` direction through
 `axis_px_per_unit_at`), then calls the glyph's own `arrow_place` and
-`arrow_distance`. The draw frame is y-up framebuffer pixels; the picker works
-in canvas pixels flipped up (`pick_flip`), a translation of it, so distances
-agree. A zero vector, an arrow under `min_length_px` and an arrow with a
+`arrow_distance`. The draw frame is y-up framebuffer pixels, and the picker
+works in it too (`pick_data_px`, `pick_cursor_px`). A zero vector, an arrow under `min_length_px` and an arrow with a
 non-finite end are not drawn and do not pick.
 
 `ARROW_SHAFT_MIN_PX` keeps the head-only arrow (shorter than its head) from

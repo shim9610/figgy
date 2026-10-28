@@ -261,6 +261,30 @@ fn pick_ndc_to_canvas(ndc: vec2<f32>) -> vec2<f32> {
 // The draw's projection in canvas pixels. A polar sample goes through the
 // draw's NDC (`data_to_ndc`); a rectangular one maps each axis' panel `t`
 // straight to pixels, which keeps the precision `t * 2 - 1` would round off.
+// The cursor in NDC on this query's chart rectangle.
+fn pick_cursor_ndc() -> vec2<f32> {
+    let cursor = pick_query_params.cursor_chart;
+    return vec2<f32>(
+        (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
+        1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
+    );
+}
+
+// The cursor in the draw's pixel frame (`data_to_px`: render pixels from the
+// target's centre, y up). The exact pass measures every primitive in this
+// frame from `pick_data_px`, the draw's own projection, so a primitive's
+// pixels are the values its vertex stage computed (#114).
+fn pick_cursor_px() -> vec2<f32> {
+    return pick_cursor_ndc() / pick_query_params.transform.pixel_to_ndc;
+}
+
+// A data point in the draw's pixel frame, with the draw's projection.
+fn pick_data_px(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    return data_to_px(pick_query_params.transform, x, y);
+}
+
+// Canvas pixels for the axis gates, which only prefilter (the exact pass
+// uses `pick_data_px`).
 fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
     if pick_polar() {
         return pick_ndc_to_canvas(data_to_ndc(pick_query_params.transform, x, y));
@@ -291,12 +315,7 @@ fn pick_polar_clip_distance() -> f32 {
     // The cursor in NDC: where the draw's `polar_clip_offset` is
     // interpolated at the fragment under the cursor.
     let t = pick_query_params.transform;
-    let cursor = pick_query_params.cursor_chart;
-    let ndc = vec2<f32>(
-        (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
-        1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
-    );
-    let px = polar_clip_offset(t, ndc);
+    let px = polar_clip_offset(t, pick_cursor_ndc());
     let limits = polar_clip_limits(t);
     let sector = polar_clip_sector(t);
     if polar_fragment_visible(px, limits, sector) {
@@ -416,10 +435,6 @@ const PICK_LINE_SKETCH: u32 = 1u;
 // Milkyway: the ribbon strip and the star field scattered along it.
 const PICK_LINE_RIBBON: u32 = 2u;
 
-// Canvas pixels (y down) into the draw shaders' pixel frame (y up).
-fn pick_flip(v: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(v.x, -v.y);
-}
 
 // `PickCandidate.primitive_kind`, numbered so that within one series a lower
 // kind is painted over a higher one: markers over the line over the error

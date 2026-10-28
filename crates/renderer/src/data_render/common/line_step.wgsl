@@ -84,27 +84,8 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
     return p;
 }
 
-// A piece shorter than this in render pixels, in both axes, draws and picks
-// as nothing (SHADER_COMMON.md §5.6, #114).
-const STEP_PIECE_MIN_PX: f32 = 1e-3;
-
-// Whether piece `p` is too short to have a direction at f32 pixel precision:
-// its panel `t` extent on each axis times the target's size in pixels. The
-// draw and the pick compute the same `axis_pair_to_t` values, so they drop
-// the same pieces, which their own pixel projections would round apart.
-fn step_piece_negligible(t: Transform, p: StepPiece) -> bool {
-    let dx = axis_pair_to_t(p.x1, t.data_min.x, t.data_max.x, t.data_min_lo.x, t.data_max_lo.x, t.scale_log.x, t.data_to_panel_scale.x, t.data_to_panel_offset.x)
-        - axis_pair_to_t(p.x0, t.data_min.x, t.data_max.x, t.data_min_lo.x, t.data_max_lo.x, t.scale_log.x, t.data_to_panel_scale.x, t.data_to_panel_offset.x);
-    let dy = axis_pair_to_t(p.y1, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y)
-        - axis_pair_to_t(p.y0, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y);
-    let size = abs(vec2<f32>(dx, dy) * 2.0 / t.pixel_to_ndc);
-    return max(size.x, size.y) < STEP_PIECE_MIN_PX;
-}
-
 // Pixel length of one piece, with the arc scan's projection.
 fn step_piece_len_px(t: Transform, p: StepPiece) -> f32 {
-    let a_px = data_to_ndc(t, p.x0, p.y0) / t.pixel_to_ndc;
-    let b_px = data_to_ndc(t, p.x1, p.y1) / t.pixel_to_ndc;
-    return distance(a_px, b_px);
+    return distance(data_to_px(t, p.x0, p.y0), data_to_px(t, p.x1, p.y1));
 }
 // ─────────────────────── end step interpolation ───────────────────────

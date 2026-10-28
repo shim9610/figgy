@@ -52,7 +52,7 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, origin: vec2<u32
     }
     let dir = delta / len;
     let normal = vec2<f32>(-dir.y, dir.x);
-    let rel = pick_flip(pick_query_params.cursor_chart.xy) - a_up;
+    let rel = pick_cursor_px() - a_up;
     let along = dot(rel, dir);
     var side = dot(rel, normal);
     let mode = pick_query_params.styled.y;
@@ -193,8 +193,8 @@ fn pick_stroke_candidate(
     var best_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = step_piece(ax, ay, bx, by, mode, k);
-        let a_px = pick_project_pair(piece.x0, piece.y0);
-        let b_px = pick_project_pair(piece.x1, piece.y1);
+        let a_px = pick_data_px(piece.x0, piece.y0);
+        let b_px = pick_data_px(piece.x1, piece.y1);
         if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
             return pick_invalid_candidate(series_order);
         }
@@ -214,12 +214,12 @@ fn pick_stroke_candidate(
         total_length = total_length + length;
         // A zero-length piece (a riser between equal values, or a degenerate
         // linear segment) has no stroke to hit.
-        if !(length > 1e-6) || step_piece_negligible(pick_query_params.transform, piece) {
+        if !(length > 1e-6) {
             continue;
         }
-        let distance = pick_stroke_piece_distance(pick_flip(a_px), pick_flip(b_px), arc_a, arc_start, arc_end, has_arc);
+        let distance = pick_stroke_piece_distance(a_px, b_px, arc_a, arc_start, arc_end, has_arc);
         if pick_is_finite(distance) && distance < best_distance {
-            let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
+            let cursor_delta = pick_cursor_px() - a_px;
             best_distance = distance;
             best_found = true;
             best_t = clamp((cursor_delta.x * segment.x + cursor_delta.y * segment.y) / length_sq, 0.0, 1.0);
@@ -284,14 +284,14 @@ fn pick_path_arrow_candidate(
     if !(arc_len > 0.0) {
         return pick_invalid_candidate(series_order);
     }
-    let a_px = pick_project_pair(ax, ay);
-    let b_px = pick_project_pair(bx, by);
+    let a_px = pick_data_px(ax, ay);
+    let b_px = pick_data_px(bx, by);
     let segment = b_px - a_px;
     let length_sq = dot(segment, segment);
     if !pick_is_finite(length_sq) || !(length_sq > 0.0) {
         return pick_invalid_candidate(series_order);
     }
-    let cursor = pick_query_params.cursor_chart.xy;
+    let cursor = pick_cursor_px();
     let position = clamp(dot(cursor - a_px, segment) / length_sq, 0.0, 1.0);
     // The cursor's arc pair on the segment and the slot it falls in.
     let cursor_arc = arc_add(arc_a, arc_from_px(position * arc_len));
@@ -313,7 +313,7 @@ fn pick_path_arrow_candidate(
         }
         // `project_arrow`'s pixel mode at the head's point, in this
         // shader's y-up frame.
-        let tail = pick_flip(pick_project_pair(head.x, head.y));
+        let tail = pick_data_px(head.x, head.y);
         let direction = vec2<f32>(
             axis_px_per_unit_at(range_x, tr.data_to_panel_scale.x, tr.scale_log.x, tr.pixel_to_ndc.x, head.x) * head.tangent.x,
             axis_px_per_unit_at(range_y, tr.data_to_panel_scale.y, tr.scale_log.y, tr.pixel_to_ndc.y, head.y) * head.tangent.y,
@@ -328,7 +328,7 @@ fn pick_path_arrow_candidate(
         if !placed.valid {
             continue;
         }
-        best = min(best, max(arrow_distance(pick_flip(cursor), placed, 0.0), 0.0));
+        best = min(best, max(arrow_distance(cursor, placed, 0.0), 0.0));
     }
     let distance = max(best, pick_polar_clip_distance());
     let distance_sq = distance * distance;

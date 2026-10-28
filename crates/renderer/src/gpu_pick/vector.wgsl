@@ -33,7 +33,7 @@ fn pick_vector_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCa
     }
     let uu = u.x + u.y;
     let vv = v.x + v.y;
-    let tail = pick_flip(pick_project_pair(x, y));
+    let tail = pick_data_px(x, y);
     var tip = tail;
     if (vector.w & PICK_VECTOR_SCALE_PIXELS) != 0u {
         let direction = vec2<f32>(pick_axis_px_per_unit(0u, x) * uu, pick_axis_px_per_unit(1u, y) * vv);
@@ -51,7 +51,7 @@ fn pick_vector_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCa
         if !pick_coordinate_is_valid(tx, 0u) || !pick_coordinate_is_valid(ty, 1u) {
             return pick_invalid_candidate(series_order);
         }
-        tip = pick_flip(pick_project_pair(tx, ty));
+        tip = pick_data_px(tx, ty);
     }
     if !pick_is_finite(tail.x) || !pick_is_finite(tail.y) || !pick_is_finite(tip.x) || !pick_is_finite(tip.y) {
         return pick_invalid_candidate(series_order);
@@ -60,7 +60,7 @@ fn pick_vector_candidate(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> PickCa
     if !placed.valid {
         return pick_invalid_candidate(series_order);
     }
-    let hit_distance = max(arrow_distance(pick_flip(pick_query_params.cursor_chart.xy), placed, px.y), 0.0);
+    let hit_distance = max(arrow_distance(pick_cursor_px(), placed, px.y), 0.0);
     let distance_sq = hit_distance * hit_distance;
     let maximum_sq = pick_query_params.chart_limits.z * pick_query_params.chart_limits.z;
     if !pick_is_finite(distance_sq) || distance_sq > maximum_sq {

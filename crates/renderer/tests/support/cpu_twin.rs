@@ -1152,12 +1152,7 @@ fn line_segment_pick(
         prefix_len += len;
         total_len += len;
         // A zero-length piece (a riser between equal values, or a degenerate
-        // linear segment) has no stroke to hit, nor one shorter than
-        // `STEP_PIECE_MIN_PX` on both axes (the shader's
-        // `step_piece_negligible` measures it in panel `t`; #114).
-        if (bx - ax).abs().max((by - ay).abs()) < 1e-3 {
-            continue;
-        }
+        // linear segment) has no stroke to hit.
         let Some(dist) =
             stroke_piece_distance(cursor, ([ax, ay], [bx, by]), stroke, arc_start, arc_end)
         else {
