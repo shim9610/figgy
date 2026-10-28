@@ -27,7 +27,9 @@ jobs:
     if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
     name: ${{ matrix.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 90
+    # The packaged suite on the software adapters (WARP, lavapipe) outgrew
+    # 90 minutes; the limit matches the repository job.
+    timeout-minutes: 300
     strategy:
       fail-fast: false
       matrix:
