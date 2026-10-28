@@ -463,8 +463,8 @@ with `vector/vector_input_path.wgsl` as the input, which splices
 pipeline layout adds group 3, the arc slot data of the line's arc scan
 (the arc prefix, the pool and `StarVsParams`), and the draw is indirect:
 the scan runs with the arrow spacing in render pixels as its slot pitch,
-and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (at
-most `STAR_MAX_SLOTS`). Slot `i` sits at arc `(i + 0.5) * spacing`
+and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (no
+slot cap, #107; only the `u32` instance count bounds it). Slot `i` sits at arc `(i + 0.5) * spacing`
 (`VectorParams.spacing_px`): `arc_walk_segment` finds its segment (a slot
 past the arc, on a NaN gap, on a segment with an invalid sample or past
 `count`, the shortest of the coordinate and colour columns, draws nothing),
@@ -640,7 +640,11 @@ placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
 **Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
 slot along the polyline's total pixel arc, the count the scan's
 `star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
-ceil(total / pitch))`, at most `STAR_MAX_SLOTS`). Its vertex stage binds
+ceil(total / pitch))`, no slot cap, #107; only the `u32` instance count
+bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
+instance per slot, each a binary search over the prefix, so a draw is
+`O(slots · log n)`; `milkyway_stars_draw_past_two_million_arc_slots`
+measures a 2.8 M-slot series, and the host budgets it (rule 10). Its vertex stage binds
 no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
 (`n_points`, the x / y lane bases and the step mode word; CPU twin
 `line_arc.rs::StarVsParams`, layout

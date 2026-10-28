@@ -7331,6 +7331,112 @@ fn milkyway_arc_star_density_is_sampling_invariant() {
     );
 }
 
+/// A star pass has no slot cap (#107 R7): a series whose arc needs more
+/// than the old 2 000 000 candidate slots still draws stars on its tail.
+/// The series zig-zags across the left 40% of the plot for about 1.4 M px of
+/// arc (2.8 M slots at the default 0.5 px pitch), then runs straight across
+/// the right 40%. Every star on that run sits past slot 2 000 000.
+#[test]
+fn milkyway_stars_draw_past_two_million_arc_slots() {
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let mut r = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        wgpu::TextureFormat::Bgra8Unorm,
+        4 * 1024 * 1024,
+    )
+    .unwrap();
+
+    let zig = 4_000usize;
+    let tail = 64usize;
+    let xs: Vec<f64> = (0..zig)
+        .map(|i| 0.4 * i as f64 / (zig - 1) as f64)
+        .chain((0..tail).map(|i| 0.6 + 0.4 * i as f64 / (tail - 1) as f64))
+        .collect();
+    let ys: Vec<f64> = (0..zig)
+        .map(|i| if i % 2 == 0 { 2.0 } else { 98.0 })
+        .chain((0..tail).map(|_| 50.0))
+        .collect();
+    r.add_column("cap_x", &col_f64(xs.clone())).unwrap();
+    r.add_column("cap_y", &col_f64(ys.clone())).unwrap();
+    // The tail alone: the star ink the long series must still reach there.
+    r.add_column("tail_x", &col_f64(xs[zig..].to_vec()))
+        .unwrap();
+    r.add_column("tail_y", &col_f64(ys[zig..].to_vec()))
+        .unwrap();
+
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 640,
+        height: 400,
+    });
+    config.draw_style = crate::config::DrawStyle::Milkyway(crate::config::MilkywayOptions {
+        star_density: 60.0,
+        ribbon_intensity: 0.0,
+        nebula: 0.0,
+        dust: 0.0,
+        glow: 0.0,
+        ..Default::default()
+    });
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 100.0);
+
+    let line_cfg = |x: &str, y: &str| SeriesConfig {
+        series_id: "cap".into(),
+        source_id: None,
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        render_type: DataRenderType::Line {
+            line: crate::data_config::DataLineStyleConfig {
+                line_style: crate::line::LineStylePreset::Solid,
+                line_color: Color::new(1.0, 1.0, 1.0, 1.0),
+                line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
+            },
+        },
+    };
+    // Ink in the right fifth of the image, where only the tail run reaches.
+    let mut right_ink = |series: &[SeriesConfig]| -> usize {
+        let img = r.export_panel_rgba(&chart, series, 1.0).unwrap();
+        let width = img.width as usize;
+        img.rgba
+            .chunks_exact(4)
+            .enumerate()
+            .filter(|(i, p)| {
+                i % width > width * 4 / 5 && p[3] > 0 && (p[0] > 40 || p[1] > 40 || p[2] > 40)
+            })
+            .count()
+    };
+    let empty = right_ink(&[]);
+    let tail_only = right_ink(&[line_cfg("tail_x", "tail_y")]).saturating_sub(empty);
+    // The cost grows with the drawn arc and is the host's to budget
+    // (rule 10): measured here, never capped.
+    let started = std::time::Instant::now();
+    let long = right_ink(&[line_cfg("cap_x", "cap_y")]).saturating_sub(empty);
+    eprintln!(
+        "{} points, about 2.8 M star slots: export {:?}",
+        zig + tail,
+        started.elapsed()
+    );
+
+    assert!(
+        tail_only > 100,
+        "the tail alone must draw stars ({tail_only} px)"
+    );
+    assert!(
+        long * 2 > tail_only,
+        "stars past slot 2 000 000 must draw: {long} px on the tail of the long \
+         series vs {tail_only} px for the tail alone"
+    );
+}
+
 /// The constellation backdrop cache must rebake only when its key
 /// (panel size, nebula, dust, seed) changes: range-only refreshes hit
 /// the cache, and a view already holding the baked generation skips the
