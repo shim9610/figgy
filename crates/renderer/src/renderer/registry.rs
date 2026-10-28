@@ -3560,13 +3560,14 @@ impl Renderer {
     /// Let uploads that do not fit enlarge the pool, or keep the fixed-capacity
     /// behavior.
     ///
-    /// `GrowthPolicy::Fixed` is the default and the 0.9 contract: an upload
-    /// with nowhere to go reports `OutOfSpace` and the host decides. With
-    /// `OnAllocFailure` the pool relayouts into a larger buffer first, which
+    /// `GrowthPolicy::OnAllocFailure` is the default (#107): an upload that
+    /// does not fit relayouts the pool into a larger buffer first, which
     /// invalidates every live [`ColumnHandle`] and `PreparedFrame` exactly as a
-    /// defragmentation does. Growth is still bounded by the device ceiling and
+    /// defragmentation does. Growth is bounded only by the device ceiling and
     /// by [`Self::set_memory_budget`]; when it cannot happen the original
-    /// `OutOfSpace` is what the caller sees.
+    /// `OutOfSpace` is what the caller sees. `GrowthPolicy::Fixed` keeps the
+    /// capacity `try_new` was given: an upload with nowhere to go reports
+    /// `OutOfSpace` and the host decides.
     pub fn set_pool_growth_policy(&mut self, policy: data_render::GrowthPolicy) {
         self.pool.growth_policy = policy;
     }

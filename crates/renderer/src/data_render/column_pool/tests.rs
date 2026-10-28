@@ -30,6 +30,8 @@ fn resident_batch_capacity_plan_is_pure_and_obeys_fragmentation_policy() {
     let Some((device, queue, mut pool)) = mk_pool(3 * ALIGN) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
     for id in ["a", "b", "c"] {
         pool.add_column(id.into(), &col_f64(vec![1.0]), ctx)
@@ -461,7 +463,12 @@ fn fixed_growth_policy_keeps_out_of_space_final() {
         return;
     };
     let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
-    assert_eq!(pool.growth_policy, GrowthPolicy::Fixed, "default is Fixed");
+    assert_eq!(
+        pool.growth_policy,
+        GrowthPolicy::OnAllocFailure,
+        "default is OnAllocFailure (#107)"
+    );
+    pool.growth_policy = GrowthPolicy::Fixed;
     let too_big = col_f64(vec![0.0; (4 * ALIGN / COLUMN_VALUE_BYTES as u64) as usize]);
 
     let error = pool
@@ -1749,6 +1756,8 @@ fn a_rejected_batch_leaves_the_pool_untouched() {
     let Some((device, queue, mut pool)) = mk_pool(8 * ALIGN) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
     let a = col_f64(vec![1.0, 2.0]);
     let empty: Column<f64> = Column {
@@ -2028,6 +2037,8 @@ fn a_batch_too_big_for_a_fixed_pool_is_refused_without_compacting() {
     let Some((device, queue, mut pool)) = mk_pool(4 * ALIGN) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
     pool.defrag_policy = DefragPolicy::OnAllocFailure;
     let one = col_f64(vec![1.0; 32]);
@@ -2138,6 +2149,8 @@ fn upsert_prepare_failures_leave_old_state_and_retry() {
     let Some((device, queue, mut pool)) = mk_pool(2 * ALIGN) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     let old = col_f64(vec![1.0, 2.0, 3.0]);
     pool.add_column("x".into(), &old, GpuAllocCtx::unbudgeted(&device, &queue))
         .unwrap();
@@ -2563,6 +2576,8 @@ fn pool_manual_policy_does_not_auto_defrag() {
     let Some((device, queue, mut pool)) = mk_pool(4 * 256) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     // Default policy is Manual.
     let small_a = col_f64((0..25).map(|i| i as f64).collect());
     let small_b = col_f64((0..25).map(|i| i as f64).collect());
@@ -3414,6 +3429,8 @@ fn a_failed_record_upsert_rolls_the_batch_back() {
     let Some((device, queue, mut pool)) = mk_pool(10 * ALIGN) else {
         return;
     };
+    // A fixed pool: this test is about what a pool that cannot grow does.
+    pool.growth_policy = GrowthPolicy::Fixed;
     let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
     let first = five_fields(3, 1.0);
     let fields = box_fields(&first);

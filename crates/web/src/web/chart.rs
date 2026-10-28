@@ -599,9 +599,10 @@ impl FiggyChart {
         Ok(families)
     }
 
-    /// Opt in to pool growth on an otherwise out-of-space upload. Growth
-    /// remains bounded by the device storage-binding limit and the
-    /// configured renderer memory budget.
+    /// Pool growth on an otherwise out-of-space upload, on by default
+    /// (#107). Growth remains bounded by the device storage-binding limit and
+    /// the configured renderer memory budget; `false` keeps the pool's
+    /// current capacity.
     pub fn set_pool_auto_growth(&mut self, enabled: bool) {
         self.renderer.set_pool_growth_policy(if enabled {
             GrowthPolicy::OnAllocFailure
