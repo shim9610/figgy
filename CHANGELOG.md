@@ -740,6 +740,25 @@ additive.
   WASM `register_ragged` and now `Column<f64>` (see "f64 columns upload
   exactly") do. Migration: the unreleased `MAX_RAGGED_VALUES` is removed.
 
+- **The picker measures in the draw's own pixel frame**
+  ([#114](https://github.com/shim9610/figgy/issues/114)). The exact
+  picker projected every vertex to canvas pixels with its own function
+  while the draw projects through `data_to_ndc / pixel_to_ndc`, and the two
+  rounded apart: a step riser of 1e-5 px had zero length in the pick and
+  its square caps in the draw, so the caps' dash was painted but not
+  picked. The new shared `data_to_px` (projection.wgsl) is that projection
+  in one place: the line vertex stages and the arc scan call it, and the
+  exact pass measures every primitive in its frame (`pick_data_px`, with
+  the cursor mapped in once by `pick_cursor_px`). The sketch stroke's pick
+  also stopped clamping its knot weight, since a multisampled fragment
+  past a strip's square cap extrapolates its end span to the pixel centre
+  (a faint dash sliver at a joint was painted but not picked). New
+  property tests draw seeded random compositions of elementary functions
+  under random styles, dashes, widths, step modes, gaps and off-screen
+  leads (`random_composite_lines_pick_where_they_draw`,
+  `random_composite_markers_and_star_lines_pick_where_they_draw`), which
+  found both. Migration: none.
+
 - **Line arcs stay exact past 2^24 px**
   ([#107](https://github.com/shim9610/figgy/issues/107)). The arc prefix of
   a dashed, sketched, Milkyway or streamline line held one f32 per point, so
