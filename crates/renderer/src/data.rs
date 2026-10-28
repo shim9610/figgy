@@ -380,10 +380,13 @@ impl ColumnSource for Column<f64> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The (hi, lo) split, written straight into the destination: an f64
+        // column keeps about 48 bits on the GPU, not f32's 24 (#107).
         for (index, &value) in self.data.iter().enumerate() {
-            let value = value as f32;
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            // The value the GPU reads: a magnitude below f32 range is 0 there.
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
@@ -394,10 +397,12 @@ impl ColumnSource for Column<f64> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The same split for streamed windows (#107, the maintainer's
+        // exception to rule 8 for upload precision).
         for (index, &value) in self.data[range].iter().enumerate() {
-            let hi = value as f32;
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }
@@ -631,10 +636,14 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The (hi, lo) split, written straight into the destination (about
+        // 48 bits); a missing value is NaN (#107).
         for (index, value) in self.data.iter().enumerate() {
-            let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let value = value.unwrap_or(f64::NAN);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            // The value the GPU reads: a magnitude below f32 range is 0 there.
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
@@ -645,10 +654,12 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The same split for streamed windows (#107, the maintainer's
+        // exception to rule 8 for upload precision); a missing value is NaN.
         for (index, value) in self.data[range].iter().enumerate() {
-            let hi = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value.unwrap_or(f64::NAN));
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }

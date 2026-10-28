@@ -293,10 +293,11 @@ impl ColumnSource for BorrowedF64Column<'_> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The (hi, lo) split, as the hi/lo path writes it (#107).
         for (index, &value) in self.data.iter().enumerate() {
-            let value = value as f32;
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
@@ -1210,12 +1211,12 @@ mod tests {
             eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
             return;
         };
+        // The fused `ColumnSource` upload writes the split too (#107);
+        // only the legacy zero-lo helper above keeps `(value, 0)`.
         let (scalar_pairs, scalar_min_positive) = scalar_pair_upload(&device, &queue, &source);
-        assert_eq!(scalar_pairs, expected_scalar_pairs);
-        assert_eq!(
-            scalar_min_positive,
-            Some((1_700_000_000_000.125_f64 as f32) as f64)
-        );
+        assert_eq!(scalar_pairs, expected_pairs);
+        let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);
+        assert_eq!(scalar_min_positive, Some(hi as f64 + lo as f64));
         let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &source);
         assert_eq!(hilo_pairs, expected_pairs);
         let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);

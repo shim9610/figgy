@@ -654,6 +654,17 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **f64 columns upload exactly.** `Column<f64>` and `Column<Option<f64>>`
+  registered through `ColumnSource` (`add_column`) wrote `(v as f32, 0)`, so
+  every bit past f32 was lost unless the host used `add_hilo_column`; past
+  2^24 that silently moved ragged group offsets. They now write the
+  `(hi, lo)` split (about 48 significant bits; integers below 2^48 exact)
+  straight into the pair writer, resident and streamed alike
+  (the maintainer's exception to rule 8 for upload precision, #107), and the
+  web wrapper's borrowed f64 column does the same. No extra pass, buffer or
+  copy; memory is unchanged (every lane was already a pair). Values that are
+  not exact f32 now place a sub-ulp closer to their f64 position.
+
 - **No export scale cap.** `MAX_EXPORT_SCALE` (8.0) is removed and
   `clamp_export_scale` only raises a scale to `MIN_EXPORT_SCALE` (0.25); the
   radial chart's 0.5..4 range keeps only its lower bound. The scaled target

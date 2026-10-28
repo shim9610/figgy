@@ -9642,7 +9642,8 @@ fn log_auto_fit_clamps_to_smallest_positive_uploaded_value() {
         1024 * 1024,
     )
     .unwrap();
-    // Scalar stats follow the recorded f32 pair, not the source f64.
+    // Scalar stats follow the recorded (hi, lo) pair, not the source f64
+    // (since #107 a `Column<f64>` uploads its split, not an f32 cast).
     let vals = vec![0.0, 0.04, 1.0, 50.0, 1000.0];
     r.add_column("v", &col_f64(vals)).unwrap();
 
@@ -9652,9 +9653,16 @@ fn log_auto_fit_clamps_to_smallest_positive_uploaded_value() {
     chart.auto_fit_y_union(r.pool(), &["v"], 0.0).unwrap();
 
     let min = chart.config().left_y.min;
-    let uploaded_min = (0.04_f64 as f32) as f64;
-    assert_eq!(min, uploaded_min);
+    let (hi, lo) = crate::data::split_f64_to_f32_pair(0.04);
+    let uploaded_min = f64::from(hi) + f64::from(lo);
+    // The log range round trip may move the last ulps; the f32 cast this
+    // replaced sits about 1e-9 away, far outside that.
+    assert!(
+        (min - uploaded_min).abs() <= uploaded_min * 1e-14,
+        "{min} vs the uploaded {uploaded_min}"
+    );
     assert_ne!(uploaded_min, 0.04_f64);
+    assert!((uploaded_min - 0.04).abs() < (f64::from(0.04_f64 as f32) - 0.04).abs());
     assert!(chart.config().left_y.max >= 1000.0);
 }
 
