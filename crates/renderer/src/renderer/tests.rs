@@ -13253,6 +13253,7 @@ fn resident_admission_mirrors_fixed_and_growing_pool_policies_without_mutation()
     };
     let before_capacity = renderer.pool.capacity();
     assert_eq!(renderer.set_memory_budget(Some(u64::MAX)), None);
+    renderer.set_pool_growth_policy(data_render::GrowthPolicy::Fixed);
     let fixed = renderer.resident_admission(request);
     assert_eq!(
         fixed.status,
