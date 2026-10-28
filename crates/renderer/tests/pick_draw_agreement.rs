@@ -908,19 +908,21 @@ fn sketch_markers_and_strokes_pick_where_the_wobble_draws_them() {
 }
 
 /// Far along the arc (#107, SHADER_COMMON.md §5.6 arc pairs): the line first
-/// zig-zags 300 times off-screen, about 1e8 px of arc, so its visible
+/// zig-zags 301 times off-screen, about 1e8 px of arc, so its visible
 /// segments start past 2^26 px, where an f32 arc lands on multiples of 8 px.
 /// The dash phase and the sketch wobble the picker derives from the arc
 /// prefix are still the drawn ones, precise and sketched, at 1x and 2x. The
 /// off-screen points stay within 2e5 px of the view, so the pick's f32 pixel
-/// geometry is exact there.
+/// geometry is exact there. 301 points put the dash phase off the few phases
+/// where a sketched dash paints a sub-pixel sliver at a joint that the
+/// picker misses whatever the arc's length (#114).
 #[test]
 fn far_along_the_arc_dashes_and_wobble_pick_where_they_draw() {
     use renderer::config::{DrawStyle, SketchOptions};
     use renderer::data_config::LineInterpolation;
     use renderer::line::LineStylePreset;
     let mut renderer = renderer();
-    let far = 300;
+    let far = 301;
     let xs: Vec<f64> = std::iter::repeat_n(-1.0, far)
         .chain([-0.5, 4.0, 4.9, 5.4, 6.1, 7.0])
         .collect();

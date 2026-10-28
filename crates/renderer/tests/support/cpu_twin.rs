@@ -875,7 +875,8 @@ const RING_INCL: f32 = 0.32;
 const PLANET_QUAD_EXTENT: f32 = 2.5;
 const PLANET_ALPHA_FLOOR: f32 = 0.003;
 
-/// Twin of `sketch_line_offset`.
+/// Twin of `sketch_line_offset_from` for an arc below 2^24 px, where the f32
+/// arc it takes equals the arc pair the shader reduces (SHADER_COMMON.md §5.6).
 fn sketch_line_offset(arc_px: f32, amplitude_px: f32, wavelength_px: f32, seed: u32) -> f32 {
     if wavelength_px > 0.0 {
         amplitude_px.max(0.0) * crate::sketch::noise1(arc_px / wavelength_px.max(1e-6), seed)
