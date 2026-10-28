@@ -51,17 +51,18 @@ struct VsIn {
 };
 
 // Line-only extra instance inputs: cumulative
-// arc length at the segment's two endpoints, from the GPU-computed prefix.
+// arc length at the segment's two endpoints, from the GPU-computed prefix,
+// as arc pairs (SHADER_COMMON.md §5.6 arc pairs).
 struct VsArc {
-    @location(4) arc_a: f32,
-    @location(5) arc_b: f32,
+    @location(4) arc_a: vec2<u32>,
+    @location(5) arc_b: vec2<u32>,
 };
 
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
-    // Arc length (px) from the polyline start: arc_a at the two A-side
-    // corners, arc_b at the two B-side corners — interpolation yields the
-    // per-fragment arc position the dash pattern walks.
+    // Dash position (px): A's arc modulo the dash period at the two A-side
+    // corners, plus the segment's arc length at the two B-side corners —
+    // interpolation yields the per-fragment position the dash pattern walks.
     @location(0) dist_px: f32,
     // Local segment-space coordinates in pixels. The fragment stage treats
     // the whole segment stroke as one square-cap rectangle:
@@ -209,11 +210,13 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let corner_px = center_px + dir * cap + normal_px * geom_half_w * side;
     let corner_ndc = corner_px * transform.pixel_to_ndc;
 
-    // Dash phase: this piece starts at the segment's arc plus the pieces
-    // before it and ends at the scanned prefix for B on the last piece, so
-    // the phase is continuous through every corner and across the joint.
-    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
-    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
+    // Dash phase: this piece starts at A's arc (reduced modulo the dash
+    // period) plus the pieces before it and ends at the scanned prefix for B
+    // on the last piece, so the phase is continuous through every corner and
+    // across the joint.
+    let phase = arc_dash_phase(arc.arc_a, dash_period(style.dash, style.dash_len));
+    let arc_start = phase + step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, phase + arc_delta(arc.arc_b, arc.arc_a), last_piece);
 
     var out: VsOut;
     out.pos = vec4<f32>(corner_ndc, 0.0, 1.0);
@@ -490,11 +493,14 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     if (k == 0u) { cap = -geom_half_w; }
     if (k == SKETCH_SUBDIV) { cap = geom_half_w; }
 
-    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
-    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
-    let arc_at = mix(arc_start, arc_end, t);
+    // The arc offset from A at this knot: the noise walks it from A's arc
+    // pair, the dash from A's phase.
+    let arc_start = step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, arc_delta(arc.arc_b, arc.arc_a), last_piece);
+    let offset_at = mix(arc_start, arc_end, t);
     let seed = u32(transform.style_params[0].z) ^ style.series_salt;
-    let disp = sketch_line_offset(arc_at, transform.style_params[0].x, transform.style_params[0].y, seed);
+    let disp = sketch_line_offset_from(arc.arc_a, offset_at, transform.style_params[0].x, transform.style_params[0].y, seed);
+    let arc_at = arc_dash_phase(arc.arc_a, dash_period(style.dash, style.dash_len)) + offset_at;
 
     let corner_px = center_px + dir * cap + normal_px * (geom_half_w * side + disp);
     let corner_ndc = corner_px * transform.pixel_to_ndc;
@@ -548,16 +554,17 @@ fn cons_structure_scale() -> f32 {
     return max(transform.style_params[2].x, 1e-3);
 }
 
-// Local ribbon/temperature modulation, 0.35 .. 1.65.
-fn cons_clump(arc_px: f32, seed: u32) -> f32 {
+// Local ribbon/temperature modulation, 0.35 .. 1.65, at arc `origin +
+// offset_px` (an arc pair and a small offset, §5.6 arc pairs).
+fn cons_clump(origin: vec2<u32>, offset_px: f32, seed: u32) -> f32 {
     let wavelength = CONS_CLUMP_WAVELENGTH_PX * cons_structure_scale();
-    return 1.0 + 0.65 * sketch_noise(arc_px / wavelength, seed ^ 0xC10Du);
+    return 1.0 + 0.65 * arc_noise(origin, offset_px, wavelength, seed ^ 0xC10Du);
 }
 
 // Stellar population mix 0..1: 0 = old/warm (dense knots), 1 = young/hot.
-fn cons_pop(arc_px: f32, seed: u32) -> f32 {
+fn cons_pop(origin: vec2<u32>, offset_px: f32, seed: u32) -> f32 {
     let wavelength = CONS_CLUMP_WAVELENGTH_PX * cons_structure_scale();
-    return 0.5 + 0.5 * sketch_noise(arc_px / wavelength, seed ^ 0x090Bu);
+    return 0.5 + 0.5 * arc_noise(origin, offset_px, wavelength, seed ^ 0x090Bu);
 }
 
 struct RibbonOut {
@@ -621,9 +628,10 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
 
     let seed = u32(transform.style_params[0].w) ^ style.series_salt;
     let intensity_cfg = max(transform.style_params[0].z, 0.0);
-    let arc_start = arc.arc_a + step_prefix_px(in, mode, slot.piece);
-    let arc_end = select(arc_start + len, arc.arc_b, last_piece);
-    let arc_px = mix(arc_start, arc_end, t);
+    // The arc offset from A at this knot.
+    let arc_start = step_prefix_px(in, mode, slot.piece);
+    let arc_end = select(arc_start + len, arc_delta(arc.arc_b, arc.arc_a), last_piece);
+    let offset_px = mix(arc_start, arc_end, t);
 
     var out: RibbonOut;
     out.pos = vec4<f32>(corner_px * transform.pixel_to_ndc, 0.0, 1.0);
@@ -631,7 +639,7 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     out.polar_limits = polar_clip_limits(transform);
     out.polar_sector = polar_clip_sector(transform);
     out.cross_d = side;
-    out.center_i = intensity_cfg * cons_clump(arc_px, seed);
+    out.center_i = intensity_cfg * cons_clump(arc.arc_a, offset_px, seed);
     out.cap_d = abs(cap) / max(half_geom, 1e-6);
     return out;
 }
@@ -705,25 +713,38 @@ fn vs_stars(
     let primary_id = select(slot, slot - 1u, is_companion);
 
     // Stratified arc position: one candidate per `pitch` px of arc, jittered
-    // inside its stratum. Attributes hash slot IDS (not positions), so the
-    // pattern upstream of a data edit stays put.
-    let arc_here =
-        (f32(primary_id) + 0.5 + 0.8 * (cons_h(primary_id, 0x0701u, seed) - 0.5)) * pitch;
+    // inside its stratum, as an exact arc pair (§5.6 arc pairs). Attributes
+    // hash slot IDS (not positions), so the pattern upstream of a data edit
+    // stays put.
+    let arc_here = arc_slot_position(
+        primary_id,
+        0.5 + 0.8 * (cons_h(primary_id, 0x0701u, seed) - 0.5),
+        pitch,
+    );
 
     // Existence gate: expected stars per slot = density * pitch / 100.
     // Keep this independent of the clump field so the line is sewn uniformly
     // by arc length rather than looking denser around particular samples.
     let p_exist = clamp(density * pitch / 100.0, 0.0, 1.0);
-    var alive = cons_h(slot, 0x0E15u, seed) < p_exist && arc_here < total;
+    // A slot the existence gate drops draws nothing: skip its segment search
+    // and arc arithmetic (most slots at the default density).
+    if (!(cons_h(slot, 0x0E15u, seed) < p_exist)) {
+        var dropped: StarOut;
+        dropped.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return dropped;
+    }
+    var alive = arc_less(arc_here, total);
 
     // Binary search: greatest g with prefix[g] <= arc_here; segment (g, g+1).
     let lo = arc_walk_segment(n, arc_here);
     let seg_a = star_arc[lo];
-    let seg_len = star_arc[lo + 1u] - seg_a;
+    let seg_len = arc_delta(star_arc[lo + 1u], seg_a);
+    // The slot's offset from the segment's start.
+    let arc_from_a = arc_delta(arc_here, seg_a);
     // NaN-gap segments contribute zero prefix advance — a slot landing on a
     // flat span (boundary ties) dies instead of drawing inside a gap.
     if (seg_len <= 0.0) { alive = false; }
-    let t = clamp((arc_here - seg_a) / max(seg_len, 1e-6), 0.0, 1.0);
+    let t = clamp(arc_from_a / max(seg_len, 1e-6), 0.0, 1.0);
 
     if (!sample_valid(transform, star_pool_pair(star_vsp.x_base, lo), star_pool_pair(star_vsp.y_base, lo))
         || !sample_valid(transform, star_pool_pair(star_vsp.x_base, lo + 1u), star_pool_pair(star_vsp.y_base, lo + 1u))) {
@@ -742,7 +763,7 @@ fn vs_stars(
     var t_piece = t;
     let pieces = step_piece_count(star_vsp.mode);
     if (pieces > 1u) {
-        var arc_in = arc_here - seg_a;
+        var arc_in = arc_from_a;
         var k = 0u;
         loop {
             piece = step_piece(x_lo, y_lo, x_hi, y_hi, star_vsp.mode, k);
@@ -782,7 +803,7 @@ fn vs_stars(
     // Temperature is a population mix driven by local density, then mapped
     // through the blackbody LUT. Vertex stages use textureLoad because they
     // have no implicit derivatives.
-    let pop = clamp(cons_pop(arc_here, seed), 0.0, 1.0);
+    let pop = clamp(cons_pop(arc_here, 0.0, seed), 0.0, 1.0);
     let h_t = cons_h(primary_id, 0x7E47u, seed);
     let t_norm = mix(mix(0.04, 0.30, h_t), mix(0.45, 0.95, h_t), pop);
     let tint = textureLoad(

@@ -192,10 +192,11 @@ struct PickCandidate {
 @group(1) @binding(2) var<storage, read> pick_style_overrides: array<PickScatterStyleOverride>;
 @group(1) @binding(3) var<storage, read_write> pick_series_output: PickCandidate;
 
-// The exact pass only: the line's cumulative arc length per point, the
-// buffer the line shader's dash phase and sketch wobble were drawn with
-// (`line_arc.wgsl`), or a one-value placeholder when `line.y` is zero.
-@group(2) @binding(0) var<storage, read> pick_arc: array<f32>;
+// The exact pass only: the line's cumulative arc length per point as arc
+// pairs (SHADER_COMMON.md §5.6), the buffer the line shader's dash phase and
+// sketch wobble were drawn with (`line_arc.wgsl`), or a one-pair placeholder
+// when `line.y` is zero.
+@group(2) @binding(0) var<storage, read> pick_arc: array<vec2<u32>>;
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
 
@@ -410,7 +411,7 @@ fn pick_styled_index(point_index: u32) -> u32 {
 // What a line series' pipeline draws under the chart's draw style
 // (`PickQueryParams.styled.y`). Constellation lines are the precise quads.
 const PICK_LINE_PRECISE: u32 = 0u;
-// `vs_sketch`: a subdivided strip displaced by `sketch_line_offset`.
+// `vs_sketch`: a subdivided strip displaced by `sketch_line_offset_from`.
 const PICK_LINE_SKETCH: u32 = 1u;
 // Milkyway: the ribbon strip and the star field scattered along it.
 const PICK_LINE_RIBBON: u32 = 2u;

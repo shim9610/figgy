@@ -7642,12 +7642,15 @@ fn gpu_arc_prefix_matches_cpu_reference() {
             submission_index: None,
             timeout: Some(std::time::Duration::from_secs(30)),
         });
-        let gpu: Vec<f32> = bytemuck::cast_slice(
+        // Arc pairs (SHADER_COMMON.md §5.6): fixed-point (low, high) words.
+        let gpu: Vec<f32> = bytemuck::cast_slice::<u8, [u32; 2]>(
             &slice
                 .get_mapped_range()
                 .expect("arc prefix readback is mapped"),
         )
-        .to_vec();
+        .iter()
+        .map(|pair| arc_pair_px(*pair) as f32)
+        .collect();
 
         // Sequential CPU reference mirroring the shader math.
         let px = |x: f64, y: f64| -> (f32, f32) {
@@ -7682,6 +7685,129 @@ fn gpu_arc_prefix_matches_cpu_reference() {
             );
         }
     }
+}
+
+/// One arc pair of the prefix (SHADER_COMMON.md §5.6 arc pairs): a 64-bit
+/// fixed-point arc of 1/65536 px as (low, high) words, in pixels.
+fn arc_pair_px(pair: [u32; 2]) -> f64 {
+    (f64::from(pair[1]) * 4_294_967_296.0 + f64::from(pair[0])) / 65_536.0
+}
+
+/// The arc prefix is a fixed-point pair per point (#107, SHADER_COMMON.md
+/// §5.6 arc pairs), so a line's cumulative arc stays exact far past 2^24 px. A
+/// zig-zag of 100 000 points across a 600 px tall chart runs about 3.9e7 px
+/// of arc. The GPU prefix must equal the f64 sum of the segment lengths to a
+/// few hundredths of a pixel at every point; an f32 running sum of the same
+/// lengths is off by pixels there.
+#[test]
+fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let mut r = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        wgpu::TextureFormat::Bgra8Unorm,
+        4 * 1024 * 1024,
+    )
+    .unwrap();
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 900,
+        height: 600,
+    });
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(-1.2, 1.2);
+
+    let n = 100_000usize;
+    let xs: Vec<f64> = (0..n).map(|i| i as f64 / n as f64).collect();
+    let ys: Vec<f64> = (0..n)
+        .map(|i| if i % 2 == 0 { -1.0 } else { 1.0 })
+        .collect();
+    r.add_column("exact_x", &col_f64(xs.clone())).unwrap();
+    r.add_column("exact_y", &col_f64(ys.clone())).unwrap();
+    let t = data_render::scatter_transform_from_config(chart.config());
+    let (arc_buf, len_bytes) = r
+        .ensure_arc_prefix(
+            "exact",
+            "exact_x",
+            "exact_y",
+            &t,
+            None,
+            LineInterpolation::Linear,
+        )
+        .expect("arc prefix")
+        .prefix;
+    assert_eq!(len_bytes, n as u64 * data_render::line_arc::ARC_PAIR_BYTES);
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: None,
+        size: len_bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut enc = device.create_command_encoder(&Default::default());
+    enc.copy_buffer_to_buffer(&arc_buf, 0, &readback, 0, len_bytes);
+    queue.submit(std::iter::once(enc.finish()));
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    let _ = device.poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: Some(std::time::Duration::from_secs(60)),
+    });
+    let gpu: Vec<f64> = bytemuck::cast_slice::<u8, [u32; 2]>(
+        &slice
+            .get_mapped_range()
+            .expect("arc prefix readback is mapped"),
+    )
+    .iter()
+    .map(|pair| arc_pair_px(*pair))
+    .collect();
+
+    // The shader's f32 pixel positions and segment lengths, summed in f64
+    // and, for contrast, in f32.
+    let px = |x: f64, y: f64| -> (f32, f32) {
+        let axis_ndc = |value: f64, axis: usize| {
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
+            let numerator = (hi - t.data_min[axis]) + (lo - t.data_min_lo[axis]);
+            let range =
+                (t.data_max[axis] - t.data_min[axis]) + (t.data_max_lo[axis] - t.data_min_lo[axis]);
+            let data_t = numerator / range;
+            let panel_t = t.data_to_panel_offset[axis] + data_t * t.data_to_panel_scale[axis];
+            panel_t * 2.0 - 1.0
+        };
+        (
+            axis_ndc(x, 0) / t.pixel_to_ndc[0],
+            axis_ndc(y, 1) / t.pixel_to_ndc[1],
+        )
+    };
+    let mut exact = 0.0f64;
+    let mut single = 0.0f32;
+    let mut worst = 0.0f64;
+    let mut single_worst = 0.0f64;
+    assert_eq!(gpu[0], 0.0);
+    for i in 1..n {
+        let a = px(xs[i - 1], ys[i - 1]);
+        let b = px(xs[i], ys[i]);
+        let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        exact += f64::from(d);
+        single += d;
+        worst = worst.max((gpu[i] - exact).abs());
+        single_worst = single_worst.max((f64::from(single) - exact).abs());
+    }
+    assert!(
+        exact > 2.0 * f64::from(1u32 << 24),
+        "the arc runs past 2^24 px ({exact})"
+    );
+    assert!(
+        single_worst > 1.0,
+        "an f32 running sum must lose pixels here ({single_worst} px)"
+    );
+    assert!(
+        worst < 0.05,
+        "arc pairs must stay exact: worst {worst} px over {exact} px of arc"
+    );
 }
 
 /// A stepped line's arc prefix sums its axis-aligned pieces in pixel
@@ -7777,7 +7903,11 @@ fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
             .ensure_arc_prefix("stepped", "step_ax", "step_ay", &t, None, mode)
             .expect("arc prefix")
             .prefix;
-        let gpu = read(&device, &queue, &arc_buf, len_bytes);
+        // Arc pairs (SHADER_COMMON.md §5.6): fixed-point (low, high) words.
+        let gpu: Vec<f32> = read(&device, &queue, &arc_buf, len_bytes)
+            .chunks_exact(2)
+            .map(|pair| arc_pair_px([pair[0].to_bits(), pair[1].to_bits()]) as f32)
+            .collect();
         assert_eq!(gpu.len(), n, "{mode:?}: length");
 
         // Sequential CPU reference over the stepped pieces.
@@ -10452,6 +10582,100 @@ fn dashed_curve_runs_match_pattern() {
         needles * 5 <= n_on.max(1),
         "{needles}/{n_on} on-runs are needle fragments (≤3 arc-px): {runs_on:?}"
     );
+}
+
+/// The dash phase stays exact far along the arc (#107, SHADER_COMMON.md §5.6
+/// arc pairs). A line first runs about 1.3e8 px off-screen, so every visible
+/// segment starts past 2^26 px of arc, where an f32 arc lands on multiples
+/// of 8 px. The visible run is horizontal, and every dash and gap along it
+/// must keep the [8 on, 4 off] pattern.
+#[test]
+fn dashes_keep_their_pattern_past_two_to_the_twenty_six_pixels_of_arc() {
+    let Some((device, queue)) = crate::data_render::shared_device() else {
+        return;
+    };
+    let mut r = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+        wgpu::TextureFormat::Bgra8Unorm,
+        1024 * 1024,
+    )
+    .unwrap();
+    let tail = 65usize;
+    let xs: Vec<f64> = [-200_000.0, -0.5]
+        .into_iter()
+        .chain((0..tail).map(|i| i as f64 / (tail - 1) as f64))
+        .collect();
+    let ys = vec![50.0; xs.len()];
+    r.add_column("far_x", &col_f64(xs)).unwrap();
+    r.add_column("far_y", &col_f64(ys)).unwrap();
+
+    let mut config = crate::default::default_config();
+    config.chart_area = crate::layout::ChartArea(Rect {
+        x: 0,
+        y: 0,
+        width: 800,
+        height: 200,
+    });
+    config.legend.visible = false;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 100.0);
+    let series = [SeriesConfig {
+        series_id: "far".into(),
+        source_id: None,
+        label: None,
+        x_column: "far_x".into(),
+        y_column: "far_y".into(),
+        render_type: DataRenderType::Line {
+            line: crate::data_config::DataLineStyleConfig {
+                line_style: crate::line::LineStylePreset::Dash, // [8, 4]
+                line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+                line_width: 2.0,
+                fill: None,
+                fill_color: None,
+                interpolation: crate::data_config::LineInterpolation::Linear,
+            },
+        },
+    }];
+    let img = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let (w, h) = (img.width as usize, img.height as usize);
+    let red = |x: usize, y: usize| {
+        let p = &img.rgba[(y * w + x) * 4..(y * w + x) * 4 + 4];
+        p[3] > 96 && p[0] > 120 && p[1] < 90 && p[2] < 90
+    };
+    // The row through the stroke's core.
+    let row = (0..h)
+        .max_by_key(|&y| (0..w).filter(|&x| red(x, y)).count())
+        .unwrap();
+    let on: Vec<bool> = (0..w).map(|x| red(x, row)).collect();
+    let first = on
+        .iter()
+        .position(|&v| v)
+        .expect("the dashed run drew nothing");
+    let last = on.iter().rposition(|&v| v).unwrap();
+    // Run lengths between the first and last ink, the outer ones dropped (the
+    // plot edge and the joint at the left edge may cut them).
+    let mut runs: Vec<(bool, usize)> = Vec::new();
+    for &v in &on[first..=last] {
+        match runs.last_mut() {
+            Some((state, len)) if *state == v => *len += 1,
+            _ => runs.push((v, 1)),
+        }
+    }
+    let inner = &runs[4..runs.len().saturating_sub(2)];
+    assert!(
+        inner.len() > 80,
+        "the run must cross many dashes ({} runs)",
+        inner.len()
+    );
+    for &(state, len) in inner {
+        let expected = if state { 6..=10 } else { 2..=6 };
+        assert!(
+            expected.contains(&len),
+            "{} run of {len} px past 2^26 px of arc, expected {expected:?} (runs: {runs:?})",
+            if state { "dash" } else { "gap" }
+        );
+    }
 }
 
 #[test]

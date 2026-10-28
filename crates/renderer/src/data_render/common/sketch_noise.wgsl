@@ -11,8 +11,13 @@ fn sketch_hash01(i: u32, seed: u32) -> f32 {
 // (floor(-0.3) → -1 → 0xFFFFFFFF, and +1u wraps back to 0), so continuity at
 // integer boundaries is preserved.
 fn sketch_noise(t: f32, seed: u32) -> f32 {
-    let i = u32(i32(floor(t)));
-    let f = fract(t);
+    return sketch_noise_lattice(u32(i32(floor(t))), fract(t), seed);
+}
+
+// The noise in lattice cell `i` at fraction `f` in [0, 1): `sketch_noise`
+// at `t` is cell `floor(t)` at `fract(t)`. The arc readers (`arc_noise`,
+// line_stroke.wgsl) give the cell of an arc pair directly.
+fn sketch_noise_lattice(i: u32, f: f32, seed: u32) -> f32 {
     let u = f * f * (3.0 - 2.0 * f);
     return mix(sketch_hash01(i, seed), sketch_hash01(i + 1u, seed), u) * 2.0 - 1.0;
 }

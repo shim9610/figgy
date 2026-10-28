@@ -907,6 +907,61 @@ fn sketch_markers_and_strokes_pick_where_the_wobble_draws_them() {
     }
 }
 
+/// Far along the arc (#107, SHADER_COMMON.md §5.6 arc pairs): the line first
+/// zig-zags 300 times off-screen, about 1e8 px of arc, so its visible
+/// segments start past 2^26 px, where an f32 arc lands on multiples of 8 px.
+/// The dash phase and the sketch wobble the picker derives from the arc
+/// prefix are still the drawn ones, precise and sketched, at 1x and 2x. The
+/// off-screen points stay within 2e5 px of the view, so the pick's f32 pixel
+/// geometry is exact there.
+#[test]
+fn far_along_the_arc_dashes_and_wobble_pick_where_they_draw() {
+    use renderer::config::{DrawStyle, SketchOptions};
+    use renderer::data_config::LineInterpolation;
+    use renderer::line::LineStylePreset;
+    let mut renderer = renderer();
+    let far = 300;
+    let xs: Vec<f64> = std::iter::repeat_n(-1.0, far)
+        .chain([-0.5, 4.0, 4.9, 5.4, 6.1, 7.0])
+        .collect();
+    let ys: Vec<f64> = (0..far)
+        .map(|i| if i % 2 == 0 { 1.0e4 } else { -1.0e4 })
+        .chain([5.0, 4.2, 5.6, 4.6, 5.9, 5.2])
+        .collect();
+    upload_xy(&mut renderer, xs, ys);
+    let precise = bare_chart();
+    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
+        amplitude_px: 4.0,
+        wavelength_px: 12.0,
+        seed: 7,
+    }));
+    for (what, chart) in [("precise", &precise), ("sketch", &sketch)] {
+        for style in [LineStylePreset::Dash, LineStylePreset::DashDotDot] {
+            for scale in [1.0, 2.0] {
+                let series = [line("far", 2.0, style, LineInterpolation::Linear)];
+                let painted = assert_pick_matches_paint_with(
+                    &mut renderer,
+                    chart,
+                    &series,
+                    "far",
+                    scale,
+                    // Inside the frame: the line enters across the plot
+                    // edge, where the frame's own ink covers the stroke.
+                    Some((
+                        (4.0 * scale) as u32,
+                        0,
+                        (WIDTH as f32 * scale) as u32,
+                        (HEIGHT as f32 * scale) as u32,
+                    )),
+                    &format!("{what} {style:?} far along the arc"),
+                    MSAA_EDGE,
+                );
+                assert!(painted > 30, "{what} {style:?} at {scale}x: {painted}");
+            }
+        }
+    }
+}
+
 /// G3, Milkyway: a planet picks on its disc, its rim glow and its ring; a
 /// line picks on its ribbon and on the star envelope around it (the stars
 /// are hashed per arc slot, so their envelope is what picks). Every painted

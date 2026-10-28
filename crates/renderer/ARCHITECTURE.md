@@ -301,7 +301,7 @@ for each distinct compute key; an exact key hit reuses the immutable result:
 ```
 pool columns (x, y) ──┐                       Transform uniform (144 B write)
                       ▼                                   │
-   seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)|   ◄────┘
+   seg_init           dst[i] = |px(pᵢ) − px(pᵢ₋₁)| in 1/65536 px ◄┘
    scan_block         256-block inclusive scans (Hillis–Steele, shared mem)
    scan_block/add     block-sum levels (dst → sums0 → sums1 → sums2)
    carry chain        chunks of min(dispatch limit × 256, 256³) points run
@@ -311,6 +311,11 @@ pool columns (x, y) ──┐                       Transform uniform (144 B wri
                       ▼
    arc prefix buffer ──► line pipeline vertex slots 4/5 (dash phase)
 ```
+
+Every arc value is a 64-bit fixed-point integer, two `u32` words per point
+(SHADER_COMMON.md §5.6 arc pairs): integer sums are exact and associative,
+so the prefix keeps 1/65536 px resolution up to 2^48 px of arc in any
+order the scan adds.
 
 The compute encoder is submitted before the host's render pass, so queue
 order sequences it under every supported embedding (winit / egui / web) without

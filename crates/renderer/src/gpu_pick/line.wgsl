@@ -37,12 +37,13 @@ fn pick_dash_gap(dist_px: f32) -> vec2<f32> {
 // The hit distance of one drawn piece of a stroke: the line shader's own
 // extrusion (square caps, `max(width, 1)`, the sketch displacement, the dash
 // phase) inverted at the cursor. `a_up` / `b_up` are the piece's ends in the
-// draw's y-up pixel frame and `arc_start` / `arc_end` the arc positions the
-// vertex stage gives them (`has_arc` is false when the arc prefix is not
-// bound: a streamed series). Zero exactly where `line_stroke_distance` is
+// draw's y-up pixel frame, `origin` the segment's arc pair at A and
+// `arc_start` / `arc_end` the piece's arc offsets from A the vertex stage
+// gives them (SHADER_COMMON.md §5.6 arc pairs; `has_arc` is false when the
+// arc prefix is not bound: a streamed series). Zero exactly where `line_stroke_distance` is
 // non-positive and the dash is on, which is where the fragment's coverage is
 // at least one half.
-fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, arc_end: f32, has_arc: bool) -> f32 {
+fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, origin: vec2<u32>, arc_start: f32, arc_end: f32, has_arc: bool) -> f32 {
     let delta = b_up - a_up;
     let len = length(delta);
     // The vertex stage collapses a zero-length piece to a point.
@@ -70,6 +71,8 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
     let half_w = pick_query_params.line_px.x;
     let dash_count = select(0u, pick_query_params.styled.w, pick_variant(PICK_VARIANT_DASH));
     let geom_half_w = half_w + select(LINE_AA_EXTENT_PX, 0.0, dash_count > 0u);
+    // A's arc modulo the dash period, where the draw's `dist_px` starts.
+    let phase = arc_dash_phase(origin, dash_period(pick_query_params.line_dash, dash_count));
     // The arc position at the cursor (the interpolated `dist_px`) and its
     // rate per pixel along the piece.
     var dist_px = 0.0;
@@ -90,11 +93,11 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
             let seed = u32(style_params.z) ^ pick_query_params.styled.z;
             let arc0 = mix(arc_start, arc_end, t0);
             let arc1 = mix(arc_start, arc_end, t1);
-            let d0 = sketch_line_offset(arc0, style_params.x, style_params.y, seed);
-            let d1 = sketch_line_offset(arc1, style_params.x, style_params.y, seed);
+            let d0 = sketch_line_offset_from(origin, arc0, style_params.x, style_params.y, seed);
+            let d1 = sketch_line_offset_from(origin, arc1, style_params.x, style_params.y, seed);
             side = side - mix(d0, d1, w);
-            let dist0 = arc0 + select(0.0, -half_w, k == 0u);
-            let dist1 = arc1 + select(0.0, half_w, k + 1u == SKETCH_SUBDIV);
+            let dist0 = phase + arc0 + select(0.0, -half_w, k == 0u);
+            let dist1 = phase + arc1 + select(0.0, half_w, k + 1u == SKETCH_SUBDIV);
             dist_px = mix(dist0, dist1, w);
             dist_slope = (dist1 - dist0) / (a1 - a0);
         } else {
@@ -107,7 +110,7 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, arc_start: f32, 
         // `arc_end + half_w` on the B-side ones.
         let span = len + 2.0 * geom_half_w;
         dist_slope = (arc_end - arc_start + 2.0 * half_w) / span;
-        dist_px = (arc_start - half_w) + (along + geom_half_w) * dist_slope;
+        dist_px = (phase + arc_start - half_w) + (along + geom_half_w) * dist_slope;
     }
     let stroke = max(line_stroke_distance(along, side, len, half_w), 0.0);
     if !pick_variant(PICK_VARIANT_DASH) || dash_count == 0u || !has_arc
@@ -168,8 +171,8 @@ fn pick_stroke_candidate(
     // The cumulative arc prefix the line was drawn with, when bound: the
     // dash phase and the sketch wobble walk it.
     let has_arc = pick_variant(PICK_VARIANT_DASH | PICK_VARIANT_STYLED_LINE) && pick_query_params.line.y != 0u;
-    var arc_a = 0.0;
-    var arc_b = 0.0;
+    var arc_a = vec2<u32>(0u, 0u);
+    var arc_b = vec2<u32>(0u, 0u);
     if has_arc {
         // A closed line is solid and binds no arc prefix; were one bound,
         // its closing segment would take the last point's arc at both ends
@@ -199,12 +202,11 @@ fn pick_stroke_candidate(
             return pick_invalid_candidate(series_order);
         }
         let length = sqrt(length_sq);
-        // The draw's arc positions for this piece: it starts at the
-        // segment's arc plus the pieces before it and the last piece ends at
-        // the scanned prefix of B.
+        // The draw's arc offsets from A for this piece: it starts after the
+        // pieces before it and the last piece ends at the scanned prefix of B.
         let piece_prefix = prefix_length;
-        let arc_start = arc_a + piece_prefix;
-        let arc_end = select(arc_start + length, arc_b, k + 1u == pieces);
+        let arc_start = piece_prefix;
+        let arc_end = select(arc_start + length, arc_delta(arc_b, arc_a), k + 1u == pieces);
         prefix_length = prefix_length + length;
         total_length = total_length + length;
         // A zero-length piece (a riser between equal values, or a degenerate
@@ -212,7 +214,7 @@ fn pick_stroke_candidate(
         if !(length > 1e-6) {
             continue;
         }
-        let distance = pick_stroke_piece_distance(pick_flip(a_px), pick_flip(b_px), arc_start, arc_end, has_arc);
+        let distance = pick_stroke_piece_distance(pick_flip(a_px), pick_flip(b_px), arc_a, arc_start, arc_end, has_arc);
         if pick_is_finite(distance) && distance < best_distance {
             let cursor_delta = pick_query_params.cursor_chart.xy - a_px;
             best_distance = distance;
@@ -275,8 +277,8 @@ fn pick_path_arrow_candidate(
         return pick_invalid_candidate(series_order);
     }
     let arc_a = pick_arc[segment_index];
-    let arc_b = pick_arc[next];
-    if !(arc_b > arc_a) {
+    let arc_len = arc_delta(pick_arc[next], arc_a);
+    if !(arc_len > 0.0) {
         return pick_invalid_candidate(series_order);
     }
     let a_px = pick_project_pair(ax, ay);
@@ -288,19 +290,21 @@ fn pick_path_arrow_candidate(
     }
     let cursor = pick_query_params.cursor_chart.xy;
     let position = clamp(dot(cursor - a_px, segment) / length_sq, 0.0, 1.0);
-    let cursor_arc = arc_a + position * (arc_b - arc_a);
+    // The cursor's arc pair on the segment and the slot it falls in.
+    let cursor_arc = arc_add(arc_a, arc_from_px(position * arc_len));
     let px = pick_query_params.vector_px;
     let tr = pick_query_params.transform;
     let range_x = fma(1.0, tr.data_max.x - tr.data_min.x, tr.data_max_lo.x - tr.data_min_lo.x);
     let range_y = fma(1.0, tr.data_max.y - tr.data_min.y, tr.data_max_lo.y - tr.data_min_lo.y);
-    let nearest = round(cursor_arc / spacing - 0.5);
+    let nearest = arc_cell(cursor_arc, spacing).index;
     var best = PICK_F32_MAX;
-    for (var k = -1; k <= 1; k = k + 1) {
-        let slot = nearest + f32(k);
-        if slot < 0.0 {
+    for (var k = 0u; k < 3u; k = k + 1u) {
+        if nearest + k < 1u {
             continue;
         }
-        let head = path_arrow_on_segment(ax, ay, bx, by, arc_a, arc_b, (slot + 0.5) * spacing);
+        let slot = nearest + k - 1u;
+        let slot_arc = arc_delta(arc_slot_position(slot, 0.5, spacing), arc_a);
+        let head = path_arrow_on_segment(ax, ay, bx, by, 0.0, arc_len, slot_arc);
         if !head.valid {
             continue;
         }

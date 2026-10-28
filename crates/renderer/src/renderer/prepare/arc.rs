@@ -220,7 +220,10 @@ impl PrepareContext<'_> {
                 vs_bg: star.vs_bg.clone(),
             });
             return Some(PreparedArc {
-                prefix: (Arc::clone(&hit.scratch.arc), u64::from(n) * 4),
+                prefix: (
+                    Arc::clone(&hit.scratch.arc),
+                    u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
+                ),
                 star,
                 charge: hit.scratch.charge(),
             });
@@ -266,7 +269,10 @@ impl PrepareContext<'_> {
             vs_bg: s.vs_bg.clone(),
         });
         let prepared = PreparedArc {
-            prefix: (Arc::clone(&scratch.arc), u64::from(n) * 4),
+            prefix: (
+                Arc::clone(&scratch.arc),
+                u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
+            ),
             star,
             charge: scratch.charge(),
         };

@@ -10,6 +10,7 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/sample_validity.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
+    "data_render/common/arc_pair.wgsl",
     "data_render/common/line_stroke.wgsl",
     "data_render/common/line_step.wgsl",
     "data_render/common/area_piece.wgsl",
@@ -246,8 +247,10 @@ const LINE_MAPPED_SLOTS: usize = 8;
 /// The attribute of each per-instance vertex slot the line entries read, in
 /// slot order: the X / Y columns bound twice (the second pair starts one
 /// logical value later, so instance i sees points [i] and [i+1] together),
-/// the arc prefix bound twice with a one-f32 shift (f32 lanes), and for the
-/// colour-mapped stroke the value column bound twice like X / Y.
+/// the arc prefix bound twice with the same one-value shift (arc pairs,
+/// `(low, high)` words of a fixed-point arc, SHADER_COMMON.md §5.6), and for
+/// the colour-mapped stroke the value column bound twice like X / Y. Every
+/// slot is 8 bytes per value.
 const LINE_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; LINE_MAPPED_SLOTS] = {
     let mut attrs = [[wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
@@ -258,7 +261,7 @@ const LINE_SLOT_ATTRIBUTES: [[wgpu::VertexAttribute; 1]; LINE_MAPPED_SLOTS] = {
     while i < LINE_MAPPED_SLOTS {
         attrs[i][0].shader_location = i as u32;
         if i == 4 || i == 5 {
-            attrs[i][0].format = wgpu::VertexFormat::Float32;
+            attrs[i][0].format = wgpu::VertexFormat::Uint32x2;
         }
         i += 1;
     }
@@ -289,18 +292,16 @@ fn line_slot_pipeline(
             immediate_size: 0,
         },
     );
-    let f32_stride = std::mem::size_of::<f32>() as wgpu::BufferAddress;
+    const _: () = assert!(
+        crate::data_render::line_arc::ARC_PAIR_BYTES == crate::data::COLUMN_VALUE_BYTES as u64
+    );
     let column_stride = crate::data::COLUMN_VALUE_BYTES as wgpu::BufferAddress;
     let buffers: [Option<wgpu::VertexBufferLayout<'_>>; LINE_MAPPED_SLOTS] =
         std::array::from_fn(|slot| {
             Some(wgpu::VertexBufferLayout {
-                // Slots 4/5 are the arc prefix's f32 lanes; every other slot
-                // is a column of (hi, lo) pairs.
-                array_stride: if slot == 4 || slot == 5 {
-                    f32_stride
-                } else {
-                    column_stride
-                },
+                // Every slot is 8 bytes per value: (hi, lo) column pairs, and
+                // the arc prefix's 4/5 are arc pairs.
+                array_stride: column_stride,
                 step_mode: wgpu::VertexStepMode::Instance,
                 attributes: &LINE_SLOT_ATTRIBUTES[slot],
             })
@@ -445,21 +446,21 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     let y_full = l.y.byte_range();
     let x_next = (x_full.start + crate::data::COLUMN_VALUE_BYTES as u64)..x_full.end;
     let y_next = (y_full.start + crate::data::COLUMN_VALUE_BYTES as u64)..y_full.end;
-    let x_f32_shift = (x_full.start + 4)..x_full.end;
     pass.set_vertex_buffer(0, l.pool_buffer.slice(x_full.clone()));
     pass.set_vertex_buffer(1, l.pool_buffer.slice(y_full.clone()));
-    pass.set_vertex_buffer(2, l.pool_buffer.slice(x_next));
+    pass.set_vertex_buffer(2, l.pool_buffer.slice(x_next.clone()));
     pass.set_vertex_buffer(3, l.pool_buffer.slice(y_next));
     // Arc-length prefix (dash phase / constellation arc); solid precise lines
     // reuse the X column as filler (read by the VS, ignored by the FS).
     match l.arc.as_ref() {
         Some((buf, len_bytes)) => {
+            let pair = crate::data_render::line_arc::ARC_PAIR_BYTES;
             pass.set_vertex_buffer(4, buf.slice(0..*len_bytes));
-            pass.set_vertex_buffer(5, buf.slice(4..*len_bytes));
+            pass.set_vertex_buffer(5, buf.slice(pair..*len_bytes));
         }
         None => {
             pass.set_vertex_buffer(4, l.pool_buffer.slice(x_full.clone()));
-            pass.set_vertex_buffer(5, l.pool_buffer.slice(x_f32_shift));
+            pass.set_vertex_buffer(5, l.pool_buffer.slice(x_next));
         }
     }
     // Per-instance vertex count decided where the pipeline variant was
@@ -486,7 +487,7 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
         pass.set_vertex_buffer(2, l.pool_buffer.slice(x_full.clone()));
         pass.set_vertex_buffer(3, l.pool_buffer.slice(y_full.clone()));
         if let Some((buf, len_bytes)) = l.arc.as_ref() {
-            let at = last * 4;
+            let at = last * crate::data_render::line_arc::ARC_PAIR_BYTES;
             pass.set_vertex_buffer(4, buf.slice(at..*len_bytes));
             pass.set_vertex_buffer(5, buf.slice(at..*len_bytes));
         }
@@ -529,7 +530,7 @@ mod arc_walk_tests {
         assert_eq!(module.source.matches(walk).count(), 1);
         let at = |name: &str| module.fragments.iter().position(|f| f.ends_with(name));
         assert!(at("common/arc_walk.wgsl") < at("line_columnar.wgsl"));
-        assert!(walk.contains("fn arc_walk_segment(n: u32, arc_here: f32) -> u32"));
+        assert!(walk.contains("fn arc_walk_segment(n: u32, arc_here: vec2<u32>) -> u32"));
         assert!(line.contains("let lo = arc_walk_segment(n, arc_here);"));
         assert!(!line.contains("var<storage, read> star_arc"));
         assert!(!line.contains("loop {\n        if (hi - lo <= 1u)"));

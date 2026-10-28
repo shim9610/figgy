@@ -65,8 +65,8 @@ mod tests {
             source: crate::data_render::line_arc::LINE_ARC_SHADER.source,
             array: "scan_shared",
             width: 256,
-            poison: "23.0",
-            bits: "bitcast<u32>(v)",
+            poison: "vec2<u32>(23u, 24u)",
+            bits: "v.x | v.y",
         },
     ];
 

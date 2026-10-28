@@ -417,7 +417,8 @@ fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
     let state = renderer
         .new_stream_arc(&config, u64::from(u32::MAX))
         .unwrap();
-    assert!(state.buffers.charge.charged_bytes() < 270_000);
+    // Bounded by one canonical chunk's block sums, 8-byte arc pairs (#107).
+    assert!(state.buffers.charge.charged_bytes() < 540_000);
     assert_eq!(
         renderer.gpu_memory_usage().total_bytes() - before,
         state.buffers.charge.charged_bytes()

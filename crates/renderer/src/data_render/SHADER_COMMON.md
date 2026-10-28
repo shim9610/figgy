@@ -37,6 +37,7 @@ To change shared shader code:
 | `projection.wgsl` (§3, §4) | the transform's modules and every pick module |
 | `sample_validity.wgsl` (§4, sample validity) | scatter, line, line_arc, vector, every pick module |
 | `grid_pair.wgsl`, `field_grid.wgsl` (§5) | field, contour anchor; `grid_pair` also errorbar, the fit reduction (`gpu_errorbar.wgsl`), the grid vector and the pick marker modules |
+| `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
 | `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
 | `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
@@ -465,10 +466,13 @@ pipeline layout adds group 3, the arc slot data of the line's arc scan
 the scan runs with the arrow spacing in render pixels as its slot pitch,
 and `star_indirect` writes `(ARROW_VERTICES, ceil(total / spacing))` (no
 slot cap, #107; only the `u32` instance count bounds it). Slot `i` sits at arc `(i + 0.5) * spacing`
-(`VectorParams.spacing_px`): `arc_walk_segment` finds its segment (a slot
+(`VectorParams.spacing_px`, the arc pair `arc_slot_position(i, 0.5, spacing)`,
+§5.6 arc pairs): `arc_walk_segment` finds its segment (a slot
 past the arc, on a NaN gap, on a segment with an invalid sample or past
 `count`, the shortest of the coordinate and colour columns, draws nothing),
-and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)` gives the
+and `path_arrow_on_segment(xa, ya, xb, yb, arc_a, arc_b, arc)`, called with
+the segment's local arc (0 at A, the segment's length at B and the slot's
+offset from A), gives the
 data-space point at the arc fraction (hi/lo pairs through `pair_add`), the
 unit data-space tangent of the segment and the fraction. The colour value
 is interpolated between the two samples as the colour-mapped stroke
@@ -588,13 +592,42 @@ the interpolated arc position, which is the cumulative arc prefix of
 `line_arc.wgsl` at the piece's ends (`arc_start - half_w` at the A-side
 corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides
 each piece into `SKETCH_SUBDIV` spans whose knots are displaced along the
-normal by `sketch_line_offset` at their arc position, and the fragment
+normal by `sketch_line_offset_from` at their arc position, and the fragment
 evaluates the same rectangle in the undisplaced `(along, side)` frame.
+
+**Arc pairs.** The prefix holds each point's cumulative arc as a 64-bit
+fixed-point integer of `ARC_UNITS_PER_PX` (65536) units per pixel, stored as
+`vec2<u32>(low word, high word)` (8 bytes per point; #107). Integer sums are
+exact and associative, so the prefix keeps 1/65536 px resolution up to 2^48
+px in any order a scan adds (the resident scan and the streamed replay give
+the same words), and no compiler can fold them the way it may fold an
+error-free float sum: an f32 `(hi, lo)` two-sum lost its low part on
+lavapipe. `line_arc.wgsl` rounds each segment's f32 length to units
+(`arc_from_px`) and adds them with `arc_add`. Every reader takes a
+segment's arc as an origin, the pair at A, plus a small f32 offset along
+it: the segment's length is `arc_delta(arc_b, arc_a)`. A value the reader
+derives from the absolute arc reduces the origin exactly first, by integer
+long division (`arc_divide`) by a step rounded to units (`arc_divisor`).
+`arc_dash_phase(origin, period)` is the origin modulo the dash period, so
+`dist_px` is that phase plus the offset; `arc_noise(origin, offset,
+wavelength, seed)` takes the noise lattice cell of the origin (`arc_cell`,
+the quotient wrapped into `u32` as `sketch_noise` wraps its index, and the
+fraction) and walks the offset from there, which is the sketch wobble
+(`sketch_line_offset_from`) and the Milkyway clump and population noise. An
+arc slot's position is `slot` whole pitch steps in units plus its offset
+(`arc_slot_position`), compared with the prefix by `arc_less`, and
+`star_indirect` counts slots in the same units. A period or a wavelength is
+thereby rounded to 1/65536 px, which moves a pattern by less than 2e-5 px
+per repetition. The fragment is
+[`data_render/common/arc_pair.wgsl`](common/arc_pair.wgsl); every module
+that splices `line_stroke.wgsl` or `arc_walk.wgsl` splices it before them.
+The cost per reader is one 64-step integer division per vertex that reduces
+an origin (the dash phase, a noise cell) and per surviving star.
 
 The picker inverts that extrusion at the cursor: it projects the cursor onto
 the piece, removes the knot displacement interpolated at that position, and
 evaluates `line_stroke_distance` and `dash_pattern_on` there. Its exact pass
-binds the line's arc prefix (group 2, `pick_arc`) — the buffer the line was
+binds the line's arc prefix (group 2, `pick_arc`, the same arc pairs) — the buffer the line was
 drawn with, from the renderer's arc cache under the same key — so the dash
 phase and the wobble are the drawn ones. A streamed series is picked without
 it (streaming is not extended): its dashes pick as a solid stroke and its
@@ -640,8 +673,8 @@ placed). The stroke's coverage, dash and polar clip are `fs_main`'s.
 **Arc slots.** The Milkyway star pass (`vs_stars`) draws one instance per
 slot along the polyline's total pixel arc, the count the scan's
 `star_indirect` kernel writes into a `DrawIndirect` buffer (`(6,
-ceil(total / pitch))`, no slot cap, #107; only the `u32` instance count
-bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
+ceil(total / pitch))`, counted in arc units, no slot cap, #107;
+only the `u32` instance count bounds it). The cost grows with the drawn arc, not with `n`: one 6-vertex
 instance per slot, each a binary search over the prefix, so a draw is
 `O(slots · log n)`; `milkyway_stars_draw_past_two_million_arc_slots`
 measures a 2.8 M-slot series, and the host budgets it (rule 10). Its vertex stage binds
@@ -650,7 +683,7 @@ no vertex buffers: group 3 is the arc prefix, the pool and `StarVsParams`
 `line_arc.rs::StarVsParams`, layout
 `stylized.rs::create_star_data_bind_group_layout`), and
 `arc_walk_segment(n, arc)` finds the segment holding a slot's arc
-position by binary search over the prefix: the last `g` with
+position (an arc pair) by binary search over the prefix: the last `g` with
 `star_arc[g] <= arc`, at most `n - 2`. A NaN gap adds nothing to the
 prefix, so a slot on a gap's boundary lands on a zero-length segment or
 on the drawn one after it, and a caller drops a slot whose segment has no
@@ -716,7 +749,8 @@ line's arc prefix (`pick_arc`, scanned with the arrow pitch, the draw's
 cache key), and `PickQueryParams.vector_min.y` is the spacing in canvas
 pixels and `vector_px` the head (length, 0, length, width). The segment
 tests the three slots nearest the cursor's arc position on it (the
-cursor projected onto the segment), each through the draw's
+cursor projected onto the segment, the slot index taken from its arc pair
+by `arc_cell`), each through the draw's
 `path_arrow_on_segment`, the pixel-mode projection one head long along
 the tangent through `axis_px_per_unit_at`, `arrow_place` with the middle
 pivot and no shaft, and `arrow_distance`. A hit is the segment's

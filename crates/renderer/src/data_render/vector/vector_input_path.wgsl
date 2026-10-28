@@ -26,8 +26,9 @@ fn vector_sample(i: u32) -> VectorSample {
     if (n < 2u || !(spacing > 0.0)) {
         return sample;
     }
-    let arc = (f32(i) + 0.5) * spacing;
-    if (!(arc < star_arc[n - 1u])) {
+    // The slot's arc pair (§5.6 arc pairs), exact for every slot.
+    let arc = arc_slot_position(i, 0.5, spacing);
+    if (!arc_less(arc, star_arc[n - 1u])) {
         return sample;
     }
     let a = arc_walk_segment(n, arc);
@@ -43,7 +44,16 @@ fn vector_sample(i: u32) -> VectorSample {
     if (!sample_valid(transform, xa, ya) || !sample_valid(transform, xb, yb)) {
         return sample;
     }
-    let head = path_arrow_on_segment(xa, ya, xb, yb, star_arc[a], star_arc[b], arc);
+    // The segment's local arc: 0 at A, its length at B, the slot between.
+    let head = path_arrow_on_segment(
+        xa,
+        ya,
+        xb,
+        yb,
+        0.0,
+        arc_delta(star_arc[b], star_arc[a]),
+        arc_delta(arc, star_arc[a]),
+    );
     if (!head.valid) {
         return sample;
     }
