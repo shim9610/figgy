@@ -68,6 +68,14 @@ python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
 
+CI's repository job also tests the whole workspace, `figgy-web` included, and
+runs the playground selftest:
+
+```sh
+cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast -- --test-threads=1
+(cd tools/playground && cargo run --locked -- --selftest)
+```
+
 CI also sets `RUSTFLAGS=-D warnings` and `RUSTDOCFLAGS=-D warnings`, so compiler
 and rustdoc warnings fail the package checks. Set both variables to reproduce
 that locally.

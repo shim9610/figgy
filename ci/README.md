@@ -13,13 +13,13 @@ request that merged it.
 A pull request that changes only standalone Markdown skips the package checks.
 `ci/change_scope.py` compares the PR's merge commit with its base. If every
 changed path is a `.md` file outside `crates/`, for example the root README,
-CHANGELOG or this guide, the three jobs still start and pass but skip every step
-after the scope check. Markdown under `crates/` always runs the checks: it is
+CHANGELOG or this guide, the matrix and repository jobs still start and pass but
+skip every step after the scope check. Markdown under `crates/` always runs the checks: it is
 packaged, its links are checked, and the guides `include_str!` pulls into the
 crate docs compile as doctests. Any other file in the change, an image
 included, runs the full matrix too. CodeQL is unaffected.
 
-CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in all three jobs, so a
+CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in every job, so a
 compiler or rustdoc warning in the libraries, examples, tests or extracted registry
 packages fails the job. Test-only input adapters and inspection helpers compile
 only with `cfg(test)`; the normal native and WASM libraries do not carry those
@@ -166,6 +166,25 @@ rest of the backend results.
 Test output is streamed immediately, so a cancellation or timeout does not hide
 panic details until the end of a large test binary.
 
+## Repository checks
+
+The package jobs test what is published: the extracted model and renderer
+archives. A separate `repository` job, on Ubuntu with Vulkan (lavapipe when the
+runner has no render device), tests the checkout itself under the same triggers
+and scope check:
+
+1. `cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast
+   -- --test-threads=1`: every workspace member, including `figgy-web`
+   (`publish = false`, so the package jobs never build it), with the renderer's
+   workspace-only test helpers.
+2. `cargo run --locked -- --selftest` in `tools/playground`, which is not a
+   workspace member: it commits every layer edit through the registry and
+   exports each step as a PNG, failing on a rejected config.
+
+The selftest PNGs are uploaded as the `playground-selftest` artifact, including
+on failure, and kept for seven days, so a rendering change can be reviewed by
+comparing them with a previous run.
+
 ## Shader compilation regressions
 
 The renderer unit suite measures the real shader and pipeline constructors with
@@ -264,6 +283,9 @@ python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
 
+The repository job's checks run from the checkout root and from
+`tools/playground` as listed in [Repository checks](#repository-checks).
+
 On Windows, use `python` if `python3` is unavailable. Select a supported native backend
 with `WGPU_BACKEND=vulkan`, `dx12` or `metal`. Without that variable, wgpu chooses from
 available backends. A working adapter and device are required; no window is needed.
@@ -286,6 +308,12 @@ CI는 공개 저장소에서 초안이 아닌 PR을 열거나 갱신하거나 �
 검토 준비 상태로 바꿀 때만 실행한다. 브랜치, master, 태그 push로는 시작하지 않는다.
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
 실행한다.
+
+패키지 작업은 배포되는 압축본만 검사한다. 별도의 `repository` 작업은 Ubuntu와
+Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. `figgy-web`을 포함한
+워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
+selftest를 실행한다. selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
+아티팩트로 7일간 남으므로 이전 실행과 비교해 렌더링 변화를 확인할 수 있다.
 
 세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,

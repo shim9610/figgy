@@ -30,8 +30,9 @@
 //! WebGPU guarantees writes from one dispatch are visible to later dispatches
 //! in the same pass, which is what orders the scan chain and the carry hops.
 //!
-//! Every arc value is an arc pair, a normalized `(hi, lo)` f32 pair of
-//! [`ARC_PAIR_BYTES`] (SHADER_COMMON.md §5.6 arc pairs, #107).
+//! Every arc value is an arc pair, a 64-bit fixed-point count of 1/65536 px
+//! held as two `u32` words, `ARC_PAIR_BYTES` each (SHADER_COMMON.md §5.6 arc
+//! pairs, #107).
 
 use std::sync::Arc;
 
