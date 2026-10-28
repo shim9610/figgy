@@ -534,6 +534,7 @@ mod tests {
         assert_eq!(
             extra,
             [
+                &"data_render/common/arc_pair.wgsl",
                 &"data_render/common/arc_walk.wgsl",
                 &"data_render/common/path_arrow.wgsl",
                 &"data_render/vector/vector_input_path.wgsl",
