@@ -587,7 +587,14 @@ answer the same question per pixel. Every step piece of a segment is
 extruded into a rectangle with square caps, `max(line_width_px, 1) / 2` wide
 either side: `line_stroke_distance` is its signed distance in the piece's
 `(along, side)` frame, and the stroke covers a pixel where it is below the
-anti-aliasing width. A dashed stroke is on where `dash_pattern_on` says so at
+anti-aliasing width. A piece shorter than `STEP_PIECE_MIN_PX` (1e-3 render px) in
+either axis' panel extent (`step_piece_negligible`, `line_step.wgsl`) draws
+and picks as nothing: below f32 pixel resolution its direction is rounding
+noise, and the draw (pixels from NDC) and the pick (canvas pixels) would
+round a 1e-5 px riser differently, so one drew its square caps with their
+own dash phase where the other saw nothing (#114). Both decide from the same
+panel `t` values, so they drop the same pieces; the arc scan still counts
+them. A dashed stroke is on where `dash_pattern_on` says so at
 the interpolated arc position, which is the cumulative arc prefix of
 `line_arc.wgsl` at the piece's ends (`arc_start - half_w` at the A-side
 corners, `arc_end + half_w` at the B-side ones). A sketch stroke subdivides

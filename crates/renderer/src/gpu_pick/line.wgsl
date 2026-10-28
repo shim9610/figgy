@@ -214,7 +214,7 @@ fn pick_stroke_candidate(
         total_length = total_length + length;
         // A zero-length piece (a riser between equal values, or a degenerate
         // linear segment) has no stroke to hit.
-        if !(length > 1e-6) {
+        if !(length > 1e-6) || step_piece_negligible(pick_query_params.transform, piece) {
             continue;
         }
         let distance = pick_stroke_piece_distance(pick_flip(a_px), pick_flip(b_px), arc_a, arc_start, arc_end, has_arc);
