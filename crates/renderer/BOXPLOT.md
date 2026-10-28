@@ -95,6 +95,13 @@ in place; `remove_record` and `remove_ragged` delete one. The record and the
 ragged column live in the GPU column pool only; the CPU keeps their scalar
 statistics (`record_stats`, `ragged_stats`) and nothing per box.
 
+A ragged column has no value cap below the `u32` index space: the pool
+stores its offsets as `u32` indices. An offset is the integer its source
+writes, and `Column<f64>` writes a value as f32, exact to 2^24, so a host
+with more outliers than that writes its offsets through a `ColumnSource`
+that writes the `(hi, lo)` split (`renderer::data::split_f64_to_f32_pair`),
+as `Config::from_boxplot`'s uploads and the WASM `register_ragged` do.
+
 ## Box groups and layout
 
 The `BoxPlot` series of one layer form its box group. They stand side by side

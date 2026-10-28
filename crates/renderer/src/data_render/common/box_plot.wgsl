@@ -480,6 +480,12 @@ fn box_mean(s: BoxStats, place: BoxLayout, markers: ResolvedBarStyle) -> BoxMark
     return out;
 }
 
+/// Offset `index` of the ragged column whose offsets are at lane `base`: a
+/// `u32` index lane (SHADER_COMMON.md §5.14), exact up to `u32::MAX`.
+fn box_ragged_offset(base: u32, index: u32) -> u32 {
+    return bitcast<u32>(category_pool[base + index * 2u]);
+}
+
 /// The outliers of group `row` of the ragged column: `(first value, count)`.
 fn box_outlier_range(row: u32) -> vec2<u32> {
     let values = box_lane(BOX_LANE_OUTLIER_VALUES);
@@ -487,10 +493,8 @@ fn box_outlier_range(row: u32) -> vec2<u32> {
     if (values == BOX_LANE_ABSENT || offsets == BOX_LANE_ABSENT || row >= box_lane(BOX_LANE_OUTLIER_GROUPS)) {
         return vec2<u32>(0u);
     }
-    let start = category_pair(offsets, row);
-    let end = category_pair(offsets, row + 1u);
-    let first = u32(start.x + start.y);
-    let last = u32(end.x + end.y);
+    let first = box_ragged_offset(offsets, row);
+    let last = box_ragged_offset(offsets, row + 1u);
     return vec2<u32>(first, select(0u, last - first, last > first));
 }
 

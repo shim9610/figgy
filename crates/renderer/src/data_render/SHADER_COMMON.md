@@ -1089,12 +1089,13 @@ A record (`ColumnPool::upsert_record`) and a ragged column
 (`ColumnPool::upsert_ragged`) are ordinary pool columns, so a shader reads
 them as every column: through the pool bound as `array<f32>` storage, at a
 lane base of `handle.offset / 4`, value `i` being the `(hi, lo)` pair at
-lanes `base + 2i` and `base + 2i + 1`.
+lanes `base + 2i` and `base + 2i + 1`. A ragged column's offsets are the one
+exception: they are indices, stored as `u32` lanes (below).
 
 | Source | Lane bases | Convention |
 |---|---|---|
 | Record | one per present schema field (`RecordRef::field_at(k)`), at most `MAX_RECORD_FIELDS` (12, three `vec4<u32>`) | row `r` of field `k` is value `r` of that field's column; an absent optional field has no column and reads as NaN; how a consumer marks it in its uniform is that consumer's contract |
-| Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `u32(offsets[g])..u32(offsets[g + 1])`, an offset read as `u32(hi + lo)`: offsets are integers up to 2^24, exact in the high lane, with `offsets[0] = 0` and `offsets[groups] = total` checked at upload |
+| Ragged column | the values (`RaggedRef::values`) and the offsets (`RaggedRef::offsets`) | group `g` is values `offsets[g]..offsets[g + 1]`. Offset `i` is a `u32` index: lane `base + 2i` holds its bits, read as `bitcast<u32>(pool[base + 2i])`, and lane `base + 2i + 1` holds 0. The pool writes the lanes from the source's `(hi, lo)` pair, the integer `hi + lo` summed in f64, so every offset up to `u32::MAX` is exact and a ragged column has no value cap below the `u32` index space; `offsets[0] = 0`, `offsets[groups] = total` and the integer, non-decreasing offsets are checked at upload. CPU writer: `ColumnPairWriter` in index lane mode (`data.rs`) |
 
 The box plot entries (§5.15) read them; the convention is also held by
 the pool test

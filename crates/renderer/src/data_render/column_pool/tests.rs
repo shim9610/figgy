@@ -2080,6 +2080,15 @@ fn a_batch_grows_the_pool_when_compaction_is_not_enough() {
 }
 
 fn read_column_values(ctx: GpuAllocCtx<'_>, pool: &ColumnPool, handle: ColumnHandle) -> Vec<f64> {
+    read_column_words(ctx, pool, handle)
+        .chunks_exact(2)
+        .map(|pair| f32::from_bits(pair[0]) as f64 + f32::from_bits(pair[1]) as f64)
+        .collect()
+}
+
+/// The two lanes of every value of a column, as `u32` bits: a ragged
+/// column's offsets are `u32` index lanes (`SHADER_COMMON.md` §5.14).
+fn read_column_words(ctx: GpuAllocCtx<'_>, pool: &ColumnPool, handle: ColumnHandle) -> Vec<u32> {
     let (device, queue) = (ctx.device, ctx.queue);
     let readback = device.create_buffer(&BufferDescriptor {
         label: Some("figgy column pool test readback"),
@@ -2115,17 +2124,13 @@ fn read_column_values(ctx: GpuAllocCtx<'_>, pool: &ColumnPool, handle: ColumnHan
         .slice(..handle.byte_size)
         .get_mapped_range()
         .expect("column readback is mapped after map_async");
-    let values = mapped[..handle.len_values * COLUMN_VALUE_BYTES]
-        .chunks_exact(COLUMN_VALUE_BYTES)
-        .map(|bytes| {
-            let hi = f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]) as f64;
-            let lo = f32::from_le_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]) as f64;
-            hi + lo
-        })
+    let words = mapped[..handle.len_values * COLUMN_VALUE_BYTES]
+        .chunks_exact(4)
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect();
     drop(mapped);
     readback.unmap();
-    values
+    words
 }
 
 #[test]
@@ -3520,9 +3525,10 @@ fn a_ragged_column_uploads_with_offset_statistics() {
         }
     );
     assert_eq!(pool.ragged_stats("outliers"), Some(ragged.stats()));
+    // The offsets are `u32` index lanes: the index, then 0.
     assert_eq!(
-        read_column_values(ctx(), &pool, ragged.offsets()),
-        [0.0, 2.0, 2.0, 5.0]
+        read_column_words(ctx(), &pool, ragged.offsets()),
+        [0, 0, 2, 0, 2, 0, 5, 0]
     );
     let read = read_column_values(ctx(), &pool, ragged.values());
     assert_eq!((read[0], read[1], read[3], read[4]), (4.0, -2.0, 9.0, 1.0));
@@ -3778,7 +3784,7 @@ fn records_and_ragged_columns_survive_defragmentation_and_clear() {
 }
 
 /// A shader reads a record field and a ragged group by their pool lane
-/// bases (`offset / 4`), the offsets as `(hi, lo)` pairs: the convention
+/// bases (`offset / 4`), the offsets as `u32` index lanes: the convention
 /// `SHADER_COMMON.md` states for records and ragged columns.
 #[test]
 fn a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset() {
@@ -3833,11 +3839,15 @@ fn pair_at(base: u32, index: u32) -> f32 {
     return pool[base + 2u * index] + pool[base + 2u * index + 1u];
 }
 
+fn offset_at(base: u32, index: u32) -> u32 {
+    return bitcast<u32>(pool[base + 2u * index]);
+}
+
 @compute @workgroup_size(1)
 fn main() {
     out[0] = pair_at(params.field_base, params.row);
-    let start = u32(pair_at(params.offsets_base, params.group));
-    let end = u32(pair_at(params.offsets_base, params.group + 1u));
+    let start = offset_at(params.offsets_base, params.group);
+    let end = offset_at(params.offsets_base, params.group + 1u);
     out[1] = f32(end - start);
     for (var i = 0u; i < 4u; i++) {
         if (start + i < end) {
@@ -3848,9 +3858,28 @@ fn main() {
     }
 }
 "#;
+    let read: Vec<f32> = run_pool_read_back(&device, &queue, &pool, SHADER, &params, 6)
+        .into_iter()
+        .map(f32::from_bits)
+        .collect();
+    // q3 of row 2 is 1.5 + 20 + 2; group 2 is values[2..5].
+    assert_eq!(read, [23.5, 3.0, 30.0, 40.0, 50.0, -1.0]);
+}
+
+/// Run the one-workgroup compute `shader` over the pool (binding 0, as
+/// `array<f32>`), `params` (binding 1) and an output of `out_words` words
+/// (binding 2), and read the output back as `u32` bits.
+fn run_pool_read_back(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    pool: &ColumnPool,
+    shader: &str,
+    params: &[u32],
+    out_words: u64,
+) -> Vec<u32> {
     let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
         label: Some("figgy record read-back test"),
-        source: wgpu::ShaderSource::Wgsl(SHADER.into()),
+        source: wgpu::ShaderSource::Wgsl(shader.into()),
     });
     let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
         label: Some("figgy record read-back test"),
@@ -3862,12 +3891,12 @@ fn main() {
     });
     let params_buffer = device.create_buffer(&BufferDescriptor {
         label: Some("figgy record read-back params"),
-        size: 32,
+        size: (params.len() * 4) as u64,
         usage: BufferUsages::STORAGE | BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
-    queue.write_buffer(&params_buffer, 0, bytemuck::cast_slice(&params));
-    let out_bytes = 6 * 4;
+    queue.write_buffer(&params_buffer, 0, bytemuck::cast_slice(params));
+    let out_bytes = out_words * 4;
     let out = device.create_buffer(&BufferDescriptor {
         label: Some("figgy record read-back out"),
         size: out_bytes,
@@ -3935,12 +3964,163 @@ fn main() {
         .slice(..out_bytes)
         .get_mapped_range()
         .expect("read-back is mapped after map_async");
-    let read: Vec<f32> = mapped
+    let read: Vec<u32> = mapped
         .chunks_exact(4)
-        .map(|bytes| f32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
+        .map(|bytes| u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
         .collect();
     drop(mapped);
     readback.unmap();
-    // q3 of row 2 is 1.5 + 20 + 2; group 2 is values[2..5].
-    assert_eq!(read, [23.5, 3.0, 30.0, 40.0, 50.0, -1.0]);
+    read
+}
+
+/// Ragged offsets at and past 2^24, where the f32 offsets the `u32` index
+/// lanes replace lost integers, up to the end of the `u32` index space.
+const INDEX_LANE_PROBES: [u32; 6] = [
+    0,
+    (1 << 24) - 1,
+    1 << 24,
+    (1 << 24) + 1,
+    u32::MAX - 1,
+    u32::MAX,
+];
+
+/// A column whose pairs are the exact `(hi, lo)` split of its values, as the
+/// document conversion and the WASM wrapper write ragged offsets.
+struct SplitPairSource<'a>(&'a [f64]);
+
+impl ColumnSource for SplitPairSource<'_> {
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn min(&self) -> f64 {
+        self.0.iter().copied().fold(f64::INFINITY, f64::min)
+    }
+
+    fn max(&self) -> f64 {
+        self.0.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+    }
+
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        for (chunk, value) in dst.chunks_exact_mut(4).zip(self.0) {
+            chunk.copy_from_slice(&(*value as f32).to_le_bytes());
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        for (index, &value) in self.0.iter().enumerate() {
+            let (hi, lo) = crate::data::split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+        }
+        ColumnUploadStats { min_positive: None }
+    }
+}
+
+/// The CPU write of an index lane: the `(hi, lo)` split of every probe is
+/// stored as its exact `u32` bits and a zero lane, where the f32 read it
+/// replaces, `u32(hi + lo)`, loses 2^24 + 1 and saturates at `u32::MAX - 1`.
+/// Without index lanes the writer still stores the f32 pair.
+#[test]
+fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
+    let values = INDEX_LANE_PROBES.map(f64::from);
+    let source = SplitPairSource(&values);
+    let mut bytes = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
+    write_scalar_source_as_pairs(
+        &source,
+        ColumnPairWriter::from_bytes_for_test(&mut bytes).with_index_lanes(true),
+    );
+    let word = |bytes: &[u8], k: usize| {
+        u32::from_le_bytes([
+            bytes[4 * k],
+            bytes[4 * k + 1],
+            bytes[4 * k + 2],
+            bytes[4 * k + 3],
+        ])
+    };
+    for (k, &probe) in INDEX_LANE_PROBES.iter().enumerate() {
+        assert_eq!((word(&bytes, 2 * k), word(&bytes, 2 * k + 1)), (probe, 0));
+        let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from(probe));
+        assert_eq!(crate::data::index_lane(hi, lo), probe);
+    }
+    let f32_read = |probe: u32| {
+        let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from(probe));
+        (hi + lo) as u32
+    };
+    assert_eq!(
+        f32_read((1 << 24) + 1),
+        1 << 24,
+        "the f32 read loses 2^24 + 1"
+    );
+    assert_eq!(
+        f32_read(u32::MAX - 1),
+        u32::MAX,
+        "and saturates near u32::MAX"
+    );
+
+    let mut pairs = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
+    write_scalar_source_as_pairs(&source, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from((1u32 << 24) + 1));
+    assert_eq!(
+        (word(&pairs, 6), word(&pairs, 7)),
+        (hi.to_bits(), lo.to_bits()),
+        "a column without index lanes keeps its f32 pairs"
+    );
+}
+
+/// The GPU read of an index lane: the pool stores the probes of an index
+/// column (a ragged column's offsets) as `u32` lanes and a shader reads them
+/// back exactly with `bitcast<u32>`. The same probes as an ordinary column,
+/// read the way ragged offsets were read before (`u32(hi + lo)`), are the
+/// control: that read loses 2^24 + 1.
+#[test]
+fn a_shader_reads_index_lanes_exactly_past_2_pow_24() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = INDEX_LANE_PROBES.map(f64::from);
+    let source = SplitPairSource(&values);
+    let columns: [(&str, &dyn ColumnSource); 2] = [("lanes", &source), ("pairs", &source)];
+    pool.begin_add_columns_observed(&columns, ctx(), None, Some(0))
+        .unwrap()
+        .commit();
+    let lanes = pool.handle_for("lanes").unwrap();
+    let pairs = pool.handle_for("pairs").unwrap();
+    let words = read_column_words(ctx(), &pool, lanes);
+    for (k, &probe) in INDEX_LANE_PROBES.iter().enumerate() {
+        assert_eq!((words[2 * k], words[2 * k + 1]), (probe, 0));
+    }
+    let count = INDEX_LANE_PROBES.len() as u32;
+    let params = [
+        (lanes.offset / 4) as u32,
+        (pairs.offset / 4) as u32,
+        count,
+        0,
+    ];
+
+    const SHADER: &str = r#"
+struct Params { lanes: u32, pairs: u32, count: u32 }
+@group(0) @binding(0) var<storage, read> pool: array<f32>;
+@group(0) @binding(1) var<storage, read> params: Params;
+@group(0) @binding(2) var<storage, read_write> out: array<u32>;
+
+@compute @workgroup_size(1)
+fn main() {
+    for (var i = 0u; i < params.count; i++) {
+        out[i] = bitcast<u32>(pool[params.lanes + 2u * i]);
+        out[params.count + i] = u32(pool[params.pairs + 2u * i] + pool[params.pairs + 2u * i + 1u]);
+    }
+}
+"#;
+    let read = run_pool_read_back(&device, &queue, &pool, SHADER, &params, 2 * count as u64);
+    assert_eq!(read[..INDEX_LANE_PROBES.len()], INDEX_LANE_PROBES);
+    assert_ne!(
+        read[INDEX_LANE_PROBES.len() + 3],
+        (1 << 24) + 1,
+        "the f32 read loses 2^24 + 1 on the GPU: {:?}",
+        &read[INDEX_LANE_PROBES.len()..]
+    );
 }

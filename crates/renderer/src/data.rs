@@ -18,6 +18,9 @@ pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_
 pub struct ColumnPairWriter<'a> {
     dst: wgpu::WriteOnly<'a, [u8]>,
     observer: Option<&'a mut dyn FnMut(usize, f32, f32)>,
+    /// Store each pair as a `u32` index lane instead of the f32 pair: a
+    /// ragged column's offsets (`SHADER_COMMON.md` §5.14).
+    index_lanes: bool,
 }
 
 impl<'a> ColumnPairWriter<'a> {
@@ -30,7 +33,19 @@ impl<'a> ColumnPairWriter<'a> {
         Self {
             dst,
             observer: None,
+            index_lanes: false,
         }
+    }
+
+    /// Store every pair as an index: the integer `hi + lo`, summed in f64,
+    /// as `u32` bits in the first lane and 0 in the second, so a shader reads
+    /// it as `bitcast<u32>` and every index up to `u32::MAX` is exact. The
+    /// observer still sees the pair the source wrote. A value that is not an
+    /// integer in `0..=u32::MAX` stores a saturated index; the caller rejects
+    /// such a column before it is published.
+    pub(crate) fn with_index_lanes(mut self, index_lanes: bool) -> Self {
+        self.index_lanes = index_lanes;
+        self
     }
 
     pub(crate) fn new_observed(
@@ -68,8 +83,11 @@ impl<'a> ColumnPairWriter<'a> {
             self.len()
         );
         let start = index * COLUMN_VALUE_BYTES;
-        let hi_bytes = hi.to_le_bytes();
-        let lo_bytes = lo.to_le_bytes();
+        let (hi_bytes, lo_bytes) = if self.index_lanes {
+            (index_lane(hi, lo).to_le_bytes(), [0; 4])
+        } else {
+            (hi.to_le_bytes(), lo.to_le_bytes())
+        };
         self.dst
             .slice(start..start + COLUMN_VALUE_BYTES)
             .copy_from_slice(&[
@@ -86,6 +104,13 @@ impl<'a> ColumnPairWriter<'a> {
             observer(index, hi, lo);
         }
     }
+}
+
+/// The `u32` index lane of a `(hi, lo)` pair: `hi + lo` summed in f64,
+/// exact for every integer up to `u32::MAX`, saturated outside that range
+/// (NaN stores 0).
+pub(crate) fn index_lane(hi: f32, lo: f32) -> u32 {
+    (hi as f64 + lo as f64) as u32
 }
 
 /// Scalar statistics collected while a source writes its GPU pair encoding.
@@ -541,8 +566,9 @@ impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
 /// One column of a converted box plot document (`Config::from_boxplot`'s
 /// record fields, outlier values and offsets): every value is computed from
 /// the borrowed summaries while it is written into the staging pairs, as
-/// `(hi, lo)` so the document's f64 values keep their precision, and the
-/// offsets are integers exact in the high lane. A missing box writes NaN.
+/// `(hi, lo)` so the document's f64 values keep their precision and every
+/// offset reaches the pool's `u32` index lanes exactly. A missing box writes
+/// NaN.
 impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
     fn len(&self) -> usize {
         ::model::bounded_sources::BoxColumn::len(self)
