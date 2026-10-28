@@ -1070,7 +1070,8 @@ fn stroke_piece_distance(
         } else {
             t1 * len
         };
-        let w = ((along - a0) / (a1 - a0)).clamp(0.0, 1.0);
+        // Unclamped, as the shader extrapolates the end span (#114).
+        let w = (along - a0) / (a1 - a0);
         let seed = (params[0][2] as u32) ^ stroke.salt;
         let arc0 = arc_start + (arc_end - arc_start) * t0;
         let arc1 = arc_start + (arc_end - arc_start) * t1;

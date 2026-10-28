@@ -626,7 +626,12 @@ an origin (the dash phase, a noise cell) and per surviving star.
 
 The picker inverts that extrusion at the cursor: it projects the cursor onto
 the piece, removes the knot displacement interpolated at that position, and
-evaluates `line_stroke_distance` and `dash_pattern_on` there. Its exact pass
+evaluates `line_stroke_distance` and `dash_pattern_on` there. The knot weight
+is not clamped to its span: a multisampled pixel whose centre lies past a
+strip's square cap but whose sample lies inside it is shaded with the end
+span's attributes extrapolated to the centre (`dist_px` and the displaced
+side), so the picker extrapolates the same span the same way, as the
+precise stroke's straight `dist_px` does (#114). Its exact pass
 binds the line's arc prefix (group 2, `pick_arc`, the same arc pairs) — the buffer the line was
 drawn with, from the renderer's arc cache under the same key — so the dash
 phase and the wobble are the drawn ones. A streamed series is picked without

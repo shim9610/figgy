@@ -88,7 +88,10 @@ fn pick_stroke_piece_distance(a_up: vec2<f32>, b_up: vec2<f32>, origin: vec2<u32
             let t1 = f32(k + 1u) / s;
             let a0 = select(t0 * len, -geom_half_w, k == 0u);
             let a1 = select(t1 * len, len + geom_half_w, k + 1u == SKETCH_SUBDIV);
-            let w = clamp((along - a0) / (a1 - a0), 0.0, 1.0);
+            // Unclamped: past the strip's ends a multisampled fragment
+            // extrapolates the end span's attributes to the pixel centre,
+            // and the pick follows it (SHADER_COMMON.md §5.6, #114).
+            let w = (along - a0) / (a1 - a0);
             let style_params = pick_query_params.transform.style_params[0];
             let seed = u32(style_params.z) ^ pick_query_params.styled.z;
             let arc0 = mix(arc_start, arc_end, t0);
