@@ -461,7 +461,12 @@ fn fixed_growth_policy_keeps_out_of_space_final() {
         return;
     };
     let ctx = GpuAllocCtx::unbudgeted(&device, &queue);
-    assert_eq!(pool.growth_policy, GrowthPolicy::Fixed, "default is Fixed");
+    assert_eq!(
+        pool.growth_policy,
+        GrowthPolicy::OnAllocFailure,
+        "default is OnAllocFailure (#107)"
+    );
+    pool.growth_policy = GrowthPolicy::Fixed;
     let too_big = col_f64(vec![0.0; (4 * ALIGN / COLUMN_VALUE_BYTES as u64) as usize]);
 
     let error = pool

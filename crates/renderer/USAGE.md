@@ -138,7 +138,7 @@ let size = window.inner_size();
 let mut renderer = Renderer::for_window(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // 16 MiB GPU column pool
+    16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
 ).unwrap();
 
 // renderer.add_column takes `&dyn ColumnSource`.
@@ -735,7 +735,7 @@ let size = window.inner_size();
 let mut renderer = Renderer::for_window(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // GPU column pool 16 MiB
+    16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
 ).unwrap();
 
 // renderer.add_column은 `&dyn ColumnSource`를 받는다.

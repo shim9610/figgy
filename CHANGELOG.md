@@ -754,6 +754,25 @@ additive.
   byte-identical. Migration: the public `line_arc::STAR_MAX_SLOTS` is
   removed.
 
+- **The column pool grows by default, to the device's limits**
+  ([#107](https://github.com/shim9610/figgy/issues/107) R8, R9). A pool
+  kept the capacity `Renderer::try_new` was given unless the host chose
+  `GrowthPolicy::OnAllocFailure`, the web wrapper's pool stayed at 16 MiB
+  unless `set_pool_auto_growth(true)` was called, and `request_device`
+  opened the device with the WebGPU baseline limits (128 MiB storage
+  binding, 256 MiB buffer, 8192 px textures) whatever the hardware
+  allowed. `GrowthPolicy::OnAllocFailure` is now the default, natively and
+  on the web, and `request_device` / `request_device_async` request the
+  adapter's supported limits. A column registers unless the device or the
+  memory budget cannot hold it, which is the only failure rule 10 allows.
+  The pool's starting capacity is still the one the host passes.
+  Migration: a host that relied on `OutOfSpace` from a full pool calls
+  `set_pool_growth_policy(GrowthPolicy::Fixed)` (web:
+  `set_pool_auto_growth(false)`); growth relayouts the pool, which
+  invalidates live `ColumnHandle`s and `PreparedFrame`s exactly as a
+  defragmentation does. A host that opens its own device keeps its own
+  limits.
+
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). A `Streamlines` series draws its polylines through the line
   path (dashes, picking and the picked ring included) and its arrowheads
