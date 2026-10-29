@@ -20,9 +20,8 @@ base = ["cargo", "test", "--locked", "-p", "figgy-renderer",
 ws = ["cargo", "test", "--locked", "--workspace", "--features",
       "figgy-model/serde,figgy-renderer/serde,figgy-renderer/cpu-twin", "--no-fail-fast"]
 runs = [
+    ["--test", "vector_export", "--", "every_catalogue_scene_reads_back_as_its_emitted_parts_within_budget"],
     ["--test", "radial_render", "--"],
-    ["--test", "radial_render", "--", "radial_gpu_pick_agrees_with_the_cpu_twin"],
-    ["--test", "radial_render", "--", "radial_step_selection_moves_the_highlight_to_each_slice"],
 ]
 # Build first so the WARP and DXC DLLs can sit next to the test binaries.
 subprocess.run([*base, "--lib", "--tests", "--no-run"], cwd=ROOT, env=env, check=True)
