@@ -138,9 +138,14 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         }
         // A category bar reads its positions and values only.
         DataRenderType::Histogram { .. } | DataRenderType::CategoryBars { .. } => {}
-        // A box plot reads its positions here; its record and outliers are
-        // resident composites outside the column registry.
-        DataRenderType::BoxPlot { .. } => {}
+        // A box plot reads its positions, its violin's densities and its raw
+        // points here; its record, outliers and violin curves are resident
+        // composites outside the column registry.
+        DataRenderType::BoxPlot { .. } => {
+            if let Some(boxes) = cfg.render_type.box_plot() {
+                ids.extend(boxes.plain_columns());
+            }
+        }
         // A range bar reads its start, whiskers, colour flag or state and
         // progress columns beside its positions and ends.
         DataRenderType::RangeBars { .. } => {

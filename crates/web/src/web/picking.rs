@@ -173,6 +173,52 @@ impl FiggyChart {
             .ok_or_else(|| js_err("selected series no longer exists"))?;
         let mut result = serde_json::json!({"identity": reference, "series_id": series.series_id});
         match &reference {
+            // A box plot's raw point reports its category (its position
+            // column's value there, and the category it names) and its
+            // value, read back from the GPU columns the draw used.
+            PickedDataRef::Point { point_index, .. }
+                if series
+                    .render_type
+                    .box_plot()
+                    .is_some_and(|b| b.points.is_some()) =>
+            {
+                let Some(points) = series.render_type.box_plot().and_then(|b| b.points) else {
+                    unreachable!("the guard matched a box plot with points");
+                };
+                let samples = [
+                    (points.positions.clone(), *point_index),
+                    (points.values.clone(), *point_index),
+                ];
+                let values = self.read_selection_samples(&samples).await?;
+                result["index"] = serde_json::json!(point_index);
+                result["position"] = serde_json::json!(values[0].is_finite().then_some(values[0]));
+                result["value"] = serde_json::json!(values[1].is_finite().then_some(values[1]));
+                let config = self.chart_config();
+                let layer = config.layer_of_series(&series.series_id);
+                let groups = config.bar_groups_of(layer);
+                let panel = match layer {
+                    renderer::LayerRef::Subplot(index)
+                    | renderer::LayerRef::SubplotOverlay(index, _) => config
+                        .subplots
+                        .get(index)
+                        .map_or(config, |subplot| &subplot.config),
+                    renderer::LayerRef::Base
+                    | renderer::LayerRef::Overlay(_)
+                    | renderer::LayerRef::Annotations => config,
+                };
+                let categories = match groups.direction {
+                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
+                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                };
+                let category = (values[0].is_finite() && values[0] >= 0.0)
+                    .then(|| values[0].round() as usize)
+                    .and_then(|k| categories.as_deref().and_then(|c| c.get(k)));
+                if let Some(category) = category {
+                    result["category_id"] = serde_json::json!(category.id);
+                    result["category_label"] = serde_json::json!(category.label);
+                }
+                result["direction"] = serde_json::json!(groups.direction);
+            }
             PickedDataRef::Point { point_index, .. } => {
                 // A colour- or size-mapped point also reports the value its
                 // colour or radius was derived from, read back from the
@@ -280,21 +326,24 @@ impl FiggyChart {
                 result["category_id"] = serde_json::json!(category.id);
                 result["category_label"] = serde_json::json!(category.label);
                 let (_, record_id) = series.box_plot_columns();
-                let record = self
-                    .renderer
-                    .pool()
-                    .record(record_id)
-                    .ok_or_else(|| js_err("the selected box's record no longer exists"))?;
-                // The record's present fields, as (name, member column).
+                // The record's present fields, as (name, member column); a
+                // violin without boxes has none.
                 let mut names = [""; renderer::MAX_RECORD_FIELDS];
                 let mut samples: [(String, usize); renderer::MAX_RECORD_FIELDS] =
                     Default::default();
                 let mut count = 0;
-                for (k, (name, _)) in renderer::BOX_PLOT_RECORD.iter().enumerate() {
-                    if let Some(member) = record.slot().fields[k].as_ref() {
-                        names[count] = name;
-                        samples[count] = (member.clone(), *bin_index);
-                        count += 1;
+                if !record_id.is_empty() {
+                    let record = self
+                        .renderer
+                        .pool()
+                        .record(record_id)
+                        .ok_or_else(|| js_err("the selected box's record no longer exists"))?;
+                    for (k, (name, _)) in renderer::BOX_PLOT_RECORD.iter().enumerate() {
+                        if let Some(member) = record.slot().fields[k].as_ref() {
+                            names[count] = name;
+                            samples[count] = (member.clone(), *bin_index);
+                            count += 1;
+                        }
                     }
                 }
                 let values = self.read_selection_samples(&samples[..count]).await?;

@@ -36,11 +36,14 @@ fn category_member(slot_a: f32, slot_b: f32, members_in: u32, member: u32, width
 }
 
 /// Where raw point `index` sits across its member of `thickness` centred
-/// at `middle`: its centre line `offset` half thicknesses from the middle,
-/// moved by up to `jitter` half thicknesses either way by a hash of the
-/// index and the series `seed`. The same on every draw and pick, so a point
-/// never moves while the chart is panned, resized or exported.
-fn category_jitter_cross(middle: f32, thickness: f32, offset: f32, jitter: f32, index: u32, seed: u32) -> f32 {
+/// at `middle`: its centre line `offset` half thicknesses from the middle
+/// (negative towards smaller category values: left of a vertical slot,
+/// down a horizontal one, whose render pixels run down), moved by up to
+/// `jitter` half thicknesses either way by a hash of the index and the
+/// series `seed`. The same on every draw and pick, so a point never moves
+/// while the chart is panned, resized or exported.
+fn category_jitter_cross(middle: f32, thickness: f32, offset: f32, jitter: f32, index: u32, seed: u32, horizontal: bool) -> f32 {
     let spread = (sketch_hash01(index, seed) * 2.0 - 1.0) * jitter;
-    return middle + (offset + spread) * thickness * 0.5;
+    let towards = select(offset, -offset, horizontal);
+    return middle + (towards + spread) * thickness * 0.5;
 }

@@ -252,13 +252,13 @@ fn violin_vertex(vi: u32, h: u32, seg: ViolinSegment, resolved: ResolvedBarStyle
     } else if (sign < 0.0) {
         c1 = seg.place.middle + margin;
     }
-    var a0 = min(seg.a.along, seg.b.along);
-    var a1 = max(seg.a.along, seg.b.along);
-    // A group's ends draw the outline past their last point.
-    if (!seg.prev.ok || !seg.next.ok) {
-        a0 = a0 - margin;
-        a1 = a1 + margin;
-    }
+    // One pixel past the segment's own value range, so the pixel at each
+    // end is covered whole by the segment that owns its centre (the
+    // others discard it): under multisampling every sample of the pixel
+    // then belongs to its owner, with no seam. A group's ends draw the
+    // outline past their last point.
+    let a0 = min(seg.a.along, seg.b.along) - margin;
+    let a1 = max(seg.a.along, seg.b.along) + margin;
     let p = box_quad_corner(vi, box_rect(c0, c1, a0, a1), 0.0);
     out.local = p;
     out.pos = box_px_to_clip(p);
@@ -301,7 +301,9 @@ fn violin_edge_distance(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
 /// segment owns.
 fn violin_coverage(p: vec2<f32>, in: ViolinVsOut, width: f32) -> vec2<f32> {
     let horizontal = category_params.horizontal != 0u;
-    let along = select(p.y, p.x, horizontal);
+    // Ownership is decided at the pixel's centre, snapped, so two segments
+    // sharing a boundary agree on it whatever their interpolation error.
+    let along = floor(select(p.y, p.x, horizontal)) + 0.5;
     let cross = select(p.x, p.y, horizontal);
     let a = in.segment.xy;
     let b = in.segment.zw;
@@ -606,7 +608,7 @@ fn box_raw_point(i: u32) -> BoxRawPoint {
     if (!place.valid || !bar_finite(along) || !(slot.finish.x > 0.0)) {
         return out;
     }
-    let cross = category_jitter_cross(place.middle, place.thickness, slot.finish.z, slot.finish.y, i, category_params.seed);
+    let cross = category_jitter_cross(place.middle, place.thickness, slot.finish.z, slot.finish.y, i, category_params.seed, category_params.horizontal != 0u);
     out.centre = box_point(cross, along);
     out.radius = slot.finish.x;
     let code = u32(round(max(slot.finish.w, 0.0)));

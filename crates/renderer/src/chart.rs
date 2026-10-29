@@ -543,33 +543,49 @@ pub fn box_plot_value_extent(
         s.render_type.box_plot().is_some() && config.layer_of_series(&s.series_id) == layer
     }) {
         let (_, record_id) = item.box_plot_columns();
-        let record = pool
-            .record(record_id)
-            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
-                series_id: item.series_id.clone(),
-                reason: format!(
-                    "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
-                ),
-            })?;
-        let stats = record.stats();
-        for (k, (name, _)) in crate::data_render::BOX_PLOT_RECORD.iter().enumerate() {
-            if *name != "sample_count" && stats.present[k] && stats.finite[k] > 0 {
-                include(stats.min[k], stats.max[k]);
+        // A violin without boxes names no record.
+        if !record_id.is_empty() {
+            let record = pool
+                .record(record_id)
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "box plot record {record_id:?} is not resident: upload it with \
+                             `upsert_record`"
+                    ),
+                })?;
+            let stats = record.stats();
+            for (k, (name, _)) in crate::data_render::BOX_PLOT_RECORD.iter().enumerate() {
+                if *name != "sample_count" && stats.present[k] && stats.finite[k] > 0 {
+                    include(stats.min[k], stats.max[k]);
+                }
             }
         }
-        if let Some(id) = item.render_type.box_plot().and_then(|b| b.outliers) {
+        let boxes = item
+            .render_type
+            .box_plot()
+            .expect("filtered to box plot series");
+        // The outliers and the violin curves: ragged columns of values.
+        for id in boxes.ragged_columns() {
             let ragged = pool
                 .ragged(id)
                 .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                     series_id: item.series_id.clone(),
                     reason: format!(
-                        "box plot outlier column {id:?} is not resident: upload it with `upsert_ragged`"
+                        "box plot ragged column {id:?} is not resident: upload it with \
+                         `upsert_ragged`"
                     ),
                 })?;
             let stats = ragged.stats();
             if stats.finite > 0 {
                 include(stats.min, stats.max);
             }
+        }
+        // The raw points' values.
+        if let Some(points) = boxes.points
+            && let Some(slot) = pool.slot(&points.values)
+        {
+            include(slot.min, slot.max);
         }
     }
     Ok((extent, groups.direction))

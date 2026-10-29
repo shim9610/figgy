@@ -213,7 +213,7 @@ fn pick_category_jitter_px(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> vec2
         return vec2<f32>(PICK_F32_MAX);
     }
     let middle = m.y + m.z * 0.5;
-    let cross = category_jitter_cross(middle, m.z, placement.w, placement.z, pick_source_row(point_index), slot.w);
+    let cross = category_jitter_cross(middle, m.z, placement.w, placement.z, pick_source_row(point_index), slot.w, horizontal);
     let frame = select(vec2<f32>(cross, along), vec2<f32>(along, cross), horizontal);
     // Chart-area render pixels (y down) to the draw's frame (y up).
     return vec2<f32>(frame.x - 1.0 / tr.pixel_to_ndc.x, 1.0 / tr.pixel_to_ndc.y - frame.y);
