@@ -319,6 +319,7 @@ fn err_refs(
         DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Heatmap { .. }
@@ -447,6 +448,7 @@ fn series_extent_request_from(
         | renderer::DataRenderType::Histogram { .. }
         | renderer::DataRenderType::CategoryBars { .. }
         | renderer::DataRenderType::BoxPlot { .. }
+        | renderer::DataRenderType::RangeBars { .. }
         | renderer::DataRenderType::Radar { .. }
         | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
@@ -856,6 +858,7 @@ fn prepare_demo_declarations(
                 DataRenderType::Histogram { bar } => bar.fill_color,
                 DataRenderType::CategoryBars { color, .. } => *color,
                 DataRenderType::BoxPlot { color, .. } => *color,
+                DataRenderType::RangeBars { color, .. } => *color,
                 DataRenderType::Radar { color, .. } => *color,
                 DataRenderType::Contour { contour, .. }
                 | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,

@@ -1,4 +1,4 @@
-// Range bar input layer of the bar module (SHADER_COMMON.md §5.19): the bars
+// Range bar input layer of the bar module (SHADER_COMMON.md §5.18): the bars
 // of a `DataRenderType::RangeBars` series, spliced into the module after
 // `box_plot.wgsl`, whose slot layout (`box_slot`), value reads
 // (`box_value`), rects and flat quads it shares, `category_bars.wgsl`,
@@ -11,7 +11,7 @@
 // and a connector at its end to the next row's bar. No vertex buffers;
 // every part is built here on every draw, pick, highlight and label from
 // the series' columns, read by their pool lanes from its lane table
-// (`category_lanes`, §5.19). The renderer compares the two given ends to
+// (`category_lanes`, §5.18). The renderer compares the two given ends to
 // choose a direction colour and maps a state index to a style; it computes
 // no value the user reads as data. Nothing per bar is stored anywhere else.
 

@@ -18,6 +18,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         // A radar vertex maps no value to its marker.
         | DataRenderType::Radar { .. }
         // A streamline has no markers; its colour column colours the line.
@@ -301,6 +302,79 @@ impl FiggyChart {
                 for (name, value) in names.iter().zip(&values) {
                     // A missing optional statistic (NaN) reads as null.
                     result[*name] = serde_json::json!(value.is_finite().then_some(*value));
+                }
+                result["direction"] = serde_json::json!(groups.direction);
+            }
+            // A range bar reports the values its columns hold for its row,
+            // read back from the GPU columns the draw used: its position
+            // (and, on a categorical axis, the category there), end, start
+            // and, when the series has them, its low and high, total flag
+            // or state, and progress. Never a difference or a duration:
+            // those are the host's to derive.
+            PickedDataRef::HistogramBin { bin_index, .. }
+                if series.render_type.range_bars().is_some() =>
+            {
+                use renderer::data_config::RangeColor;
+                let Some(bars) = series.render_type.range_bars() else {
+                    unreachable!("the guard matched a range bar series");
+                };
+                let colour = match bars.color_by {
+                    RangeColor::Single => None,
+                    RangeColor::Direction { total, .. } => {
+                        total.as_ref().map(|t| ("total", t.column.as_str()))
+                    }
+                    RangeColor::State { column, .. } => Some(("state", column.as_str())),
+                };
+                let roles = [
+                    Some(("position", series.x_column.as_str())),
+                    Some(("end", series.y_column.as_str())),
+                    Some(("start", bars.start)),
+                    bars.whiskers.map(|w| ("low", w.low.as_str())),
+                    bars.whiskers.map(|w| ("high", w.high.as_str())),
+                    colour,
+                    bars.progress.map(|p| ("progress", p.column.as_str())),
+                ];
+                let mut names = [""; 7];
+                let mut samples: [(String, usize); 7] = Default::default();
+                let mut count = 0;
+                for (name, column) in roles.into_iter().flatten() {
+                    names[count] = name;
+                    samples[count] = (column.to_owned(), *bin_index);
+                    count += 1;
+                }
+                let values = self.read_selection_samples(&samples[..count]).await?;
+                result["index"] = serde_json::json!(bin_index);
+                for (name, value) in names.iter().zip(&values) {
+                    result[*name] = serde_json::json!(value.is_finite().then_some(*value));
+                }
+                let config = self.chart_config();
+                let layer = config.layer_of_series(&series.series_id);
+                let groups = config.bar_groups_of(layer);
+                let panel = match layer {
+                    renderer::LayerRef::Subplot(index)
+                    | renderer::LayerRef::SubplotOverlay(index, _) => config
+                        .subplots
+                        .get(index)
+                        .map_or(config, |subplot| &subplot.config),
+                    renderer::LayerRef::Base
+                    | renderer::LayerRef::Overlay(_)
+                    | renderer::LayerRef::Annotations => config,
+                };
+                let categories = match groups.direction {
+                    renderer::CategoryBarDirection::Vertical => &panel.bottom_x.categories,
+                    renderer::CategoryBarDirection::Horizontal => &panel.left_y.categories,
+                };
+                let at = values
+                    .first()
+                    .copied()
+                    .filter(|v| v.is_finite() && *v >= 0.0);
+                if let Some(category) = categories
+                    .as_deref()
+                    .zip(at)
+                    .and_then(|(categories, at)| categories.get(at.round() as usize))
+                {
+                    result["category_id"] = serde_json::json!(category.id);
+                    result["category_label"] = serde_json::json!(category.label);
                 }
                 result["direction"] = serde_json::json!(groups.direction);
             }

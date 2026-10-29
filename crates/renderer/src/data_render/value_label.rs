@@ -150,8 +150,7 @@ pub(crate) fn value_label_kind(
                 });
             any.then_some((VALUE_LABEL_KIND_BOXES, labels.text.as_slice()))
         }
-        DataRenderType::RangeBars { labels, .. } => (labels.placement
-            != CategoryBarLabels::None)
+        DataRenderType::RangeBars { labels, .. } => (labels.placement != CategoryBarLabels::None)
             .then_some((VALUE_LABEL_KIND_RANGE, labels.text.as_slice())),
         DataRenderType::Radar { labels, .. } => {
             let shown = match labels.placement {

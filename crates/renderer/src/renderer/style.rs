@@ -509,7 +509,7 @@ pub(super) fn box_plot_style_map(
 }
 
 /// The part colours of a range bar series as the bar style map its draw,
-/// pick and highlight read (SHADER_COMMON.md §5.19): the whisker's colour
+/// pick and highlight read (SHADER_COMMON.md §5.18): the whisker's colour
 /// and width, the connector's colour and width, the up, down and total
 /// fills of [`RangeColor::Direction`](crate::data_config::RangeColor), the
 /// remaining opacity of the progress, then one fill per state of
@@ -779,8 +779,7 @@ pub(super) fn effective_series_primitives(
         // Boxes are precise like category bars, for the same reason.
         box_plot: matches!(draw_style, DrawStyle::Precise) && render_type.box_plot().is_some(),
         // Range bars are precise like category bars, for the same reason.
-        range_bars: matches!(draw_style, DrawStyle::Precise)
-            && render_type.range_bars().is_some(),
+        range_bars: matches!(draw_style, DrawStyle::Precise) && render_type.range_bars().is_some(),
         // Arrows are a precise-mode primitive for the same reason: no stylized
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.
@@ -1009,7 +1008,7 @@ impl Renderer {
         // A box plot series' lanes are its body's fill, outline and material
         // (§5.15); its part styles are its bar style map's slots.
         // A range bar series' lanes are a category bar's: its look is a
-        // `CategoryBarStyle` (§5.19); its part colours are its bar style
+        // `CategoryBarStyle` (§5.18); its part colours are its bar style
         // map's slots.
         let bar = match (
             extract_bar(render_type),

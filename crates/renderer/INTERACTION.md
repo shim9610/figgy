@@ -137,6 +137,16 @@ of the series and across the radar series, and `selection_details()`
 reports the category id and label. The vertices' value labels are pick and
 drag targets of their own (Value labels, below).
 
+Range bars are a Cartesian series kind as well (`DataRenderType::RangeBars`,
+[range bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RANGEBARS.md)),
+with the same interactions: decoration selection and drag, the plot area,
+the annotation layer and the active layer, and overlays and subplots with
+range groups of their own. The body, the whisker and the connector of a bar
+are picked by `pick_chart_data` as `PickedData::HistogramBin { series_id,
+bin_index }` for the bar, `bin_index` its row; the picked bar's highlight
+rings its body, and `step_selection` moves along the rows and across the
+range series of the layer.
+
 ### Value labels
 
 The value label of a category bar, box plot or radar series is the

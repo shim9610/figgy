@@ -337,6 +337,7 @@ impl FiggyChart {
                 | DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
                 | DataRenderType::BoxPlot { .. }
+                | DataRenderType::RangeBars { .. }
                 | DataRenderType::Radar { .. } => {}
             }
         }

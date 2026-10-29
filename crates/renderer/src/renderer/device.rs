@@ -651,10 +651,7 @@ impl TargetPipelines {
                 ));
             }
         }
-        for (need, selection) in [
-            (need_range_bars, false),
-            (need_range_bar_selection, true),
-        ] {
+        for (need, selection) in [(need_range_bars, false), (need_range_bar_selection, true)] {
             let slot = if selection {
                 &mut self.bar_range_selection
             } else {

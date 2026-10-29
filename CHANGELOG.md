@@ -22,8 +22,8 @@ new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection and
-the `CategoryBars`, `BoxPlot`, `Radar` and `Streamlines` series kinds) are
-additive.
+the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines` and `RangeBars`
+series kinds) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -63,6 +63,25 @@ additive.
   3 categories and 1 series") no longer sees them; an empty categorical axis now fails with
   "a categorical axis needs at least one category".
 
+- **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
+  [#52](https://github.com/shim9610/figgy/issues/52), #58 item 23).
+  `DataRenderType::RangeBars` draws a bar from a start to an end value at a
+  position: waterfalls, candlesticks, state timelines and Gantt charts and
+  floating ranges in one kind. `x_column` holds the positions, `y_column`
+  the ends and `start` the starts; `RangeWhiskers` adds a low-to-high
+  stroke, `RangeColor` colours by the series, the direction of the given
+  ends (with a `RangeTotal` flag column) or a state index into
+  `RangeStateStyle`s, `RangeProgress` shades the unfinished share,
+  `RangeConnector` joins each end to the next bar and `slot_width` sizes a
+  slot on a numeric (time) position axis. The host supplies every value; the
+  renderer computes no total, change or duration. `validate_range_bar_series`
+  and `Config::validate_range_bars` hold the rules: a grouped layer of its
+  own, a categorical or linear numeric position axis (`slot_width` exactly
+  on a numeric one), a numeric value axis, linear or logarithmic, a
+  connector only on a series alone in its layer. `step_selection` walks the
+  rows and the range series of a layer. Every option is omitted from a
+  document when unset. Labels reuse `CategoryBarSeriesLabels`, one host
+  string per row.
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51), #58
   item 22b). `DataRenderType::Streamlines { line, arrows, color_map }`
   declares host-integrated field lines: every streamline of the series in
@@ -843,6 +862,21 @@ additive.
   literals `value_map: None`; `VectorParamsGpu::pad0` is now `spacing_px`
   (zero for the point and grid forms).
 
+- **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
+  [#52](https://github.com/shim9610/figgy/issues/52)). The bar module draws
+  them through its range bar fragment (`common/range_bars.wgsl`,
+  SHADER_COMMON.md §5.18): one instance per row, its whisker, body and
+  connector built from the pool on every draw, pick and highlight over the
+  category bar group 3, with the part colours in the series' bar style
+  slots. `CategoryBarParamsGpu` grows from 48 to 64 bytes with `slot_half`,
+  the half slot the category bars and boxes now read too (one category,
+  bit-identical). The body, the whisker and the connector pick their bar as
+  a histogram bin (`pick_range_bar`); value labels place at the body's end
+  (`VALUE_LABEL_KIND_RANGE`). `Chart::auto_fit_layer_union` fits the value
+  axis to the ends and whiskers without forcing zero, and a numeric
+  position axis to the slots (`range_bar_extents`). Streamed sources are
+  rejected. Three playground scenes (Waterfall, Candlesticks, Gantt) join
+  the decoration oracle's catalogue. Guide: `RANGEBARS.md`.
 - **Offset spectra** ([#50](https://github.com/shim9610/figgy/issues/50),
   #58 item 22a). A document with `line_offsets` draws each member as an
   internal panel of its own through the existing per-panel path: lines,
@@ -1477,6 +1511,12 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
+  [#52](https://github.com/shim9610/figgy/issues/52)). `RangeBars` series
+  read and write in `set_series` JSON (SCHEMA.md); `selection_details()`
+  reports a picked bar's `position`, `end`, `start` and, when present,
+  `low`, `high`, `total` or `state` and `progress`, with its category on a
+  categorical axis.
 - **Streamlines** ([#51](https://github.com/shim9610/figgy/issues/51)).
   `set_series` / `get_series` read and write the `"Streamlines"` render
   type; `pick_point`, `step_selection`, the column references and

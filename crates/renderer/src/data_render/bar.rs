@@ -12,7 +12,7 @@ use super::*;
 /// whose mean and outliers are `marker.wgsl` shapes (with `ramp.wgsl` and
 /// `sketch_noise.wgsl`, which that fragment reads), and the range bar
 /// entries of its range bar input fragment (`common/range_bars.wgsl`,
-/// §5.19), which share the box plot's slot layout and the category bars'
+/// §5.18), which share the box plot's slot layout and the category bars'
 /// shading.
 pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",

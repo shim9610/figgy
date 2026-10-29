@@ -1049,7 +1049,7 @@ pub(super) fn box_plot_params<'c>(
 /// column of the series holds one value per row of its positions. The lane
 /// table is the end, start, low, high, colour and progress column lanes
 /// (`BOX_LANE_ABSENT` for an absent one), the colour mode and the state
-/// style count (SHADER_COMMON.md §5.19); the range group holds any number
+/// style count (SHADER_COMMON.md §5.18); the range group holds any number
 /// of series, each reading only its own columns, and any number of rows.
 /// The group layout of `config.bar_groups` is already in render pixels and
 /// the corner radius is scaled to `display_scale`; the slot is one category
@@ -1069,8 +1069,7 @@ pub(super) fn range_bar_params<'c>(
     use data_render::{
         BOX_LANE_ABSENT, RANGE_BAR_LANES, RANGE_COLOR_DIRECTION, RANGE_COLOR_SINGLE,
         RANGE_COLOR_STATE, RANGE_LANE_COLOR, RANGE_LANE_COLOR_MODE, RANGE_LANE_END,
-        RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START,
-        RANGE_LANE_STATES,
+        RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START, RANGE_LANE_STATES,
     };
     let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
         series_id: series.series_id.clone(),
@@ -1198,13 +1197,14 @@ pub(super) fn range_bar_data<'c>(
     display_scale: f32,
     lookup: impl FnMut(&str) -> Result<ColumnHandle>,
 ) -> Result<(data_render::CategoryBarData, u32)> {
-    let ranges = series
-        .render_type
-        .range_bars()
-        .ok_or_else(|| FiggyError::InvalidSeriesConfig {
-            series_id: series.series_id.clone(),
-            reason: "not a range bar series".into(),
-        })?;
+    let ranges =
+        series
+            .render_type
+            .range_bars()
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "not a range bar series".into(),
+            })?;
     let (params, lanes) = range_bar_params(config, group, series, display_scale, lookup)?;
     let style_map =
         crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale);

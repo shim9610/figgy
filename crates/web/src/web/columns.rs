@@ -141,6 +141,13 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         // A box plot reads its positions here; its record and outliers are
         // resident composites outside the column registry.
         DataRenderType::BoxPlot { .. } => {}
+        // A range bar reads its start, whiskers, colour flag or state and
+        // progress columns beside its positions and ends.
+        DataRenderType::RangeBars { .. } => {
+            if let Some(bars) = cfg.render_type.range_bars() {
+                ids.extend(bars.extra_columns());
+            }
+        }
         // A radar series reads its category indices and values only.
         DataRenderType::Radar { .. } => {}
         // Streamlines read their polylines and, mapped, a colour column.

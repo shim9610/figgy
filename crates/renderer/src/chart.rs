@@ -470,7 +470,11 @@ pub fn range_bar_extents(
     pool: &ColumnPool,
     config: &Config,
     item: &SeriesConfig,
-) -> Result<(FitExtent, FitExtent, crate::data_config::CategoryBarDirection)> {
+) -> Result<(
+    FitExtent,
+    FitExtent,
+    crate::data_config::CategoryBarDirection,
+)> {
     let groups = config.bar_groups_of(config.layer_of_series(&item.series_id));
     let mut value = FitExtent::EMPTY;
     let mut position = FitExtent::EMPTY;

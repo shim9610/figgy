@@ -57,10 +57,13 @@ pub enum SceneKind {
     Radar,
     LongLabels,
     OffsetSpectra,
+    Waterfall,
+    Candles,
+    Gantt,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 20] = [
+    pub const ALL: [SceneKind; 23] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -81,6 +84,9 @@ impl SceneKind {
         SceneKind::Radar,
         SceneKind::LongLabels,
         SceneKind::OffsetSpectra,
+        SceneKind::Waterfall,
+        SceneKind::Candles,
+        SceneKind::Gantt,
     ];
 
     pub fn label(self) -> &'static str {
@@ -105,6 +111,9 @@ impl SceneKind {
             SceneKind::Radar => "Radar (spider)",
             SceneKind::LongLabels => "Long labels (auto layout)",
             SceneKind::OffsetSpectra => "Offset spectra (waterfall)",
+            SceneKind::Waterfall => "Waterfall (range bars)",
+            SceneKind::Candles => "Candlesticks (range bars)",
+            SceneKind::Gantt => "Gantt (range bars)",
         }
     }
 
@@ -178,6 +187,22 @@ impl SceneKind {
                 "Twelve spectra stacked by line_offsets with a skew along x: pick \
                  a trace (values stay unshifted), step with the arrows; the \
                  labels are annotations."
+            }
+            SceneKind::Waterfall => {
+                "An energy balance as range bars: the host's running totals before \
+                 and after each step, coloured by direction, a subtotal and a total \
+                 flagged by a column, connectors and the host's change labels. Pick \
+                 a bar or a connector, step with the arrows."
+            }
+            SceneKind::Candles => {
+                "Daily prices on a time axis: open to close bodies, low to high \
+                 wicks, up and down colours from the given ends, a slot of 0.7 days. \
+                 Pick a body or a wick; pan and zoom the time axis."
+            }
+            SceneKind::Gantt => {
+                "Tasks by team as horizontal range bars on a time value axis: a \
+                 state colour per task, its progress shaded, planned beside actual. \
+                 Pick a task, step with the arrows."
             }
         }
     }
@@ -365,6 +390,9 @@ pub fn build(
         SceneKind::Radar => radar(r),
         SceneKind::LongLabels => long_labels(r),
         SceneKind::OffsetSpectra => offset_spectra(r),
+        SceneKind::Waterfall => waterfall(r),
+        SceneKind::Candles => candles(r),
+        SceneKind::Gantt => gantt(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -2121,4 +2149,294 @@ pub mod radial {
         chart.format_labels();
         chart
     }
+}
+
+// ---------------------------------------------------------------------------
+// Range bars
+// ---------------------------------------------------------------------------
+
+/// A range bar series of `start` to `end` at `positions`, flat, its other
+/// options unset.
+fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color) -> SeriesConfig {
+    use renderer::data_config::{CategoryBarSeriesLabels, CategoryBarStyle, RangeColor};
+    series(
+        id,
+        positions,
+        end,
+        DataRenderType::RangeBars {
+            color,
+            style: CategoryBarStyle {
+                corner_radius: 2.0,
+                ..CategoryBarStyle::default()
+            },
+            start: start.into(),
+            whiskers: None,
+            color_by: RangeColor::Single,
+            progress: None,
+            connector: None,
+            slot_width: None,
+            labels: CategoryBarSeriesLabels::default(),
+        },
+    )
+}
+
+/// The waterfall scene: an energy balance from the host's running totals,
+/// the subtotal and the total flagged by a column, connectors between the
+/// steps and the host's change labels.
+fn waterfall(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarLabels, RangeColor, RangeConnector, RangeTotal,
+    };
+    let steps = [
+        ("supply", "Supply", 120.0, false),
+        ("solar", "Solar", 35.0, false),
+        ("wind", "Wind", 22.0, false),
+        ("losses", "Losses", -18.0, false),
+        ("gross", "Gross", 0.0, true),
+        ("heat", "Heat", -42.0, false),
+        ("industry", "Industry", -51.0, false),
+        ("storage", "Storage", 9.0, false),
+        ("net", "Net", 0.0, true),
+    ];
+    // The running totals are host data: the renderer draws the bars from
+    // the values it is given.
+    let (mut total, mut start, mut end, mut flag, mut text) =
+        (0.0f64, Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for &(_, _, change, is_total) in &steps {
+        if is_total {
+            start.push(0.0);
+            end.push(total);
+            text.push(format!("{total:.0}"));
+        } else {
+            start.push(total);
+            total += change;
+            end.push(total);
+            text.push(format!("{change:+.0}"));
+        }
+        flag.push(if is_total { 1.0 } else { 0.0 });
+    }
+    upload(r, "wf_pos", (0..steps.len()).map(|i| i as f64).collect())?;
+    upload(r, "wf_start", start)?;
+    upload(r, "wf_end", end)?;
+    upload(r, "wf_total", flag)?;
+    let mut config = base_config("Energy balance", "", "TWh");
+    config.bottom_x.categories = Some(
+        steps
+            .iter()
+            .map(|&(id, label, _, _)| Category::new(id, label))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.7,
+        ..BarGroups::default()
+    });
+    let mut bars = range_series(
+        "balance",
+        "wf_pos",
+        "wf_start",
+        "wf_end",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        color_by,
+        connector,
+        labels,
+        ..
+    } = &mut bars.render_type
+    {
+        *color_by = RangeColor::Direction {
+            up: Color::from_rgb8(44, 160, 90),
+            down: Color::from_rgb8(214, 72, 64),
+            total: Some(RangeTotal {
+                column: "wf_total".into(),
+                color: Color::from_rgb8(65, 110, 180),
+            }),
+        };
+        *connector = Some(RangeConnector {
+            color: Color::from_rgb8(110, 110, 110),
+            width: 1.5,
+        });
+        labels.placement = CategoryBarLabels::Outside;
+        labels.text = text;
+    }
+    let series = vec![bars];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.08)?;
+    let mut config = chart.config().clone();
+    let (min, max) = (0.0, config.left_y.max);
+    if config.left_y.auto_ticks(min, max, 6).is_err() {
+        config.left_y.min = min;
+        config.left_y.max = max;
+    }
+    Ok(CartesianScene { config, series })
+}
+
+/// The candlestick scene: sixty days of synthetic prices on a time axis,
+/// open to close bodies and low to high wicks, coloured by the direction of
+/// the given ends.
+fn candles(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{BarGroups, RangeColor, RangeWhiskers};
+    const DAY: f64 = 86_400.0;
+    const T0: f64 = 1_767_225_600.0; // 2026-01-01T00:00:00Z
+    let n = 60;
+    let (mut open, mut close, mut low, mut high) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let mut price = 100.0f64;
+    for i in 0..n {
+        let o = price;
+        let c = o * (1.0 + 0.025 * noise(31, i));
+        let spread = 0.012 * o * (1.0 + noise(32, i).abs());
+        open.push(o);
+        close.push(c);
+        low.push(o.min(c) - spread);
+        high.push(o.max(c) + spread);
+        price = c;
+    }
+    upload(r, "cd_t", (0..n).map(|i| T0 + i as f64 * DAY).collect())?;
+    upload(r, "cd_open", open)?;
+    upload(r, "cd_close", close)?;
+    upload(r, "cd_low", low)?;
+    upload(r, "cd_high", high)?;
+    let mut config = base_config("Daily prices", "Date", "Price");
+    config.bottom_x.label_style.format =
+        LabelFormat::Timestamp(renderer::format::TimestampLabelFormat::default());
+    config.bar_groups = Some(BarGroups::default());
+    let mut candles = range_series(
+        "price",
+        "cd_t",
+        "cd_open",
+        "cd_close",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        style,
+        whiskers,
+        color_by,
+        slot_width,
+        ..
+    } = &mut candles.render_type
+    {
+        style.corner_radius = 0.0;
+        *whiskers = Some(RangeWhiskers {
+            low: "cd_low".into(),
+            high: "cd_high".into(),
+            width: 1.5,
+            color: Some(Color::from_rgb8(70, 70, 70)),
+        });
+        *color_by = RangeColor::Direction {
+            up: Color::from_rgb8(38, 166, 154),
+            down: Color::from_rgb8(239, 83, 80),
+            total: None,
+        };
+        // The bars cover 0.7 of a day; the group takes the whole slot.
+        *slot_width = Some(DAY);
+    }
+    if let Some(groups) = config.bar_groups.as_mut() {
+        groups.group_width = 0.7;
+    }
+    let series = vec![candles];
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.03)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The Gantt scene: tasks on team rows as horizontal range bars over a time
+/// value axis, a state colour per task and its progress shaded, the planned
+/// schedule beside the actual one.
+fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarDirection, CategoryBarLabels, RangeColor, RangeProgress,
+        RangeStateStyle,
+    };
+    const DAY: f64 = 86_400.0;
+    const T0: f64 = 1_767_225_600.0;
+    // (row, planned start, planned days, actual start, actual days, state,
+    // progress, name)
+    let tasks = [
+        (0.0, 0.0, 6.0, 0.0, 7.0, 2.0, 1.0, "Spec"),
+        (1.0, 4.0, 10.0, 5.0, 11.0, 1.0, 0.6, "Renderer"),
+        (1.0, 15.0, 6.0, 17.0, 6.0, 0.0, 0.0, "Shaders"),
+        (2.0, 6.0, 8.0, 7.0, 9.0, 1.0, 0.4, "Web"),
+        (3.0, 12.0, 9.0, 13.0, 8.0, 0.0, 0.1, "Docs"),
+        (3.0, 22.0, 4.0, 23.0, 4.0, 0.0, 0.0, "Release"),
+    ];
+    let column = |f: &dyn Fn(&(f64, f64, f64, f64, f64, f64, f64, &str)) -> f64| {
+        tasks.iter().map(f).collect::<Vec<f64>>()
+    };
+    upload(r, "gt_row", column(&|t| t.0))?;
+    upload(r, "gt_plan_start", column(&|t| T0 + t.1 * DAY))?;
+    upload(r, "gt_plan_end", column(&|t| T0 + (t.1 + t.2) * DAY))?;
+    upload(r, "gt_start", column(&|t| T0 + t.3 * DAY))?;
+    upload(r, "gt_end", column(&|t| T0 + (t.3 + t.4) * DAY))?;
+    upload(r, "gt_state", column(&|t| t.5))?;
+    upload(r, "gt_progress", column(&|t| t.6))?;
+    let mut config = base_config("Release plan", "Date", "");
+    config.left_y.categories = Some(vec![
+        Category::new("design", "Design"),
+        Category::new("core", "Core"),
+        Category::new("web", "Web"),
+        Category::new("docs", "Docs"),
+    ]);
+    config.bottom_x.label_style.format =
+        LabelFormat::Timestamp(renderer::format::TimestampLabelFormat::default());
+    config.bar_groups = Some(BarGroups {
+        direction: CategoryBarDirection::Horizontal,
+        group_width: 0.75,
+        bar_gap: 2.0,
+        ..BarGroups::default()
+    });
+    let planned = range_series(
+        "planned",
+        "gt_row",
+        "gt_plan_start",
+        "gt_plan_end",
+        Color::from_rgb8(176, 186, 198),
+    );
+    let mut actual = range_series(
+        "actual",
+        "gt_row",
+        "gt_start",
+        "gt_end",
+        Color::from_rgb8(90, 110, 130),
+    );
+    if let DataRenderType::RangeBars {
+        color_by,
+        progress,
+        labels,
+        ..
+    } = &mut actual.render_type
+    {
+        *color_by = RangeColor::State {
+            column: "gt_state".into(),
+            styles: vec![
+                RangeStateStyle {
+                    color: Color::from_rgb8(120, 144, 156),
+                },
+                RangeStateStyle {
+                    color: Color::from_rgb8(66, 133, 244),
+                },
+                RangeStateStyle {
+                    color: Color::from_rgb8(52, 168, 83),
+                },
+            ],
+        };
+        *progress = Some(RangeProgress {
+            column: "gt_progress".into(),
+            remaining_opacity: 0.4,
+        });
+        labels.placement = CategoryBarLabels::Inside;
+        labels.text = tasks.iter().map(|t| t.7.to_string()).collect();
+    }
+    let series = vec![planned, actual];
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.04)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
 }

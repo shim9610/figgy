@@ -1160,6 +1160,53 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 `labels.text`는 상자 꼭대기 위에 그리고, `labels.offsets`(범주마다 `[dx, dy]` 논리 픽셀)는 라벨을 끌어 옮긴
 거리다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
+<a id="rangebars-render_type"></a>
+
+## `RangeBars` render_type
+
+Range bar series read their positions from `x_column`, their end values from
+`y_column` and their start values from `start`, whatever the direction; the
+optional columns are named in `whiskers` (`low`, `high`), `color_by` (the
+`Direction` total flag or the `State` index column) and `progress`. Every
+column holds one value per row. `style` and `labels` are always written;
+`whiskers`, `color_by` (`"Single"`), `progress`, `connector` and
+`slot_width` are omitted when unset. The range bar series of a layer stand
+side by side under `bar_groups` (`mode` `"Grouped"`).
+
+```json
+{
+  "series_id": "price",
+  "x_column": "time",
+  "y_column": "close",
+  "render_type": {
+    "RangeBars": {
+      "color": { "r": 0.35, "g": 0.43, "b": 0.51, "a": 1.0 },
+      "style": { "material": "Flat", "corner_radius": 0.0, "outline": false,
+                 "outline_width": 1.0, "outline_color": { "r": 0.16, "g": 0.22, "b": 0.29, "a": 1.0 },
+                 "texture_strength": 0.2, "texture_scale": 1.0, "gloss": 0.45,
+                 "emphasis_brightness": 0.08 },
+      "start": "open",
+      "whiskers": { "low": "low", "high": "high", "width": 1.5 },
+      "color_by": { "Direction": {
+        "up": { "r": 0.15, "g": 0.65, "b": 0.6, "a": 1.0 },
+        "down": { "r": 0.94, "g": 0.33, "b": 0.31, "a": 1.0 } } },
+      "slot_width": 86400.0,
+      "labels": { "placement": "Auto", "decimals": 1, "value_suffix": "" }
+    }
+  }
+}
+```
+
+A Gantt chart names `"color_by": { "State": { "column": "state", "styles":
+[{ "color": … }] } }` and `"progress": { "column": "done", "remaining_opacity":
+0.4 }`; a waterfall `"Direction"` with `"total": { "column": "is_total",
+"color": … }` and `"connector": { "color": …, "width": 1.5 }`. The picked
+bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
+`start` and, when the series has them, `low`, `high`, `total` or `state` and
+`progress` (`null` for a NaN), with `category_id` and `category_label` on a
+categorical axis; never a difference or a duration. `labels.text` holds one
+host string per row and `labels.offsets` their drag offsets.
+
 <a id="radar-render_type"></a>
 
 ## `Radar` render_type
