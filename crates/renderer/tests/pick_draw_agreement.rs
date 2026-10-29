@@ -4247,7 +4247,10 @@ fn diag_dump(
     let stem: String = format!("{what}_{scale}x")
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .take(60)
         .collect();
+    let stem = format!("{stem}_{}", failures.len());
+    eprintln!("DIAG dump {stem}: {what} at {scale}x: {failures:?}");
     let write = |name: &str, img: &RasterImage| {
         let file = std::fs::File::create(dir.join(format!("{stem}_{name}.png"))).unwrap();
         let mut enc = png::Encoder::new(std::io::BufWriter::new(file), img.width, img.height);
