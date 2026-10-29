@@ -420,7 +420,11 @@ pub fn assert_pick_matches_paint_with(
             ));
         }
     }
-    if !failures.is_empty() || what.contains("polar fill") || what.contains("hole") {
+    if !failures.is_empty()
+        || what.contains("polar fill")
+        || what.contains("hole")
+        || what.contains("1592590347")
+    {
         diag_dump(
             renderer,
             &probe,
@@ -4249,7 +4253,10 @@ fn diag_dump(
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .take(60)
         .collect();
-    let stem = format!("{stem}_{}", failures.len());
+    let hash = what.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x100_0000_01b3)
+    });
+    let stem = format!("{stem}_{scale}x_{hash:016x}_{}", failures.len());
     eprintln!("DIAG dump {stem}: {what} at {scale}x: {failures:?}");
     let write = |name: &str, img: &RasterImage| {
         let file = std::fs::File::create(dir.join(format!("{stem}_{name}.png"))).unwrap();
@@ -4292,4 +4299,21 @@ fn diag_dump(
         }
     }
     std::fs::write(dir.join(format!("{stem}.txt")), text).unwrap();
+}
+
+// DIAGNOSTIC ONLY (diag/backend-pick): the data of the Metal-only case.
+#[test]
+fn diag_print_seed_1592590347() {
+    let seed = 1592590347u64;
+    let mut rng = random_curves::Rng::new(seed.rotate_left(17));
+    let lead = [0, 0, 2, 301, 601][rng.index(5)];
+    let curve = random_curves::Curve::random(seed, lead);
+    for i in 20..30 {
+        eprintln!(
+            "DIAG data {i}: x {:?} y {:?} dy {:e}",
+            curve.xs[i],
+            curve.ys[i],
+            curve.ys[i + 1] - curve.ys[i]
+        );
+    }
 }
