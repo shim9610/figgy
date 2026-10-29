@@ -486,25 +486,44 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
     if (!a.ok || !b.ok) {
         return 1e30;
     }
-    let outline = max(resolved.border_width_px, 0.0) * 0.5;
+    // Inside the fill: within the segment's value range and its half
+    // width (on its side for a half).
     let span = b.along - a.along;
-    var t = 0.0;
+    var t = -1.0;
     if (span != 0.0) {
         t = (along - a.along) / span;
     }
-    var past = 0.0;
-    if (t < 0.0 || t > 1.0) {
-        // Past an end of the curve: the distance along to it.
-        let end_along = select(a.along, b.along, t > 1.0);
-        past = abs(along - end_along);
-        t = clamp(t, 0.0, 1.0);
+    if (t >= 0.0 && t <= 1.0 && u <= mix(a.width, b.width, t) && (sign == 0.0 || u >= 0.0)) {
+        return 0.0;
     }
-    let w = mix(a.width, b.width, t);
-    var across = max(u - w, 0.0);
-    if (sign != 0.0) {
-        across = max(across, -u);
+    // Else the outline's distances, as `violin_coverage` measures them:
+    // this segment's edge and its neighbours', the caps at the curve's
+    // ends and a half's straight side, less the outline's half width.
+    let q = vec2<f32>(along, u);
+    let pa = vec2<f32>(a.along, a.width);
+    let pb = vec2<f32>(b.along, b.width);
+    var d = violin_edge_distance(q, pa, pb);
+    if (lo > first) {
+        let prev = violin_point(h, lo - 1u, position, place.thickness);
+        if (prev.ok) {
+            d = min(d, violin_edge_distance(q, vec2<f32>(prev.along, prev.width), pa));
+        }
+    } else {
+        d = min(d, violin_edge_distance(q, vec2<f32>(a.along, select(-a.width, 0.0, sign != 0.0)), pa));
     }
-    return max(length(vec2<f32>(past, across)) - outline, 0.0);
+    if (lo + 2u < end) {
+        let next = violin_point(h, lo + 2u, position, place.thickness);
+        if (next.ok) {
+            d = min(d, violin_edge_distance(q, pb, vec2<f32>(next.along, next.width)));
+        }
+    } else {
+        d = min(d, violin_edge_distance(q, vec2<f32>(b.along, select(-b.width, 0.0, sign != 0.0)), pb));
+    }
+    if (sign != 0.0 && t >= 0.0 && t <= 1.0) {
+        d = min(d, abs(u));
+    }
+    let outline = max(resolved.border_width_px, 0.0) * 0.5;
+    return max(d - outline, 0.0);
 }
 
 fn violin_pick_row(g: u32) -> DataPickCandidate {
