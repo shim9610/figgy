@@ -191,7 +191,7 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let delta = b_px - a_px;
     let len = length(delta);
     // Zero-length guard — normal=0 makes corner=center, collapsing the quad.
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -490,7 +490,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
 
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     let half_w = max(style.line_width_px, 1.0) * 0.5;
@@ -619,7 +619,7 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
 
     // Geometric half-extent = one FULL ribbon width: the gaussian profile in
@@ -796,7 +796,7 @@ fn vs_stars(
     let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
-    let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
+    let dir = step_piece_dir(transform, piece, select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6));
     let normal_px = vec2<f32>(-dir.y, dir.x);
     // Also kills non-finite endpoints (NaN comparisons are false).
     if (!(len > 1e-6)) { alive = false; }
