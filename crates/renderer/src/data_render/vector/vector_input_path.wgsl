@@ -64,7 +64,9 @@ fn vector_sample(i: u32) -> VectorSample {
         let ca = vector_pool_pair(vector_params.c_base, a);
         let cb = vector_pool_pair(vector_params.c_base, b);
         sample.value = ca + (cb - ca) * head.t;
-        sample.value_valid = true;
+        // Checked by bits at both ends: Metal's fast math need not carry a
+        // NaN end through the interpolation (#63).
+        sample.value_valid = vector_pair_finite(ca) && vector_pair_finite(cb);
     }
     sample.valid = true;
     return sample;
