@@ -117,6 +117,25 @@ fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec
     return b;
 }
 
+// The unit direction `dir` of piece `p` in pixels, exactly along its axis:
+// a riser's x and a run's y are zero, keeping only the sign. Copying the
+// shared coordinate (`step_piece_end`) is not enough in Metal's vertex stage,
+// which can leave an ulp in the difference of the two equal coordinates;
+// divided by a riser's length of 1e-4 px it tilted the quad by a degree
+// (#63).
+fn step_piece_dir(t: Transform, p: StepPiece, dir: vec2<f32>) -> vec2<f32> {
+    if (t.polar_angle.x > 0.5) {
+        return dir;
+    }
+    if (p.axis == STEP_AXIS_X) {
+        return vec2<f32>(0.0, sign(dir.y));
+    }
+    if (p.axis == STEP_AXIS_Y) {
+        return vec2<f32>(sign(dir.x), 0.0);
+    }
+    return dir;
+}
+
 // Pixel length of one piece, with the arc scan's projection.
 fn step_piece_len_px(t: Transform, p: StepPiece) -> f32 {
     let a = data_to_px(t, p.x0, p.y0);
