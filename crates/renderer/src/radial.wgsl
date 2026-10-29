@@ -34,14 +34,14 @@ fn scene(pixel: vec2<f32>) -> vec4<f32> {
         shade=max(shade,(1.0-smoothstep(-blur,blur*2.0,d))*0.16);
     }
     color=vec4(color.rgb*(1.0-shade),shade+color.a*(1.0-shade));
-    var closest=hit_key(10000.0);
+    var closest=10000.0;
     for(var i=0u;i<u32(globals.size.z);i++) {
         let s=sectors[i];
         let cs=cos(s.arc.z);let sn=sin(s.arc.z);
         let rd=vec3(0.0,-sn,-cs);
         let h=hit_pixel(pixel,s);
-        if hit_key(h.t)<closest {
-            closest=hit_key(h.t);
+        if h.t<closest {
+            closest=h.t;
             // The brush of BrushedMetal and SatinMetal runs around the
             // center: its tangent is circumferential in the turned texture
             // frame, its coordinates are (radius, twice the turned angle).
@@ -94,13 +94,12 @@ fn label_pixel(pixel: vec2<f32>) -> vec4<f32> {
         }
     }
     if !moving { return text; }
-    var closest=hit_key(10000.0);var winner=0u;
+    var best=NO_HIT;
     for(var i=0u;i<u32(globals.size.z);i++) {
-        let h=hit_pixel(pixel,sectors[i]);
-        if hit_key(h.t)<closest {closest=hit_key(h.t);winner=i;}
+        best=nearest_hit(best,hit_pixel(pixel,sectors[i]).t,i);
     }
-    if closest<hit_key(10000.0) {
-        let s=sectors[winner];
+    if bitcast<f32>(best.x)<9999.0 {
+        let s=sectors[best.y];
         if s.effects.z>0.0 && s.rounding.z>0.0 {
             let offset=vec2(0.0,s.effects.w);
             let location=pixel+offset;
