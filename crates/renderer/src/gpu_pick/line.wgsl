@@ -194,7 +194,7 @@ fn pick_stroke_candidate(
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = step_piece(ax, ay, bx, by, mode, k);
         let a_px = pick_data_px(piece.x0, piece.y0);
-        let b_px = pick_data_px(piece.x1, piece.y1);
+        let b_px = step_piece_end(t, piece, a_px, pick_data_px(piece.x1, piece.y1));
         if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
             return pick_invalid_candidate(series_order);
         }

@@ -170,7 +170,7 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
     var a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
-    var b_ndc = data_to_ndc(transform, piece.x1, piece.y1);
+    var b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
     if (style.dash_len == 0u) {
         let pad = abs(transform.pixel_to_ndc) * (max(style.line_width_px, 1.0) + 2.0);
         let clipped = clip_solid_segment(a_ndc, b_ndc, pad);
@@ -467,7 +467,7 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
     let a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
-    let b_ndc = data_to_ndc(transform, piece.x1, piece.y1);
+    let b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
 
     let a_px = a_ndc / transform.pixel_to_ndc;
     let b_px = b_ndc / transform.pixel_to_ndc;
@@ -600,7 +600,7 @@ fn vs_ribbon(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> RibbonOut
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
     let last_piece = slot.piece + 1u == step_piece_count(mode);
     let a_px = data_to_px(transform, piece.x0, piece.y0);
-    let b_px = data_to_px(transform, piece.x1, piece.y1);
+    let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
     let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
@@ -777,7 +777,7 @@ fn vs_stars(
         }
     }
     let a_px = data_to_px(transform, piece.x0, piece.y0);
-    let b_px = data_to_px(transform, piece.x1, piece.y1);
+    let b_px = step_piece_end(transform, piece, a_px, data_to_px(transform, piece.x1, piece.y1));
     let delta = b_px - a_px;
     let len = length(delta);
     let dir = select(vec2<f32>(0.0, 0.0), delta / max(len, 1e-6), len > 1e-6);
