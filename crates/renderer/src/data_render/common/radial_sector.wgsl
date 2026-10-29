@@ -73,13 +73,17 @@ fn hit_sector(ro: vec3<f32>,rd: vec3<f32>,s: Sector) -> Hit {
     }
     return Hit(10000.0,vec3(0.0),vec3(0.0));
 }
-// The order key of a hit's `t`: its bits, with the sign bit cleared, so a
-// `-0.0` start orders as 0. `t` is never negative, and for floats that are
-// not negative the bit pattern orders as the value does, so the nearest-hit
-// loops compare integers. Metal compiles a float `if h.t<closest
-// {closest=h.t;winner=i;}` so that `closest` moves and `winner` does not
-// (#63): an integer comparison leaves fast math nothing to fold.
-fn hit_key(t: f32) -> u32 { return bitcast<u32>(t)&0x7fffffffu; }
+// The nearest hit so far, kept as one value: the order key of its `t` (the
+// bits with the sign bit cleared, so a `-0.0` start orders as 0; `t` is
+// never negative, and the bits of a float that is not negative order as its
+// value does) and its sector. Metal drops the winner of a loop that updates
+// the distance and the index as two variables, keeping the nearest `t` with
+// sector 0 (#63); one `vec2<u32>` assignment moves both together.
+fn nearest_hit(best: vec2<u32>,t: f32,i: u32) -> vec2<u32> {
+    let key=bitcast<u32>(t)&0x7fffffffu;
+    return select(best,vec2(key,i),key<best.x);
+}
+const NO_HIT: vec2<u32> = vec2(0x461c4000u,0u); // nearest_hit's key of t = 10000
 fn hit_pixel(pixel: vec2<f32>,s: Sector) -> Hit {
     let cs=cos(s.arc.z);let sn=sin(s.arc.z);let mid=s.arc.x+s.arc.y*0.5;
     let center=s.geometry.xy+s.detail.x*s.geometry.z*vec2(cos(mid),sin(mid)*cs);

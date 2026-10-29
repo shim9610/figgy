@@ -1666,24 +1666,25 @@ mod pick_module_tests {
         );
     }
 
-    /// Every nearest-hit loop of the draw and the pick compares `hit_key`
-    /// integers, never the `t` floats: Metal drops the winner update of a
-    /// float comparison (#63).
+    /// The pick and the draw's moving inside glyphs choose their sector by
+    /// `nearest_hit`, never by a loop that keeps the distance and the index
+    /// as two variables: Metal drops that winner (#63).
     #[test]
-    fn nearest_hit_loops_compare_hit_keys() {
-        for (name, source) in [
-            ("radial.wgsl", include_str!("radial.wgsl")),
-            ("radial_pick.wgsl", include_str!("radial_pick.wgsl")),
+    fn index_loops_fold_hits_with_nearest_hit() {
+        for (name, source, count) in [
+            ("radial.wgsl", include_str!("radial.wgsl"), 1),
+            ("radial_pick.wgsl", include_str!("radial_pick.wgsl"), 1),
         ] {
-            assert!(!source.contains("h.t<closest"), "{name}");
-            assert!(source.contains("if hit_key(h.t)<"), "{name}");
+            assert!(!source.contains("winner=i"), "{name}");
+            assert_eq!(
+                source.matches("best=nearest_hit(best,").count(),
+                count,
+                "{name}"
+            );
         }
-        assert_eq!(
-            include_str!("radial.wgsl")
-                .matches("if hit_key(h.t)<closest")
-                .count(),
-            2
-        );
+        let key = |t: f32| f32::to_bits(t) & 0x7fff_ffff;
+        assert_eq!(key(10000.0), 0x461c_4000, "NO_HIT");
+        assert!(key(-0.0) < key(f32::MIN_POSITIVE) && key(3.0) < key(3.0001));
     }
 }
 
