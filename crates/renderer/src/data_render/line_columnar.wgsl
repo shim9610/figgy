@@ -262,8 +262,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // as colour, opaque, so backends can be compared pixel by pixel.
     let _keep = line_fragment_color(in, style.color_premul);
     return vec4<f32>(
-        fract(in.dist_px / 32.0),
-        clamp(in.along_px / 40.0 + 0.25, 0.0, 1.0),
+        clamp(dpdx(in.along_px) * 8.0 + 0.5, 0.0, 1.0),
+        clamp(dpdy(in.along_px) * 0.25 + 0.5, 0.0, 1.0),
         clamp((in.polar_px.x * 4.0 + in.polar_px.y) / 255.0, 0.0, 1.0),
         1.0,
     );
