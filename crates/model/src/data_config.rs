@@ -3154,17 +3154,16 @@ pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), &'static s
     {
         return Err("the columns of a range bar series are distinct");
     }
-    if let Some(w) = bars.whiskers {
-        if !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
+    if bars.whiskers.is_some_and(|w| {
+        !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
             || w.color.is_some_and(|c| !valid_bar_color(c, true))
-        {
-            return Err("range bar whiskers are 0..=24 px wide, in an opaque colour");
-        }
+    }) {
+        return Err("range bar whiskers are 0..=24 px wide, in an opaque colour");
     }
-    if let Some(c) = bars.connector {
-        if !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false) {
-            return Err("a range bar connector is 0..=24 px wide, its colour channels in 0..=1");
-        }
+    if bars.connector.is_some_and(|c| {
+        !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false)
+    }) {
+        return Err("a range bar connector is 0..=24 px wide, its colour channels in 0..=1");
     }
     let opaque = match bars.color_by {
         RangeColor::Single => true,

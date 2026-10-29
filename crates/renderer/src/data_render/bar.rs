@@ -442,7 +442,7 @@ pub struct CategoryBarParamsGpu {
     /// The series salt, which seeds the material grain per bar.
     pub seed: u32,
     /// Half a slot along the position axis in data units, as a `(hi, lo)`
-    /// pair: [`CATEGORY_SLOT_HALF`] for category bars and boxes, half a
+    /// pair: `CATEGORY_SLOT_HALF` for category bars and boxes, half a
     /// range bar series' `slot_width` on a numeric axis.
     pub slot_half: [f32; 2],
     pub _reserved: [u32; 2],

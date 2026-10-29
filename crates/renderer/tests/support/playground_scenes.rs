@@ -2432,11 +2432,14 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         labels.text = tasks.iter().map(|t| t.7.to_string()).collect();
     }
     let series = vec![planned, actual];
-    let config = with_legend(config, &series);
+    let mut config = with_legend(config, &series);
+    // The top left is the one empty corner of the plan.
+    config.legend.corner = renderer::config::LegendCorner::TopLeft;
     let mut chart = Chart::new(config);
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.04)?;
-    Ok(CartesianScene {
-        config: chart.config().clone(),
-        series,
-    })
+    let mut config = chart.config().clone();
+    // End the date axis half a day after the last task, short of the next
+    // weekly tick, so no tick label sits on the plot's right edge.
+    config.bottom_x.max = T0 + 27.5 * DAY;
+    Ok(CartesianScene { config, series })
 }

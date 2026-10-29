@@ -1500,6 +1500,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Histogram { .. } => "histogram",
         DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::BoxPlot { .. } => "box plot",
+        DataRenderType::RangeBars { .. } => "range bars",
         DataRenderType::Radar { .. } => "radar",
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
@@ -1872,6 +1873,28 @@ fn series_controls(
             ui.checkbox(&mut style.outline, "outline");
             slider(ui, "corner radius", &mut style.corner_radius, 0.0..=3.0);
             slider(ui, "whisker width", &mut style.whisker_width, 0.0..=4.0);
+        }
+        // The direction, group width and gap are the chart's
+        // (`Config::bar_groups`); the columns are the scene's.
+        DataRenderType::RangeBars {
+            color: fill,
+            style,
+            whiskers,
+            connector,
+            ..
+        } => {
+            color(ui, "fill", fill);
+            slider(ui, "corner radius", &mut style.corner_radius, 0.0..=12.0);
+            ui.checkbox(&mut style.outline, "outline");
+            color(ui, "outline colour", &mut style.outline_color);
+            slider(ui, "outline width", &mut style.outline_width, 0.0..=4.0);
+            if let Some(w) = whiskers {
+                slider(ui, "whisker width", &mut w.width, 0.0..=8.0);
+            }
+            if let Some(c) = connector {
+                color(ui, "connector colour", &mut c.color);
+                slider(ui, "connector width", &mut c.width, 0.0..=8.0);
+            }
         }
         // The grid shape, the spoke direction and the rings are the polar
         // chart's (the "Chart" section); the look is the series'.
