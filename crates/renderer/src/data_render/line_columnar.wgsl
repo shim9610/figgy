@@ -152,8 +152,12 @@ fn clip_solid_segment(first: vec2<f32>, second: vec2<f32>, pad: vec2<f32>) -> ma
 }
 
 @vertex
-fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
-    return line_vertex(in, arc, vid);
+fn vs_main(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32, @builtin(instance_index) inst: u32) -> VsOut {
+    // DIAGNOSTIC ONLY (diag/backend-pick): the instance and piece ride in
+    // the unused cartesian polar varying.
+    var out = line_vertex(in, arc, vid);
+    out.polar_px = vec2<f32>(f32(inst), f32(strip_slot(vid, 4u).piece));
+    return out;
 }
 
 // The precise stroke's vertex: `vs_main`, and `vs_main_mapped` under its
@@ -260,7 +264,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(
         fract(in.dist_px / 32.0),
         clamp(in.along_px / 40.0 + 0.25, 0.0, 1.0),
-        clamp(in.segment_len_px / 64.0, 0.0, 1.0),
+        clamp((in.polar_px.x * 4.0 + in.polar_px.y + 0.5) / 255.0, 0.0, 1.0),
         1.0,
     );
 }
