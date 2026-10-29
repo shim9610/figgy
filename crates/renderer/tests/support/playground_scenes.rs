@@ -60,10 +60,12 @@ pub enum SceneKind {
     Waterfall,
     Candles,
     Gantt,
+    Violins,
+    Raincloud,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 23] = [
+    pub const ALL: [SceneKind; 25] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -87,6 +89,8 @@ impl SceneKind {
         SceneKind::Waterfall,
         SceneKind::Candles,
         SceneKind::Gantt,
+        SceneKind::Violins,
+        SceneKind::Raincloud,
     ];
 
     pub fn label(self) -> &'static str {
@@ -114,6 +118,8 @@ impl SceneKind {
             SceneKind::Waterfall => "Waterfall (range bars)",
             SceneKind::Candles => "Candlesticks (range bars)",
             SceneKind::Gantt => "Gantt (range bars)",
+            SceneKind::Violins => "Split violins (box plot)",
+            SceneKind::Raincloud => "Raincloud (box plot)",
         }
     }
 
@@ -203,6 +209,16 @@ impl SceneKind {
                 "Tasks by team as horizontal range bars on a time value axis: a \
                  state colour per task, its progress shaded, planned beside actual. \
                  Pick a task, step with the arrows."
+            }
+            SceneKind::Violins => {
+                "Two conditions per dose as split violins over the host's density \
+                 curves, without boxes, a box override restyling one category. \
+                 Pick a violin, step with the arrows."
+            }
+            SceneKind::Raincloud => {
+                "Four groups as rainclouds: a half violin on the right, a narrow \
+                 box, and the raw points jittered on the left. Pick a point and \
+                 step along the points, or a cloud."
             }
         }
     }
@@ -393,6 +409,8 @@ pub fn build(
         SceneKind::Waterfall => waterfall(r),
         SceneKind::Candles => candles(r),
         SceneKind::Gantt => gantt(r),
+        SceneKind::Violins => violins(r),
+        SceneKind::Raincloud => raincloud(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -2157,6 +2175,309 @@ pub mod radial {
 
 /// A range bar series of `start` to `end` at `positions`, flat, its other
 /// options unset.
+/// The host's side of a violin or a raincloud: `samples` per category,
+/// summarised as a box record (median, quartiles, 1.5 IQR whiskers), a
+/// Gaussian kernel density on `grid` points per category (Silverman's
+/// bandwidth) as the ragged curve `{id}.curve` with its density column
+/// `{id}.density`, and the samples as raw point columns `{id}.cat` and
+/// `{id}.value`. The renderer draws what this computes; it estimates
+/// nothing. Returns the largest density, for `fit_density_scale`.
+fn upload_distribution(
+    r: &mut Renderer,
+    id: &str,
+    samples: &[Vec<f64>],
+    grid: usize,
+) -> Result<f64, FiggyError> {
+    use renderer::{BOX_PLOT_RECORD, RaggedSource, RecordSource};
+    let quantile = |sorted: &[f64], q: f64| {
+        let at = q * (sorted.len() - 1) as f64;
+        let (lo, hi) = (at.floor() as usize, at.ceil() as usize);
+        sorted[lo] + (sorted[hi] - sorted[lo]) * (at - lo as f64)
+    };
+    let mut stats = [Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    let mut values = Vec::new();
+    let mut density = Vec::new();
+    let mut offsets = vec![0.0];
+    let mut peak = 0.0f64;
+    for group in samples {
+        let mut sorted = group.clone();
+        sorted.sort_by(f64::total_cmp);
+        let (q1, med, q3) = (
+            quantile(&sorted, 0.25),
+            quantile(&sorted, 0.5),
+            quantile(&sorted, 0.75),
+        );
+        let iqr = q3 - q1;
+        let low = sorted
+            .iter()
+            .copied()
+            .find(|v| *v >= q1 - 1.5 * iqr)
+            .unwrap_or(q1);
+        let high = sorted
+            .iter()
+            .rev()
+            .copied()
+            .find(|v| *v <= q3 + 1.5 * iqr)
+            .unwrap_or(q3);
+        for (k, v) in [med, q1, q3, low, high].into_iter().enumerate() {
+            stats[k].push(v);
+        }
+        let n = sorted.len() as f64;
+        let mean = sorted.iter().sum::<f64>() / n;
+        let sd = (sorted.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n).sqrt();
+        let h = 1.06 * sd * n.powf(-0.2);
+        let (a, b) = (sorted[0] - 2.0 * h, sorted[sorted.len() - 1] + 2.0 * h);
+        for v in linspace(a, b, grid) {
+            let d = sorted
+                .iter()
+                .map(|x| (-0.5 * ((v - x) / h).powi(2)).exp())
+                .sum::<f64>()
+                / (n * h * (2.0 * std::f64::consts::PI).sqrt());
+            peak = peak.max(d);
+            values.push(v);
+            density.push(d);
+        }
+        offsets.push(values.len() as f64);
+    }
+    let column = |data: Vec<f64>| {
+        let (min, max) = data
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                (lo.min(*v), hi.max(*v))
+            });
+        Column { data, min, max }
+    };
+    let columns = stats.map(column);
+    let names = ["median", "q1", "q3", "whisker_low", "whisker_high"];
+    let fields: [(&str, &dyn ColumnSource); 5] =
+        std::array::from_fn(|k| (names[k], &columns[k] as &dyn ColumnSource));
+    r.upsert_record(
+        format!("{id}.record"),
+        &RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields: &fields,
+        },
+    )?;
+    r.upsert_ragged(
+        format!("{id}.curve"),
+        &RaggedSource {
+            values: &column(values),
+            offsets: &column(offsets),
+        },
+    )?;
+    upload(r, &format!("{id}.density"), density)?;
+    let (cats, points): (Vec<f64>, Vec<f64>) = samples
+        .iter()
+        .enumerate()
+        .flat_map(|(k, group)| group.iter().map(move |v| (k as f64, *v)))
+        .unzip();
+    upload(r, &format!("{id}.cat"), cats)?;
+    upload(r, &format!("{id}.value"), points)?;
+    Ok(peak)
+}
+
+/// `n` samples of a two-component mixture around `centre`, from the
+/// scene's deterministic noise.
+fn mixture(seed: u64, n: usize, centre: f64, split: f64, spread: f64) -> Vec<f64> {
+    (0..n)
+        .map(|i| {
+            let side = if noise(seed, 3 * i) > 0.0 {
+                split
+            } else {
+                -split
+            };
+            let g = (noise(seed, 3 * i + 1) + noise(seed, 3 * i + 2)) * 0.5;
+            centre + side + g * spread
+        })
+        .collect()
+}
+
+/// A box plot series over `{id}.record` with a violin of `body`, named
+/// `label` (the legend names a series by its id).
+fn violin_box(
+    id: &str,
+    label: &str,
+    color: Color,
+    body: renderer::data_config::ViolinBody,
+) -> SeriesConfig {
+    use renderer::data_config::{BoxPlotSeriesLabels, BoxPlotStyle, Violin};
+    let mut item = series(
+        id,
+        "vl_pos",
+        &format!("{id}.record"),
+        DataRenderType::BoxPlot {
+            color,
+            style: BoxPlotStyle {
+                caps: false,
+                show_outliers: false,
+                ..BoxPlotStyle::default()
+            },
+            labels: BoxPlotSeriesLabels::default(),
+            outliers: None,
+            overrides: None,
+            violin: Some(Violin {
+                body,
+                box_width: 0.18,
+            }),
+            points: None,
+        },
+    );
+    // The legend names a series by its id.
+    item.series_id = label.into();
+    item
+}
+
+fn violin_half(id: &str, scale: f64, fill: Option<Color>) -> renderer::data_config::ViolinHalf {
+    use renderer::data_config::{ViolinHalf, ViolinStyle};
+    let mut half = ViolinHalf {
+        curve: format!("{id}.curve"),
+        density: format!("{id}.density"),
+        density_scale: 1.0,
+        style: ViolinStyle {
+            fill,
+            outline: true,
+            outline_width: 1.0,
+            outline_color: Color::from_rgb8(40, 52, 64),
+        },
+    };
+    half.fit_density_scale(scale);
+    half
+}
+
+/// The split violin scene: two conditions per dose, each a host density
+/// curve on its side of one box plot series without boxes, the third dose
+/// restyled by a box override.
+fn violins(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, BoxPlotOverride, BoxPlotTarget, ViolinBody};
+    let doses = ["0 mg", "5 mg", "10 mg", "20 mg"];
+    upload(r, "vl_pos", (0..doses.len()).map(|k| k as f64).collect())?;
+    let control: Vec<Vec<f64>> = (0..doses.len())
+        .map(|k| mixture(11 + k as u64, 160, 40.0 + 4.0 * k as f64, 6.0, 10.0))
+        .collect();
+    let treated: Vec<Vec<f64>> = (0..doses.len())
+        .map(|k| {
+            mixture(
+                31 + k as u64,
+                160,
+                42.0 + 9.0 * k as f64,
+                2.0 + 3.0 * k as f64,
+                9.0,
+            )
+        })
+        .collect();
+    let peak_c = upload_distribution(r, "vl_c", &control, 160)?;
+    let peak_t = upload_distribution(r, "vl_t", &treated, 160)?;
+    let peak = peak_c.max(peak_t);
+    let mut config = base_config("Response by dose", "Dose", "Response");
+    config.bottom_x.categories = Some(
+        doses
+            .iter()
+            .map(|d| Category::new(d.replace(' ', ""), *d))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.85,
+        ..BarGroups::default()
+    });
+    // One series carries both conditions as the halves of its violins,
+    // with no box (no record): a box would summarise one condition only.
+    let mut control_series = violin_box(
+        "vl_c",
+        "Control / treated",
+        Color::from_rgb8(120, 160, 200),
+        ViolinBody::Split {
+            low: Some(violin_half("vl_c", peak, None)),
+            high: Some(violin_half(
+                "vl_t",
+                peak,
+                Some(Color::from_rgb8(236, 150, 110)),
+            )),
+        },
+    );
+    control_series.y_column.clear();
+    if let DataRenderType::BoxPlot { overrides, .. } = &mut control_series.render_type {
+        let mut o = BoxPlotOverride::new(BoxPlotTarget::new("10mg", "Control / treated"));
+        o.color = Some(Color::from_rgb8(170, 140, 210));
+        *overrides = Some(vec![o]);
+    }
+    let series = vec![control_series];
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The raincloud scene: four groups, each a half violin on the high side
+/// over the host's density curve, a narrow box, and the raw points
+/// jittered on the low side.
+fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, BoxPoints, BoxPointsStyle, ViolinBody};
+    let groups = ["North", "East", "South", "West"];
+    upload(r, "vl_pos", (0..groups.len()).map(|k| k as f64).collect())?;
+    let samples: Vec<Vec<f64>> = (0..groups.len())
+        .map(|k| {
+            mixture(
+                71 + k as u64,
+                120,
+                30.0 + 7.0 * k as f64,
+                3.0 * (k % 2) as f64 + 1.0,
+                12.0,
+            )
+        })
+        .collect();
+    let peak = upload_distribution(r, "rc", &samples, 140)?;
+    let mut config = base_config("Rainfall by region", "Region", "mm");
+    config.bottom_x.categories = Some(
+        groups
+            .iter()
+            .map(|g| Category::new(g.to_lowercase(), *g))
+            .collect(),
+    );
+    config.bar_groups = Some(BarGroups {
+        group_width: 0.9,
+        ..BarGroups::default()
+    });
+    let mut cloud = violin_box(
+        "rc",
+        "Rainfall",
+        Color::from_rgb8(90, 150, 200),
+        ViolinBody::Split {
+            low: None,
+            high: Some(violin_half("rc", peak, None)),
+        },
+    );
+    cloud.x_column = "vl_pos".into();
+    if let DataRenderType::BoxPlot { points, violin, .. } = &mut cloud.render_type {
+        if let Some(violin) = violin {
+            violin.box_width = 0.12;
+        }
+        *points = Some(BoxPoints {
+            positions: "rc.cat".into(),
+            values: "rc.value".into(),
+            style: BoxPointsStyle {
+                color: Color::from_rgb8(40, 80, 120),
+                size: 4.0,
+                jitter: 0.35,
+                offset: -0.5,
+                ..BoxPointsStyle::default()
+            },
+        });
+    }
+    let series = vec![cloud];
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
 fn range_series(id: &str, positions: &str, start: &str, end: &str, color: Color) -> SeriesConfig {
     use renderer::data_config::{CategoryBarSeriesLabels, CategoryBarStyle, RangeColor};
     series(

@@ -6467,6 +6467,45 @@ fn streamed_series_reject_range_bars() {
     ));
 }
 
+/// Streaming is not extended to a box plot's violin or raw points (CLAUDE.md
+/// rule 8): a streamed one is rejected with an explicit reason naming them.
+#[test]
+fn streamed_series_reject_violins_and_raw_points() {
+    use crate::data_config::{BoxPoints, Violin, ViolinBody, ViolinHalf};
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: String::new(),
+        render_type: DataRenderType::BoxPlot {
+            color: Color::BLACK,
+            style: Default::default(),
+            labels: Default::default(),
+            outliers: None,
+            overrides: None,
+            violin: Some(Violin::new(ViolinBody::Symmetric(ViolinHalf {
+                curve: "curve".into(),
+                density: "density".into(),
+                density_scale: 1.0,
+                style: Default::default(),
+            }))),
+            points: Some(BoxPoints {
+                positions: "x".into(),
+                values: "y".into(),
+                style: Default::default(),
+            }),
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("violin") && reason.contains("raw point")
+                && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to radar series: a streamed radar series is
 /// rejected with an explicit reason (CLAUDE.md rule 8), on its polar chart
 /// and before the polar rejection.

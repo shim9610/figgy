@@ -838,6 +838,8 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Waterfall => "Waterfall",
         SceneKind::Candles => "Candles",
         SceneKind::Gantt => "Gantt",
+        SceneKind::Violins => "Violins",
+        SceneKind::Raincloud => "Raincloud",
     }
 }
 
