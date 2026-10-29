@@ -16,8 +16,12 @@ OUT.mkdir(parents=True, exist_ok=True)
 env = dict(os.environ, FIGGY_DIAG_DIR=str(OUT), RUST_BACKTRACE="1")
 base = ["cargo", "test", "--locked", "-p", "figgy-renderer",
         "--features", "serde,cpu-twin", "--no-fail-fast"]
+# The packaged CI run builds the whole workspace with these unified features.
+ws = ["cargo", "test", "--locked", "--workspace", "--features",
+      "figgy-model/serde,figgy-renderer/serde,figgy-renderer/cpu-twin", "--no-fail-fast"]
 runs = [
     ["--test", "radial_render", "--"],
+    ["WS", "--test", "radial_render", "--"],
     ["--test", "radial_render", "--", "radial_gpu_pick_agrees_with_the_cpu_twin"],
     ["--test", "radial_render", "--", "radial_step_selection_moves_the_highlight_to_each_slice"],
 ]
@@ -32,7 +36,7 @@ if os.name == "nt" and (warp := os.environ.get("FIGGY_TEST_WARP_DLL")):
 failed = False
 with open(OUT / "log.txt", "w", encoding="utf-8") as log:
     for args in runs:
-        cmd = [*base, *args, "--nocapture", "--test-threads=1"]
+        cmd = ([*ws, *args[1:]] if args[0] == "WS" else [*base, *args]) + ["--nocapture", "--test-threads=1"]
         log.write("+ " + " ".join(cmd) + "\n")
         log.flush()
         result = subprocess.run(cmd, cwd=ROOT, env=env, stdout=subprocess.PIPE,
