@@ -1009,6 +1009,7 @@ fn edges(p: vec2<f32>, s: Sector) -> vec3<f32>
 fn footprint(p: vec2<f32>, s: Sector) -> f32
 fn solid(p: vec3<f32>, s: Sector) -> f32
 fn hit_sector(ro: vec3<f32>, rd: vec3<f32>, s: Sector) -> Hit
+fn hit_key(t: f32) -> u32
 fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
 ```
 
@@ -1026,6 +1027,12 @@ fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
 `hit_pixel` returns the hit of the ray through a physical pixel, `t` its
 distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
 picked, as the sector with the smallest `t`, the first one on a tie.
+The nearest-hit loops compare `hit_key(t)`, the bits of `t` with the sign
+bit cleared, which order as `t` does because `t` is never negative. They
+do not compare the floats: Metal compiles a float
+`if h.t < closest { closest = h.t; winner = i; }` so that `closest` moves
+and `winner` does not (#63), and an integer comparison leaves fast math
+nothing to fold.
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds
@@ -1038,7 +1045,7 @@ ray-march (`radial_pick` in `tests/support/cpu_twin.rs`) is test support for
 the pick agreement test in `tests/radial_render.rs`; the product picks on
 the GPU only.
 
-The struct, the constant, `Hit` and the six functions are the fragment
+The struct, the constant, `Hit` and the seven functions are the fragment
 [`data_render/common/radial_sector.wgsl`](common/radial_sector.wgsl),
 spliced after `material.wgsl` into the radial draw module and the radial
 pick module by `assembled!` (`radial.rs`). `radial.wgsl` marks where each
