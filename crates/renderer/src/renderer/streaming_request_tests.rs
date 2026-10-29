@@ -2524,6 +2524,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::HeatmapContour { .. }
                     | DataRenderType::CategoryBars { .. }
                     | DataRenderType::BoxPlot { .. }
+                    | DataRenderType::RangeBars { .. }
                     | DataRenderType::Radar { .. }
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}

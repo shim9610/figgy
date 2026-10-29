@@ -1708,23 +1708,25 @@ pub fn parse_value_label_id(id: &str) -> Option<(&str, usize)> {
 }
 
 impl SeriesConfig {
-    /// The value label offsets of a category bar, box plot or radar series
-    /// (`labels.offsets`), or `None` for every other kind.
+    /// The value label offsets of a category bar, box plot, range bar or
+    /// radar series (`labels.offsets`), or `None` for every other kind.
     pub fn value_label_offsets(&self) -> Option<&[[f32; 2]]> {
         match &self.render_type {
             DataRenderType::CategoryBars { labels, .. } => Some(&labels.offsets),
             DataRenderType::BoxPlot { labels, .. } => Some(&labels.offsets),
+            DataRenderType::RangeBars { labels, .. } => Some(&labels.offsets),
             DataRenderType::Radar { labels, .. } => Some(&labels.offsets),
             _ => None,
         }
     }
 
-    /// The drawn strings of a category bar, box plot or radar series'
-    /// value labels (`labels.text`), or `None` for every other kind.
+    /// The drawn strings of a category bar, box plot, range bar or radar
+    /// series' value labels (`labels.text`), or `None` for every other kind.
     pub fn value_label_text(&self) -> Option<&[String]> {
         match &self.render_type {
             DataRenderType::CategoryBars { labels, .. } => Some(&labels.text),
             DataRenderType::BoxPlot { labels, .. } => Some(&labels.text),
+            DataRenderType::RangeBars { labels, .. } => Some(&labels.text),
             DataRenderType::Radar { labels, .. } => Some(&labels.text),
             _ => None,
         }
@@ -1758,6 +1760,7 @@ impl SeriesConfig {
         let offsets = match &mut self.render_type {
             DataRenderType::CategoryBars { labels, .. } => &mut labels.offsets,
             DataRenderType::BoxPlot { labels, .. } => &mut labels.offsets,
+            DataRenderType::RangeBars { labels, .. } => &mut labels.offsets,
             DataRenderType::Radar { labels, .. } => &mut labels.offsets,
             _ => return reject,
         };

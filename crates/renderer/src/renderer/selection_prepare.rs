@@ -53,8 +53,9 @@ pub(super) struct SelectionColumns<'a> {
     pub x: ColumnHandle,
     pub y: ColumnHandle,
     pub bar: Option<(ColumnHandle, ColumnHandle)>,
-    /// A category bar or box plot series' data and style map, as its draw
-    /// binds them; its picked bar's or box's highlight reads the same.
+    /// A category bar, box plot or range bar series' data and style map, as
+    /// its draw binds them; its picked bar's or box's highlight reads the
+    /// same.
     pub category: Option<data_render::CategoryBarData>,
     pub rows: SelectionRows,
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
@@ -408,6 +409,50 @@ impl PrepareContext<'_> {
                                 .bar_box_plot_selection
                                 .as_ref()
                                 .expect("prepare ensured box plot selection pipeline"),
+                            transform_bg: &view.transform_bg,
+                            style_bg,
+                            style_map_bg: None,
+                            pool_buffer: column_buffer,
+                            edges: columns.x,
+                            values: columns.y,
+                            instance: row,
+                            category: Some(category),
+                        });
+                    }
+                    // A range bar is a bin whose index is its row: the
+                    // highlight builds the same body from the same group 3
+                    // and style map as the draw.
+                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_bars => {
+                        let Some(category) = columns.category.clone() else {
+                            continue;
+                        };
+                        let Ok(row) = u32::try_from(*bin_index) else {
+                            continue;
+                        };
+                        let ranges = rt
+                            .range_bars()
+                            .expect("a range bar selection has a range bar config");
+                        let mut highlight = PrimitiveStyle::from_category_bars(
+                            ranges.color,
+                            ranges.style,
+                            series.style.display_scale,
+                        );
+                        highlight.color_premul =
+                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
+                        highlight.line_width_px = selection_cfg.outline_width_px;
+                        highlight.dash_len = row;
+                        let buffer =
+                            data_render::create_style_uniform_buffer(&self.device, &highlight);
+                        let style_bg = data_render::create_style_bind_group(
+                            &self.device,
+                            &self.style_bgl,
+                            &buffer,
+                        );
+                        selected_bars.push(ColumnBarSelectionLayer {
+                            pipeline: pipelines
+                                .bar_range_selection
+                                .as_ref()
+                                .expect("prepare ensured range bar selection pipeline"),
                             transform_bg: &view.transform_bg,
                             style_bg,
                             style_map_bg: None,

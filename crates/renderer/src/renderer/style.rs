@@ -508,6 +508,79 @@ pub(super) fn box_plot_style_map(
     data_render::create_bar_style_map_writing(device, layout, &slots, capacity, write)
 }
 
+/// The part colours of a range bar series as the bar style map its draw,
+/// pick and highlight read (SHADER_COMMON.md §5.19): the whisker's colour
+/// and width, the connector's colour and width, the up, down and total
+/// fills of [`RangeColor::Direction`](crate::data_config::RangeColor), the
+/// remaining opacity of the progress, then one fill per state of
+/// [`RangeColor::State`](crate::data_config::RangeColor). A part the series
+/// does not draw has a zero mask. The slots are written straight into the
+/// mapped slot buffer, sized by the series' states, so any number of states
+/// stages nothing on the CPU; range bars have no per-bar overrides.
+pub(super) fn range_bar_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    bars: crate::data_config::RangeBarsRef<'_>,
+    scale: f32,
+) -> data_render::BarStyleMap {
+    use crate::data_config::RangeColor;
+    use data_render::{
+        BAR_STYLE_MASK_FILL, BAR_STYLE_MASK_GAP, BAR_STYLE_MASK_WIDTH_RATIO, BarStyleSlotGpu,
+        RANGE_SLOT_CONNECTOR, RANGE_SLOT_DOWN, RANGE_SLOT_PROGRESS, RANGE_SLOT_STATES,
+        RANGE_SLOT_TOTAL, RANGE_SLOT_UP, RANGE_SLOT_WHISKER,
+    };
+    let fill = |color: Color| BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(color),
+        params: [0.0, 0.0, 0.0, BAR_STYLE_MASK_FILL as f32],
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let stroke = |color: Color, width: f32| BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(color),
+        params: [
+            0.0,
+            width.max(0.0) * scale,
+            0.0,
+            (BAR_STYLE_MASK_FILL | BAR_STYLE_MASK_GAP) as f32,
+        ],
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let none: BarStyleSlotGpu = bytemuck::Zeroable::zeroed();
+    let states: &[crate::data_config::RangeStateStyle] = match bars.color_by {
+        RangeColor::State { styles, .. } => styles,
+        RangeColor::Single | RangeColor::Direction { .. } => &[],
+    };
+    let slot_count = RANGE_SLOT_STATES as usize + states.len();
+    let mut parts = [none; RANGE_SLOT_STATES as usize];
+    parts[RANGE_SLOT_WHISKER as usize] = bars
+        .whiskers
+        .map_or(none, |w| stroke(w.color.unwrap_or(bars.color), w.width));
+    parts[RANGE_SLOT_CONNECTOR as usize] =
+        bars.connector.map_or(none, |c| stroke(c.color, c.width));
+    if let RangeColor::Direction { up, down, total } = bars.color_by {
+        parts[RANGE_SLOT_UP as usize] = fill(*up);
+        parts[RANGE_SLOT_DOWN as usize] = fill(*down);
+        parts[RANGE_SLOT_TOTAL as usize] = total.as_ref().map_or(none, |t| fill(t.color));
+    }
+    parts[RANGE_SLOT_PROGRESS as usize] = bars.progress.map_or(none, |p| BarStyleSlotGpu {
+        params: [
+            0.0,
+            0.0,
+            p.remaining_opacity.clamp(0.0, 1.0),
+            BAR_STYLE_MASK_WIDTH_RATIO as f32,
+        ],
+        ..bytemuck::Zeroable::zeroed()
+    });
+    let write_slots = |push: &mut dyn FnMut(&BarStyleSlotGpu)| {
+        for part in &parts {
+            push(part);
+        }
+        for state in states {
+            push(&fill(state.color));
+        }
+    };
+    data_render::create_bar_style_map_written(device, layout, slot_count, write_slots, 0, |_| {})
+}
+
 /// The three part slots of `style` (SHADER_COMMON.md §5.15): the body's
 /// material and finish (corner radius px, emphasis, notch depth share), the
 /// strokes (median colour and width, whisker colour and width, cap length
@@ -935,19 +1008,26 @@ impl Renderer {
         // (SHADER_COMMON.md §5.13); its layout is prepared with its group.
         // A box plot series' lanes are its body's fill, outline and material
         // (§5.15); its part styles are its bar style map's slots.
+        // A range bar series' lanes are a category bar's: its look is a
+        // `CategoryBarStyle` (§5.19); its part colours are its bar style
+        // map's slots.
         let bar = match (
             extract_bar(render_type),
             render_type.category_bars(),
             render_type.box_plot(),
+            render_type.range_bars(),
         ) {
-            (Some(b), _, _) => PrimitiveStyle::from_bar(b, scale),
-            (None, Some(bars), _) => {
+            (Some(b), _, _, _) => PrimitiveStyle::from_bar(b, scale),
+            (None, Some(bars), _, _) => {
                 PrimitiveStyle::from_category_bars(bars.color, bars.style, scale)
             }
-            (None, None, Some(boxes)) => {
+            (None, None, Some(boxes), _) => {
                 PrimitiveStyle::from_box_plot(boxes.color, boxes.style, scale)
             }
-            (None, None, None) => PrimitiveStyle::from_color(Color::BLACK),
+            (None, None, None, Some(ranges)) => {
+                PrimitiveStyle::from_category_bars(ranges.color, ranges.style, scale)
+            }
+            (None, None, None, None) => PrimitiveStyle::from_color(Color::BLACK),
         };
         let (mut line, mut scatter, mut bar) = (line, scatter, bar);
         line.series_salt = series_salt;

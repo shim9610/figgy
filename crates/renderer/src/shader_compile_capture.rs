@@ -177,6 +177,7 @@ impl Capture {
                                 | "pick_histogram_bin"
                                 | "pick_category_bar"
                                 | "pick_box_plot"
+                                | "pick_range_bar"
                                 | "pick_value_labels"
                                 | "scan_block"
                         )

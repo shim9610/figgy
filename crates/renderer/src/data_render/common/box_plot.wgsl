@@ -179,19 +179,26 @@ struct BoxLayout {
 /// `group_width`, its boxes side by side `gap_px` apart in series order, as
 /// grouped category bars stand.
 fn box_layout(s: BoxStats, resolved: ResolvedBarStyle) -> BoxLayout {
+    return box_slot(s.position, s.q_low, resolved);
+}
+
+/// This series' place in the slot of `position`, measured along the value
+/// axis at `at` (a value the glyph reaches, so the projection is defined
+/// on a logarithmic value axis): the box layout, which range bars share.
+fn box_slot(position: vec2<f32>, at: vec2<f32>, resolved: ResolvedBarStyle) -> BoxLayout {
     var out: BoxLayout;
     out.valid = false;
     let horizontal = category_params.horizontal != 0u;
-    let low = vec2<f32>(s.position.x - 0.5, s.position.y);
-    let high = vec2<f32>(s.position.x + 0.5, s.position.y);
+    let low = category_slot_edge(position, -1.0);
+    let high = category_slot_edge(position, 1.0);
     var slot_a: f32;
     var slot_b: f32;
     if (horizontal) {
-        slot_a = category_px(data_to_ndc(transform, s.q_low, low)).y;
-        slot_b = category_px(data_to_ndc(transform, s.q_low, high)).y;
+        slot_a = category_px(data_to_ndc(transform, at, low)).y;
+        slot_b = category_px(data_to_ndc(transform, at, high)).y;
     } else {
-        slot_a = category_px(data_to_ndc(transform, low, s.q_low)).x;
-        slot_b = category_px(data_to_ndc(transform, high, s.q_low)).x;
+        slot_a = category_px(data_to_ndc(transform, low, at)).x;
+        slot_b = category_px(data_to_ndc(transform, high, at)).x;
     }
     let members = f32(max(category_params.members, 1u));
     let slot = abs(slot_b - slot_a);

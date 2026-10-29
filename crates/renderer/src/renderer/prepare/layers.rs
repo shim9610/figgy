@@ -398,6 +398,40 @@ impl PrepareContext<'_> {
                         .as_ref()
                         .expect("prepare ensured box plot pipeline"),
                 ))
+            } else if primitives.range_bars && phase.is_none() {
+                // Range bars: the group is this panel's range bar series; the
+                // params read every column's lane and the style map holds the
+                // part colours. No streamed form.
+                let (data, count) = range_bar_data(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.category_bar_data_bgl,
+                    self.per_point_style_map_bgl,
+                    column_buffer,
+                    chart_config,
+                    series_specs
+                        .iter()
+                        .filter(|s| {
+                            effective_series_primitives(
+                                &chart_config.draw_style,
+                                &s.config.render_type,
+                            )
+                            .range_bars
+                        })
+                        .map(|s| s.config),
+                    cfg,
+                    series.style.display_scale,
+                    &mut lookup,
+                )?;
+                Some((
+                    data,
+                    count,
+                    data_render::RANGE_BAR_VERTICES,
+                    pipelines
+                        .bar_range
+                        .as_ref()
+                        .expect("prepare ensured range bar pipeline"),
+                ))
             } else {
                 None
             };

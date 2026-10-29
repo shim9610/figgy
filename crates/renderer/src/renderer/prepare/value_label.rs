@@ -213,10 +213,10 @@ impl PrepareContext<'_> {
         };
         let axis = value_label_axis(config, &cfg.render_type);
         let categories = value_label_categories(config, &cfg.render_type);
+        let count = data_render::value_label_count(kind, text, categories);
         let params = data_render::value_label_params(
             kind,
-            text,
-            categories,
+            count,
             atlas,
             axis.label_style.font_size,
             scale,
@@ -234,6 +234,7 @@ impl PrepareContext<'_> {
                     text,
                     cfg.value_label_offsets().unwrap_or(&[]),
                     categories,
+                    count,
                     atlas,
                     scale,
                     push,

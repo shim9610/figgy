@@ -214,6 +214,11 @@ pub(super) struct TargetPipelines {
     pub(super) bar_box_plot: Option<wgpu::RenderPipeline>,
     /// The picked box's highlight over the same layout.
     pub(super) bar_box_plot_selection: Option<wgpu::RenderPipeline>,
+    /// The range bar draw (`vs_range_bars` / `fs_range_bars`) over the
+    /// category bar layout.
+    pub(super) bar_range: Option<wgpu::RenderPipeline>,
+    /// The picked range bar's highlight over the same layout.
+    pub(super) bar_range_selection: Option<wgpu::RenderPipeline>,
     /// The value labels of category bar, box plot and radar series
     /// (`vs_value_label` / `fs_value_label`), group 1 the series' value
     /// label group.
@@ -315,6 +320,8 @@ impl TargetPipelines {
         let mut need_category_bar_selection = false;
         let mut need_box_plot = false;
         let mut need_box_plot_selection = false;
+        let mut need_range_bars = false;
+        let mut need_range_bar_selection = false;
         let mut need_value_labels = false;
         let mut need_value_label_selection = false;
         let mut need_field_selection = false;
@@ -396,6 +403,8 @@ impl TargetPipelines {
                 need_category_bar_selection |= primitives.category_bars && typed_bin;
                 need_box_plot |= primitives.box_plot;
                 need_box_plot_selection |= primitives.box_plot && typed_bin;
+                need_range_bars |= primitives.range_bars;
+                need_range_bar_selection |= primitives.range_bars && typed_bin;
                 // Value labels compile with any label the series can show;
                 // `Emphasized` radar labels with or without a selection.
                 let labels =
@@ -630,6 +639,29 @@ impl TargetPipelines {
             };
             if need && slot.is_none() {
                 *slot = Some(data_render::create_box_plot_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    category_bar_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                    selection,
+                ));
+            }
+        }
+        for (need, selection) in [
+            (need_range_bars, false),
+            (need_range_bar_selection, true),
+        ] {
+            let slot = if selection {
+                &mut self.bar_range_selection
+            } else {
+                &mut self.bar_range
+            };
+            if need && slot.is_none() {
+                *slot = Some(data_render::create_range_bar_pipeline_with_sample_count(
                     device,
                     &self.shaders.bar,
                     transform_bgl,
@@ -1089,6 +1121,40 @@ impl TargetPipelines {
         }
         for selection in [false, true] {
             let slot = if selection {
+                &mut self.bar_range_selection
+            } else {
+                &mut self.bar_range
+            };
+            if slot.is_none() && feature.is_none_or(|f| f.includes_field("bar_range")) {
+                *slot = Some(
+                    observe_value_async(
+                        observer,
+                        "renderer.prewarm",
+                        if selection {
+                            "selected range bar"
+                        } else {
+                            "range bars"
+                        },
+                        || {
+                            data_render::create_range_bar_pipeline_with_sample_count(
+                                device,
+                                &self.shaders.bar,
+                                transform_bgl,
+                                style_bgl,
+                                per_point_style_map_bgl,
+                                category_bar_data_bgl,
+                                surface_format,
+                                self.sample_count,
+                                selection,
+                            )
+                        },
+                    )
+                    .await,
+                );
+            }
+        }
+        for selection in [false, true] {
+            let slot = if selection {
                 &mut self.bar_value_label_selection
             } else {
                 &mut self.bar_value_label
@@ -1356,6 +1422,8 @@ pub(super) fn create_target_pipelines_observed(
         bar_category_selection: None,
         bar_box_plot: None,
         bar_box_plot_selection: None,
+        bar_range: None,
+        bar_range_selection: None,
         bar_value_label: None,
         bar_value_label_selection: None,
         field: None,
@@ -1438,6 +1506,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_category_selection: None,
         bar_box_plot: None,
         bar_box_plot_selection: None,
+        bar_range: None,
+        bar_range_selection: None,
         bar_value_label: None,
         bar_value_label_selection: None,
         field: None,
