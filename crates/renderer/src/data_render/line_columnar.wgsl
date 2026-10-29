@@ -254,7 +254,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
         discard;
     }
-    return line_fragment_color(in, style.color_premul);
+    // DIAGNOSTIC ONLY (diag/backend-pick): the interpolated stroke values
+    // as colour, opaque, so backends can be compared pixel by pixel.
+    let _keep = line_fragment_color(in, style.color_premul);
+    return vec4<f32>(
+        fract(in.dist_px / 32.0),
+        clamp(in.along_px / 40.0 + 0.25, 0.0, 1.0),
+        clamp(in.segment_len_px / 64.0, 0.0, 1.0),
+        1.0,
+    );
 }
 
 // ───────────── colour-mapped stroke ─────────────
