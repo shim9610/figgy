@@ -165,6 +165,9 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_exact_candidates"
                     | "pick_reduce_candidates"
                     | "pick_histogram_bin"
+                    | "pick_category_bar"
+                    | "pick_box_plot"
+                    | "pick_value_labels"
                     | "scan_block"
             )
         ) {
