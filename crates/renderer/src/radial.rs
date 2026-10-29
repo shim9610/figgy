@@ -1672,6 +1672,26 @@ mod pick_module_tests {
             2
         );
     }
+
+    /// Every nearest-hit loop of the draw and the pick compares `hit_key`
+    /// integers, never the `t` floats: Metal drops the winner update of a
+    /// float comparison (#63).
+    #[test]
+    fn nearest_hit_loops_compare_hit_keys() {
+        for (name, source) in [
+            ("radial.wgsl", include_str!("radial.wgsl")),
+            ("radial_pick.wgsl", include_str!("radial_pick.wgsl")),
+        ] {
+            assert!(!source.contains("h.t<closest"), "{name}");
+            assert!(source.contains("if hit_key(h.t)<"), "{name}");
+        }
+        assert_eq!(
+            include_str!("radial.wgsl")
+                .matches("if hit_key(h.t)<closest")
+                .count(),
+            2
+        );
+    }
 }
 
 #[cfg(test)]
