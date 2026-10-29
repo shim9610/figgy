@@ -7796,6 +7796,34 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
         worst = worst.max((gpu[i] - exact).abs());
         single_worst = single_worst.max((f64::from(single) - exact).abs());
     }
+    {
+        // DIAGNOSTIC ONLY (diag/backend-pick): per-segment GPU length minus
+        // the CPU f32 length, in units of the f32 ulp at that length.
+        let mut hist = std::collections::BTreeMap::<i64, usize>::new();
+        let mut sum_ulps = 0.0f64;
+        let mut first = Vec::new();
+        for i in 1..n {
+            let a = px(xs[i - 1], ys[i - 1]);
+            let b = px(xs[i], ys[i]);
+            let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+            let g = gpu[i] - gpu[i - 1];
+            let ulp = f64::from(f32::from_bits(d.to_bits() + 1) - d);
+            let units = ((g - f64::from(d)) / ulp).round() as i64;
+            sum_ulps += (g - f64::from(d)) / ulp;
+            *hist.entry(units).or_default() += 1;
+            if first.len() < 12 {
+                first.push(format!(
+                    "i={i} a=({:?},{:?}) b=({:?},{:?}) d={d:?} gpu={g:?} ulps={units}",
+                    a.0, a.1, b.0, b.1
+                ));
+            }
+        }
+        eprintln!(
+            "DIAG arc: worst {worst} mean ulps {} hist {hist:?}\n{}",
+            sum_ulps / (n - 1) as f64,
+            first.join("\n")
+        );
+    }
     assert!(
         exact > 2.0 * f64::from(1u32 << 24),
         "the arc runs past 2^24 px ({exact})"

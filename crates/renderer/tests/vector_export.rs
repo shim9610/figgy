@@ -444,6 +444,17 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
                     let want = straight(&export.rgba[i..i + 4]);
                     for k in 0..4 {
                         let d = (px[k] - want[k]).abs();
+                        // DIAGNOSTIC ONLY (diag/backend-pick).
+                        if d > 3.0 {
+                            eprintln!(
+                                "DIAG composite {context}: ({x}, {y}) ch {k} got {:?} want {:?} below {:?} above {:?} export {:?}",
+                                px,
+                                want,
+                                b,
+                                a,
+                                &export.rgba[i..i + 4]
+                            );
+                        }
                         worst = worst.max(d);
                         over_one += usize::from(d > 1.0);
                     }

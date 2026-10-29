@@ -394,6 +394,18 @@ pub fn assert_pick_matches_paint_with(
             ));
         }
     }
+    if !failures.is_empty() {
+        diag_dump(
+            renderer,
+            &probe,
+            &with,
+            &without,
+            what,
+            scale,
+            &failures,
+            tolerance.fringe,
+        );
+    }
     renderer.remove_chart(probe.id).unwrap();
     assert!(
         failures.is_empty(),
@@ -4185,4 +4197,65 @@ fn overlapping_offset_members_pick_what_is_painted_on_top() {
             assert!(painted > 30, "{subject} at {scale}x: {painted}");
         }
     }
+}
+
+// DIAGNOSTIC ONLY (diag/backend-pick, never merged): dump both exports and
+// the neighbourhood of each disagreement so backends can be compared.
+#[allow(clippy::too_many_arguments)]
+fn diag_dump(
+    renderer: &mut Renderer,
+    probe: &Probe,
+    with: &RasterImage,
+    without: &RasterImage,
+    what: &str,
+    scale: f32,
+    failures: &[String],
+    fringe: f32,
+) {
+    let Ok(dir) = std::env::var("FIGGY_DIAG_DIR") else {
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    std::fs::create_dir_all(dir).unwrap();
+    let stem: String = format!("{what}_{scale}x")
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    let write = |name: &str, img: &RasterImage| {
+        let file = std::fs::File::create(dir.join(format!("{stem}_{name}.png"))).unwrap();
+        let mut enc = png::Encoder::new(std::io::BufWriter::new(file), img.width, img.height);
+        enc.set_color(png::ColorType::Rgba);
+        enc.set_depth(png::BitDepth::Eight);
+        enc.write_header()
+            .unwrap()
+            .write_image_data(&img.rgba)
+            .unwrap();
+    };
+    write("with", with);
+    write("without", without);
+    let mut text = String::new();
+    for f in failures.iter().take(40) {
+        text.push_str(f);
+        text.push('\n');
+        let inner = f.trim_start_matches('(');
+        let mut it = inner.split([',', ')']);
+        let x: u32 = it.next().unwrap().trim().parse().unwrap();
+        let y: u32 = it.next().unwrap().trim().parse().unwrap();
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let (px, py) = (x as i32 + dx, y as i32 + dy);
+                if px < 0 || py < 0 || px as u32 >= with.width || py as u32 >= with.height {
+                    continue;
+                }
+                let (px, py) = (px as u32, py as u32);
+                let ink = difference(with, without, px, py);
+                let hit = probe.pick(renderer, px, py, fringe);
+                text.push_str(&format!(
+                    "  ({px},{py}) ink {ink} hit {:?}\n",
+                    hit.map(|h| (h.series_id, h.point_index, h.distance_px))
+                ));
+            }
+        }
+    }
+    std::fs::write(dir.join(format!("{stem}.txt")), text).unwrap();
 }

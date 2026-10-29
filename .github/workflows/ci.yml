@@ -83,12 +83,9 @@ jobs:
       - name: Install pinned Windows DXC and WARP
         if: steps.scope.outputs.checks == 'true' && runner.os == 'Windows'
         run: python ci/setup_windows.py
-      - name: Formatting, native and WASM checks, strict API documentation
+      - name: DIAGNOSTIC backend comparison (diag/backend-pick, never merged)
         if: steps.scope.outputs.checks == 'true'
-        run: python ci/verify.py static
-      - name: Package, extract, run rendering and pixel regressions
-        if: steps.scope.outputs.checks == 'true'
-        run: python ci/verify.py packages
+        run: python ci/diag_backend.py
       - name: Upload verification logs and rendered images
         if: always() && steps.scope.outputs.checks == 'true'
         uses: actions/upload-artifact@v4
@@ -101,7 +98,7 @@ jobs:
     # The repository half of the release gate (#58): the whole workspace,
     # figgy-web included, which `verify.py packages` does not package, and the
     # playground selftest, whose rendered scenes are uploaded for review.
-    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
+    if: false
     name: repository / ubuntu-24.04 / vulkan
     runs-on: ubuntu-24.04
     timeout-minutes: 300

@@ -833,6 +833,21 @@ fn subplot_members_draw_shifted_in_their_own_area() {
         .fold((0u8, 0usize), |(largest, count), d| {
             (largest.max(d), count + usize::from(d > 0))
         });
+    // DIAGNOSTIC ONLY (diag/backend-pick).
+    for (i, (p, q)) in drawn
+        .rgba
+        .chunks_exact(4)
+        .zip(expected.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if p != q {
+            eprintln!(
+                "DIAG subplot: ({}, {}) drawn {p:?} expected {q:?}",
+                i as u32 % drawn.width,
+                i as u32 / drawn.width
+            );
+        }
+    }
     assert!(largest <= 2, "{count} pixels differ by up to {largest}");
     assert_ne!(
         drawn.rgba,
