@@ -17,7 +17,7 @@ env = dict(os.environ, FIGGY_DIAG_DIR=str(OUT), RUST_BACKTRACE="1")
 base = ["cargo", "test", "--locked", "-p", "figgy-renderer",
         "--features", "serde,cpu-twin", "--no-fail-fast"]
 runs = [
-    ["--test", "radial_render"],
+    ["--test", "radial_render", "--"],
     ["--test", "radial_render", "--", "radial_gpu_pick_agrees_with_the_cpu_twin"],
     ["--test", "radial_render", "--", "radial_step_selection_moves_the_highlight_to_each_slice"],
 ]
