@@ -1073,4 +1073,37 @@ fn three_thousand_rows_draw_pick_and_highlight() {
     let x = x_of(N - 1) as u32;
     assert!(bbox(&outlined, (x - 3, 0, x + 4, HEIGHT), is_magenta).is_some());
     assert_eq!(bbox(&outlined, (0, 0, x - 10, HEIGHT), is_magenta), None);
+
+    // The cost grows with the rows; it is measured, never capped.
+    const BIG: usize = 100_000;
+    for id in ["n.pos", "n.start", "n.end"] {
+        r.remove_column(id).unwrap();
+    }
+    r.add_column("n.pos", &col((0..BIG).map(|k| k as f64).collect()))
+        .unwrap();
+    r.add_column(
+        "n.start",
+        &col((0..BIG).map(|k| 10.0 + (k % 7) as f64).collect()),
+    )
+    .unwrap();
+    r.add_column(
+        "n.end",
+        &col((0..BIG).map(|k| 60.0 + (k % 11) as f64).collect()),
+    )
+    .unwrap();
+    chart.config_mut().picked_data = None;
+    chart.config_mut().bottom_x.max = BIG as f64 - 0.5;
+    let _ = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let started = std::time::Instant::now();
+    let _ = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    let draw = started.elapsed();
+    let id = r
+        .register_chart(chart.config().clone(), series.to_vec())
+        .unwrap();
+    let started = std::time::Instant::now();
+    let hit = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    let pick = started.elapsed();
+    assert!(hit.is_some(), "a bar under the pointer of {BIG} rows");
+    eprintln!("range bars over {BIG} rows: export {draw:?}, pick {pick:?}");
+    r.remove_chart(id).unwrap();
 }

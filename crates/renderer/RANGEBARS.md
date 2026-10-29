@@ -39,7 +39,12 @@ series:
 Every column holds one value per row of the positions; a column of another
 length is an error naming it. A row with a NaN position, start or end, or
 with equal ends, draws no bar and none of its parts. There is no limit on
-rows, series, states or labels beyond the column pool and `u32`.
+rows, series, states or labels beyond the column pool and `u32`. The cost
+grows with the rows and is the host's to budget: on the software Vulkan
+adapter the tests run on, picking among 100,000 rows takes about 10 ms and
+exporting them on a 7600 px wide panel about 1.8 s
+(`three_thousand_rows_draw_pick_and_highlight` in
+`tests/range_bars_render.rs` prints both).
 
 ## Layout and axes
 
