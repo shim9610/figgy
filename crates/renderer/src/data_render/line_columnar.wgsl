@@ -283,6 +283,11 @@ struct MappedVsOut {
     @location(6) @interpolate(flat) polar_sector: vec4<f32>,
     // The colour value as a hi/lo pair, interpolated along the stroke.
     @location(7) value: vec2<f32>,
+    // Nonzero when either end has no colour value: the whole segment takes
+    // `nan_color`, as an IEEE interpolation of a NaN end would. Decided by
+    // bits, not by NaN arithmetic, which Metal's fast math does not keep
+    // (#63).
+    @location(8) @interpolate(flat) value_missing: u32,
 };
 
 // The colourbar of a colour-mapped stroke. CPU twin:
@@ -355,6 +360,9 @@ fn vs_main_mapped(in: VsIn, arc: VsArc, value: VsValue, @builtin(vertex_index) v
     let d2 = dot(d, d);
     let f = select(0.0, dot(base.pos.xy / transform.pixel_to_ndc - a_px, d) / d2, d2 > 1e-12);
     out.value = value.value_a + (value.value_b - value.value_a) * f;
+    let ends_finite = ramp_finite(value.value_a.x) && ramp_finite(value.value_a.y)
+        && ramp_finite(value.value_b.x) && ramp_finite(value.value_b.y);
+    out.value_missing = select(1u, 0u, ends_finite);
     return out;
 }
 
@@ -372,7 +380,9 @@ fn fs_main_mapped(in: MappedVsOut) -> @location(0) vec4<f32> {
     stroke.polar_px = in.polar_px;
     stroke.polar_limits = in.polar_limits;
     stroke.polar_sector = in.polar_sector;
-    return line_fragment_color(stroke, line_value_color(in.value));
+    let mapped = (line_value_map.flags & VALUE_MAP_COLOR) != 0u;
+    let color = select(line_value_color(in.value), line_value_map.nan_color_premul, mapped && in.value_missing != 0u);
+    return line_fragment_color(stroke, color);
 }
 
 @fragment
