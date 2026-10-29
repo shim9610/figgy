@@ -1,4 +1,4 @@
-// Category slot placement (SHADER_COMMON.md §2.7): where a series' member
+// Category slot placement (SHADER_COMMON.md §5.20): where a series' member
 // sits across a category slot, and where a box plot's raw point is
 // jittered inside it. Spliced into the bar module, whose box plot, range
 // bar and violin fragments place their members with it, and into the

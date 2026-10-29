@@ -15,7 +15,7 @@ use super::*;
 /// §5.18), which share the box plot's slot layout and the category bars'
 /// shading, and the violin and raw point entries of its violin fragment
 /// (`common/violin.wgsl`, §5.19), placed by the shared category slot
-/// fragment (`common/category_jitter.wgsl`, §2.7) the point pick splices
+/// fragment (`common/category_jitter.wgsl`, §5.20) the point pick splices
 /// too.
 pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",

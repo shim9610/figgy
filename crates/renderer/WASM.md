@@ -297,6 +297,7 @@ chart.register_ragged("outliers", values, offsets);
 - 두 함수 모두 같은 ID로 다시 호출하면 교체하며, 실패하면 기존 상태를 유지한다. 컬럼, 레코드, ragged 컬럼은 ID 공간 하나를 공유하므로 이미 컬럼인 ID는 거부한다. 레코드와 ragged 컬럼은 상주 데이터만 지원하며 스트리밍 ID는 거부한다.
 - `RangeBars` 시리즈는 `x_column`(위치), `y_column`(끝값), `start`와 선택 컬럼(`whiskers`의 `low`·`high`, `color_by`의 합계 표시 또는 상태 컬럼, `progress`)을 일반 컬럼으로 읽는다. 모든 컬럼은 위치 컬럼과 길이가 같아야 한다. [SCHEMA.md](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#rangebars-render_type)를 참고한다.
 - `BoxPlot` 시리즈는 `y_column`으로 레코드를, `outliers`로 ragged 컬럼을, `x_column`으로 범주 위치 컬럼(`0..n-1`)을 가리킨다. [박스플롯 문서](#box-plot-documents)를 참고한다.
+- 박스플롯의 `violin`은 반쪽마다 곡선 ragged 컬럼과 밀도 컬럼을, `points`는 원시 점의 범주 위치 컬럼과 값 컬럼을 가리킨다. 밀도는 호스트가 계산해 올리고, 점의 흔들림(jitter)은 셰이더가 점 번호로 계산하므로 별도 컬럼이 없다. 상자 없이 바이올린만 그리려면 `y_column`을 비운다.
 
 빈 배열은 거부한다. 유효한 `update_register_*` 호출은 같은 값이라도 매번 교체 업로드를 수행하며, 실패하면 기존 상태를 유지한다. 해시만 비교해 업로드를 생략하지 않는다. `set_series`는 어떤 등록 컬럼을 그릴지만 바꾸고 컬럼을 업로드하지 않는다.
 

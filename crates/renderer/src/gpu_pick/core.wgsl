@@ -48,7 +48,7 @@ const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
 const PICK_VARIANT_PATH_ARROWS: u32 = 128u; // streamline arrowheads (§5.8)
-const PICK_VARIANT_CATEGORY_JITTER: u32 = 256u; // a box plot's raw points (§2.7)
+const PICK_VARIANT_CATEGORY_JITTER: u32 = 256u; // a box plot's raw points (§5.20)
 override PICK_VARIANT: u32 = 511u;
 
 fn pick_variant(bits: u32) -> bool {

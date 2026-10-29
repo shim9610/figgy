@@ -211,6 +211,12 @@ does not compute statistics or check their order; the drawing clamps.
 `auto_fit_layer_union` fits the value axis to the records' and outliers'
 statistics. Every part of a box (body, whiskers, caps, median, mean,
 outliers) picks the box as `PickedData::HistogramBin` with the category row.
+A box plot series can also draw violins from the host's density curves
+(`BoxPlot.violin`: one curve mirrored, or a curve per side) and its raw
+points jittered across the slot (`BoxPlot.points`, a raincloud with a
+one-sided violin); a violin answers its category as its box does, a raw
+point `PickedData::Point`. The renderer draws the density it is given and
+estimates nothing.
 `Config::from_boxplot` opens a legacy `BoxPlotChart` document as such a
 chart; see the
 [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).

@@ -186,6 +186,74 @@ overrides.push(individual);
 # }
 ```
 
+## Violins and rainclouds
+
+A box plot series can draw a **violin** behind its boxes (`violin:
+Option<Violin>`) and its **raw points** beside them (`points:
+Option<BoxPoints>`): violin plots, split violins and rainclouds. The host
+computes the density (a KDE evaluated on its own grid, the way matplotlib
+evaluates 100 points and R's `density` 512) and uploads it; the renderer
+draws the curve it is given and estimates nothing.
+
+| Field | Holds |
+|---|---|
+| `Violin.body` | `ViolinBody::Symmetric(half)`: one curve mirrored about the category position, one scale and one style; or `ViolinBody::Split { low, high }`: a curve per side, at least one (`low` left of a vertical violin, below a horizontal one) |
+| `Violin.box_width` | the box's share of the slot, `0..=1`, centred on the member's middle (default 0.25); 0 hides the box |
+| `ViolinHalf.curve` | a ragged column, one group per category: the positions along the value axis the density was evaluated at, ascending within a group |
+| `ViolinHalf.density` | a plain column index-aligned with the curve's values: the density at each position, drawn as the half width |
+| `ViolinHalf.density_scale` | the density drawn at the full half slot; `fit_density_scale(max)` sets it from the density column's maximum |
+| `ViolinHalf.style` | `ViolinStyle`: the fill (`None` takes the series colour), the outline, its width and colour |
+| `BoxPoints.positions`, `.values` | two plain columns: each point's category position (the index `x_column` uses) and its value |
+| `BoxPoints.style` | `BoxPointsStyle`: colour, size (1–24 px), circle or square, filled, `jitter` (0–1 of the half slot, either way) and `offset` (−1–1 of the half slot, negative on the low side) |
+
+A violin without boxes leaves `y_column` empty: no record is read and no
+box is drawn. A raincloud is a split violin with one half and the points on
+the other side (a negative `offset` with only `high`). A box override's
+colour and outline restyle its category's violin too. The jitter is a hash
+of each point's index, computed in the shader on every draw and pick: a
+point never moves while the chart is panned, resized or exported, and there
+is no jitter column. A curve that does not ascend draws its segments as
+given and picks undefined; a NaN value or density breaks the body there.
+
+```rust
+use renderer::data_config::{
+    BoxPoints, BoxPointsStyle, Violin, ViolinBody, ViolinHalf, ViolinStyle,
+};
+
+// A raincloud: the host's density on the high side, a narrow box, the
+// raw points jittered on the low side.
+let mut half = ViolinHalf {
+    curve: "kde".into(),
+    density: "kde.density".into(),
+    density_scale: 1.0,
+    style: ViolinStyle::default(),
+};
+half.fit_density_scale(0.042); // the density column's maximum
+let violin = Violin {
+    body: ViolinBody::Split { low: None, high: Some(half) },
+    box_width: 0.12,
+};
+let points = BoxPoints {
+    positions: "sample.category".into(),
+    values: "sample.value".into(),
+    style: BoxPointsStyle {
+        offset: -0.5,
+        jitter: 0.35,
+        ..BoxPointsStyle::default()
+    },
+};
+# let _ = (violin, points);
+```
+
+There is no limit on curve points, categories or raw points beyond the
+column pool and `u32`. The violin is drawn one instance per curve segment,
+so a long curve costs only its own segments; the cost grows with the data
+and is the host's to budget. On the software Vulkan adapter the tests run
+on, picking among 600 violins of 4 096 curve points takes about 4 ms, and
+a raw point among 3 000 000 about 70 ms
+(`long_curves_many_categories_and_a_million_points_draw_and_pick` in
+`tests/violin_render.rs` prints both).
+
 ## Value labels
 
 `labels: BoxPlotSeriesLabels` holds the placement (`None`, `Median`,
@@ -195,8 +263,8 @@ and the count are per-box data the configuration does not hold. A host that
 uploads its own records writes it, for example with `format_box_plot_labels`
 from the statistics it holds; `Config::from_boxplot` writes it from the
 document. The renderer draws each string `10` px past the top of its box (the
-highest of its high whisker, mean, notch and outliers), centred across the
-box, in the value axis' tick label face, unless the placement (or the box's
+highest of its high whisker, mean, notch and outliers, and of its violin's
+curves), centred across the box, in the value axis' tick label face, unless the placement (or the box's
 override) is `None`; a label that would cross the data area's edge sits on
 the other side of that top instead. An empty string draws nothing and labels
 never displace each other. A label is a typed pick target (`PickedData::ValueLabel`), its
@@ -208,7 +276,8 @@ pixels, one per category); see Value labels in the
 
 `Chart::auto_fit_layer_union` fits the value axis to the pool's statistics of
 every value field of the records (whiskers, quartiles, median, mean and CI;
-not `sample_count`) and of the outlier columns, so toggling `show_mean` or
+not `sample_count`), of the outlier columns, of the violin curves and of the
+raw points' values, so toggling `show_mean` or
 `show_outliers` does not rescale the chart. `auto_ticks` rounds it to nice
 ticks. A fixed range is set on the value axis like any other Cartesian range;
 the data and the pick are clipped to the plot.
@@ -225,6 +294,14 @@ click use the same pick (`pick_data` in the WASM wrapper); no statistic moves
 on hover or selection. In the browser, `step_selection` walks the categories and the series of
 the box group (the boxes, never their outliers), and `selection_details()`
 reports the box's category and the statistics read back from its record.
+
+A violin answers its category as a box does (`PickedData::HistogramBin`):
+inside its fill or on its outline, measured as the draw measures them; its
+highlight outlines the selected category's violin under the box's ring. A
+raw point answers `PickedData::Point` with its row, placed by the function
+its draw uses, and its highlight rings it; `step_selection` walks the points
+(`dx`) and the box plot series with points (`dy`), and `selection_details()`
+reports a point's `position`, `value` and category.
 
 The title, legend, axes, tick labels and axis titles are selected and dragged,
 the plot area dragged and resized, the annotation layer drawn and edited,
