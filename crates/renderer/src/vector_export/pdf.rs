@@ -8,7 +8,7 @@
 //! one ExtGState per alpha byte the page uses); a text block is a saved
 //! graphics state translated to its origin and rotated about its centre,
 //! each glyph's outline inline at its pen; an image is an RGB XObject with
-//! a DeviceGray soft mask, both deflated with the PNG Paeth predictor; a
+//! a DeviceGray soft mask, both deflated with PNG predictors chosen per row; a
 //! clip is a saved state with a rectangle clip.
 //!
 //! Images are written as objects while the page is drawn; the content
@@ -303,16 +303,37 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-/// Deflate the `channels` (offsets into each RGBA pixel) of `image`, each
-/// row Paeth-filtered (PNG predictor 15, filter type 4), through a fixed
-/// buffer.
+/// One sample of `channel` of `image` at row `y`, column `x`, filtered by
+/// PNG filter type `filter` (0 None, 1 Sub, 2 Up, 3 Average, 4 Paeth)
+/// against its left, upper and upper-left neighbours of the same channel.
+fn filtered(image: &RasterImage, filter: u8, x: usize, y: usize, channel: usize) -> u8 {
+    let w = image.width as usize;
+    let px = |x: usize, y: usize| image.rgba[(y * w + x) * 4 + channel];
+    let a = if x > 0 { px(x - 1, y) } else { 0 };
+    let b = if y > 0 { px(x, y - 1) } else { 0 };
+    let c = if x > 0 && y > 0 { px(x - 1, y - 1) } else { 0 };
+    let predicted = match filter {
+        0 => 0,
+        1 => a,
+        2 => b,
+        3 => ((u16::from(a) + u16::from(b)) / 2) as u8,
+        _ => paeth(a, b, c),
+    };
+    px(x, y).wrapping_sub(predicted)
+}
+
+/// Deflate the `channels` (offsets into each RGBA pixel) of `image` through
+/// a fixed buffer, each row PNG-filtered (predictor 15) by the filter type
+/// whose bytes, read as signed, sum to the least magnitude: the per-row
+/// choice a PNG encoder makes, so the same pixels deflate to about the size
+/// of the PNG export (#63). The choice scores the row once per filter type
+/// and writes it once; nothing is stored per row.
 fn write_predicted(
     encoder: &mut ZlibEncoder<&mut Vec<u8>>,
     image: &RasterImage,
     channels: &[usize],
 ) -> std::io::Result<()> {
     let w = image.width as usize;
-    let px = |x: usize, y: usize, c: usize| image.rgba[(y * w + x) * 4 + c];
     let mut buf = [0u8; 4096];
     let mut n = 0;
     let mut push = |encoder: &mut ZlibEncoder<&mut Vec<u8>>, byte: u8| -> std::io::Result<()> {
@@ -325,17 +346,17 @@ fn write_predicted(
         Ok(())
     };
     for y in 0..image.height as usize {
-        push(encoder, 4)?;
+        let score = |filter: u8| -> u64 {
+            (0..w)
+                .flat_map(|x| channels.iter().map(move |&c| (x, c)))
+                .map(|(x, c)| u64::from((filtered(image, filter, x, y, c) as i8).unsigned_abs()))
+                .sum()
+        };
+        let filter = (0..5u8).min_by_key(|&f| score(f)).unwrap_or(4);
+        push(encoder, filter)?;
         for x in 0..w {
             for &c in channels {
-                let a = if x > 0 { px(x - 1, y, c) } else { 0 };
-                let b = if y > 0 { px(x, y - 1, c) } else { 0 };
-                let ul = if x > 0 && y > 0 {
-                    px(x - 1, y - 1, c)
-                } else {
-                    0
-                };
-                push(encoder, px(x, y, c).wrapping_sub(paeth(a, b, ul)))?;
+                push(encoder, filtered(image, filter, x, y, c))?;
             }
         }
     }
