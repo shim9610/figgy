@@ -180,7 +180,9 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
 
     // Convert to pixel space so the direction vector can be normalized.
     let a_px = a_ndc / transform.pixel_to_ndc;
-    let b_px = b_ndc / transform.pixel_to_ndc;
+    // Copied again after the division: Metal's vertex stage may divide the
+    // two equal coordinates differently (#63).
+    let b_px = step_piece_end(transform, piece, a_px, b_ndc / transform.pixel_to_ndc);
 
     let delta = b_px - a_px;
     let len = length(delta);
@@ -470,7 +472,9 @@ fn vs_sketch(in: VsIn, arc: VsArc, @builtin(vertex_index) vid: u32) -> VsOut {
     let b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
 
     let a_px = a_ndc / transform.pixel_to_ndc;
-    let b_px = b_ndc / transform.pixel_to_ndc;
+    // Copied again after the division: Metal's vertex stage may divide the
+    // two equal coordinates differently (#63).
+    let b_px = step_piece_end(transform, piece, a_px, b_ndc / transform.pixel_to_ndc);
 
     let delta = b_px - a_px;
     let len = length(delta);

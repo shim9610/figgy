@@ -100,7 +100,9 @@ fn step_piece(xa: vec2<f32>, ya: vec2<f32>, xb: vec2<f32>, yb: vec2<f32>, mode: 
 // `a`. Projecting that coordinate twice need not round alike (Metal's
 // compiler may contract one evaluation and not the other), and on a piece far
 // shorter than a pixel, a riser between nearly equal values, one ulp across
-// tilts the stroke's square-capped quad by degrees (#63). A polar chart maps
+// tilts the stroke's square-capped quad by about a degree (#63); a vertex stage that
+// divides NDC into pixels copies it again after the division, which Metal may
+// also round differently for equal inputs. A polar chart maps
 // the data axes onto rings and spokes, so nothing is copied there.
 fn step_piece_end(t: Transform, p: StepPiece, a: vec2<f32>, b: vec2<f32>) -> vec2<f32> {
     if (t.polar_angle.x > 0.5) {
