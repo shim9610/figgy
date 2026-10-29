@@ -1026,6 +1026,10 @@ fn hit_pixel(pixel: vec2<f32>, s: Sector) -> Hit
 `hit_pixel` returns the hit of the ray through a physical pixel, `t` its
 distance from the camera, or `t = 10000` for a miss; a pixel is drawn, and
 picked, as the sector with the smallest `t`, the first one on a tie.
+The loops that choose a sector by index (the pick, and the draw's moving
+inside glyphs) count the winner from 1, with 0 for none: Metal compiles a
+0-based `winner = i` as a constant 0, so every pick answered sector 0
+(#63).
 
 Rust twin: `radial::Sector` (`radial.rs`), built per slice by
 `radial_layout.rs`; `mirrored_struct_layouts_match_their_rust_twins` holds

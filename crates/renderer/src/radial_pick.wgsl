@@ -18,17 +18,16 @@ struct RadialPickResult {
 @group(0) @binding(1) var<storage, read> sectors: array<Sector>;
 @group(0) @binding(2) var<storage, read_write> result: RadialPickResult;
 @compute @workgroup_size(1) fn pick() {
+    // `winner` counts sectors from 1, and 0 means none yet. Metal compiled
+    // the 0-based `winner=i` written straight into the result as a constant
+    // 0, so every pick answered sector 0 (#63).
     var closest=10000.0;var winner=0u;
     for(var i=0u;i<query.count;i++) {
         var s=sectors[i];
         if query.rest!=0u { s.rounding.z=0.0; }
         let h=hit_pixel(query.pixel,s);
-        if h.t<closest {closest=h.t;winner=i;}
+        if h.t<closest {closest=h.t;winner=i+1u;}
     }
-    // Field by field: Metal stores 0 for `winner` when the result is built
-    // with one `RadialPickResult(winner, ...)` constructor (#63).
-    result.index=winner;
-    result.hit=select(0u,1u,closest<9999.0);
-    result.t=closest;
-    result.reserved=0u;
+    let hit=winner!=0u;
+    result=RadialPickResult(select(0u,winner-1u,hit),select(0u,1u,hit),closest,0u);
 }
