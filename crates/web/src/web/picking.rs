@@ -299,9 +299,13 @@ impl FiggyChart {
             }
             // A box reports its category and its statistics, read back from
             // the record's GPU columns the draw used.
-            PickedDataRef::HistogramBin { bin_index, .. }
-                if series.render_type.box_plot().is_some() =>
-            {
+            PickedDataRef::HistogramBin {
+                bin_index, half, ..
+            } if series.render_type.box_plot().is_some() => {
+                // A split violin's picked half, as the selection names it.
+                if let Some(half) = half {
+                    result["half"] = serde_json::json!(half);
+                }
                 let config = self.chart_config();
                 let layer = config.layer_of_series(&series.series_id);
                 let groups = config.bar_groups_of(layer);

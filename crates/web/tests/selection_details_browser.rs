@@ -119,6 +119,7 @@ async fn histogram_selection_reads_live_gpu_bins_and_steps_in_both_orientations(
                 source_id: Some(format!("source-{id}")),
                 series_id: id.into(),
                 bin_index: 1,
+                half: None,
             },
         );
         let selected = details(&chart).await;

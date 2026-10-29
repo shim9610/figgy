@@ -84,6 +84,18 @@ series kinds and the box plot's `violin` and `points`) are additive.
   raw points. Both fields are omitted from a document when unset. Code that
   builds `DataRenderType::BoxPlot` by struct literal adds `violin: None,
   points: None` (`BoxPlot` is unreleased).
+- **A picked split violin names its half**
+  ([#53](https://github.com/shim9610/figgy/issues/53) D1).
+  `PickedDataRef::HistogramBin` and the renderer's
+  `PickedData::HistogramBin` gain `half: Option<ViolinSide>`: `Some(Low)`
+  or `Some(High)` for a split violin's half under the cursor, `None` for
+  every other bin, a box and a symmetric violin. Selecting a half outlines
+  that half alone; selecting the category (`None`) outlines the whole
+  violin and its box. `step_selection` moves to a whole category
+  (`None`). `ViolinSide` gains serde. The key is omitted when `None`, so
+  documents parse and re-serialize byte for byte. Migration: a
+  `HistogramBin { .. }` literal adds `half: None`, and a pattern that names
+  every field adds `half` or `..`.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52), #58 item 23).
   `DataRenderType::RangeBars` draws a bar from a start to an end value at a

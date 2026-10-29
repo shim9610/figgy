@@ -1897,38 +1897,6 @@ impl Renderer {
             }
 
             if primitives.box_plot {
-                // A violin's bodies, from the same params and style map as
-                // its draw; its raw points are picked by the point picker.
-                if primitives.violin {
-                    let (data, segments) = box_extras_data(
-                        &self.device,
-                        &self.gpu_ledger,
-                        &self.category_bar_data_bgl,
-                        &self.per_point_style_map_bgl,
-                        self.pool.buffer(),
-                        &self.pool,
-                        &display_config,
-                        series.iter().filter(|s| {
-                            effective_series_primitives(&config.draw_style, &s.render_type).box_plot
-                        }),
-                        cfg,
-                        request.display_scale,
-                        |id| {
-                            self.pool
-                                .handle_for(id)
-                                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
-                        },
-                        false,
-                    )?;
-                    if segments != 0 {
-                        data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
-                            source_id: cfg.source_id.clone(),
-                            series_id: cfg.series_id.clone(),
-                            paint_order,
-                            geometry: crate::gpu_data_pick::GpuDataPickGeometry::Violin { data },
-                        });
-                    }
-                }
                 // The boxes the box plot entries draw at the pick's display
                 // transform, from the same params and style map as the draw.
                 let boxes = cfg
@@ -1977,6 +1945,39 @@ impl Renderer {
                             )?,
                         },
                     });
+                }
+                // A violin's bodies, from the same params and style map as
+                // its draw, after the boxes: a box painted over its violin
+                // wins a tie. Its raw points are picked by the point picker.
+                if primitives.violin {
+                    let (data, segments) = box_extras_data(
+                        &self.device,
+                        &self.gpu_ledger,
+                        &self.category_bar_data_bgl,
+                        &self.per_point_style_map_bgl,
+                        self.pool.buffer(),
+                        &self.pool,
+                        &display_config,
+                        series.iter().filter(|s| {
+                            effective_series_primitives(&config.draw_style, &s.render_type).box_plot
+                        }),
+                        cfg,
+                        request.display_scale,
+                        |id| {
+                            self.pool
+                                .handle_for(id)
+                                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                        },
+                        false,
+                    )?;
+                    if segments != 0 {
+                        data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                            source_id: cfg.source_id.clone(),
+                            series_id: cfg.series_id.clone(),
+                            paint_order,
+                            geometry: crate::gpu_data_pick::GpuDataPickGeometry::Violin { data },
+                        });
+                    }
                 }
                 continue;
             }

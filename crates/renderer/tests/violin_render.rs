@@ -23,7 +23,7 @@ use renderer::data::Column;
 use renderer::data_config::{
     BarGroups, BoxOutlierShape, BoxPlotOverride, BoxPlotSeriesLabels, BoxPlotStyle, BoxPlotTarget,
     BoxPoints, BoxPointsStyle, CategoryBarDirection, CategoryBarMode, Violin, ViolinBody,
-    ViolinHalf, ViolinStyle,
+    ViolinHalf, ViolinSide, ViolinStyle,
 };
 use renderer::layout::{ChartArea, Rect};
 use renderer::{
@@ -586,9 +586,13 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
     assert!(
         matches!(
             &hit,
-            Some(renderer::PickedData::HistogramBin { bin_index: 1, .. })
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 1,
+                half: Some(ViolinSide::High),
+                ..
+            })
         ),
-        "violin pick: {hit:?}"
+        "violin pick names the category and the half: {hit:?}"
     );
     // An orange raw point of category c: pick at its centre.
     let (centre, full) = member(&chart, direction, 2, 1.0);
@@ -642,6 +646,7 @@ fn violins_and_points_pick_and_highlight_what_they_paint() {
             source_id: None,
             series_id: "v".into(),
             bin_index: 1,
+            half: None,
         }],
         highlight_color: Color::from_rgb8(255, 0, 255),
         outline_width_px: 2.0,
@@ -1105,4 +1110,137 @@ fn long_curves_many_categories_and_a_million_points_draw_and_pick() {
         eprintln!("{count} raw points: export {draw:?}, pick {pick:?}");
         r.remove_chart(id).unwrap();
     }
+}
+
+/// A split violin's pick names the half under the cursor, a symmetric
+/// one's none; selecting a half rings that half alone, without the box's
+/// ring, and selecting the category rings both halves.
+#[test]
+fn a_split_violin_picks_and_highlights_each_half() {
+    let mut r = renderer();
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        let mut chart = chart(direction);
+        let series = [violin_series(
+            "v",
+            ViolinBody::Split {
+                low: Some(half("lo", RED)),
+                high: Some(half("hi", BLUE)),
+            },
+            0.25,
+        )];
+        let (centre, full) = member(&chart, direction, 2, 1.0);
+        // Low peaks at 35 on the low side, high at 65 on the high side.
+        let low_sign = match direction {
+            CategoryBarDirection::Vertical => -1.0,
+            CategoryBarDirection::Horizontal => 1.0,
+        };
+        let low = xy(
+            direction,
+            centre + low_sign * full * 0.6,
+            along(&chart, direction, 35.0, 1.0),
+        );
+        let high = xy(
+            direction,
+            centre - low_sign * full * 0.6,
+            along(&chart, direction, 65.0, 1.0),
+        );
+        for (at, want) in [(low, ViolinSide::Low), (high, ViolinSide::High)] {
+            let hit = pick(&mut r, &chart, &series, 1.0, (at.0 + 0.5, at.1 + 0.5));
+            assert!(
+                matches!(
+                    &hit,
+                    Some(renderer::PickedData::HistogramBin { bin_index: 2, half: Some(h), .. })
+                        if *h == want
+                ),
+                "{direction:?}: {want:?} picked {hit:?}"
+            );
+        }
+        // Inside the box, which is painted over the violin: the box.
+        let inside = xy(direction, centre, along(&chart, direction, 50.0, 1.0));
+        let hit = pick(
+            &mut r,
+            &chart,
+            &series,
+            1.0,
+            (inside.0 + 0.5, inside.1 + 0.5),
+        );
+        assert!(
+            matches!(
+                &hit,
+                Some(renderer::PickedData::HistogramBin {
+                    bin_index: 2,
+                    half: None,
+                    ..
+                })
+            ),
+            "{direction:?}: the box: {hit:?}"
+        );
+        let select = |half| DataSelectionsConfig {
+            refs: vec![PickedDataRef::HistogramBin {
+                source_id: None,
+                series_id: "v".into(),
+                bin_index: 2,
+                half,
+            }],
+            highlight_color: Color::from_rgb8(255, 0, 255),
+            outline_width_px: 2.0,
+            ..Default::default()
+        };
+        // Selecting the low half rings it alone, not the high half nor the
+        // box.
+        chart.config_mut().picked_data = Some(select(Some(ViolinSide::Low)));
+        let ringed = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        assert!(
+            span_at(&ringed, &chart, direction, 2, 35.0, 1.0, is_magenta).is_some(),
+            "{direction:?}: the low half's ring"
+        );
+        assert_eq!(
+            span_at(&ringed, &chart, direction, 2, 65.0, 1.0, is_magenta),
+            None,
+            "{direction:?}: not the high half's"
+        );
+        // The box's edge on the high side, where only a box ring could be.
+        let box_edge = centre - low_sign * full * 0.25;
+        let ring_px = (-2..=2).any(|d| {
+            let (x, y) = xy(
+                direction,
+                box_edge + d as f32,
+                along(&chart, direction, 50.0, 1.0),
+            );
+            is_magenta(pixel(&ringed, x as u32, y as u32))
+        });
+        assert!(!ring_px, "{direction:?}: the box is not ringed");
+        // The whole category: both halves.
+        chart.config_mut().picked_data = Some(select(None));
+        let ringed = r.export_panel_rgba(&chart, &series, 1.0).unwrap();
+        assert!(span_at(&ringed, &chart, direction, 2, 35.0, 1.0, is_magenta).is_some());
+        assert!(span_at(&ringed, &chart, direction, 2, 65.0, 1.0, is_magenta).is_some());
+    }
+    // A symmetric violin names no half.
+    let chart = chart(CategoryBarDirection::Vertical);
+    let series = [violin_series(
+        "v",
+        ViolinBody::Symmetric(half("sym", RED)),
+        0.0,
+    )];
+    let (centre, full) = member(&chart, CategoryBarDirection::Vertical, 0, 1.0);
+    let at = (
+        centre - full * 0.5,
+        along(&chart, CategoryBarDirection::Vertical, 50.0, 1.0),
+    );
+    let hit = pick(&mut r, &chart, &series, 1.0, (at.0 + 0.5, at.1 + 0.5));
+    assert!(
+        matches!(
+            &hit,
+            Some(renderer::PickedData::HistogramBin {
+                bin_index: 0,
+                half: None,
+                ..
+            })
+        ),
+        "{hit:?}"
+    );
 }

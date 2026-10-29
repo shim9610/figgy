@@ -298,6 +298,11 @@ reports the box's category and the statistics read back from its record.
 A violin answers its category as a box does (`PickedData::HistogramBin`):
 inside its fill or on its outline, measured as the draw measures them; its
 highlight outlines the selected category's violin under the box's ring. A
+split violin's pick also names the half under the cursor (`half:
+Some(ViolinSide::Low | High)`, a symmetric one's `None`), and selecting a
+half (`PickedDataRef::HistogramBin { half: Some(..), .. }`) outlines that
+half alone. Inside the box, which is painted over the violin, the pick
+answers the box (`half: None`). A
 raw point answers `PickedData::Point` with its row, placed by the function
 its draw uses, and its highlight rings it; `step_selection` walks the points
 (`dx`) and the box plot series with points (`dy`), and `selection_details()`

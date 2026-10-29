@@ -1187,7 +1187,9 @@ each point's index, so there is no jitter column.
 ```
 
 A picked violin answers like its box (`category_id`, `category_label` and
-the record's statistics, none without a record); a picked raw point's
+the record's statistics, none without a record), with `"half": "Low"` or
+`"High"` for a split violin's half; the selection reference
+(`{"kind": "histogram_bin", …, "half": "Low"}`) outlines that half alone; a picked raw point's
 `selection_details()` carries `index`, `position`, `value`, `direction`
 and, when its position names a category, `category_id` and
 `category_label`. `step_selection(dx, dy)` walks the points and the box

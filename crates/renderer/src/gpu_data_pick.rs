@@ -74,6 +74,9 @@ struct DataPickIdentity {
     source_id: Option<String>,
     series_id: String,
     paint_order: u32,
+    /// A violin's candidates name the half they hit in `index1`
+    /// (`VIOLIN_SIDE_*`, 0 for a symmetric body).
+    violin: bool,
 }
 
 pub(crate) enum GpuDataPickGeometry {
@@ -246,6 +249,7 @@ impl DataPickPipelineBundle {
                     source_id,
                     series_id,
                     paint_order: index as u32,
+                    violin: false,
                 })
                 .collect(),
             transform_bg,
@@ -1137,6 +1141,7 @@ impl DataPickPipelineBundle {
             // A value label pick binds the series' label uniform beside the
             // query in group 1.
             let mut label_params = None;
+            let violin = matches!(item.geometry, GpuDataPickGeometry::Violin { .. });
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1330,6 +1335,7 @@ impl DataPickPipelineBundle {
                 source_id: item.source_id,
                 series_id: item.series_id,
                 paint_order: item.paint_order,
+                violin,
             });
             prepared.push(PreparedSeries { query_bg, kind });
         }
@@ -1568,6 +1574,15 @@ fn decode_candidate(
             series_id,
             bin_index: candidate.index0 as usize,
             distance_px,
+            half: match (identity.violin, candidate.index1) {
+                (true, crate::data_render::VIOLIN_SIDE_LOW) => {
+                    Some(crate::data_config::ViolinSide::Low)
+                }
+                (true, crate::data_render::VIOLIN_SIDE_HIGH) => {
+                    Some(crate::data_config::ViolinSide::High)
+                }
+                _ => None,
+            },
         },
         DATA_PICK_KIND_MATRIX_CELL => PickedData::MatrixCell {
             source_id,

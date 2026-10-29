@@ -285,8 +285,13 @@ fn vs_violin(@builtin(vertex_index) vi: u32, @builtin(instance_index) inst: u32)
 }
 
 /// The distance from `q` to the segment from `a` to `b`, all `(along,
-/// across)` pixels.
+/// across)` pixels: an edge of the body's outline. Where the body has no
+/// width at either end, it has no outline there either (no stalk where the
+/// density is zero): the distance is infinite.
 fn violin_edge_distance(q: vec2<f32>, a: vec2<f32>, b: vec2<f32>) -> f32 {
+    if (!(a.y > 0.0) && !(b.y > 0.0)) {
+        return 1e30;
+    }
     let ab = b - a;
     let len2 = dot(ab, ab);
     var t = 0.0;
@@ -363,8 +368,14 @@ fn violin_coverage(p: vec2<f32>, in: ViolinVsOut, width: f32) -> vec2<f32> {
     } else {
         d = min(d, violin_edge_distance(q, vec2<f32>(b.x, select(-b.y, 0.0, sign != 0.0)), b));
     }
+    // A half's straight side, where the body has a width: no stalk past
+    // the curve where the density is zero.
     if (sign != 0.0 && inside_range) {
-        d = min(d, abs(u));
+        let span = b.x - a.x;
+        let t = select(0.0, clamp((along - a.x) / span, 0.0, 1.0), span != 0.0);
+        if (mix(a.y, b.y, t) > 0.0) {
+            d = min(d, abs(u));
+        }
     }
     let ring = clamp(width * 0.5 + 0.5 - d, 0.0, 1.0);
     return vec2<f32>(max(fill, ring), ring);
@@ -387,7 +398,8 @@ fn fs_violin(in: ViolinVsOut) -> @location(0) vec4<f32> {
 // (`style.color_premul`) and width (`style.line_width_px`), over the body's
 // emphasis brightness. The pass draws every segment of the series and
 // keeps those of the selected category (`style.dash_len`), and of the
-// selected half (`style.primitive_flags`: 0 every half, `h + 1` half `h`).
+// selected half (`style.primitive_flags`: 0 every half, else the half's
+// `VIOLIN_SIDE_*`).
 
 @vertex
 fn vs_violin_selection(@builtin(vertex_index) vi: u32, @builtin(instance_index) inst: u32) -> ViolinVsOut {
@@ -396,7 +408,7 @@ fn vs_violin_selection(@builtin(vertex_index) vi: u32, @builtin(instance_index) 
         return violin_vs_empty();
     }
     let half = style.primitive_flags;
-    if (half != 0u && half != at.x + 1u) {
+    if (half != 0u && half != violin_lane(at.x, VIOLIN_HALF_SIDE)) {
         return violin_vs_empty();
     }
     let resolved = violin_style(at.x, style.dash_len);
@@ -429,7 +441,7 @@ fn fs_violin_selection(in: ViolinVsOut) -> @location(0) vec4<f32> {
 // interpolated half width, the outline's half width added. Past the
 // curve's ends the distance is to the nearer end. A hit answers the
 // category as a histogram bin, with the half in `index1` (0 for a
-// symmetric body, 1 + the half's index for a split one).
+// symmetric body, the half's `VIOLIN_SIDE_*` for a split one).
 
 fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
     let resolved = violin_style_over(category_geometry_style(), h, g);
@@ -519,7 +531,7 @@ fn violin_pick_half(h: u32, g: u32, cursor: vec2<f32>) -> f32 {
     } else {
         d = min(d, violin_edge_distance(q, vec2<f32>(b.along, select(-b.width, 0.0, sign != 0.0)), pb));
     }
-    if (sign != 0.0 && t >= 0.0 && t <= 1.0) {
+    if (sign != 0.0 && t >= 0.0 && t <= 1.0 && mix(a.width, b.width, t) > 0.0) {
         d = min(d, abs(u));
     }
     let outline = max(resolved.border_width_px, 0.0) * 0.5;
@@ -544,13 +556,14 @@ fn violin_pick_row(g: u32) -> DataPickCandidate {
         || best > max(data_pick_query.limits.x, 0.0)) {
         return data_pick_invalid();
     }
-    let symmetric = halves == 1u && violin_lane(0u, VIOLIN_HALF_SIDE) == VIOLIN_SIDE_BOTH;
+    // `VIOLIN_SIDE_BOTH` (0) for a symmetric body: no half to name.
+    let side = violin_lane(best_half, VIOLIN_HALF_SIDE);
     return DataPickCandidate(
         1u,
         data_pick_query.data.y,
         DATA_PICK_KIND_HISTOGRAM_BIN,
         g,
-        select(best_half + 1u, 0u, symmetric),
+        side,
         0u,
         best,
         g,

@@ -575,6 +575,14 @@ pub enum PickedDataRef {
         source_id: Option<String>,
         series_id: String,
         bin_index: usize,
+        /// The half of a split violin (`ViolinSide::Low` or `High`) at the
+        /// category `bin_index`; `None` for every other bin, a box, or a
+        /// symmetric violin.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        half: Option<crate::data_config::ViolinSide>,
     },
     MatrixCell {
         #[cfg_attr(
@@ -1831,6 +1839,7 @@ mod draw_style_serde_tests {
                     source_id: Some("source-a".into()),
                     series_id: "hist".into(),
                     bin_index: 4,
+                    half: None,
                 },
                 PickedDataRef::MatrixCell {
                     source_id: None,

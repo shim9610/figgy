@@ -62,6 +62,7 @@ fn select(chart: &mut FiggyChart, series_id: &str, bin_index: usize) {
             source_id: None,
             series_id: series_id.into(),
             bin_index,
+            half: None,
         }],
         ..Default::default()
     });

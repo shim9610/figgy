@@ -2755,8 +2755,12 @@ pub enum ViolinBody {
     },
 }
 
-/// Which side of the category position a violin half is drawn on.
+/// Which side of the category position a violin half is drawn on. A pick
+/// and a selection of a split violin's half name it (`Low` or `High` in
+/// [`PickedDataRef::HistogramBin`](crate::config::PickedDataRef::HistogramBin)'s
+/// `half`); a symmetric body is `Both` and is never named there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ViolinSide {
     /// A symmetric body, mirrored.
     Both,
@@ -4221,6 +4225,7 @@ impl crate::config::Config {
                         series_id: next.series_id.clone(),
                         source_id: next.source_id.clone(),
                         bin_index: shift(*bin_index, bar_delta, count),
+                        half: None,
                     })
                 } else {
                     let DataRenderType::Histogram { bar } = selected else {
@@ -4256,6 +4261,7 @@ impl crate::config::Config {
                         series_id: next.series_id.clone(),
                         source_id: next.source_id.clone(),
                         bin_index: shift(*bin_index, bin_delta, count),
+                        half: None,
                     })
                 }
             }
@@ -6330,6 +6336,24 @@ mod box_plot_tests {
         let body = &json["render_type"]["BoxPlot"]["violin"]["body"]["Split"];
         assert!(body.get("low").is_none() && body.get("high").is_some());
         assert_eq!(serde_json::from_value::<SeriesConfig>(json).unwrap(), full);
+        // A picked split violin's half is written only when named.
+        let whole = PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "a".into(),
+            bin_index: 2,
+            half: None,
+        };
+        assert!(serde_json::to_value(&whole).unwrap().get("half").is_none());
+        let low = PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: "a".into(),
+            bin_index: 2,
+            half: Some(ViolinSide::Low),
+        };
+        let json = serde_json::to_value(&low).unwrap();
+        assert_eq!(json["kind"], "histogram_bin");
+        assert_eq!(json["half"], "Low");
+        assert_eq!(serde_json::from_value::<PickedDataRef>(json).unwrap(), low);
         // A minimal violin: the box width and the style default.
         let minimal: Violin = serde_json::from_str(
             r#"{"body":{"Symmetric":{"curve":"c","density":"d","density_scale":1.0}}}"#,
@@ -6774,6 +6798,7 @@ mod step_selection_tests {
             source_id: Some(format!("{series_id}-source")),
             series_id: series_id.into(),
             bin_index,
+            half: None,
         }
     }
 
@@ -7620,6 +7645,7 @@ mod range_bar_tests {
             source_id: None,
             series_id: series.into(),
             bin_index: row,
+            half: None,
         };
         config.picked_data = Some(DataSelectionsConfig {
             refs: vec![pick("one", 0)],

@@ -120,8 +120,9 @@ categories and the series of the box group (the boxes, never their
 outliers), and `selection_details()` reports the category and the box's
 statistics read back from its record. The boxes' value labels are pick and
 drag targets of their own (Value labels, below). A box plot's violin
-answers its category the same way, inside its fill or on its outline, and
-its highlight outlines the selected category's violin; a raw point
+answers its category the same way, inside its fill or on its outline, a
+split violin naming the half under the cursor (`half`), and its highlight
+outlines the selected category's violin or the selected half alone; a raw point
 (`BoxPlot.points`) is picked as `PickedData::Point { series_id,
 point_index }` where its draw placed it, its highlight rings it, and
 `step_selection` walks the points (`dx`) and the box plot series with

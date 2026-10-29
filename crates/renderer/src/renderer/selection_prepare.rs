@@ -1,6 +1,7 @@
 //! Selection preparation shared by resident columns and bounded selected rows.
 
 use super::*;
+use crate::data_config::ViolinSide;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelectionRefFilter {
@@ -385,7 +386,9 @@ impl PrepareContext<'_> {
                     // A box is a bin whose index is its row: the highlight
                     // builds the same body from the same group 3 and style
                     // map as the draw.
-                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.box_plot => {
+                    PickedDataRef::HistogramBin {
+                        bin_index, half, ..
+                    } if primitives.box_plot => {
                         let Some(category) = columns.category.clone() else {
                             continue;
                         };
@@ -412,9 +415,15 @@ impl PrepareContext<'_> {
                             &buffer,
                         );
                         // The violin's outline first, under the box's ring:
-                        // every segment, the vertex stage keeping the row's.
+                        // every segment, the vertex stage keeping the row's
+                        // (and the selected half's: a selected half rings
+                        // that half alone, not the box).
                         if let Some((violin, segments)) = columns.violin.clone() {
-                            highlight.primitive_flags = 0;
+                            highlight.primitive_flags = match half {
+                                None | Some(ViolinSide::Both) => 0,
+                                Some(ViolinSide::Low) => data_render::VIOLIN_SIDE_LOW,
+                                Some(ViolinSide::High) => data_render::VIOLIN_SIDE_HIGH,
+                            };
                             let buffer =
                                 data_render::create_style_uniform_buffer(&self.device, &highlight);
                             selected_bars.push(ColumnBarSelectionLayer {
@@ -436,6 +445,9 @@ impl PrepareContext<'_> {
                                 instances: segments,
                                 category: Some(violin),
                             });
+                        }
+                        if half.is_some_and(|half| half != ViolinSide::Both) {
+                            continue;
                         }
                         selected_bars.push(ColumnBarSelectionLayer {
                             pipeline: pipelines
@@ -818,6 +830,7 @@ mod tests {
                     source_id: None,
                     series_id: "selected".into(),
                     bin_index: 2,
+                    half: None,
                 },
                 point(2),
                 point(10),
@@ -1064,6 +1077,7 @@ mod tests {
                         source_id: Some("source".into()),
                         series_id: "selected".into(),
                         bin_index: 2,
+                        half: None,
                     }
                 }],
                 highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),

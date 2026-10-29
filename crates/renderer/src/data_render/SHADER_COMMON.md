@@ -312,8 +312,8 @@ built from the same function with the highlight colour and the outline
 width, as a category bar's. The series' violin and raw point entries
 (§5.19) read the same `Style` for their base (the emphasis), their colours
 being style slots; the violin's highlight also reads `dash_len` (the
-selected category) and `primitive_flags` (0 for every half, `h + 1` for
-half `h`), and the raw point's highlight the selection's colour and width.
+selected category) and `primitive_flags` (0 for every half, else the
+selected half's `VIOLIN_SIDE_*`), and the raw point's highlight the selection's colour and width.
 
 ### 2.6 The range bar entries' `Style`
 
@@ -1491,7 +1491,8 @@ segment whose half-open value range holds its snapped centre, so the
 segments tile without seams under multisampling; the fill is measured
 across the slanted edge, the outline is the distance to the segment's edge
 and its neighbours' (round joins), the caps at a group's ends and a half's
-straight side at the middle. A NaN value or density draws no segment
+straight side at the middle; an edge with no width at either end has no
+outline, so no stalk is drawn where the density is zero. A NaN value or density draws no segment
 there. The renderer scales the density it is given; it estimates nothing.
 
 `vs_violin_selection` draws every segment of the series and keeps the
@@ -1503,7 +1504,9 @@ cursor is inside the fill when within the segment's interpolated half
 width, and otherwise its distance is the outline's as the draw measures
 it, less half the outline width. A hit is a `DATA_PICK_KIND_HISTOGRAM_BIN`
 candidate naming the category, with the half in `index1` (0 for a
-symmetric body, `h + 1` for half `h` of a split one).
+symmetric body, the half's `VIOLIN_SIDE_*` for a split one), which the
+CPU decodes into `PickedData::HistogramBin.half` for a violin's candidates
+only (a histogram's `index1` carries its envelope).
 
 The raw points' params are the box params with `positions` the points'
 category position column and `count` the rows both point columns hold;

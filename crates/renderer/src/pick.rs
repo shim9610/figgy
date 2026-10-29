@@ -42,6 +42,9 @@ pub enum PickedData {
         source_id: Option<String>,
         series_id: String,
         bin_index: usize,
+        /// The half of a split violin under the cursor; `None` for every
+        /// other bin, a box or a symmetric violin.
+        half: Option<crate::data_config::ViolinSide>,
         distance_px: f32,
     },
     MatrixCell {
@@ -117,11 +120,13 @@ impl PickedData {
                 source_id,
                 series_id,
                 bin_index,
+                half,
                 ..
             } => crate::config::PickedDataRef::HistogramBin {
                 source_id: source_id.clone(),
                 series_id: series_id.clone(),
                 bin_index: *bin_index,
+                half: *half,
             },
             Self::MatrixCell {
                 source_id,
