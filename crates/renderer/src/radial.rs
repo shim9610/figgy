@@ -467,14 +467,10 @@ impl RadialPickTicket {
         // DIAGNOSTIC ONLY (diag/backend-pick).
         if std::env::var_os("FIGGY_DIAG_DIR").is_some() {
             eprintln!(
-                "DIAG radial gpu: raw index {} t {:?} hit {} count*1000+loops {}",
-                result.index, result.t, result.hit, result.reserved
+                "DIAG radial gpu: winner {} t {:?} hit {}",
+                result.index, result.t, result.hit
             );
         }
-        let result = RadialPickResultGpu {
-            index: result.index.wrapping_sub(5) / 7,
-            ..result
-        };
         if result.hit == 0 {
             return Ok(None);
         }
@@ -1675,27 +1671,6 @@ mod pick_module_tests {
                 .count(),
             2
         );
-    }
-
-    /// The pick and the draw's moving inside glyphs choose their sector by
-    /// `nearest_hit`, never by a loop that keeps the distance and the index
-    /// as two variables: Metal drops that winner (#63).
-    #[test]
-    fn index_loops_fold_hits_with_nearest_hit() {
-        for (name, source, count) in [
-            ("radial.wgsl", include_str!("radial.wgsl"), 1),
-            ("radial_pick.wgsl", include_str!("radial_pick.wgsl"), 1),
-        ] {
-            assert!(!source.contains("winner=i"), "{name}");
-            assert_eq!(
-                source.matches("best=nearest_hit(best,").count(),
-                count,
-                "{name}"
-            );
-        }
-        let key = |t: f32| f32::to_bits(t) & 0x7fff_ffff;
-        assert_eq!(key(10000.0), 0x461c_4000, "NO_HIT");
-        assert!(key(-0.0) < key(f32::MIN_POSITIVE) && key(3.0) < key(3.0001));
     }
 }
 
