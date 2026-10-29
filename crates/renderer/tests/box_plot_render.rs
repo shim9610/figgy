@@ -185,6 +185,8 @@ fn boxes(id: &str, color: Color) -> SeriesConfig {
             labels: BoxPlotSeriesLabels::default(),
             outliers: (id == "one").then(|| "one.outliers".into()),
             overrides: None,
+            violin: None,
+            points: None,
         },
     }
 }

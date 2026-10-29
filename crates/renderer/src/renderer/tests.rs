@@ -6425,6 +6425,8 @@ fn streamed_series_reject_box_plots() {
             labels: Default::default(),
             outliers: None,
             overrides: None,
+            violin: None,
+            points: None,
         },
     };
     assert!(matches!(

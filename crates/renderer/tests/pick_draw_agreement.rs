@@ -3352,6 +3352,8 @@ fn box_plots_pick_the_box_they_paint() {
                     labels: Default::default(),
                     outliers: Some("outliers".into()),
                     overrides: None,
+                    violin: None,
+                    points: None,
                 },
             }];
             for scale in [1.0, 2.0] {

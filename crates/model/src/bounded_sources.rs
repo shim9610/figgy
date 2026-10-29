@@ -845,6 +845,8 @@ impl Config {
                     },
                     outliers: outliers.clone(),
                     overrides: (!overrides.is_empty()).then_some(overrides),
+                    violin: None,
+                    points: None,
                 },
             });
             uploads.push(SeriesUpload {

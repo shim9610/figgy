@@ -255,6 +255,21 @@ pub enum DataRenderType {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         overrides: Option<Vec<BoxPlotOverride>>,
+        /// The violin drawn behind each box: a host density curve per
+        /// category, mirrored or one per side ([`Violin`]). With a violin,
+        /// an empty `y_column` draws no box.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        violin: Option<Violin>,
+        /// The raw points drawn beside each box, jittered across the slot
+        /// ([`BoxPoints`]): a raincloud with a one-sided violin.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        points: Option<BoxPoints>,
     },
     /// Range bars: one bar per row, floating from a start value to an end
     /// value at a position, with optional whiskers from a low to a high
@@ -2667,6 +2682,204 @@ impl BoxPlotOverride {
     }
 }
 
+/// The violin of a [`DataRenderType::BoxPlot`] series: one body per
+/// category drawn from the host's density curves, behind a box narrowed to
+/// `box_width` of the slot.
+///
+/// The host computes the density (a KDE evaluated on its own grid): the
+/// renderer draws the curve it is given, scaled to the slot by each half's
+/// `density_scale`, and estimates nothing (`CLAUDE.md` rule 1).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Violin {
+    pub body: ViolinBody,
+    /// The share of the slot's thickness the box takes, `0..=1`, centred on
+    /// the member's middle; 0 hides the box.
+    #[cfg_attr(feature = "serde", serde(default = "Violin::default_box_width"))]
+    pub box_width: f32,
+}
+
+impl Violin {
+    /// The box takes a quarter of the slot by default.
+    pub const DEFAULT_BOX_WIDTH: f32 = 0.25;
+
+    #[cfg(feature = "serde")]
+    fn default_box_width() -> f32 {
+        Self::DEFAULT_BOX_WIDTH
+    }
+
+    /// A violin of `body` with the default box width.
+    pub fn new(body: ViolinBody) -> Self {
+        Self {
+            body,
+            box_width: Self::DEFAULT_BOX_WIDTH,
+        }
+    }
+
+    /// The halves the violin draws, low side first: a symmetric body's one
+    /// half drawn on both sides, or each present half of a split one.
+    pub fn halves(&self) -> impl Iterator<Item = (ViolinSide, &ViolinHalf)> {
+        let (both, low, high) = match &self.body {
+            ViolinBody::Symmetric(half) => (Some(half), None, None),
+            ViolinBody::Split { low, high } => (None, low.as_ref(), high.as_ref()),
+        };
+        both.map(|h| (ViolinSide::Both, h))
+            .into_iter()
+            .chain(low.map(|h| (ViolinSide::Low, h)))
+            .chain(high.map(|h| (ViolinSide::High, h)))
+    }
+}
+
+/// The shape of a violin: one curve mirrored about the category position,
+/// or a curve per side whose halves differ (a split violin, or a
+/// raincloud's half violin with the points on the other side).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum ViolinBody {
+    /// One curve drawn on both sides: one scale and one style.
+    Symmetric(ViolinHalf),
+    /// A curve per side, at least one: `low` below the category position
+    /// (left of a vertical violin, under a horizontal one), `high` above
+    /// it.
+    Split {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        low: Option<ViolinHalf>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        high: Option<ViolinHalf>,
+    },
+}
+
+/// Which side of the category position a violin half is drawn on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ViolinSide {
+    /// A symmetric body, mirrored.
+    Both,
+    Low,
+    High,
+}
+
+/// One density curve of a violin.
+///
+/// `curve` is a ragged column with one group per category: the positions
+/// along the value axis the host evaluated its density at, ascending
+/// within a group. `density` is a plain column index-aligned with the
+/// curve's values: the density at each position, drawn as the half width.
+/// A group that does not ascend draws its segments as given and picks
+/// undefined; a NaN breaks the outline.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct ViolinHalf {
+    pub curve: ColumnId,
+    pub density: ColumnId,
+    /// The density drawn at the full half width of the slot; a larger
+    /// density is drawn wider. Finite and positive ([`Self::fit_density_scale`]).
+    pub density_scale: f64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub style: ViolinStyle,
+}
+
+impl ViolinHalf {
+    /// Set `density_scale` to `max`, typically the density column's maximum
+    /// statistic, so the widest point of the series fills the half slot.
+    ///
+    /// A display helper, like [`PointSizeMap::fit_domain`]: it writes one
+    /// value. A non-finite or non-positive `max` leaves the scale unchanged
+    /// and returns `false`.
+    pub fn fit_density_scale(&mut self, max: f64) -> bool {
+        if !max.is_finite() || max <= 0.0 {
+            return false;
+        }
+        self.density_scale = max;
+        true
+    }
+}
+
+/// The look of a violin half. Widths are logical pixels.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct ViolinStyle {
+    /// The fill, opaque; `None` takes the series' colour (or a box
+    /// override's, for its category).
+    #[cfg_attr(feature = "serde", serde(skip_serializing_if = "Option::is_none"))]
+    pub fill: Option<Color>,
+    pub outline: bool,
+    pub outline_width: f32,
+    pub outline_color: Color,
+}
+
+impl Default for ViolinStyle {
+    fn default() -> Self {
+        Self {
+            fill: None,
+            outline: true,
+            outline_width: 1.2,
+            outline_color: Color::from_rgb8(32, 46, 60),
+        }
+    }
+}
+
+/// The raw points of a [`DataRenderType::BoxPlot`] series: one marker per
+/// row of two plain columns, at its category's slot, jittered across it.
+///
+/// `positions` holds each point's category position (the index the
+/// series' `x_column` uses) and `values` its value. The jitter is the
+/// renderer's: a hash of the point's index, the same on every draw and
+/// pick, so a point never moves while the chart is panned or exported
+/// (`CLAUDE.md` rule 1). There is no limit on the number of points.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct BoxPoints {
+    pub positions: ColumnId,
+    pub values: ColumnId,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub style: BoxPointsStyle,
+}
+
+/// The look and the placement of a box plot's raw points. Sizes are
+/// logical pixels; `jitter` and `offset` are shares of the half slot.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct BoxPointsStyle {
+    pub color: Color,
+    /// The marker's diameter, `1..=24`.
+    pub size: f32,
+    pub shape: BoxOutlierShape,
+    pub filled: bool,
+    /// How far a point may move from its centre line, `0..=1` of the half
+    /// slot, spread evenly on both sides.
+    pub jitter: f32,
+    /// Where the centre line sits from the member's middle, `-1..=1` of the
+    /// half slot: negative on the low side, positive on the high side.
+    pub offset: f32,
+}
+
+impl Default for BoxPointsStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::from_rgb8(32, 46, 60),
+            size: 4.0,
+            shape: BoxOutlierShape::Circle,
+            filled: true,
+            jitter: 0.5,
+            offset: 0.0,
+        }
+    }
+}
+
 /// The most characters one drawn box label may have.
 pub const MAX_BOX_PLOT_LABEL_CHARS: usize = 160;
 
@@ -2723,6 +2936,42 @@ pub struct BoxPlotRef<'a> {
     pub labels: &'a BoxPlotSeriesLabels,
     pub outliers: Option<&'a str>,
     pub overrides: &'a [BoxPlotOverride],
+    pub violin: Option<&'a Violin>,
+    pub points: Option<&'a BoxPoints>,
+}
+
+impl<'a> BoxPlotRef<'a> {
+    /// The ragged columns the series reads besides its record: the outliers
+    /// and each violin half's curve (a symmetric curve once per half it
+    /// names).
+    pub fn ragged_columns(self) -> impl Iterator<Item = &'a str> + 'a {
+        self.outliers.into_iter().chain(
+            self.violin
+                .into_iter()
+                .flat_map(Violin::halves)
+                .map(|(_, half)| half.curve.as_str()),
+        )
+    }
+
+    /// The plain columns the series reads besides its positions: each
+    /// violin half's density and the points' positions and values.
+    pub fn plain_columns(self) -> impl Iterator<Item = &'a str> + 'a {
+        self.violin
+            .into_iter()
+            .flat_map(Violin::halves)
+            .map(|(_, half)| half.density.as_str())
+            .chain(
+                self.points
+                    .into_iter()
+                    .flat_map(|p| [p.positions.as_str(), p.values.as_str()]),
+            )
+    }
+
+    /// Whether the series draws boxes: always without a violin, and with
+    /// one only when it names a record and gives the box a width.
+    pub fn draws_boxes(self, record: &str) -> bool {
+        !record.is_empty() && self.violin.is_none_or(|v| v.box_width > 0.0)
+    }
 }
 
 impl DataRenderType {
@@ -2735,12 +2984,16 @@ impl DataRenderType {
                 labels,
                 outliers,
                 overrides,
+                violin,
+                points,
             } => Some(BoxPlotRef {
                 color: *color,
                 style,
                 labels,
                 outliers: outliers.as_deref(),
                 overrides: overrides.as_deref().unwrap_or(&[]),
+                violin: violin.as_ref(),
+                points: points.as_ref(),
             }),
             _ => None,
         }
@@ -2792,11 +3045,58 @@ pub fn validate_box_plot_series(
         return Err("a box label is one line of at most 160 characters");
     }
     let (positions, record) = series.box_plot_columns();
-    if positions.is_empty() || record.is_empty() || boxes.outliers.is_some_and(str::is_empty) {
+    if positions.is_empty()
+        || (record.is_empty() && boxes.violin.is_none())
+        || boxes.outliers.is_some_and(str::is_empty)
+    {
         return Err(
             "a box plot series names its category positions (x_column), its record (y_column) \
-             and, when set, its outlier column",
+             unless it draws a violin, and, when set, its outlier column",
         );
+    }
+    if let Some(violin) = boxes.violin {
+        if !finite_in(violin.box_width, 0.0, 1.0) {
+            return Err("a violin's box width is a share of the slot in 0..=1");
+        }
+        if violin.halves().next().is_none() {
+            return Err("a split violin draws at least one half");
+        }
+        for (_, half) in violin.halves() {
+            if half.curve.is_empty() || half.density.is_empty() || half.curve == half.density {
+                return Err("a violin half names a ragged curve and a distinct density column");
+            }
+            if !half.density_scale.is_finite() || half.density_scale <= 0.0 {
+                return Err("a violin half's density_scale is finite and positive");
+            }
+            let style = &half.style;
+            if !finite_in(style.outline_width, 0.0, 8.0)
+                || !valid_bar_color(style.outline_color, false)
+                || style.fill.is_some_and(|c| !valid_bar_color(c, true))
+            {
+                return Err(
+                    "a violin outline is 0..=8 px wide with channels in 0..=1, its fill opaque",
+                );
+            }
+        }
+    }
+    if let Some(points) = boxes.points {
+        let style = &points.style;
+        if points.positions.is_empty()
+            || points.values.is_empty()
+            || points.positions == points.values
+        {
+            return Err("box points name distinct position and value columns");
+        }
+        if !finite_in(style.size, 1.0, 24.0)
+            || !finite_in(style.jitter, 0.0, 1.0)
+            || !finite_in(style.offset, -1.0, 1.0)
+            || !valid_bar_color(style.color, false)
+        {
+            return Err(
+                "box points are 1..=24 px, jittered by 0..=1 and offset by -1..=1 of the half \
+                 slot, with colour channels in 0..=1",
+            );
+        }
     }
     for (index, o) in boxes.overrides.iter().enumerate() {
         if o.target.series_id != series.series_id
@@ -3751,12 +4051,13 @@ impl DataRenderType {
             DataRenderType::Vector { components, .. } => {
                 matches!(components, VectorComponents::Points { .. })
             }
+            // Its raw points, when it has them.
+            DataRenderType::BoxPlot { points, .. } => points.is_some(),
             DataRenderType::Histogram { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. }
             | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. } => false,
         }
     }
@@ -3848,7 +4149,10 @@ impl crate::config::Config {
                 let Some(next) = points().nth(shift(index, dy, points().count())) else {
                     return Ok(None);
                 };
-                let mut count = len(&next.x_column).min(len(&next.y_column));
+                let mut count = match next.render_type.box_plot().and_then(|b| b.points) {
+                    Some(points) => len(&points.positions).min(len(&points.values)),
+                    None => len(&next.x_column).min(len(&next.y_column)),
+                };
                 // A point vector draws only where all four columns have a value.
                 if let DataRenderType::Vector {
                     components: VectorComponents::Points { u, v },
@@ -5498,7 +5802,7 @@ mod category_bar_tests {
 #[cfg(test)]
 mod box_plot_tests {
     use super::*;
-    use crate::config::Config;
+    use crate::config::{Config, DataSelectionsConfig, PickedDataRef};
     use crate::layer::{OverlayLayer, Subplot};
 
     fn categories(n: usize) -> Vec<Category> {
@@ -5520,6 +5824,8 @@ mod box_plot_tests {
                 labels: BoxPlotSeriesLabels::default(),
                 outliers: None,
                 overrides: None,
+                violin: None,
+                points: None,
             },
         }
     }
@@ -5821,6 +6127,219 @@ mod box_plot_tests {
             minimal.render_type.box_plot().unwrap().style,
             &BoxPlotStyle::default()
         );
+    }
+
+    fn half(curve: &str) -> ViolinHalf {
+        ViolinHalf {
+            curve: curve.into(),
+            density: format!("{curve}.density"),
+            density_scale: 0.4,
+            style: ViolinStyle::default(),
+        }
+    }
+
+    fn violin(series: &mut SeriesConfig, body: ViolinBody) {
+        let DataRenderType::BoxPlot { violin, .. } = render(series) else {
+            unreachable!()
+        };
+        *violin = Some(Violin::new(body));
+    }
+
+    fn points(series: &mut SeriesConfig) -> &mut BoxPoints {
+        let DataRenderType::BoxPlot { points, .. } = render(series) else {
+            unreachable!()
+        };
+        points.get_or_insert_with(|| BoxPoints {
+            positions: "p.cat".into(),
+            values: "p.value".into(),
+            style: BoxPointsStyle::default(),
+        })
+    }
+
+    #[test]
+    fn violins_and_points_validate_and_a_violin_needs_no_record() {
+        let config = chart(3);
+        let mut a = boxes("a");
+        violin(&mut a, ViolinBody::Symmetric(half("curve")));
+        points(&mut a);
+        assert_eq!(config.validate_box_plots(&[a.clone()]), Ok(()));
+        // A violin alone: no record, no box.
+        a.y_column.clear();
+        assert_eq!(config.validate_box_plots(&[a.clone()]), Ok(()));
+        assert!(!a.render_type.box_plot().unwrap().draws_boxes(&a.y_column));
+        let mut plain = boxes("p");
+        plain.y_column.clear();
+        assert!(config.validate_box_plots(&[plain]).is_err());
+        // A split violin with one half (a raincloud), and none.
+        let mut split = boxes("s");
+        violin(
+            &mut split,
+            ViolinBody::Split {
+                low: None,
+                high: Some(half("curve")),
+            },
+        );
+        assert_eq!(config.validate_box_plots(&[split.clone()]), Ok(()));
+        let mut empty = boxes("e");
+        violin(
+            &mut empty,
+            ViolinBody::Split {
+                low: None,
+                high: None,
+            },
+        );
+        assert!(config.validate_box_plots(&[empty]).is_err());
+        let bad_half = |edit: fn(&mut ViolinHalf)| {
+            let mut s = boxes("b");
+            let mut h = half("curve");
+            edit(&mut h);
+            violin(&mut s, ViolinBody::Symmetric(h));
+            config.validate_box_plots(&[s]).is_err()
+        };
+        assert!(bad_half(|h| h.density_scale = 0.0));
+        assert!(bad_half(|h| h.density_scale = f64::NAN));
+        assert!(bad_half(|h| h.density = h.curve.clone()));
+        assert!(bad_half(|h| h.style.outline_width = 9.0));
+        assert!(bad_half(
+            |h| h.style.fill = Some(Color::new(1.0, 0.0, 0.0, 0.5))
+        ));
+        let bad_points = |edit: fn(&mut BoxPoints)| {
+            let mut s = boxes("b");
+            edit(points(&mut s));
+            config.validate_box_plots(&[s]).is_err()
+        };
+        assert!(bad_points(|p| p.values = p.positions.clone()));
+        assert!(bad_points(|p| p.style.size = 0.5));
+        assert!(bad_points(|p| p.style.jitter = 1.5));
+        assert!(bad_points(|p| p.style.offset = -1.5));
+        let mut wide = boxes("w");
+        violin(&mut wide, ViolinBody::Symmetric(half("curve")));
+        let DataRenderType::BoxPlot {
+            violin: Some(v), ..
+        } = render(&mut wide)
+        else {
+            unreachable!()
+        };
+        v.box_width = 1.5;
+        assert!(config.validate_box_plots(&[wide]).is_err());
+    }
+
+    #[test]
+    fn violin_halves_and_columns_follow_the_body() {
+        let symmetric = Violin::new(ViolinBody::Symmetric(half("c")));
+        let sides: Vec<_> = symmetric
+            .halves()
+            .map(|(side, h)| (side, h.curve.as_str()))
+            .collect();
+        assert_eq!(sides, [(ViolinSide::Both, "c")]);
+        let split = Violin::new(ViolinBody::Split {
+            low: Some(half("lo")),
+            high: Some(half("hi")),
+        });
+        let sides: Vec<_> = split
+            .halves()
+            .map(|(side, h)| (side, h.curve.as_str()))
+            .collect();
+        assert_eq!(sides, [(ViolinSide::Low, "lo"), (ViolinSide::High, "hi")]);
+        let mut s = boxes("a");
+        violin(
+            &mut s,
+            ViolinBody::Split {
+                low: Some(half("lo")),
+                high: Some(half("hi")),
+            },
+        );
+        points(&mut s);
+        let DataRenderType::BoxPlot { outliers, .. } = render(&mut s) else {
+            unreachable!()
+        };
+        *outliers = Some("out".into());
+        let boxes = s.render_type.box_plot().unwrap();
+        assert_eq!(
+            boxes.ragged_columns().collect::<Vec<_>>(),
+            ["out", "lo", "hi"]
+        );
+        assert_eq!(
+            boxes.plain_columns().collect::<Vec<_>>(),
+            ["lo.density", "hi.density", "p.cat", "p.value"]
+        );
+        let mut h = half("c");
+        assert!(h.fit_density_scale(2.5));
+        assert_eq!(h.density_scale, 2.5);
+        assert!(!h.fit_density_scale(0.0));
+        assert!(!h.fit_density_scale(f64::INFINITY));
+        assert_eq!(h.density_scale, 2.5);
+    }
+
+    #[test]
+    fn step_selection_walks_box_points_and_their_series() {
+        let mut a = boxes("a");
+        points(&mut a);
+        let mut b = boxes("b");
+        points(&mut b).values = "b.value".into();
+        let plain = boxes("c");
+        let series = [a, plain, b];
+        let mut config = chart(3);
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: "a".into(),
+                point_index: 4,
+            }],
+            ..Default::default()
+        });
+        let len = |id: &str| match id {
+            "p.cat" => Some(10),
+            "p.value" => Some(8),
+            "b.value" => Some(5),
+            _ => Some(3),
+        };
+        let at = |config: &Config| match &config.picked_data.as_ref().unwrap().refs[0] {
+            PickedDataRef::Point {
+                series_id,
+                point_index,
+                ..
+            } => (series_id.clone(), *point_index),
+            other => panic!("{other:?}"),
+        };
+        // Along the points, bounded by the shorter of the two columns.
+        assert_eq!(config.step_selection(&series, 9, 0, len), Ok(true));
+        assert_eq!(at(&config), ("a".into(), 7));
+        // Across to the next series with points, skipping the plain boxes.
+        assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
+        assert_eq!(at(&config), ("b".into(), 4));
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn violins_and_points_round_trip_and_are_absent_by_default() {
+        let plain = boxes("a");
+        let json = serde_json::to_value(&plain).unwrap();
+        let fields = &json["render_type"]["BoxPlot"];
+        assert!(fields.get("violin").is_none() && fields.get("points").is_none());
+        let mut full = boxes("a");
+        violin(
+            &mut full,
+            ViolinBody::Split {
+                low: None,
+                high: Some(half("hi")),
+            },
+        );
+        points(&mut full).style.offset = -0.6;
+        let json = serde_json::to_value(&full).unwrap();
+        let body = &json["render_type"]["BoxPlot"]["violin"]["body"]["Split"];
+        assert!(body.get("low").is_none() && body.get("high").is_some());
+        assert_eq!(serde_json::from_value::<SeriesConfig>(json).unwrap(), full);
+        // A minimal violin: the box width and the style default.
+        let minimal: Violin = serde_json::from_str(
+            r#"{"body":{"Symmetric":{"curve":"c","density":"d","density_scale":1.0}}}"#,
+        )
+        .unwrap();
+        assert_eq!(minimal.box_width, Violin::DEFAULT_BOX_WIDTH);
+        let ViolinBody::Symmetric(h) = &minimal.body else {
+            unreachable!()
+        };
+        assert_eq!(h.style, ViolinStyle::default());
     }
 }
 
@@ -6204,6 +6723,8 @@ mod step_selection_tests {
             labels: BoxPlotSeriesLabels::default(),
             outliers: None,
             overrides: None,
+            violin: None,
+            points: None,
         }
     }
 
