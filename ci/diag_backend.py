@@ -21,7 +21,6 @@ ws = ["cargo", "test", "--locked", "--workspace", "--features",
       "figgy-model/serde,figgy-renderer/serde,figgy-renderer/cpu-twin", "--no-fail-fast"]
 runs = [
     ["--test", "radial_render", "--"],
-    ["WS", "--test", "radial_render", "--"],
     ["--test", "radial_render", "--", "radial_gpu_pick_agrees_with_the_cpu_twin"],
     ["--test", "radial_render", "--", "radial_step_selection_moves_the_highlight_to_each_slice"],
 ]

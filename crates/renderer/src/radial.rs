@@ -467,8 +467,8 @@ impl RadialPickTicket {
         // DIAGNOSTIC ONLY (diag/backend-pick).
         if std::env::var_os("FIGGY_DIAG_DIR").is_some() {
             eprintln!(
-                "DIAG radial gpu: winner {} t {:?} hit {}",
-                result.index, result.t, result.hit
+                "DIAG radial gpu: winner {} t {:?} hit {} mask {:b}",
+                result.index, result.t, result.hit, result.reserved
             );
         }
         if result.hit == 0 {
