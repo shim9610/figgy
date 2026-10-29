@@ -109,6 +109,14 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Nor to range bars: a bar reads its start, whiskers, colour and
+        // progress columns by their pool lanes.
+        if series.render_type.range_bars().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: crate::streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
+            });
+        }
         // The value maps read index-aligned columns on every draw; streaming
         // is not extended to them.
         if let Some(scatter) = extract_scatter(&series.render_type)

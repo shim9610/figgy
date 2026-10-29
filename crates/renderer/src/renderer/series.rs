@@ -94,7 +94,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. } => None,
     }
 }
 
@@ -128,6 +129,7 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         // Arrowheads are not markers either; they are drawn along the line
         // by the vector glyph (`DataRenderType::streamlines`).
         | DataRenderType::Streamlines { .. } => None,
@@ -182,6 +184,7 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -218,6 +221,7 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -253,6 +257,7 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -285,6 +290,7 @@ pub(super) fn extract_vector(
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -429,6 +435,25 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
+        // One bar per row where every column of the series has a value:
+        // the positions, the ends and the referenced columns are
+        // index-aligned, so the shortest decides.
+        DataRenderType::RangeBars { .. } => {
+            let bars = series.render_type.range_bars();
+            let lengths = || {
+                [x, y]
+                    .into_iter()
+                    .chain(bars.iter().flat_map(|b| b.extra_columns().map(len)))
+            };
+            let count = lengths().min().unwrap_or(0);
+            let truncated = lengths().any(|value| value > count);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         // A radar polygon: one closed segment and one marker per vertex of
         // the category index and value columns, which hold one value per
         // category (checked when the polygon is prepared).
@@ -519,6 +544,7 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -551,6 +577,7 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -574,6 +601,7 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -597,6 +625,7 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }

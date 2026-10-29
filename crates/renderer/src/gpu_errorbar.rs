@@ -160,7 +160,8 @@ impl GpuSeriesFitMode {
             // from record and ragged statistics.
             DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. } => {
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. } => {
                 return None;
             }
             // A radar series and streamlines fit as the line they draw (the
@@ -254,6 +255,7 @@ impl GpuSeriesExtentMode {
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,

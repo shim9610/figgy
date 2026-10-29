@@ -100,7 +100,8 @@ impl PreparationFeature {
             let group = match item.render_type {
                 DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. } => Self::Bars,
+                | DataRenderType::BoxPlot { .. }
+                | DataRenderType::RangeBars { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }

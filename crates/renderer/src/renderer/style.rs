@@ -653,6 +653,8 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) category_bars: bool,
     /// A box plot series' boxes. Precise mode only, like category bars.
     pub(super) box_plot: bool,
+    /// A range bar series' bars. Precise mode only, like category bars.
+    pub(super) range_bars: bool,
     /// A vector (quiver) series' arrows. Precise mode only, like fields.
     pub(super) vector: bool,
 }
@@ -670,6 +672,7 @@ pub(super) fn effective_series_primitives(
             bar: false,
             category_bars: false,
             box_plot: false,
+            range_bars: false,
             vector: false,
         };
     }
@@ -702,6 +705,9 @@ pub(super) fn effective_series_primitives(
             && render_type.category_bars().is_some(),
         // Boxes are precise like category bars, for the same reason.
         box_plot: matches!(draw_style, DrawStyle::Precise) && render_type.box_plot().is_some(),
+        // Range bars are precise like category bars, for the same reason.
+        range_bars: matches!(draw_style, DrawStyle::Precise)
+            && render_type.range_bars().is_some(),
         // Arrows are a precise-mode primitive for the same reason: no stylized
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.
@@ -765,6 +771,7 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => false,
     }
