@@ -1665,6 +1665,19 @@ mod pick_module_tests {
             2
         );
     }
+
+    /// The pick and the moving inside glyphs count their winner from 1:
+    /// Metal compiles a 0-based `winner=i` as a constant 0 (#63).
+    #[test]
+    fn sector_index_loops_count_the_winner_from_one() {
+        for (name, source) in [
+            ("radial.wgsl", include_str!("radial.wgsl")),
+            ("radial_pick.wgsl", include_str!("radial_pick.wgsl")),
+        ] {
+            assert!(!source.contains("winner=i;"), "{name}");
+            assert_eq!(source.matches("winner=i+1u;").count(), 1, "{name}");
+        }
+    }
 }
 
 #[cfg(test)]
