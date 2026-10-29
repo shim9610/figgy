@@ -464,6 +464,21 @@ impl RadialPickTicket {
             *bytemuck::from_bytes::<RadialPickResultGpu>(&mapped)
         };
         pending.readback.unmap();
+        // DIAGNOSTIC ONLY (diag/backend-pick).
+        if std::env::var_os("FIGGY_DIAG_DIR").is_some() {
+            eprintln!(
+                "DIAG radial gpu: winner {} t {:?} runner {} t {:?} hit {}",
+                result.index & 0xff,
+                result.t,
+                (result.index >> 8) & 0xff,
+                f32::from_bits(result.reserved),
+                result.hit
+            );
+        }
+        let result = RadialPickResultGpu {
+            index: result.index & 0xff,
+            ..result
+        };
         if result.hit == 0 {
             return Ok(None);
         }

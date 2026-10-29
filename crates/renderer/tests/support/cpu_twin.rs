@@ -1972,7 +1972,12 @@ pub(crate) fn radial_pick(
             if rest {
                 s.rounding[2] = 0.0;
             }
-            radial_hit(&s, pixel).map(|depth| (depth, *t))
+            let hit = radial_hit(&s, pixel);
+            // DIAGNOSTIC ONLY (diag/backend-pick).
+            if std::env::var_os("FIGGY_DIAG_DIR").is_some() {
+                eprintln!("DIAG radial twin {pixel:?}: {t:?} t {hit:?}");
+            }
+            hit.map(|depth| (depth, *t))
         })
         .min_by(|a, b| a.0.total_cmp(&b.0))
         .map(|(_, t)| t)

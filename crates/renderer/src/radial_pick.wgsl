@@ -18,12 +18,14 @@ struct RadialPickResult {
 @group(0) @binding(1) var<storage, read> sectors: array<Sector>;
 @group(0) @binding(2) var<storage, read_write> result: RadialPickResult;
 @compute @workgroup_size(1) fn pick() {
-    var closest=10000.0;var winner=0u;
+    var closest=10000.0;var winner=0u;var second=10000.0;var runner=255u;
     for(var i=0u;i<query.count;i++) {
         var s=sectors[i];
         if query.rest!=0u { s.rounding.z=0.0; }
         let h=hit_pixel(query.pixel,s);
-        if h.t<closest {closest=h.t;winner=i;}
+        if h.t<closest {second=closest;runner=winner;closest=h.t;winner=i;}
+        else if h.t<second {second=h.t;runner=i;}
     }
-    result=RadialPickResult(winner,select(0u,1u,closest<9999.0),closest,0u);
+    // DIAGNOSTIC ONLY (diag/backend-pick): the runner-up sector and its t.
+    result=RadialPickResult(winner|(runner<<8u),select(0u,1u,closest<9999.0),closest,bitcast<u32>(second));
 }

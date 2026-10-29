@@ -193,6 +193,11 @@ fn every_catalogue_scene_reads_back_as_its_emitted_parts_within_budget() {
         for scale in SCALES {
             let context = format!("{kind:?} at {scale}x");
             let sizes = check_document(&mut r, &context, &chart, &scene.series, scale, 0.0);
+            // DIAGNOSTIC ONLY (diag/backend-pick).
+            eprintln!(
+                "DIAG sizes {context}: svg_other {} svg_images {} pdf_other {} pdf_images {} png {}",
+                sizes.svg_other, sizes.svg_images, sizes.pdf_other, sizes.pdf_images, sizes.png
+            );
             report += &format!(
                 "{context}: SVG {} KiB + images {} KiB, PDF {} KiB + images {} KiB, PNG {} KiB\n",
                 sizes.svg_other / 1024,
