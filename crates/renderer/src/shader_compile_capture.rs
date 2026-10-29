@@ -178,6 +178,7 @@ impl Capture {
                                 | "pick_category_bar"
                                 | "pick_box_plot"
                                 | "pick_range_bar"
+                                | "pick_violin"
                                 | "pick_value_labels"
                                 | "scan_block"
                         )

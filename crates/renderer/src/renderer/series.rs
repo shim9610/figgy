@@ -943,28 +943,62 @@ pub(super) fn box_plot_params<'c>(
         lanes[k as usize] = value;
     }
     let (positions, record_id) = series.box_plot_columns();
-    let record = pool.record(record_id).ok_or_else(|| {
-        invalid(format!(
-            "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
-        ))
-    })?;
-    if record.slot().schema != data_render::BOX_PLOT_RECORD {
-        return Err(invalid(format!(
-            "record {record_id:?} is not a box plot record (`BOX_PLOT_RECORD`)"
-        )));
+    if record_id.is_empty() {
+        // A violin without boxes: every record field is absent, so no box
+        // draws or picks.
+        for k in 0..data_render::BOX_PLOT_RECORD.len() {
+            set(&mut lanes, k as u32, BOX_LANE_ABSENT);
+        }
+    } else {
+        let record = pool.record(record_id).ok_or_else(|| {
+            invalid(format!(
+                "box plot record {record_id:?} is not resident: upload it with `upsert_record`"
+            ))
+        })?;
+        if record.slot().schema != data_render::BOX_PLOT_RECORD {
+            return Err(invalid(format!(
+                "record {record_id:?} is not a box plot record (`BOX_PLOT_RECORD`)"
+            )));
+        }
+        if record.slot().len as usize != n {
+            return Err(invalid(format!(
+                "box plot record {record_id:?} has {} rows for {n} categories; it needs one per category",
+                record.slot().len
+            )));
+        }
+        for k in 0..data_render::BOX_PLOT_RECORD.len() {
+            let value = match record.slot().fields[k].as_deref() {
+                Some(member) => lane(&lookup(member)?)?,
+                None => BOX_LANE_ABSENT,
+            };
+            set(&mut lanes, k as u32, value);
+        }
     }
-    if record.slot().len as usize != n {
-        return Err(invalid(format!(
-            "box plot record {record_id:?} has {} rows for {n} categories; it needs one per category",
-            record.slot().len
-        )));
+    // A violin narrows the box to its share of the slot and its curves
+    // lift the value label past them.
+    let width = boxes.violin.map_or(1.0, |violin| violin.box_width);
+    set(&mut lanes, data_render::BOX_LANE_BOX_WIDTH, width.to_bits());
+    for k in 0..4 {
+        set(
+            &mut lanes,
+            data_render::BOX_LANE_VIOLIN_CURVES + k,
+            BOX_LANE_ABSENT,
+        );
     }
-    for k in 0..data_render::BOX_PLOT_RECORD.len() {
-        let value = match record.slot().fields[k].as_deref() {
-            Some(member) => lane(&lookup(member)?)?,
-            None => BOX_LANE_ABSENT,
-        };
-        set(&mut lanes, k as u32, value);
+    for (h, (_, half)) in boxes
+        .violin
+        .into_iter()
+        .flat_map(|v| v.halves())
+        .enumerate()
+    {
+        let ragged = violin_curve(series, pool, &half.curve, n)?;
+        let base = data_render::BOX_LANE_VIOLIN_CURVES + 2 * h as u32;
+        set(&mut lanes, base, lane(&lookup(&ragged.slot().values)?)?);
+        set(
+            &mut lanes,
+            base + 1,
+            lane(&lookup(&ragged.slot().offsets)?)?,
+        );
     }
     let mut max_group = 0u32;
     match boxes.outliers {
@@ -1038,6 +1072,231 @@ pub(super) fn box_plot_params<'c>(
         .and_then(|v| v.checked_add(BOX_PLOT_BASE_VERTICES))
         .ok_or_else(|| invalid("a box plot outlier group is too long to draw".into()))?;
     Ok((params, lanes, vertices))
+}
+
+/// The ragged curve `id` of a violin half of `series`: resident, with one
+/// group per category of the `n`.
+fn violin_curve<'p>(
+    series: &SeriesConfig,
+    pool: &'p ColumnPool,
+    id: &str,
+    n: usize,
+) -> Result<crate::data_render::column_pool::RaggedRef<'p>> {
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let ragged = pool.ragged(id).ok_or_else(|| {
+        invalid(format!(
+            "violin curve {id:?} is not resident: upload it with `upsert_ragged`"
+        ))
+    })?;
+    if ragged.slot().groups as usize != n {
+        return Err(invalid(format!(
+            "violin curve {id:?} has {} groups for {n} categories; it needs one per category",
+            ragged.slot().groups
+        )));
+    }
+    Ok(ragged)
+}
+
+/// The params, the lane table and the segment count a box plot series'
+/// violin draws, picks and highlights with: the box group's layout (its
+/// params, with the series' category position column), the half count,
+/// the first half's segment count and, per half, its side, its curve's
+/// values and offsets lanes, its group and value counts, its density lane
+/// and its density scale (SHADER_COMMON.md §5.19). One instance per curve
+/// value: an instance at a group's last value draws nothing.
+///
+/// The columns are data, so they are checked here against the pool: each
+/// curve is a ragged column with one group per category, and its density
+/// column holds one value per curve value.
+pub(super) fn violin_params<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    pool: &ColumnPool,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(
+    data_render::CategoryBarParamsGpu,
+    [u32; data_render::VIOLIN_LANES],
+    u32,
+)> {
+    use crate::data_config::ViolinSide;
+    use data_render::{
+        VIOLIN_HALF_BASE, VIOLIN_HALF_LANES, VIOLIN_LANE_FIRST_SEGMENTS, VIOLIN_LANE_HALVES,
+        VIOLIN_LANES, VIOLIN_SIDE_BOTH, VIOLIN_SIDE_HIGH, VIOLIN_SIDE_LOW,
+    };
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let boxes = series
+        .render_type
+        .box_plot()
+        .ok_or_else(|| invalid("not a box plot series".into()))?;
+    let violin = boxes
+        .violin
+        .ok_or_else(|| invalid("the box plot series draws no violin".into()))?;
+    let (mut params, _, _) =
+        box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
+    let n = params.count as usize;
+    let lane = |handle: &ColumnHandle| -> Result<u32> {
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "violin column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let mut lanes = [0u32; VIOLIN_LANES];
+    let mut segments = 0u32;
+    for (h, (side, half)) in violin.halves().enumerate() {
+        let ragged = violin_curve(series, pool, &half.curve, n)?;
+        let values = ragged.stats().total;
+        let density = lookup(&half.density)?;
+        if density.len_values != values as usize {
+            return Err(invalid(format!(
+                "violin density {:?} has {} values for the {values} values of curve {:?}; it \
+                 needs one per curve value",
+                half.density, density.len_values, half.curve
+            )));
+        }
+        let count = values;
+        let base = VIOLIN_HALF_BASE + h * VIOLIN_HALF_LANES;
+        lanes[base] = match side {
+            ViolinSide::Both => VIOLIN_SIDE_BOTH,
+            ViolinSide::Low => VIOLIN_SIDE_LOW,
+            ViolinSide::High => VIOLIN_SIDE_HIGH,
+        };
+        lanes[base + 1] = lane(&lookup(&ragged.slot().values)?)?;
+        lanes[base + 2] = lane(&lookup(&ragged.slot().offsets)?)?;
+        lanes[base + 3] = ragged.slot().groups;
+        lanes[base + 4] = count;
+        lanes[base + 5] = lane(&density)?;
+        lanes[base + 6] = (half.density_scale as f32).to_bits();
+        if h == 0 {
+            lanes[VIOLIN_LANE_FIRST_SEGMENTS] = count;
+        }
+        segments = segments
+            .checked_add(count)
+            .ok_or_else(|| invalid("the violin curves are too long to draw".into()))?;
+        lanes[VIOLIN_LANE_HALVES] = h as u32 + 1;
+    }
+    // Every instance reads its category through the curve, not the params.
+    params.count = n as u32;
+    Ok((params, lanes, segments))
+}
+
+/// The params and the point count a box plot series' raw points draw with:
+/// the box group's layout with `positions` the points' category position
+/// column and `count` its rows where both point columns have a value, and
+/// a lane table holding the values lane.
+pub(super) fn box_points_params<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    pool: &ColumnPool,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(data_render::CategoryBarParamsGpu, [u32; 1])> {
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let points = series
+        .render_type
+        .box_plot()
+        .and_then(|b| b.points)
+        .ok_or_else(|| invalid("the box plot series draws no points".into()))?;
+    let (mut params, _, _) =
+        box_plot_params(config, group, series, display_scale, pool, &mut lookup)?;
+    let positions = lookup(&points.positions)?;
+    let values = lookup(&points.values)?;
+    let lane = |handle: &ColumnHandle| -> Result<u32> {
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "box points column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let count = positions.len_values.min(values.len_values);
+    params.positions = lane(&positions)?;
+    params.count = u32::try_from(count).map_err(|_| FiggyError::GpuResourceLimit {
+        resource: "box points",
+        requested: count as u64,
+        limit: u64::from(u32::MAX),
+    })?;
+    Ok((params, [lane(&values)?]))
+}
+
+/// The group 3 and style map a box plot series' violin (`points` false) or
+/// raw points (`points` true) of the panel `config` are drawn, picked and
+/// highlighted with at `display_scale`, and their instance count: curve
+/// segments, or points. Every pass builds it here, so they all see the
+/// same bodies and points.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn box_extras_data<'c>(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    data_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    pool: &ColumnPool,
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+    points: bool,
+) -> Result<(data_render::CategoryBarData, u32)> {
+    let boxes = series
+        .render_type
+        .box_plot()
+        .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: "not a box plot series".into(),
+        })?;
+    let create = |params: &data_render::CategoryBarParamsGpu, lanes: &[u32], style_map| {
+        data_render::create_category_bar_data_bind_group(
+            device,
+            ledger,
+            data_bgl,
+            pool_buffer,
+            params,
+            lanes.len(),
+            |push| {
+                lanes.iter().for_each(|&lane| push(lane));
+                Ok(())
+            },
+            style_map,
+        )
+    };
+    if points {
+        let (params, lanes) =
+            box_points_params(config, group, series, display_scale, pool, lookup)?;
+        let style = boxes.points.expect("checked by box_points_params");
+        let style_map = crate::renderer::style::box_points_style_map(
+            device,
+            style_map_bgl,
+            style,
+            display_scale,
+        );
+        Ok((create(&params, &lanes, style_map)?, params.count))
+    } else {
+        let (params, lanes, segments) =
+            violin_params(config, group, series, display_scale, pool, lookup)?;
+        let violin = boxes.violin.expect("checked by violin_params");
+        let style_map = crate::renderer::style::violin_style_map(
+            device,
+            style_map_bgl,
+            category_bar_categories(config).unwrap_or(&[]),
+            boxes,
+            violin,
+            display_scale,
+        );
+        Ok((create(&params, &lanes, style_map)?, segments))
+    }
 }
 
 /// The params and the lane table a range bar series of the panel `config`

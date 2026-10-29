@@ -57,6 +57,10 @@ pub(super) struct SelectionColumns<'a> {
     /// its draw binds them; its picked bar's or box's highlight reads the
     /// same.
     pub category: Option<data_render::CategoryBarData>,
+    /// A box plot series' violin data and segment count, and its raw
+    /// points' data, as their draws bind them.
+    pub violin: Option<(data_render::CategoryBarData, u32)>,
+    pub box_points: Option<data_render::CategoryBarData>,
     pub rows: SelectionRows,
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
     /// rows.global_start. Its style-index vertex column still uses local rows.
@@ -75,7 +79,9 @@ impl<'a> SelectionLayers<'a> {
             area: None,
             field: None,
             bar: None,
+            violin: None,
             category_bars: None,
+            box_points: None,
             contour: None,
             vector: None,
             errorbar: None,
@@ -372,6 +378,7 @@ impl PrepareContext<'_> {
                             edges,
                             values,
                             instance,
+                            instances: 1,
                             category: None,
                         });
                     }
@@ -404,6 +411,32 @@ impl PrepareContext<'_> {
                             &self.style_bgl,
                             &buffer,
                         );
+                        // The violin's outline first, under the box's ring:
+                        // every segment, the vertex stage keeping the row's.
+                        if let Some((violin, segments)) = columns.violin.clone() {
+                            highlight.primitive_flags = 0;
+                            let buffer =
+                                data_render::create_style_uniform_buffer(&self.device, &highlight);
+                            selected_bars.push(ColumnBarSelectionLayer {
+                                pipeline: pipelines
+                                    .bar_violin_selection
+                                    .as_ref()
+                                    .expect("prepare ensured violin selection pipeline"),
+                                transform_bg: &view.transform_bg,
+                                style_bg: data_render::create_style_bind_group(
+                                    &self.device,
+                                    &self.style_bgl,
+                                    &buffer,
+                                ),
+                                style_map_bg: None,
+                                pool_buffer: column_buffer,
+                                edges: columns.x,
+                                values: columns.y,
+                                instance: 0,
+                                instances: segments,
+                                category: Some(violin),
+                            });
+                        }
                         selected_bars.push(ColumnBarSelectionLayer {
                             pipeline: pipelines
                                 .bar_box_plot_selection
@@ -416,12 +449,55 @@ impl PrepareContext<'_> {
                             edges: columns.x,
                             values: columns.y,
                             instance: row,
+                            instances: 1,
                             category: Some(category),
                         });
                     }
                     // A range bar is a bin whose index is its row: the
                     // highlight builds the same body from the same group 3
                     // and style map as the draw.
+                    // A box plot's raw point: its ring, built from the same
+                    // group 3 and slot as its draw places it with.
+                    PickedDataRef::Point { point_index, .. } if primitives.box_points => {
+                        let Some(points) = columns.box_points.clone() else {
+                            continue;
+                        };
+                        let Ok(index) = u32::try_from(*point_index) else {
+                            continue;
+                        };
+                        let boxes = rt
+                            .box_plot()
+                            .expect("a box point selection has a box plot config");
+                        let mut highlight = PrimitiveStyle::from_box_plot(
+                            boxes.color,
+                            boxes.style,
+                            series.style.display_scale,
+                        );
+                        highlight.color_premul =
+                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
+                        highlight.line_width_px = selection_cfg.outline_width_px;
+                        let buffer =
+                            data_render::create_style_uniform_buffer(&self.device, &highlight);
+                        selected_bars.push(ColumnBarSelectionLayer {
+                            pipeline: pipelines
+                                .bar_box_point_selection
+                                .as_ref()
+                                .expect("prepare ensured box point selection pipeline"),
+                            transform_bg: &view.transform_bg,
+                            style_bg: data_render::create_style_bind_group(
+                                &self.device,
+                                &self.style_bgl,
+                                &buffer,
+                            ),
+                            style_map_bg: None,
+                            pool_buffer: column_buffer,
+                            edges: columns.x,
+                            values: columns.y,
+                            instance: index,
+                            instances: 1,
+                            category: Some(points),
+                        });
+                    }
                     PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_bars => {
                         let Some(category) = columns.category.clone() else {
                             continue;
@@ -460,6 +536,7 @@ impl PrepareContext<'_> {
                             edges: columns.x,
                             values: columns.y,
                             instance: row,
+                            instances: 1,
                             category: Some(category),
                         });
                     }
@@ -504,6 +581,7 @@ impl PrepareContext<'_> {
                             edges: columns.x,
                             values: columns.y,
                             instance: row,
+                            instances: 1,
                             category: Some(category),
                         });
                     }
@@ -1051,6 +1129,8 @@ mod tests {
                                     }
                                 }),
                                 category: None,
+                                violin: None,
+                                box_points: None,
                                 rows: SelectionRows {
                                     global_start: if local { 2 } else { 0 },
                                     refs: SelectionRefFilter::Typed(0),

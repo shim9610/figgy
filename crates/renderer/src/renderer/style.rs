@@ -581,6 +581,113 @@ pub(super) fn range_bar_style_map(
     data_render::create_bar_style_map_written(device, layout, slot_count, write_slots, 0, |_| {})
 }
 
+/// The halves of a box plot's violin as the bar style map its draw, pick
+/// and highlight read (SHADER_COMMON.md §5.19): one slot per half in
+/// [`Violin::halves`](crate::data_config::Violin::halves) order with its
+/// fill (the series colour without one), outline colour and width, and one
+/// override row per box override, keyed by its category's row, with the
+/// override's colour as the fill and its style's outline (D7). The rows
+/// are written straight into the mapped buffers, so nothing is staged on
+/// the CPU.
+pub(super) fn violin_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    categories: &[crate::config::Category],
+    boxes: crate::data_config::BoxPlotRef<'_>,
+    violin: &crate::data_config::Violin,
+    scale: f32,
+) -> data_render::BarStyleMap {
+    use data_render::{
+        BAR_STYLE_MASK_BORDER_COLOR, BAR_STYLE_MASK_BORDER_WIDTH, BAR_STYLE_MASK_FILL,
+        BarStyleOverrideGpu, BarStyleSlotGpu,
+    };
+    let outline_width = |on: bool, width: f32| if on { width.max(0.0) * scale } else { 0.0 };
+    let half_slot = |half: &crate::data_config::ViolinHalf| BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(half.style.fill.unwrap_or(boxes.color)),
+        border_color_premul: premul_rgba(half.style.outline_color),
+        params: [
+            outline_width(half.style.outline, half.style.outline_width),
+            0.0,
+            0.0,
+            (BAR_STYLE_MASK_FILL | BAR_STYLE_MASK_BORDER_COLOR | BAR_STYLE_MASK_BORDER_WIDTH)
+                as f32,
+        ],
+        ..bytemuck::Zeroable::zeroed()
+    };
+    let write_slots = |push: &mut dyn FnMut(&BarStyleSlotGpu)| {
+        for (_, half) in violin.halves() {
+            push(&half_slot(half));
+        }
+    };
+    let write = |push: &mut dyn FnMut(&BarStyleOverrideGpu)| {
+        for o in boxes.overrides {
+            let Some(row) = categories
+                .iter()
+                .position(|c| c.id == o.target.category_id)
+                .and_then(|row| u32::try_from(row).ok())
+            else {
+                continue;
+            };
+            let mut row_style: BarStyleOverrideGpu = bytemuck::Zeroable::zeroed();
+            row_style.bin_index = row;
+            let mut mask = 0;
+            if let Some(color) = o.color {
+                row_style.fill_color_premul = premul_rgba(color);
+                mask |= BAR_STYLE_MASK_FILL;
+            }
+            if let Some(style) = &o.style {
+                row_style.border_color_premul = premul_rgba(style.outline_color);
+                row_style.params[0] = outline_width(style.outline, style.outline_width);
+                mask |= BAR_STYLE_MASK_BORDER_COLOR | BAR_STYLE_MASK_BORDER_WIDTH;
+            }
+            if mask != 0 {
+                row_style.params[3] = mask as f32;
+                push(&row_style);
+            }
+        }
+    };
+    data_render::create_bar_style_map_written(
+        device,
+        layout,
+        violin.halves().count(),
+        write_slots,
+        boxes.overrides.len(),
+        write,
+    )
+}
+
+/// A box plot's raw points as the bar style map their draw and highlight
+/// read (SHADER_COMMON.md §5.19): one slot with the colour as its fill and
+/// the radius in render pixels, the jitter and offset shares and the shape
+/// code (`marker.wgsl` base shape id, plus `BOX_POINTS_FILLED` when filled)
+/// in its finish.
+pub(super) fn box_points_style_map(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    points: &crate::data_config::BoxPoints,
+    scale: f32,
+) -> data_render::BarStyleMap {
+    use crate::data_config::BoxOutlierShape;
+    use data_render::{BAR_STYLE_MASK_FILL, BOX_POINTS_FILLED, BarStyleSlotGpu};
+    let style = &points.style;
+    let shape = match style.shape {
+        BoxOutlierShape::Circle => 0,
+        BoxOutlierShape::Square => 1,
+    } + if style.filled { BOX_POINTS_FILLED } else { 0 };
+    let slot = BarStyleSlotGpu {
+        fill_color_premul: premul_rgba(style.color),
+        params: [0.0, 0.0, 0.0, BAR_STYLE_MASK_FILL as f32],
+        finish: [
+            style.size.max(0.0) * 0.5 * scale,
+            style.jitter,
+            style.offset,
+            shape as f32,
+        ],
+        ..bytemuck::Zeroable::zeroed()
+    };
+    data_render::create_bar_style_map_written(device, layout, 1, |push| push(&slot), 0, |_| {})
+}
+
 /// The three part slots of `style` (SHADER_COMMON.md §5.15): the body's
 /// material and finish (corner radius px, emphasis, notch depth share), the
 /// strokes (median colour and width, whisker colour and width, cap length
@@ -728,6 +835,10 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) box_plot: bool,
     /// A range bar series' bars. Precise mode only, like category bars.
     pub(super) range_bars: bool,
+    /// A box plot series' violins, with its boxes.
+    pub(super) violin: bool,
+    /// A box plot series' raw points, with its boxes.
+    pub(super) box_points: bool,
     /// A vector (quiver) series' arrows. Precise mode only, like fields.
     pub(super) vector: bool,
 }
@@ -746,6 +857,8 @@ pub(super) fn effective_series_primitives(
             category_bars: false,
             box_plot: false,
             range_bars: false,
+            violin: false,
+            box_points: false,
             vector: false,
         };
     }
@@ -780,6 +893,11 @@ pub(super) fn effective_series_primitives(
         box_plot: matches!(draw_style, DrawStyle::Precise) && render_type.box_plot().is_some(),
         // Range bars are precise like category bars, for the same reason.
         range_bars: matches!(draw_style, DrawStyle::Precise) && render_type.range_bars().is_some(),
+        // A box plot's violins and raw points are drawn with its boxes.
+        violin: matches!(draw_style, DrawStyle::Precise)
+            && render_type.box_plot().is_some_and(|b| b.violin.is_some()),
+        box_points: matches!(draw_style, DrawStyle::Precise)
+            && render_type.box_plot().is_some_and(|b| b.points.is_some()),
         // Arrows are a precise-mode primitive for the same reason: no stylized
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.

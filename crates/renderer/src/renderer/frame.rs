@@ -273,6 +273,7 @@ pub(super) struct PreparedBarSelectionLayer {
     pub(super) edges: ColumnHandle,
     pub(super) values: ColumnHandle,
     pub(super) instance: u32,
+    pub(super) instances: u32,
     pub(super) category: Option<data_render::CategoryBarData>,
 }
 
@@ -361,6 +362,30 @@ pub(super) struct PreparedCategoryBarLayer {
     pub(super) vertices: u32,
 }
 
+impl PreparedCategoryBarLayer {
+    fn new(layer: data_render::ColumnCategoryBarLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            data: layer.data,
+            count: layer.count,
+            vertices: layer.vertices,
+        }
+    }
+
+    fn layer(&self) -> data_render::ColumnCategoryBarLayer<'_> {
+        data_render::ColumnCategoryBarLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: &self.style_bg,
+            data: self.data.clone(),
+            count: self.count,
+            vertices: self.vertices,
+        }
+    }
+}
+
 /// Owned value label layer: the label group (uniform and atlas), the
 /// category bar data it reads, and the selected label's box pipeline.
 pub(super) struct PreparedValueLabelLayer {
@@ -397,7 +422,9 @@ pub(super) struct PreparedSeries {
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
     pub(super) bar: Option<PreparedBarLayer>,
+    pub(super) violin: Option<PreparedCategoryBarLayer>,
     pub(super) category_bars: Option<PreparedCategoryBarLayer>,
+    pub(super) box_points: Option<PreparedCategoryBarLayer>,
     pub(super) contour: Option<PreparedContourLayer>,
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
@@ -761,14 +788,9 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
-            category_bars: layers.category_bars.map(|layer| PreparedCategoryBarLayer {
-                pipeline: layer.pipeline.clone(),
-                transform_bg: layer.transform_bg.clone(),
-                style_bg: layer.style_bg.clone(),
-                data: layer.data,
-                count: layer.count,
-                vertices: layer.vertices,
-            }),
+            violin: layers.violin.map(PreparedCategoryBarLayer::new),
+            category_bars: layers.category_bars.map(PreparedCategoryBarLayer::new),
+            box_points: layers.box_points.map(PreparedCategoryBarLayer::new),
             vector: layers.vector.map(|layer| PreparedVectorLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -856,6 +878,7 @@ impl PreparedSeries {
                     edges: layer.edges,
                     values: layer.values,
                     instance: layer.instance,
+                    instances: layer.instances,
                     category: layer.category,
                 })
                 .collect(),
@@ -940,16 +963,15 @@ impl PreparedSeries {
                 edges: layer.edges,
                 values: layer.values,
             }),
-            category_bars: self.category_bars.as_ref().map(|layer| {
-                data_render::ColumnCategoryBarLayer {
-                    pipeline: &layer.pipeline,
-                    transform_bg: &layer.transform_bg,
-                    style_bg: &layer.style_bg,
-                    data: layer.data.clone(),
-                    count: layer.count,
-                    vertices: layer.vertices,
-                }
-            }),
+            violin: self.violin.as_ref().map(PreparedCategoryBarLayer::layer),
+            category_bars: self
+                .category_bars
+                .as_ref()
+                .map(PreparedCategoryBarLayer::layer),
+            box_points: self
+                .box_points
+                .as_ref()
+                .map(PreparedCategoryBarLayer::layer),
             vector: self
                 .vector
                 .as_ref()
@@ -1054,6 +1076,7 @@ impl PreparedSeries {
                     edges: layer.edges,
                     values: layer.values,
                     instance: layer.instance,
+                    instances: layer.instances,
                     category: layer.category.clone(),
                 })
                 .collect(),

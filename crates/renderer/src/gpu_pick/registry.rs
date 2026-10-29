@@ -17,6 +17,7 @@ pub(super) fn series_exact_key(
     errorbar: bool,
     area: bool,
     path_arrows: bool,
+    category_jitter: bool,
 ) -> PickExactKey {
     let scatter = flags & FLAG_SCATTER != 0;
     let line = flags & FLAG_LINE != 0;
@@ -43,6 +44,9 @@ pub(super) fn series_exact_key(
     if line && path_arrows {
         bits |= exact_variant::PATH_ARROWS;
     }
+    if scatter && category_jitter {
+        bits |= exact_variant::CATEGORY_JITTER;
+    }
     // Without a style map every point has the series' shape.
     let shape = if scatter && flags & FLAG_STYLE_MAP == 0 {
         base_shape_id
@@ -62,8 +66,10 @@ pub(super) fn series_exact_key(
 /// paths when the draw style uses them and the polar paths on polar axes.
 pub(super) fn series_exact_variant(series: &PickSeriesGpu, query: &GpuPickQuery) -> PickExactKey {
     let mut key = series.exact_key;
+    // A box plot's raw points draw precise markers under every style.
     if series.flags & FLAG_SCATTER != 0
         && key.shader != PickShader::Vector
+        && key.bits & exact_variant::CATEGORY_JITTER == 0
         && query.draw_style.marker != PICK_MARKER_PRECISE
     {
         key.bits |= exact_variant::STYLED_MARKER;

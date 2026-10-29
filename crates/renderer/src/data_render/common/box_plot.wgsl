@@ -45,6 +45,12 @@ const BOX_LANE_OUTLIER_VALUES: u32 = 9u;
 const BOX_LANE_OUTLIER_OFFSETS: u32 = 10u;
 const BOX_LANE_OUTLIER_GROUPS: u32 = 11u;
 const BOX_LANE_MAX_GROUP: u32 = 12u;
+// The box's share of its slot as `f32` bits: 1 for a plain box, a violin's
+// `box_width` (0 hides the box).
+const BOX_LANE_BOX_WIDTH: u32 = 13u;
+// The violin curves the value label clears: each half's ragged values and
+// offsets lanes (`BOX_LANE_ABSENT` without one), up to two halves.
+const BOX_LANE_VIOLIN_CURVES: u32 = 14u;
 const BOX_LANE_ABSENT: u32 = 4294967295u;
 
 // Quads of one box, six vertices each, in the legacy paint order: the low
@@ -179,7 +185,20 @@ struct BoxLayout {
 /// `group_width`, its boxes side by side `gap_px` apart in series order, as
 /// grouped category bars stand.
 fn box_layout(s: BoxStats, resolved: ResolvedBarStyle) -> BoxLayout {
-    return box_slot(s.position, s.q_low, resolved);
+    var place = box_slot(s.position, s.q_low, resolved);
+    // A violin narrows the box about its middle, or hides it.
+    let share = bitcast<f32>(box_lane(BOX_LANE_BOX_WIDTH));
+    if (!(share > 0.0)) {
+        place.valid = false;
+        return place;
+    }
+    if (place.valid && share < 1.0) {
+        let half = place.thickness * share * 0.5;
+        place.cross0 = place.middle - half;
+        place.cross1 = place.middle + half;
+        place.thickness = half * 2.0;
+    }
+    return place;
 }
 
 /// This series' place in the slot of `position`, measured along the value
@@ -200,19 +219,15 @@ fn box_slot(position: vec2<f32>, at: vec2<f32>, resolved: ResolvedBarStyle) -> B
         slot_a = category_px(data_to_ndc(transform, low, at)).x;
         slot_b = category_px(data_to_ndc(transform, high, at)).x;
     }
-    let members = f32(max(category_params.members, 1u));
-    let slot = abs(slot_b - slot_a);
-    let span = slot * clamp(resolved.width_ratio, 0.0, 1.0);
-    let gap = max(resolved.gap_px, 0.0);
-    let thickness = (span - gap * (members - 1.0)) / members;
-    if (!(thickness > 0.0) || !bar_finite(slot_a) || !bar_finite(slot_b)) {
+    let m = category_member(slot_a, slot_b, category_params.members, category_params.member, resolved.width_ratio, resolved.gap_px);
+    if (m.x < 0.5) {
         return out;
     }
-    let centre = (slot_a + slot_b) * 0.5;
-    out.cross0 = centre - span * 0.5 + f32(category_params.member) * (thickness + gap);
+    let thickness = m.z;
+    out.cross0 = m.y;
     out.cross1 = out.cross0 + thickness;
     out.middle = out.cross0 + thickness * 0.5;
-    out.offset = out.middle - centre;
+    out.offset = out.middle - m.w;
     out.thickness = thickness;
     out.valid = true;
     return out;

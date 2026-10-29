@@ -58,8 +58,10 @@ use types::{CANDIDATE_BYTES, FLAG_LINE, FLAG_SCATTER, FLAG_SIZE_AREA, FLAG_SIZE_
 use types::{ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, create_rows_buffer_checked};
 use types::{FLAG_STYLE_INDEX, FLAG_STYLE_MAP, FLAG_VECTOR, GATE_MASK_BYTES};
 pub(crate) use types::{GpuPickArea, GpuPickErrorBar, GpuPickErrorBarStyle};
+pub(crate) use types::{
+    GpuPickCategoryJitter, GpuPickSeriesDescriptor, GpuPickSizeMap, GpuPickVector, GpuStreamPick,
+};
 pub(crate) use types::{GpuPickDrawStyle, GpuPickQuery, GpuPickScatter, GpuPickScatterStyle};
-pub(crate) use types::{GpuPickSeriesDescriptor, GpuPickSizeMap, GpuPickVector, GpuStreamPick};
 pub(crate) use types::{GpuStreamPickColumns, validate_stream_handle};
 use types::{PICK_LINE_PRECISE, PICK_LINE_RIBBON, PICK_LINE_SKETCH, PICK_MARKER_PLANET};
 use types::{PICK_MARKER_PRECISE, PICK_MARKER_SKETCH, PICK_MARKER_STAR, PickCandidateGpu};

@@ -182,6 +182,43 @@ fn pick_marker_distance(marker_in: PickMarker, center_px: vec2<f32>, point_index
     return max(marker_edge(d, filled), 0.0);
 }
 
+// A box plot's raw point in the draw's pixel frame (y up): its member's
+// middle in the category slot of its position, jittered across it by
+// `category_jitter_cross` as `vs_box_points` draws it, at its value along
+// the other axis. The slot and the jitter are measured in chart-area render
+// pixels with y down, as the bar module measures them.
+fn pick_category_jitter_px(point_index: u32, x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    let tr = pick_query_params.transform;
+    let slot = pick_query_params.category_slot;
+    let placement = pick_query_params.category;
+    let horizontal = slot.z != 0u;
+    let position = select(x, y, horizontal);
+    let value = select(y, x, horizontal);
+    let low = vec2<f32>(position.x - 0.5, position.y);
+    let high = vec2<f32>(position.x + 0.5, position.y);
+    var slot_a: f32;
+    var slot_b: f32;
+    var along: f32;
+    if (horizontal) {
+        slot_a = category_frame_px(data_to_ndc(tr, value, low), tr.pixel_to_ndc).y;
+        slot_b = category_frame_px(data_to_ndc(tr, value, high), tr.pixel_to_ndc).y;
+        along = category_frame_px(data_to_ndc(tr, value, position), tr.pixel_to_ndc).x;
+    } else {
+        slot_a = category_frame_px(data_to_ndc(tr, low, value), tr.pixel_to_ndc).x;
+        slot_b = category_frame_px(data_to_ndc(tr, high, value), tr.pixel_to_ndc).x;
+        along = category_frame_px(data_to_ndc(tr, position, value), tr.pixel_to_ndc).y;
+    }
+    let m = category_member(slot_a, slot_b, slot.y, slot.x, placement.x, placement.y * pick_query_params.scatter_line.z);
+    if (m.x < 0.5) {
+        return vec2<f32>(PICK_F32_MAX);
+    }
+    let middle = m.y + m.z * 0.5;
+    let cross = category_jitter_cross(middle, m.z, placement.w, placement.z, pick_source_row(point_index), slot.w);
+    let frame = select(vec2<f32>(cross, along), vec2<f32>(along, cross), horizontal);
+    // Chart-area render pixels (y down) to the draw's frame (y up).
+    return vec2<f32>(frame.x - 1.0 / tr.pixel_to_ndc.x, 1.0 / tr.pixel_to_ndc.y - frame.y);
+}
+
 fn pick_marker_candidate(
     point_index: u32,
     x: vec2<f32>,
@@ -199,7 +236,10 @@ fn pick_marker_candidate(
     if marker.hidden || !pick_is_finite(marker.radius) {
         return pick_invalid_candidate(series_order);
     }
-    let point_px = pick_data_px(x, y);
+    var point_px = pick_data_px(x, y);
+    if pick_variant(PICK_VARIANT_CATEGORY_JITTER) && pick_query_params.category_slot.y != 0u {
+        point_px = pick_category_jitter_px(point_index, x, y);
+    }
     if !pick_is_finite(point_px.x) || !pick_is_finite(point_px.y) {
         return pick_invalid_candidate(series_order);
     }

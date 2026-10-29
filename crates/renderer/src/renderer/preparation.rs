@@ -304,6 +304,10 @@ impl Renderer {
                     && p.bar_box_plot_selection.is_some()
                     && p.bar_range.is_some()
                     && p.bar_range_selection.is_some()
+                    && p.bar_violin.is_some()
+                    && p.bar_violin_selection.is_some()
+                    && p.bar_box_points.is_some()
+                    && p.bar_box_point_selection.is_some()
                     && p.bar_value_label.is_some()
                     && p.bar_value_label_selection.is_some()
             }
@@ -418,6 +422,10 @@ impl TargetPipelines {
             bar_box_plot_selection: None,
             bar_range: None,
             bar_range_selection: None,
+            bar_violin: None,
+            bar_violin_selection: None,
+            bar_box_points: None,
+            bar_box_point_selection: None,
             bar_value_label: None,
             bar_value_label_selection: None,
             field: None,
@@ -491,6 +499,18 @@ impl TargetPipelines {
         }
         if self.bar_range_selection.is_none() {
             self.bar_range_selection = other.bar_range_selection;
+        }
+        if self.bar_violin.is_none() {
+            self.bar_violin = other.bar_violin;
+        }
+        if self.bar_violin_selection.is_none() {
+            self.bar_violin_selection = other.bar_violin_selection;
+        }
+        if self.bar_box_points.is_none() {
+            self.bar_box_points = other.bar_box_points;
+        }
+        if self.bar_box_point_selection.is_none() {
+            self.bar_box_point_selection = other.bar_box_point_selection;
         }
         if self.bar_value_label.is_none() {
             self.bar_value_label = other.bar_value_label;

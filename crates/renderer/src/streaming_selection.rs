@@ -700,6 +700,8 @@ impl Renderer {
                     y,
                     bar: None,
                     category: None,
+                    violin: None,
+                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
@@ -1029,6 +1031,8 @@ impl Renderer {
                     y,
                     bar,
                     category: None,
+                    violin: None,
+                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,

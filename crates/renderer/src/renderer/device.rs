@@ -219,6 +219,16 @@ pub(super) struct TargetPipelines {
     pub(super) bar_range: Option<wgpu::RenderPipeline>,
     /// The picked range bar's highlight over the same layout.
     pub(super) bar_range_selection: Option<wgpu::RenderPipeline>,
+    /// A box plot's violin bodies (`vs_violin` / `fs_violin`) over the
+    /// category bar layout.
+    pub(super) bar_violin: Option<wgpu::RenderPipeline>,
+    /// The picked violin's highlight over the same layout.
+    pub(super) bar_violin_selection: Option<wgpu::RenderPipeline>,
+    /// A box plot's raw points (`vs_box_points` / `fs_box_points`) over the
+    /// category bar layout.
+    pub(super) bar_box_points: Option<wgpu::RenderPipeline>,
+    /// The picked raw point's ring over the same layout.
+    pub(super) bar_box_point_selection: Option<wgpu::RenderPipeline>,
     /// The value labels of category bar, box plot and radar series
     /// (`vs_value_label` / `fs_value_label`), group 1 the series' value
     /// label group.
@@ -322,6 +332,10 @@ impl TargetPipelines {
         let mut need_box_plot_selection = false;
         let mut need_range_bars = false;
         let mut need_range_bar_selection = false;
+        let mut need_violin = false;
+        let mut need_violin_selection = false;
+        let mut need_box_points = false;
+        let mut need_box_point_selection = false;
         let mut need_value_labels = false;
         let mut need_value_label_selection = false;
         let mut need_field_selection = false;
@@ -405,6 +419,10 @@ impl TargetPipelines {
                 need_box_plot_selection |= primitives.box_plot && typed_bin;
                 need_range_bars |= primitives.range_bars;
                 need_range_bar_selection |= primitives.range_bars && typed_bin;
+                need_violin |= primitives.violin;
+                need_violin_selection |= primitives.violin && typed_bin;
+                need_box_points |= primitives.box_points;
+                need_box_point_selection |= primitives.box_points && typed_point;
                 // Value labels compile with any label the series can show;
                 // `Emphasized` radar labels with or without a selection.
                 let labels =
@@ -667,6 +685,33 @@ impl TargetPipelines {
                     category_bar_data_bgl,
                     surface_format,
                     self.sample_count,
+                    selection,
+                ));
+            }
+        }
+        for (need, points, selection) in [
+            (need_violin, false, false),
+            (need_violin_selection, false, true),
+            (need_box_points, true, false),
+            (need_box_point_selection, true, true),
+        ] {
+            let slot = match (points, selection) {
+                (false, false) => &mut self.bar_violin,
+                (false, true) => &mut self.bar_violin_selection,
+                (true, false) => &mut self.bar_box_points,
+                (true, true) => &mut self.bar_box_point_selection,
+            };
+            if need && slot.is_none() {
+                *slot = Some(data_render::create_violin_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.bar,
+                    transform_bgl,
+                    style_bgl,
+                    per_point_style_map_bgl,
+                    category_bar_data_bgl,
+                    surface_format,
+                    self.sample_count,
+                    points,
                     selection,
                 ));
             }
@@ -1150,6 +1195,41 @@ impl TargetPipelines {
                 );
             }
         }
+        for (points, selection) in [(false, false), (false, true), (true, false), (true, true)] {
+            let (slot, field, label) = match (points, selection) {
+                (false, false) => (&mut self.bar_violin, "bar_violin", "violins"),
+                (false, true) => (
+                    &mut self.bar_violin_selection,
+                    "bar_violin",
+                    "selected violin",
+                ),
+                (true, false) => (&mut self.bar_box_points, "bar_box_points", "box points"),
+                (true, true) => (
+                    &mut self.bar_box_point_selection,
+                    "bar_box_points",
+                    "selected box point",
+                ),
+            };
+            if slot.is_none() && feature.is_none_or(|f| f.includes_field(field)) {
+                *slot = Some(
+                    observe_value_async(observer, "renderer.prewarm", label, || {
+                        data_render::create_violin_pipeline_with_sample_count(
+                            device,
+                            &self.shaders.bar,
+                            transform_bgl,
+                            style_bgl,
+                            per_point_style_map_bgl,
+                            category_bar_data_bgl,
+                            surface_format,
+                            self.sample_count,
+                            points,
+                            selection,
+                        )
+                    })
+                    .await,
+                );
+            }
+        }
         for selection in [false, true] {
             let slot = if selection {
                 &mut self.bar_value_label_selection
@@ -1421,6 +1501,10 @@ pub(super) fn create_target_pipelines_observed(
         bar_box_plot_selection: None,
         bar_range: None,
         bar_range_selection: None,
+        bar_violin: None,
+        bar_violin_selection: None,
+        bar_box_points: None,
+        bar_box_point_selection: None,
         bar_value_label: None,
         bar_value_label_selection: None,
         field: None,
@@ -1505,6 +1589,10 @@ pub(super) async fn create_target_pipelines_observed_async(
         bar_box_plot_selection: None,
         bar_range: None,
         bar_range_selection: None,
+        bar_violin: None,
+        bar_violin_selection: None,
+        bar_box_points: None,
+        bar_box_point_selection: None,
         bar_value_label: None,
         bar_value_label_selection: None,
         field: None,

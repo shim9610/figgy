@@ -48,7 +48,8 @@ const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
 const PICK_VARIANT_PATH_ARROWS: u32 = 128u; // streamline arrowheads (§5.8)
-override PICK_VARIANT: u32 = 255u;
+const PICK_VARIANT_CATEGORY_JITTER: u32 = 256u; // a box plot's raw points (§2.7)
+override PICK_VARIANT: u32 = 511u;
 
 fn pick_variant(bits: u32) -> bool {
     return (PICK_VARIANT & bits) != 0u;
@@ -147,6 +148,13 @@ struct PickQueryParams {
     area: vec4<u32>,
     // (baseline hi, baseline lo, 0, 0): `Style.dash[1].xy` of the fill.
     area_baseline: vec4<f32>,
+    // A box plot's raw points (`PICK_VARIANT_CATEGORY_JITTER`,
+    // `category_jitter.wgsl`): (group width, member gap in logical pixels,
+    // jitter share, offset share).
+    category: vec4<f32>,
+    // (member, members — zero without raw points —, 1 when the categories
+    // run along y, series seed).
+    category_slot: vec4<u32>,
 };
 
 struct PickScatterStyleSlot {
