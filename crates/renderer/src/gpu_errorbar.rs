@@ -167,6 +167,8 @@ impl GpuSeriesFitMode {
             // A radar series and streamlines fit as the line they draw (the
             // extent mode above answers them first).
             DataRenderType::Radar { .. } | DataRenderType::Streamlines { .. } => return None,
+            // A ternary chart's axes are the triangle, not a data extent.
+            DataRenderType::Ternary { .. } => return None,
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -256,6 +258,8 @@ impl GpuSeriesExtentMode {
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
+            // A ternary chart's axes are the triangle, not a data extent.
+            | DataRenderType::Ternary { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,

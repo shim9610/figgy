@@ -173,6 +173,7 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
+        | DataRenderType::Ternary { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
@@ -1453,6 +1454,7 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::BoxPlot { .. }
                     | DataRenderType::RangeBars { .. }
                     | DataRenderType::Radar { .. }
+                    | DataRenderType::Ternary { .. }
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

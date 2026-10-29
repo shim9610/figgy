@@ -574,7 +574,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         // held to the painted pixels by `pick_draw_agreement`. Nor the
         // arrowheads along streamlines, held to the paint the same way.
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        // The twin does not model the ternary placement either; its GPU
+        // pick is held to the paint by `pick_draw_agreement`.
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -597,9 +600,10 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Vector { .. }
-        // Radar vertex markers: see `extract_line`.
+        // Radar vertex markers and ternary markers: see `extract_line`.
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 

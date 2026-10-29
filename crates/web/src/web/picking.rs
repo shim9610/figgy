@@ -14,6 +14,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::LineScatterErrorbarX { scatter, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, .. }
         | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        // A ternary series' markers, when it draws them.
+        DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }

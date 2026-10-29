@@ -107,6 +107,7 @@ impl ChartViewState {
             colorbar: _,
             draw_style: _,
             polar: _,
+            ternary: _,
             overlays,
             subplots,
             active_layer: _,
@@ -168,6 +169,7 @@ impl ChartViewState {
             colorbar: _,
             draw_style: _,
             polar: _,
+            ternary: _,
             overlays: config_overlays,
             subplots: config_subplots,
             active_layer: _,
@@ -237,6 +239,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         colorbar,
         draw_style,
         polar,
+        ternary,
         overlays,
         subplots,
         active_layer: _,
@@ -257,6 +260,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && draw_style == &right.draw_style
         // The grid, axes and labels are rings and spokes or a rectangle.
         && polar == &right.polar
+        && ternary == &right.ternary
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
@@ -1339,6 +1343,10 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::CategoryBars { .. }
         // Category indices and values too.
         | DataRenderType::Radar { .. } => {}
+        // Its first two components are its x and y columns; the third is a
+        // referenced column, so replacing it redraws the series and
+        // removing it invalidates it.
+        DataRenderType::Ternary { c_column, .. } => visit(c_column),
         // The polylines are its x and y columns; the colour column is
         // referenced like a scatter's colour map.
         DataRenderType::Streamlines { color_map, .. } => {
@@ -1675,6 +1683,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::Streamlines { .. } => {
             return Err(invalid("streamlines are not drawn on polar axes"));
+        }
+        DataRenderType::Ternary { .. } => {
+            return Err(invalid("ternary series are drawn on ternary charts, not polar axes"));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

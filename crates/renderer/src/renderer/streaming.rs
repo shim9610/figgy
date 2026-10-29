@@ -172,8 +172,10 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::BoxPlot { .. }
             | DataRenderType::RangeBars { .. }
             | DataRenderType::Radar { .. }
-            // Never streamed: a streamed streamline series is rejected.
+            // Never streamed: a streamed streamline or ternary series is
+            // rejected.
             | DataRenderType::Streamlines { .. }
+            | DataRenderType::Ternary { .. }
             | DataRenderType::Contour { .. } => false,
         })
             || match (&left.colorbar, &right.colorbar) {

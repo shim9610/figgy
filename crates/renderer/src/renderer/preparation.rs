@@ -121,7 +121,9 @@ impl PreparationFeature {
                 | DataRenderType::LineScatterErrorbarY { .. }
                 | DataRenderType::LineScatterErrorbarXY { .. }
                 // A radar series draws through the line and scatter pipelines.
-                | DataRenderType::Radar { .. } => Self::Basic,
+                | DataRenderType::Radar { .. }
+                // So does a ternary series, through its ternary entries.
+                | DataRenderType::Ternary { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);

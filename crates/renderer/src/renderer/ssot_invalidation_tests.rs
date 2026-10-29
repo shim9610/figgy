@@ -1500,6 +1500,7 @@ fn config_fields_are_classified() {
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
         polar: _,         // the coordinate system: geometry (Packed/Replay) and raster
+        ternary: _,       // the coordinate system: geometry (Packed/Replay) and raster
         overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
         subplots,         // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _,  // layer only: no raster, no pixels

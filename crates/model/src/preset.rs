@@ -332,6 +332,14 @@ impl ColorCycle {
             DataRenderType::Radar { color, .. } => {
                 *color = c;
             }
+            DataRenderType::Ternary { scatter, line, .. } => {
+                if let Some(scatter) = scatter {
+                    scatter.point_color = c;
+                }
+                if let Some(line) = line {
+                    line.line_color = c;
+                }
+            }
             // The line and its arrowheads join the cycle; a colour map, when
             // set, still draws from the colourbar.
             DataRenderType::Streamlines { line, .. } => {

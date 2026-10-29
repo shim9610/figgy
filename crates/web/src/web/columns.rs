@@ -155,6 +155,16 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
         }
         // A radar series reads its category indices and values only.
         DataRenderType::Radar { .. } => {}
+        // A ternary series reads its third component and its markers'
+        // columns beside its first two.
+        DataRenderType::Ternary {
+            c_column, scatter, ..
+        } => {
+            ids.push(c_column);
+            if let Some(scatter) = scatter {
+                push_scatter_ref(&mut ids, scatter);
+            }
+        }
         // Streamlines read their polylines and, mapped, a colour column.
         DataRenderType::Streamlines { color_map, .. } => {
             if let Some(map) = color_map {

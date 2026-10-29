@@ -312,6 +312,14 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
+                DataRenderType::Ternary {
+                    scatter: Some(scatter),
+                    ..
+                } => {
+                    if let Some(map) = &scatter.point_color_map {
+                        union(&map.column)?;
+                    }
+                }
                 // A vector's colour map: a column or a grid's columns.
                 DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
                     Some(VectorColumns::Points { color, .. }) => {
@@ -338,7 +346,8 @@ impl FiggyChart {
                 | DataRenderType::CategoryBars { .. }
                 | DataRenderType::BoxPlot { .. }
                 | DataRenderType::RangeBars { .. }
-                | DataRenderType::Radar { .. } => {}
+                | DataRenderType::Radar { .. }
+                | DataRenderType::Ternary { scatter: None, .. } => {}
             }
         }
         let mut chart = Chart::new(self.chart_config().clone());

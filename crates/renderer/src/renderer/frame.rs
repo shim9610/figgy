@@ -51,6 +51,7 @@ pub(super) fn annotation_raster_for_chart(
         colorbar: _,
         draw_style,
         polar: _,
+        ternary: _,
         overlays: _,
         subplots: _,
         active_layer: _,
