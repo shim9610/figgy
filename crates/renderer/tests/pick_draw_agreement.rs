@@ -394,7 +394,7 @@ pub fn assert_pick_matches_paint_with(
             ));
         }
     }
-    if !failures.is_empty() {
+    if !failures.is_empty() || what.contains("polar fill") || what.contains("hole") {
         diag_dump(
             renderer,
             &probe,
