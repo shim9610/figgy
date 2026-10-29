@@ -17,10 +17,9 @@ env = dict(os.environ, FIGGY_DIAG_DIR=str(OUT), RUST_BACKTRACE="1")
 base = ["cargo", "test", "--locked", "-p", "figgy-renderer",
         "--features", "serde,cpu-twin", "--no-fail-fast"]
 runs = [
-    ["--test", "radial_render", "--", "radial_picking_matches_visible_rounded_lifted_surfaces"],
-    ["--test", "vector_render", "--", "colour_mapped_streamlines_follow_the_colourbar_ramp"],
-    ["--test", "vector_export", "--",
-     "every_catalogue_scene_reads_back_as_its_emitted_parts_within_budget"],
+    ["--test", "radial_render"],
+    ["--test", "radial_render", "--", "radial_gpu_pick_agrees_with_the_cpu_twin"],
+    ["--test", "radial_render", "--", "radial_step_selection_moves_the_highlight_to_each_slice"],
 ]
 # Build first so the WARP and DXC DLLs can sit next to the test binaries.
 subprocess.run([*base, "--lib", "--tests", "--no-run"], cwd=ROOT, env=env, check=True)
