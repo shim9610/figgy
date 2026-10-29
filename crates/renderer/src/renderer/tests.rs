@@ -7696,9 +7696,9 @@ fn arc_pair_px(pair: [u32; 2]) -> f64 {
 /// The arc prefix is a fixed-point pair per point (#107, SHADER_COMMON.md
 /// §5.6 arc pairs), so a line's cumulative arc stays exact far past 2^24 px. A
 /// zig-zag of 100 000 points across a 600 px tall chart runs about 3.9e7 px
-/// of arc. The GPU prefix must equal the f64 sum of the segment lengths to a
-/// few hundredths of a pixel at every point; an f32 running sum of the same
-/// lengths is off by pixels there.
+/// of arc. Every step of the GPU prefix must be its segment's length to the
+/// few ulps WGSL allows `sqrt`, at every point; an f32 running sum of the
+/// same lengths is off by pixels there.
 #[test]
 fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
     let Some((device, queue)) = crate::data_render::shared_device() else {
@@ -7782,16 +7782,33 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
             axis_ndc(y, 1) / t.pixel_to_ndc[1],
         )
     };
+    // WGSL lets `sqrt` err by a few ulps (it inherits `inverseSqrt`'s
+    // accuracy), so a segment's f32 length is the adapter's: lavapipe
+    // matches the CPU here, WARP is one ulp long on every segment and Metal
+    // two (#63). Each prefix step must be that segment's length to within
+    // `SQRT_ULPS` ulps and one arc unit; an f32 running sum would be off by
+    // whole pixels at this arc (`single_worst`), so a step that is not the
+    // exact difference of two prefix pairs still shows.
+    const SQRT_ULPS: f64 = 4.0;
+    let ulp = |d: f32| f64::from(f32::from_bits(d.to_bits() + 1) - d);
     let mut exact = 0.0f64;
     let mut single = 0.0f32;
     let mut worst = 0.0f64;
+    let mut allowed = 0.0f64;
     let mut single_worst = 0.0f64;
     assert_eq!(gpu[0], 0.0);
     for i in 1..n {
         let a = px(xs[i - 1], ys[i - 1]);
         let b = px(xs[i], ys[i]);
         let d = ((b.0 - a.0).powi(2) + (b.1 - a.1).powi(2)).sqrt();
+        let bound = SQRT_ULPS * ulp(d) + 1.0 / 65_536.0;
+        let step = gpu[i] - gpu[i - 1];
+        assert!(
+            (step - f64::from(d)).abs() <= bound,
+            "arc step {i} is {step} px for a {d} px segment"
+        );
         exact += f64::from(d);
+        allowed += bound;
         single += d;
         worst = worst.max((gpu[i] - exact).abs());
         single_worst = single_worst.max((f64::from(single) - exact).abs());
@@ -7833,8 +7850,8 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
         "an f32 running sum must lose pixels here ({single_worst} px)"
     );
     assert!(
-        worst < 0.05,
-        "arc pairs must stay exact: worst {worst} px over {exact} px of arc"
+        worst <= allowed,
+        "arc pairs must stay exact: worst {worst} px over {exact} px of arc, {allowed} px allowed"
     );
 }
 

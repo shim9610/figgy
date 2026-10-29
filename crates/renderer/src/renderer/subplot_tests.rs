@@ -833,22 +833,14 @@ fn subplot_members_draw_shifted_in_their_own_area() {
         .fold((0u8, 0usize), |(largest, count), d| {
             (largest.max(d), count + usize::from(d > 0))
         });
-    // DIAGNOSTIC ONLY (diag/backend-pick).
-    for (i, (p, q)) in drawn
-        .rgba
-        .chunks_exact(4)
-        .zip(expected.rgba.chunks_exact(4))
-        .enumerate()
-    {
-        if p != q {
-            eprintln!(
-                "DIAG subplot: ({}, {}) drawn {p:?} expected {q:?}",
-                i as u32 % drawn.width,
-                i as u32 / drawn.width
-            );
-        }
-    }
-    assert!(largest <= 2, "{count} pixels differ by up to {largest}");
+    // The shift is added in the shader for the group and on the host for
+    // the copy, so the two lines sit within an f32 rounding of each other
+    // and their anti-aliased edges differ by a few code values: up to 2 on
+    // lavapipe, 3 on WARP and Metal (#63), on a handful of pixels.
+    assert!(
+        largest <= 4 && count <= 16,
+        "{count} pixels differ by up to {largest}"
+    );
     assert_ne!(
         drawn.rgba,
         r.export_document_rgba(&Chart::new(plain), &host(false), 1.0)

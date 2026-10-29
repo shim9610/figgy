@@ -463,9 +463,13 @@ fn the_chrome_rasters_and_the_data_image_composite_to_the_png_export() {
             // The PNG blends each data primitive onto the grid in the 8-bit
             // target; the file blends the data image, rounded once on its
             // own, over the grid. That rounding is all that may differ:
-            // within 1/255 but for a few channels, none past 3/255.
+            // within 1/255 but for a few channels, none past 4/255. Where
+            // many translucent strokes overlap (BigData) the per-blend
+            // rounding adds up: within 3/255 on lavapipe, 3.67/255 on WARP
+            // and 3.77/255 on Metal, whose 8-bit blends need not round to
+            // nearest (#63).
             let channels = (export.width * export.height * 4) as usize;
-            assert!(worst <= 3.0, "{context}: composite differs by {worst}/255");
+            assert!(worst <= 4.0, "{context}: composite differs by {worst}/255");
             assert!(
                 over_one * 2000 <= channels,
                 "{context}: {over_one} of {channels} channels differ by more than 1/255"

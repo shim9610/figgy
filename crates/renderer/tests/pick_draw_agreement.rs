@@ -54,6 +54,15 @@ pub struct Tolerance {
     pub skip_near: Option<(f64, f64, f64)>,
 }
 
+/// How close to a pixel centre a hard edge (a fill's edge, a dash's end,
+/// the polar clip) may run for the rasterizer and the picker to put that
+/// centre on different sides. Rasterizers snap vertices to subpixel grids
+/// and interpolate varyings in f32, so a centre a few ten-thousandths of a
+/// pixel from the edge is a tie: lavapipe matches the picker there, WARP
+/// and Metal need not (#63). A zero-distance pick on an unpainted pixel is
+/// accepted only when moving the cursor this far ends the zero distance.
+pub const TIE_PX: f32 = 1.0 / 64.0;
+
 pub const STRICT: Tolerance = Tolerance {
     painted: PAINTED,
     fringe: 2.0,
@@ -289,6 +298,22 @@ impl Probe {
         pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
+    /// Whether the zero-distance region of `subject` ends within [`TIE_PX`]
+    /// of the centre of export pixel `(x, y)`: a cursor moved that far along
+    /// an axis no longer picks `subject` at distance zero.
+    pub fn on_zero_edge(&self, renderer: &mut Renderer, x: u32, y: u32, subject: &str) -> bool {
+        let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+        [(TIE_PX, 0.0), (-TIE_PX, 0.0), (0.0, TIE_PX), (0.0, -TIE_PX)]
+            .into_iter()
+            .any(|(dx, dy)| {
+                let request = self.request(cx + dx, cy + dy, 0.0);
+                pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve())
+                    .unwrap()
+                    .filter(|hit| hit.series_id == subject)
+                    .is_none_or(|hit| hit.distance_px > 0.0)
+            })
+    }
+
     /// The typed data pick at canvas position `(x, y)`.
     pub fn pick_data_at(
         &self,
@@ -387,6 +412,7 @@ pub fn assert_pick_matches_paint_with(
         if let Some(hit) = hit
             && hit.distance_px == 0.0
             && ink < tolerance.zero_ink
+            && !probe.on_zero_edge(renderer, x, y, subject)
         {
             failures.push(format!(
                 "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
@@ -3958,6 +3984,7 @@ fn assert_member_pick_matches_paint(
         if let Some(hit) = hit
             && hit.distance_px == 0.0
             && ink < tolerance.zero_ink
+            && !probe.on_zero_edge(renderer, x, y, subject)
         {
             failures.push(format!(
                 "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
@@ -4239,8 +4266,12 @@ fn diag_dump(
         text.push('\n');
         let inner = f.trim_start_matches('(');
         let mut it = inner.split([',', ')']);
-        let x: u32 = it.next().unwrap().trim().parse().unwrap();
-        let y: u32 = it.next().unwrap().trim().parse().unwrap();
+        let (Some(Ok(x)), Some(Ok(y))) = (
+            it.next().map(|v| v.trim().parse::<u32>()),
+            it.next().map(|v| v.trim().parse::<u32>()),
+        ) else {
+            continue;
+        };
         for dy in -2i32..=2 {
             for dx in -2i32..=2 {
                 let (px, py) = (x as i32 + dx, y as i32 + dy);
