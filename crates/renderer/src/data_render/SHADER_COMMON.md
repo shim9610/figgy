@@ -1558,7 +1558,7 @@ fractions `t`: `view3d_axis_t` reads x and y on the chart's own axis ranges
 (the transform, without the panel placement the flat draws add) and
 `view3d_z_t` reads a height on `right_y`. `project_box` maps `t` to the
 panel composite's clip space with depth, `project_box_live` to the frame
-target's (the live highlight), and `box_point` to box space for shading.
+target's (the live highlight), and `box_space_point` to box space for shading.
 `box_visible` clips a fragment to the box. Both matrices are
 `Config::view_matrix` composed on the host with the target's pixel map, so
 the draw, the ID pick and the CPU decorations project through one camera.

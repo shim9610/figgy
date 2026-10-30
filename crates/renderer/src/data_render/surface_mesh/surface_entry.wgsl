@@ -56,7 +56,7 @@ fn surface_color(in: SurfaceOut, emphasis: f32) -> vec4<f32> {
         if (dot(n, view3d.eye.xyz) < 0.0) {
             n = -n;
         }
-        let p = box_point(in.t);
+        let p = box_space_point(in.t);
         let tangent = normalize(vec3<f32>(1.0, 0.0, 0.0) - n * n.x + vec3<f32>(0.0, 1e-6, 0.0));
         rgb = material_surface(surface.material, rgb, p, n, view3d.eye.xyz,
             view3d.light.xyz, tangent, vec2<f32>(p.y, p.x), view3d.flags.z);

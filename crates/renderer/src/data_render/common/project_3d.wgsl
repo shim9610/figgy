@@ -57,7 +57,7 @@ fn project_box_live(t: vec3<f32>) -> vec4<f32> {
 }
 
 /// Box space: `t` centred and scaled to the box's half extents.
-fn box_point(t: vec3<f32>) -> vec3<f32> {
+fn box_space_point(t: vec3<f32>) -> vec3<f32> {
     return (t * 2.0 - vec3<f32>(1.0)) * view3d.half_extents.xyz;
 }
 

@@ -124,8 +124,8 @@ fn surface_normal(ij: vec2<u32>) -> vec3<f32> {
     if (!a.valid || !b.valid || !c.valid || !d.valid) {
         return vec3<f32>(0.0, 0.0, 1.0);
     }
-    let du = box_point(b.t) - box_point(a.t);
-    let dv = box_point(d.t) - box_point(c.t);
+    let du = box_space_point(b.t) - box_space_point(a.t);
+    let dv = box_space_point(d.t) - box_space_point(c.t);
     let nrm = cross(du, dv);
     let len = length(nrm);
     if (len <= 0.0 || !f32_is_finite(len)) {
