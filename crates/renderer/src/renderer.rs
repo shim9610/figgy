@@ -236,6 +236,9 @@ pub struct Renderer {
     /// metadata + `FieldParams`) — shared by the field pipeline and every
     /// per-series field bind group.
     field_bgl: wgpu::BindGroupLayout,
+    /// The 3D surface's group 3 (camera + surface look), with the field
+    /// layout as group 2 (`data_render::surface_mesh`).
+    surface_bgl: wgpu::BindGroupLayout,
     /// Vector data layout (pool + grid table + colourmap stops +
     /// `VectorParams`), group 2 of the assembled vector pipelines.
     vector_bgl: wgpu::BindGroupLayout,

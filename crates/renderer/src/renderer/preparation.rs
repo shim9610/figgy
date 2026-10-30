@@ -414,6 +414,8 @@ impl TargetPipelines {
             pick_ring: None,
             pick_ring_mapped: None,
             ternary: Default::default(),
+            surface_shader: source.surface_shader.clone(),
+            surface: Default::default(),
             errorbar: None,
             errorbar_mapped: None,
             bar: None,
@@ -467,6 +469,14 @@ impl TargetPipelines {
             self.pick_ring_mapped = other.pick_ring_mapped;
         }
         for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.surface_shader.is_none() {
+            self.surface_shader = other.surface_shader;
+        }
+        for (slot, other) in self.surface.iter_mut().zip(other.surface) {
             if slot.is_none() {
                 *slot = other;
             }

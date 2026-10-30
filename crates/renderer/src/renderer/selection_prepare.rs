@@ -93,6 +93,8 @@ impl<'a> SelectionLayers<'a> {
             selected_fields: self.selected_fields,
             picked: self.picked,
             value_labels: None,
+            surface: None,
+            selected_surface: None,
         }
     }
 }
@@ -607,9 +609,11 @@ impl PrepareContext<'_> {
                             category: Some(category),
                         });
                     }
+                    // A 3D chart's picked cell is its surface patch
+                    // (`surface_layers`), not the flat cell outline.
                     PickedDataRef::MatrixCell {
                         x_index, y_index, ..
-                    } if primitives.field => {
+                    } if primitives.field && chart_config.view_3d.is_none() => {
                         let (Some(x_index), Some(y_index)) =
                             (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
                         else {

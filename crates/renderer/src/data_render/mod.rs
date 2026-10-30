@@ -37,6 +37,7 @@ pub use bar::*;
 mod field;
 pub use field::*;
 mod contour;
+pub mod surface_mesh;
 pub use contour::*;
 mod value_label;
 pub use value_label::*;

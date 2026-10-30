@@ -3025,6 +3025,16 @@ impl<'a> BoxPlotRef<'a> {
 impl DataRenderType {
     /// The third component's column of a ternary series, or `None` for every
     /// other kind.
+    /// The surface look of a heatmap kind (`Heatmap`, `HeatmapContour`),
+    /// `None` for every other kind and for a heatmap without one.
+    pub fn surface_style(&self) -> Option<&SurfaceStyle> {
+        match self {
+            DataRenderType::Heatmap { surface, .. }
+            | DataRenderType::HeatmapContour { surface, .. } => surface.as_ref(),
+            _ => None,
+        }
+    }
+
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
             DataRenderType::Ternary { c_column, .. } => Some(c_column),

@@ -264,6 +264,8 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         // The grid, axes and labels are rings and spokes or a rectangle.
         && polar == &right.polar
         && ternary == &right.ternary
+        // The box's grid, axes and labels follow the camera.
+        && view_3d == &right.view_3d
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
@@ -1472,6 +1474,25 @@ pub(super) fn validate_renderer_series(
             reason: reason.to_string(),
         });
     }
+    // A 3D chart draws heatmaps as surfaces and contours on its floor; a
+    // surface's look and colour grid are checked wherever they are set.
+    if let Err(reason) = config.validate_view3d_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| {
+                    !matches!(
+                        s.render_type,
+                        crate::data_config::DataRenderType::Heatmap { .. }
+                            | crate::data_config::DataRenderType::Contour { .. }
+                            | crate::data_config::DataRenderType::HeatmapContour { .. }
+                    )
+                })
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.
     config
@@ -1639,6 +1660,12 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
         .validate_ternary()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "ternary",
+            reason,
+        })?;
+    config
+        .validate_view_3d()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "view_3d",
             reason,
         })
 }

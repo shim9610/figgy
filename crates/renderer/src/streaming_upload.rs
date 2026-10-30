@@ -1097,6 +1097,8 @@ mod tests {
                                 selected_bars: vec![],
                                 selected_fields: vec![],
                                 picked: vec![],
+                                selected_surface: None,
+                                surface: None,
                             };
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: None,

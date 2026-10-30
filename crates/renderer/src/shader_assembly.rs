@@ -59,6 +59,7 @@ pub const MODULES: &[(&str, Assembled)] = &[
     ("errorbar", crate::data_render::ERRORBAR_SHADER),
     ("bar", crate::data_render::BAR_SHADER),
     ("field", crate::data_render::FIELD_SHADER),
+    ("surface", crate::data_render::surface_mesh::SURFACE_SHADER),
     ("line_arc", crate::data_render::line_arc::LINE_ARC_SHADER),
     ("contour_anchor", crate::gpu_contour::CONTOUR_ANCHOR_SHADER),
     ("contour_label", crate::gpu_contour::CONTOUR_LABEL_SHADER),
