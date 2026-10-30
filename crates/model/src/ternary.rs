@@ -18,11 +18,15 @@
 //! or 100, which only scales the labels). `top_x` stays in the document
 //! but is not drawn.
 //!
+//! A series may also fill closed regions ([`TernaryRegionStyle`]), drawn
+//! under every series' markers and lines through an even-odd stencil.
+//!
 //! A ternary chart draws only ternary series, in the Precise draw style;
 //! overlays, line offsets, the polar system, subplot axis links and
 //! streamed sources are rejected. `None` (the default, omitted from JSON)
 //! draws the rectangular chart.
 
+use crate::Color;
 use crate::config::{AxisOptions, AxisScale, Config};
 use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig};
 use crate::layout::{Side, TitlePlacement};
@@ -35,6 +39,44 @@ use crate::text::TextExtents;
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(default))]
 pub struct TernaryOptions {}
+
+/// The fill of the closed regions a ternary series outlines: phase fields,
+/// soil-texture classes, rock classification areas. The host gives each
+/// polygon's vertices in order in the series' x, y and c columns, a NaN row
+/// separating polygons within one series; the renderer closes each polygon
+/// from its last vertex to its first and creates no vertex of its own. The
+/// fill is painted with an even-odd stencil over the whole series, so a
+/// polygon inside another is a hole and two polygons that overlap leave
+/// their overlap unfilled: regions that should overlap go in separate
+/// series. Drawn under every series' markers and lines, in series order,
+/// as a line's area fill is.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(default))]
+pub struct TernaryRegionStyle {
+    /// The fill colour; its alpha multiplies `opacity`.
+    pub color: Color,
+    /// `0..=1`.
+    pub opacity: f32,
+}
+
+impl Default for TernaryRegionStyle {
+    fn default() -> Self {
+        Self {
+            color: Color::new(0.3, 0.5, 0.8, 1.0),
+            opacity: 0.35,
+        }
+    }
+}
+
+impl TernaryRegionStyle {
+    /// The premultiplied colour the fill paints: the colour at its alpha
+    /// times `opacity`.
+    pub fn color_premul(&self) -> [f32; 4] {
+        let a = self.color.a.clamp(0.0, 1.0) * self.opacity.clamp(0.0, 1.0);
+        [self.color.r * a, self.color.g * a, self.color.b * a, a]
+    }
+}
 
 /// The triangle a ternary chart draws into, in the chart's pixel space
 /// (y down).
@@ -296,6 +338,7 @@ impl Config {
                         c_column,
                         scatter,
                         line,
+                        region,
                     },
                     true,
                 ) => {
@@ -311,8 +354,23 @@ impl Config {
                              y_column, c_column)",
                         );
                     }
-                    if scatter.is_none() && line.is_none() {
-                        return Err("a ternary series draws markers, a line or both");
+                    if scatter.is_none() && line.is_none() && region.is_none() {
+                        return Err(
+                            "a ternary series draws markers, a line, a region fill or any of them",
+                        );
+                    }
+                    if let Some(region) = region {
+                        let finite = |v: f32| v.is_finite() && (0.0..=1.0).contains(&v);
+                        if !finite(region.opacity)
+                            || !finite(region.color.r)
+                            || !finite(region.color.g)
+                            || !finite(region.color.b)
+                            || !finite(region.color.a)
+                        {
+                            return Err(
+                                "a ternary region fill's colour and opacity are finite and in 0..=1",
+                            );
+                        }
                     }
                     if let Some(line) = line {
                         if line.interpolation != LineInterpolation::Linear {
@@ -399,6 +457,7 @@ mod tests {
             c_column: "c".into(),
             scatter,
             line,
+            region: None,
         }
     }
 
@@ -483,7 +542,23 @@ mod tests {
         let ok = series("t", ternary(Some(scatter()), Some(line())));
         assert_eq!(config.validate_ternary_series(&[ok.clone()]), Ok(()));
         let err = |s: SeriesConfig| config.validate_ternary_series(&[s]).unwrap_err();
-        assert!(err(series("t", ternary(None, None))).contains("markers, a line or both"));
+        assert!(err(series("t", ternary(None, None))).contains("markers, a line, a region fill"));
+        let mut filled_region = ternary(None, None);
+        if let DataRenderType::Ternary { region, .. } = &mut filled_region {
+            *region = Some(TernaryRegionStyle::default());
+        }
+        assert_eq!(
+            config.validate_ternary_series(&[series("t", filled_region.clone())]),
+            Ok(()),
+            "a region alone draws"
+        );
+        if let DataRenderType::Ternary { region, .. } = &mut filled_region {
+            *region = Some(TernaryRegionStyle {
+                opacity: 2.0,
+                ..TernaryRegionStyle::default()
+            });
+        }
+        assert!(err(series("t", filled_region)).contains("0..=1"));
         let mut filled = line();
         filled.fill = Some(LineFill::ToBaseline(0.0));
         assert!(err(series("t", ternary(None, Some(filled)))).contains("no fill"));
@@ -560,6 +635,26 @@ mod tests {
         );
         let back: SeriesConfig = serde_json::from_str(&json).unwrap();
         assert_eq!(back, s);
+        assert!(!json.contains("\"region\""), "unset, omitted: {json}");
+        // A region fill round-trips and reads with every field defaulted.
+        let mut filled = ternary(None, None);
+        if let DataRenderType::Ternary { region, .. } = &mut filled {
+            *region = Some(TernaryRegionStyle {
+                color: Color::new(0.1, 0.2, 0.3, 1.0),
+                opacity: 0.5,
+            });
+        }
+        let s = series("r", filled);
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains("\"region\":{") && json.contains("\"opacity\":0.5"),
+            "{json}"
+        );
+        let back: SeriesConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+        let partial: TernaryRegionStyle = serde_json::from_str("{\"opacity\":0.2}").unwrap();
+        assert_eq!(partial.opacity, 0.2);
+        assert_eq!(partial.color, TernaryRegionStyle::default().color);
     }
 
     #[test]

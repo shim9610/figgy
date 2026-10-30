@@ -161,6 +161,7 @@ fn ternary(
             c_column: "c".into(),
             scatter,
             line,
+            region: None,
         },
     }
 }
@@ -668,6 +669,7 @@ fn registration_rejects_what_ternary_does_not_draw() {
             c_column: "missing".into(),
             scatter: Some(marker_style(4.0)),
             line: None,
+            region: None,
         },
         ..ok
     };
@@ -880,4 +882,521 @@ fn a_replaced_c_column_redraws() {
     assert!(ink_on(&second, na, nb) > 10, "dashes on the new chord");
     assert!(ink_on(&second, oa, ob) < 4, "nothing left on the old chord");
     r.remove_chart(id).unwrap();
+}
+
+// ───── region fills (#49, #55) ─────
+
+fn region(color: Color, opacity: f32) -> renderer::TernaryRegionStyle {
+    renderer::TernaryRegionStyle { color, opacity }
+}
+
+/// A region series over `rows` (polygons separated by NaN rows) with no
+/// markers and no line.
+fn region_series(id: &str, style: renderer::TernaryRegionStyle) -> SeriesConfig {
+    SeriesConfig {
+        render_type: DataRenderType::Ternary {
+            c_column: "c".into(),
+            scatter: None,
+            line: None,
+            region: Some(style),
+        },
+        ..ternary(id, None, None)
+    }
+}
+
+const NAN_ROW: [f64; 3] = [f64::NAN, f64::NAN, f64::NAN];
+
+/// Test support, not product code: the even-odd rule over the polygons of
+/// `rows` (NaN rows separating them) in pixel space, the rule the stencil
+/// draws and the pick counts with.
+fn inside_even_odd(config: &Config, rows: &[[f64; 3]], scale: f32, p: (f64, f64)) -> bool {
+    let mut inside = false;
+    for ring in rows.split(|r| r.iter().any(|v| v.is_nan())) {
+        let pts: Vec<(f64, f64)> = ring.iter().map(|r| ternary_px(config, *r, scale)).collect();
+        for (i, a) in pts.iter().enumerate() {
+            let b = pts[(i + 1) % pts.len()];
+            if (a.1 > p.1) != (b.1 > p.1) {
+                let x = a.0 + (p.1 - a.1) / (b.1 - a.1) * (b.0 - a.0);
+                if x > p.0 {
+                    inside = !inside;
+                }
+            }
+        }
+    }
+    inside
+}
+
+/// Pixels of `rows`' polygon edges at `scale` within `margin` px of `p`.
+fn near_an_edge(
+    config: &Config,
+    rows: &[[f64; 3]],
+    scale: f32,
+    p: (f64, f64),
+    margin: f64,
+) -> bool {
+    for ring in rows.split(|r| r.iter().any(|v| v.is_nan())) {
+        let pts: Vec<(f64, f64)> = ring.iter().map(|r| ternary_px(config, *r, scale)).collect();
+        for (i, a) in pts.iter().enumerate() {
+            let b = pts[(i + 1) % pts.len()];
+            let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+            let len_sq = dx * dx + dy * dy;
+            let t = (((p.0 - a.0) * dx + (p.1 - a.1) * dy) / len_sq).clamp(0.0, 1.0);
+            let (ex, ey) = (a.0 + t * dx - p.0, a.1 + t * dy - p.1);
+            if ex.hypot(ey) < margin {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// A concave polygon with a hole, drawn as two NaN-separated rings of one
+/// series.
+fn concave_with_hole() -> Vec<[f64; 3]> {
+    vec![
+        // The outer ring: a notch cut into the a-b edge.
+        [70.0, 15.0, 15.0],
+        [48.0, 34.0, 18.0],
+        [15.0, 70.0, 15.0],
+        [15.0, 15.0, 70.0],
+        NAN_ROW,
+        // The hole around the centroid.
+        [40.0, 30.0, 30.0],
+        [30.0, 40.0, 30.0],
+        [30.0, 30.0, 40.0],
+    ]
+}
+
+/// A region fills exactly where the even-odd rule says: the concave outer
+/// ring is filled, its hole is empty, the notch is empty, and the fill
+/// stops at the edges, at 1x and 2x. The renderer closes each ring itself.
+#[test]
+fn regions_fill_their_polygons_by_the_even_odd_rule() {
+    let mut r = renderer();
+    let rows = concave_with_hole();
+    upload(&mut r, &rows);
+    let config = bare_config();
+    let series = [region_series("field", region(RED, 1.0))];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("ternary-region-{scale}x"), &img);
+        let (mut checked, mut filled) = (0, 0);
+        for a in (5..100).step_by(5) {
+            for b in (5..100 - a).step_by(5) {
+                let row = [a as f64, b as f64, (100 - a - b) as f64];
+                let p = ternary_px(&config, row, scale);
+                if near_an_edge(&config, &rows, scale, p, 2.5 * f64::from(scale)) {
+                    continue;
+                }
+                let expected = inside_even_odd(&config, &rows, scale, p);
+                assert_eq!(
+                    is_red(at(&img, p)),
+                    expected,
+                    "{scale}x at {row:?} ({p:?}): expected inside = {expected}"
+                );
+                checked += 1;
+                filled += usize::from(expected);
+            }
+        }
+        assert!(
+            checked > 100 && filled > 20 && filled < checked,
+            "{checked} {filled}"
+        );
+        // The hole and the notch are empty, the body between them filled.
+        assert!(is_red(at(
+            &img,
+            ternary_px(&config, [55.0, 20.0, 25.0], scale)
+        )));
+        assert!(!is_red(at(
+            &img,
+            ternary_px(&config, [33.3, 33.3, 33.4], scale)
+        )));
+        assert!(!is_red(at(
+            &img,
+            ternary_px(&config, [58.0, 34.0, 8.0], scale)
+        )));
+        assert!(!is_red(at(
+            &img,
+            ternary_px(&config, [90.0, 5.0, 5.0], scale)
+        )));
+    }
+}
+
+/// The fill picks the series where it paints and nothing in its hole or
+/// outside; a marker or a stroke of another series over the fill wins the
+/// tie, as over a line fill; and the fill's hit names the lowest index of
+/// an edge the cursor's ray crosses.
+#[test]
+fn a_region_picks_inside_and_loses_ties_to_marks() {
+    let mut r = renderer();
+    let rows = concave_with_hole();
+    upload(&mut r, &rows);
+    let config = bare_config();
+    let field = region_series("field", region(RED, 0.5));
+    let body = [55.0, 20.0, 25.0];
+    let hole = [33.3, 33.3, 33.4];
+    let notch = [58.0, 34.0, 8.0];
+    let outside = [90.0, 5.0, 5.0];
+    for scale in [1.0f32, 2.0] {
+        let series = [field.clone()];
+        let hit = picked_point(pick(
+            &mut r,
+            &config,
+            &series,
+            scale,
+            ternary_px(&config, body, scale),
+            0.0,
+        ));
+        assert_eq!(
+            hit.as_ref().map(|h| h.0.as_str()),
+            Some("field"),
+            "{scale}x body"
+        );
+        let index = hit.unwrap().1;
+        assert!(
+            inside_even_odd(&config, &rows, scale, ternary_px(&config, body, scale)) && index < 4,
+            "{scale}x the hit names an outer-ring vertex: {index}"
+        );
+        for (name, row) in [("hole", hole), ("notch", notch), ("outside", outside)] {
+            assert_eq!(
+                picked_point(pick(
+                    &mut r,
+                    &config,
+                    &series,
+                    scale,
+                    ternary_px(&config, row, scale),
+                    0.0,
+                )),
+                None,
+                "{scale}x {name}"
+            );
+        }
+    }
+    // A marker series over the fill: on the marker the marker wins, beside
+    // it (but inside the region) the fill answers.
+    let mut both = renderer();
+    let marker_rows = vec![body];
+    upload(&mut both, &rows);
+    let mark = SeriesConfig {
+        x_column: "ma".into(),
+        y_column: "mb".into(),
+        render_type: DataRenderType::Ternary {
+            c_column: "mc".into(),
+            scatter: Some(marker_style(8.0)),
+            line: None,
+            region: None,
+        },
+        ..ternary("mark", None, None)
+    };
+    for (id, k) in [("ma", 0), ("mb", 1), ("mc", 2)] {
+        both.add_column(id, &col(marker_rows.iter().map(|r| r[k]).collect()))
+            .unwrap();
+    }
+    let series = [field.clone(), mark];
+    let on = ternary_px(&config, body, 1.0);
+    assert_eq!(
+        picked_point(pick(&mut both, &config, &series, 1.0, on, 0.0)),
+        Some(("mark".into(), 0))
+    );
+    let beside = (on.0 + 30.0, on.1);
+    assert_eq!(
+        picked_point(pick(&mut both, &config, &series, 1.0, beside, 0.0)).map(|h| h.0),
+        Some("field".into())
+    );
+}
+
+/// Within one series polygons combine by even-odd, so an overlap is left
+/// unfilled; in two series each is filled whole and the overlap blends.
+#[test]
+fn overlapping_polygons_cancel_within_a_series_and_stack_across_series() {
+    let mut r = renderer();
+    let left = [[60.0, 20.0, 20.0], [20.0, 60.0, 20.0], [30.0, 30.0, 40.0]];
+    let right = [[50.0, 25.0, 25.0], [25.0, 50.0, 25.0], [20.0, 20.0, 60.0]];
+    let overlap = [35.0, 35.0, 30.0];
+    let only_left = [47.0, 31.0, 22.0];
+    let mut one: Vec<[f64; 3]> = left.to_vec();
+    one.push(NAN_ROW);
+    one.extend(right);
+    upload(&mut r, &one);
+    let config = bare_config();
+    // The probe points by the rule itself, so a wrong probe fails here.
+    for (name, row, in_left, in_right) in [
+        ("overlap", overlap, true, true),
+        ("only_left", only_left, true, false),
+    ] {
+        let p = ternary_px(&config, row, 1.0);
+        assert_eq!(
+            inside_even_odd(&config, &left, 1.0, p),
+            in_left,
+            "{name} in left"
+        );
+        assert_eq!(
+            inside_even_odd(&config, &right, 1.0, p),
+            in_right,
+            "{name} in right"
+        );
+    }
+    let single = [region_series("field", region(RED, 1.0))];
+    let img = export(&mut r, &config, &single, 1.0);
+    save("ternary-region-xor", &img);
+    assert!(is_red(at(&img, ternary_px(&config, only_left, 1.0))));
+    assert!(
+        !is_red(at(&img, ternary_px(&config, overlap, 1.0))),
+        "the overlap of one series' polygons is a hole"
+    );
+    // The same two polygons as two series: both filled.
+    for (id, k) in [("ra", 0), ("rb", 1), ("rc", 2)] {
+        r.add_column(id, &col(right.iter().map(|row| row[k]).collect()))
+            .unwrap();
+    }
+    upload(&mut r, &left);
+    let second = SeriesConfig {
+        x_column: "ra".into(),
+        y_column: "rb".into(),
+        render_type: DataRenderType::Ternary {
+            c_column: "rc".into(),
+            scatter: None,
+            line: None,
+            region: Some(region(RED, 1.0)),
+        },
+        ..ternary("right", None, None)
+    };
+    let two = [single[0].clone(), second];
+    let img = export(&mut r, &config, &two, 1.0);
+    save("ternary-region-two", &img);
+    assert!(is_red(at(&img, ternary_px(&config, only_left, 1.0))));
+    assert!(is_red(at(&img, ternary_px(&config, overlap, 1.0))));
+    // A translucent fill paints at its opacity: premultiplied red at a
+    // quarter over the export's transparent background.
+    let faint = [region_series("field", region(RED, 0.25))];
+    upload(&mut r, &one);
+    let img = export(&mut r, &config, &faint, 1.0);
+    let p = at(&img, ternary_px(&config, only_left, 1.0));
+    assert!(
+        p[0] > 200 && p[1] < 20 && p[2] < 20 && (56..=72).contains(&p[3]),
+        "{p:?}"
+    );
+}
+
+/// Rule 10: a polygon of more than a million vertices draws whole and
+/// picks, and the cost grows with the vertex count only (one stencil
+/// triangle per vertex).
+#[test]
+fn a_million_vertex_region_draws_and_picks() {
+    let mut r = renderer();
+    let n = 1 << 20;
+    // A circle of radius 25 around the centroid, in components.
+    let rows: Vec<[f64; 3]> = (0..n)
+        .map(|i| {
+            let t = i as f64 / n as f64 * std::f64::consts::TAU;
+            let (dx, dy) = (25.0 * t.cos(), 25.0 * t.sin());
+            [
+                33.3 + dx,
+                33.3 + dy * 0.5 - dx * 0.5,
+                33.4 - dy * 0.5 - dx * 0.5,
+            ]
+        })
+        .collect();
+    upload(&mut r, &rows);
+    let config = bare_config();
+    let series = [region_series("disc", region(RED, 1.0))];
+    let started = std::time::Instant::now();
+    let img = export(&mut r, &config, &series, 1.0);
+    eprintln!(
+        "{n}-vertex ternary region exported in {:?}",
+        started.elapsed()
+    );
+    save("ternary-region-million", &img);
+    assert!(is_red(at(
+        &img,
+        ternary_px(&config, [33.3, 33.3, 33.4], 1.0)
+    )));
+    assert!(!is_red(at(
+        &img,
+        ternary_px(&config, [80.0, 10.0, 10.0], 1.0)
+    )));
+    let started = std::time::Instant::now();
+    let hit = picked_point(pick(
+        &mut r,
+        &config,
+        &series,
+        1.0,
+        ternary_px(&config, [33.3, 33.3, 33.4], 1.0),
+        0.0,
+    ));
+    eprintln!("{n}-vertex ternary region pick in {:?}", started.elapsed());
+    assert_eq!(hit.map(|h| h.0), Some("disc".into()));
+}
+
+/// A region alone is a drawable series; a region with a colour or opacity
+/// out of range is rejected at registration with the model's reason.
+#[test]
+fn a_region_alone_registers_and_a_bad_opacity_is_rejected() {
+    let mut r = renderer();
+    upload(&mut r, &concave_with_hole());
+    let alone = region_series("field", region(RED, 0.5));
+    assert!(r.register_chart(bare_config(), vec![alone]).is_ok());
+    let bad = region_series("field", region(RED, 1.5));
+    let err = r
+        .register_chart(bare_config(), vec![bad])
+        .err()
+        .map(|e| e.to_string())
+        .unwrap_or_default();
+    assert!(err.contains("0..=1"), "{err}");
+}
+
+/// A region with its outline and markers in one series, beside a marker
+/// series, exports at 1x and 2x with the fill under the marks, and draws
+/// the same on the screen path through the resident panel composite.
+#[test]
+fn a_region_with_marks_draws_on_the_export_and_screen_paths() {
+    let mut r = renderer();
+    let rows = concave_with_hole();
+    upload(&mut r, &rows);
+    let config = bare_config();
+    let dressed = SeriesConfig {
+        render_type: DataRenderType::Ternary {
+            c_column: "c".into(),
+            scatter: Some(marker_style(6.0)),
+            line: Some(line_style(2.0, LineStylePreset::Solid)),
+            region: Some(region(MAGENTA, 1.0)),
+        },
+        ..ternary("field", None, None)
+    };
+    let series = [dressed];
+    let body = ternary_px(&config, [55.0, 20.0, 25.0], 1.0);
+    let hole = ternary_px(&config, [33.3, 33.3, 33.4], 1.0);
+    let vertex = ternary_px(&config, rows[0], 1.0);
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("ternary-region-dressed-{scale}x"), &img);
+        let s = f64::from(scale);
+        assert!(
+            is_magenta(at(&img, (body.0 * s, body.1 * s))),
+            "{scale}x fill"
+        );
+        assert!(
+            !is_magenta(at(&img, (hole.0 * s, hole.1 * s))),
+            "{scale}x hole"
+        );
+        // The marker (red) sits over the fill at the vertex.
+        assert!(
+            is_red(at(&img, (vertex.0 * s, vertex.1 * s))),
+            "{scale}x marker over fill"
+        );
+    }
+    // The screen path: prepare + paint through the resident composite.
+    let chart = Chart::new(config.clone());
+    let rect = config.chart_area.0;
+    let view = r.create_chart_view(&chart, rect).unwrap();
+    let styles: Vec<_> = series
+        .iter()
+        .map(|cfg| r.create_style_for_series(cfg).unwrap())
+        .collect();
+    let drawn: Vec<_> = series
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| renderer::Series { config, style })
+        .collect();
+    let items = [renderer::ChartDrawItem {
+        view: &view,
+        chart_config: chart.config(),
+        series: &drawn,
+    }];
+    let prepared = r.prepare(&items).unwrap();
+    let (w, h) = (rect.width, rect.height);
+    let device = r.device().clone();
+    let queue = r.queue().clone();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("ternary screen target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("ternary screen readback"),
+        size: u64::from(row) * u64::from(h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ternary screen paint"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        r.paint_prepared(&mut pass, (w, h), &prepared).unwrap();
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    drop(prepared);
+    r.end_gpu_frame();
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    let data = slice.get_mapped_range().unwrap();
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let start = (y * row) as usize;
+        for px in data[start..start + (w * 4) as usize].chunks_exact(4) {
+            rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+    }
+    drop(data);
+    buffer.unmap();
+    let screen = RasterImage {
+        width: w,
+        height: h,
+        rgba,
+    };
+    save("ternary-region-screen", &screen);
+    assert!(is_magenta(at(&screen, body)), "screen fill");
+    assert!(!is_magenta(at(&screen, hole)), "screen hole");
+    assert!(is_red(at(&screen, vertex)), "screen marker over fill");
 }

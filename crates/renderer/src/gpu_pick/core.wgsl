@@ -29,6 +29,9 @@ const PICK_FLAG_SIZE_AREA: u32 = 32u;
 // A point vector series: its "markers" are the arrows the vector shader
 // draws from each anchor.
 const PICK_FLAG_VECTOR: u32 = 64u;
+// A ternary series' region fill: the cursor inside one of the polygons its
+// samples outline (even-odd) picks the series as a fill hit.
+const PICK_FLAG_REGION: u32 = 128u;
 // `PickQueryParams.vector.w` bit 8: `VectorScale::Pixels` (else `Data`).
 const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 
@@ -212,6 +215,17 @@ struct PickCandidate {
 @group(2) @binding(0) var<storage, read> pick_arc: array<vec2<u32>>;
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
+// The region fold beside the candidates: (crossing parity, lowest crossing
+// index, series order).
+var<workgroup> pick_shared_region: array<vec3<u32>, PICK_WORKGROUP_SIZE>;
+
+// Fold two region partials: parities add modulo two, the lowest index and
+// the one series order carry.
+fn pick_region_fold(a: vec3<u32>, b: vec3<u32>) -> vec3<u32> {
+    return vec3<u32>(a.x ^ b.x, min(a.y, b.y), max(a.z, b.z));
+}
+
+const PICK_REGION_NONE: vec3<u32> = vec3<u32>(0u, 0xffffffffu, 0u);
 
 // Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
 // Keep this override paired with gpu_compile::workgroup_options.
@@ -220,6 +234,7 @@ override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
 fn figgy_zero_workgroup(local_index: u32) {
     if FIGGY_EXPLICIT_WORKGROUP_ZERO {
         pick_shared_candidates[local_index] = PickCandidate();
+        pick_shared_region[local_index] = vec3<u32>();
         workgroupBarrier();
     }
 }
@@ -282,6 +297,84 @@ fn pick_ternary_valid(i: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
 fn pick_ternary_px(i: u32, x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
     let t = pick_query_params.transform;
     return ternary_ndc(t, x, y, pick_ternary_c(i)) / t.pixel_to_ndc;
+}
+
+// ───── ternary region fill ─────
+// A region series' exact pass counts, over every edge of every polygon
+// its samples outline, the crossings of the ray from the cursor towards +x
+// (the even-odd rule the stencil fill draws with, `ternary_region.wgsl`).
+// Each workgroup folds its crossings to a parity and the lowest index of a
+// crossing edge, written as a region entry (`PICK_KIND_REGION`) after its
+// best candidate; `pick_reduce_candidates` folds the entries of a series
+// and turns an odd parity into a fill hit at distance zero on that index,
+// which loses every tie as a line fill does.
+fn pick_region() -> bool {
+    return pick_ternary() && (pick_query_params.style.x & PICK_FLAG_REGION) != 0u;
+}
+
+// Whether vertex `i` can be placed: inside the columns and a valid sample.
+fn pick_region_valid(i: u32) -> bool {
+    if i >= pick_query_params.data.x {
+        return false;
+    }
+    let x = pick_read_pair(pick_query_params.data.y, i);
+    let y = pick_read_pair(pick_query_params.data.z, i);
+    return pick_ternary_valid(i, x, y);
+}
+
+fn pick_region_px(i: u32) -> vec2<f32> {
+    let x = pick_read_pair(pick_query_params.data.y, i);
+    let y = pick_read_pair(pick_query_params.data.z, i);
+    return pick_ternary_px(i, x, y);
+}
+
+// The first vertex of the ring that holds vertex `i`, as
+// `region_ring_start` of the draw finds it.
+fn pick_region_ring_start(i: u32) -> u32 {
+    var first = i;
+    loop {
+        if first == 0u || !pick_region_valid(first - 1u) {
+            break;
+        }
+        first = first - 1u;
+    }
+    return first;
+}
+
+// The vertex edge `i` runs to: the next, or the ring's first past the
+// ring's last; `0xffffffff` when `i` starts no edge.
+fn pick_region_edge_end(i: u32) -> u32 {
+    if !pick_region_valid(i) {
+        return 0xffffffffu;
+    }
+    if pick_region_valid(i + 1u) {
+        return i + 1u;
+    }
+    let first = pick_region_ring_start(i);
+    if first == i {
+        return 0xffffffffu;
+    }
+    return first;
+}
+
+// Whether the ray from `p` towards +x crosses edge (a, b): the edge
+// straddles p.y (half-open, so a vertex on the ray counts once) and meets
+// the ray to the right of p.
+fn pick_region_edge_crosses(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> bool {
+    if (a.y > p.y) == (b.y > p.y) {
+        return false;
+    }
+    let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+    return x > p.x;
+}
+
+// Whether the edge starting at vertex `i` crosses the cursor's ray.
+fn pick_region_crossing(i: u32) -> bool {
+    let end = pick_region_edge_end(i);
+    if end == 0xffffffffu {
+        return false;
+    }
+    return pick_region_edge_crosses(pick_region_px(i), pick_region_px(end), pick_cursor_px());
 }
 
 fn pick_polar() -> bool {
@@ -482,6 +575,22 @@ const PICK_KIND_MARKER: u32 = 0u;
 const PICK_KIND_LINE: u32 = 1u;
 const PICK_KIND_ERRORBAR: u32 = 2u;
 const PICK_KIND_FILL: u32 = 3u;
+// Not a candidate: a workgroup's region entry (`valid` its crossing parity,
+// `point_index` the lowest crossing edge's start), folded by the per-series
+// reduction into a `PICK_KIND_FILL` hit when the parity is odd.
+const PICK_KIND_REGION: u32 = 4u;
+
+// A region entry of `parity` and lowest crossing index `index` for the
+// series `order`.
+fn pick_region_entry(parity: u32, index: u32, order: u32) -> PickCandidate {
+    return PickCandidate(parity, order, index, PICK_KIND_REGION, 0u, 0.0, 0.0, 0u);
+}
+
+// The fill hit a region entry fold with odd parity becomes: distance zero
+// on the lowest crossing edge's start, as a line fill names a point.
+fn pick_region_hit(index: u32, order: u32) -> PickCandidate {
+    return PickCandidate(1u, order, index, PICK_KIND_FILL, index, 0.0, 0.0, 0u);
+}
 
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
     return PickCandidate(

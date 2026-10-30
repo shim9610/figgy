@@ -1098,6 +1098,7 @@ mod tests {
                                 selected_fields: vec![],
                                 picked: vec![],
                                 selected_surface: None,
+                                region: None,
                                 surface: None,
                                 floor: None,
                             };

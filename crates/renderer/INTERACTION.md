@@ -156,8 +156,10 @@ range series of the layer.
 
 Ternary charts (`Config.ternary`, `DataRenderType::Ternary`,
 [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md))
-keep every interaction in the triangle's frames. Markers, strokes and
-dashes are picked where they paint as `PickedData::Point { point_index }`;
+keep every interaction in the triangle's frames. Markers, strokes, dashes
+and region fills are picked where they paint as
+`PickedData::Point { point_index }` (a fill's index is the lowest of an
+edge the cursor's ray crosses, and a fill loses every tie to a mark);
 the picked ring is drawn on the marker, `step_selection` walks the points
 (bounded by the shortest of the three columns), and `selection_details()`
 reports `x`, `y` and `c`. An edge drags along its outward normal

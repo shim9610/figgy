@@ -330,6 +330,13 @@ pub(super) struct TargetPipelines {
     /// pick. Compiled only when a 3D chart is drawn.
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
     pub(super) surface: [Option<wgpu::RenderPipeline>; 5],
+    /// A ternary series' region fill: the module and its stencil and cover
+    /// pipelines, indexed by
+    /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
+    /// panel composite's stencil attachment. Compiled only when a ternary
+    /// chart with a region fill is drawn.
+    pub(super) ternary_region_shader: Option<wgpu::ShaderModule>,
+    pub(super) ternary_region: [Option<wgpu::RenderPipeline>; 2],
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
@@ -462,6 +469,75 @@ impl TargetPipelines {
                 pass,
             );
         }
+    }
+
+    /// Compile the ternary region module and its two pipelines when a
+    /// ternary chart among `items` draws a series with a region fill.
+    pub(super) fn ensure_ternary_region_pipelines(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        region_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        let needed = items.iter().any(|item| {
+            item.chart_config.ternary.is_some()
+                && item
+                    .series
+                    .iter()
+                    .any(|series| series.config.render_type.ternary_region().is_some())
+        });
+        if !needed {
+            return;
+        }
+        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+            self.ensure_ternary_region_pass(
+                device,
+                transform_bgl,
+                region_bgl,
+                surface_format,
+                pass,
+            );
+        }
+    }
+
+    /// Compile the ternary region module and the one pipeline `pass` when
+    /// they are missing.
+    pub(super) fn ensure_ternary_region_pass(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        region_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::ternary_region::TernaryRegionPass,
+    ) {
+        if self.ternary_region[pass as usize].is_some() {
+            return;
+        }
+        let shader = self.ternary_region_shader.get_or_insert_with(|| {
+            crate::gpu_compile::shader_module(
+                device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("figgy ternary region shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        data_render::ternary_region::TERNARY_REGION_SHADER
+                            .source
+                            .into(),
+                    ),
+                },
+            )
+        });
+        self.ternary_region[pass as usize] =
+            Some(data_render::ternary_region::create_ternary_region_pipeline(
+                device,
+                shader,
+                transform_bgl,
+                region_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
     }
 
     /// Compile the surface module and the one pipeline `pass` when they are
@@ -1771,6 +1847,8 @@ pub(super) fn create_target_pipelines_observed(
         ternary: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        ternary_region_shader: None,
+        ternary_region: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -1862,6 +1940,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         ternary: Default::default(),
         surface_shader: None,
         surface: Default::default(),
+        ternary_region_shader: None,
+        ternary_region: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -2363,6 +2443,8 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let surface_bgl = data_render::surface_mesh::create_surface_data_bind_group_layout(&device);
+        let region_bgl =
+            data_render::ternary_region::create_ternary_region_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
@@ -2424,6 +2506,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             surface_bgl,
+            region_bgl,
             vector_bgl,
             category_bar_data_bgl,
             value_label_bgl,
@@ -2511,6 +2594,8 @@ impl Renderer {
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let surface_bgl = data_render::surface_mesh::create_surface_data_bind_group_layout(&device);
+        let region_bgl =
+            data_render::ternary_region::create_ternary_region_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
@@ -2572,6 +2657,7 @@ impl Renderer {
             star_data_bgl,
             field_bgl,
             surface_bgl,
+            region_bgl,
             vector_bgl,
             category_bar_data_bgl,
             value_label_bgl,
@@ -3090,6 +3176,20 @@ impl Renderer {
             );
         }
         finished(observer, "renderer.prewarm", "surface");
+        crate::init::yield_init_frame().await;
+
+        // A ternary series' region fill (`TernaryRegionStyle`).
+        started(observer, "renderer.prewarm", "ternary region");
+        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+            self.pipelines.ensure_ternary_region_pass(
+                &self.device,
+                &self.transform_bgl,
+                &self.region_bgl,
+                self.surface_format,
+                pass,
+            );
+        }
+        finished(observer, "renderer.prewarm", "ternary region");
         crate::init::yield_init_frame().await;
 
         if self.arc_pipelines.is_none() {

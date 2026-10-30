@@ -259,18 +259,26 @@ pub(crate) fn render(desc: &wgpu::RenderPipelineDescriptor<'_>, elapsed: Duratio
     record(|c| {
         // The 3D panel composite's pipelines test depth (#49): recorded as
         // the WebGPU descriptor the browser prewarm passes through.
+        // The 3D panel composite's pipelines test depth and the ternary
+        // region fill's test and write the stencil (#49): recorded as the
+        // WebGPU descriptor the browser prewarm passes through.
         let depth_stencil = desc.depth_stencil.as_ref().map(|d| {
-            assert_eq!(
-                d.stencil,
-                wgpu::StencilState::default(),
-                "Add stencil state to the contract before a pipeline uses it"
-            );
             assert_eq!(d.bias, wgpu::DepthBiasState::default());
-            json!({
+            let face = |f: wgpu::StencilFaceState| {
+                json!({"compare": web(f.compare), "failOp": web(f.fail_op), "depthFailOp": web(f.depth_fail_op), "passOp": web(f.pass_op)})
+            };
+            let mut value = json!({
                 "format": format!("{:?}", d.format).to_lowercase().replace("depth24plusstencil8", "depth24plus-stencil8"),
                 "depthWriteEnabled": d.depth_write_enabled.unwrap_or(false),
                 "depthCompare": d.depth_compare.map_or("always".into(), web),
-            })
+            });
+            if d.stencil != wgpu::StencilState::default() {
+                value["stencilFront"] = face(d.stencil.front);
+                value["stencilBack"] = face(d.stencil.back);
+                value["stencilReadMask"] = json!(d.stencil.read_mask);
+                value["stencilWriteMask"] = json!(d.stencil.write_mask);
+            }
+            value
         });
         assert!(desc.multiview_mask.is_none());
         assert_eq!(desc.primitive.polygon_mode, wgpu::PolygonMode::Fill);

@@ -1285,10 +1285,14 @@ plus `color_value` with a colour grid.
 A ternary series draws on a ternary chart (`"ternary": {}` on the config,
 omitted when off). It reads its three components from `x_column` (the
 bottom-left corner, on `bottom_x`), `y_column` (the top, on `left_y`) and
-`c_column` (the bottom-right, on `right_y`), unnormalized. `scatter` and
-`line` take the scatter and line styles and are omitted when unset; at
-least one is set. The line is linear (`"interpolation": "Linear"`) with no
-`fill`. The three axes have `min` 0 and the same `max` (1 or 100).
+`c_column` (the bottom-right, on `right_y`), unnormalized. `scatter`,
+`line` and `region` take the scatter style, the line style and
+`{ "color": {..}, "opacity": 0.35 }`, and are omitted when unset; at least
+one is set. The line is linear (`"interpolation": "Linear"`) with no
+`fill`. With `region`, the samples are the vertices of closed polygons, a
+NaN row separating them, filled under every series' markers and lines
+(even-odd within a series: a polygon inside another is a hole). The three
+axes have `min` 0 and the same `max` (1 or 100).
 
 ```json
 {
@@ -1307,7 +1311,8 @@ least one is set. The line is linear (`"interpolation": "Linear"`) with no
 
 A picked point's `selection_details()` carries `index`, `x`, `y` and `c` (the
 uploaded components, never fractions), plus `color_value` or `size_value`
-when mapped.
+when mapped. A region fill picks as a point of the series: the lowest index
+of a polygon edge the cursor's rightward ray crosses.
 
 <a id="radar-render_type"></a>
 

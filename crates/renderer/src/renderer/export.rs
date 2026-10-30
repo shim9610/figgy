@@ -748,6 +748,13 @@ impl Renderer {
             export_format,
             items,
         );
+        export_target_pipelines.ensure_ternary_region_pipelines(
+            &self.device,
+            &self.transform_bgl,
+            &self.region_bgl,
+            export_format,
+            items,
+        );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -816,12 +823,9 @@ impl Renderer {
         for (input, item) in inputs.iter().zip(prepared.iter_mut()) {
             let panel = item.view.panel_rect;
             let (w, h) = (panel.width, panel.height);
-            if input.chart_config.view_3d.is_none()
-                || item.series.is_empty()
-                || w == 0
-                || h == 0
-                || w > max
-                || h > max
+            let needs_attachment = input.chart_config.view_3d.is_some()
+                || super::prepare::panel_stencil(input.chart_config, input.series);
+            if !needs_attachment || item.series.is_empty() || w == 0 || h == 0 || w > max || h > max
             {
                 continue;
             }

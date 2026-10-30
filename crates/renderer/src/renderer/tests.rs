@@ -6506,6 +6506,7 @@ fn streamed_series_reject_ternary_series() {
                 point_size_map: None,
             }),
             line: None,
+            region: None,
         },
     };
     assert!(matches!(

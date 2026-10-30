@@ -1593,6 +1593,39 @@ fragment and the stroke widths are floor-plane pixels (#49 D7). The ID pick writ
 surface sample and `(id | 0x80000000, level, c, r)` for a floor contour, to
 an `Rgba32Uint` target with the depth test.
 
+### 5.22 Ternary region fill (group 1) and its pick
+
+[`ternary_region.wgsl`](ternary_region.wgsl), assembled with the transform,
+the projection and the sample validity fragments, fills the closed polygons
+a ternary series outlines (`TernaryRegionStyle`) by stencil-then-cover with
+the even-odd rule into the panel composite's stencil attachment
+(`Depth24PlusStencil8`, shared with the 3D surfaces, #49). Group 1 is the
+pool as storage (binding 0) and `TernaryRegionParams` (binding 1; CPU twin
+`ternary_region.rs::TernaryRegionParamsGpu`, 32 B: the premultiplied fill
+colour, the x, y and c lane bases and the vertex count); no vertex slot is
+bound. `vs_stencil` draws one triangle per instance `i`: the triangle's
+centre, vertex `i` and the vertex edge `i` runs to (`region_edge_end`: the
+next valid vertex, or the ring's first past the ring's last, found by
+`region_ring_start` walking back to the previous NaN row), with the stencil
+op `Invert`, colour writes masked. `vs_cover` / `fs_cover` draws the whole
+triangle once per series where the stencil is not zero and resets it
+(`NotEqual`, `Zero`), so one series' polygons combine by even-odd. The
+anchor is fixed (the maintainer's decision on #49): N triangles for N
+vertices, nothing stored per polygon.
+
+The point picker counts the same rule: under `PICK_FLAG_REGION` (query
+`style.x`) the exact pass's `pick_region_crossing` tests every edge against
+the ray from the cursor towards +x (`pick_region_edge_crosses`, half-open
+in y so a vertex on the ray counts once) and folds its workgroup's
+crossings to a parity and the lowest crossing index (`pick_shared_region`,
+`pick_region_fold`), written as a `PICK_KIND_REGION` entry after the best
+candidates (the workgroup candidate buffer holds two per group).
+`pick_reduce_candidates` folds the entries of a series and, on an odd
+parity, compares `pick_region_hit` (a `PICK_KIND_FILL` candidate at
+distance zero on that index) with the best candidate, so the fill beats
+every farther candidate and loses every tie to a marker or a stroke, as a
+line fill does. The cross-series reduction sees finished candidates only.
+
 ## Checklist
 
 When shared shader code changes:

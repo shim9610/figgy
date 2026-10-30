@@ -23,6 +23,10 @@ pub struct SeriesLayers<'a> {
     pub floor: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
     /// The picked sample's patch of the surface, in the live highlight slot.
     pub selected_surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
+    /// A ternary series' region fill, drawn into the panel composite's
+    /// stencil attachment before every series' fill and body
+    /// (`issue_series_regions`), never by `issue_series_data`.
+    pub region: Option<super::ternary_region::ColumnTernaryRegionLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
     pub bar: Option<ColumnBarLayer<'a>>,
     /// A box plot series' violins, under its boxes.
@@ -418,6 +422,20 @@ pub(crate) fn issue_series_value_labels(
 /// The caller has set the viewport (panel) and the scissor (data area).
 /// Issue every series' surface: the 3D draw, into a pass with the panel
 /// composite's depth-stencil attachment.
+/// Every series' ternary region fill, in series order, into a pass with
+/// the stencil attachment: under every fill and body, as the line fills
+/// are under every body.
+pub(crate) fn issue_series_regions(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
+    for s in series_list {
+        if let Some(region) = &s.region {
+            super::ternary_region::issue_ternary_region_layer(pass, region);
+        }
+    }
+}
+
 pub(crate) fn issue_series_surfaces(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],

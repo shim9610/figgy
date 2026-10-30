@@ -18,6 +18,10 @@ pub(crate) const FLAG_SIZE_MAP: u32 = 16;
 pub(crate) const FLAG_SIZE_AREA: u32 = 32;
 /// The scatter primitive is a point vector's arrows (`PICK_FLAG_VECTOR`).
 pub(crate) const FLAG_VECTOR: u32 = 64;
+/// A ternary series' region fill (`PICK_FLAG_REGION`): the exact pass counts
+/// the crossings of the cursor's ray with the polygons' edges, and the
+/// per-series reduction turns an odd count into a fill hit.
+pub(crate) const FLAG_REGION: u32 = 128;
 
 /// `PICK_VECTOR_SCALE_PIXELS` in `PickQueryParams.vector.w`.
 pub(crate) const VECTOR_SCALE_PIXELS: u32 = 256;
@@ -227,6 +231,10 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// A ternary series' third component: its markers and line are placed
     /// by `ternary_ndc` on a ternary chart. Resident series only.
     pub(crate) ternary_c: Option<ColumnId>,
+    /// Whether the ternary series fills the regions its samples outline
+    /// (`TernaryRegionStyle`): the cursor inside one picks the series as a
+    /// fill hit. Needs `ternary_c`. Resident series only.
+    pub(crate) ternary_region: bool,
 }
 
 /// The error bars of a marker series as the error-bar shader draws them
@@ -881,7 +889,9 @@ pub(super) struct PickSeriesGpu {
     pub(super) exact_key: PickExactKey,
     /// [`GpuPickSeriesDescriptor::category_jitter`].
     pub(super) category_jitter: Option<GpuPickCategoryJitter>,
-    /// [`GpuPickSeriesDescriptor::ternary_c`], resolved.
+    /// [`GpuPickSeriesDescriptor::ternary_c`], resolved. With
+    /// `FLAG_REGION` in `flags`, the workgroup candidate buffer holds a
+    /// region entry per group after the best candidates.
     pub(super) ternary: Option<PickTernaryGpu>,
 }
 

@@ -96,6 +96,7 @@ impl<'a> SelectionLayers<'a> {
             surface: None,
             selected_surface: None,
             floor: None,
+            region: None,
         }
     }
 }

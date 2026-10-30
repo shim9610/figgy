@@ -1661,6 +1661,8 @@ pub(crate) struct SurfacePickIdentity {
 
 /// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
 pub(crate) struct SurfacePickTicket {
+    /// Polled for the readback on native; the browser's device polls itself.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub(crate) device: Arc<wgpu::Device>,
     pub(crate) readback: wgpu::Buffer,
     pub(crate) receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,

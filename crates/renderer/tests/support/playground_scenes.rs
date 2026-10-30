@@ -224,7 +224,8 @@ impl SceneKind {
             SceneKind::Ternary => {
                 "Alloy compositions as three unnormalized columns placed in a \
                  triangle, coloured by hardness through the colourbar, with a \
-                 dashed tie-line. Pick a sample; step with the arrows."
+                 dashed tie-line and a filled phase field with a hole. Pick a \
+                 sample or the field; step with the arrows."
             }
             SceneKind::Surface => {
                 "A heatmap's grid drawn as a lit, wireframed surface in a 3D box, \
@@ -2528,6 +2529,23 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     upload(r, "tn_tie_fe", vec![70.0, 30.0])?;
     upload(r, "tn_tie_ni", vec![10.0, 25.0])?;
     upload(r, "tn_tie_cr", vec![20.0, 45.0])?;
+    // A phase field: a concave region around the chromium-rich cluster
+    // with a hole, two NaN-separated rings of one series.
+    let field: [[f64; 3]; 10] = [
+        [45.0, 10.0, 45.0],
+        [30.0, 15.0, 55.0],
+        [15.0, 30.0, 55.0],
+        [20.0, 42.0, 38.0],
+        [34.0, 36.0, 30.0],
+        [42.0, 25.0, 33.0],
+        [f64::NAN, f64::NAN, f64::NAN],
+        [40.0, 13.0, 47.0],
+        [36.0, 18.0, 46.0],
+        [32.0, 13.5, 54.5],
+    ];
+    upload(r, "tn_field_fe", field.iter().map(|v| v[0]).collect())?;
+    upload(r, "tn_field_ni", field.iter().map(|v| v[1]).collect())?;
+    upload(r, "tn_field_cr", field.iter().map(|v| v[2]).collect())?;
     let mut markers = scatter_style(
         Color::from_rgb8(31, 119, 180),
         ScatterShape::CircleFilled,
@@ -2540,6 +2558,20 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     tie.line_style = LineStylePreset::Dash;
     let series = vec![
         series(
+            "Cr-rich field",
+            "tn_field_fe",
+            "tn_field_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_field_cr".into(),
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(214, 96, 40), 1.2)),
+                region: Some(renderer::TernaryRegionStyle {
+                    color: Color::from_rgb8(244, 160, 90),
+                    opacity: 0.3,
+                }),
+            },
+        ),
+        series(
             "alloys",
             "tn_fe",
             "tn_ni",
@@ -2547,6 +2579,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 c_column: "tn_cr".into(),
                 scatter: Some(markers),
                 line: None,
+                region: None,
             },
         ),
         series(
@@ -2561,6 +2594,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     5.0,
                 )),
                 line: Some(tie),
+                region: None,
             },
         ),
     ];
@@ -2643,7 +2677,9 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 let mut bar = default::default_colorbar_options();
                 bar.axis.min = -0.8;
                 bar.axis.max = 1.3;
-                contour.set_nice_levels(&bar.axis, 8);
+                contour
+                    .set_nice_levels(&bar.axis, 8)
+                    .expect("the surface scene's colourbar range gives nice levels");
                 contour
             },
             surface: Some(SurfaceStyle {

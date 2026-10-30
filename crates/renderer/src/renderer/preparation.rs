@@ -416,6 +416,8 @@ impl TargetPipelines {
             ternary: Default::default(),
             surface_shader: source.surface_shader.clone(),
             surface: Default::default(),
+            ternary_region_shader: source.ternary_region_shader.clone(),
+            ternary_region: Default::default(),
             errorbar: None,
             errorbar_mapped: None,
             bar: None,

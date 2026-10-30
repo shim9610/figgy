@@ -897,6 +897,60 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // A ternary series' region fill: the closed polygons its samples
+            // outline, drawn into the composite's stencil attachment before
+            // every series' fill and body. Resident only (streamed ternary
+            // sources are rejected).
+            let region = match (rt.ternary_region(), rt.ternary_c_column()) {
+                (Some(style), Some(c)) if chart_config.ternary.is_some() && phase.is_none() => {
+                    let c_h = lookup(c)?;
+                    let lane = |handle: ColumnHandle| -> Result<u32> {
+                        if !handle.offset.is_multiple_of(4) {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "region column byte offset is not f32-aligned".into(),
+                            });
+                        }
+                        u32::try_from(handle.offset / 4).map_err(|_| {
+                            FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "region column lies past the 32-bit lane range".into(),
+                            }
+                        })
+                    };
+                    let count = x_h.len_values.min(y_h.len_values).min(c_h.len_values);
+                    let params = data_render::ternary_region::TernaryRegionParamsGpu {
+                        color_premul: style.color_premul(),
+                        x_base: lane(x_h)?,
+                        y_base: lane(y_h)?,
+                        c_base: lane(c_h)?,
+                        count: u32::try_from(count).unwrap_or(u32::MAX),
+                    };
+                    let (region_bg, charge) =
+                        data_render::ternary_region::create_ternary_region_bind_group(
+                            &self.gpu_ledger,
+                            &self.device,
+                            &self.region_bgl,
+                            column_buffer,
+                            &params,
+                        );
+                    let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
+                        pipelines.ternary_region[pass as usize]
+                            .as_ref()
+                            .expect("prepare ensured the ternary region pipelines")
+                    };
+                    Some(data_render::ternary_region::ColumnTernaryRegionLayer {
+                        stencil: pipeline(data_render::ternary_region::TernaryRegionPass::Stencil),
+                        cover: pipeline(data_render::ternary_region::TernaryRegionPass::Cover),
+                        transform_bg: &view.transform_bg,
+                        region_bg,
+                        count: params.count,
+                        charge,
+                    })
+                }
+                _ => None,
+            };
+
             // Star pass: per-series GPU state is the owned snapshot the
             // prepare phase cloned out of the arc scratch (indirect args +
             // VS bind group) — read from the token, never from `arc_cache`,
@@ -1210,6 +1264,7 @@ impl PrepareContext<'_> {
                 surface,
                 selected_surface,
                 floor,
+                region,
             });
         }
         Ok(out)

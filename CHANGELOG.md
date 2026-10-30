@@ -24,7 +24,8 @@ new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `offsets`, the `value_label` selection,
 the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
 `Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
-`view_3d` and the heatmaps' `surface`) are additive.
+the ternary series' `region`, `view_3d` and the heatmaps' `surface`) are
+additive.
 
 <a id="unreleased-model"></a>
 
@@ -120,6 +121,19 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   literal adds `view_3d: None`; a `Heatmap { .. }` or `HeatmapContour { .. }`
   literal adds `surface: None`, and a pattern that names every field adds
   `surface` or `..`.
+- **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
+  [#55](https://github.com/shim9610/figgy/issues/55)).
+  `DataRenderType::Ternary` gains `region: Option<TernaryRegionStyle>`
+  (`color`, `opacity`): the series' samples are the vertices of closed
+  polygons, a NaN row separating them, filled under every series' markers
+  and lines in series order. Within one series polygons combine by
+  even-odd (a polygon inside another is a hole, an overlap is unfilled);
+  regions that should overlap go in separate series. A ternary series now
+  draws markers, a line, a region fill or any of them;
+  `Config::validate_ternary_series` checks the fill's colour and opacity.
+  The legend swatch carries the fill as a band. `region` is omitted when
+  `None`. Migration: a `Ternary { .. }` literal adds `region: None`, and a
+  pattern that names every field adds `region` or `..`.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55),
   #58 item 24). `Config.ternary: Option<TernaryOptions>` turns a chart into
   a triangle, and `DataRenderType::Ternary { c_column, scatter, line }`
@@ -985,6 +999,23 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   anchors only, streamed sources are rejected, and the compile capture
   records `depthStencil`. A grid past `1 << 22` quads draws whole.
   Guide: `SURFACE.md`.
+- **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
+  [#55](https://github.com/shim9610/figgy/issues/55)). A ternary panel with
+  a region fill composites with the same `Depth24PlusStencil8` attachment,
+  on screen and in export. The region module
+  (`data_render/ternary_region.wgsl`, SHADER_COMMON.md §5.22) fills by
+  stencil-then-cover with the even-odd rule: `vs_stencil` draws one
+  triangle per edge from the triangle's centre (the closing edge found by
+  walking back to the ring's first vertex, nothing stored per polygon),
+  `vs_cover` paints the triangle once per series where the stencil is odd.
+  Group 1 binds the pool as storage with the fill's params; no vertex slot.
+  The point picker counts the crossings of the cursor's ray with the edges
+  under `PICK_FLAG_REGION` and folds the parity in the per-series reduction
+  (`PICK_KIND_REGION` entries beside the workgroup candidates): an odd
+  count is a fill hit at distance zero on the lowest crossing edge's start,
+  losing every tie to a mark. The compile capture records the stencil
+  state. A million-vertex polygon draws and picks (`ternary_render.rs`);
+  the Ternary scene gains a filled phase field with a hole.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `ScatterTransform` grows from 144 to 176 bytes with `ternary_lt` and
   `ternary_r`, the triangle's corners in data-area NDC; the pick core's copy
@@ -1666,6 +1697,10 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   `zoom_view(factor)` zooms a 3D chart's camera, a data-area drag orbits
   it, `auto_fit_all` fits the z axis, and `selection_details()` adds a
   surface's `color_value` when it has a colour grid.
+- **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
+  [#55](https://github.com/shim9610/figgy/issues/55)). `set_series` reads and
+  writes a ternary series' `"region"` (SCHEMA.md, omitted when absent); a
+  fill picks as a point of its series. No new binding.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `set_config` / `get_config` read and write `"ternary"` (omitted when
   absent), `set_series` the `"Ternary"` render type (SCHEMA.md);

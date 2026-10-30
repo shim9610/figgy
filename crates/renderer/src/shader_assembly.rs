@@ -171,6 +171,7 @@ mod tests {
             ("PICK_FLAG_SIZE_MAP", pick::FLAG_SIZE_MAP),
             ("PICK_FLAG_SIZE_AREA", pick::FLAG_SIZE_AREA),
             ("PICK_FLAG_VECTOR", pick::FLAG_VECTOR),
+            ("PICK_FLAG_REGION", pick::FLAG_REGION),
             ("PICK_VECTOR_SCALE_PIXELS", pick::VECTOR_SCALE_PIXELS),
             ("PICK_MARKER_PRECISE", pick::PICK_MARKER_PRECISE),
             ("PICK_MARKER_SKETCH", pick::PICK_MARKER_SKETCH),

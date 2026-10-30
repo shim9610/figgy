@@ -420,8 +420,10 @@ pub enum DataRenderType {
     /// sample with a negative or non-finite component, or a sum ≤ 0, is not
     /// drawn and breaks the line. The markers and the line take every
     /// option of a scatter and a line series (style tables, colour and size
-    /// maps, dashes) except step modes and fills. Streamed sources are
-    /// rejected.
+    /// maps, dashes) except step modes and fills. With `region`, the series'
+    /// samples are the vertices of closed polygons (a NaN row separates
+    /// them) filled with [`crate::ternary::TernaryRegionStyle`] under every
+    /// series' markers and lines. Streamed sources are rejected.
     Ternary {
         /// The third component's column, read on `right_y`.
         c_column: ColumnId,
@@ -435,6 +437,13 @@ pub enum DataRenderType {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         line: Option<DataLineStyleConfig>,
+        /// The fill of the polygons the samples outline; `None` (omitted
+        /// from JSON) fills nothing.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        region: Option<crate::ternary::TernaryRegionStyle>,
     },
     /// Streamlines of a flow, electric or magnetic field: polylines the
     /// host integrated from its field, drawn by the line path, with
@@ -3038,6 +3047,14 @@ impl DataRenderType {
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
             DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
+    /// A ternary series' region fill, when it has one.
+    pub fn ternary_region(&self) -> Option<&crate::ternary::TernaryRegionStyle> {
+        match self {
+            DataRenderType::Ternary { region, .. } => region.as_ref(),
             _ => None,
         }
     }

@@ -428,18 +428,43 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
                 line_fill_band(line),
             )
         }
-        // A ternary series reads as what it draws: markers, a line, or both.
-        DataRenderType::Ternary { scatter, line, .. } => match (scatter, line) {
-            (Some(scatter), Some(line)) => line_scatter_symbol_with_style(
-                &scatter.point_shape,
-                line.line_color,
-                line.line_style,
-                None,
-            ),
-            (Some(scatter), None) => scatter_symbol(&scatter.point_shape, scatter.point_color),
-            (None, Some(line)) => line_symbol(line.line_color, line.line_style, None),
-            (None, None) => blank_symbol(),
-        },
+        // A ternary series reads as what it draws: markers, a line, or both,
+        // over its region fill's band when it has one; a fill alone is a
+        // band under an invisible rule.
+        DataRenderType::Ternary {
+            scatter,
+            line,
+            region,
+            ..
+        } => {
+            let band = region.as_ref().map(|region| {
+                let [r, g, b, a] = region.color_premul();
+                if a > 0.0 {
+                    Color::new(r / a, g / a, b / a, a)
+                } else {
+                    Color::new(0.0, 0.0, 0.0, 0.0)
+                }
+            });
+            match (scatter, line) {
+                (Some(scatter), Some(line)) => line_scatter_symbol_with_style(
+                    &scatter.point_shape,
+                    line.line_color,
+                    line.line_style,
+                    band,
+                ),
+                (Some(scatter), None) => scatter_symbol(&scatter.point_shape, scatter.point_color),
+                (None, Some(line)) => line_symbol(line.line_color, line.line_style, band),
+                (None, None) => match band {
+                    Some(band) => {
+                        vec![
+                            RichSegment::rule(SYMBOL_FIELD_EM, Some(band))
+                                .with_rule_band(Some(band)),
+                        ]
+                    }
+                    None => blank_symbol(),
+                },
+            }
+        }
     }
 }
 

@@ -326,6 +326,39 @@ pub(super) struct PreparedSurfaceLayer {
     pub(super) surface_charge: crate::gpu_memory::SharedCharge,
 }
 
+pub(super) struct PreparedTernaryRegionLayer {
+    pub(super) stencil: wgpu::RenderPipeline,
+    pub(super) cover: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) region_bg: wgpu::BindGroup,
+    pub(super) count: u32,
+    pub(super) charge: crate::gpu_memory::SharedCharge,
+}
+
+impl PreparedTernaryRegionLayer {
+    fn own(layer: data_render::ternary_region::ColumnTernaryRegionLayer<'_>) -> Self {
+        Self {
+            stencil: layer.stencil.clone(),
+            cover: layer.cover.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            region_bg: layer.region_bg,
+            count: layer.count,
+            charge: layer.charge,
+        }
+    }
+
+    fn borrow(&self) -> data_render::ternary_region::ColumnTernaryRegionLayer<'_> {
+        data_render::ternary_region::ColumnTernaryRegionLayer {
+            stencil: &self.stencil,
+            cover: &self.cover,
+            transform_bg: &self.transform_bg,
+            region_bg: self.region_bg.clone(),
+            count: self.count,
+            charge: self.charge.clone(),
+        }
+    }
+}
+
 impl PreparedSurfaceLayer {
     fn own(layer: data_render::surface_mesh::ColumnSurfaceLayer<'_>) -> Self {
         Self {
@@ -470,6 +503,7 @@ pub(super) struct PreparedSeries {
     pub(super) surface: Option<PreparedSurfaceLayer>,
     pub(super) floor: Option<PreparedSurfaceLayer>,
     pub(super) selected_surface: Option<PreparedSurfaceLayer>,
+    pub(super) region: Option<PreparedTernaryRegionLayer>,
     pub(super) bar: Option<PreparedBarLayer>,
     pub(super) violin: Option<PreparedCategoryBarLayer>,
     pub(super) category_bars: Option<PreparedCategoryBarLayer>,
@@ -664,6 +698,9 @@ pub(super) struct ResidentDisplayKey {
     /// the fitted box (which the axes' label band sizes), the z axis range
     /// and the light. `None` for a flat panel.
     pub(super) camera: Option<data_render::surface_mesh::View3dGpu>,
+    /// Whether the composite carries the stencil attachment: a ternary
+    /// panel with a region fill. Its parameters are in `series`.
+    pub(super) stencil: bool,
 }
 
 /// The current frame's inputs to compare against a [`ResidentDisplayKey`]
@@ -679,6 +716,14 @@ pub(super) struct ResidentDisplayProbe<'a> {
     pub(super) pool_layout_generation: u64,
     pub(super) target_pipeline_generation: u64,
     pub(super) camera: Option<data_render::surface_mesh::View3dGpu>,
+    pub(super) stencil: bool,
+}
+
+impl ResidentDisplayProbe<'_> {
+    /// Whether the panel's composite needs the depth-stencil attachment.
+    pub(super) fn needs_depth_stencil(&self) -> bool {
+        self.camera.is_some() || self.stencil
+    }
 }
 
 impl ResidentDisplayKey {
@@ -695,6 +740,7 @@ impl ResidentDisplayKey {
                 (None, None) => true,
                 _ => false,
             }
+            && self.stencil == probe.stencil
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
             && self.colorbar == probe.chart_config.colorbar
@@ -744,6 +790,7 @@ impl ResidentDisplayKey {
             pool_layout_generation: probe.pool_layout_generation,
             target_pipeline_generation: probe.target_pipeline_generation,
             camera: probe.camera,
+            stencil: probe.stencil,
         }
     }
 }
@@ -837,6 +884,7 @@ impl PreparedSeries {
             surface: layers.surface.map(PreparedSurfaceLayer::own),
             floor: layers.floor.map(PreparedSurfaceLayer::own),
             selected_surface: layers.selected_surface.map(PreparedSurfaceLayer::own),
+            region: layers.region.map(PreparedTernaryRegionLayer::own),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -1018,6 +1066,7 @@ impl PreparedSeries {
                 .selected_surface
                 .as_ref()
                 .map(PreparedSurfaceLayer::borrow),
+            region: self.region.as_ref().map(PreparedTernaryRegionLayer::borrow),
             field: self
                 .field
                 .as_ref()
@@ -2278,6 +2327,7 @@ impl Renderer {
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
                 surface_bgl: &self.surface_bgl,
+                region_bgl: &self.region_bgl,
                 vector_bgl: &self.vector_bgl,
                 category_bar_data_bgl: &self.category_bar_data_bgl,
                 value_label_bgl: &self.value_label_bgl,
