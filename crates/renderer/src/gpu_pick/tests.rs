@@ -3447,7 +3447,13 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
         ),
         (PickShader::Vector, &["vector_points"][..]),
     ] {
-        let expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        let mut expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        // The marker modules pick the raincloud points, whose jitter the bar
+        // module draws.
+        if matches!(shader, PickShader::Marker | PickShader::MarkerLine) {
+            assert!(draw("bar").contains("data_render/common/category_jitter.wgsl"));
+            expected.insert("data_render/common/category_jitter.wgsl");
+        }
         assert!(!expected.is_empty(), "{shader:?}");
         assert_eq!(
             common(shader.fragments()),
