@@ -322,6 +322,7 @@ fn every_cell_carries_its_own_value_colour() {
         Vec::new(),
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("flat-continuous", &img);
 
     for (c, column) in Z.iter().enumerate() {
         for (r, z) in column.iter().enumerate() {
@@ -662,6 +663,7 @@ fn interpolated_shading_blends_between_sample_points() {
         Vec::new(),
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("interpolated-continuous", &img);
 
     // The midpoint is the exact claim: halfway between two samples is halfway
     // up the ramp. Flat shading would paint one of the two endpoint colours here.
@@ -728,6 +730,7 @@ fn bands_quantize_the_ramp_into_flat_steps() {
         vec![2.5],
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("flat-bands", &img);
 
     // Two bands: the ramp at 0.25 and at 0.75.
     let below = bar.colormap.sample(0.25);
@@ -1007,64 +1010,20 @@ fn a_short_grid_draws_less_and_reports_it() {
     assert!(info.truncated, "the fourth column is surplus");
 }
 
-/// Visual probe — writes the rendered fields so a human can look at them.
-/// Assertions above are the actual gate; this is for eyes.
-#[test]
-fn heatmap_probe_renders_every_shading_and_fill() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    edges_fixture(&mut renderer);
-    let bar = colorbar(0.0, 5.0, AxisScale::Linear);
-    let chart = ranged_chart(bar);
-    let cases = [
-        (
-            "flat-continuous",
-            Shading::Flat,
-            FillMode::Continuous,
-            vec![],
-        ),
-        (
-            "flat-bands",
-            Shading::Flat,
-            FillMode::Bands,
-            vec![1.5f64, 3.5],
-        ),
-        (
-            "interpolated-continuous",
-            Shading::Interpolated,
-            FillMode::Continuous,
-            vec![],
-        ),
-        (
-            "interpolated-bands",
-            Shading::Interpolated,
-            FillMode::Bands,
-            vec![1.5, 3.5],
-        ),
-    ];
-    let dir = probe_dir();
-    for (name, shading, mode, levels) in cases {
-        let series = vec![heatmap(
-            &["z0", "z1", "z2"],
-            MatrixOrientation::ColumnsAreX,
-            GridLayout::Edges,
-            shading,
-            mode,
-            levels,
-        )];
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-        let png = encode_png(&img).expect("encode");
-        std::fs::write(format!("{dir}/probe_heatmap_{name}.png"), png).expect("write probe");
-    }
-}
-
-/// Where the visual probes land: `$FIGGY_PROBE_DIR` when set, otherwise
-/// Cargo's per-target scratch directory under `target/`, so a plain test run
-/// never writes into the source tree.
+/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
+/// points it at the CI image directory), otherwise Cargo's per-target scratch
+/// directory under `target/`, so a plain test run never writes into the
+/// source tree.
 fn probe_dir() -> String {
     let dir = std::env::var("FIGGY_PROBE_DIR")
         .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
     std::fs::create_dir_all(&dir).expect("create probe directory");
     dir
+}
+
+/// Save a rendered field as a PNG. The pixel assertions are the gate; the
+/// image is what a person looks at when one fails.
+fn save_probe(name: &str, img: &RasterImage) {
+    let png = encode_png(img).expect("encode png");
+    std::fs::write(format!("{}/probe_heatmap_{name}.png", probe_dir()), png).expect("write png");
 }

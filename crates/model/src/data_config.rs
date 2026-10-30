@@ -4591,6 +4591,15 @@ mod matrix_tests {
     }
 }
 
+// The wire form of a series: every field added after a release is additive
+// schema, absent at its default so a document written before it parses and
+// re-serializes byte-identically, and round-trips when set.
+//
+// One test runs every check in turn (#47 §3), including the family modules'
+// round trips below, which stay beside their fixtures: the renderer's
+// `released_documents.rs` holds the fixture documents, so this module keeps
+// the model's own coverage without a copy of them per field. Each check is a
+// plain function so a failure names it.
 #[cfg(all(test, feature = "serde"))]
 mod serde_tests {
     use super::{
@@ -4620,7 +4629,6 @@ mod serde_tests {
         })
     }
 
-    #[test]
     fn old_series_json_without_additive_fields_still_parses() {
         let cfg: SeriesConfig =
             serde_json::from_value(base_series_json()).expect("old series shape parses");
@@ -4645,7 +4653,6 @@ mod serde_tests {
         assert_eq!(json, base_series_json());
     }
 
-    #[test]
     fn value_maps_round_trip_and_default_the_size_scale() {
         let mut json = base_series_json();
         let scatter = &mut json["render_type"]["Scatter"]["scatter"];
@@ -4674,7 +4681,6 @@ mod serde_tests {
         assert_eq!(back, cfg);
     }
 
-    #[test]
     fn point_style_mapping_round_trips_with_flattened_override() {
         let scatter = DataScatterStyleConfig {
             point_color: Color::BLACK,
@@ -4720,7 +4726,6 @@ mod serde_tests {
         assert_eq!(back, scatter);
     }
 
-    #[test]
     fn errorbar_style_mapping_round_trips_with_flattened_override() {
         let err = DataErrorBarStyleConfig {
             error_bar_color: Color::BLACK,
@@ -4768,7 +4773,6 @@ mod serde_tests {
     // The line fields added for area fill and step lines are all defaulted and
     // omitted at their defaults, so a document written before them parses and
     // serializes byte-identically.
-    #[test]
     fn legacy_line_style_json_round_trips_without_fill_or_interpolation_keys() {
         use super::{DataLineStyleConfig, LineInterpolation};
 
@@ -4789,7 +4793,6 @@ mod serde_tests {
         );
     }
 
-    #[test]
     fn line_fill_and_interpolation_round_trip_and_keep_their_spelling() {
         use super::{DataLineStyleConfig, LineFill, LineInterpolation};
 
@@ -4831,7 +4834,6 @@ mod serde_tests {
         }
     }
 
-    #[test]
     fn legacy_histogram_style_defaults_to_full_width_without_overrides() {
         let legacy = serde_json::json!({
             "fill_color": { "r": 0.2, "g": 0.3, "b": 0.4, "a": 1.0 },
@@ -4847,7 +4849,6 @@ mod serde_tests {
         assert_eq!(parsed.bar_style_overrides, None);
     }
 
-    #[test]
     fn vector_render_types_round_trip_and_default_the_optional_fields() {
         let style = VectorStyle {
             color: Color::BLACK,
@@ -4923,7 +4924,6 @@ mod serde_tests {
         assert!(again.contains("\"pivot\":\"Tail\""));
     }
 
-    #[test]
     fn field_render_types_round_trip() {
         use super::{
             ContourConfig, ContourLabelAnchor, ContourLabelConfig, DataBarBinStyleConfig,
@@ -5020,7 +5020,6 @@ mod serde_tests {
     // `per_level_color: None` means "every level uses `line.line_color`". It has
     // to survive as an absent key, not as an empty list — an empty list is a
     // table with no entries, which is a different statement.
-    #[test]
     fn contour_optional_keys_are_omitted_when_absent() {
         use super::{ContourConfig, DataLineStyleConfig, FillMode};
         use crate::line::LineStylePreset;
@@ -5052,7 +5051,6 @@ mod serde_tests {
         );
     }
 
-    #[test]
     fn contour_label_spacing_serde_requires_a_finite_positive_value() {
         use super::ContourLabelConfig;
 
@@ -5077,6 +5075,32 @@ mod serde_tests {
                 .expect_err("invalid spacing must fail during deserialization");
             assert!(error.to_string().contains("spacing_px must be finite"));
         }
+    }
+
+    /// The one serde test of this file: the additive keys of every series
+    /// kind, in turn.
+    #[test]
+    fn serde_round_trips_the_additive_keys_and_parses_old_documents() {
+        old_series_json_without_additive_fields_still_parses();
+        value_maps_round_trip_and_default_the_size_scale();
+        point_style_mapping_round_trips_with_flattened_override();
+        errorbar_style_mapping_round_trips_with_flattened_override();
+        legacy_line_style_json_round_trips_without_fill_or_interpolation_keys();
+        line_fill_and_interpolation_round_trip_and_keep_their_spelling();
+        legacy_histogram_style_defaults_to_full_width_without_overrides();
+        vector_render_types_round_trip_and_default_the_optional_fields();
+        field_render_types_round_trip();
+        contour_optional_keys_are_omitted_when_absent();
+        contour_label_spacing_serde_requires_a_finite_positive_value();
+        super::category_bar_tests::value_label_offsets_round_trip_and_are_omitted_when_empty();
+        super::category_bar_tests::category_bars_round_trip_and_default_their_optional_fields();
+        super::category_bar_tests::bar_groups_and_cross_at_are_additive_on_the_wire();
+        super::category_bar_tests::log_ticks_are_additive_on_the_wire();
+        super::box_plot_tests::box_plot_series_round_trip_and_omit_their_defaults();
+        super::box_plot_tests::violins_and_points_round_trip_and_are_absent_by_default();
+        super::radar_tests::radar_series_round_trip_and_omit_their_defaults();
+        super::streamline_tests::streamlines_round_trip();
+        super::range_bar_tests::range_bars_round_trip_and_omit_unset_options();
     }
 }
 
@@ -5703,9 +5727,9 @@ mod category_bar_tests {
         }
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn value_label_offsets_round_trip_and_are_omitted_when_empty() {
+    pub(super) fn value_label_offsets_round_trip_and_are_omitted_when_empty() {
         let mut series = bars("a");
         let json = serde_json::to_value(&series).unwrap();
         let fields = json["render_type"]["CategoryBars"]["labels"]
@@ -5770,9 +5794,9 @@ mod category_bar_tests {
         assert_eq!(line, before);
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn category_bars_round_trip_and_default_their_optional_fields() {
+    pub(super) fn category_bars_round_trip_and_default_their_optional_fields() {
         let mut series = bars("a");
         let mut o = CategoryBarOverride::new(CategoryBarTarget::new("c0", "a"));
         o.color = Some(Color::WHITE);
@@ -5805,9 +5829,9 @@ mod category_bar_tests {
         assert!(fields["labels"].get("text").is_none());
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn bar_groups_and_cross_at_are_additive_on_the_wire() {
+    pub(super) fn bar_groups_and_cross_at_are_additive_on_the_wire() {
         let config = crate::default::default_config();
         let json = serde_json::to_value(&config).unwrap();
         assert!(json.get("bar_groups").is_none());
@@ -5829,9 +5853,9 @@ mod category_bar_tests {
     /// `log_ticks` is written only when it is not the default, so a
     /// document written before the field existed re-serializes unchanged,
     /// and an `Adaptive` axis round-trips (#42).
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn log_ticks_are_additive_on_the_wire() {
+    pub(super) fn log_ticks_are_additive_on_the_wire() {
         use crate::config::LogTickPolicy;
         let mut config = crate::default::default_config();
         config.colorbar = Some(crate::default::default_colorbar_options());
@@ -6183,9 +6207,9 @@ mod box_plot_tests {
         assert_eq!(labels(&mut series[1]).text, ["0.0 (n=—)", "", "20.0 (n=—)"]);
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn box_plot_series_round_trip_and_omit_their_defaults() {
+    pub(super) fn box_plot_series_round_trip_and_omit_their_defaults() {
         let plain = boxes("a");
         let json = serde_json::to_value(&plain).unwrap();
         let fields = json["render_type"]["BoxPlot"].as_object().unwrap();
@@ -6404,9 +6428,9 @@ mod box_plot_tests {
         assert_eq!(at(&config), ("b".into(), 4));
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn violins_and_points_round_trip_and_are_absent_by_default() {
+    pub(super) fn violins_and_points_round_trip_and_are_absent_by_default() {
         let plain = boxes("a");
         let json = serde_json::to_value(&plain).unwrap();
         let fields = &json["render_type"]["BoxPlot"];
@@ -6727,9 +6751,9 @@ mod radar_tests {
         );
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn radar_series_round_trip_and_omit_their_defaults() {
+    pub(super) fn radar_series_round_trip_and_omit_their_defaults() {
         let mut series = radar("a");
         let json = serde_json::to_value(&series.render_type).unwrap();
         assert_eq!(
@@ -7380,9 +7404,9 @@ mod streamline_tests {
         assert_ne!(line.line_color, flow.line.line_color);
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn streamlines_round_trip() {
+    pub(super) fn streamlines_round_trip() {
         for series in [
             streamlines(None, None),
             streamlines(Some(StreamlineArrows::default()), None),
@@ -7767,9 +7791,9 @@ mod range_bar_tests {
         assert_eq!(s.value_label_offset(2), [4.0, -1.0]);
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn range_bars_round_trip_and_omit_unset_options() {
+    pub(super) fn range_bars_round_trip_and_omit_unset_options() {
         let mut full = ranges("one");
         every_option(&mut full);
         let json = serde_json::to_string(&full).unwrap();

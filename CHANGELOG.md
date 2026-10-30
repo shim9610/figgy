@@ -2055,7 +2055,19 @@ entries above describe the changes.
 - **Test suite** ([#47](https://github.com/shim9610/figgy/issues/47)). 20
   duplicate tests are removed and 7 pairs merged, each keeping every check;
   the draw-and-pick agreement tests probe the pixels of an edge band around
-  each primitive.
+  each primitive. Section 3: the five P-00 streaming feasibility probes
+  (`stream_*_replay`, `stream_field_axis_probe`) are removed with the frozen
+  streaming paths they probed; the model crate's serde checks run as one
+  test per file (`config.rs`, `data_config.rs`), each former test a step
+  that keeps every assertion; the visual probes are gone and the images
+  `ci/verify.py` collects are written by the pixel tests that draw the same
+  scenes (histogram, heatmap, contour), while the colourbar, layout
+  geometry and demo field panel probes became pixel tests: the ramp is
+  painted beside the data area on its side and runs from the axis minimum,
+  the selection highlight changes pixels around the bar only, the axes
+  frame the data area and the legend's ink lies in its corner's quadrant,
+  and the demo panel's fill, level rings and labels are checked where the
+  Gaussian puts them.
 - **Dev-dependencies.** `figgy-renderer` and `figgy` gain a `serde`
   dev-dependency for the mutation walker. `figgy-renderer` gains the
   `cpu-twin` feature (`renderer::pick::cpu_twin`, test support, hidden from

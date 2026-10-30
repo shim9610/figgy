@@ -205,6 +205,11 @@ fn data_to_px(chart: &Chart, x: f64, y: f64) -> (u32, u32) {
 fn is_blue(p: &[u8]) -> bool {
     p[3] > 16 && p[2] > 140 && p[0] < 100 && p[1] < 100
 }
+/// The demo panel's near-black contour stroke, blended with the fill under it;
+/// no Viridis colour at or above the lowest drawn level is this dark.
+fn is_dark(p: &[u8]) -> bool {
+    p[3] > 16 && p[0] < 90 && p[1] < 90 && p[2] < 90
+}
 fn is_white(p: &[u8]) -> bool {
     p[3] > 16 && p[0] > 180 && p[1] > 180 && p[2] > 180
 }
@@ -274,6 +279,7 @@ fn a_contour_traces_one_unbroken_isoline_and_nothing_else() {
     let chart = bare_chart(colorbar(0.0, 4.0));
     let series = vec![contour_only(&["p0", "p1", "p2"], vec![2.0], None)];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("lines", &img);
 
     // On the isoline, at three points along it.
     for (x, y) in [(0.25f64, 1.75f64), (1.0, 1.0), (1.75, 0.25)] {
@@ -713,6 +719,7 @@ fn contour_lines_land_on_top_of_the_field() {
     let chart = bare_chart(bar.clone());
     let series = vec![heatmap_contour(&["p0", "p1", "p2"], vec![2.0])];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("over-fill", &img);
 
     // On the isoline: the line wins.
     assert!(
@@ -735,77 +742,6 @@ fn contour_lines_land_on_top_of_the_field() {
             &p[..4],
             [to8(want.r), to8(want.g), to8(want.b)]
         );
-    }
-}
-
-/// Visual probe — assertions above are the gate; this is for eyes.
-#[test]
-fn contour_probe_renders_lines_and_filled_bands() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    // A saddle: z = (x - 1)^2 - (y - 1)^2, sampled on a 5 x 5 lattice. Level 0
-    // is the pair of diagonals through the centre, which is exactly the
-    // saddle case that the bilinear implicit form must resolve without a branch.
-    let coords = vec![0.0, 0.5, 1.0, 1.5, 2.0];
-    let column = |x: f64| -> Column<f64> {
-        col_f64(
-            coords
-                .iter()
-                .map(|y| (x - 1.0) * (x - 1.0) - (y - 1.0) * (y - 1.0))
-                .collect(),
-        )
-    };
-    let columns: Vec<Column<f64>> = coords.iter().map(|x| column(*x)).collect();
-    let ids = ["s0", "s1", "s2", "s3", "s4"];
-    let batch: Vec<(&str, &dyn renderer::ColumnSource)> = ids
-        .iter()
-        .zip(&columns)
-        .map(|(id, col)| (*id, col as &dyn renderer::ColumnSource))
-        .collect();
-    renderer
-        .add_columns(&[
-            (
-                "gx",
-                &col_f64(coords.clone()) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "gy",
-                &col_f64(coords.clone()) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("coordinates");
-    renderer.add_columns(&batch).expect("saddle grid");
-
-    let dir = probe_dir();
-    let bar = colorbar(-1.0, 1.0);
-    let chart = bare_chart(bar);
-    // Labels: one anchor per level, placed on that level's line with the tangent
-    // that runs along it there.
-    let mut labelled_lines = contour_only(&ids, vec![-0.5, 0.0, 0.5], None);
-    if let DataRenderType::Contour { contour, .. } = &mut labelled_lines.render_type {
-        contour.labels = Some(ContourLabelConfig {
-            visible: true,
-            font_size: 18.0,
-            color: Color::BLACK,
-            format: LabelFormat::Decimal,
-            significant_digits: 1,
-            spacing_px: 140.0,
-            // Automatic: the probe shows what the anchor pass chooses.
-            anchors: Vec::new(),
-            bg_color: Some(Color::new(0.98, 0.98, 0.98, 1.0)),
-            bg_padding_px: 2.0,
-        });
-    }
-    let cases: [(&str, SeriesConfig); 3] = [
-        ("lines", contour_only(&ids, vec![-0.5, 0.0, 0.5], None)),
-        ("over-fill", heatmap_contour(&ids, vec![-0.5, 0.0, 0.5])),
-        ("labelled", labelled_lines),
-    ];
-    for (name, series) in cases {
-        let img = renderer.export_panel_rgba(&chart, &[series], 1.0).unwrap();
-        let png = encode_png(&img).expect("encode");
-        std::fs::write(format!("{dir}/probe_contour_{name}.png"), png).expect("write probe");
     }
 }
 
@@ -1247,6 +1183,7 @@ fn a_contour_label_draws_at_its_anchor() {
         label_config(vec![anchor(0, 0.4, 0.4, 1.0, 0.0)], true),
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("labelled", &img);
 
     assert!(
         near(&img, data_to_px(&chart, 0.4, 0.4), 14, is_blue),
@@ -2012,16 +1949,17 @@ fn re_dispatching_anchors_allocates_nothing() {
     );
 }
 
-/// Probe of the field panel `examples/winit_simple.rs` builds — the same 40 x 40
+/// The field panel `examples/winit_simple.rs` builds — the same 40 x 40
 /// Gaussian bump, uploaded as one batch, filled, contoured and labelled.
 ///
 /// Its job is the integration the unit fixtures above are too small to show: a
 /// real grid, forty columns through `add_columns`, interpolated shading, four
-/// levels and their labels, all in one panel. It writes a PNG rather than
-/// asserting a colour, so the windowed demo's look is inspectable without a
-/// window.
+/// levels and their labels, all in one panel. The fill is checked at the peak
+/// and at a corner, each level's ring is found where the Gaussian puts it, and
+/// the labels change pixels inside the data area only. The PNG is saved so the
+/// windowed demo's look is inspectable without a window.
 #[test]
-fn field_panel_probe_matches_the_winit_demo() {
+fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
     let Some(mut renderer) = try_renderer() else {
         return;
     };
@@ -2061,7 +1999,7 @@ fn field_panel_probe_matches_the_winit_demo() {
     bar.axis.min = 0.0;
     bar.axis.max = 1.0;
     bar.axis.major_spacing = 0.25;
-    let mut chart = bare_chart(bar);
+    let mut chart = bare_chart(bar.clone());
     chart.set_x_range(0.0, 1.0);
     chart.set_y_range(0.0, 1.0);
 
@@ -2087,7 +2025,7 @@ fn field_panel_probe_matches_the_winit_demo() {
                 opacity: 1.0,
             },
             contour: ContourConfig {
-                levels,
+                levels: levels.clone(),
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
                     line_color: Color::new(0.08, 0.08, 0.08, 1.0),
@@ -2113,17 +2051,110 @@ fn field_panel_probe_matches_the_winit_demo() {
         },
     }];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-    let dir = probe_dir();
-    let png = encode_png(&img).expect("encode");
-    std::fs::write(format!("{dir}/probe_contour_demo_panel.png"), png).expect("write probe");
+    save_probe("demo_panel", &img);
+
+    // The fill: the peak is the ramp's top, a corner its bottom. The sample
+    // grid straddles the centre, so the interpolated peak is 0.99, a ramp
+    // step or two below 1.
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let assert_fill = |x: f64, y: f64, z: f64, what: &str| {
+        let px = data_to_px(&chart, x, y);
+        let p = pixel(&img, px.0, px.1);
+        let want = bar.color_for_z(z);
+        for (got, expected) in [
+            (p[0] as i32, to8(want.r)),
+            (p[1] as i32, to8(want.g)),
+            (p[2] as i32, to8(want.b)),
+        ] {
+            assert!(
+                (got - expected).abs() <= 8,
+                "{what} at ({x}, {y}): got {:?}, expected {:?}",
+                &p[..4],
+                [to8(want.r), to8(want.g), to8(want.b)]
+            );
+        }
+    };
+    assert_fill(0.5, 0.5, 1.0, "the peak");
+    assert_fill(0.05, 0.05, 0.0, "a corner");
+
+    // The contours: level L is the circle exp(-r² / SPREAD) = L. A label and
+    // its background sit on the line at up to two places per ring, so the
+    // stroke is looked for at eight angles and must be there at six.
+    for level in &levels {
+        let r = (-SPREAD * level.ln()).sqrt();
+        let hits = (0..8)
+            .filter(|k| {
+                let angle = *k as f64 * std::f64::consts::FRAC_PI_4;
+                let px = data_to_px(&chart, 0.5 + r * angle.cos(), 0.5 + r * angle.sin());
+                near(&img, px, 3, is_dark)
+            })
+            .count();
+        assert!(
+            hits >= 6,
+            "level {level} (r = {r:.3}): stroke found at {hits} of 8 angles"
+        );
+    }
+    // Between two rings there is no stroke: z = 0.49 at r = 0.19, with the
+    // 0.4 and 0.6 rings 0.02 away on either side.
+    // Checked on the label-free render, where no label can sit there.
+    let mut unlabelled = series.clone();
+    let DataRenderType::HeatmapContour { contour, .. } = &mut unlabelled[0].render_type else {
+        unreachable!()
+    };
+    contour.labels = None;
+    let plain = renderer
+        .export_panel_rgba(&chart, &unlabelled, 1.0)
+        .unwrap();
+    let between = data_to_px(&chart, 0.5 + 0.19, 0.5);
+    assert!(
+        !near(&plain, between, 1, is_dark),
+        "contour ink between the 0.4 and 0.6 rings"
+    );
+
+    // The labels: the same panel without them differs, and only in the data
+    // area, where the labels and their backgrounds are drawn.
+    let da = chart.config().data_area().expect("data area");
+    let mut label_pixels = 0u32;
+    for (i, (a, b)) in img
+        .rgba
+        .chunks_exact(4)
+        .zip(plain.rgba.chunks_exact(4))
+        .enumerate()
+    {
+        if a == b {
+            continue;
+        }
+        label_pixels += 1;
+        let (x, y) = (i as u32 % img.width, i as u32 / img.width);
+        assert!(
+            x >= da.x && x < da.x + da.width && y >= da.y && y < da.y + da.height,
+            "a label changed pixel ({x}, {y}) outside the data area at ({}, {}) {} x {}",
+            da.x,
+            da.y,
+            da.width,
+            da.height
+        );
+    }
+    assert!(
+        label_pixels > 100,
+        "the four levels' labels changed only {label_pixels} pixels"
+    );
 }
 
-/// Where the visual probes land: `$FIGGY_PROBE_DIR` when set, otherwise
-/// Cargo's per-target scratch directory under `target/`, so a plain test run
-/// never writes into the source tree.
+/// Where the saved images land: `$FIGGY_PROBE_DIR` when set (`ci/verify.py`
+/// points it at the CI image directory), otherwise Cargo's per-target scratch
+/// directory under `target/`, so a plain test run never writes into the
+/// source tree.
 fn probe_dir() -> String {
     let dir = std::env::var("FIGGY_PROBE_DIR")
         .unwrap_or_else(|_| env!("CARGO_TARGET_TMPDIR").to_string());
     std::fs::create_dir_all(&dir).expect("create probe directory");
     dir
+}
+
+/// Save a rendered panel as a PNG. The pixel assertions are the gate; the
+/// image is what a person looks at when one fails.
+fn save_probe(name: &str, img: &RasterImage) {
+    let png = encode_png(img).expect("encode png");
+    std::fs::write(format!("{}/probe_contour_{name}.png", probe_dir()), png).expect("write png");
 }
