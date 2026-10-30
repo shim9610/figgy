@@ -634,6 +634,18 @@ impl FiggyChart {
         Ok(true)
     }
 
+    /// Zoom a 3D chart's camera (`Config.view_3d`): the eye distance is
+    /// divided by `factor` and clamped (`Config::zoom_view`). Returns whether
+    /// the view changed; a flat chart never does.
+    pub fn zoom_view(&mut self, factor: f64) -> Result<bool, JsValue> {
+        let mut cfg = self.chart_config().clone();
+        if !cfg.zoom_view(factor) {
+            return Ok(false);
+        }
+        self.replace_chart_config(cfg)?;
+        Ok(true)
+    }
+
     pub(super) async fn prepare_gpu_picking(&mut self) -> Result<(), JsValue> {
         self.renderer
             .enable_gpu_picking_async()

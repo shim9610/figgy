@@ -293,6 +293,24 @@ impl FiggyChart {
             chart.auto_fit_layer_extent(layer, &x_ext, &y_ext, padding);
             self.replace_chart_config(chart.config().clone())?;
         }
+        // A 3D chart's z axis fits to its height columns' statistics.
+        let config = self.chart_config();
+        let three_d = match layer {
+            renderer::LayerRef::Subplot(index) | renderer::LayerRef::SubplotOverlay(index, _) => {
+                config
+                    .subplots
+                    .get(index)
+                    .is_some_and(|subplot| subplot.config.view_3d.is_some())
+            }
+            _ => config.view_3d.is_some(),
+        };
+        if three_d {
+            let mut chart = Chart::new(config.clone());
+            chart
+                .auto_fit_view_3d_z(self.renderer.pool(), layer, &series, padding)
+                .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+        }
         self.request_host_redraw();
         Ok(())
     }
