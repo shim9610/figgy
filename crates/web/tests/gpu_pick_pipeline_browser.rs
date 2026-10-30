@@ -161,6 +161,7 @@ async fn streamline_series_round_trip_and_pick_through_the_wrapper() {
         label: None,
         x_column: "sl-x".into(),
         y_column: "sl-y".into(),
+        z_column: None,
         render_type: DataRenderType::Streamlines {
             line: renderer::DataLineStyleConfig {
                 line_width: 2.0,
@@ -289,6 +290,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             label: None,
             x_column: "browser-direct-x".into(),
             y_column: "browser-direct-y".into(),
+            z_column: None,
             render_type: DataRenderType::Scatter { scatter: scatter() },
         },
         SeriesConfig {
@@ -297,6 +299,7 @@ async fn chrome_dawn_creates_and_executes_gpu_pick_pipeline_without_validation_e
             label: None,
             x_column: "browser-pick-x".into(),
             y_column: "browser-pick-y".into(),
+            z_column: None,
             render_type: DataRenderType::Scatter { scatter: scatter() },
         },
     ];

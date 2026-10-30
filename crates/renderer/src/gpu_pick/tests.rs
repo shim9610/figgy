@@ -198,6 +198,7 @@ fn scatter_series(
         label: None,
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
+        z_column: None,
         render_type: DataRenderType::Scatter { scatter },
     }
 }
@@ -216,6 +217,7 @@ fn line_series(
         label: None,
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -2354,6 +2356,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
         label: None,
         x_column: "parity-tie-x0".into(),
         y_column: "parity-tie-y0".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine { scatter, line },
     };
     let later_series = scatter_series(

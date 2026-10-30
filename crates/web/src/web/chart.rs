@@ -739,6 +739,7 @@ impl FiggyChart {
             label: rich_label.clone(),
             x_column: x_column.into(),
             y_column: y_column.into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,

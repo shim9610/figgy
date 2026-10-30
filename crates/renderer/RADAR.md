@@ -59,6 +59,7 @@ let series = vec![SeriesConfig {
     label: None,
     x_column: "categories".into(),
     y_column: "release1".into(),
+    z_column: None,
     render_type: DataRenderType::Radar {
         color: Color::from_rgb8(60, 110, 200),
         style: RadarSeriesStyle::default(),

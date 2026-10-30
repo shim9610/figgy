@@ -212,6 +212,7 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         label: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -288,6 +289,7 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -355,6 +357,7 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         label: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -438,6 +441,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         label: None,
         x_column: "bump_x".into(),
         y_column: "bump_y".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: MatrixRef {
                 columns: ids,

@@ -1239,8 +1239,9 @@ impl Chart {
 
     /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
     /// union of the height columns' cached statistics of the layer's
-    /// heatmaps and contours. A display parameter from column statistics
-    /// (rule 1): nothing is read back. A flat chart is left as it is.
+    /// heatmaps and contours and of the `z_column` of its scatter and line
+    /// series (#132). A display parameter from column statistics (rule 1):
+    /// nothing is read back. A flat chart is left as it is.
     pub fn auto_fit_view_3d_z(
         &mut self,
         pool: &ColumnPool,
@@ -1270,7 +1271,12 @@ impl Chart {
                 DataRenderType::Heatmap { matrix, .. }
                 | DataRenderType::Contour { matrix, .. }
                 | DataRenderType::HeatmapContour { matrix, .. } => matrix,
-                _ => continue,
+                _ => {
+                    if let Some(id) = cfg.z_column.as_deref() {
+                        z.union(&Self::slot_extent(pool, id)?);
+                    }
+                    continue;
+                }
             };
             for id in &matrix.columns {
                 z.union(&Self::slot_extent(pool, id)?);

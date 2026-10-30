@@ -56,6 +56,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -308,6 +309,7 @@ fn main() {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: color,
@@ -406,6 +408,7 @@ fn main() {
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),
@@ -447,6 +450,7 @@ fn main() {
         label: None,
         x_column: "px".into(),
         y_column: "pb".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: DataScatterStyleConfig {
                 point_color: Color::from_rgb8(255, 142, 92),

@@ -1024,6 +1024,7 @@ impl Renderer {
             label: _,
             x_column: _,
             y_column: _,
+            z_column: _,
             render_type,
         } = cfg;
         let series_salt = crate::sketch::fnv1a(series_id);

@@ -904,6 +904,7 @@ fn prepare_demo_declarations(
             label: Some(rich_label.clone()),
             x_column: x_column.to_string(),
             y_column: y_column.to_string(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -1025,6 +1026,7 @@ mod tests {
             label: None,
             x_column: "x".to_string(),
             y_column: "y".to_string(),
+            z_column: None,
             render_type,
         }
     }
@@ -1036,6 +1038,7 @@ mod tests {
             label: None,
             x_column: x.to_string(),
             y_column: y.to_string(),
+            z_column: None,
             render_type: DataRenderType::Line { line: line_style() },
         }
     }

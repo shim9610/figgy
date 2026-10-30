@@ -176,6 +176,7 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: color,
@@ -708,6 +709,7 @@ pub fn line(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: renderer::DataLineStyleConfig {
                 line_style: style,
@@ -1473,6 +1475,7 @@ fn arrows(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "u".into(),
@@ -1642,6 +1645,7 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             label: None,
             x_column: "gx".into(),
             y_column: "gy".into(),
+            z_column: None,
             render_type: DataRenderType::Vector {
                 components: VectorComponents::Grid {
                     u: matrix("u"),
@@ -1736,6 +1740,7 @@ fn arrows_ringed() -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "ring_u".into(),
@@ -1991,6 +1996,7 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Histogram {
                 bar: DataBarStyleConfig {
                     fill_color: RED,
@@ -2127,6 +2133,7 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 Shading::Flat => "hy".into(),
                 _ => "cy".into(),
             },
+            z_column: None,
             render_type: DataRenderType::Heatmap {
                 matrix: MatrixRef {
                     columns: vec!["h0".into(), "h1".into(), "h2".into()],
@@ -2232,6 +2239,7 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         label: None,
         x_column: "cgx".into(),
         y_column: "cgy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["c0".into(), "c1".into(), "c2".into()],
@@ -2411,6 +2419,7 @@ fn contour_strokes_pick_where_they_paint() {
         label: None,
         x_column: "sgx".into(),
         y_column: "sgy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["s0".into(), "s1".into(), "s2".into()],
@@ -2699,6 +2708,7 @@ pub fn errorbar_series(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type,
     }
 }
@@ -3131,6 +3141,7 @@ fn category_bars_pick_the_bar_they_paint() {
             label: None,
             x_column: "pos".into(),
             y_column: id.into(),
+            z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color,
                 style,
@@ -3341,6 +3352,7 @@ fn box_plots_pick_the_box_they_paint() {
                 label: None,
                 x_column: "pos".into(),
                 y_column: "record".into(),
+                z_column: None,
                 render_type: DataRenderType::BoxPlot {
                     color: RED,
                     style: BoxPlotStyle {
@@ -3514,6 +3526,7 @@ fn range_bars_pick_the_bar_they_paint() {
             label: None,
             x_column: "pos".into(),
             y_column: "end".into(),
+            z_column: None,
             render_type: DataRenderType::RangeBars {
                 color: RED,
                 style: CategoryBarStyle {
@@ -3698,6 +3711,7 @@ fn violins_and_raincloud_points_pick_what_they_paint() {
             label: None,
             x_column: "pos".into(),
             y_column: String::new(),
+            z_column: None,
             render_type: DataRenderType::BoxPlot {
                 color: RED,
                 style: BoxPlotStyle::default(),
@@ -3813,6 +3827,7 @@ fn radar(id: &str, style: renderer::RadarSeriesStyle) -> SeriesConfig {
         label: None,
         x_column: "cat".into(),
         y_column: "val".into(),
+        z_column: None,
         render_type: DataRenderType::Radar {
             color: RED,
             style,
@@ -3997,6 +4012,7 @@ fn value_labels_pick_where_they_paint() {
             label: None,
             x_column: "pos".into(),
             y_column: id.into(),
+            z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color,
                 style,
@@ -4073,6 +4089,7 @@ fn value_labels_pick_where_they_paint() {
             label: None,
             x_column: "cat".into(),
             y_column: "radar".into(),
+            z_column: None,
             render_type: DataRenderType::Radar {
                 color: RED,
                 style: renderer::RadarSeriesStyle {
@@ -4166,6 +4183,7 @@ fn streamline(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Streamlines {
             line: renderer::DataLineStyleConfig {
                 line_style: style,

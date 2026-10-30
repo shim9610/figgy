@@ -1544,6 +1544,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -1574,6 +1575,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -1602,6 +1604,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -1807,6 +1810,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Vector {
                 components: crate::data_config::VectorComponents::Points {
                     u: u.into(),

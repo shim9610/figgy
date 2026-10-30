@@ -143,6 +143,7 @@ fn radar(id: &str, values: &str, color: Color, style: RadarSeriesStyle) -> Serie
         label: None,
         x_column: "cat".into(),
         y_column: values.into(),
+        z_column: None,
         render_type: DataRenderType::Radar {
             color,
             style,
