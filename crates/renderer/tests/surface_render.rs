@@ -250,3 +250,43 @@ fn the_id_pick_answers_the_sample_under_the_cursor() {
         assert_eq!(miss, None, "{scale}x");
     }
 }
+
+/// The picked sample's patch is drawn over the surface around the sample's
+/// projected place, at 1x and 2x, and nowhere else.
+#[test]
+fn the_picked_sample_patch_is_highlighted() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let mut config = chart_3d();
+    config.picked_data = Some(renderer::DataSelectionsConfig {
+        refs: vec![renderer::PickedDataRef::MatrixCell {
+            source_id: None,
+            series_id: "ridge".into(),
+            x_index: 10,
+            y_index: 3,
+        }],
+        highlight_color: Color::new(1.0, 0.0, 1.0, 1.0),
+        ..renderer::DataSelectionsConfig::default()
+    });
+    let series = [surface_series(21, Shading::Interpolated, None)];
+    let (x, y) = (0.5, 3.0 / 16.0);
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("surface-picked-{scale}x"), &img);
+        let at = config.scaled(scale).project_3d([x, y, ridge(x, y)]).unwrap();
+        let (mut near, mut far) = (0, 0);
+        for (i, p) in img.rgba.chunks_exact(4).enumerate() {
+            if !(p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180) {
+                continue;
+            }
+            let (px, py) = ((i as u32 % img.width) as f64, (i as u32 / img.width) as f64);
+            if (px - at[0]).hypot(py - at[1]) < 30.0 * f64::from(scale) {
+                near += 1;
+            } else {
+                far += 1;
+            }
+        }
+        assert!(near > 10, "{scale}x: {near} outline pixels at the sample");
+        assert_eq!(far, 0, "{scale}x: outline pixels away from the sample");
+    }
+}
