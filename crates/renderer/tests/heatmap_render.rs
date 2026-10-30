@@ -199,7 +199,11 @@ fn heatmap(
         x_column: "gx".into(),
         y_column: "gy".into(),
         render_type: if levels.is_empty() {
-            DataRenderType::Heatmap { matrix, fill }
+            DataRenderType::Heatmap {
+                matrix,
+                fill,
+                surface: None,
+            }
         } else {
             DataRenderType::HeatmapContour {
                 matrix,
@@ -217,6 +221,7 @@ fn heatmap(
                     per_level_color: None,
                     labels: None,
                 },
+                surface: None,
             }
         },
     }

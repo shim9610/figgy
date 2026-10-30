@@ -1201,6 +1201,7 @@ fn typed_gpu_pick_returns_canonical_heatmap_cell_indices() {
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
             },
+            surface: None,
         },
     };
     let chart = renderer
@@ -1273,6 +1274,7 @@ fn typed_gpu_pick_prefers_heatmap_contour_level_over_containing_cell() {
                 per_level_color: None,
                 labels: None,
             },
+            surface: None,
         },
     };
     let chart = renderer
@@ -1896,6 +1898,7 @@ fn state_test_heatmap(id: &str, x: &str, y: &str, z: &[&str]) -> SeriesConfig {
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
             },
+            surface: None,
         },
     }
 }
@@ -1920,13 +1923,19 @@ fn state_test_heatmap_contour(
     levels: usize,
 ) -> SeriesConfig {
     let mut series = state_test_heatmap(id, x, y, z);
-    let DataRenderType::Heatmap { matrix, fill } = series.render_type else {
+    let DataRenderType::Heatmap {
+        matrix,
+        fill,
+        surface: _,
+    } = series.render_type
+    else {
         unreachable!();
     };
     series.render_type = DataRenderType::HeatmapContour {
         matrix,
         fill,
         contour: state_test_contour_config(levels),
+        surface: None,
     };
     series
 }
@@ -2727,6 +2736,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
         DataRenderType::Heatmap {
             matrix: matrix.clone(),
             fill: fill.clone(),
+            surface: None,
         },
         DataRenderType::Contour {
             matrix: matrix.clone(),
@@ -2736,6 +2746,7 @@ fn field_and_bar_types_are_not_submitted_to_the_paired_extent_reducer() {
             matrix,
             fill,
             contour,
+            surface: None,
         },
     ];
     for render_type in &unpaired {
@@ -2827,6 +2838,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
         DataRenderType::Heatmap {
             matrix: matrix.clone(),
             fill: fill.clone(),
+            surface: None,
         },
         DataRenderType::Contour {
             matrix: matrix.clone(),
@@ -2836,6 +2848,7 @@ fn draw_style_supports_matches_the_primitives_each_style_draws() {
             matrix,
             fill,
             contour,
+            surface: None,
         },
     ];
     let err = crate::data_config::DataErrorBarStyleConfig {
@@ -3129,6 +3142,7 @@ fn set_chart_config_rejects_removing_required_colorbar_without_publishing() {
                 shading: crate::data_config::Shading::Flat,
                 opacity: 1.0,
             },
+            surface: None,
         },
     };
     let chart = renderer

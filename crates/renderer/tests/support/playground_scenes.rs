@@ -827,6 +827,7 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     bg_padding_px: 2.0,
                 }),
             },
+            surface: None,
         },
     )];
     Ok(CartesianScene {
@@ -980,6 +981,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 shading: Shading::Interpolated,
                 opacity: 0.3,
             },
+            surface: None,
         },
     );
     // The gradient grid: data-scaled, so the tips follow the axes when the

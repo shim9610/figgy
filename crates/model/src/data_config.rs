@@ -12,6 +12,7 @@ use crate::line::LineStylePreset;
 use crate::material::Material;
 use crate::text::RichText;
 use crate::tick::TickError;
+use crate::view3d::SurfaceStyle;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -119,6 +120,15 @@ pub enum DataRenderType {
     Heatmap {
         matrix: MatrixRef,
         fill: FieldFillConfig,
+        /// The look of the heatmap drawn as a surface on a 3D chart
+        /// (`Config.view_3d`); kept and unused on a flat chart. `None` (the
+        /// default, omitted from JSON) draws the surface with
+        /// [`SurfaceStyle::default`].
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        surface: Option<SurfaceStyle>,
     },
     /// Contour lines only — the field is not filled.
     Contour {
@@ -130,6 +140,13 @@ pub enum DataRenderType {
         matrix: MatrixRef,
         fill: FieldFillConfig,
         contour: ContourConfig,
+        /// The surface's look on a 3D chart, as [`DataRenderType::Heatmap`]'s;
+        /// the contours draw on the box floor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        surface: Option<SurfaceStyle>,
     },
     /// A vector field (quiver plot): one arrow per sample, with the direction
     /// and length given by the host's `u` / `v` components.
@@ -4953,6 +4970,7 @@ mod serde_tests {
             DataRenderType::Heatmap {
                 matrix: matrix.clone(),
                 fill: fill.clone(),
+                surface: None,
             },
             DataRenderType::Contour {
                 matrix: matrix.clone(),
@@ -4962,6 +4980,7 @@ mod serde_tests {
                 matrix,
                 fill,
                 contour,
+                surface: None,
             },
         ];
         for case in cases {
@@ -7022,6 +7041,7 @@ mod step_selection_tests {
                 shading: Shading::Flat,
                 opacity: 1.0,
             },
+            surface: None,
         };
         let grid = vector(VectorComponents::Grid {
             u: matrix(

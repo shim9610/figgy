@@ -648,6 +648,7 @@ impl SubplotElement {
                 draw_style,
                 polar,
                 ternary,
+                view_3d,
                 overlays,
                 subplots,
                 // `subplot_config` resets these two; the stored ones stay.
@@ -671,6 +672,7 @@ impl SubplotElement {
                 draw_style,
                 polar,
                 ternary,
+                view_3d,
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,

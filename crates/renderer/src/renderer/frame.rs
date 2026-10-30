@@ -52,6 +52,7 @@ pub(super) fn annotation_raster_for_chart(
         draw_style,
         polar: _,
         ternary: _,
+        view_3d: _,
         overlays: _,
         subplots: _,
         active_layer: _,

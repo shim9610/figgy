@@ -181,6 +181,7 @@ fn heatmap_contour(columns: &[&str], levels: Vec<f64>) -> SeriesConfig {
                 opacity: 1.0,
             },
             contour: contour_config(levels, None),
+            surface: None,
         },
     }
 }
@@ -2108,6 +2109,7 @@ fn field_panel_probe_matches_the_winit_demo() {
                     bg_padding_px: 2.0,
                 }),
             },
+            surface: None,
         },
     }];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();

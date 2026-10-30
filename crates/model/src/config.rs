@@ -929,6 +929,15 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub ternary: Option<crate::ternary::TernaryOptions>,
+    /// The 3D view. `None` (default, key absent in JSON) is the flat chart;
+    /// `Some` draws a box seen through this camera, heatmaps as surfaces
+    /// and contours on its floor, with x on `bottom_x`, y on `left_y` and
+    /// z on `right_y`. See [`crate::view3d`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub view_3d: Option<crate::view3d::View3d>,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
@@ -1025,6 +1034,9 @@ impl Config {
             polar,
             // The ternary switch holds no pixel dimension.
             ternary,
+            // The camera holds angles, a distance in box half-diagonals and
+            // relative lengths: no pixel dimension.
+            view_3d: _,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.

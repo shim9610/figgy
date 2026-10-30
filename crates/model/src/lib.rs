@@ -84,6 +84,7 @@ pub mod boxplot;
 pub use boxplot::*;
 pub mod polar;
 pub mod ternary;
+pub mod view3d;
 pub use polar::{
     AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
     PolarOptions,

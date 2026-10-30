@@ -319,6 +319,7 @@ pub fn default_config() -> Config {
         draw_style: DrawStyle::Precise,
         polar: None,
         ternary: None,
+        view_3d: None,
         overlays: Vec::new(),
         subplots: Vec::new(),
         active_layer: LayerRef::Base,

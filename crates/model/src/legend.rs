@@ -941,6 +941,7 @@ mod tests {
                 matrix: matrix(),
                 fill: fill(),
                 contour: contour(level_color),
+                surface: None,
             },
         ] {
             let mark = series_symbol_segments(&field_series(render_type), None);
@@ -965,6 +966,7 @@ mod tests {
                 opacity: 0.5,
                 ..fill()
             },
+            surface: None,
         });
         let map = ColorMap::Viridis;
         let mark = series_symbol_segments(&heatmap, Some(&map));
@@ -1013,6 +1015,7 @@ mod tests {
         let heatmap = field_series(DataRenderType::Heatmap {
             matrix: matrix(),
             fill: fill(),
+            surface: None,
         });
         let mark = series_symbol_segments(&heatmap, None);
         assert_eq!(mark.len(), 1);

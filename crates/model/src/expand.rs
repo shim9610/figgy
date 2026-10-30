@@ -632,6 +632,7 @@ impl Config {
             draw_style,
             polar,
             ternary,
+            view_3d,
             overlays,
             // A panel is a single chart; expansion ignores the active layer
             // and the annotation layer is drawn with the base panel.
@@ -716,6 +717,7 @@ impl Config {
             draw_style: *draw_style,
             polar: polar.clone(),
             ternary: ternary.clone(),
+            view_3d: view_3d.clone(),
             overlays: Vec::new(),
             subplots: Vec::new(),
             active_layer: LayerRef::Base,
@@ -758,6 +760,7 @@ impl Config {
             draw_style,
             polar,
             ternary,
+            view_3d,
             // A panel is a single chart without layers of its own.
             overlays: _,
             subplots: _,
@@ -794,6 +797,7 @@ impl Config {
             draw_style: *draw_style,
             polar: polar.clone(),
             ternary: ternary.clone(),
+            view_3d: view_3d.clone(),
             overlays: Vec::new(),
             subplots: Vec::new(),
             active_layer: LayerRef::Base,
@@ -1104,6 +1108,7 @@ impl Config {
             draw_style: _,
             polar: _,
             ternary: _,
+            view_3d: _,
             overlays: _,
             subplots: _,
             active_layer: _,
@@ -1164,6 +1169,7 @@ fn retain_picks(panel: &mut Config, keep: impl Fn(&str) -> bool) {
         draw_style: _,
         polar: _,
         ternary: _,
+        view_3d: _,
         overlays: _,
         subplots: _,
         active_layer: _,

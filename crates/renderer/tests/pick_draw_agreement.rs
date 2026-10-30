@@ -2141,6 +2141,7 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                     shading: shading.clone(),
                     opacity: 1.0,
                 },
+                surface: None,
             },
         }];
         for scale in [1.0, 2.0] {

@@ -584,6 +584,7 @@ mod tests {
                 matrix: matrix(),
                 fill: fill(),
                 contour: contour(),
+                surface: None,
             },
         ] {
             let mut item = series(render_type);
@@ -601,6 +602,7 @@ mod tests {
         let mut heatmap = series(DataRenderType::Heatmap {
             matrix: matrix(),
             fill: fill(),
+            surface: None,
         });
         let before = heatmap.clone();
         ColorCycle::Classic.apply_to_series(&mut heatmap, 2);

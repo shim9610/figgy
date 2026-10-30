@@ -256,6 +256,17 @@ impl Config {
         if let Element::DataAreaEdge(side) = element {
             return self.nudge_data_area_edge(side, dx, dy);
         }
+        // A 3D chart's data area is grabbed to orbit the camera; its edges
+        // still resize it.
+        if let Element::DataArea = element
+            && self.view_3d.is_some()
+        {
+            return if self.orbit_view(dx, dy) {
+                NudgeResult::Moved
+            } else {
+                NudgeResult::Rejected(NudgeReject::OutOfBounds)
+            };
+        }
         if let Element::DataArea = element {
             return self.nudge_data_area(dx, dy);
         }
