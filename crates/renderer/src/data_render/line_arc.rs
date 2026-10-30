@@ -49,6 +49,7 @@ pub(crate) const LINE_ARC_SHADER: crate::shader_assembly::Assembled = crate::sha
     "data_render/common/transform.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
+    "data_render/common/project_3d.wgsl",
     "data_render/common/line_step.wgsl",
     "data_render/common/arc_pair.wgsl",
     "data_render/line_arc.wgsl",
@@ -214,7 +215,13 @@ pub struct ArcScanPipelines {
     storage_bgl: wgpu::BindGroupLayout,
     replay_bgl: wgpu::BindGroupLayout,
     star_args_bgl: wgpu::BindGroupLayout,
+    /// Group 3 of `seg_init_3d`: the camera of a 3D line (#132), the
+    /// surface data layout.
+    view3d_bgl: wgpu::BindGroupLayout,
     seg_init: wgpu::ComputePipeline,
+    /// `seg_init` for a 3D chart's line: the segment lengths of the
+    /// projected chords, with the camera bound as group 3.
+    seg_init_3d: wgpu::ComputePipeline,
     scan_block: wgpu::ComputePipeline,
     add_offsets: wgpu::ComputePipeline,
     apply_carry: wgpu::ComputePipeline,
@@ -348,6 +355,40 @@ pub fn create_arc_scan_pipelines_observed(
             immediate_size: 0,
         },
     );
+    // The surface data layout's bindings (the camera and params, 4 and 5)
+    // visible to the compute stage: `seg_init_3d` reads the camera.
+    let view3d_bgl = {
+        let uniform = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy arc view3d bgl"),
+                entries: &[uniform(4), uniform(5)],
+            },
+        )
+    };
+    let layout_3d = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy arc scan 3D layout"),
+            bind_group_layouts: &[
+                Some(&transform_bgl),
+                Some(&storage_bgl),
+                None,
+                Some(&view3d_bgl),
+            ],
+            immediate_size: 0,
+        },
+    );
     let replay_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -393,6 +434,9 @@ pub fn create_arc_scan_pipelines_observed(
         seg_init: observe_value(observer, INIT_SCOPE, "seg_init", || {
             pipeline(&layout, "seg_init")
         }),
+        seg_init_3d: observe_value(observer, INIT_SCOPE, "seg_init_3d", || {
+            pipeline(&layout_3d, "seg_init_3d")
+        }),
         scan_block: observe_value(observer, INIT_SCOPE, "scan_block", || {
             pipeline(&layout, "scan_block")
         }),
@@ -418,6 +462,7 @@ pub fn create_arc_scan_pipelines_observed(
         storage_bgl,
         replay_bgl,
         star_args_bgl,
+        view3d_bgl,
     }
 }
 
@@ -432,6 +477,7 @@ pub async fn create_arc_scan_pipelines_observed_async(
         LINE_ARC_SHADER.source,
         &[
             ("seg_init", "seg_init"),
+            ("seg_init_3d", "seg_init_3d"),
             ("scan_block", "scan_block"),
             ("add_offsets", "add_offsets"),
             ("apply_carry", "apply_carry"),
@@ -624,6 +670,8 @@ pub struct ArcScratch {
     // (transform_buf, carry_buf) needs a named field.
     bg_transform: wgpu::BindGroup,
     chunks: Vec<ChunkBinds>,
+    /// A 3D line's camera (#132): `seg_init_3d` runs with it as group 3.
+    view3d: Option<super::surface_mesh::View3dBinding>,
     /// Constellation star pass state — built only for styles that draw the
     /// arc-driven star pass (`build`'s `star_data_bgl` argument).
     pub star: Option<StarPass>,
@@ -657,10 +705,17 @@ pub(crate) struct ArcParams {
     pub(crate) mode: u32,
     /// A ternary line's third component's element offset in the pool;
     /// `seg_init` measures the chord `vs_ternary` draws when the transform's
-    /// ternary flag is set. Zero otherwise.
+    /// ternary flag is set. A 3D line's height column's (`ARC_FLAG_3D`),
+    /// measured by `seg_init_3d` through the camera. Zero otherwise.
     pub(crate) c_base: u32,
-    pub(crate) _pad: [u32; 2],
+    /// `ARC_FLAG_*`.
+    pub(crate) flags: u32,
+    pub(crate) _pad: u32,
 }
+
+/// `ArcParams.flags`: the line is a 3D chart's, its height at `c_base`
+/// (#132). Pinned to the WGSL constant by `shader_consistency`.
+pub(crate) const ARC_FLAG_3D: u32 = 1;
 
 const _: () = assert!(std::mem::size_of::<ArcParams>() == 32);
 
@@ -747,7 +802,8 @@ impl ArcReplayLeaf {
             start: self.local_start,
             mode: 0,
             c_base: 0,
-            _pad: [0; 2],
+            flags: 0,
+            _pad: 0,
         }
     }
 
@@ -892,7 +948,20 @@ impl ArcScratch {
         star_data_bgl: Option<&wgpu::BindGroupLayout>,
         step_mode: u32,
         c_base: u32,
+        view3d: Option<&super::surface_mesh::View3dGpu>,
     ) -> Option<Self> {
+        let arc_flags = if view3d.is_some() { ARC_FLAG_3D } else { 0 };
+        let view3d = view3d.map(|camera| {
+            super::surface_mesh::create_view3d_binding(
+                ledger,
+                device,
+                &pipelines.view3d_bgl,
+                camera,
+                1.0,
+                0,
+                None,
+            )
+        });
         let plan = buffer_plan(
             n,
             max_workgroups_per_dimension,
@@ -1024,7 +1093,8 @@ impl ArcScratch {
                     start,
                     mode: step_mode,
                     c_base,
-                    _pad: [0; 2],
+                    flags: arc_flags,
+                    _pad: 0,
                 },
             );
             let p_s0 = params_buf(
@@ -1036,7 +1106,8 @@ impl ArcScratch {
                     start: 0,
                     mode: 0,
                     c_base: 0,
-                    _pad: [0; 2],
+                    flags: 0,
+                    _pad: 0,
                 },
             );
             let p_s1 = params_buf(
@@ -1048,7 +1119,8 @@ impl ArcScratch {
                     start: 0,
                     mode: 0,
                     c_base: 0,
-                    _pad: [0; 2],
+                    flags: 0,
+                    _pad: 0,
                 },
             );
             chunks.push(ChunkBinds {
@@ -1144,6 +1216,7 @@ impl ArcScratch {
             carry_buf,
             bg_transform,
             chunks,
+            view3d,
             star,
             charge: shared_charge(tally, ledger, GpuResourceKind::ArcScan),
         })
@@ -1195,7 +1268,13 @@ impl ArcScratch {
             let b0 = blocks(chunk.len);
             let b1 = blocks(b0);
 
-            pass.set_pipeline(&pipelines.seg_init);
+            match &self.view3d {
+                Some(view3d) => {
+                    pass.set_pipeline(&pipelines.seg_init_3d);
+                    pass.set_bind_group(3, &view3d.bind_group, &[]);
+                }
+                None => pass.set_pipeline(&pipelines.seg_init),
+            }
             pass.set_bind_group(1, &chunk.bg_arc, &[]);
             pass.dispatch_workgroups(b0, 1, 1);
 
@@ -1540,6 +1619,7 @@ mod replay_product_tests {
                 None,
                 0,
                 0,
+                None,
             )
             .expect("resident oracle build");
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1635,7 +1715,8 @@ mod replay_product_tests {
                             start: 0,
                             mode: 0,
                             c_base: 0,
-                            _pad: [0; 2],
+                            flags: 0,
+                            _pad: 0,
                         },
                     );
                     let upper_params = init(
@@ -1647,7 +1728,8 @@ mod replay_product_tests {
                             start: 0,
                             mode: 0,
                             c_base: 0,
-                            _pad: [0; 2],
+                            flags: 0,
+                            _pad: 0,
                         },
                     );
                     let top_storage = pipelines.replay_storage_bind_group(

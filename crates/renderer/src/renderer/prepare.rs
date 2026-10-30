@@ -51,6 +51,8 @@ pub(super) struct PrepareContext<'a> {
     pub(super) per_point_style_map_bgl: &'a wgpu::BindGroupLayout,
     pub(super) point_value_map_bgl: &'a wgpu::BindGroupLayout,
     pub(super) neutral_point_value_map_bg: &'a wgpu::BindGroup,
+    pub(super) neutral_point_value_map_buffers: &'a data_render::PointValueMapBuffers,
+    pub(super) view3d_value_map_bgl: &'a wgpu::BindGroupLayout,
     pub(super) data_selection_bgl: &'a wgpu::BindGroupLayout,
     pub(super) star_data_bgl: &'a wgpu::BindGroupLayout,
     pub(super) sampler: &'a wgpu::Sampler,
@@ -132,6 +134,7 @@ impl PrepareContext<'_> {
             &self.style_bgl,
             &self.per_point_style_map_bgl,
             self.point_value_map_bgl,
+            [self.surface_bgl, self.view3d_value_map_bgl],
             &self.data_selection_bgl,
             &self.field_bgl,
             self.vector_bgl,
@@ -507,6 +510,26 @@ impl PrepareContext<'_> {
         Ok((prepared, column_sources))
     }
 
+    /// The value-map buffers a mapped scatter series on a 3D chart binds
+    /// beside the camera (#132): the series' own when it has a value map,
+    /// else the renderer's neutral ones; `None` for a plain series.
+    pub(super) fn scatter_value_map_buffers(
+        &self,
+        cfg: &SeriesConfig,
+        mapped: bool,
+    ) -> Option<&data_render::PointValueMapBuffers> {
+        if !mapped {
+            return None;
+        }
+        let scatter = extract_scatter(&cfg.render_type)?;
+        if scatter.point_color_map.is_none() && scatter.point_size_map.is_none() {
+            return Some(self.neutral_point_value_map_buffers);
+        }
+        self.value_map_cache
+            .get(cfg.series_id.as_str())
+            .map(|scratch| &scratch.buffers)
+    }
+
     /// The value columns and group-3 bind group a mapped scatter draw binds.
     ///
     /// `None` everywhere when the series draws through the plain pipeline. With
@@ -643,9 +666,9 @@ pub(super) fn draw_panel_composite(
     data_area: Rect,
     series_list: &[data_render::SeriesLayers<'_>],
 ) {
-    let three_d = series_list
-        .iter()
-        .any(|s| s.surface.is_some() || s.floor.is_some());
+    let three_d = series_list.iter().any(|s| {
+        s.surface.is_some() || s.floor.is_some() || s.line_3d.is_some() || s.scatter_3d.is_some()
+    });
     // A flat panel with the stencil attachment (a ternary chart with a
     // region fill) draws in two passes: the region fills into the stencil,
     // then its bodies with the 2D pipelines, which carry no depth-stencil

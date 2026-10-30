@@ -15,13 +15,15 @@ use std::sync::{Arc, OnceLock};
 
 use renderer::data::Column;
 use renderer::data_config::{
-    FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
+    DataLineStyleConfig, DataScatterStyleConfig, FieldFillConfig, FillMode, GridLayout,
+    LineInterpolation, MatrixOrientation, MatrixRef, ScatterShape, Shading,
 };
 use renderer::layout::{ChartArea, Rect};
+use renderer::line::LineStylePreset;
 use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
 use renderer::{
-    Chart, Color, ColorMap, Config, DataRenderType, RasterImage, Renderer, RendererDevice,
-    SeriesConfig,
+    Chart, Color, ColorMap, Config, DataRenderType, DataSelectionsConfig, PickedDataRef,
+    RasterImage, Renderer, RendererDevice, SeriesConfig,
 };
 
 const WIDTH: u32 = 520;
@@ -770,4 +772,528 @@ fn the_2x_camera_is_the_1x_camera_doubled() {
             "{t:?}: 1x {p:?}, 2x {q:?}"
         );
     }
+}
+
+// ── Scatter and line series on a 3D chart (#132) ────────────────────────────
+
+const RED: Color = Color {
+    r: 1.0,
+    g: 0.0,
+    b: 0.0,
+    a: 1.0,
+};
+
+fn is_red(p: [u8; 4]) -> bool {
+    p[3] > 100 && p[0] > 170 && p[1] < 90 && p[2] < 90
+}
+
+/// Whether a red pixel lies within `radius` of `at`.
+fn red_near(img: &RasterImage, at: (f64, f64), radius: f64) -> bool {
+    let r = radius.ceil() as i64;
+    (-r..=r).any(|dy| {
+        (-r..=r).any(|dx| {
+            f64::from((dx * dx + dy * dy) as i32) <= radius * radius
+                && is_red(pixel(img, (at.0 + dx as f64, at.1 + dy as f64)))
+        })
+    })
+}
+
+/// A helix of `n` points through the box, as columns `tx`, `ty`, `tz`.
+fn upload_helix(r: &mut Renderer, n: usize) {
+    let xs: Vec<f64> = (0..n).map(|i| helix_point(n, i)[0]).collect();
+    let ys: Vec<f64> = (0..n).map(|i| helix_point(n, i)[1]).collect();
+    let zs: Vec<f64> = (0..n).map(|i| helix_point(n, i)[2]).collect();
+    for (id, data) in [("tx", xs), ("ty", ys), ("tz", zs)] {
+        let _ = r.remove_column(id);
+        r.add_column(id, &col(data)).unwrap();
+    }
+}
+
+fn helix_point(n: usize, i: usize) -> [f64; 3] {
+    let t = i as f64 / (n - 1) as f64;
+    [
+        0.5 + 0.33 * (4.0 * std::f64::consts::PI * t).cos(),
+        0.5 + 0.33 * (4.0 * std::f64::consts::PI * t).sin(),
+        0.05 + 0.9 * t,
+    ]
+}
+
+fn red_points(size: f32) -> DataScatterStyleConfig {
+    DataScatterStyleConfig {
+        point_color: RED,
+        point_shape: ScatterShape::CircleFilled,
+        point_size: size,
+        point_style_table: None,
+        point_style_index_column: None,
+        point_style_overrides: None,
+        point_color_map: None,
+        point_size_map: None,
+    }
+}
+
+fn red_line(width: f32, line_style: LineStylePreset) -> DataLineStyleConfig {
+    DataLineStyleConfig {
+        line_style,
+        line_color: RED,
+        line_width: width,
+        fill: None,
+        fill_color: None,
+        interpolation: LineInterpolation::Linear,
+    }
+}
+
+fn point_series(id: &str, x: &str, y: &str, z: &str, render_type: DataRenderType) -> SeriesConfig {
+    SeriesConfig {
+        series_id: id.into(),
+        source_id: None,
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: Some(z.into()),
+        render_type,
+    }
+}
+
+/// The markers and the stroke of a scatter-line series land where the
+/// camera puts its samples, at 1x and 2x, and nowhere else.
+#[test]
+fn scatter_and_line_series_draw_on_a_3d_chart() {
+    let mut r = renderer();
+    let n = 60;
+    upload_helix(&mut r, n);
+    let config = chart_3d();
+    let series = [point_series(
+        "helix",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::ScatterLine {
+            scatter: red_points(5.0),
+            line: red_line(3.0, LineStylePreset::Solid),
+        },
+    )];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("scatter_line_3d_{scale}x"), &img);
+        let displayed = config.scaled(scale);
+        for i in [0, 17, 30, 44, n - 1] {
+            let p = displayed.project_3d(helix_point(n, i)).unwrap();
+            assert!(
+                is_red(pixel(&img, (p[0], p[1]))),
+                "{scale}x: no marker at sample {i}, {p:?}"
+            );
+        }
+        // Between two samples: the stroke.
+        let (a, b) = (helix_point(n, 30), helix_point(n, 31));
+        let mid = displayed
+            .project_3d([
+                (a[0] + b[0]) / 2.0,
+                (a[1] + b[1]) / 2.0,
+                (a[2] + b[2]) / 2.0,
+            ])
+            .unwrap();
+        assert!(
+            red_near(&img, (mid[0], mid[1]), 2.0 * f64::from(scale)),
+            "{scale}x: no stroke between samples 30 and 31 at {mid:?}"
+        );
+        // The box's centre at z = 0 is well off the helix: nothing red.
+        let off = displayed.project_3d([0.5, 0.5, 0.0]).unwrap();
+        assert!(
+            !red_near(&img, (off[0], off[1]), 6.0 * f64::from(scale)),
+            "{scale}x: red ink off the helix at {off:?}"
+        );
+    }
+}
+
+/// A marker behind the surface is hidden by the depth test and one on the
+/// surface shows over it (the bias towards the camera).
+#[test]
+fn markers_are_depth_tested_against_the_surface() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    // On the near face of the ridge, exactly on the surface; and on the far
+    // slope, on the surface the peak hides (see the ID pick test).
+    let (shown, hidden) = ([0.5, 3.0 / 16.0], [0.5, 0.6]);
+    let points = [shown, hidden];
+    for (id, k) in [("px", 0), ("py", 1)] {
+        let _ = r.remove_column(id);
+        r.add_column(id, &col(points.iter().map(|p| p[k]).collect()))
+            .unwrap();
+    }
+    let _ = r.remove_column("pz");
+    r.add_column(
+        "pz",
+        &col(points.iter().map(|p| ridge(p[0], p[1])).collect()),
+    )
+    .unwrap();
+    let config = chart_3d();
+    let series = [
+        surface_series(21, Shading::Interpolated, None),
+        point_series(
+            "dots",
+            "px",
+            "py",
+            "pz",
+            DataRenderType::Scatter {
+                scatter: red_points(6.0),
+            },
+        ),
+    ];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("markers_depth_tested", &img);
+    let at = |p: [f64; 2]| {
+        let q = config.project_3d([p[0], p[1], ridge(p[0], p[1])]).unwrap();
+        (q[0], q[1])
+    };
+    assert!(
+        is_red(pixel(&img, at(shown))),
+        "the marker on the near face is drawn over the surface"
+    );
+    assert!(
+        !red_near(&img, at(hidden), 2.0),
+        "the marker behind the peak is hidden by the surface"
+    );
+    // Without the surface the hidden one shows: it is the depth test, not
+    // the placement, that hides it.
+    let alone = export(&mut r, &config, &series[1..], 1.0);
+    assert!(is_red(pixel(&alone, at(hidden))));
+}
+
+/// The ID pick answers the marker under the cursor and, on the stroke, the
+/// nearer end of the segment; beside the stroke nothing is a point.
+#[test]
+fn the_id_pick_answers_markers_and_segment_ends() {
+    let mut r = renderer();
+    let n = 40;
+    upload_helix(&mut r, n);
+    upload_grid(&mut r, 21, 17, |x, y| 0.5 * ridge(x, y));
+    let config = chart_3d();
+    let series = vec![
+        surface_series(21, Shading::Interpolated, None),
+        point_series(
+            "trail",
+            "tx",
+            "ty",
+            "tz",
+            DataRenderType::Line {
+                line: red_line(3.0, LineStylePreset::Solid),
+            },
+        ),
+        point_series(
+            "dots",
+            "tx",
+            "ty",
+            "tz",
+            DataRenderType::Scatter {
+                scatter: red_points(5.0),
+            },
+        ),
+    ];
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    for scale in [1.0f32, 2.0] {
+        let displayed = config.scaled(scale);
+        let pick = |r: &mut Renderer, at: [f64; 3], offset: [f64; 2]| {
+            let p = displayed.project_3d(at).unwrap();
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [(p[0] + offset[0]) as f32, (p[1] + offset[1]) as f32],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: (WIDTH as f32 * scale) as u32,
+                    height: (HEIGHT as f32 * scale) as u32,
+                },
+                display_scale: scale,
+                max_distance_px: 0.0,
+            };
+            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+        };
+        let point = |picked: Option<renderer::PickedData>| match picked {
+            Some(renderer::PickedData::Point {
+                series_id,
+                point_index,
+                ..
+            }) => (series_id, point_index),
+            other => panic!("{scale}x: picked {other:?}"),
+        };
+        // A marker, drawn over the stroke: the dots answer.
+        assert_eq!(
+            point(pick(&mut r, helix_point(n, 25), [0.0, 0.0])),
+            ("dots".to_string(), 25),
+            "{scale}x"
+        );
+        // On the stroke between samples 25 and 26 (a 16 px chord), past
+        // both markers (radius 5) and nearer 26: the trail's end 26 answers.
+        let (a, b) = (helix_point(n, 25), helix_point(n, 26));
+        let near_b = [
+            a[0] + 0.6 * (b[0] - a[0]),
+            a[1] + 0.6 * (b[1] - a[1]),
+            a[2] + 0.6 * (b[2] - a[2]),
+        ];
+        assert_eq!(
+            point(pick(&mut r, near_b, [0.0, 0.0])),
+            ("trail".to_string(), 26),
+            "{scale}x"
+        );
+        // Beside the stroke: never a point.
+        let beside = pick(&mut r, helix_point(n, 25), [0.0, -14.0 * f64::from(scale)]);
+        assert!(
+            !matches!(beside, Some(renderer::PickedData::Point { .. })),
+            "{scale}x: {beside:?}"
+        );
+    }
+    // `step_selection` walks the picked series' samples.
+    let mut stepped = config.clone();
+    stepped.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
+            source_id: None,
+            series_id: "dots".into(),
+            point_index: 25,
+        }],
+        ..DataSelectionsConfig::default()
+    });
+    let len = |id: &str| (id == "tx" || id == "ty" || id == "tz").then_some(n);
+    assert_eq!(stepped.step_selection(&series, 1, 0, len), Ok(true));
+    assert!(matches!(
+        stepped.picked_data.as_ref().unwrap().refs[0],
+        PickedDataRef::Point {
+            point_index: 26,
+            ..
+        }
+    ));
+}
+
+/// The picked ring draws around the marker's projected place at 1x and 2x.
+#[test]
+fn the_picked_ring_surrounds_the_3d_marker() {
+    let mut r = renderer();
+    let n = 40;
+    upload_helix(&mut r, n);
+    let mut config = chart_3d();
+    let series = [point_series(
+        "dots",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::Scatter {
+            scatter: red_points(5.0),
+        },
+    )];
+    let plain = export(&mut r, &config, &series, 1.0);
+    config.picked_data = Some(DataSelectionsConfig {
+        refs: vec![PickedDataRef::Point {
+            source_id: None,
+            series_id: "dots".into(),
+            point_index: 12,
+        }],
+        ..DataSelectionsConfig::default()
+    });
+    let selection = config.picked_data.clone().unwrap();
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        save(&format!("picked_ring_3d_{scale}x"), &img);
+        let p = config.scaled(scale).project_3d(helix_point(n, 12)).unwrap();
+        let extra = f64::from(selection.point_radius_extra_px * scale);
+        let ring_radius = 5.0 * f64::from(scale) + extra;
+        // Inked, not the marker, and (at 1x) not there without the
+        // selection: the ring, on the circle around the marker.
+        let mut on_ring = 0;
+        for k in 0..16 {
+            let a = k as f64 * std::f64::consts::TAU / 16.0;
+            let q = (p[0] + ring_radius * a.cos(), p[1] + ring_radius * a.sin());
+            let got = pixel(&img, q);
+            let changed = scale != 1.0 || got != pixel(&plain, q);
+            if got[3] > 60 && !is_red(got) && changed {
+                on_ring += 1;
+            }
+        }
+        assert!(
+            on_ring >= 10,
+            "{scale}x: ring pixels on {on_ring} of 16 samples"
+        );
+    }
+}
+
+/// A dashed 3D line has gaps along its projected chord; a solid one has
+/// none: the dash phase walks the chord the stroke draws.
+#[test]
+fn a_dashed_3d_line_dashes_along_the_projected_chord() {
+    let mut r = renderer();
+    for (id, data) in [
+        ("lx", vec![0.1, 0.9]),
+        ("ly", vec![0.1, 0.9]),
+        ("lz", vec![0.1, 0.9]),
+    ] {
+        let _ = r.remove_column(id);
+        r.add_column(id, &col(data)).unwrap();
+    }
+    let config = chart_3d();
+    let runs = |style: LineStylePreset, scale: f32, r: &mut Renderer| {
+        let series = [point_series(
+            "chord",
+            "lx",
+            "ly",
+            "lz",
+            DataRenderType::Line {
+                line: red_line(3.0, style),
+            },
+        )];
+        let img = export(r, &config, &series, scale);
+        let displayed = config.scaled(scale);
+        let a = displayed.project_3d([0.1, 0.1, 0.1]).unwrap();
+        let b = displayed.project_3d([0.9, 0.9, 0.9]).unwrap();
+        let steps = 400;
+        let mut runs = 0;
+        let mut inside = false;
+        for k in 40..=360 {
+            let t = k as f64 / steps as f64;
+            let red = red_near(
+                &img,
+                (a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])),
+                1.0,
+            );
+            if red && !inside {
+                runs += 1;
+            }
+            inside = red;
+        }
+        runs
+    };
+    for scale in [1.0f32, 2.0] {
+        assert_eq!(
+            runs(LineStylePreset::Solid, scale, &mut r),
+            1,
+            "{scale}x solid"
+        );
+        let dashed = runs(LineStylePreset::Dash, scale, &mut r);
+        assert!(dashed >= 4, "{scale}x dashed: {dashed} runs");
+    }
+}
+
+/// The screen path (the resident composite) draws the marks too.
+#[test]
+fn the_screen_draws_the_marks() {
+    let mut r = renderer();
+    let n = 30;
+    upload_helix(&mut r, n);
+    let config = chart_3d();
+    let series = vec![point_series(
+        "helix",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::ScatterLine {
+            scatter: red_points(5.0),
+            line: red_line(3.0, LineStylePreset::Solid),
+        },
+    )];
+    let img = paint_screen(&mut r, &config, &series);
+    let p = config.project_3d(helix_point(n, 10)).unwrap();
+    assert!(is_red(pixel(&img, (p[0], p[1]))), "{p:?}");
+}
+
+/// Rule 10: a trajectory past `1 << 20` rows draws whole and picks; the
+/// renderer caps no row count.
+#[test]
+fn a_million_row_trajectory_draws_and_picks() {
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Bgra8Unorm,
+        256 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    let n = (1 << 20) + 1;
+    upload_helix(&mut r, n);
+    let config = chart_3d();
+    let series = vec![point_series(
+        "helix",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::ScatterLine {
+            scatter: red_points(3.0),
+            line: red_line(2.0, LineStylePreset::Solid),
+        },
+    )];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("million_rows", &img);
+    let p = config.project_3d(helix_point(n, n - 1)).unwrap();
+    assert!(
+        red_near(&img, (p[0], p[1]), 2.0),
+        "the last row draws: {:?} at {p:?}",
+        pixel(&img, (p[0], p[1]))
+    );
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [p[0] as f32, p[1] as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    let picked = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+    // The nearest mark under the cursor answers: a row whose marker covers
+    // the last row's pixel and lies no deeper than it (the end of the helix
+    // is where its strands cross on screen).
+    match picked {
+        Some(renderer::PickedData::Point { point_index, .. }) => {
+            let q = config.project_3d(helix_point(n, point_index)).unwrap();
+            assert!(
+                (q[0] - p[0]).hypot(q[1] - p[1]) <= 3.5 && q[2] <= p[2] + 1e-6,
+                "picked row {point_index} at {q:?}, the last row at {p:?}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
+/// The renderer rejects a scatter series without a height column on a 3D
+/// chart, and the z fit spans a trajectory's heights.
+#[test]
+fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
+    let mut r = renderer();
+    upload_helix(&mut r, 20);
+    let config = chart_3d();
+    let mut flat = point_series(
+        "dots",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::Scatter {
+            scatter: red_points(5.0),
+        },
+    );
+    flat.z_column = None;
+    let err = r
+        .register_chart(config.clone(), vec![flat])
+        .err()
+        .expect("a 3D scatter names its z column");
+    assert!(err.to_string().contains("z_column"), "{err}");
+
+    let mut chart = Chart::new(config);
+    let series = [point_series(
+        "dots",
+        "tx",
+        "ty",
+        "tz",
+        DataRenderType::Scatter {
+            scatter: red_points(5.0),
+        },
+    )];
+    chart
+        .auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)
+        .unwrap();
+    let z = &chart.config().right_y;
+    assert!(
+        (z.min - 0.05).abs() < 1e-9 && (z.max - 0.95).abs() < 1e-9,
+        "{} {}",
+        z.min,
+        z.max
+    );
 }

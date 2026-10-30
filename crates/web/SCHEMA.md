@@ -1250,7 +1250,24 @@ host string per row and `labels.offsets` their drag offsets.
 x, `left_y` y and `right_y` z. `"Heatmap"` and `"HeatmapContour"` series
 draw as surfaces and `"Contour"` series on the floor. `"surface"` on a
 heatmap holds its look and is omitted when absent; on a flat chart it is
-kept and unused.
+kept and unused. A `"Scatter"`, `"Line"` or `"ScatterLine"` series draws
+its points or trajectory in the box when it names its height column in
+`"z_column"` (omitted when absent; kept and unused on a flat chart):
+
+```json
+{
+  "series_id": "trajectory",
+  "label": null,
+  "x_column": "tx",
+  "y_column": "ty",
+  "z_column": "tz",
+  "render_type": { "ScatterLine": { "scatter": { "point_color": { "r": 0.9, "g": 0.2, "b": 0.1, "a": 1.0 },
+                                                   "point_shape": "CircleFilled", "point_size": 3.5 },
+                                      "line": { "line_style": "Solid",
+                                                "line_color": { "r": 0.9, "g": 0.2, "b": 0.1, "a": 1.0 },
+                                                "line_width": 1.5 } } }
+}
+```
 
 ```json
 {

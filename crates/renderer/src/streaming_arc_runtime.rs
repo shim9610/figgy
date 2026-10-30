@@ -407,7 +407,8 @@ impl Renderer {
                         start: 0,
                         mode: 0,
                         c_base: 0,
-                        _pad: [0; 2],
+                        flags: 0,
+                        _pad: 0,
                     }),
                 )
             });
@@ -421,7 +422,8 @@ impl Renderer {
                         start: 0,
                         mode: 0,
                         c_base: 0,
-                        _pad: [0; 2],
+                        flags: 0,
+                        _pad: 0,
                     }),
                 )
             });

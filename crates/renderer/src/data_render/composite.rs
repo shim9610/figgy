@@ -47,6 +47,13 @@ pub struct SeriesLayers<'a> {
     /// right after it, before `scatter`. `None` everywhere else.
     pub line_extra: Option<ColumnStarLayer<'a>>,
     pub scatter: Option<ColumnScatterLayer<'a>>,
+    /// A line series on a 3D chart (#132), drawn into the panel composite
+    /// with the depth test after the surfaces (`issue_series_surfaces`),
+    /// never by `issue_series_data`.
+    pub line_3d: Option<ColumnLineLayer<'a>>,
+    /// A scatter series on a 3D chart (#132), drawn as `line_3d` is, after
+    /// every series' 3D line.
+    pub scatter_3d: Option<ColumnScatterLayer<'a>>,
     pub selected_bars: Vec<ColumnBarSelectionLayer<'a>>,
     pub selected_fields: Vec<ColumnFieldSelectionLayer<'a>>,
     pub picked: Vec<ColumnPickRingLayer<'a>>,
@@ -271,45 +278,59 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     }
 
     if let Some(s) = series.scatter.as_ref() {
-        let count =
-            s.x.len_values
-                .min(s.y.len_values)
-                .min(s.ternary_c.map_or(usize::MAX, |c| c.len_values)) as u32;
-        if count > 0 {
-            pass.set_pipeline(s.pipeline);
-            pass.set_bind_group(0, s.transform_bg, &[]);
-            pass.set_bind_group(1, s.style_bg, &[]);
-            if let Some(map) = s.style_map_bg {
-                pass.set_bind_group(2, map, &[]);
-                pass.set_bind_group(
-                    3,
-                    s.value_map_bg
-                        .expect("mapped scatter draw binds its value map group"),
-                    &[],
-                );
-            } else if let Some(tex) = s.texture_bg {
-                pass.set_bind_group(2, tex, &[]);
-            }
-            pass.set_vertex_buffer(0, s.quad_vb.slice(..));
-            pass.set_vertex_buffer(1, s.pool_buffer.slice(s.x.byte_range()));
-            pass.set_vertex_buffer(2, s.pool_buffer.slice(s.y.byte_range()));
-            // A ternary series' third component, after the slots its
-            // pipeline shares with the plain one.
-            if let Some(c) = s.ternary_c {
-                let slot = if s.style_map_bg.is_some() { 6 } else { 3 };
-                pass.set_vertex_buffer(slot, s.pool_buffer.slice(c.byte_range()));
-            }
-            if s.style_map_bg.is_some() {
-                let style_index = s.style_index.as_ref().unwrap_or(&s.x);
-                pass.set_vertex_buffer(3, s.pool_buffer.slice(style_index.byte_range()));
-                let color_value = s.color_value.as_ref().unwrap_or(&s.x);
-                pass.set_vertex_buffer(4, s.pool_buffer.slice(color_value.byte_range()));
-                let size_value = s.size_value.as_ref().unwrap_or(&s.x);
-                pass.set_vertex_buffer(5, s.pool_buffer.slice(size_value.byte_range()));
-            }
-            pass.draw(0..4, 0..count);
-        }
+        draw_scatter_layer(pass, s);
     }
+}
+
+/// Issue one scatter layer: the markers of a flat, ternary or 3D series
+/// (the 3D one into a pass with the depth attachment, its camera as
+/// group 3).
+pub(crate) fn draw_scatter_layer(pass: &mut wgpu::RenderPass<'_>, s: &ColumnScatterLayer<'_>) {
+    let count =
+        s.x.len_values
+            .min(s.y.len_values)
+            .min(s.third.map_or(usize::MAX, |c| c.len_values)) as u32;
+    if count == 0 {
+        return;
+    }
+    pass.set_pipeline(s.pipeline);
+    pass.set_bind_group(0, s.transform_bg, &[]);
+    pass.set_bind_group(1, s.style_bg, &[]);
+    if let Some(map) = s.style_map_bg {
+        pass.set_bind_group(2, map, &[]);
+        // A 3D series binds its value map and camera as one group.
+        if s.view3d.is_none() {
+            pass.set_bind_group(
+                3,
+                s.value_map_bg
+                    .expect("mapped scatter draw binds its value map group"),
+                &[],
+            );
+        }
+    } else if let Some(tex) = s.texture_bg {
+        pass.set_bind_group(2, tex, &[]);
+    }
+    if let Some(view3d) = &s.view3d {
+        pass.set_bind_group(3, &view3d.bind_group, &[]);
+    }
+    pass.set_vertex_buffer(0, s.quad_vb.slice(..));
+    pass.set_vertex_buffer(1, s.pool_buffer.slice(s.x.byte_range()));
+    pass.set_vertex_buffer(2, s.pool_buffer.slice(s.y.byte_range()));
+    // A ternary series' third component or a 3D series' height, after the
+    // slots its pipeline shares with the plain one.
+    if let Some(c) = s.third {
+        let slot = if s.style_map_bg.is_some() { 6 } else { 3 };
+        pass.set_vertex_buffer(slot, s.pool_buffer.slice(c.byte_range()));
+    }
+    if s.style_map_bg.is_some() {
+        let style_index = s.style_index.as_ref().unwrap_or(&s.x);
+        pass.set_vertex_buffer(3, s.pool_buffer.slice(style_index.byte_range()));
+        let color_value = s.color_value.as_ref().unwrap_or(&s.x);
+        pass.set_vertex_buffer(4, s.pool_buffer.slice(color_value.byte_range()));
+        let size_value = s.size_value.as_ref().unwrap_or(&s.x);
+        pass.set_vertex_buffer(5, s.pool_buffer.slice(size_value.byte_range()));
+    }
+    pass.draw(0..4, 0..count);
 }
 
 /// Issue one series' picked highlights: the selected bars and fields and the
@@ -378,17 +399,23 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_bind_group(1, &p.style_bg, &[]);
         if let Some(map) = p.style_map_bg {
             pass.set_bind_group(2, map, &[]);
-            pass.set_bind_group(
-                3,
-                p.value_map_bg
-                    .expect("mapped pick ring draw binds its value map group"),
-                &[],
-            );
+            if p.view3d.is_none() {
+                pass.set_bind_group(
+                    3,
+                    p.value_map_bg
+                        .expect("mapped pick ring draw binds its value map group"),
+                    &[],
+                );
+            }
+        }
+        // A 3D series' ring: the camera (with its value map when mapped).
+        if let Some(view3d) = &p.view3d {
+            pass.set_bind_group(3, &view3d.bind_group, &[]);
         }
         pass.set_vertex_buffer(0, p.quad_vb.slice(..));
         pass.set_vertex_buffer(1, p.pool_buffer.slice(p.x.byte_range()));
         pass.set_vertex_buffer(2, p.pool_buffer.slice(p.y.byte_range()));
-        if let Some(c) = p.ternary_c {
+        if let Some(c) = p.third {
             let slot = if p.style_map_bg.is_some() { 6 } else { 3 };
             pass.set_vertex_buffer(slot, p.pool_buffer.slice(c.byte_range()));
         }
@@ -451,6 +478,19 @@ pub(crate) fn issue_series_surfaces(
     for s in series_list {
         if let Some(surface) = &s.surface {
             super::surface_mesh::issue_surface_layer(pass, surface);
+        }
+    }
+    // The 3D lines and markers (#132), depth tested against the surfaces
+    // and each other: every series' line, then every series' markers, as
+    // the flat bodies order them.
+    for s in series_list {
+        if let Some(line) = &s.line_3d {
+            draw_line_layer(pass, line);
+        }
+    }
+    for s in series_list {
+        if let Some(scatter) = &s.scatter_3d {
+            draw_scatter_layer(pass, scatter);
         }
     }
 }

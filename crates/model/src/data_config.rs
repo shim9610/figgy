@@ -4643,8 +4643,18 @@ mod serde_tests {
         assert_eq!(scatter.point_color_map, None);
         assert_eq!(scatter.point_size_map, None);
 
-        let json = serde_json::to_value(cfg).expect("serialize");
+        let json = serde_json::to_value(cfg.clone()).expect("serialize");
         assert!(json.get("source_id").is_none());
+        // The height column (#132) is omitted while unset and round-trips.
+        assert!(json.get("z_column").is_none());
+        let mut tall = cfg;
+        tall.z_column = Some("z".into());
+        let json_tall = serde_json::to_value(&tall).expect("serialize");
+        assert_eq!(json_tall["z_column"], "z");
+        assert_eq!(
+            serde_json::from_value::<SeriesConfig>(json_tall).expect("parse"),
+            tall
+        );
         let scatter = &json["render_type"]["Scatter"]["scatter"];
         assert!(scatter.get("point_style_table").is_none());
         assert!(scatter.get("point_style_index_column").is_none());

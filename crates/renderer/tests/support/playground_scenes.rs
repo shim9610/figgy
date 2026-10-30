@@ -2659,40 +2659,77 @@ fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
         per_level_color: None,
         labels: None,
     };
-    let series = vec![series(
-        "surface",
-        "sf_x",
-        "sf_y",
-        DataRenderType::HeatmapContour {
-            matrix: MatrixRef {
-                columns: columns.iter().map(|c| c.as_str().into()).collect(),
-                orientation: MatrixOrientation::ColumnsAreX,
-                grid_layout: GridLayout::Centers,
+    // A trajectory over the surface (#132): a scatter-line series with a
+    // height column, drawn through the 3D point entries.
+    let steps = 120;
+    let path: Vec<[f64; 3]> = (0..steps)
+        .map(|i| {
+            let t = i as f64 / (steps - 1) as f64;
+            let a = 1.5 * std::f64::consts::TAU * t;
+            let x = 1.4 * a.cos() * (1.0 - 0.4 * t);
+            let y = 1.4 * a.sin() * (1.0 - 0.4 * t);
+            [x, y, height(x, y) + 0.25]
+        })
+        .collect();
+    upload(r, "sf_tx", path.iter().map(|p| p[0]).collect())?;
+    upload(r, "sf_ty", path.iter().map(|p| p[1]).collect())?;
+    upload(r, "sf_tz", path.iter().map(|p| p[2]).collect())?;
+    let mut trajectory = series(
+        "trajectory",
+        "sf_tx",
+        "sf_ty",
+        DataRenderType::ScatterLine {
+            scatter: renderer::data_config::DataScatterStyleConfig {
+                point_color: Color::from_rgb8(220, 60, 40),
+                point_shape: renderer::ScatterShape::CircleFilled,
+                point_size: 3.5,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
             },
-            fill: FieldFillConfig {
-                mode: FillMode::Continuous,
-                shading: Shading::Interpolated,
-                opacity: 1.0,
-            },
-            contour: {
-                let mut bar = default::default_colorbar_options();
-                bar.axis.min = -0.8;
-                bar.axis.max = 1.3;
-                contour
-                    .set_nice_levels(&bar.axis, 8)
-                    .expect("the surface scene's colourbar range gives nice levels");
-                contour
-            },
-            surface: Some(SurfaceStyle {
-                wireframe: Some(SurfaceWireframe {
-                    color: Color::new(0.1, 0.1, 0.1, 0.35),
-                    width: 0.8,
-                }),
-                material: renderer::Material::Matte,
-                ..SurfaceStyle::default()
-            }),
+            line: line_style(Color::from_rgb8(220, 60, 40), 1.5),
         },
-    )];
+    );
+    trajectory.z_column = Some("sf_tz".into());
+    let series = vec![
+        series(
+            "surface",
+            "sf_x",
+            "sf_y",
+            DataRenderType::HeatmapContour {
+                matrix: MatrixRef {
+                    columns: columns.iter().map(|c| c.as_str().into()).collect(),
+                    orientation: MatrixOrientation::ColumnsAreX,
+                    grid_layout: GridLayout::Centers,
+                },
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Interpolated,
+                    opacity: 1.0,
+                },
+                contour: {
+                    let mut bar = default::default_colorbar_options();
+                    bar.axis.min = -0.8;
+                    bar.axis.max = 1.3;
+                    contour
+                        .set_nice_levels(&bar.axis, 8)
+                        .expect("the surface scene's colourbar range gives nice levels");
+                    contour
+                },
+                surface: Some(SurfaceStyle {
+                    wireframe: Some(SurfaceWireframe {
+                        color: Color::new(0.1, 0.1, 0.1, 0.35),
+                        width: 0.8,
+                    }),
+                    material: renderer::Material::Matte,
+                    ..SurfaceStyle::default()
+                }),
+            },
+        ),
+        trajectory,
+    ];
     let mut config = base_config("Surface", "x", "y");
     let mut right = config.left_y.clone();
     right.title_option.text = RichText::plain(

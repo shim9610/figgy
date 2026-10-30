@@ -1593,6 +1593,45 @@ fragment and the stroke widths are floor-plane pixels (#49 D7). The ID pick writ
 surface sample and `(id | 0x80000000, level, c, r)` for a floor contour, to
 an `Rgba32Uint` target with the depth test.
 
+**3D points and lines (#132).** `view3d_point_t` places a sample of three
+columns (x, y and the height of a series' `z_column`) and
+`view3d_point_valid` accepts it when the flat sample is valid, the height
+finite (positive on a logarithmic z) and the box point inside the box; a
+sample outside the box is not drawn and breaks a line. `view3d_pick_id`
+reads the series' pick id from `flags.w`, as the floor pick does. The
+scatter, line and arc modules splice `project_3d.wgsl` (after the sample
+validity) and gain the entries: `scatter_columnar.wgsl` `vs_3d` /
+`vs_3d_mapped` (the height at slot 3 / 6, the flat marker quad around the
+projected clip position scaled by its `w`, so it is `point_radius_px` on
+screen; `scatter_vertex_clip` / `mapped_vertex_clip` are the flat vertex
+functions with a clip position), `vs_3d_pick` / `vs_3d_mapped_pick` with
+`fs_3d_pick` / `fs_3d_mapped_pick` (the ID pick: `(id, 1, index, 0)` where
+the marker is at least half covered, `precise_marker_alpha` /
+`mapped_marker_alpha` the fragment coverage `fs_main` / `fs_mapped` paint
+with), and `vs_pick_ring_3d` / `vs_pick_ring_3d_mapped` (the ring through
+`project_box_live`); `line_columnar.wgsl` `vs_3d` (the heights at slots 6
+and 7, the flat stroke built between the projected ends, each corner at its
+end's depth) and `vs_3d_pick` / `fs_3d_pick` (`(id, 1, nearer end, 0)`
+where the stroke's dashes are at least half covered); `line_arc.wgsl`
+`seg_init_3d` (`ARC_FLAG_3D` in `ArcParams.flags`, the height at `c_base`,
+the chord length between the projected ends in the target's pixels, the
+camera as group 3 of its own layout so the flat `seg_init` keeps its two
+groups). The precise 3D entries bind the surface group (bindings 4 and 5)
+as group 3; the mapped ones bind
+`surface_mesh::create_view3d_value_map_bind_group_layout`, the point value
+map (bindings 0 and 1) and the camera (4 and 5) in one group, because the
+mapped scatter pipeline already fills groups 0 to 3. The draws take the
+depth state `surface_mesh::point_depth_stencil` (`LessEqual`, written, no
+bias): a marker is placed at the depth of the front of a ball of its radius
+and a stroke at the front of a tube of its half width
+(`project_box_front`, the box point moved that many output pixels towards
+the eye, `flags.z` pixels per box half-diagonal), so a mark exactly on a
+surface shows whole and a marker covers its own stroke at the sample. The
+draws convert coverage to sample coverage (`alpha_to_coverage_enabled`,
+`View3dPass::multisample`) on a multisampled composite, so an antialiased
+fringe writes depth only on the samples it covers and a dense trajectory
+stays solid; the picks render one sample into the ID target.
+
 ### 5.22 Ternary region fill (group 1) and its pick
 
 [`ternary_region.wgsl`](ternary_region.wgsl), assembled with the transform,

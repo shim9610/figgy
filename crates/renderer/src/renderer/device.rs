@@ -299,6 +299,170 @@ fn create_ternary_pipeline(
     }
 }
 
+/// The 3D point pipelines (`TargetPipelines::view3d`, #132).
+pub(super) const VIEW3D_PIPELINES: usize = 8;
+
+/// One of a 3D chart's scatter and line pipelines (`TargetPipelines::view3d`,
+/// #132): the markers (`vs_3d`, `vs_3d_mapped`) and the stroke (`vs_3d`)
+/// in the panel composite with the depth test, their 1×1 ID picks
+/// (`vs_3d_pick`, `vs_3d_mapped_pick`, the line's `vs_3d_pick`) into the
+/// integer pick target, and the picked ring in the live slot
+/// (`vs_pick_ring_3d`, `vs_pick_ring_3d_mapped`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum View3dPipeline {
+    Scatter = 0,
+    ScatterMapped = 1,
+    ScatterPick = 2,
+    ScatterMappedPick = 3,
+    Ring = 4,
+    RingMapped = 5,
+    Line = 6,
+    LinePick = 7,
+}
+
+impl View3dPipeline {
+    pub(super) const ALL: [Self; VIEW3D_PIPELINES] = [
+        Self::Scatter,
+        Self::ScatterMapped,
+        Self::ScatterPick,
+        Self::ScatterMappedPick,
+        Self::Ring,
+        Self::RingMapped,
+        Self::Line,
+        Self::LinePick,
+    ];
+
+    fn stage(self) -> &'static str {
+        match self {
+            Self::Scatter => "3D scatter",
+            Self::ScatterMapped => "mapped 3D scatter",
+            Self::ScatterPick => "3D scatter pick",
+            Self::ScatterMappedPick => "mapped 3D scatter pick",
+            Self::Ring => "3D picked point ring",
+            Self::RingMapped => "mapped 3D picked point ring",
+            Self::Line => "3D line",
+            Self::LinePick => "3D line pick",
+        }
+    }
+
+    fn pass(self) -> data_render::View3dPass {
+        match self {
+            Self::Scatter | Self::ScatterMapped | Self::Line => data_render::View3dPass::Draw,
+            Self::ScatterPick | Self::ScatterMappedPick | Self::LinePick => {
+                data_render::View3dPass::Pick
+            }
+            Self::Ring | Self::RingMapped => data_render::View3dPass::Live,
+        }
+    }
+
+    fn mapped(self) -> bool {
+        matches!(
+            self,
+            Self::ScatterMapped | Self::ScatterMappedPick | Self::RingMapped
+        )
+    }
+}
+
+/// The 3D point pipeline `kind` over the layouts `[transform, style, style
+/// map, camera, value map and camera]`: the precise entries bind the
+/// camera group (the surface layout) as group 3, the mapped ones the
+/// combined value map and camera group. The pick kinds render one sample
+/// into the ID target; the others `sample_count` into `surface_format`.
+fn create_view3d_pipeline(
+    kind: View3dPipeline,
+    device: &wgpu::Device,
+    shaders: &data_render::ShaderModules,
+    [
+        transform_bgl,
+        style_bgl,
+        style_map_bgl,
+        surface_bgl,
+        view3d_value_map_bgl,
+    ]: [&wgpu::BindGroupLayout; 5],
+    surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    let pass = kind.pass();
+    let sample_count = if pass == data_render::View3dPass::Pick {
+        1
+    } else {
+        sample_count
+    };
+    match kind {
+        View3dPipeline::Line | View3dPipeline::LinePick => {
+            data_render::create_line_view3d_pipeline_with_sample_count(
+                device,
+                &shaders.line,
+                transform_bgl,
+                style_bgl,
+                surface_bgl,
+                surface_format,
+                sample_count,
+                pass,
+            )
+        }
+        _ if !kind.mapped() => {
+            let (vs, fs, label) = match kind {
+                View3dPipeline::ScatterPick => {
+                    ("vs_3d_pick", "fs_3d_pick", "figgy scatter 3D pick pipeline")
+                }
+                View3dPipeline::Ring => (
+                    "vs_pick_ring_3d",
+                    "fs_pick_ring",
+                    "figgy picked point 3D ring pipeline",
+                ),
+                _ => ("vs_3d", "fs_main", "figgy scatter 3D pipeline"),
+            };
+            data_render::create_scatter_view3d_pipeline(
+                device,
+                &shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_bgl,
+                surface_format,
+                sample_count,
+                pass,
+                vs,
+                fs,
+                label,
+            )
+        }
+        _ => {
+            let (vs, fs, label) = match kind {
+                View3dPipeline::ScatterMappedPick => (
+                    "vs_3d_mapped_pick",
+                    "fs_3d_mapped_pick",
+                    "figgy scatter 3D mapped pick pipeline",
+                ),
+                View3dPipeline::RingMapped => (
+                    "vs_pick_ring_3d_mapped",
+                    "fs_pick_ring",
+                    "figgy picked point 3D mapped ring pipeline",
+                ),
+                _ => (
+                    "vs_3d_mapped",
+                    "fs_mapped",
+                    "figgy scatter 3D mapped pipeline",
+                ),
+            };
+            data_render::create_scatter_view3d_mapped_pipeline(
+                device,
+                &shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                style_map_bgl,
+                view3d_value_map_bgl,
+                surface_format,
+                sample_count,
+                pass,
+                vs,
+                fs,
+                label,
+            )
+        }
+    }
+}
+
 /// Pipelines compiled against one render-target format. Axis is created with
 /// the target; ordinary renderer use creates the other variants lazily, while
 /// explicit full prewarm materializes every optional field before interaction.
@@ -324,6 +488,11 @@ pub(super) struct TargetPipelines {
     /// (`vs_pick_ring_ternary`, `vs_pick_ring_ternary_mapped`), each the
     /// plain pipeline with the third component's vertex slot.
     pub(super) ternary: [Option<wgpu::RenderPipeline>; TERNARY_PIPELINES],
+    /// A 3D chart's scatter and line entries (#132), indexed by
+    /// [`View3dPipeline`]: the depth-tested draws, their ID picks and the
+    /// picked rings, each the plain pipeline with the height's vertex slot
+    /// and the camera group.
+    pub(super) view3d: [Option<wgpu::RenderPipeline>; VIEW3D_PIPELINES],
     /// A 3D chart's surface module and pipelines, indexed by
     /// [`data_render::surface_mesh::SurfacePass`]: the depth-tested draw in
     /// the panel composite, the picked patch in the live slot and the ID
@@ -540,6 +709,29 @@ impl TargetPipelines {
             ));
     }
 
+    /// Compile the one 3D point pipeline `kind` when it is missing (#132);
+    /// `bgls` are the transform, style, style map, surface and combined
+    /// value map layouts.
+    pub(super) fn ensure_view3d_pass(
+        &mut self,
+        device: &wgpu::Device,
+        bgls: [&wgpu::BindGroupLayout; 5],
+        surface_format: wgpu::TextureFormat,
+        kind: View3dPipeline,
+    ) {
+        if self.view3d[kind as usize].is_some() {
+            return;
+        }
+        self.view3d[kind as usize] = Some(create_view3d_pipeline(
+            kind,
+            device,
+            &self.shaders,
+            bgls,
+            surface_format,
+            self.sample_count,
+        ));
+    }
+
     /// Compile the surface module and the one pipeline `pass` when they are
     /// missing; `bgls` are the transform, style, field and surface layouts.
     pub(super) fn ensure_surface_pass(
@@ -602,6 +794,7 @@ impl TargetPipelines {
         style_bgl: &wgpu::BindGroupLayout,
         per_point_style_map_bgl: &wgpu::BindGroupLayout,
         point_value_map_bgl: &wgpu::BindGroupLayout,
+        [surface_bgl, view3d_value_map_bgl]: [&wgpu::BindGroupLayout; 2],
         data_selection_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
@@ -644,6 +837,7 @@ impl TargetPipelines {
         let mut need_pick_ring = false;
         let mut need_pick_ring_mapped = false;
         let mut need_ternary = [false; TERNARY_PIPELINES];
+        let mut need_view3d = [false; VIEW3D_PIPELINES];
         for item in items {
             let typed_picks = item
                 .chart_config
@@ -782,6 +976,20 @@ impl TargetPipelines {
                 }
                 if has_errorbar(&series.config.render_type) && series.style.errorbar_map.is_some() {
                     need_errorbar_mapped = true;
+                }
+                // A scatter or line series on a 3D chart draws through the
+                // 3D entries (#132); its picks compile when it is picked.
+                if item.chart_config.view_3d.is_some() && series.config.z_column.is_some() {
+                    let mapped = series.style.scatter_map.is_some();
+                    let ring = item.chart_config.picked_points.is_some() || typed_point;
+                    need_view3d[View3dPipeline::Line as usize] |= primitives.line;
+                    need_view3d[View3dPipeline::Scatter as usize] |= primitives.scatter && !mapped;
+                    need_view3d[View3dPipeline::ScatterMapped as usize] |=
+                        primitives.scatter && mapped;
+                    need_view3d[View3dPipeline::Ring as usize] |=
+                        primitives.scatter && !mapped && ring;
+                    need_view3d[View3dPipeline::RingMapped as usize] |=
+                        primitives.scatter && mapped && ring;
                 }
             }
         }
@@ -1187,6 +1395,22 @@ impl TargetPipelines {
                     surface_format,
                     self.sample_count,
                 ));
+            }
+        }
+        for kind in View3dPipeline::ALL {
+            if need_view3d[kind as usize] {
+                self.ensure_view3d_pass(
+                    device,
+                    [
+                        transform_bgl,
+                        style_bgl,
+                        per_point_style_map_bgl,
+                        surface_bgl,
+                        view3d_value_map_bgl,
+                    ],
+                    surface_format,
+                    kind,
+                );
             }
         }
         if need_errorbar_mapped && self.errorbar_mapped.is_none() {
@@ -1845,6 +2069,7 @@ pub(super) fn create_target_pipelines_observed(
         pick_ring: None,
         pick_ring_mapped: None,
         ternary: Default::default(),
+        view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
         ternary_region_shader: None,
@@ -1938,6 +2163,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         pick_ring: None,
         pick_ring_mapped: None,
         ternary: Default::default(),
+        view3d: Default::default(),
         surface_shader: None,
         surface: Default::default(),
         ternary_region_shader: None,
@@ -2431,14 +2657,20 @@ impl Renderer {
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
         let point_value_map_bgl = data_render::create_point_value_map_bind_group_layout(&device);
-        let (neutral_point_value_map_bg, neutral_point_value_map_charge) =
-            data_render::create_point_value_map_bind_group(
+        let (neutral_point_value_map_buffers, neutral_point_value_map_charge) =
+            data_render::create_point_value_map_buffers(
                 &device,
                 &gpu_ledger,
-                &point_value_map_bgl,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
             );
+        let neutral_point_value_map_bg = data_render::bind_point_value_map(
+            &device,
+            &point_value_map_bgl,
+            &neutral_point_value_map_buffers,
+        );
+        let view3d_value_map_bgl =
+            data_render::surface_mesh::create_view3d_value_map_bind_group_layout(&device);
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
@@ -2501,7 +2733,9 @@ impl Renderer {
             per_point_style_map_bgl,
             point_value_map_bgl,
             neutral_point_value_map_bg,
+            neutral_point_value_map_buffers,
             _neutral_point_value_map_charge: neutral_point_value_map_charge,
+            view3d_value_map_bgl,
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
@@ -2582,14 +2816,20 @@ impl Renderer {
         let per_point_style_map_bgl =
             data_render::create_per_point_style_map_bind_group_layout(&device);
         let point_value_map_bgl = data_render::create_point_value_map_bind_group_layout(&device);
-        let (neutral_point_value_map_bg, neutral_point_value_map_charge) =
-            data_render::create_point_value_map_bind_group(
+        let (neutral_point_value_map_buffers, neutral_point_value_map_charge) =
+            data_render::create_point_value_map_buffers(
                 &device,
                 &gpu_ledger,
-                &point_value_map_bgl,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
             );
+        let neutral_point_value_map_bg = data_render::bind_point_value_map(
+            &device,
+            &point_value_map_bgl,
+            &neutral_point_value_map_buffers,
+        );
+        let view3d_value_map_bgl =
+            data_render::surface_mesh::create_view3d_value_map_bind_group_layout(&device);
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
@@ -2652,7 +2892,9 @@ impl Renderer {
             per_point_style_map_bgl,
             point_value_map_bgl,
             neutral_point_value_map_bg,
+            neutral_point_value_map_buffers,
             _neutral_point_value_map_charge: neutral_point_value_map_charge,
+            view3d_value_map_bgl,
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
@@ -2864,6 +3106,7 @@ impl Renderer {
         let had_pick_ring = self.pipelines.pick_ring.is_some();
         let had_pick_ring_mapped = self.pipelines.pick_ring_mapped.is_some();
         let had_ternary = self.pipelines.ternary.each_ref().map(Option::is_some);
+        let had_view3d = self.pipelines.view3d.each_ref().map(Option::is_some);
         let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
@@ -2999,6 +3242,24 @@ impl Renderer {
                         &self.style_bgl,
                         &self.per_point_style_map_bgl,
                         &self.point_value_map_bgl,
+                    ],
+                    surface_format,
+                    target_sample_count,
+                ));
+            }
+        }
+        for kind in View3dPipeline::ALL {
+            if had_view3d[kind as usize] {
+                self.pipelines.view3d[kind as usize] = Some(create_view3d_pipeline(
+                    kind,
+                    &self.device,
+                    &self.pipelines.shaders,
+                    [
+                        &self.transform_bgl,
+                        &self.style_bgl,
+                        &self.per_point_style_map_bgl,
+                        &self.surface_bgl,
+                        &self.view3d_value_map_bgl,
                     ],
                     surface_format,
                     target_sample_count,
@@ -3176,6 +3437,27 @@ impl Renderer {
             );
         }
         finished(observer, "renderer.prewarm", "surface");
+        crate::init::yield_init_frame().await;
+
+        // The 3D scatter and line entries (#132).
+        for kind in View3dPipeline::ALL {
+            if self.pipelines.view3d[kind as usize].is_none() {
+                started(observer, "renderer.prewarm", kind.stage());
+                self.pipelines.ensure_view3d_pass(
+                    &self.device,
+                    [
+                        &self.transform_bgl,
+                        &self.style_bgl,
+                        &self.per_point_style_map_bgl,
+                        &self.surface_bgl,
+                        &self.view3d_value_map_bgl,
+                    ],
+                    self.surface_format,
+                    kind,
+                );
+                finished(observer, "renderer.prewarm", kind.stage());
+            }
+        }
         crate::init::yield_init_frame().await;
 
         // A ternary series' region fill (`TernaryRegionStyle`).

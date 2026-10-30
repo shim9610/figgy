@@ -55,6 +55,13 @@ fn vs_ternary(in: VsTernaryIn) -> VsOut {
 // The precise marker's vertex at `center_ndc`, placed by its entry; a
 // sample that is not `valid` is not drawn.
 fn scatter_vertex(in: VsIn, valid: bool, center_ndc: vec2<f32>) -> VsOut {
+    return scatter_vertex_clip(in, valid, vec4<f32>(center_ndc, 0.0, 1.0));
+}
+
+// The precise marker's quad around the clip position `clip`: `w` is 1 on a
+// flat chart and the perspective divisor on a 3D one, so the quad is
+// `point_radius_px` on screen either way, at the point's depth.
+fn scatter_vertex_clip(in: VsIn, valid: bool, clip: vec4<f32>) -> VsOut {
     if (!valid) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -62,15 +69,34 @@ fn scatter_vertex(in: VsIn, valid: bool, center_ndc: vec2<f32>) -> VsOut {
     }
     let half_px =
         visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
-    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+    let world = clip.xy + in.quad_pos * (half_px * transform.pixel_to_ndc) * clip.w;
 
     var out: VsOut;
-    out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
+    out.pos = vec4<f32>(world, clip.z, clip.w);
+    out.polar_px = polar_clip_offset(transform, world / clip.w);
     out.polar_limits = polar_clip_limits(transform);
     out.polar_sector = polar_clip_sector(transform);
     out.local_pos = in.quad_pos;
     return out;
+}
+
+// The precise marker's coverage at `local_pos` (the quad's -1..1 frame):
+// the marker shape of `Style` as an analytic distance, antialiased.
+fn precise_marker_alpha(local_pos: vec2<f32>) -> f32 {
+    let r = style.point_radius_px;
+    let filled = shape_is_filled(style.shape_id);
+    let base = base_shape_id(style.shape_id);
+    let visual_r = visual_shape_radius(base, r);
+    // Pixel-space position — same expanded scale as the vs_main quad, so
+    // one unit here is one screen pixel.
+    let p = local_pos * (visual_r + QUAD_MARGIN_PX);
+
+    let d = shape_distance(base, p, visual_r, filled);
+    let aa = fwidth(d);
+    // Filled: cover d < 0. Outline/Cross: ~1.5 px stroke centered on the
+    // d == 0 contour.
+    let edge = marker_edge(d, filled);
+    return 1.0 - smoothstep(-aa, aa, edge);
 }
 
 @fragment
@@ -78,24 +104,69 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
         discard;
     }
-    let r = style.point_radius_px;
-    let filled = shape_is_filled(style.shape_id);
-    let base = base_shape_id(style.shape_id);
-    let visual_r = visual_shape_radius(base, r);
-    // Pixel-space position — same expanded scale as the vs_main quad, so
-    // one unit here is one screen pixel.
-    let p = in.local_pos * (visual_r + QUAD_MARGIN_PX);
-
-    let d = shape_distance(base, p, visual_r, filled);
-    let aa = fwidth(d);
-    // Filled: cover d < 0. Outline/Cross: ~1.5 px stroke centered on the
-    // d == 0 contour.
-    let edge = marker_edge(d, filled);
-    let alpha = 1.0 - smoothstep(-aa, aa, edge);
+    let alpha = precise_marker_alpha(in.local_pos);
     if (alpha <= 0.0) {
         discard;
     }
     return style.color_premul * alpha;
+}
+
+// ──────────────── 3D chart entries (#132) ────────────────
+// A 3D chart's markers (`Config.view_3d`): the height column at slot 3
+// (precise) or 6 (mapped), the marker a camera-facing quad at the projected
+// box point through `project_box`, at the point's depth, `point_radius_px`
+// on screen under either projection. `fs_main` / `fs_mapped` paint it in
+// the panel composite with the depth test; `fs_3d_pick` /
+// `fs_3d_mapped_pick` write the point's index for the 1×1 ID pick
+// (`view3d_pick_id`, kind 1); `vs_pick_ring_3d*` place the picked ring in
+// the live slot through `project_box_live`.
+
+struct VsZIn {
+    @location(0) quad_pos: vec2<f32>,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
+    @location(3) z: vec2<f32>,
+};
+
+fn point_3d_vertex(in: VsZIn) -> VsOut {
+    let base = VsIn(in.quad_pos, in.x, in.y);
+    let t = view3d_point_t(in.x, in.y, in.z);
+    return scatter_vertex_clip(
+        base,
+        view3d_point_valid(transform, in.x, in.y, in.z),
+        clip_at_depth(project_box(t), project_box_front(t, style.point_radius_px)),
+    );
+}
+
+@vertex
+fn vs_3d(in: VsZIn) -> VsOut {
+    return point_3d_vertex(in);
+}
+
+struct VsPickOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) @interpolate(flat) index: u32,
+};
+
+@vertex
+fn vs_3d_pick(in: VsZIn, @builtin(instance_index) inst: u32) -> VsPickOut {
+    let v = point_3d_vertex(in);
+    var out: VsPickOut;
+    out.pos = v.pos;
+    out.local_pos = v.local_pos;
+    out.index = inst;
+    return out;
+}
+
+/// The ID pick of a precise 3D marker: the series' pick id, kind 1 (a
+/// point) and the point's index, where the marker is at least half covered.
+@fragment
+fn fs_3d_pick(in: VsPickOut) -> @location(0) vec4<u32> {
+    if (precise_marker_alpha(in.local_pos) < 0.5) {
+        discard;
+    }
+    return vec4<u32>(view3d_pick_id(), 1u, in.index, 0u);
 }
 
 // ──────────────── sketch mode ────────────────
@@ -323,6 +394,12 @@ fn vs_ternary_mapped(in: VsTernaryMappedIn, @builtin(instance_index) inst: u32) 
 
 // The mapped marker's vertex at `center_ndc`, placed by its entry.
 fn mapped_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsMappedOut {
+    return mapped_vertex_clip(in, inst, valid, vec4<f32>(center_ndc, 0.0, 1.0));
+}
+
+// The mapped marker's quad around the clip position `clip` (`w` 1 on a flat
+// chart, the perspective divisor on a 3D one; see `scatter_vertex_clip`).
+fn mapped_vertex_clip(in: VsMappedIn, inst: u32, valid: bool, clip: vec4<f32>) -> VsMappedOut {
     if (!valid) {
         var masked: VsMappedOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
@@ -336,11 +413,11 @@ fn mapped_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) 
     }
     let half_px =
         visual_shape_radius(base_shape_id(resolved.shape_id), resolved.radius_px) + QUAD_MARGIN_PX;
-    let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
+    let world = clip.xy + in.quad_pos * (half_px * transform.pixel_to_ndc) * clip.w;
 
     var out: VsMappedOut;
-    out.pos = vec4<f32>(world, 0.0, 1.0);
-    out.polar_px = polar_clip_offset(transform, out.pos.xy);
+    out.pos = vec4<f32>(world, clip.z, clip.w);
+    out.polar_px = polar_clip_offset(transform, world / clip.w);
     out.polar_limits = polar_clip_limits(transform);
     out.polar_sector = polar_clip_sector(transform);
     out.local_pos = in.quad_pos;
@@ -350,24 +427,90 @@ fn mapped_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) 
     return out;
 }
 
+// The mapped marker's coverage at `local_pos` for its resolved radius and
+// shape, antialiased.
+fn mapped_marker_alpha(local_pos: vec2<f32>, radius_px: f32, shape_id: u32) -> f32 {
+    let filled = shape_is_filled(shape_id);
+    let base = base_shape_id(shape_id);
+    let visual_r = visual_shape_radius(base, radius_px);
+    let p = local_pos * (visual_r + QUAD_MARGIN_PX);
+
+    let d = shape_distance(base, p, visual_r, filled);
+    let aa = fwidth(d);
+    let edge = marker_edge(d, filled);
+    return 1.0 - smoothstep(-aa, aa, edge);
+}
+
 @fragment
 fn fs_mapped(in: VsMappedOut) -> @location(0) vec4<f32> {
     if (!polar_fragment_visible(in.polar_px, in.polar_limits, in.polar_sector)) {
         discard;
     }
-    let filled = shape_is_filled(in.shape_id);
-    let base = base_shape_id(in.shape_id);
-    let visual_r = visual_shape_radius(base, in.radius_px);
-    let p = in.local_pos * (visual_r + QUAD_MARGIN_PX);
-
-    let d = shape_distance(base, p, visual_r, filled);
-    let aa = fwidth(d);
-    let edge = marker_edge(d, filled);
-    let alpha = 1.0 - smoothstep(-aa, aa, edge);
+    let alpha = mapped_marker_alpha(in.local_pos, in.radius_px, in.shape_id);
     if (alpha <= 0.0) {
         discard;
     }
     return in.color_premul * alpha;
+}
+
+// A 3D chart's mapped markers (#132): the height at slot 6.
+struct VsZMappedIn {
+    @location(0) quad_pos: vec2<f32>,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
+    @location(3) style_index: f32,
+    @location(4) color_value: vec2<f32>,
+    @location(5) size_value: vec2<f32>,
+    @location(6) z: vec2<f32>,
+};
+
+fn z_mapped_in(in: VsZMappedIn) -> VsMappedIn {
+    return VsMappedIn(in.quad_pos, in.x, in.y, in.style_index, in.color_value, in.size_value);
+}
+
+fn mapped_point_3d_vertex(in: VsZMappedIn, inst: u32) -> VsMappedOut {
+    let t = view3d_point_t(in.x, in.y, in.z);
+    let resolved = resolve_mapped_style(in.style_index, inst, in.color_value, in.size_value);
+    return mapped_vertex_clip(
+        z_mapped_in(in),
+        inst,
+        view3d_point_valid(transform, in.x, in.y, in.z),
+        clip_at_depth(project_box(t), project_box_front(t, max(resolved.radius_px, 0.0))),
+    );
+}
+
+@vertex
+fn vs_3d_mapped(in: VsZMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
+    return mapped_point_3d_vertex(in, inst);
+}
+
+struct VsMappedPickOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) local_pos: vec2<f32>,
+    @location(1) radius_px: f32,
+    @location(2) @interpolate(flat) shape_id: u32,
+    @location(3) @interpolate(flat) index: u32,
+};
+
+@vertex
+fn vs_3d_mapped_pick(in: VsZMappedIn, @builtin(instance_index) inst: u32) -> VsMappedPickOut {
+    let v = mapped_point_3d_vertex(in, inst);
+    var out: VsMappedPickOut;
+    out.pos = v.pos;
+    out.local_pos = v.local_pos;
+    out.radius_px = v.radius_px;
+    out.shape_id = v.shape_id;
+    out.index = inst;
+    return out;
+}
+
+/// The ID pick of a mapped 3D marker (see `fs_3d_pick`).
+@fragment
+fn fs_3d_mapped_pick(in: VsMappedPickOut) -> @location(0) vec4<u32> {
+    if (mapped_marker_alpha(in.local_pos, in.radius_px, in.shape_id) < 0.5) {
+        discard;
+    }
+    return vec4<u32>(view3d_pick_id(), 1u, in.index, 0u);
 }
 
 // The picked ring's marker mode (`Style.primitive_flags` of the ring entry):
@@ -484,6 +627,16 @@ fn ring_vertex(in: VsIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPic
     return out;
 }
 
+// A 3D chart's picked ring (#132): around the marker's projected position
+// in the frame target, over anything in front of it (the live slot has no
+// depth, #49 D4).
+@vertex
+fn vs_pick_ring_3d(in: VsZIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    let base = VsIn(in.quad_pos, in.x, in.y);
+    let live = project_box_live(view3d_point_t(in.x, in.y, in.z));
+    return ring_vertex(base, inst, view3d_point_valid(transform, in.x, in.y, in.z), live.xy / live.w);
+}
+
 @vertex
 fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
     return mapped_ring_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
@@ -492,6 +645,12 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
 @vertex
 fn vs_pick_ring_ternary_mapped(in: VsTernaryMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
     return mapped_ring_vertex(ternary_mapped_in(in), inst, ternary_sample_valid(in.x, in.y, in.c), ternary_ndc(transform, in.x, in.y, in.c));
+}
+
+@vertex
+fn vs_pick_ring_3d_mapped(in: VsZMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    let live = project_box_live(view3d_point_t(in.x, in.y, in.z));
+    return mapped_ring_vertex(z_mapped_in(in), inst, view3d_point_valid(transform, in.x, in.y, in.z), live.xy / live.w);
 }
 
 // The mapped ring's vertex around the marker at `center_ndc`.
