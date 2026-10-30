@@ -423,3 +423,151 @@ fn a_translucent_surface_shows_its_floor_contours() {
         reds(&clear)
     );
 }
+
+/// Paint `config` with `series` on the screen path (prepare, then paint
+/// into a target, through the resident panel composite) and read it back.
+fn paint_screen(r: &mut Renderer, config: &Config, series: &[SeriesConfig]) -> RasterImage {
+    let chart = Chart::new(config.clone());
+    let rect = config.chart_area.0;
+    let view = r.create_chart_view(&chart, rect).unwrap();
+    let styles: Vec<_> = series
+        .iter()
+        .map(|cfg| r.create_style_for_series(cfg).unwrap())
+        .collect();
+    let drawn: Vec<_> = series
+        .iter()
+        .zip(&styles)
+        .map(|(config, style)| renderer::Series { config, style })
+        .collect();
+    let items = [renderer::ChartDrawItem {
+        view: &view,
+        chart_config: chart.config(),
+        series: &drawn,
+    }];
+    let prepared = r.prepare(&items).unwrap();
+    let (w, h) = (rect.width, rect.height);
+    let device = r.device().clone();
+    let queue = r.queue().clone();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("surface screen target"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Bgra8Unorm,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let target = texture.create_view(&Default::default());
+    let row = (w * 4).div_ceil(256) * 256;
+    let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("surface screen readback"),
+        size: u64::from(row) * u64::from(h),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&Default::default());
+    {
+        let mut pass = encoder
+            .begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("surface screen paint"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &target,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color::WHITE),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                ..Default::default()
+            })
+            .forget_lifetime();
+        r.paint_prepared(&mut pass, (w, h), &prepared).unwrap();
+    }
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buffer,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit([encoder.finish()]);
+    drop(prepared);
+    r.end_gpu_frame();
+    let slice = buffer.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device
+        .poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        })
+        .unwrap();
+    let data = slice.get_mapped_range().unwrap();
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        let start = (y * row) as usize;
+        // BGRA to RGBA.
+        for px in data[start..start + (w * 4) as usize].chunks_exact(4) {
+            rgba.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+        }
+    }
+    drop(data);
+    buffer.unmap();
+    RasterImage {
+        width: w,
+        height: h,
+        rgba,
+    }
+}
+
+/// The screen draws the surface through the resident panel composite with
+/// its depth-stencil attachment as the export does, and a camera edit
+/// draws it again (the composite's key holds the camera).
+#[test]
+fn the_screen_draws_the_surface_and_redraws_it_when_the_camera_turns() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let mut config = chart_3d();
+    let series = [surface_series(21, Shading::Interpolated, None)];
+    let screen = paint_screen(&mut r, &config, &series);
+    save("surface-screen", &screen);
+    let peak = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    let p = pixel(&screen, (peak[0], peak[1] + 4.0));
+    assert!(
+        p[0] > 100 && p[1] > 100 && p[2] < 90,
+        "the peak on screen: {p:?}"
+    );
+    // Turn the camera: the peak moves and the composite follows.
+    config.orbit_view(60.0, 0.0);
+    let turned = paint_screen(&mut r, &config, &series);
+    save("surface-screen-turned", &turned);
+    let moved = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    assert!(
+        (moved[0] - peak[0]).abs() > 3.0,
+        "the camera turned the box"
+    );
+    let p = pixel(&turned, (moved[0], moved[1] + 4.0));
+    assert!(
+        p[0] > 100 && p[1] > 100 && p[2] < 90,
+        "the peak after the turn: {p:?}"
+    );
+}
