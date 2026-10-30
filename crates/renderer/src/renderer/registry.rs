@@ -1457,6 +1457,18 @@ pub(super) fn validate_renderer_series(
         });
     }
     validate_radar_rules(config, series)?;
+    // A ternary chart draws only ternary series, and a ternary series needs
+    // a ternary chart; its line is linear and unfilled.
+    if let Err(reason) = config.validate_ternary_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.ternary_c_column().is_some())
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.
     config
@@ -1608,12 +1620,19 @@ pub(super) fn validate_streamline_series(
     Ok(())
 }
 
-/// The polar coordinate system of the chart against its own axes.
+/// The polar and ternary coordinate systems of the chart against its own
+/// axes.
 pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
     config
         .validate_polar()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "polar",
+            reason,
+        })?;
+    config
+        .validate_ternary()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "ternary",
             reason,
         })
 }

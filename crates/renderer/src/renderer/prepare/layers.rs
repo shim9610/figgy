@@ -574,15 +574,23 @@ impl PrepareContext<'_> {
                     }
                     _ => None,
                 };
+                // A ternary series' stroke: the ternary entry with its third
+                // component (never mapped, never styled).
+                let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
                 Some(ColumnLineLayer {
                     pipeline: if value_map.is_some() {
                         pipelines
                             .line_mapped
                             .as_ref()
                             .expect("prepare ensured mapped line pipeline")
+                    } else if ternary_c.is_some() {
+                        pipelines.ternary[TernaryPipeline::Line as usize]
+                            .as_ref()
+                            .expect("prepare ensured the ternary line pipeline")
                     } else {
                         line_pick.pipeline
                     },
+                    ternary_c,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.line_bg,
                     pool_buffer: column_buffer,
@@ -738,13 +746,25 @@ impl PrepareContext<'_> {
                     &mut lookup,
                 )?;
                 let scatter_pick = scatter_pick.expect("prepare ensured scatter pipeline");
+                // A ternary series' markers: the ternary entries with its
+                // third component.
+                let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
+                let ternary = |kind: TernaryPipeline| {
+                    pipelines.ternary[kind as usize]
+                        .as_ref()
+                        .expect("prepare ensured the ternary scatter pipeline")
+                };
                 Some(ColumnScatterLayer {
-                    pipeline: precise_style_map.map_or(scatter_pick.pipeline, |_| {
-                        pipelines
+                    pipeline: match (precise_style_map, ternary_c) {
+                        (Some(_), Some(_)) => ternary(TernaryPipeline::ScatterMapped),
+                        (None, Some(_)) => ternary(TernaryPipeline::Scatter),
+                        (Some(_), None) => pipelines
                             .scatter_mapped
                             .as_ref()
-                            .expect("prepare ensured mapped scatter pipeline")
-                    }),
+                            .expect("prepare ensured mapped scatter pipeline"),
+                        (None, None) => scatter_pick.pipeline,
+                    },
+                    ternary_c,
                     transform_bg: &view.transform_bg,
                     style_bg: &series.style.scatter_bg,
                     style_map_bg: precise_style_map.map(|m| &m.bind_group),

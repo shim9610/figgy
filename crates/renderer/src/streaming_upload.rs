@@ -1076,6 +1076,7 @@ mod tests {
                                     texture_bg: None,
                                     closed: false,
                                     value_map: None,
+                                    ternary_c: None,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,
@@ -1091,6 +1092,7 @@ mod tests {
                                     color_value: None,
                                     size_value: None,
                                     texture_bg: None,
+                                    ternary_c: None,
                                 }),
                                 selected_bars: vec![],
                                 selected_fields: vec![],

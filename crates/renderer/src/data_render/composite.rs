@@ -258,7 +258,11 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     }
 
     if let Some(s) = series.scatter.as_ref() {
-        let count = s.x.len_values.min(s.y.len_values) as u32;
+        let count = s
+            .x
+            .len_values
+            .min(s.y.len_values)
+            .min(s.ternary_c.map_or(usize::MAX, |c| c.len_values)) as u32;
         if count > 0 {
             pass.set_pipeline(s.pipeline);
             pass.set_bind_group(0, s.transform_bg, &[]);
@@ -277,6 +281,12 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
             pass.set_vertex_buffer(0, s.quad_vb.slice(..));
             pass.set_vertex_buffer(1, s.pool_buffer.slice(s.x.byte_range()));
             pass.set_vertex_buffer(2, s.pool_buffer.slice(s.y.byte_range()));
+            // A ternary series' third component, after the slots its
+            // pipeline shares with the plain one.
+            if let Some(c) = s.ternary_c {
+                let slot = if s.style_map_bg.is_some() { 6 } else { 3 };
+                pass.set_vertex_buffer(slot, s.pool_buffer.slice(c.byte_range()));
+            }
             if s.style_map_bg.is_some() {
                 let style_index = s.style_index.as_ref().unwrap_or(&s.x);
                 pass.set_vertex_buffer(3, s.pool_buffer.slice(style_index.byte_range()));
@@ -353,6 +363,10 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         pass.set_vertex_buffer(0, p.quad_vb.slice(..));
         pass.set_vertex_buffer(1, p.pool_buffer.slice(p.x.byte_range()));
         pass.set_vertex_buffer(2, p.pool_buffer.slice(p.y.byte_range()));
+        if let Some(c) = p.ternary_c {
+            let slot = if p.style_map_bg.is_some() { 6 } else { 3 };
+            pass.set_vertex_buffer(slot, p.pool_buffer.slice(c.byte_range()));
+        }
         if p.style_map_bg.is_some() {
             let style_index = p.style_index.as_ref().unwrap_or(&p.x);
             pass.set_vertex_buffer(3, p.pool_buffer.slice(style_index.byte_range()));

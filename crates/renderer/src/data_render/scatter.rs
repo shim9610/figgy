@@ -520,6 +520,10 @@ pub struct ColumnScatterLayer<'a> {
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the constellation planet atlas/ring bind group. `None` otherwise.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+    /// A ternary series' third component: `pipeline` is a ternary pipeline,
+    /// the column bound at slot 3 (precise) or 6 (mapped). `None` for every
+    /// other series.
+    pub ternary_c: Option<ColumnHandle>,
 }
 
 pub struct ColumnPickRingLayer<'a> {
@@ -537,4 +541,6 @@ pub struct ColumnPickRingLayer<'a> {
     pub color_value: Option<ColumnHandle>,
     pub size_value: Option<ColumnHandle>,
     pub instance: u32,
+    /// See [`ColumnScatterLayer::ternary_c`].
+    pub ternary_c: Option<ColumnHandle>,
 }

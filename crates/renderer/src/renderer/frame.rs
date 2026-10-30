@@ -231,6 +231,7 @@ pub(super) struct PreparedLineLayer {
     /// A colour-mapped stroke: the value column and the groups 2 and 3 of
     /// the mapped line pipeline.
     pub(super) value_map: Option<(ColumnHandle, wgpu::BindGroup, wgpu::BindGroup)>,
+    pub(super) ternary_c: Option<ColumnHandle>,
 }
 
 pub(super) struct PreparedScatterLayer {
@@ -247,6 +248,7 @@ pub(super) struct PreparedScatterLayer {
     pub(super) color_value: Option<ColumnHandle>,
     pub(super) size_value: Option<ColumnHandle>,
     pub(super) texture_bg: Option<wgpu::BindGroup>,
+    pub(super) ternary_c: Option<ColumnHandle>,
 }
 
 pub(super) struct PreparedPickRingLayer {
@@ -263,6 +265,7 @@ pub(super) struct PreparedPickRingLayer {
     pub(super) color_value: Option<ColumnHandle>,
     pub(super) size_value: Option<ColumnHandle>,
     pub(super) instance: u32,
+    pub(super) ternary_c: Option<ColumnHandle>,
 }
 
 pub(super) struct PreparedBarSelectionLayer {
@@ -843,6 +846,7 @@ impl PreparedSeries {
                 value_map: layer
                     .value_map
                     .map(|map| (map.column, map.neutral_bg.clone(), map.value_map_bg.clone())),
+                ternary_c: layer.ternary_c,
             }),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
                 pipeline: layer.pipeline.clone(),
@@ -866,6 +870,7 @@ impl PreparedSeries {
                 color_value: layer.color_value,
                 size_value: layer.size_value,
                 texture_bg: layer.texture_bg.cloned(),
+                ternary_c: layer.ternary_c,
             }),
             selected_bars: layers
                 .selected_bars
@@ -913,6 +918,7 @@ impl PreparedSeries {
                     color_value: layer.color_value,
                     size_value: layer.size_value,
                     instance: layer.instance,
+                    ternary_c: layer.ternary_c,
                 })
                 .collect(),
             value_labels: layers.value_labels.map(|layer| PreparedValueLabelLayer {
@@ -1038,6 +1044,7 @@ impl PreparedSeries {
                         value_map_bg: map,
                     }
                 }),
+                ternary_c: layer.ternary_c,
             }),
             line_extra: self
                 .line_extra
@@ -1064,6 +1071,7 @@ impl PreparedSeries {
                 color_value: layer.color_value,
                 size_value: layer.size_value,
                 texture_bg: layer.texture_bg.as_ref(),
+                ternary_c: layer.ternary_c,
             }),
             selected_bars: self
                 .selected_bars
@@ -1111,6 +1119,7 @@ impl PreparedSeries {
                     color_value: layer.color_value,
                     size_value: layer.size_value,
                     instance: layer.instance,
+                    ternary_c: layer.ternary_c,
                 })
                 .collect(),
             value_labels: self.value_labels.as_ref().map(|layer| {

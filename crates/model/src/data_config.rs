@@ -3006,6 +3006,15 @@ impl<'a> BoxPlotRef<'a> {
 }
 
 impl DataRenderType {
+    /// The third component's column of a ternary series, or `None` for every
+    /// other kind.
+    pub fn ternary_c_column(&self) -> Option<&str> {
+        match self {
+            DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
     /// The fields of a box plot series, or `None` for every other kind.
     pub fn box_plot(&self) -> Option<BoxPlotRef<'_>> {
         match self {

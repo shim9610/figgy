@@ -287,18 +287,28 @@ impl PrepareContext<'_> {
                 let ring_buf = data_render::create_style_uniform_buffer(&self.device, &ring_style);
                 let style_bg =
                     data_render::create_style_bind_group(&self.device, &self.style_bgl, &ring_buf);
+                // A ternary point's ring: the ternary entries with its third
+                // component.
+                let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
+                let ternary = |kind: TernaryPipeline| {
+                    pipelines.ternary[kind as usize]
+                        .as_ref()
+                        .expect("prepare ensured the ternary pick ring pipeline")
+                };
                 picked.push(ColumnPickRingLayer {
-                    pipeline: if uses_mapped_pick {
-                        pipelines
+                    pipeline: match (uses_mapped_pick, ternary_c.is_some()) {
+                        (true, true) => ternary(TernaryPipeline::RingMapped),
+                        (false, true) => ternary(TernaryPipeline::Ring),
+                        (true, false) => pipelines
                             .pick_ring_mapped
                             .as_ref()
-                            .expect("prepare ensured mapped pick ring pipeline")
-                    } else {
-                        pipelines
+                            .expect("prepare ensured mapped pick ring pipeline"),
+                        (false, false) => pipelines
                             .pick_ring
                             .as_ref()
-                            .expect("prepare ensured pick ring pipeline")
+                            .expect("prepare ensured pick ring pipeline"),
                     },
+                    ternary_c,
                     transform_bg: &view.transform_bg,
                     style_bg,
                     style_map_bg: precise_pick_style_map
