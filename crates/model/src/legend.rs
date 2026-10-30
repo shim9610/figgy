@@ -382,6 +382,11 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
         DataRenderType::BoxPlot { color, .. } => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)
         }
+        // A range bar is a filled swatch in the series colour, like a bar;
+        // direction and state colours are read from the bars.
+        DataRenderType::RangeBars { color, .. } => {
+            scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
         // A radar series reads as the line it is drawn with: its outline
         // over its fill band, with its vertex marker when it has one.
         DataRenderType::Radar {

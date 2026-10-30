@@ -16,7 +16,7 @@
 /// The group a series' bars belong to and how they are laid out.
 ///
 /// CPU twin: `data_render/bar.rs::CategoryBarParamsGpu`
-/// (`#[repr(C)]`, 48 B).
+/// (`#[repr(C)]`, 64 B).
 struct CategoryBarParams {
     /// f32 lane base of this series' category position column.
     positions: u32,
@@ -42,6 +42,11 @@ struct CategoryBarParams {
     scale: f32,
     /// The series salt, which seeds the material grain per bar.
     seed: u32,
+    /// Half a slot along the position axis in data units, as a `(hi, lo)`
+    /// pair: `(0.5, 0)`, half a category, for category bars and boxes; half
+    /// a range bar series' `slot_width` on a numeric axis.
+    slot_half: vec2<f32>,
+    _reserved: vec2<u32>,
 };
 
 const CATEGORY_BAR_MODE_GROUPED: u32 = 0u;
@@ -102,6 +107,13 @@ fn category_invalid() -> CategoryBar {
 /// NDC to chart-area render pixels, y down.
 fn category_px(ndc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>((ndc.x + 1.0) / transform.pixel_to_ndc.x, (1.0 - ndc.y) / transform.pixel_to_ndc.y);
+}
+
+/// The position half a slot below (`side` -1) or above (`side` 1)
+/// `position`, both `(hi, lo)` pairs: the slot's edge along the position
+/// axis.
+fn category_slot_edge(position: vec2<f32>, side: f32) -> vec2<f32> {
+    return vec2<f32>(position.x + side * category_params.slot_half.x, position.y + side * category_params.slot_half.y);
 }
 
 /// The base style of the series' bars: the `Style` lanes (fill, outline
@@ -222,8 +234,8 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
     var b: f32;
     var slot_a: f32;
     var slot_b: f32;
-    let low = vec2<f32>(position.x - 0.5, position.y);
-    let high = vec2<f32>(position.x + 0.5, position.y);
+    let low = category_slot_edge(position, -1.0);
+    let high = category_slot_edge(position, 1.0);
     if (horizontal) {
         a = category_px(data_to_ndc(transform, start, position)).x;
         b = category_px(data_to_ndc(transform, end, position)).x;

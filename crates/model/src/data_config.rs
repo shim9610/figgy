@@ -256,6 +256,91 @@ pub enum DataRenderType {
         )]
         overrides: Option<Vec<BoxPlotOverride>>,
     },
+    /// Range bars: one bar per row, floating from a start value to an end
+    /// value at a position, with optional whiskers from a low to a high
+    /// value. One kind draws waterfall charts (the running total before and
+    /// after each step), candlesticks (open to close, low to high), state
+    /// timelines and Gantt charts (an interval per row), and floating
+    /// min–max bars.
+    ///
+    /// `x_column` holds the positions and `y_column` the end values,
+    /// whatever the direction (the box plot convention); `start` holds the
+    /// start values. Every role is a column of one value per row, supplied
+    /// by the host: the renderer draws the values it is given and computes
+    /// none (a running total, a duration or a difference is host data). A
+    /// row with a NaN position, start or end, or with equal start and end,
+    /// draws no bar.
+    ///
+    /// The `RangeBars` series of one layer form its range group: they stand
+    /// side by side in series order (planned beside actual), laid out by
+    /// `Config::bar_groups`' direction, group width and gap ([`BarGroups`]),
+    /// whose mode must be grouped. `Vertical` stands the bars up from a
+    /// position axis on `bottom_x` (a waterfall, candles); `Horizontal` lays
+    /// them along x from a position axis on `left_y` (a Gantt chart). The
+    /// position axis is categorical (one slot per category) or linear
+    /// numeric, where `slot_width` gives the slot in data units (a time
+    /// axis); the value axis is linear or logarithmic.
+    ///
+    /// `color_by` chooses each bar's fill: the series colour, the direction
+    /// of the given ends (`up` when end ≥ start, else `down`, and a host
+    /// flagged total), or a host state index into a style list.
+    /// `progress` shades the part of a bar past a host fraction; `connector`
+    /// joins each bar's end to the next bar.
+    ///
+    /// Value labels: `labels.text` holds the drawn strings, which the host
+    /// writes (the renderer never formats a value), one per row, drawn past
+    /// each bar's end (or inside it) as `labels.placement` says, moved by
+    /// `labels.offsets`. An empty string draws nothing.
+    ///
+    /// The columns must be GPU resident; a streamed source is rejected with
+    /// an error. Polar charts (`Config.polar`) reject range bars.
+    RangeBars {
+        /// The fill colour of the series' bars under [`RangeColor::Single`],
+        /// opaque; the legend swatch and the whisker colour by default.
+        color: Color,
+        /// The look of the bars: material, corner radius, outline, texture,
+        /// gloss and the brightness of a picked bar.
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: CategoryBarStyle,
+        /// The column of the start values.
+        start: ColumnId,
+        /// The whiskers from a low to a high value (a candle's wick).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        whiskers: Option<RangeWhiskers>,
+        /// How each bar's fill is chosen.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "RangeColor::is_single")
+        )]
+        color_by: RangeColor,
+        /// The finished share of each bar (a Gantt task's progress).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        progress: Option<RangeProgress>,
+        /// The line from each bar's end to the next bar (a waterfall).
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        connector: Option<RangeConnector>,
+        /// The slot of one row along a numeric position axis, in data units;
+        /// `None` on a categorical axis, where the slot is one category.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        slot_width: Option<f64>,
+        /// Where the value labels go and the drawn text of each bar. The
+        /// renderer never writes the text; `decimals` and `value_suffix` are
+        /// not read.
+        #[cfg_attr(feature = "serde", serde(default))]
+        labels: CategoryBarSeriesLabels,
+    },
     /// The polygon of a radar chart: one vertex per category of the polar
     /// chart's categorical angle axis (`bottom_x` with
     /// [`AxisOptions::categories`]), joined into a closed outline, filled
@@ -1623,23 +1708,25 @@ pub fn parse_value_label_id(id: &str) -> Option<(&str, usize)> {
 }
 
 impl SeriesConfig {
-    /// The value label offsets of a category bar, box plot or radar series
-    /// (`labels.offsets`), or `None` for every other kind.
+    /// The value label offsets of a category bar, box plot, range bar or
+    /// radar series (`labels.offsets`), or `None` for every other kind.
     pub fn value_label_offsets(&self) -> Option<&[[f32; 2]]> {
         match &self.render_type {
             DataRenderType::CategoryBars { labels, .. } => Some(&labels.offsets),
             DataRenderType::BoxPlot { labels, .. } => Some(&labels.offsets),
+            DataRenderType::RangeBars { labels, .. } => Some(&labels.offsets),
             DataRenderType::Radar { labels, .. } => Some(&labels.offsets),
             _ => None,
         }
     }
 
-    /// The drawn strings of a category bar, box plot or radar series'
-    /// value labels (`labels.text`), or `None` for every other kind.
+    /// The drawn strings of a category bar, box plot, range bar or radar
+    /// series' value labels (`labels.text`), or `None` for every other kind.
     pub fn value_label_text(&self) -> Option<&[String]> {
         match &self.render_type {
             DataRenderType::CategoryBars { labels, .. } => Some(&labels.text),
             DataRenderType::BoxPlot { labels, .. } => Some(&labels.text),
+            DataRenderType::RangeBars { labels, .. } => Some(&labels.text),
             DataRenderType::Radar { labels, .. } => Some(&labels.text),
             _ => None,
         }
@@ -1673,6 +1760,7 @@ impl SeriesConfig {
         let offsets = match &mut self.render_type {
             DataRenderType::CategoryBars { labels, .. } => &mut labels.offsets,
             DataRenderType::BoxPlot { labels, .. } => &mut labels.offsets,
+            DataRenderType::RangeBars { labels, .. } => &mut labels.offsets,
             DataRenderType::Radar { labels, .. } => &mut labels.offsets,
             _ => return reject,
         };
@@ -1958,6 +2046,7 @@ impl DataRenderType {
             | DataRenderType::Vector { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. }
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. } => false,
@@ -2868,6 +2957,362 @@ pub fn format_box_plot_labels(
     }
 }
 
+/// The whiskers of a [`DataRenderType::RangeBars`] series: a stroke from
+/// the low to the high value at the middle of each bar, under the bar (a
+/// candle's wick).
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeWhiskers {
+    /// The column of the low values.
+    pub low: ColumnId,
+    /// The column of the high values.
+    pub high: ColumnId,
+    /// The stroke width in logical pixels, `0..=24`.
+    pub width: f32,
+    /// The stroke colour, opaque; the series colour when `None`.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub color: Option<Color>,
+}
+
+/// How the bars of a [`DataRenderType::RangeBars`] series are filled.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum RangeColor {
+    /// Every bar in the series colour.
+    #[default]
+    Single,
+    /// By the direction of the bar's given ends: `up` when end ≥ start,
+    /// else `down`; a bar whose `total` flag column reads 1 takes the total
+    /// colour (a waterfall's subtotals). The renderer compares the two
+    /// values it was given; it computes no change.
+    Direction {
+        up: Color,
+        down: Color,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        total: Option<RangeTotal>,
+    },
+    /// By a host state index per bar: the bar of state `k` (the column's
+    /// value rounded) takes `styles[k]`; a state with no style takes the
+    /// series colour.
+    State {
+        /// The column of the state indices.
+        column: ColumnId,
+        styles: Vec<RangeStateStyle>,
+    },
+}
+
+impl RangeColor {
+    /// Whether this is [`RangeColor::Single`], which a document omits.
+    pub fn is_single(&self) -> bool {
+        matches!(self, RangeColor::Single)
+    }
+}
+
+/// The total flag of [`RangeColor::Direction`]: a column that reads 1 for a
+/// total or subtotal bar (any other value is a step), and its colour.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeTotal {
+    pub column: ColumnId,
+    pub color: Color,
+}
+
+/// The look of one state of [`RangeColor::State`].
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeStateStyle {
+    /// The fill colour, opaque.
+    pub color: Color,
+}
+
+/// The progress of a [`DataRenderType::RangeBars`] series: each bar is drawn
+/// whole from its start to `start + p · (end − start)`, `p` the bar's value
+/// in `column` clamped to `0..=1`, and past that at `remaining_opacity`. A
+/// NaN progress draws the bar whole.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeProgress {
+    pub column: ColumnId,
+    /// The opacity of the unfinished part, `0..=1`.
+    pub remaining_opacity: f32,
+}
+
+/// The connector of a [`DataRenderType::RangeBars`] series: a line at each
+/// bar's end value, from the bar's edge to the next bar's (by row), as a
+/// waterfall joins its steps. The last bar and a bar next to a missing one
+/// have none.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct RangeConnector {
+    /// The line colour; channels in `0..=1`.
+    pub color: Color,
+    /// The line width in logical pixels, `0..=24`.
+    pub width: f32,
+}
+
+/// The fields of a [`DataRenderType::RangeBars`] series, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct RangeBarsRef<'a> {
+    pub color: Color,
+    pub style: &'a CategoryBarStyle,
+    pub start: &'a str,
+    pub whiskers: Option<&'a RangeWhiskers>,
+    pub color_by: &'a RangeColor,
+    pub progress: Option<&'a RangeProgress>,
+    pub connector: Option<&'a RangeConnector>,
+    pub slot_width: Option<f64>,
+    pub labels: &'a CategoryBarSeriesLabels,
+}
+
+impl DataRenderType {
+    /// The fields of a range bar series, or `None` for every other kind.
+    pub fn range_bars(&self) -> Option<RangeBarsRef<'_>> {
+        match self {
+            DataRenderType::RangeBars {
+                color,
+                style,
+                start,
+                whiskers,
+                color_by,
+                progress,
+                connector,
+                slot_width,
+                labels,
+            } => Some(RangeBarsRef {
+                color: *color,
+                style,
+                start,
+                whiskers: whiskers.as_ref(),
+                color_by,
+                progress: progress.as_ref(),
+                connector: connector.as_ref(),
+                slot_width: *slot_width,
+                labels,
+            }),
+            _ => None,
+        }
+    }
+}
+
+impl<'a> RangeBarsRef<'a> {
+    /// Every column the series reads besides its positions and end values
+    /// (`x_column`, `y_column`): the start, the whiskers' low and high, the
+    /// total flag or the state index, and the progress, in that order.
+    pub fn extra_columns(self) -> impl Iterator<Item = &'a str> + 'a {
+        let colour = match self.color_by {
+            RangeColor::Single => None,
+            RangeColor::Direction { total, .. } => total.as_ref().map(|t| t.column.as_str()),
+            RangeColor::State { column, .. } => Some(column.as_str()),
+        };
+        std::iter::once(self.start)
+            .chain(self.whiskers.map(|w| w.low.as_str()))
+            .chain(self.whiskers.map(|w| w.high.as_str()))
+            .chain(colour)
+            .chain(self.progress.map(|p| p.column.as_str()))
+    }
+}
+
+/// The most a range bar's whisker or connector is wide, in logical pixels.
+pub const MAX_RANGE_STROKE_WIDTH: f32 = 24.0;
+
+/// The rules one range bar series is held to: an opaque colour and valid
+/// style, every column id not empty and distinct, whisker and connector
+/// widths in `0..=`[`MAX_RANGE_STROKE_WIDTH`], opaque whisker, direction
+/// and state colours, a connector colour with channels in `0..=1`, a
+/// remaining opacity in `0..=1`, label decimals `0..=6` and a one-line
+/// value suffix of at most 24 characters, `labels.text` of one-line strings
+/// of at most [`MAX_CATEGORY_BAR_LABEL_CHARS`] characters, and
+/// `labels.offsets` empty or one per string of `labels.text`.
+pub fn validate_range_bar_series(series: &SeriesConfig) -> Result<(), &'static str> {
+    let Some(bars) = series.render_type.range_bars() else {
+        return Ok(());
+    };
+    if !valid_bar_color(bars.color, true) {
+        return Err("a range bar colour must be opaque with channels in 0..=1");
+    }
+    bars.style.validate()?;
+    let columns = || {
+        [series.x_column.as_str(), series.y_column.as_str()]
+            .into_iter()
+            .chain(bars.extra_columns())
+    };
+    if columns().any(str::is_empty) {
+        return Err(
+            "a range bar series names its positions (x_column), its end values (y_column), its \
+             start values and every optional column",
+        );
+    }
+    if columns()
+        .enumerate()
+        .any(|(k, id)| columns().take(k).any(|earlier| earlier == id))
+    {
+        return Err("the columns of a range bar series are distinct");
+    }
+    if bars.whiskers.is_some_and(|w| {
+        !finite_in(w.width, 0.0, MAX_RANGE_STROKE_WIDTH)
+            || w.color.is_some_and(|c| !valid_bar_color(c, true))
+    }) {
+        return Err("range bar whiskers are 0..=24 px wide, in an opaque colour");
+    }
+    if bars.connector.is_some_and(|c| {
+        !finite_in(c.width, 0.0, MAX_RANGE_STROKE_WIDTH) || !valid_bar_color(c.color, false)
+    }) {
+        return Err("a range bar connector is 0..=24 px wide, its colour channels in 0..=1");
+    }
+    let opaque = match bars.color_by {
+        RangeColor::Single => true,
+        RangeColor::Direction { up, down, total } => {
+            valid_bar_color(*up, true)
+                && valid_bar_color(*down, true)
+                && total
+                    .as_ref()
+                    .is_none_or(|t| valid_bar_color(t.color, true))
+        }
+        RangeColor::State { styles, .. } => styles.iter().all(|s| valid_bar_color(s.color, true)),
+    };
+    if !opaque {
+        return Err("range bar direction and state colours must be opaque");
+    }
+    if bars
+        .progress
+        .is_some_and(|p| !finite_in(p.remaining_opacity, 0.0, 1.0))
+    {
+        return Err("a range bar's remaining opacity is in 0..=1");
+    }
+    if bars.slot_width.is_some_and(|w| !(w.is_finite() && w > 0.0)) {
+        return Err("a range bar slot width is finite and greater than 0");
+    }
+    let labels = bars.labels;
+    if labels.decimals > 6 || !single_line_within(&labels.value_suffix, 24) {
+        return Err(
+            "range bar labels need 0..=6 decimals and a one-line suffix of at most 24 characters",
+        );
+    }
+    if labels
+        .text
+        .iter()
+        .any(|text| !single_line_within(text, MAX_CATEGORY_BAR_LABEL_CHARS))
+    {
+        return Err("a range bar label is one line of at most 160 characters");
+    }
+    validate_value_label_offsets(&labels.offsets, labels.text.len())?;
+    Ok(())
+}
+
+impl crate::config::Config {
+    /// The rules the range bar series of a chart are held to, with the
+    /// series list it draws.
+    ///
+    /// The [`DataRenderType::RangeBars`] series of one layer are its range
+    /// group: any number of them, side by side in series order, laid out by
+    /// the layer's `bar_groups` ([`crate::config::Config::bar_groups_of`]),
+    /// whose mode must be [`CategoryBarMode::Grouped`]. A layer draws
+    /// either category bars, box plots or range bars. The position axis
+    /// (`bottom_x` for vertical bars, `left_y` for horizontal ones) is
+    /// categorical, with no `slot_width`, or linear numeric, with a
+    /// `slot_width`; the value axis is numeric, linear or logarithmic. A
+    /// connector needs its series to be the only range bar series of its
+    /// layer (it would cross its neighbours). Each series passes
+    /// [`validate_range_bar_series`]. Horizontal range bars cannot sit on an
+    /// overlay layer, and a polar chart draws no range bars. Whether every
+    /// column holds one value per row is data: the renderer checks it
+    /// against the pool when it prepares.
+    pub fn validate_range_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        use crate::layer::LayerRef;
+        let ranges = || {
+            series
+                .iter()
+                .filter(|s| s.render_type.range_bars().is_some())
+        };
+        if ranges().next().is_none() {
+            return Ok(());
+        }
+        if self.polar.is_some() {
+            return Err("range bars are not drawn on polar axes");
+        }
+        for layer in self.panel_layers() {
+            let members = || ranges().filter(|s| self.layer_of_series(&s.series_id) == layer);
+            if members().next().is_none() {
+                continue;
+            }
+            if series.iter().any(|s| {
+                (s.render_type.category_bars().is_some() || s.render_type.box_plot().is_some())
+                    && self.layer_of_series(&s.series_id) == layer
+            }) {
+                return Err("a layer draws either category bars, box plots or range bars");
+            }
+            let groups = self.bar_groups_of(layer);
+            if groups.mode != CategoryBarMode::Grouped {
+                return Err(
+                    "range bars stand side by side: their bar_groups mode must be Grouped, not \
+                     Stacked or PercentStacked",
+                );
+            }
+            let horizontal = groups.direction == CategoryBarDirection::Horizontal;
+            let overlay = matches!(layer, LayerRef::Overlay(_) | LayerRef::SubplotOverlay(..));
+            if horizontal && overlay {
+                return Err(
+                    "horizontal range bars cannot sit on an overlay layer: its own axis is a value axis on y",
+                );
+            }
+            let subplot = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    self.subplot_config(index)
+                }
+                LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
+            };
+            let chart = subplot.as_ref().unwrap_or(self);
+            let position_axis = if horizontal {
+                &chart.left_y
+            } else {
+                &chart.bottom_x
+            };
+            let value_axis = match layer {
+                LayerRef::Overlay(index) | LayerRef::SubplotOverlay(_, index) => {
+                    &chart.overlays[index].y_axis
+                }
+                _ if horizontal => &chart.bottom_x,
+                _ => &chart.left_y,
+            };
+            if value_axis.categories.is_some() {
+                return Err("range bars need a numeric value axis");
+            }
+            let categorical = position_axis.categories.is_some();
+            if !categorical && position_axis.scale == AxisScale::Logarithmic {
+                return Err(
+                    "range bars need a categorical or linear numeric position axis: bottom_x \
+                     for vertical bars, left_y for horizontal ones",
+                );
+            }
+            let connectors = members().any(|s| {
+                s.render_type
+                    .range_bars()
+                    .is_some_and(|b| b.connector.is_some())
+            });
+            if connectors && members().nth(1).is_some() {
+                return Err("a range bar connector needs its series alone in its layer");
+            }
+            for item in members() {
+                validate_range_bar_series(item)?;
+                let slot = item.render_type.range_bars().and_then(|b| b.slot_width);
+                if categorical == slot.is_some() {
+                    return Err(
+                        "a range bar series on a categorical position axis has no slot_width; \
+                         on a numeric one it needs one",
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// The marker drawn at every vertex of a radar series.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -3311,7 +3756,8 @@ impl DataRenderType {
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. }
             | DataRenderType::CategoryBars { .. }
-            | DataRenderType::BoxPlot { .. } => false,
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. } => false,
         }
     }
 }
@@ -3334,7 +3780,8 @@ impl crate::config::Config {
     ///   pointer axis its category axis runs along (`dx` for vertical bars,
     ///   `dy` for horizontal ones) and across the category bar series of its
     ///   layer by the other; a box moves the same way across the box plot
-    ///   series of its layer (boxes, never their outliers).
+    ///   series of its layer (boxes, never their outliers), and a range bar
+    ///   across the range bar series of its layer, by row.
     /// - A histogram bin moves along its bins by `dx` for vertical bars and
     ///   `dy` for horizontal ones, and across the histograms of the same
     ///   orientation by the other.
@@ -3423,7 +3870,8 @@ impl crate::config::Config {
             } => {
                 let selected = &series[position].render_type;
                 let boxes = selected.box_plot().is_some();
-                if selected.category_bars().is_some() || boxes {
+                let ranges = selected.range_bars().is_some();
+                if selected.category_bars().is_some() || boxes || ranges {
                     let layer = self.layer_of_series(series_id);
                     let groups = self.bar_groups_of(layer);
                     let horizontal = groups.direction == CategoryBarDirection::Horizontal;
@@ -3431,6 +3879,8 @@ impl crate::config::Config {
                         series.iter().filter(|s| {
                             (if boxes {
                                 s.render_type.box_plot().is_some()
+                            } else if ranges {
+                                s.render_type.range_bars().is_some()
                             } else {
                                 s.render_type.category_bars().is_some()
                             }) && self.layer_of_series(&s.series_id) == layer
@@ -3448,6 +3898,14 @@ impl crate::config::Config {
                     // positions hold one value per category.
                     let count = if boxes {
                         len(next.box_plot_columns().0)
+                    } else if let Some(bars) = next.render_type.range_bars() {
+                        // A range bar is drawn where all its columns hold a
+                        // value: the shortest of them bounds the bars.
+                        bars.extra_columns()
+                            .chain([next.x_column.as_str(), next.y_column.as_str()])
+                            .map(len)
+                            .min()
+                            .unwrap_or(0)
                     } else {
                         let (positions, values) = next.category_bar_columns(groups.direction);
                         len(positions).min(len(values))
@@ -6320,5 +6778,396 @@ mod streamline_tests {
         let flow = parsed.render_type.streamlines().unwrap();
         assert_eq!((flow.arrows, flow.color_map), (None, None));
         assert_eq!(serde_json::to_string(&parsed).unwrap(), minimal);
+    }
+}
+
+#[cfg(test)]
+mod range_bar_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::layer::{OverlayLayer, Subplot};
+
+    fn ranges(id: &str) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "pos".into(),
+            y_column: format!("{id}.end"),
+            render_type: DataRenderType::RangeBars {
+                color: Color::from_rgb8(40, 120, 200),
+                style: CategoryBarStyle::default(),
+                start: format!("{id}.start"),
+                whiskers: None,
+                color_by: RangeColor::Single,
+                progress: None,
+                connector: None,
+                slot_width: None,
+                labels: CategoryBarSeriesLabels::default(),
+            },
+        }
+    }
+
+    /// The fields of a range bar series, mutable.
+    fn edit(series: &mut SeriesConfig) -> &mut DataRenderType {
+        &mut series.render_type
+    }
+
+    fn chart() -> Config {
+        let mut config = crate::default::default_config();
+        config.bottom_x.categories = Some(vec![
+            Category::new("a", "A"),
+            Category::new("b", "B"),
+            Category::new("c", "C"),
+        ]);
+        config
+    }
+
+    fn every_option(series: &mut SeriesConfig) {
+        let id = series.series_id.clone();
+        let DataRenderType::RangeBars {
+            whiskers,
+            color_by,
+            progress,
+            connector,
+            labels,
+            ..
+        } = edit(series)
+        else {
+            unreachable!()
+        };
+        *whiskers = Some(RangeWhiskers {
+            low: format!("{id}.low"),
+            high: format!("{id}.high"),
+            width: 2.0,
+            color: Some(Color::BLACK),
+        });
+        *color_by = RangeColor::Direction {
+            up: Color::from_rgb8(0, 160, 0),
+            down: Color::from_rgb8(200, 0, 0),
+            total: Some(RangeTotal {
+                column: format!("{id}.total"),
+                color: Color::from_rgb8(0, 0, 200),
+            }),
+        };
+        *progress = Some(RangeProgress {
+            column: format!("{id}.progress"),
+            remaining_opacity: 0.4,
+        });
+        *connector = Some(RangeConnector {
+            color: Color::from_rgb8(90, 90, 90),
+            width: 1.5,
+        });
+        labels.placement = CategoryBarLabels::Outside;
+        labels.text = vec!["+1".into(), "-2".into(), "3".into()];
+        labels.offsets = vec![[0.0, 0.0], [1.0, -2.0], [0.0, 0.0]];
+    }
+
+    #[test]
+    fn a_valid_group_passes_on_categorical_and_numeric_position_axes() {
+        let config = chart();
+        let mut one = ranges("one");
+        every_option(&mut one);
+        assert_eq!(
+            config.validate_range_bars(std::slice::from_ref(&one)),
+            Ok(())
+        );
+        // Any number of series stand side by side (without connectors).
+        let many: Vec<SeriesConfig> = (0..40).map(|k| ranges(&format!("s{k}"))).collect();
+        assert_eq!(config.validate_range_bars(&many), Ok(()));
+        // A numeric position axis needs a slot width; a categorical one
+        // has none.
+        let mut numeric = crate::default::default_config();
+        assert!(numeric.validate_range_bars(&[ranges("t")]).is_err());
+        let mut timed = ranges("t");
+        let DataRenderType::RangeBars { slot_width, .. } = edit(&mut timed) else {
+            unreachable!()
+        };
+        *slot_width = Some(86_400.0);
+        assert_eq!(
+            numeric.validate_range_bars(std::slice::from_ref(&timed)),
+            Ok(())
+        );
+        assert!(
+            config
+                .validate_range_bars(std::slice::from_ref(&timed))
+                .is_err()
+        );
+        // A logarithmic value axis is drawn (prices); a logarithmic
+        // position axis is not.
+        let mut log = config.clone();
+        log.left_y.scale = AxisScale::Logarithmic;
+        assert_eq!(log.validate_range_bars(&[ranges("one")]), Ok(()));
+        numeric.bottom_x.scale = AxisScale::Logarithmic;
+        assert!(numeric.validate_range_bars(&[timed]).is_err());
+        // A categorical value axis is refused.
+        let mut values = config.clone();
+        values.left_y.categories = Some(vec![Category::new("x", "X")]);
+        assert!(values.validate_range_bars(&[ranges("one")]).is_err());
+    }
+
+    #[test]
+    fn layer_rules_hold_the_group() {
+        let config = chart();
+        // Polar charts draw none.
+        let mut polar = config.clone();
+        polar.polar = Some(Default::default());
+        assert!(polar.validate_range_bars(&[ranges("one")]).is_err());
+        // The group stands side by side.
+        let mut stacked = config.clone();
+        stacked.bar_groups = Some(BarGroups {
+            mode: CategoryBarMode::Stacked,
+            ..BarGroups::default()
+        });
+        assert!(stacked.validate_range_bars(&[ranges("one")]).is_err());
+        // A layer draws one kind of bars.
+        let mut bars = ranges("bars");
+        bars.render_type = DataRenderType::CategoryBars {
+            color: Color::BLACK,
+            style: CategoryBarStyle::default(),
+            labels: CategoryBarSeriesLabels::default(),
+            label_format: CategoryBarLabelFormat::Value,
+            overrides: None,
+        };
+        assert!(config.validate_range_bars(&[bars, ranges("one")]).is_err());
+        // A connector needs its series alone in its layer.
+        let mut joined = ranges("one");
+        let DataRenderType::RangeBars { connector, .. } = edit(&mut joined) else {
+            unreachable!()
+        };
+        *connector = Some(RangeConnector {
+            color: Color::BLACK,
+            width: 1.0,
+        });
+        assert_eq!(
+            config.validate_range_bars(std::slice::from_ref(&joined)),
+            Ok(())
+        );
+        assert!(
+            config
+                .validate_range_bars(&[joined, ranges("two")])
+                .is_err()
+        );
+        // Horizontal range bars cannot sit on an overlay layer.
+        let mut overlay = config.clone();
+        overlay.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..BarGroups::default()
+        });
+        overlay.left_y.categories = overlay.bottom_x.categories.take();
+        overlay.overlays.push(OverlayLayer {
+            series: vec!["one".into()],
+            ..Default::default()
+        });
+        assert!(overlay.validate_range_bars(&[ranges("one")]).is_err());
+        // A subplot's own axes decide for its range bars.
+        let mut parent = crate::default::default_config();
+        parent.subplots.push(Subplot {
+            config: chart(),
+            series: vec!["one".into()],
+            ..Default::default()
+        });
+        assert_eq!(parent.validate_range_bars(&[ranges("one")]), Ok(()));
+    }
+
+    #[test]
+    fn series_rules_reject_bad_columns_widths_and_colours() {
+        let ok = || {
+            let mut s = ranges("one");
+            every_option(&mut s);
+            s
+        };
+        assert_eq!(validate_range_bar_series(&ok()), Ok(()));
+        let mut s = ok();
+        s.y_column = "one.start".into();
+        assert!(
+            validate_range_bar_series(&s).is_err(),
+            "a column read twice"
+        );
+        let mut s = ok();
+        s.x_column.clear();
+        assert!(validate_range_bar_series(&s).is_err(), "an empty column id");
+        let reject = |f: &dyn Fn(&mut DataRenderType)| {
+            let mut s = ok();
+            f(&mut s.render_type);
+            validate_range_bar_series(&s)
+        };
+        let whiskers = |w: f32| {
+            reject(&|rt| {
+                if let DataRenderType::RangeBars {
+                    whiskers: Some(x), ..
+                } = rt
+                {
+                    x.width = w;
+                }
+            })
+        };
+        assert!(whiskers(24.5).is_err());
+        assert!(whiskers(f32::NAN).is_err());
+        assert_eq!(whiskers(24.0), Ok(()));
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars {
+                    connector: Some(c), ..
+                } = rt
+                {
+                    c.width = -1.0;
+                }
+            })
+            .is_err()
+        );
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars { color_by, .. } = rt {
+                    *color_by = RangeColor::State {
+                        column: "one.state".into(),
+                        styles: vec![RangeStateStyle {
+                            color: Color::from_rgba8(0, 0, 0, 10),
+                        }],
+                    };
+                }
+            })
+            .is_err()
+        );
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars {
+                    progress: Some(p), ..
+                } = rt
+                {
+                    p.remaining_opacity = 1.5;
+                }
+            })
+            .is_err()
+        );
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars { slot_width, .. } = rt {
+                    *slot_width = Some(0.0);
+                }
+            })
+            .is_err()
+        );
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars { labels, .. } = rt {
+                    labels.offsets = vec![[0.0, 0.0]];
+                }
+            })
+            .is_err(),
+            "one offset per label"
+        );
+        assert!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars { labels, .. } = rt {
+                    labels.text[0] = "two\nlines".into();
+                }
+            })
+            .is_err()
+        );
+        // Thousands of state styles and labels are configuration, not a
+        // cap (rule 10).
+        assert_eq!(
+            reject(&|rt| {
+                if let DataRenderType::RangeBars {
+                    color_by, labels, ..
+                } = rt
+                {
+                    *color_by = RangeColor::State {
+                        column: "one.state".into(),
+                        styles: vec![
+                            RangeStateStyle {
+                                color: Color::BLACK
+                            };
+                            5000
+                        ],
+                    };
+                    labels.text = vec!["x".into(); 5000];
+                    labels.offsets.clear();
+                }
+            }),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn step_selection_walks_range_bars_by_row_and_series() {
+        use crate::config::{DataSelectionsConfig, PickedDataRef};
+        let mut config = chart();
+        let series = [ranges("one"), ranges("two")];
+        let pick = |series: &str, row: usize| PickedDataRef::HistogramBin {
+            source_id: None,
+            series_id: series.into(),
+            bin_index: row,
+        };
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![pick("one", 0)],
+            ..DataSelectionsConfig::default()
+        });
+        // Rows: the shortest column of the series bounds them.
+        let len = |c: &str| match c {
+            "pos" | "one.end" | "two.end" | "two.start" => Some(5),
+            "one.start" => Some(4),
+            _ => None,
+        };
+        assert_eq!(config.step_selection(&series, 1, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick("one", 1));
+        assert_eq!(config.step_selection(&series, 9, 0, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick("one", 3));
+        assert_eq!(config.step_selection(&series, 0, 1, len), Ok(true));
+        assert_eq!(config.picked_data.as_ref().unwrap().refs[0], pick("two", 3));
+    }
+
+    #[test]
+    fn value_labels_drag_by_row() {
+        let mut s = ranges("one");
+        every_option(&mut s);
+        let count = s.value_label_text().map_or(0, <[String]>::len);
+        assert_eq!(count, 3);
+        assert_eq!(
+            s.drag_value_label(2, count, 4.0, -1.0),
+            crate::layout::NudgeResult::Moved
+        );
+        assert_eq!(s.value_label_offset(2), [4.0, -1.0]);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn range_bars_round_trip_and_omit_unset_options() {
+        let mut full = ranges("one");
+        every_option(&mut full);
+        let json = serde_json::to_string(&full).unwrap();
+        assert_eq!(serde_json::from_str::<SeriesConfig>(&json).unwrap(), full);
+        let bare = serde_json::to_value(ranges("one")).unwrap();
+        let fields = bare["render_type"]["RangeBars"].as_object().unwrap();
+        for absent in [
+            "whiskers",
+            "color_by",
+            "progress",
+            "connector",
+            "slot_width",
+        ] {
+            assert!(!fields.contains_key(absent), "{absent}");
+        }
+        let minimal = serde_json::json!({
+            "series_id": "one",
+            "label": null,
+            "x_column": "pos",
+            "y_column": "one.end",
+            "render_type": {"RangeBars": {
+                "color": {"r": 0.0, "g": 0.0, "b": 0.0, "a": 1.0},
+                "start": "one.start"
+            }}
+        });
+        let parsed: SeriesConfig = serde_json::from_value(minimal).unwrap();
+        let bars = parsed.render_type.range_bars().unwrap();
+        assert_eq!(bars.color_by, &RangeColor::Single);
+        assert_eq!(bars.style, &CategoryBarStyle::default());
+        assert!(bars.whiskers.is_none() && bars.progress.is_none() && bars.connector.is_none());
+        let again = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SeriesConfig>(&again).unwrap(),
+            parsed
+        );
     }
 }

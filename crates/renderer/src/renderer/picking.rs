@@ -1446,6 +1446,23 @@ impl Renderer {
             )
             .map(Some);
         }
+        if primitives.range_bars {
+            let (data, _) = range_bar_data(
+                &self.device,
+                &self.gpu_ledger,
+                &self.category_bar_data_bgl,
+                &self.per_point_style_map_bgl,
+                self.pool.buffer(),
+                display_config,
+                series.iter().filter(|s| {
+                    effective_series_primitives(&config.draw_style, &s.render_type).range_bars
+                }),
+                cfg,
+                scale,
+                |id| lookup(&self.pool, id),
+            )?;
+            return Ok(Some(data));
+        }
         if primitives.line && cfg.render_type.radar().is_some() {
             let pool_buffer = self.pool.buffer().clone();
             let (_, preparation) = self.preparation_parts();
@@ -1825,6 +1842,38 @@ impl Renderer {
                                 style_map,
                             )?,
                         },
+                    });
+                }
+                continue;
+            }
+
+            if primitives.range_bars {
+                // The bars the range bar entries draw at the pick's display
+                // transform, from the same params and style map as the draw.
+                let (data, count) = range_bar_data(
+                    &self.device,
+                    &self.gpu_ledger,
+                    &self.category_bar_data_bgl,
+                    &self.per_point_style_map_bgl,
+                    self.pool.buffer(),
+                    &display_config,
+                    series.iter().filter(|s| {
+                        effective_series_primitives(&config.draw_style, &s.render_type).range_bars
+                    }),
+                    cfg,
+                    request.display_scale,
+                    |id| {
+                        self.pool
+                            .handle_for(id)
+                            .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                    },
+                )?;
+                if count != 0 {
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::RangeBars { data },
                     });
                 }
                 continue;

@@ -710,19 +710,59 @@ pub(crate) fn create_bar_style_map_writing(
     capacity: usize,
     write: impl FnOnce(&mut dyn FnMut(&BarStyleOverrideGpu)),
 ) -> BarStyleMap {
+    create_bar_style_map_written(
+        device,
+        layout,
+        slots.len(),
+        |push| {
+            for slot in slots {
+                push(slot);
+            }
+        },
+        capacity,
+        write,
+    )
+}
+
+/// [`create_bar_style_map_writing`] with the style slots written straight
+/// into the slot buffer's mapping too: `write_slots` pushes up to
+/// `slot_count` slots (pushes past it are dropped, slots it does not push
+/// read as zero), so a series with any number of part styles (a range bar
+/// series' states) stages nothing on the CPU. No slots binds one padding
+/// row.
+pub(crate) fn create_bar_style_map_written(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slot_count: usize,
+    write_slots: impl FnOnce(&mut dyn FnMut(&BarStyleSlotGpu)),
+    capacity: usize,
+    write: impl FnOnce(&mut dyn FnMut(&BarStyleOverrideGpu)),
+) -> BarStyleMap {
     const ROW: usize = std::mem::size_of::<BarStyleOverrideGpu>();
-    let dummy_style = [<BarStyleSlotGpu as bytemuck::Zeroable>::zeroed()];
-    let style_rows = if slots.is_empty() {
-        &dummy_style[..]
-    } else {
-        slots
-    };
+    const SLOT: usize = std::mem::size_of::<BarStyleSlotGpu>();
     // gpu-alloc: caller
-    let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    let style_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("figgy bar style slots"),
-        contents: bytemuck::cast_slice(style_rows),
+        size: (slot_count.max(1) as u64).saturating_mul(SLOT as u64),
         usage: wgpu::BufferUsages::STORAGE,
+        mapped_at_creation: true,
     });
+    {
+        let mut view = style_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the style slots are mapped at creation");
+        let mut pushed = 0usize;
+        write_slots(&mut |slot| {
+            if pushed < slot_count {
+                let at = pushed * SLOT;
+                view.slice(at..at + SLOT)
+                    .copy_from_slice(bytemuck::bytes_of(slot));
+                pushed += 1;
+            }
+        });
+    }
+    style_buf.unmap();
     // gpu-alloc: caller
     let override_buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("figgy histogram style override rows"),
@@ -747,7 +787,7 @@ pub(crate) fn create_bar_style_map_writing(
     }
     override_buf.unmap();
     let meta = BarStyleMapMeta {
-        style_count: slots.len().min(u32::MAX as usize) as u32,
+        style_count: slot_count.min(u32::MAX as usize) as u32,
         override_count: written.min(u32::MAX as usize) as u32,
         has_index: 0,
         _pad: 0,

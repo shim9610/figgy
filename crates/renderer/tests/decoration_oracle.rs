@@ -835,6 +835,9 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Radar => "Radar",
         SceneKind::LongLabels => "LongLabels",
         SceneKind::OffsetSpectra => "OffsetSpectra",
+        SceneKind::Waterfall => "Waterfall",
+        SceneKind::Candles => "Candles",
+        SceneKind::Gantt => "Gantt",
     }
 }
 

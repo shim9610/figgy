@@ -215,7 +215,15 @@ outliers) picks the box as `PickedData::HistogramBin` with the category row.
 chart; see the
 [box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).
 
-Category bar, box plot and radar series draw value labels: the strings of
+Range bars are `DataRenderType::RangeBars` series: a bar per row from a
+start to an end value at a position, with optional whiskers, direction,
+total or state colours, progress and connectors, over a categorical or a
+numeric (time) position axis. Every value is a host column; the renderer
+computes no total, change or duration. Every part of a bar picks it as
+`PickedData::HistogramBin` with the row; see the
+[range bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RANGEBARS.md).
+
+Category bar, box plot, range bar and radar series draw value labels: the strings of
 `labels.text` (SSOT configuration written at edit time by `format_labels`,
 `format_box_plot_labels` or `format_radar_labels`; the renderer never
 formats a value), baked into a label atlas with the contour labels' text

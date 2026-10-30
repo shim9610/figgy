@@ -170,6 +170,7 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             | DataRenderType::Histogram { .. }
             | DataRenderType::CategoryBars { .. }
             | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. }
             | DataRenderType::Radar { .. }
             // Never streamed: a streamed streamline series is rejected.
             | DataRenderType::Streamlines { .. }

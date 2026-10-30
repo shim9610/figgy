@@ -122,6 +122,13 @@ pub(crate) enum GpuDataPickGeometry {
     BoxPlot {
         data: crate::data_render::CategoryBarData,
     },
+    /// A range bar series' bars, picked by the range bar entry
+    /// (`pick_range_bar`) over the draw's group 3 and style map at the
+    /// pick's display scale: the body, the whisker and the connector of a
+    /// bar answer it as a histogram bin whose index is its row.
+    RangeBars {
+        data: crate::data_render::CategoryBarData,
+    },
     /// A series' value labels, picked by the bar module's label entry
     /// (`pick_value_labels`) over the draw's label uniform, category bar
     /// group 3 and style map at the pick's display scale. A label answers as
@@ -602,6 +609,7 @@ pub(crate) struct DataPickPipelineBundle {
     vector_cell: wgpu::ComputePipeline,
     category_bar: wgpu::ComputePipeline,
     box_plot: wgpu::ComputePipeline,
+    range_bar: wgpu::ComputePipeline,
     /// Group 1 of the value label pick: the query (1, 2, 3), the series'
     /// label uniform (4) and its label cells (7).
     value_label_query_bgl: wgpu::BindGroupLayout,
@@ -785,6 +793,19 @@ impl DataPickPipelineBundle {
                 },
             )
         });
+        let range_bar = observe_value(observer, INIT_SCOPE, "pick_range_bar", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy range bar data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_range_bar"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
         let value_labels = observe_value(observer, INIT_SCOPE, "pick_value_labels", || {
             crate::gpu_compile::compute_pipeline(
                 &device,
@@ -855,6 +876,7 @@ impl DataPickPipelineBundle {
             vector_cell,
             category_bar,
             box_plot,
+            range_bar,
             value_label_query_bgl,
             value_labels,
             empty_bar_style_map,
@@ -889,6 +911,7 @@ impl DataPickPipelineBundle {
                     ("pick_histogram_bin", "pick_histogram_bin"),
                     ("pick_category_bar", "pick_category_bar"),
                     ("pick_box_plot", "pick_box_plot"),
+                    ("pick_range_bar", "pick_range_bar"),
                     ("pick_value_labels", "pick_value_labels"),
                 ],
                 observer,
@@ -1064,6 +1087,7 @@ impl DataPickPipelineBundle {
             VectorGrid(wgpu::BindGroup),
             CategoryBars(crate::data_render::CategoryBarData),
             BoxPlot(crate::data_render::CategoryBarData),
+            RangeBars(crate::data_render::CategoryBarData),
             ValueLabels(crate::data_render::CategoryBarData),
         }
         struct PreparedSeries {
@@ -1180,6 +1204,16 @@ impl DataPickPipelineBundle {
                     (
                         category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
                         PreparedKind::BoxPlot(data),
+                    )
+                }
+                GpuDataPickGeometry::RangeBars { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::RangeBars(data),
                     )
                 }
                 GpuDataPickGeometry::ValueLabels { data, labels } => {
@@ -1299,6 +1333,11 @@ impl DataPickPipelineBundle {
                     }
                     PreparedKind::BoxPlot(data) => {
                         pass.set_pipeline(&self.box_plot);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::RangeBars(data) => {
+                        pass.set_pipeline(&self.range_bar);
                         pass.set_bind_group(2, &data.style_map, &[]);
                         pass.set_bind_group(3, &data.bind_group, &[]);
                     }

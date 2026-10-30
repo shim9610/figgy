@@ -100,7 +100,8 @@ impl PreparationFeature {
             let group = match item.render_type {
                 DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
-                | DataRenderType::BoxPlot { .. } => Self::Bars,
+                | DataRenderType::BoxPlot { .. }
+                | DataRenderType::RangeBars { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
@@ -301,6 +302,8 @@ impl Renderer {
                     && p.bar_category_selection.is_some()
                     && p.bar_box_plot.is_some()
                     && p.bar_box_plot_selection.is_some()
+                    && p.bar_range.is_some()
+                    && p.bar_range_selection.is_some()
                     && p.bar_value_label.is_some()
                     && p.bar_value_label_selection.is_some()
             }
@@ -413,6 +416,8 @@ impl TargetPipelines {
             bar_category_selection: None,
             bar_box_plot: None,
             bar_box_plot_selection: None,
+            bar_range: None,
+            bar_range_selection: None,
             bar_value_label: None,
             bar_value_label_selection: None,
             field: None,
@@ -480,6 +485,12 @@ impl TargetPipelines {
         }
         if self.bar_box_plot_selection.is_none() {
             self.bar_box_plot_selection = other.bar_box_plot_selection;
+        }
+        if self.bar_range.is_none() {
+            self.bar_range = other.bar_range;
+        }
+        if self.bar_range_selection.is_none() {
+            self.bar_range_selection = other.bar_range_selection;
         }
         if self.bar_value_label.is_none() {
             self.bar_value_label = other.bar_value_label;

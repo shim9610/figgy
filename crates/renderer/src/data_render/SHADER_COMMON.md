@@ -48,11 +48,12 @@ To change shared shader code:
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
 | `data_pick.wgsl` | bar, field, grid vector |
-| `material.wgsl` (§5.9) | bar (category bars, box plots), radial, the radial pick module |
+| `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
-| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots) |
+| `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
+| `range_bars.wgsl` (§2.6, §5.18) | bar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
 | `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
 | `value_label.wgsl` (§5.17) | bar |
@@ -307,6 +308,19 @@ series' bar style slots (§5.15), which the pick reads too. The selected
 box's highlight (`vs_box_plot_selection`) reads a per-selection `Style`
 built from the same function with the highlight colour and the outline
 width, as a category bar's.
+
+### 2.6 The range bar entries' `Style`
+
+A `DataRenderType::RangeBars` series (§5.18) reads the category bar lanes
+of §2.4 for its bodies: its look is a `CategoryBarStyle`, so the CPU
+writer is `style.rs::PrimitiveStyle::from_category_bars` with the series
+colour. `color_premul` is the fill under `RangeColor::Single` (and the
+fallback of a part or a state with no colour of its own). The part
+colours and widths are not `Style` lanes but the series' bar style slots
+(§5.18), which the pick reads too. The selected bar's highlight
+(`vs_range_bar_selection`) reads a per-selection `Style` built from the
+same function with the highlight colour and the outline width, as a
+category bar's.
 
 ---
 
@@ -1064,7 +1078,7 @@ pipeline never reads group 3 bindings 8 to 10.
 ```wgsl
 struct CategoryBarParams { positions, count, member, members, mode,
     horizontal: u32, gap_px, group_width, corner_radius_px, emphasis,
-    scale: f32, seed: u32 };   // 48 bytes
+    scale: f32, seed: u32, slot_half: vec2<f32>, _reserved: vec2<u32> };   // 64 bytes
 @group(3) @binding(8) var<storage, read> category_pool: array<f32>;
 @group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
 @group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
@@ -1088,6 +1102,7 @@ number of series is one storage array of that many `u32`s.
 | `corner_radius_px`, `emphasis` | the series' corner radius in render pixels and the picked bar's emphasis brightness |
 | `scale` | render pixels per logical pixel: the material's object unit (`Bar.effects.y`) |
 | `seed` | the series salt; the grain seed of a bar is `(seed ^ row · 2654435761) % 4096` |
+| `slot_half` | half a slot along the position axis in data units, a `(hi, lo)` pair: `(0.5, 0)` (half a category, `CATEGORY_SLOT_HALF`) for category bars and boxes, half a range bar series' `slot_width` on a numeric axis (§5.18); the slot's edges are `category_slot_edge(position, ±1)` |
 
 Rust twin: `data_render::CategoryBarParamsGpu` (`bar.rs`), written by
 `renderer/series.rs::category_bar_params`; the lane table is written by
@@ -1270,7 +1285,7 @@ module.
 ### 5.17 Value labels (group 1, bindings 4 to 7)
 
 The value label of each category of a `CategoryBars`, `BoxPlot` or `Radar`
-series: `labels.text[i]` (SSOT configuration; the renderer never formats a
+series, and of each row of a `RangeBars` series: `labels.text[i]` (SSOT configuration; the renderer never formats a
 value) baked into the series' label atlas by the contour labels' builder
 (`ContourLabelAtlasInput::for_value_labels`: the value axis' tick label
 face and size at the render scale, its colour or white inside a dark bar,
@@ -1298,7 +1313,7 @@ labels.
 | Member (binding 4, and binding 7's cells) | Meaning |
 |---|---|
 | `atlas` | the atlas geometry (§5.16) |
-| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1) or `_RADAR` (2), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, any number; binding 7 holds that many cells |
+| `shape` | `(kind, labels, 0, 0)`: `VALUE_LABEL_KIND_BARS` (0), `_BOXES` (1), `_RADAR` (2) or `_RANGE` (3), and the label count: one per category in axis order, as many as the axis has categories and `labels.text` has strings, or for range bars one per string (a label per row), any number; binding 7 holds that many cells |
 | `metrics` | `(gap, baseline, font size, scale)`: the gap between the anchor and the label (bars 6, boxes 10, radar 9 logical px, at the render scale), the text baseline's height above the content's bottom edge, the font size, all in render pixels, and render pixels per logical pixel |
 | `selection_color`, `selection` | the selection box: the model's `SELECTION_COLOR` premultiplied, and `(SELECTION_STROKE_WIDTH, SELECTION_PADDING, 0, 0)` at the render scale |
 | `value_label_cells[i]` | `(width, placement, offset x, offset y)`: the content width of string `i`'s cell (0 for an empty string or a label its placement hides: a bar's or box's `None`, from the series or its override), the placement (`VALUE_LABEL_OUTSIDE` 0, `_INSIDE` 1, `_AUTO` 2) and `labels.offsets[i]` (the drag offset) in render pixels, x right and y down |
@@ -1354,6 +1369,81 @@ after every series of the panel, so a label wins every tie against the
 data it is drawn over.
 
 ---
+### 5.18 Range bars (group 3, bindings 8 to 10)
+
+The bars of a `DataRenderType::RangeBars` series: one instance per row of
+its columns, floating from the row's start to its end value at its
+position, drawn by the input fragment
+[`common/range_bars.wgsl`](common/range_bars.wgsl), spliced into the bar
+module after `box_plot.wgsl`, whose slot layout (`box_slot`), value reads
+(`box_value`), rects and flat quads it shares, and before
+`bar_columnar.wgsl`. The entries use the category bar pipeline layout and
+group 3 unchanged: the pool at binding 8, a `CategoryBarParams` (§5.13) at
+binding 9 and the lane table at binding 10, which a range bar series reads
+as follows (CPU writer: `renderer/series.rs::range_bar_params`;
+`RANGE_BAR_LANES`, 8 entries, a fixed schema, not a count of data).
+
+| Entry of `category_lanes` | Meaning for a range bar series |
+|---|---|
+| `RANGE_LANE_END` (0), `RANGE_LANE_START` (1) | the f32 lane bases of the end (`y_column`) and start columns |
+| `RANGE_LANE_LOW` (2), `RANGE_LANE_HIGH` (3) | the whiskers' low and high columns, `BOX_LANE_ABSENT` without whiskers |
+| `RANGE_LANE_COLOR` (4) | the total flag column of `RangeColor::Direction` or the state column of `RangeColor::State`, `BOX_LANE_ABSENT` without one |
+| `RANGE_LANE_PROGRESS` (5) | the progress column, `BOX_LANE_ABSENT` without progress |
+| `RANGE_LANE_COLOR_MODE` (6) | `RANGE_COLOR_SINGLE` (0), `_DIRECTION` (1) or `_STATE` (2) |
+| `RANGE_LANE_STATES` (7) | the number of state styles: style slots `RANGE_SLOT_STATES..` |
+
+| Member of `CategoryBarParams` | Meaning for a range bar series |
+|---|---|
+| `positions`, `count` | the position column's (`x_column`) lane base and the row count: any number of rows |
+| `member`, `members` | the series' place among the layer's range bar series and their count, any number (a bar reads only its own columns) |
+| `mode` | `CATEGORY_BAR_MODE_GROUPED`: the series stand side by side |
+| `horizontal`, `gap_px`, `group_width` | as §5.13, from `Config::bar_groups`; the gap is in render pixels |
+| `corner_radius_px`, `emphasis`, `scale`, `seed` | as §5.13; a floating bar is rounded at both ends |
+| `slot_half` | `(0.5, 0)` on a categorical position axis, half the series' `slot_width` as a `(hi, lo)` pair on a numeric one |
+
+The part colours are the series' bar style map's slots (group 2,
+bindings 5–7; CPU writer `renderer/style.rs::range_bar_style_map`, written
+straight into the slot buffer's mapping, sized by the states); range bars
+have no per-bar overrides. A slot with a zero mask sets nothing:
+
+| Slot | Lanes |
+|---|---|
+| `RANGE_SLOT_WHISKER` (0) | fill = the whisker colour (the series colour by default), gap = the whisker width px |
+| `RANGE_SLOT_CONNECTOR` (1) | fill = the connector colour, gap = its width px |
+| `RANGE_SLOT_UP` (2), `_DOWN` (3), `_TOTAL` (4) | fill = the direction and total colours of `RangeColor::Direction` |
+| `RANGE_SLOT_PROGRESS` (5) | width ratio = the remaining opacity of `RangeProgress` |
+| `RANGE_SLOT_STATES + k` | fill = the colour of state `k` of `RangeColor::State` |
+
+One instance draws `RANGE_BAR_VERTICES` (18): three quads in paint order,
+the whisker (a flat stroke rect from the low to the high value at the
+bar's middle, under the body), the body (`bar_surface`, §5.9 bars, over
+the rounded rect from the start to the end, sampled at 2×2 subpixels with
+the outline as the inside band, as a category bar's) and the connector (a
+flat stroke rect at the bar's end value, from its edge to the edge of the
+next row's bar facing it; none for the last row or a missing neighbour).
+A NaN position, start or end, or equal ends, draws no bar and none of its
+parts. The body's fill follows the colour mode: the series colour; the
+up colour when the end pair is at least the start pair (compared high word
+first) and the down colour otherwise, the total colour where the flag
+reads 1; or the style of the state `round(v)`, the series colour past the
+styles. With progress, the body past `start + p · (end − start)` (`p`
+clamped to `0..=1`, the difference taken on the pairs so a time axis keeps
+its precision; a NaN `p` draws the bar whole) is drawn at the remaining
+opacity. The renderer compares the given ends and maps a given state; it
+computes no value the user reads as data.
+
+`vs_range_bar_selection` / `fs_range_bar_selection` draw the picked bar's
+body ring and emphasis as a category bar's (one quad, the body). The
+compute entry `pick_range_bar` answers, per bar, the nearest of its body
+(the rounded-rect distance), its whisker and its connector (their rect
+distances), each from the function its draw uses, within the pick
+distance, as a `DATA_PICK_KIND_HISTOGRAM_BIN` candidate whose index is the
+row; a connector is a candidate of the bar it leaves. A bar's value label
+(`VALUE_LABEL_KIND_RANGE`, §5.17) is placed at the body's end by the
+category bar rule, a range bar counting as grouped. Nothing per bar is
+stored anywhere; the CPU keeps the lane bases, the part colours of the
+configuration and the columns' scalar statistics (the fit).
+
 ## Checklist
 
 When shared shader code changes:

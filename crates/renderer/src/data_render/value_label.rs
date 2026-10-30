@@ -24,6 +24,7 @@ pub const VALUE_LABEL_VERTICES: u32 = 6;
 pub(crate) const VALUE_LABEL_KIND_BARS: u32 = 0;
 pub(crate) const VALUE_LABEL_KIND_BOXES: u32 = 1;
 pub(crate) const VALUE_LABEL_KIND_RADAR: u32 = 2;
+pub(crate) const VALUE_LABEL_KIND_RANGE: u32 = 3;
 /// A label's placement (`VALUE_LABEL_OUTSIDE` / `_INSIDE` / `_AUTO`).
 pub(crate) const VALUE_LABEL_OUTSIDE: u32 = 0;
 pub(crate) const VALUE_LABEL_INSIDE: u32 = 1;
@@ -118,7 +119,8 @@ impl ValueLabelAtlas {
 }
 
 /// The value labels a series draws: its kind and its strings. `None` for a
-/// series that is not a category bar, box plot or radar series, or that
+/// series that is not a category bar, box plot, range bar or radar series,
+/// or that
 /// draws no labels: placement `None` (the series' and every override's),
 /// no non-empty string, or a radar series whose `Emphasized` labels have no
 /// selection. `selected` is whether the series has a selected vertex or
@@ -148,6 +150,8 @@ pub(crate) fn value_label_kind(
                 });
             any.then_some((VALUE_LABEL_KIND_BOXES, labels.text.as_slice()))
         }
+        DataRenderType::RangeBars { labels, .. } => (labels.placement != CategoryBarLabels::None)
+            .then_some((VALUE_LABEL_KIND_RANGE, labels.text.as_slice())),
         DataRenderType::Radar { labels, .. } => {
             let shown = match labels.placement {
                 RadarLabels::None => false,
@@ -161,10 +165,19 @@ pub(crate) fn value_label_kind(
     kind.filter(|(_, text)| text.iter().any(|t| !t.is_empty()))
 }
 
-/// The placement of label `index` (category `category_id`) of a series
-/// [`value_label_kind`] accepted, or `None` when the label is hidden.
-fn label_placement(render_type: &DataRenderType, category_id: &str) -> Option<u32> {
+/// The placement of a label of a series [`value_label_kind`] accepted (of
+/// category `category_id`, which a range bar series' row labels have
+/// none of), or `None` when the label is hidden.
+fn label_placement(render_type: &DataRenderType, category_id: Option<&str>) -> Option<u32> {
+    let category_id = category_id.unwrap_or_default();
+    let bar_placement = |placement: CategoryBarLabels| match placement {
+        CategoryBarLabels::None => None,
+        CategoryBarLabels::Inside => Some(VALUE_LABEL_INSIDE),
+        CategoryBarLabels::Outside => Some(VALUE_LABEL_OUTSIDE),
+        CategoryBarLabels::Auto => Some(VALUE_LABEL_AUTO),
+    };
     match render_type {
+        DataRenderType::RangeBars { labels, .. } => bar_placement(labels.placement),
         DataRenderType::CategoryBars {
             labels, overrides, ..
         } => {
@@ -175,12 +188,7 @@ fn label_placement(render_type: &DataRenderType, category_id: &str) -> Option<u3
                 .find(|o| o.target.category_id == category_id)
                 .and_then(|o| o.labels)
                 .unwrap_or(labels.placement);
-            match placement {
-                CategoryBarLabels::None => None,
-                CategoryBarLabels::Inside => Some(VALUE_LABEL_INSIDE),
-                CategoryBarLabels::Outside => Some(VALUE_LABEL_OUTSIDE),
-                CategoryBarLabels::Auto => Some(VALUE_LABEL_AUTO),
-            }
+            bar_placement(placement)
         }
         DataRenderType::BoxPlot {
             labels, overrides, ..
@@ -210,26 +218,38 @@ fn selection_policy(scale: f32) -> ([f32; 4], f32, f32) {
     )
 }
 
-/// The value label uniform of one series: the atlas geometry, its kind and
-/// its label count, one per category of `categories` (the series' axis in
-/// order) that has a string of `text`, any number (#107 R11), at `scale`
-/// render pixels per logical pixel. The labels' cells are
-/// [`value_label_cells`].
-pub(crate) fn value_label_params(
+/// How many labels a series of `kind` with the strings `text` draws over
+/// `categories` (the series' axis in order): one per category that has a
+/// string, or for range bars one per string (a label per row, whatever
+/// the position axis), any number (#107 R11).
+pub(crate) fn value_label_count(
     kind: u32,
     text: &[String],
     categories: &[crate::config::Category],
+) -> usize {
+    if kind == VALUE_LABEL_KIND_RANGE {
+        text.len()
+    } else {
+        categories.len().min(text.len())
+    }
+}
+
+/// The value label uniform of one series: the atlas geometry, its kind and
+/// its label count ([`value_label_count`]) at `scale` render pixels per
+/// logical pixel. The labels' cells are [`value_label_cells`].
+pub(crate) fn value_label_params(
+    kind: u32,
+    count: usize,
     atlas: &ValueLabelAtlas,
     font_px: f32,
     scale: f32,
 ) -> ValueLabelParamsGpu {
     let gap = match kind {
-        VALUE_LABEL_KIND_BARS => BAR_LABEL_GAP,
+        VALUE_LABEL_KIND_BARS | VALUE_LABEL_KIND_RANGE => BAR_LABEL_GAP,
         VALUE_LABEL_KIND_BOXES => BOX_LABEL_GAP,
         _ => RADAR_LABEL_GAP,
     };
     let (color, stroke, padding) = selection_policy(scale);
-    let count = categories.len().min(text.len());
     ValueLabelParamsGpu {
         atlas: atlas.geometry,
         shape: [kind, u32::try_from(count).unwrap_or(u32::MAX), 0, 0],
@@ -239,8 +259,8 @@ pub(crate) fn value_label_params(
     }
 }
 
-/// Push the label cells of one series, one per label of
-/// [`value_label_params`] in category order: the width of its string's
+/// Push the label cells of one series, the first `count` labels in
+/// category (or, for range bars, row) order: the width of its string's
 /// cell (zero for an empty string or a label its placement hides), its
 /// placement and its drag offset (`offsets`) at `scale` render pixels per
 /// logical pixel. [`create_value_label_data`] writes them into the cells'
@@ -251,12 +271,14 @@ pub(crate) fn value_label_cells(
     text: &[String],
     offsets: &[[f32; 2]],
     categories: &[crate::config::Category],
+    count: usize,
     atlas: &ValueLabelAtlas,
     scale: f32,
     push: &mut dyn FnMut([f32; 4]),
 ) {
-    for (index, (category, text)) in categories.iter().zip(text).enumerate() {
-        let placement = label_placement(render_type, &category.id);
+    for (index, text) in text.iter().take(count).enumerate() {
+        let category = categories.get(index).map(|c| c.id.as_str());
+        let placement = label_placement(render_type, category);
         let width = atlas.cells.get(index).map_or(0.0, |cell| cell.width);
         let cell = match placement {
             Some(placement) if !text.is_empty() => {

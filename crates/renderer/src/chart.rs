@@ -458,6 +458,53 @@ pub fn category_bar_value_extent(
     Ok((extent, groups.direction))
 }
 
+/// The extents a range bar series `item` of `config` draws over, from the
+/// pool's scalar statistics, with its direction: its value axis spans the
+/// finite range of its start and end columns and, with whiskers, of its
+/// low and high ones, zero not forced (a bar floats, and a price axis may
+/// be logarithmic); its position axis, when it is numeric (the series has
+/// a `slot_width`), spans its positions grown by half a slot on each side,
+/// and is empty on a categorical axis, which no fit moves. Nothing per bar
+/// is read back.
+pub fn range_bar_extents(
+    pool: &ColumnPool,
+    config: &Config,
+    item: &SeriesConfig,
+) -> Result<(
+    FitExtent,
+    FitExtent,
+    crate::data_config::CategoryBarDirection,
+)> {
+    let groups = config.bar_groups_of(config.layer_of_series(&item.series_id));
+    let mut value = FitExtent::EMPTY;
+    let mut position = FitExtent::EMPTY;
+    let Some(bars) = item.render_type.range_bars() else {
+        return Ok((value, position, groups.direction));
+    };
+    value.union(&Chart::slot_extent(pool, &item.y_column)?);
+    value.union(&Chart::slot_extent(pool, bars.start)?);
+    if let Some(w) = bars.whiskers {
+        value.union(&Chart::slot_extent(pool, &w.low)?);
+        value.union(&Chart::slot_extent(pool, &w.high)?);
+    }
+    if let Some(width) = bars.slot_width {
+        let positions = Chart::slot_extent(pool, &item.x_column)?;
+        if positions.min.is_finite() && positions.max.is_finite() {
+            let (min, max) = (positions.min - width * 0.5, positions.max + width * 0.5);
+            position.union(&FitExtent {
+                min,
+                max,
+                min_positive: if min > 0.0 {
+                    Some(min)
+                } else {
+                    (max > 0.0).then_some(max)
+                },
+            });
+        }
+    }
+    Ok((value, position, groups.direction))
+}
+
 /// The value-axis extent of the box plots `layer` of `config` draws, from
 /// the pool's scalar statistics, with their direction.
 ///
@@ -1084,6 +1131,22 @@ impl Chart {
                         x.union(&extent)
                     }
                     _ => {}
+                }
+                continue;
+            }
+            // A range bar series fits its value axis to its ends and
+            // whiskers, and a numeric position axis to its slots.
+            if cfg.render_type.range_bars().is_some() {
+                let (value, position, direction) = range_bar_extents(pool, &self.config, cfg)?;
+                let (along_x, along_y) = match direction {
+                    crate::data_config::CategoryBarDirection::Vertical => (position, value),
+                    crate::data_config::CategoryBarDirection::Horizontal => (value, position),
+                };
+                if fit_x {
+                    x.union(&along_x);
+                }
+                if fit_y {
+                    y.union(&along_y);
                 }
                 continue;
             }

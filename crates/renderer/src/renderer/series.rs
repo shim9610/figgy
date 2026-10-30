@@ -94,7 +94,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. } => None,
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. } => None,
     }
 }
 
@@ -128,6 +129,7 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         // Arrowheads are not markers either; they are drawn along the line
         // by the vector glyph (`DataRenderType::streamlines`).
         | DataRenderType::Streamlines { .. } => None,
@@ -182,6 +184,7 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -218,6 +221,7 @@ pub(super) fn extract_field_fill(
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -253,6 +257,7 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -285,6 +290,7 @@ pub(super) fn extract_vector(
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -429,6 +435,25 @@ pub(super) fn series_draw_info_from_pool(
                 truncated,
             }
         }
+        // One bar per row where every column of the series has a value:
+        // the positions, the ends and the referenced columns are
+        // index-aligned, so the shortest decides.
+        DataRenderType::RangeBars { .. } => {
+            let bars = series.render_type.range_bars();
+            let lengths = || {
+                [x, y]
+                    .into_iter()
+                    .chain(bars.iter().flat_map(|b| b.extra_columns().map(len)))
+            };
+            let count = lengths().min().unwrap_or(0);
+            let truncated = lengths().any(|value| value > count);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
         // A radar polygon: one closed segment and one marker per vertex of
         // the category index and value columns, which hold one value per
         // category (checked when the polygon is prepared).
@@ -519,6 +544,7 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -551,6 +577,7 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -574,6 +601,7 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -597,6 +625,7 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => None,
     }
@@ -847,6 +876,7 @@ pub(super) fn category_bar_params<'c>(
     params.emphasis = bars.style.emphasis_brightness;
     params.scale = display_scale;
     params.seed = crate::sketch::fnv1a(&series.series_id);
+    params.slot_half = data_render::CATEGORY_SLOT_HALF;
     Ok(params)
 }
 
@@ -1002,9 +1032,194 @@ pub(super) fn box_plot_params<'c>(
     params.emphasis = boxes.style.emphasis_brightness;
     params.scale = display_scale;
     params.seed = crate::sketch::fnv1a(&series.series_id);
+    params.slot_half = data_render::CATEGORY_SLOT_HALF;
     let vertices = max_group
         .checked_mul(BOX_PLOT_QUAD_VERTICES)
         .and_then(|v| v.checked_add(BOX_PLOT_BASE_VERTICES))
         .ok_or_else(|| invalid("a box plot outlier group is too long to draw".into()))?;
     Ok((params, lanes, vertices))
+}
+
+/// The params and the lane table a range bar series of the panel `config`
+/// draws with: `group` is the panel's range bar series in order, `lookup`
+/// resolves a column to its handle (so the panel's column fingerprint
+/// covers them).
+///
+/// The columns are data, so they are checked here against the pool: every
+/// column of the series holds one value per row of its positions. The lane
+/// table is the end, start, low, high, colour and progress column lanes
+/// (`BOX_LANE_ABSENT` for an absent one), the colour mode and the state
+/// style count (SHADER_COMMON.md §5.18); the range group holds any number
+/// of series, each reading only its own columns, and any number of rows.
+/// The group layout of `config.bar_groups` is already in render pixels and
+/// the corner radius is scaled to `display_scale`; the slot is one category
+/// on a categorical position axis and the series' `slot_width` on a
+/// numeric one.
+pub(super) fn range_bar_params<'c>(
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(
+    data_render::CategoryBarParamsGpu,
+    [u32; data_render::RANGE_BAR_LANES],
+)> {
+    use crate::data_config::{CategoryBarDirection, RangeColor};
+    use data_render::{
+        BOX_LANE_ABSENT, RANGE_BAR_LANES, RANGE_COLOR_DIRECTION, RANGE_COLOR_SINGLE,
+        RANGE_COLOR_STATE, RANGE_LANE_COLOR, RANGE_LANE_COLOR_MODE, RANGE_LANE_END,
+        RANGE_LANE_HIGH, RANGE_LANE_LOW, RANGE_LANE_PROGRESS, RANGE_LANE_START, RANGE_LANE_STATES,
+    };
+    let invalid = |reason: String| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason,
+    };
+    let bars = series
+        .render_type
+        .range_bars()
+        .ok_or_else(|| invalid("not a range bar series".into()))?;
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    let positions = lookup(&series.x_column)?;
+    let n = positions.len_values;
+    let mut lane = |id: &str| -> Result<u32> {
+        let handle = lookup(id)?;
+        if handle.len_values != n {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: format!(
+                    "range bar column {id:?} has {} values for the {n} positions of {:?}; it \
+                     needs one per row",
+                    handle.len_values, series.x_column
+                ),
+            });
+        }
+        u32::try_from(handle.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "range bar column lane",
+            requested: handle.offset / 4,
+            limit: u64::from(u32::MAX),
+        })
+    };
+    let mut lanes = [BOX_LANE_ABSENT; RANGE_BAR_LANES];
+    lanes[RANGE_LANE_END as usize] = lane(&series.y_column)?;
+    lanes[RANGE_LANE_START as usize] = lane(bars.start)?;
+    if let Some(w) = bars.whiskers {
+        lanes[RANGE_LANE_LOW as usize] = lane(&w.low)?;
+        lanes[RANGE_LANE_HIGH as usize] = lane(&w.high)?;
+    }
+    let (mode, colour, states) = match bars.color_by {
+        RangeColor::Single => (RANGE_COLOR_SINGLE, None, 0),
+        RangeColor::Direction { total, .. } => (
+            RANGE_COLOR_DIRECTION,
+            total.as_ref().map(|t| t.column.as_str()),
+            0,
+        ),
+        RangeColor::State { column, styles } => {
+            (RANGE_COLOR_STATE, Some(column.as_str()), styles.len())
+        }
+    };
+    if let Some(id) = colour {
+        lanes[RANGE_LANE_COLOR as usize] = lane(id)?;
+    }
+    if let Some(p) = bars.progress {
+        lanes[RANGE_LANE_PROGRESS as usize] = lane(&p.column)?;
+    }
+    lanes[RANGE_LANE_COLOR_MODE as usize] = mode;
+    lanes[RANGE_LANE_STATES as usize] =
+        u32::try_from(states).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "range bar state styles",
+            requested: states as u64,
+            limit: u64::from(u32::MAX),
+        })?;
+    let mut member = None;
+    let mut members = 0usize;
+    for item in group {
+        if item.render_type.range_bars().is_none() {
+            continue;
+        }
+        if item.series_id == series.series_id {
+            member = Some(members);
+        }
+        members += 1;
+    }
+    let member = member.ok_or_else(|| invalid("the series is not in its range group".into()))?;
+    let count = u32::try_from(n).map_err(|_| FiggyError::GpuResourceLimit {
+        resource: "range bar rows",
+        requested: n as u64,
+        limit: u64::from(u32::MAX),
+    })?;
+    let mut params: data_render::CategoryBarParamsGpu = bytemuck::Zeroable::zeroed();
+    params.positions =
+        u32::try_from(positions.offset / 4).map_err(|_| FiggyError::GpuResourceLimit {
+            resource: "range bar column lane",
+            requested: positions.offset / 4,
+            limit: u64::from(u32::MAX),
+        })?;
+    params.count = count;
+    params.member = member as u32;
+    params.members = members as u32;
+    params.mode = data_render::CATEGORY_BAR_MODE_GROUPED;
+    params.horizontal = u32::from(groups.direction == CategoryBarDirection::Horizontal);
+    params.gap_px = groups.bar_gap.max(0.0);
+    params.group_width = groups.group_width.clamp(0.0, 1.0);
+    params.corner_radius_px = bars.style.corner_radius.max(0.0) * display_scale;
+    params.emphasis = bars.style.emphasis_brightness;
+    params.scale = display_scale;
+    params.seed = crate::sketch::fnv1a(&series.series_id);
+    params.slot_half = match bars.slot_width {
+        Some(width) => {
+            // Half the slot as a (hi, lo) pair, so a time axis keeps the
+            // slot's edges at the positions' precision.
+            let half = width * 0.5;
+            let hi = half as f32;
+            [hi, (half - f64::from(hi)) as f32]
+        }
+        None => data_render::CATEGORY_SLOT_HALF,
+    };
+    Ok((params, lanes))
+}
+
+/// The group 3 and style map a range bar series of the panel `config` is
+/// drawn, picked, highlighted and labelled with at `display_scale`
+/// ([`range_bar_params`] and [`crate::renderer::style::range_bar_style_map`]
+/// bound into the category bar data layout), and its row count. Every pass
+/// builds it here, so they all see the same bars.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn range_bar_data<'c>(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    data_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    config: &Config,
+    group: impl IntoIterator<Item = &'c SeriesConfig>,
+    series: &SeriesConfig,
+    display_scale: f32,
+    lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<(data_render::CategoryBarData, u32)> {
+    let ranges =
+        series
+            .render_type
+            .range_bars()
+            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "not a range bar series".into(),
+            })?;
+    let (params, lanes) = range_bar_params(config, group, series, display_scale, lookup)?;
+    let style_map =
+        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale);
+    let data = data_render::create_category_bar_data_bind_group(
+        device,
+        ledger,
+        data_bgl,
+        pool_buffer,
+        &params,
+        lanes.len(),
+        |push| {
+            lanes.iter().for_each(|&lane| push(lane));
+            Ok(())
+        },
+        style_map,
+    )?;
+    Ok((data, params.count))
 }

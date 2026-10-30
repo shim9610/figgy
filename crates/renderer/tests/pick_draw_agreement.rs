@@ -3454,6 +3454,163 @@ fn box_plots_pick_the_box_they_paint() {
     }
 }
 
+/// Range bars pick where they paint: every painted pixel of a body, a
+/// whisker or a connector picks its bar, and nothing unpainted picks, in
+/// both directions at 1x and 2x. A connector pixel picks the bar it
+/// leaves, whichever slot it lies in; every other picked pixel lies in its
+/// bar's slot.
+#[test]
+fn range_bars_pick_the_bar_they_paint() {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, CategoryBarDirection, CategoryBarStyle, RangeColor, RangeConnector,
+        RangeWhiskers,
+    };
+    let mut renderer = renderer();
+    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
+    renderer.add_column("start", &col(vec![2.0, 6.0])).unwrap();
+    renderer.add_column("end", &col(vec![6.0, 3.0])).unwrap();
+    renderer.add_column("low", &col(vec![1.0, 2.0])).unwrap();
+    renderer.add_column("high", &col(vec![8.0, 9.0])).unwrap();
+    const ORANGE: Color = Color::from_rgb8(255, 128, 0);
+    let is_connector = |p: &[u8]| p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60;
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        let mut chart = bare_chart();
+        let config = chart.config_mut();
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.line_visible = false;
+        }
+        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+        match direction {
+            CategoryBarDirection::Vertical => {
+                config.bottom_x.categories = categories;
+                config.left_y.min = 0.0;
+                config.left_y.max = 10.0;
+            }
+            CategoryBarDirection::Horizontal => {
+                config.left_y.categories = categories;
+                config.bottom_x.min = 0.0;
+                config.bottom_x.max = 10.0;
+            }
+        }
+        config.bar_groups = Some(BarGroups {
+            direction,
+            ..BarGroups::default()
+        });
+        let series = [SeriesConfig {
+            series_id: "range".into(),
+            source_id: None,
+            label: None,
+            x_column: "pos".into(),
+            y_column: "end".into(),
+            render_type: DataRenderType::RangeBars {
+                color: RED,
+                style: CategoryBarStyle {
+                    material: renderer::Material::Flat,
+                    ..CategoryBarStyle::default()
+                },
+                start: "start".into(),
+                whiskers: Some(RangeWhiskers {
+                    low: "low".into(),
+                    high: "high".into(),
+                    width: 2.0,
+                    color: Some(BLUE),
+                }),
+                color_by: RangeColor::Single,
+                progress: None,
+                connector: Some(RangeConnector {
+                    color: ORANGE,
+                    width: 2.0,
+                }),
+                slot_width: None,
+                labels: Default::default(),
+            },
+        }];
+        for scale in [1.0, 2.0] {
+            let what = format!("{direction:?} at {scale}x");
+            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let da = chart.config().data_area().unwrap();
+            let row_of = |x: u32, y: u32| -> usize {
+                match direction {
+                    CategoryBarDirection::Vertical => {
+                        let t = (x as f32 / scale - da.x as f32) / da.width as f32;
+                        (t * 2.0).floor().clamp(0.0, 1.0) as usize
+                    }
+                    CategoryBarDirection::Horizontal => {
+                        let t = ((da.y + da.height) as f32 - y as f32 / scale) / da.height as f32;
+                        (t * 2.0).floor().clamp(0.0, 1.0) as usize
+                    }
+                }
+            };
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut failures = Vec::new();
+            let mut picked = 0usize;
+            let mut connectors = 0usize;
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                let hit = match probe.pick_data(&mut renderer, px, py, 0.0) {
+                    Some(renderer::PickedData::HistogramBin {
+                        series_id,
+                        bin_index,
+                        ..
+                    }) => {
+                        assert_eq!(series_id, "range", "{what}");
+                        Some(bin_index)
+                    }
+                    None => None,
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                };
+                if ink > 160 && hit.is_none() {
+                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                }
+                if ink < MSAA_EDGE.zero_ink && hit.is_some() {
+                    failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
+                }
+                let i = ((py * with.width + px) * 4) as usize;
+                let connector = is_connector(&with.rgba[i..i + 4]);
+                if let Some(row) = hit
+                    && ink > 240
+                {
+                    picked += 1;
+                    if connector {
+                        connectors += 1;
+                        if row != 0 {
+                            failures.push(format!("({px}, {py}) connector picked bar {row}"));
+                        }
+                    } else if row != row_of(px, py) {
+                        failures.push(format!(
+                            "({px}, {py}) in slot {} picked bar {row}",
+                            row_of(px, py)
+                        ));
+                    }
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(painted > 400, "{what}: {painted}");
+            assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
+            assert!(connectors > 0, "{what}: the connector's pixels pick");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}
+
 /// A polar chart whose angle axis holds `n` categories (radar spokes) over
 /// a 0..1 radius, without chrome.
 fn bare_radar_chart(n: usize, polar: renderer::polar::PolarOptions) -> Chart {

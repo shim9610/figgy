@@ -6434,6 +6434,37 @@ fn streamed_series_reject_box_plots() {
     ));
 }
 
+/// Streaming is not extended to range bars: a streamed range bar series is
+/// rejected with an explicit reason (CLAUDE.md rule 8) before a cursor
+/// exists.
+#[test]
+fn streamed_series_reject_range_bars() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::RangeBars {
+            color: Color::BLACK,
+            style: Default::default(),
+            start: "start".into(),
+            whiskers: None,
+            color_by: Default::default(),
+            progress: None,
+            connector: None,
+            slot_width: None,
+            labels: Default::default(),
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("range bar") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to radar series: a streamed radar series is
 /// rejected with an explicit reason (CLAUDE.md rule 8), on its polar chart
 /// and before the polar rejection.

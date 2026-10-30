@@ -1351,6 +1351,17 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
                 visit(id);
             }
         }
+        // Its positions and end values are its x and y columns; the start,
+        // the whiskers, the colour flag or state and the progress are
+        // referenced columns, so replacing one redraws the series and
+        // removing one invalidates it.
+        DataRenderType::RangeBars { .. } => {
+            if let Some(bars) = series.render_type.range_bars() {
+                for id in bars.extra_columns() {
+                    visit(id);
+                }
+            }
+        }
         // A matrix' constituent columns are referenced columns like any other:
         // remove-column cascade, validation, and the derived-identity stamp all
         // reach them through here, so a grid column cannot be dropped from under
@@ -1420,6 +1431,17 @@ pub(super) fn validate_renderer_series(
             reason: reason.to_string(),
         });
     }
+    // The range bar rules are the chart's too: their groups, their axes,
+    // and every range series' columns, style and labels.
+    if let Err(reason) = config.validate_range_bars(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.range_bars().is_some())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     validate_radar_rules(config, series)?;
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.
@@ -1469,6 +1491,11 @@ pub(super) fn validate_renderer_series(
             }
         } else {
             validate_registered_column(pool, &item.y_column)?;
+        }
+        if let Some(bars) = item.render_type.range_bars() {
+            for id in bars.extra_columns() {
+                validate_registered_column(pool, id)?;
+            }
         }
         if let Some(scatter) = extract_scatter(&item.render_type) {
             if let Some(column) = scatter.point_style_index_column.as_deref() {
@@ -1631,6 +1658,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::BoxPlot { .. } => {
             return Err(invalid("box plots are not drawn on polar axes"));
+        }
+        DataRenderType::RangeBars { .. } => {
+            return Err(invalid("range bars are not drawn on polar axes"));
         }
         DataRenderType::Streamlines { .. } => {
             return Err(invalid("streamlines are not drawn on polar axes"));

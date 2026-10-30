@@ -45,6 +45,7 @@ struct ValueLabelParams {
 const VALUE_LABEL_KIND_BARS: u32 = 0u;
 const VALUE_LABEL_KIND_BOXES: u32 = 1u;
 const VALUE_LABEL_KIND_RADAR: u32 = 2u;
+const VALUE_LABEL_KIND_RANGE: u32 = 3u;
 const VALUE_LABEL_OUTSIDE: u32 = 0u;
 const VALUE_LABEL_INSIDE: u32 = 1u;
 const VALUE_LABEL_AUTO: u32 = 2u;
@@ -135,11 +136,24 @@ fn value_label_crosses(centre: vec2<f32>, size: vec2<f32>, dir: vec2<f32>) -> bo
 /// that would cross the data area's edge goes inside the bar's end.
 fn value_label_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     let bar = category_bar(row, resolve_bar_style(category_geometry_style(), row));
+    return value_label_bar_at(row, bar, category_params.mode == CATEGORY_BAR_MODE_GROUPED, size, placement);
+}
+
+/// A range bar's label: the bar rule of `value_label_bar` at the bar's end,
+/// a range bar counting as grouped (outside under `VALUE_LABEL_AUTO`).
+fn value_label_range_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
+    let r = range_bar(row, category_geometry_style());
+    let bar = CategoryBar(r.valid, r.rect, r.radii, 0u, r.end_px, true);
+    return value_label_bar_at(row, bar, true, size, placement);
+}
+
+/// The label of row `row` at `bar` (drawn, `grouped` or a stack's segment)
+/// as `placement` says.
+fn value_label_bar_at(row: u32, bar: CategoryBar, grouped: bool, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     if (!bar.valid) {
         return value_label_hidden();
     }
     let horizontal = category_params.horizontal != 0u;
-    let grouped = category_params.mode == CATEGORY_BAR_MODE_GROUPED;
     let gap = value_label.metrics.x;
     let font = value_label.metrics.z;
     let middle = (bar.rect.xy + bar.rect.zw) * 0.5;
@@ -324,6 +338,9 @@ fn value_label_place(row: u32) -> ValueLabelBox {
     }
     if (kind == VALUE_LABEL_KIND_RADAR) {
         return value_label_radar(row, size);
+    }
+    if (kind == VALUE_LABEL_KIND_RANGE) {
+        return value_label_range_bar(row, size, u32(cell.y));
     }
     return value_label_hidden();
 }

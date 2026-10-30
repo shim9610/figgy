@@ -213,14 +213,9 @@ impl PrepareContext<'_> {
         };
         let axis = value_label_axis(config, &cfg.render_type);
         let categories = value_label_categories(config, &cfg.render_type);
-        let params = data_render::value_label_params(
-            kind,
-            text,
-            categories,
-            atlas,
-            axis.label_style.font_size,
-            scale,
-        );
+        let count = data_render::value_label_count(kind, text, categories);
+        let params =
+            data_render::value_label_params(kind, count, atlas, axis.label_style.font_size, scale);
         data_render::create_value_label_data(
             self.device,
             self.gpu_ledger,
@@ -234,6 +229,7 @@ impl PrepareContext<'_> {
                     text,
                     cfg.value_label_offsets().unwrap_or(&[]),
                     categories,
+                    count,
                     atlas,
                     scale,
                     push,

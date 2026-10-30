@@ -322,6 +322,11 @@ impl ColorCycle {
             DataRenderType::BoxPlot { color, .. } => {
                 *color = c;
             }
+            // The series fill joins the cycle; direction and state colours
+            // stay, since they carry the bars' meaning.
+            DataRenderType::RangeBars { color, .. } => {
+                *color = c;
+            }
             // The outline and markers join the cycle, and the fill follows
             // them unless the style names its own.
             DataRenderType::Radar { color, .. } => {

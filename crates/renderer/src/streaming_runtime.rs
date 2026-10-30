@@ -38,6 +38,9 @@ pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
 /// Why a streamed streamline series is rejected: streaming is not extended
 /// to them (CLAUDE.md rule 8).
+pub(crate) const STREAMED_RANGE_BARS_REASON: &str =
+    "range bar series require GPU-resident columns; streamed sources are not supported";
+
 pub(crate) const STREAMED_STREAMLINES_REASON: &str =
     "streamline series require GPU-resident columns; streamed sources are not supported";
 
@@ -59,6 +62,7 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Vector { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. } => false,
     }
@@ -649,6 +653,16 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::BoxPlot { .. } => Ok(&[]),
+        // Nor to range bars. Rejected before a cursor exists; this is a
+        // backstop.
+        DataRenderType::RangeBars { .. } if primitives.range_bars => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_RANGE_BARS_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::RangeBars { .. } => Ok(&[]),
         // Nor to radar series: a polygon closes on its first vertex. Rejected
         // before a cursor exists; this is a backstop.
         DataRenderType::Radar { .. } if primitives.line || primitives.scatter => {
