@@ -52,6 +52,7 @@ pub(super) fn annotation_raster_for_chart(
         draw_style,
         polar: _,
         ternary: _,
+        view_3d: _,
         overlays: _,
         subplots: _,
         active_layer: _,
@@ -312,6 +313,80 @@ pub(super) struct PreparedFieldLayer {
     pub(super) drawable: bool,
 }
 
+/// Owned surface layer (a heatmap on a 3D chart): refcounted clones of the
+/// field's group 2 and the surface's group 3.
+pub(super) struct PreparedSurfaceLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) field_bg: wgpu::BindGroup,
+    pub(super) surface_bg: wgpu::BindGroup,
+    pub(super) quads: u32,
+    pub(super) charge: crate::gpu_memory::SharedCharge,
+    pub(super) surface_charge: crate::gpu_memory::SharedCharge,
+}
+
+pub(super) struct PreparedTernaryRegionLayer {
+    pub(super) stencil: wgpu::RenderPipeline,
+    pub(super) cover: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) region_bg: wgpu::BindGroup,
+    pub(super) count: u32,
+    pub(super) charge: crate::gpu_memory::SharedCharge,
+}
+
+impl PreparedTernaryRegionLayer {
+    fn own(layer: data_render::ternary_region::ColumnTernaryRegionLayer<'_>) -> Self {
+        Self {
+            stencil: layer.stencil.clone(),
+            cover: layer.cover.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            region_bg: layer.region_bg,
+            count: layer.count,
+            charge: layer.charge,
+        }
+    }
+
+    fn borrow(&self) -> data_render::ternary_region::ColumnTernaryRegionLayer<'_> {
+        data_render::ternary_region::ColumnTernaryRegionLayer {
+            stencil: &self.stencil,
+            cover: &self.cover,
+            transform_bg: &self.transform_bg,
+            region_bg: self.region_bg.clone(),
+            count: self.count,
+            charge: self.charge.clone(),
+        }
+    }
+}
+
+impl PreparedSurfaceLayer {
+    fn own(layer: data_render::surface_mesh::ColumnSurfaceLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg,
+            field_bg: layer.field_bg,
+            surface_bg: layer.surface_bg,
+            quads: layer.quads,
+            charge: layer.charge,
+            surface_charge: layer.surface_charge,
+        }
+    }
+
+    fn borrow(&self) -> data_render::surface_mesh::ColumnSurfaceLayer<'_> {
+        data_render::surface_mesh::ColumnSurfaceLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: self.style_bg.clone(),
+            field_bg: self.field_bg.clone(),
+            surface_bg: self.surface_bg.clone(),
+            quads: self.quads,
+            charge: Arc::clone(&self.charge),
+            surface_charge: Arc::clone(&self.surface_charge),
+        }
+    }
+}
+
 /// Owned vector layer: refcounted clones of the group-2 state, like the field.
 pub(super) struct PreparedVectorLayer {
     pub(super) pipeline: wgpu::RenderPipeline,
@@ -425,6 +500,10 @@ pub(super) struct PreparedSeries {
     pub(super) _stream_transform_charge: Option<crate::gpu_memory::SharedCharge>,
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
+    pub(super) surface: Option<PreparedSurfaceLayer>,
+    pub(super) floor: Option<PreparedSurfaceLayer>,
+    pub(super) selected_surface: Option<PreparedSurfaceLayer>,
+    pub(super) region: Option<PreparedTernaryRegionLayer>,
     pub(super) bar: Option<PreparedBarLayer>,
     pub(super) violin: Option<PreparedCategoryBarLayer>,
     pub(super) category_bars: Option<PreparedCategoryBarLayer>,
@@ -574,6 +653,10 @@ pub(super) struct ResidentDisplay {
     pub(super) texture: TrackedTexture,
     /// Multisampled target resolved into `texture`; `None` at 1x.
     pub(super) msaa: Option<TrackedTexture>,
+    /// The depth-stencil attachment of a 3D panel's composite, at the
+    /// target's sample count (`surface_mesh::DEPTH_STENCIL_FORMAT`); `None`
+    /// for every flat panel, whose pipelines have no depth state.
+    pub(super) depth: Option<TrackedTexture>,
     pub(super) bind_group: wgpu::BindGroup,
 }
 
@@ -611,6 +694,13 @@ pub(super) struct ResidentDisplayKey {
     pub(super) columns: u64,
     pub(super) pool_layout_generation: u64,
     pub(super) target_pipeline_generation: u64,
+    /// A 3D panel's camera uniform as the composite draws it: the camera,
+    /// the fitted box (which the axes' label band sizes), the z axis range
+    /// and the light. `None` for a flat panel.
+    pub(super) camera: Option<data_render::surface_mesh::View3dGpu>,
+    /// Whether the composite carries the stencil attachment: a ternary
+    /// panel with a region fill. Its parameters are in `series`.
+    pub(super) stencil: bool,
 }
 
 /// The current frame's inputs to compare against a [`ResidentDisplayKey`]
@@ -625,6 +715,15 @@ pub(super) struct ResidentDisplayProbe<'a> {
     pub(super) columns: u64,
     pub(super) pool_layout_generation: u64,
     pub(super) target_pipeline_generation: u64,
+    pub(super) camera: Option<data_render::surface_mesh::View3dGpu>,
+    pub(super) stencil: bool,
+}
+
+impl ResidentDisplayProbe<'_> {
+    /// Whether the panel's composite needs the depth-stencil attachment.
+    pub(super) fn needs_depth_stencil(&self) -> bool {
+        self.camera.is_some() || self.stencil
+    }
 }
 
 impl ResidentDisplayKey {
@@ -636,6 +735,12 @@ impl ResidentDisplayKey {
             && self.columns == probe.columns
             && self.pool_layout_generation == probe.pool_layout_generation
             && self.target_pipeline_generation == probe.target_pipeline_generation
+            && match (&self.camera, &probe.camera) {
+                (Some(a), Some(b)) => bytemuck::bytes_of(a) == bytemuck::bytes_of(b),
+                (None, None) => true,
+                _ => false,
+            }
+            && self.stencil == probe.stencil
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
             && self.colorbar == probe.chart_config.colorbar
@@ -684,6 +789,8 @@ impl ResidentDisplayKey {
             columns: probe.columns,
             pool_layout_generation: probe.pool_layout_generation,
             target_pipeline_generation: probe.target_pipeline_generation,
+            camera: probe.camera,
+            stencil: probe.stencil,
         }
     }
 }
@@ -774,6 +881,10 @@ impl PreparedSeries {
                 verts_per_instance: layer.verts_per_instance,
                 closed: layer.closed,
             }),
+            surface: layers.surface.map(PreparedSurfaceLayer::own),
+            floor: layers.floor.map(PreparedSurfaceLayer::own),
+            selected_surface: layers.selected_surface.map(PreparedSurfaceLayer::own),
+            region: layers.region.map(PreparedTernaryRegionLayer::own),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
                 transform_bg: layer.transform_bg.clone(),
@@ -949,6 +1060,13 @@ impl PreparedSeries {
                     verts_per_instance: layer.verts_per_instance,
                     closed: layer.closed,
                 }),
+            surface: self.surface.as_ref().map(PreparedSurfaceLayer::borrow),
+            floor: self.floor.as_ref().map(PreparedSurfaceLayer::borrow),
+            selected_surface: self
+                .selected_surface
+                .as_ref()
+                .map(PreparedSurfaceLayer::borrow),
+            region: self.region.as_ref().map(PreparedTernaryRegionLayer::borrow),
             field: self
                 .field
                 .as_ref()
@@ -2208,6 +2326,8 @@ impl Renderer {
                 gpu_ledger: &self.gpu_ledger,
                 style_bgl: &self.style_bgl,
                 field_bgl: &self.field_bgl,
+                surface_bgl: &self.surface_bgl,
+                region_bgl: &self.region_bgl,
                 vector_bgl: &self.vector_bgl,
                 category_bar_data_bgl: &self.category_bar_data_bgl,
                 value_label_bgl: &self.value_label_bgl,

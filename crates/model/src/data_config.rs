@@ -12,6 +12,7 @@ use crate::line::LineStylePreset;
 use crate::material::Material;
 use crate::text::RichText;
 use crate::tick::TickError;
+use crate::view3d::SurfaceStyle;
 
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -119,6 +120,15 @@ pub enum DataRenderType {
     Heatmap {
         matrix: MatrixRef,
         fill: FieldFillConfig,
+        /// The look of the heatmap drawn as a surface on a 3D chart
+        /// (`Config.view_3d`); kept and unused on a flat chart. `None` (the
+        /// default, omitted from JSON) draws the surface with
+        /// [`SurfaceStyle::default`].
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        surface: Option<SurfaceStyle>,
     },
     /// Contour lines only — the field is not filled.
     Contour {
@@ -130,6 +140,13 @@ pub enum DataRenderType {
         matrix: MatrixRef,
         fill: FieldFillConfig,
         contour: ContourConfig,
+        /// The surface's look on a 3D chart, as [`DataRenderType::Heatmap`]'s;
+        /// the contours draw on the box floor.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        surface: Option<SurfaceStyle>,
     },
     /// A vector field (quiver plot): one arrow per sample, with the direction
     /// and length given by the host's `u` / `v` components.
@@ -403,8 +420,10 @@ pub enum DataRenderType {
     /// sample with a negative or non-finite component, or a sum ≤ 0, is not
     /// drawn and breaks the line. The markers and the line take every
     /// option of a scatter and a line series (style tables, colour and size
-    /// maps, dashes) except step modes and fills. Streamed sources are
-    /// rejected.
+    /// maps, dashes) except step modes and fills. With `region`, the series'
+    /// samples are the vertices of closed polygons (a NaN row separates
+    /// them) filled with [`crate::ternary::TernaryRegionStyle`] under every
+    /// series' markers and lines. Streamed sources are rejected.
     Ternary {
         /// The third component's column, read on `right_y`.
         c_column: ColumnId,
@@ -418,6 +437,13 @@ pub enum DataRenderType {
             serde(default, skip_serializing_if = "Option::is_none")
         )]
         line: Option<DataLineStyleConfig>,
+        /// The fill of the polygons the samples outline; `None` (omitted
+        /// from JSON) fills nothing.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        region: Option<crate::ternary::TernaryRegionStyle>,
     },
     /// Streamlines of a flow, electric or magnetic field: polylines the
     /// host integrated from its field, drawn by the line path, with
@@ -3008,9 +3034,27 @@ impl<'a> BoxPlotRef<'a> {
 impl DataRenderType {
     /// The third component's column of a ternary series, or `None` for every
     /// other kind.
+    /// The surface look of a heatmap kind (`Heatmap`, `HeatmapContour`),
+    /// `None` for every other kind and for a heatmap without one.
+    pub fn surface_style(&self) -> Option<&SurfaceStyle> {
+        match self {
+            DataRenderType::Heatmap { surface, .. }
+            | DataRenderType::HeatmapContour { surface, .. } => surface.as_ref(),
+            _ => None,
+        }
+    }
+
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
             DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
+    /// A ternary series' region fill, when it has one.
+    pub fn ternary_region(&self) -> Option<&crate::ternary::TernaryRegionStyle> {
+        match self {
+            DataRenderType::Ternary { region, .. } => region.as_ref(),
             _ => None,
         }
     }
@@ -4953,6 +4997,7 @@ mod serde_tests {
             DataRenderType::Heatmap {
                 matrix: matrix.clone(),
                 fill: fill.clone(),
+                surface: None,
             },
             DataRenderType::Contour {
                 matrix: matrix.clone(),
@@ -4962,6 +5007,7 @@ mod serde_tests {
                 matrix,
                 fill,
                 contour,
+                surface: None,
             },
         ];
         for case in cases {
@@ -7022,6 +7068,7 @@ mod step_selection_tests {
                 shading: Shading::Flat,
                 opacity: 1.0,
             },
+            surface: None,
         };
         let grid = vector(VectorComponents::Grid {
             u: matrix(

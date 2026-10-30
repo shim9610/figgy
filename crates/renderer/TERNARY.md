@@ -60,6 +60,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
                 point_size_map: None,
             }),
             line: None,
+            region: None, // Some(TernaryRegionStyle { .. }) fills the polygons the samples outline
         },
     }];
     let image = renderer.export_panel_rgba(&chart, &series, 1.0)?;
@@ -101,14 +102,33 @@ are: their range is the triangle, not a data extent.
 
 ## Series
 
-A `Ternary` series draws markers (`scatter`), a line (`line`) or both, and
-names three distinct columns. The marker styles, style tables, overrides
-and the colour and size maps work as on a scatter series. The line takes
-every line style and dash pattern. It is linear: step modes are rejected.
-It has no fill: `LineFill` fills towards a y value or a second series that
-shares an x column, and neither means anything inside a triangle. Region
-fills (a phase field, a soil class) are planned with the depth-stencil
-attachment of #49.
+A `Ternary` series draws markers (`scatter`), a line (`line`), a region
+fill (`region`) or any of them, and names three distinct columns. The
+marker styles, style tables, overrides and the colour and size maps work
+as on a scatter series. The line takes every line style and dash pattern.
+It is linear: step modes are rejected. It has no `LineFill`: that fills
+towards a y value or a second series that shares an x column, and neither
+means anything inside a triangle.
+
+### Region fills
+
+A phase field, a soil-texture class or a rock classification area is a
+closed polygon inside the triangle. With `region: Some(TernaryRegionStyle
+{ color, opacity })`, the series' samples are the vertices of such
+polygons, in order; a NaN row separates one polygon from the next, and the
+renderer closes each polygon from its last vertex back to its first. The
+fill is `color` at `opacity`, painted under every series' markers and
+lines in series order, as a line's area fill is; a series with a `line`
+draws its outline over its own fill.
+
+The fill is a stencil-then-cover with the even-odd rule: one triangle per
+edge from the triangle's centre inverts a stencil, and one cover per
+series paints where the stencil is odd. So, within one series, a polygon
+inside another is a hole, and two polygons that overlap leave their
+overlap unfilled. Regions that should overlap go in separate series. The
+cost is one stencil triangle per vertex and one cover per series; nothing
+is stored per polygon, and there is no limit on polygons or vertices (a
+million-vertex polygon is drawn in `ternary_render.rs`).
 
 A ternary chart draws only ternary series, in the Precise draw style. It
 rejects overlays, line offsets, the polar system, subplot axis links to or
@@ -139,7 +159,11 @@ axes, the hit regions and the drags all read this one triangle.
   the pick reads the c column from the pool and places the sample with the
   draw's own projection. A ternary series always takes the direct scan (one
   exact pass over its points), because the placement is not separable by
-  axis. The result is `PickedData::Point` with the sample's index.
+  axis. The result is `PickedData::Point` with the sample's index. A region
+  fill picks where it paints, by the same even-odd rule (the crossings of
+  the cursor's ray with the polygons' edges): the hit names the lowest
+  index of an edge the ray crosses, at distance zero, and loses every tie
+  to a marker or a stroke, as a line fill does.
 - **Highlight.** The picked point's ring is drawn at the marker's place and
   radius.
 - **`step_selection`** walks the points; the count is the shortest of the
@@ -170,7 +194,7 @@ axes, the hit regions and the drags all read this one triangle.
 
 The playground's Ternary scene (`tests/support/playground_scenes.rs`) draws
 Fe/Ni/Cr alloy compositions coloured by hardness through a colourbar, with
-a dashed tie-line. The decoration oracle sweeps it like every other scene.
+a dashed tie-line and a filled, outlined phase field with a hole. The decoration oracle sweeps it like every other scene.
 
 ```sh
 cargo test --locked -p figgy-renderer --features serde,cpu-twin --test ternary_render

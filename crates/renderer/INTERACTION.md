@@ -156,8 +156,10 @@ range series of the layer.
 
 Ternary charts (`Config.ternary`, `DataRenderType::Ternary`,
 [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md))
-keep every interaction in the triangle's frames. Markers, strokes and
-dashes are picked where they paint as `PickedData::Point { point_index }`;
+keep every interaction in the triangle's frames. Markers, strokes, dashes
+and region fills are picked where they paint as
+`PickedData::Point { point_index }` (a fill's index is the lowest of an
+edge the cursor's ray crosses, and a fill loses every tie to a mark);
 the picked ring is drawn on the marker, `step_selection` walks the points
 (bounded by the shortest of the three columns), and `selection_details()`
 reports `x`, `y` and `c`. An edge drags along its outward normal
@@ -168,6 +170,21 @@ the top axis registers nothing. The plot area moves and resizes, and the
 triangle refits. The annotation layer places ratio anchors only, ternary
 subplots carry their own triangle, and overlays and streamed sources are
 rejected.
+
+3D charts (`Config.view_3d`, a heatmap drawn as a surface,
+[surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
+pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
+depth test: a surface answers `PickedData::MatrixCell` for the grid sample
+nearest the fragment inside its quad, never one hidden behind the surface,
+and a floor contour answers its level. The picked sample's patch is
+outlined and brightened over anything in front of it. `step_selection`
+walks the samples and `selection_details()` reports the sample's values. A
+data-area drag orbits the camera (`Config::orbit_view`) and
+`Config::zoom_view` zooms it; the data area's edges still resize it. A box
+axis drags along its edge's outward screen normal (`line_offset`), its tick
+labels in the edge frame and the titles in screen space. The annotation
+layer places ratio anchors only, 3D subplots carry their own camera, and
+overlays and streamed sources are rejected.
 
 ### Value labels
 

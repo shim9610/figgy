@@ -1233,6 +1233,62 @@ impl Chart {
             }
         }
         self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
+        self.auto_fit_view_3d_z(pool, layer, series, padding_ratio)?;
+        Ok(())
+    }
+
+    /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
+    /// union of the height columns' cached statistics of the layer's
+    /// heatmaps and contours. A display parameter from column statistics
+    /// (rule 1): nothing is read back. A flat chart is left as it is.
+    pub fn auto_fit_view_3d_z(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let chart = match layer {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                match self.config.subplots.get(index) {
+                    Some(subplot) => &subplot.config,
+                    None => return Ok(()),
+                }
+            }
+            _ => &self.config,
+        };
+        if chart.view_3d.is_none() {
+            return Ok(());
+        }
+        let mut z = FitExtent::EMPTY;
+        for cfg in series {
+            let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            if !(fit_x || fit_y) {
+                continue;
+            }
+            let matrix = match &cfg.render_type {
+                DataRenderType::Heatmap { matrix, .. }
+                | DataRenderType::Contour { matrix, .. }
+                | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                _ => continue,
+            };
+            for id in &matrix.columns {
+                z.union(&Self::slot_extent(pool, id)?);
+            }
+        }
+        let Some((min, max)) = fitted_axis_range(&chart.right_y, &z, padding_ratio) else {
+            return Ok(());
+        };
+        let log = matches!(chart.right_y.scale, AxisScale::Logarithmic);
+        self.with_axis_range_change(|c| {
+            let chart = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    &mut c.subplots[index].config
+                }
+                _ => c,
+            };
+            apply_axis_range(&mut chart.right_y, min, max, log);
+        });
         Ok(())
     }
 

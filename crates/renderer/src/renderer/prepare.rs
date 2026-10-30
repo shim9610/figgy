@@ -40,6 +40,8 @@ pub(super) struct PrepareContext<'a> {
     pub(super) gpu_ledger: &'a Arc<GpuLedger>,
     pub(super) style_bgl: &'a wgpu::BindGroupLayout,
     pub(super) field_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) surface_bgl: &'a wgpu::BindGroupLayout,
+    pub(super) region_bgl: &'a wgpu::BindGroupLayout,
     pub(super) vector_bgl: &'a wgpu::BindGroupLayout,
     pub(super) category_bar_data_bgl: &'a wgpu::BindGroupLayout,
     /// Group 1 of the value label pipelines (`create_value_label_bind_group_layout`).
@@ -139,6 +141,22 @@ impl PrepareContext<'_> {
             self.surface_format,
             items,
         );
+        self.pipelines.ensure_surface_pipelines(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.field_bgl,
+            self.surface_bgl,
+            self.surface_format,
+            items,
+        );
+        self.pipelines.ensure_ternary_region_pipelines(
+            &self.device,
+            &self.transform_bgl,
+            self.region_bgl,
+            self.surface_format,
+            items,
+        );
         self.pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -223,6 +241,8 @@ impl PrepareContext<'_> {
                 columns: self.panel_columns(item.column_fingerprint, input.series),
                 pool_layout_generation: self.pool.layout_generation(),
                 target_pipeline_generation: self.target_pipeline_generation,
+                camera: panel_camera(input.chart_config, panel),
+                stencil: panel_stencil(input.chart_config, input.series),
             };
             let view_id = Arc::as_ptr(&item.view.content_revision) as usize;
             let slot = self
@@ -244,6 +264,7 @@ impl PrepareContext<'_> {
                             && display.texture.height() == h
                             && display.format == self.surface_format
                             && display.sample_count == self.target_sample_count
+                            && display.depth.is_some() == probe.needs_depth_stencil()
                     });
                     let i = match reusable {
                         Some(i) => {
@@ -253,12 +274,14 @@ impl PrepareContext<'_> {
                             i
                         }
                         None => {
+                            let depth = key.camera.is_some() || key.stencil;
                             let display = self.create_resident_display(
                                 Arc::downgrade(&item.view.content_revision),
                                 key,
                                 serial,
                                 w,
                                 h,
+                                depth,
                             );
                             match slot {
                                 Some(i) => {
@@ -284,33 +307,23 @@ impl PrepareContext<'_> {
                                 label: Some("resident panel composite"),
                             })
                     });
-                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                        label: Some("resident panel composite"),
-                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                            view: msaa.as_ref().unwrap_or(&target),
-                            depth_slice: None,
-                            resolve_target: msaa.as_ref().map(|_| &target),
-                            ops: wgpu::Operations {
-                                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                                store: if msaa.is_some() {
-                                    wgpu::StoreOp::Discard
-                                } else {
-                                    wgpu::StoreOp::Store
-                                },
-                            },
-                        })],
-                        ..Default::default()
-                    });
+                    let depth = display
+                        .depth
+                        .as_ref()
+                        .map(|texture| texture.create_view(&Default::default()));
                     let series_list: Vec<_> =
                         item.series.iter().map(PreparedSeries::layers).collect();
-                    pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
-                    pass.set_scissor_rect(
-                        data_area.x,
-                        data_area.y,
-                        data_area.width.min(w - data_area.x),
-                        data_area.height.min(h - data_area.y),
+                    draw_panel_composite(
+                        encoder,
+                        PanelCompositeTargets {
+                            color: msaa.as_ref().unwrap_or(&target),
+                            resolve: msaa.as_ref().map(|_| &target),
+                            depth: depth.as_ref(),
+                        },
+                        (w, h),
+                        data_area,
+                        &series_list,
                     );
-                    data_render::issue_series_bodies(&mut pass, &series_list);
                     i
                 }
             };
@@ -356,7 +369,9 @@ impl PrepareContext<'_> {
     }
 
     /// A panel-sized composite target in the surface format and sample
-    /// count, bound for the blit like a raster layer.
+    /// count, bound for the blit like a raster layer, with a depth-stencil
+    /// attachment when `depth` (a 3D panel, or a ternary panel with a
+    /// region fill).
     pub(super) fn create_resident_display(
         &self,
         view: std::sync::Weak<std::sync::atomic::AtomicU64>,
@@ -364,6 +379,7 @@ impl PrepareContext<'_> {
         serial: u64,
         w: u32,
         h: u32,
+        depth: bool,
     ) -> ResidentDisplay {
         let target = |sample_count: u32, usage: wgpu::TextureUsages| {
             TrackedTexture::new(
@@ -399,6 +415,14 @@ impl PrepareContext<'_> {
                 wgpu::TextureUsages::RENDER_ATTACHMENT,
             )
         });
+        let depth = depth.then(|| {
+            create_composite_depth(
+                self.device,
+                self.gpu_ledger,
+                (w, h),
+                self.target_sample_count,
+            )
+        });
         let bind_group = data_render::create_texture_bind_group(
             self.device,
             self.texture_bgl,
@@ -406,6 +430,7 @@ impl PrepareContext<'_> {
             self.sampler,
         );
         ResidentDisplay {
+            depth,
             view,
             key,
             serial,
@@ -541,5 +566,165 @@ impl PrepareContext<'_> {
                     .into(),
             })?;
         Ok((color_value, size_value, Some(&scratch.bind_group)))
+    }
+}
+
+/// A 3D panel's camera uniform for a composite target the size of `panel`,
+/// or `None` for a flat panel: the resident key compares it, and the
+/// composite's surfaces draw with it.
+pub(super) fn panel_camera(
+    config: &Config,
+    panel: Rect,
+) -> Option<data_render::surface_mesh::View3dGpu> {
+    let target = (
+        (f64::from(panel.x), f64::from(panel.y)),
+        (f64::from(panel.width), f64::from(panel.height)),
+    );
+    data_render::surface_mesh::view3d_gpu(config, target, target)
+}
+
+/// Whether a panel's composite needs the stencil attachment: a ternary
+/// chart with a region fill among its series.
+pub(super) fn panel_stencil(config: &Config, series: &[Series<'_>]) -> bool {
+    config.ternary.is_some()
+        && series
+            .iter()
+            .any(|series| series.config.render_type.ternary_region().is_some())
+}
+
+/// The depth-stencil attachment of a 3D panel's composite, charged with
+/// the composite.
+pub(super) fn create_composite_depth(
+    device: &wgpu::Device,
+    ledger: &Arc<crate::gpu_memory::GpuLedger>,
+    (w, h): (u32, u32),
+    sample_count: u32,
+) -> TrackedTexture {
+    TrackedTexture::new(
+        ledger,
+        if sample_count > 1 {
+            GpuResourceKind::MsaaTarget
+        } else {
+            GpuResourceKind::PanelTexture
+        },
+        device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("panel composite depth-stencil"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: data_render::surface_mesh::DEPTH_STENCIL_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        }),
+    )
+}
+
+/// The attachments of a panel composite pass.
+pub(super) struct PanelCompositeTargets<'t> {
+    pub(super) color: &'t wgpu::TextureView,
+    pub(super) resolve: Option<&'t wgpu::TextureView>,
+    /// A 3D panel's depth-stencil attachment.
+    pub(super) depth: Option<&'t wgpu::TextureView>,
+}
+
+/// Draw one panel's bodies into its composite: cleared, scissored to the
+/// data area. A 3D panel draws its surfaces with the depth test; a flat one
+/// its series bodies, after the ternary region fills when its attachment
+/// carries the stencil. Shared by the resident display and the export.
+pub(super) fn draw_panel_composite(
+    encoder: &mut wgpu::CommandEncoder,
+    targets: PanelCompositeTargets<'_>,
+    (w, h): (u32, u32),
+    data_area: Rect,
+    series_list: &[data_render::SeriesLayers<'_>],
+) {
+    let three_d = series_list
+        .iter()
+        .any(|s| s.surface.is_some() || s.floor.is_some());
+    // A flat panel with the stencil attachment (a ternary chart with a
+    // region fill) draws in two passes: the region fills into the stencil,
+    // then its bodies with the 2D pipelines, which carry no depth-stencil
+    // state and so cannot join a pass that has the attachment. The colour
+    // target is kept between the two and resolved by the second.
+    let two_passes = targets.depth.is_some() && !three_d;
+    let scissor = |pass: &mut wgpu::RenderPass<'_>| {
+        pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
+        pass.set_scissor_rect(
+            data_area.x,
+            data_area.y,
+            data_area.width.min(w - data_area.x),
+            data_area.height.min(h - data_area.y),
+        );
+    };
+    let final_store = if targets.resolve.is_some() {
+        wgpu::StoreOp::Discard
+    } else {
+        wgpu::StoreOp::Store
+    };
+    {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("panel composite"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: targets.color,
+                depth_slice: None,
+                resolve_target: if two_passes { None } else { targets.resolve },
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: if two_passes {
+                        wgpu::StoreOp::Store
+                    } else {
+                        final_store
+                    },
+                },
+            })],
+            depth_stencil_attachment: targets.depth.map(|view| {
+                wgpu::RenderPassDepthStencilAttachment {
+                    view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                    stencil_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(0),
+                        store: wgpu::StoreOp::Discard,
+                    }),
+                }
+            }),
+            ..Default::default()
+        });
+        scissor(&mut pass);
+        // The ternary region fills first, into the stencil, under every
+        // fill and body; a 3D panel then draws its surfaces, a flat one
+        // its bodies (in the second pass when the stencil is attached).
+        if targets.depth.is_some() {
+            data_render::issue_series_regions(&mut pass, series_list);
+        }
+        if three_d {
+            data_render::issue_series_surfaces(&mut pass, series_list);
+        } else if !two_passes {
+            data_render::issue_series_bodies(&mut pass, series_list);
+        }
+    }
+    if two_passes {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("panel composite bodies"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: targets.color,
+                depth_slice: None,
+                resolve_target: targets.resolve,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Load,
+                    store: final_store,
+                },
+            })],
+            ..Default::default()
+        });
+        scissor(&mut pass);
+        data_render::issue_series_bodies(&mut pass, series_list);
     }
 }

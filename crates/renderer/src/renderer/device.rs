@@ -176,6 +176,24 @@ pub(super) fn preferred_msaa_sample_count(
     }
 }
 
+/// Whether a series draws a surface on a 3D chart: a heatmap kind.
+pub(super) fn draws_surface(rt: &crate::data_config::DataRenderType) -> bool {
+    matches!(
+        rt,
+        crate::data_config::DataRenderType::Heatmap { .. }
+            | crate::data_config::DataRenderType::HeatmapContour { .. }
+    )
+}
+
+/// Whether a series draws contours on a 3D chart's floor.
+pub(super) fn draws_floor(rt: &crate::data_config::DataRenderType) -> bool {
+    matches!(
+        rt,
+        crate::data_config::DataRenderType::Contour { .. }
+            | crate::data_config::DataRenderType::HeatmapContour { .. }
+    )
+}
+
 /// The ternary pipelines (`TargetPipelines::ternary`).
 pub(super) const TERNARY_PIPELINES: usize = 5;
 
@@ -306,6 +324,19 @@ pub(super) struct TargetPipelines {
     /// (`vs_pick_ring_ternary`, `vs_pick_ring_ternary_mapped`), each the
     /// plain pipeline with the third component's vertex slot.
     pub(super) ternary: [Option<wgpu::RenderPipeline>; TERNARY_PIPELINES],
+    /// A 3D chart's surface module and pipelines, indexed by
+    /// [`data_render::surface_mesh::SurfacePass`]: the depth-tested draw in
+    /// the panel composite, the picked patch in the live slot and the ID
+    /// pick. Compiled only when a 3D chart is drawn.
+    pub(super) surface_shader: Option<wgpu::ShaderModule>,
+    pub(super) surface: [Option<wgpu::RenderPipeline>; 5],
+    /// A ternary series' region fill: the module and its stencil and cover
+    /// pipelines, indexed by
+    /// [`data_render::ternary_region::TernaryRegionPass`], drawn into the
+    /// panel composite's stencil attachment. Compiled only when a ternary
+    /// chart with a region fill is drawn.
+    pub(super) ternary_region_shader: Option<wgpu::ShaderModule>,
+    pub(super) ternary_region: [Option<wgpu::RenderPipeline>; 2],
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
@@ -402,6 +433,164 @@ impl TargetPipelines {
                     self.sample_count,
                 )
             });
+        }
+    }
+
+    /// Compile the surface module and its three pipelines when a 3D chart
+    /// among `items` draws a heatmap as a surface (`Config.view_3d`). The
+    /// draw and the picked patch target this set's format and sample count;
+    /// the ID pick its own one-sample `Rgba32Uint`.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn ensure_surface_pipelines(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        style_bgl: &wgpu::BindGroupLayout,
+        field_bgl: &wgpu::BindGroupLayout,
+        surface_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        let needed = items.iter().any(|item| {
+            item.chart_config.view_3d.is_some()
+                && item.series.iter().any(|series| {
+                    draws_surface(&series.config.render_type)
+                        || draws_floor(&series.config.render_type)
+                })
+        });
+        if !needed {
+            return;
+        }
+        for pass in data_render::surface_mesh::SurfacePass::ALL {
+            self.ensure_surface_pass(
+                device,
+                [transform_bgl, style_bgl, field_bgl, surface_bgl],
+                surface_format,
+                pass,
+            );
+        }
+    }
+
+    /// Compile the ternary region module and its two pipelines when a
+    /// ternary chart among `items` draws a series with a region fill.
+    pub(super) fn ensure_ternary_region_pipelines(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        region_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        items: &[ChartDrawItem<'_>],
+    ) {
+        let needed = items.iter().any(|item| {
+            item.chart_config.ternary.is_some()
+                && item
+                    .series
+                    .iter()
+                    .any(|series| series.config.render_type.ternary_region().is_some())
+        });
+        if !needed {
+            return;
+        }
+        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+            self.ensure_ternary_region_pass(
+                device,
+                transform_bgl,
+                region_bgl,
+                surface_format,
+                pass,
+            );
+        }
+    }
+
+    /// Compile the ternary region module and the one pipeline `pass` when
+    /// they are missing.
+    pub(super) fn ensure_ternary_region_pass(
+        &mut self,
+        device: &wgpu::Device,
+        transform_bgl: &wgpu::BindGroupLayout,
+        region_bgl: &wgpu::BindGroupLayout,
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::ternary_region::TernaryRegionPass,
+    ) {
+        if self.ternary_region[pass as usize].is_some() {
+            return;
+        }
+        let shader = self.ternary_region_shader.get_or_insert_with(|| {
+            crate::gpu_compile::shader_module(
+                device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("figgy ternary region shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        data_render::ternary_region::TERNARY_REGION_SHADER
+                            .source
+                            .into(),
+                    ),
+                },
+            )
+        });
+        self.ternary_region[pass as usize] =
+            Some(data_render::ternary_region::create_ternary_region_pipeline(
+                device,
+                shader,
+                transform_bgl,
+                region_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
+    }
+
+    /// Compile the surface module and the one pipeline `pass` when they are
+    /// missing; `bgls` are the transform, style, field and surface layouts.
+    pub(super) fn ensure_surface_pass(
+        &mut self,
+        device: &wgpu::Device,
+        bgls: [&wgpu::BindGroupLayout; 4],
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::surface_mesh::SurfacePass,
+    ) {
+        let [transform_bgl, style_bgl, field_bgl, surface_bgl] = bgls;
+        if self.surface[pass as usize].is_some() {
+            return;
+        }
+        if pass.on_floor() {
+            self.surface[pass as usize] = Some(data_render::surface_mesh::create_surface_pipeline(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
+            return;
+        }
+        let shader = self.surface_shader.get_or_insert_with(|| {
+            crate::gpu_compile::shader_module(
+                device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("figgy surface shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        data_render::surface_mesh::SURFACE_SHADER.source.into(),
+                    ),
+                },
+            )
+        });
+        let slot = &mut self.surface[pass as usize];
+        if slot.is_none() {
+            *slot = Some(data_render::surface_mesh::create_surface_pipeline(
+                device,
+                shader,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
         }
     }
 
@@ -1656,6 +1845,10 @@ pub(super) fn create_target_pipelines_observed(
         pick_ring: None,
         pick_ring_mapped: None,
         ternary: Default::default(),
+        surface_shader: None,
+        surface: Default::default(),
+        ternary_region_shader: None,
+        ternary_region: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -1745,6 +1938,10 @@ pub(super) async fn create_target_pipelines_observed_async(
         pick_ring: None,
         pick_ring_mapped: None,
         ternary: Default::default(),
+        surface_shader: None,
+        surface: Default::default(),
+        ternary_region_shader: None,
+        ternary_region: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -2245,6 +2442,9 @@ impl Renderer {
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
+        let surface_bgl = data_render::surface_mesh::create_surface_data_bind_group_layout(&device);
+        let region_bgl =
+            data_render::ternary_region::create_ternary_region_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
@@ -2305,6 +2505,8 @@ impl Renderer {
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
+            surface_bgl,
+            region_bgl,
             vector_bgl,
             category_bar_data_bgl,
             value_label_bgl,
@@ -2391,6 +2593,9 @@ impl Renderer {
         let data_selection_bgl = data_render::create_data_selection_bind_group_layout(&device);
         let star_data_bgl = data_render::create_star_data_bind_group_layout(&device);
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
+        let surface_bgl = data_render::surface_mesh::create_surface_data_bind_group_layout(&device);
+        let region_bgl =
+            data_render::ternary_region::create_ternary_region_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
@@ -2451,6 +2656,8 @@ impl Renderer {
             data_selection_bgl,
             star_data_bgl,
             field_bgl,
+            surface_bgl,
+            region_bgl,
             vector_bgl,
             category_bar_data_bgl,
             value_label_bgl,
@@ -2952,6 +3159,38 @@ impl Renderer {
                 observer,
             )
             .await;
+
+        // The 3D surface and its floor contours (`Config.view_3d`).
+        started(observer, "renderer.prewarm", "surface");
+        for pass in data_render::surface_mesh::SurfacePass::ALL {
+            self.pipelines.ensure_surface_pass(
+                &self.device,
+                [
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.field_bgl,
+                    &self.surface_bgl,
+                ],
+                self.surface_format,
+                pass,
+            );
+        }
+        finished(observer, "renderer.prewarm", "surface");
+        crate::init::yield_init_frame().await;
+
+        // A ternary series' region fill (`TernaryRegionStyle`).
+        started(observer, "renderer.prewarm", "ternary region");
+        for pass in data_render::ternary_region::TernaryRegionPass::ALL {
+            self.pipelines.ensure_ternary_region_pass(
+                &self.device,
+                &self.transform_bgl,
+                &self.region_bgl,
+                self.surface_format,
+                pass,
+            );
+        }
+        finished(observer, "renderer.prewarm", "ternary region");
+        crate::init::yield_init_frame().await;
 
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(

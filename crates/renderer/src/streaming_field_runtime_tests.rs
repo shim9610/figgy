@@ -143,6 +143,7 @@ fn setup_columns_with_budget(
                 },
                 opacity: 0.63,
             },
+            surface: None,
         },
     }];
     let id = renderer

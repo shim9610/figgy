@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod selection_prepare;
+mod surface_pick;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "shader_compile_tests.rs"]
@@ -236,6 +237,12 @@ pub struct Renderer {
     /// metadata + `FieldParams`) — shared by the field pipeline and every
     /// per-series field bind group.
     field_bgl: wgpu::BindGroupLayout,
+    /// The 3D surface's group 3 (camera + surface look), with the field
+    /// layout as group 2 (`data_render::surface_mesh`).
+    surface_bgl: wgpu::BindGroupLayout,
+    /// A ternary region fill's group 1 (the pool as storage and its
+    /// params), group 0 the transform (`data_render::ternary_region`).
+    region_bgl: wgpu::BindGroupLayout,
     /// Vector data layout (pool + grid table + colourmap stops +
     /// `VectorParams`), group 2 of the assembled vector pipelines.
     vector_bgl: wgpu::BindGroupLayout,

@@ -162,7 +162,14 @@ pub mod ternary {
     #![doc = include_str!("../TERNARY.md")]
     pub use model::ternary::*;
 }
-pub use model::ternary::{TernaryGeometry, TernaryOptions};
+pub use model::ternary::{TernaryGeometry, TernaryOptions, TernaryRegionStyle};
+/// 3D charts: `View3d` for `Config.view_3d`, the camera a heatmap is drawn
+/// through as a surface, and `SurfaceStyle`, the surface's look.
+pub mod view3d {
+    #![doc = include_str!("../SURFACE.md")]
+    pub use model::view3d::*;
+}
+pub use model::view3d::{SurfaceStyle, View3d};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {

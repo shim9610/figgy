@@ -1495,6 +1495,7 @@ mod tests {
                 DataRenderType::Heatmap {
                     matrix: matrix(GridLayout::Edges),
                     fill: fill(Shading::Flat),
+                    surface: None,
                 },
                 GpuFieldExtentMode::EdgesCells,
             ),
@@ -1502,6 +1503,7 @@ mod tests {
                 DataRenderType::Heatmap {
                     matrix: matrix(GridLayout::Edges),
                     fill: fill(Shading::Interpolated),
+                    surface: None,
                 },
                 GpuFieldExtentMode::EdgesSamples,
             ),
@@ -1517,6 +1519,7 @@ mod tests {
                     matrix: matrix(GridLayout::Centers),
                     fill: fill(Shading::Flat),
                     contour: contour(),
+                    surface: None,
                 },
                 GpuFieldExtentMode::CentersCells,
             ),
@@ -1525,6 +1528,7 @@ mod tests {
                     matrix: matrix(GridLayout::Centers),
                     fill: fill(Shading::Interpolated),
                     contour: contour(),
+                    surface: None,
                 },
                 GpuFieldExtentMode::CentersSamples,
             ),
@@ -1687,6 +1691,7 @@ mod tests {
                     shading: Shading::Flat,
                     opacity: 1.0,
                 },
+                surface: None,
             },
         );
         let mut transposed = field.clone();

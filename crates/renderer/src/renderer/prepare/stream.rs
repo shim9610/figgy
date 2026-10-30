@@ -117,6 +117,16 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
             });
         }
+        // Nor to 3D charts: a surface and its floor read their grid from the
+        // resident pool through the camera of the panel composite.
+        if config.view_3d.is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "3D chart series require GPU-resident columns; streamed sources are not \
+                         supported"
+                    .into(),
+            });
+        }
         // Nor to ternary series: a sample reads its third component from the
         // resident pool.
         if series.render_type.ternary_c_column().is_some() {

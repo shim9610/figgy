@@ -1422,12 +1422,17 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                             bar_style_overrides: None,
                         },
                     },
-                    1 => DataRenderType::Heatmap { matrix, fill },
+                    1 => DataRenderType::Heatmap {
+                        matrix,
+                        fill,
+                        surface: None,
+                    },
                     2 => DataRenderType::Contour { matrix, contour },
                     3 => DataRenderType::HeatmapContour {
                         matrix,
                         fill,
                         contour,
+                        surface: None,
                     },
                     _ => unreachable!(),
                 };
@@ -1571,6 +1576,7 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
             shading: Shading::Flat,
             opacity: 1.0,
         },
+        surface: None,
     };
     assert!(
         PrepareContext::validate_stream_series(&crate::default::default_config(), &series).is_ok()

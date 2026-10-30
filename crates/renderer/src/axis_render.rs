@@ -256,6 +256,11 @@ pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn 
         // axis is not drawn.
         ternary::emit_ternary_grid(config, &da, fp, sink);
         ternary::emit_ternary_axes(config, &da, fp, sink);
+    } else if config.view_3d.is_some() {
+        // The box's back panes carry the grid and three of its edges the
+        // x, y and z axes; the top axis is not drawn.
+        box3d::emit_box_grid(config, &da, fp, sink);
+        box3d::emit_box_axes(config, &da, fp, sink);
     } else {
         emit_grid(config, &plot, fp, sink);
         for (axis, side) in [
@@ -327,6 +332,16 @@ pub(crate) fn emit_part_of(
                 ternary::emit_ternary_axis_strokes(config, &da, k, fp, sink);
             }
         }
+        Element::AxisLabel(side) if config.view_3d.is_some() => {
+            if let Some(k) = box3d::side_component(side) {
+                box3d::emit_box_labels(config, &da, k, fp, sink);
+            }
+        }
+        Element::Axis(side) if config.view_3d.is_some() => {
+            if let Some(k) = box3d::side_component(side) {
+                box3d::emit_box_axis_strokes(config, &da, k, fp, sink);
+            }
+        }
         Element::AxisLabel(side) => {
             emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
         }
@@ -359,6 +374,9 @@ pub(crate) fn emit_part_of(
 mod polar;
 #[path = "ternary_axes.rs"]
 mod ternary;
+
+#[path = "box3d_axes.rs"]
+mod box3d;
 
 #[cfg(test)]
 mod tests;

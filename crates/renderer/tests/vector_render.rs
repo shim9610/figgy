@@ -943,6 +943,7 @@ fn grid_arrows_draw_over_a_heatmap_and_contour_on_the_same_grid() {
                 per_level_color: None,
                 labels: None,
             },
+            surface: None,
         },
     };
     let series = [

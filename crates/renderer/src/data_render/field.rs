@@ -12,7 +12,9 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
     "data_render/common/ramp.wgsl",
+    "data_render/common/field_paint.wgsl",
     "data_render/common/data_pick.wgsl",
+    "data_render/common/project_3d.wgsl",
     "data_render/field_columnar.wgsl",
 );
 

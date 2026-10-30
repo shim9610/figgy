@@ -191,6 +191,7 @@ fn series() -> Vec<SeriesConfig> {
                     shading: Shading::Flat,
                     opacity: 1.0,
                 },
+                surface: None,
             },
         ),
         declared(

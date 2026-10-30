@@ -30,6 +30,7 @@ pub struct Config {
     pub draw_style: DrawStyle,
     pub polar: Option<PolarOptions>,         // None = rectangular; Some draws bottom_x as the angle, left_y as the radius
     pub ternary: Option<TernaryOptions>,     // None = rectangular; Some draws a triangle, bottom_x / left_y / right_y its three components
+    pub view_3d: Option<View3d>,             // None = flat; Some draws a 3D box, bottom_x / left_y / right_y its x, y and z
     pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
@@ -253,6 +254,46 @@ right axes are not drawn and register nothing, their titles included. Chart
 title, the bottom and left axis titles, legend, data area and annotations
 keep the rectangular rules.
 
+<a id="view3d-configview_3d"></a>
+### `View3d` (`Config::view_3d`)
+
+`view_3d: None` (default, key absent in JSON) is the flat chart.
+`Some(View3d::default())` draws a box in the data area seen through the
+camera below: `bottom_x` is x, `left_y` is y and `right_y` is z, up. A
+`Heatmap` draws as a surface, a `Contour` on the floor and a
+`HeatmapContour` both. [SURFACE.md](SURFACE.md) walks through a first
+surface.
+
+| Field | Default | Meaning |
+|---|---|---|
+| `azimuth_degrees` | -60 | The turn around z from +x towards +y, any finite value |
+| `elevation_degrees` | 30 | `-90..=90` |
+| `distance` | 3 | The eye distance in half-diagonals of the box, `1.2..=100`; 3 fits the box in the data area |
+| `projection` | `Orthographic` | Or `Perspective`, a pinhole at `distance` |
+| `box_aspect` | `None` | `Some([x, y, z])`, each `0.05..=20`; `None` is `[1, 1, 0.75]` (omitted from JSON) |
+
+`SurfaceStyle` (`surface` on `Heatmap` and `HeatmapContour`, omitted from
+JSON when `None`): `color_matrix?` (a second grid of the same shape to
+colour by), `wireframe?` (`SurfaceWireframe { color, width }`, width in
+logical pixels, `0..=24`), `material` (`Flat`, unlit, by default), `gloss`,
+`texture_strength`, `texture_scale` and `emphasis_brightness`. On a flat
+chart the style is kept and unused.
+
+`Config::view_matrix` is the one camera matrix, `Config::project_3d` places
+a box point in pixels, and `Config::orbit_view` / `Config::zoom_view` turn
+and zoom the camera (a data-area drag orbits it).
+
+Validation (`Config::validate_view_3d`, reported as `InvalidConfig { field:
+"view_3d" }` where the chart is drawn): the camera in range; the three axes
+linear or logarithmic and not categorical; neither polar nor ternary; no
+`overlays`, no `line_offsets` members and the `Precise` draw style.
+`Config::validate_view3d_series` (reported as `InvalidSeriesConfig` at
+registration): a 3D chart draws only heatmaps, contours and heatmap
+contours; a surface's fill is continuous, a floor contour has no labels and
+a colour grid matches its height grid. Streamed sources are rejected. Fits
+also fit `right_y` to the heights. Annotations are placed by ratio only.
+Subplots carry their own `view_3d`.
+
 ### `TernaryOptions` (`Config::ternary`)
 
 `ternary: None` (default, key absent in JSON) is the rectangular chart.
@@ -281,8 +322,9 @@ polar; no `overlays`, no `line_offsets` members, the `Precise` draw style
 and no subplot axis links. `Config::validate_ternary_series` (reported as
 `InvalidSeriesConfig` at registration): a ternary chart draws only
 `Ternary` series and a `Ternary` series needs a ternary chart; its three
-columns are distinct, it draws markers, a line or both, and its line is
-linear with no fill. Streamed sources are rejected. Fits leave the three
+columns are distinct, it draws markers, a line, a region fill or any of
+them, its line is linear with no fill, and its region fill's colour and
+opacity are finite and in `0..=1`. Streamed sources are rejected. Fits leave the three
 axes alone. Annotations are placed by ratio only: reference lines, spans
 and data anchors report a skip (`NoValueAxis`). Subplots carry their own
 `ternary`.
@@ -651,14 +693,14 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `ScatterErrorbarXY { scatter, err_x, err_y, err_style }` | scatter + errorbar | Points + X/Y errorbars |
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | The above + connecting line |
 | `Histogram { bar }` | bar | Bars from host-binned `(edges, counts)`. `bar.orientation` alone decides which column is which: `Vertical` = `x_column` edges / `y_column` counts, `Horizontal` the reverse. The `edges = counts + 1` length relation is never used to guess |
-| `Heatmap { matrix, fill }` | fill | Filled field only |
-| `Contour { matrix, contour }` | contour | Contour lines only |
-| `HeatmapContour { matrix, fill, contour }` | fill + contour | Filled field with lines over it |
+| `Heatmap { matrix, fill, surface? }` | fill | Filled field only; a surface on a 3D chart (`surface` its look, see [`View3d`](#view3d-configview_3d)) |
+| `Contour { matrix, contour }` | contour | Contour lines only; on a 3D chart's floor |
+| `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | Filled field with lines over it; on a 3D chart, the surface with the lines on the floor |
 | `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
-| `Ternary { c_column, scatter?, line? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern); at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
+| `Ternary { c_column, scatter?, line?, region? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern), `region` (`TernaryRegionStyle { color, opacity }`) fills the closed polygons the samples outline (a NaN row separates polygons; even-odd within a series, so a polygon inside another is a hole) under every series' markers and lines; at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
 | `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, drawn outside each vertex along its spoke; `labels.offsets` holds each label's drag offset. Needs `Config.polar` with `Chord` interpolation, any number of radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see
@@ -1390,9 +1432,9 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `ScatterErrorbarXY { scatter, err_x, err_y, err_style }` | scatter + errorbar | 점 + X/Y 오차 막대 |
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | 위 3 + 연결선 |
 | `Histogram { bar }` | bar | 호스트가 집계한 경계·빈도 `(edges, counts)`로 막대를 그린다. `bar.orientation`이 `Vertical`이면 X컬럼이 경계, Y컬럼이 빈도이며 `Horizontal`은 반대다. `edges = counts + 1`이라는 길이 관계로 역할을 추측하지 않는다. |
-| `Heatmap { matrix, fill }` | fill | 면만 |
-| `Contour { matrix, contour }` | contour | 선만 |
-| `HeatmapContour { matrix, fill, contour }` | fill + contour | 면 + 그 위의 선 |
+| `Heatmap { matrix, fill, surface? }` | fill | 면만. 3D 차트에서는 곡면 |
+| `Contour { matrix, contour }` | contour | 선만. 3D 차트에서는 바닥에 |
+| `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | 면 + 그 위의 선. 3D 차트에서는 곡면과 바닥의 선 |
 | `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | 차트의 범주형 축에서 범주마다 막대 하나. 위치 컬럼 `0..n`과 범주마다 값 하나(NaN은 누락)를 읽으며 두 컬럼의 역할은 `Config::bar_groups`의 방향이 정한다. `style`은 `CategoryBarStyle`(재질·모서리·외곽선·질감·광택·강조), `overrides`는 범주 ID로 막대 하나의 모양을 바꾼다. `labels.text`는 `format_labels`가 기록한 값 라벨 문자열이며 막대 끝에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. [범주형 막대](CATEGORICAL.md) 참고 |
 | `BoxPlot { color, style, labels, outliers?, overrides? }` | box plot | 차트의 범주형 축에서 범주마다 상자 하나. `x_column`은 위치 컬럼 `0..n`, `y_column`은 상자 통계 레코드(`BOX_PLOT_RECORD`, 범주마다 한 행, NaN은 누락)의 ID, `outliers`는 범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼이며 방향이 바뀌어도 역할은 그대로다. `style`은 `BoxPlotStyle`(재질·외곽선·중앙값·수염과 캡·노치·평균과 이상치 표식), `overrides`는 범주 ID로 상자 하나의 모양을 바꾼다. `labels.text`는 호스트가 기록한 라벨 문자열(`format_box_plot_labels`)이며 상자 꼭대기 위에 그린다. `labels.offsets`는 라벨마다 끌어 옮긴 거리다. 순서가 맞지 않는 통계는 검사하지 않고 그릴 때 맞춘다. [박스플롯](BOXPLOT.md) 참고 |

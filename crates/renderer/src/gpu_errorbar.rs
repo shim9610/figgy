@@ -146,9 +146,11 @@ impl GpuSeriesFitMode {
         }
         use crate::data_config::{GridLayout, Shading};
         let (matrix, samples) = match render_type {
-            DataRenderType::Heatmap { matrix, fill } => {
-                (matrix, matches!(fill.shading, Shading::Interpolated))
-            }
+            DataRenderType::Heatmap {
+                matrix,
+                fill,
+                surface: _,
+            } => (matrix, matches!(fill.shading, Shading::Interpolated)),
             DataRenderType::Contour { matrix, .. } => (matrix, true),
             DataRenderType::HeatmapContour { matrix, fill, .. } => {
                 // The fit covers the union of fill and isolines. A flat fill

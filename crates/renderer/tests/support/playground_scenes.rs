@@ -63,10 +63,11 @@ pub enum SceneKind {
     Violins,
     Raincloud,
     Ternary,
+    Surface,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 26] = [
+    pub const ALL: [SceneKind; 27] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -93,6 +94,7 @@ impl SceneKind {
         SceneKind::Violins,
         SceneKind::Raincloud,
         SceneKind::Ternary,
+        SceneKind::Surface,
     ];
 
     pub fn label(self) -> &'static str {
@@ -123,6 +125,7 @@ impl SceneKind {
             SceneKind::Violins => "Split violins (box plot)",
             SceneKind::Raincloud => "Raincloud (box plot)",
             SceneKind::Ternary => "Ternary (three components)",
+            SceneKind::Surface => "3D surface",
         }
     }
 
@@ -221,7 +224,13 @@ impl SceneKind {
             SceneKind::Ternary => {
                 "Alloy compositions as three unnormalized columns placed in a \
                  triangle, coloured by hardness through the colourbar, with a \
-                 dashed tie-line. Pick a sample; step with the arrows."
+                 dashed tie-line and a filled phase field with a hole. Pick a \
+                 sample or the field; step with the arrows."
+            }
+            SceneKind::Surface => {
+                "A heatmap's grid drawn as a lit, wireframed surface in a 3D box, \
+                 its contours on the floor. Drag the plot to orbit; pick a sample \
+                 and step with the arrows."
             }
             SceneKind::Raincloud => {
                 "Four groups as rainclouds: a half violin on the right, a narrow \
@@ -420,6 +429,7 @@ pub fn build(
         SceneKind::Violins => violins(r),
         SceneKind::Raincloud => raincloud(r),
         SceneKind::Ternary => ternary(r),
+        SceneKind::Surface => surface(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -827,6 +837,7 @@ fn field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     bg_padding_px: 2.0,
                 }),
             },
+            surface: None,
         },
     )];
     Ok(CartesianScene {
@@ -980,6 +991,7 @@ fn vector_field(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 shading: Shading::Interpolated,
                 opacity: 0.3,
             },
+            surface: None,
         },
     );
     // The gradient grid: data-scaled, so the tips follow the axes when the
@@ -2517,6 +2529,23 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     upload(r, "tn_tie_fe", vec![70.0, 30.0])?;
     upload(r, "tn_tie_ni", vec![10.0, 25.0])?;
     upload(r, "tn_tie_cr", vec![20.0, 45.0])?;
+    // A phase field: a concave region around the chromium-rich cluster
+    // with a hole, two NaN-separated rings of one series.
+    let field: [[f64; 3]; 10] = [
+        [45.0, 10.0, 45.0],
+        [30.0, 15.0, 55.0],
+        [15.0, 30.0, 55.0],
+        [20.0, 42.0, 38.0],
+        [34.0, 36.0, 30.0],
+        [42.0, 25.0, 33.0],
+        [f64::NAN, f64::NAN, f64::NAN],
+        [40.0, 13.0, 47.0],
+        [36.0, 18.0, 46.0],
+        [32.0, 13.5, 54.5],
+    ];
+    upload(r, "tn_field_fe", field.iter().map(|v| v[0]).collect())?;
+    upload(r, "tn_field_ni", field.iter().map(|v| v[1]).collect())?;
+    upload(r, "tn_field_cr", field.iter().map(|v| v[2]).collect())?;
     let mut markers = scatter_style(
         Color::from_rgb8(31, 119, 180),
         ScatterShape::CircleFilled,
@@ -2529,6 +2558,20 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     tie.line_style = LineStylePreset::Dash;
     let series = vec![
         series(
+            "Cr-rich field",
+            "tn_field_fe",
+            "tn_field_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_field_cr".into(),
+                scatter: None,
+                line: Some(line_style(Color::from_rgb8(214, 96, 40), 1.2)),
+                region: Some(renderer::TernaryRegionStyle {
+                    color: Color::from_rgb8(244, 160, 90),
+                    opacity: 0.3,
+                }),
+            },
+        ),
+        series(
             "alloys",
             "tn_fe",
             "tn_ni",
@@ -2536,6 +2579,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                 c_column: "tn_cr".into(),
                 scatter: Some(markers),
                 line: None,
+                region: None,
             },
         ),
         series(
@@ -2550,6 +2594,7 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
                     5.0,
                 )),
                 line: Some(tie),
+                region: None,
             },
         ),
     ];
@@ -2580,6 +2625,96 @@ fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     config.colorbar = Some(bar);
     let mut chart = Chart::new(config);
     chart.auto_fit_colorbar_union(r.pool(), &["tn_hv"], 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
+        series,
+    })
+}
+
+fn surface(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::data_config::{
+        ContourConfig, FieldFillConfig, FillMode, GridLayout, MatrixOrientation, MatrixRef, Shading,
+    };
+    use renderer::view3d::{SurfaceStyle, SurfaceWireframe, View3d};
+    let (nx, ny) = (48, 40);
+    let xs = linspace(-2.0, 2.0, nx);
+    let ys = linspace(-2.0, 2.0, ny);
+    upload(r, "sf_x", xs.clone())?;
+    upload(r, "sf_y", ys.clone())?;
+    let height = |x: f64, y: f64| {
+        (-(x - 0.6).powi(2) - (y - 0.3).powi(2)).exp() * 1.2
+            - 0.7 * (-(x + 0.8).powi(2) - (y + 0.7).powi(2)).exp()
+            + 0.15 * (2.0 * x).sin() * (1.5 * y).cos()
+    };
+    let mut columns = Vec::with_capacity(nx);
+    for (i, x) in xs.iter().enumerate() {
+        let id = format!("sf_z{i}");
+        upload(r, &id, ys.iter().map(|y| height(*x, *y)).collect())?;
+        columns.push(id);
+    }
+    let mut contour = ContourConfig {
+        levels: vec![],
+        line: line_style(Color::from_rgb8(40, 40, 40), 1.0),
+        per_level_color: None,
+        labels: None,
+    };
+    let series = vec![series(
+        "surface",
+        "sf_x",
+        "sf_y",
+        DataRenderType::HeatmapContour {
+            matrix: MatrixRef {
+                columns: columns.iter().map(|c| c.as_str().into()).collect(),
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Centers,
+            },
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Interpolated,
+                opacity: 1.0,
+            },
+            contour: {
+                let mut bar = default::default_colorbar_options();
+                bar.axis.min = -0.8;
+                bar.axis.max = 1.3;
+                contour
+                    .set_nice_levels(&bar.axis, 8)
+                    .expect("the surface scene's colourbar range gives nice levels");
+                contour
+            },
+            surface: Some(SurfaceStyle {
+                wireframe: Some(SurfaceWireframe {
+                    color: Color::new(0.1, 0.1, 0.1, 0.35),
+                    width: 0.8,
+                }),
+                material: renderer::Material::Matte,
+                ..SurfaceStyle::default()
+            }),
+        },
+    )];
+    let mut config = base_config("Surface", "x", "y");
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "z",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    right.label_style.label_visible = true;
+    config.right_y = right;
+    config.view_3d = Some(View3d::default());
+    for axis in [&mut config.bottom_x, &mut config.left_y] {
+        axis.min = -2.0;
+        axis.max = 2.0;
+        axis.major_spacing = 1.0;
+    }
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    let column_ids: Vec<&str> = columns.iter().map(String::as_str).collect();
+    chart.auto_fit_colorbar_union(r.pool(), &column_ids, 0.0)?;
+    chart.auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
         config: with_legend(chart.config().clone(), &series),
         series,

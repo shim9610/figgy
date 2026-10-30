@@ -933,7 +933,13 @@ impl GpuPickEngine {
             *slot = *length;
         }
         let line_dash_len = pattern.len().min(line_dash.len()) as u32;
-        if flags & (FLAG_SCATTER | FLAG_LINE) == 0 {
+        // A region fill is picked by the crossings of the cursor's ray with
+        // the polygons' edges, placed as the draw places them.
+        let region = descriptor.ternary_region && ternary.is_some();
+        if region {
+            flags |= FLAG_REGION;
+        }
+        if flags & (FLAG_SCATTER | FLAG_LINE | FLAG_REGION) == 0 {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
 
@@ -954,6 +960,9 @@ impl GpuPickEngine {
             || area.is_some()
             || ternary.is_some()
             || descriptor.line_closed;
+        // A region series' exact pass writes a region entry (its crossing
+        // parity) per workgroup after the best candidates.
+        let candidate_slots = if region { 2 } else { 1 };
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
             .checked_mul(GATE_MASK_BYTES)
@@ -963,7 +972,7 @@ impl GpuPickEngine {
                 limit: limits.max_buffer_size,
             })?;
         let workgroup_candidate_bytes = u64::from(workgroup_count)
-            .checked_mul(CANDIDATE_BYTES)
+            .checked_mul(CANDIDATE_BYTES * candidate_slots)
             .ok_or(GpuPickError::DeviceLimit {
                 resource: "GPU pick workgroup-candidate buffer",
                 requested: u64::MAX,

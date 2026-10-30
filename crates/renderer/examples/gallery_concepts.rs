@@ -325,6 +325,7 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
                 per_level_color: None,
                 labels: None,
             },
+            surface: None,
         },
     )];
     let mut bar = renderer::default::default_colorbar_options();

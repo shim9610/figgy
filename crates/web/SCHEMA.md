@@ -1242,6 +1242,42 @@ bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 categorical axis; never a difference or a duration. `labels.text` holds one
 host string per row and `labels.offsets` their drag offsets.
 
+<a id="surface-render_type"></a>
+
+## 3D surfaces (`view_3d` and a heatmap's `surface`)
+
+`"view_3d"` on the config (omitted when off) draws a 3D box: `bottom_x` is
+x, `left_y` y and `right_y` z. `"Heatmap"` and `"HeatmapContour"` series
+draw as surfaces and `"Contour"` series on the floor. `"surface"` on a
+heatmap holds its look and is omitted when absent; on a flat chart it is
+kept and unused.
+
+```json
+{
+  "view_3d": { "azimuth_degrees": -60.0, "elevation_degrees": 30.0,
+               "distance": 3.0, "projection": "Orthographic" }
+}
+```
+
+```json
+{
+  "Heatmap": {
+    "matrix": { "columns": ["z0", "z1"], "orientation": "ColumnsAreX", "grid_layout": "Centers" },
+    "fill": { "mode": "Continuous", "shading": "Interpolated", "opacity": 1.0 },
+    "surface": {
+      "wireframe": { "color": { "r": 0.1, "g": 0.1, "b": 0.1, "a": 0.6 }, "width": 1.0 },
+      "material": "Matte", "gloss": 0.45, "texture_strength": 0.2,
+      "texture_scale": 1.0, "emphasis_brightness": 0.12
+    }
+  }
+}
+```
+
+`box_aspect` (`[x, y, z]`) and the surface's `color_matrix` (a matrix of
+the same shape) are omitted when absent. A picked sample's
+`selection_details()` carries `x_index`, `y_index`, `x`, `y` and `value`,
+plus `color_value` with a colour grid.
+
 <a id="ternary-render_type"></a>
 
 ## `Ternary` render_type
@@ -1249,10 +1285,14 @@ host string per row and `labels.offsets` their drag offsets.
 A ternary series draws on a ternary chart (`"ternary": {}` on the config,
 omitted when off). It reads its three components from `x_column` (the
 bottom-left corner, on `bottom_x`), `y_column` (the top, on `left_y`) and
-`c_column` (the bottom-right, on `right_y`), unnormalized. `scatter` and
-`line` take the scatter and line styles and are omitted when unset; at
-least one is set. The line is linear (`"interpolation": "Linear"`) with no
-`fill`. The three axes have `min` 0 and the same `max` (1 or 100).
+`c_column` (the bottom-right, on `right_y`), unnormalized. `scatter`,
+`line` and `region` take the scatter style, the line style and
+`{ "color": {..}, "opacity": 0.35 }`, and are omitted when unset; at least
+one is set. The line is linear (`"interpolation": "Linear"`) with no
+`fill`. With `region`, the samples are the vertices of closed polygons, a
+NaN row separating them, filled under every series' markers and lines
+(even-odd within a series: a polygon inside another is a hole). The three
+axes have `min` 0 and the same `max` (1 or 100).
 
 ```json
 {
@@ -1271,7 +1311,8 @@ least one is set. The line is linear (`"interpolation": "Linear"`) with no
 
 A picked point's `selection_details()` carries `index`, `x`, `y` and `c` (the
 uploaded components, never fractions), plus `color_value` or `size_value`
-when mapped.
+when mapped. A region fill picks as a point of the series: the lowest index
+of a polygon edge the cursor's rightward ray crosses.
 
 <a id="radar-render_type"></a>
 

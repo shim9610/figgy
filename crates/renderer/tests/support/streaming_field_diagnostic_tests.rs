@@ -364,6 +364,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
                     shading: crate::data_config::Shading::Interpolated,
                     opacity: 0.63,
                 },
+                surface: None,
             },
         }];
         let mut resident = make();

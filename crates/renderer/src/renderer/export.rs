@@ -565,6 +565,15 @@ impl Renderer {
             validate_polar_series(chart.config(), config)?;
         }
         validate_radar_rules(chart.config(), series)?;
+        chart
+            .config()
+            .validate_view3d_series(series)
+            .map_err(|reason| FiggyError::InvalidSeriesConfig {
+                series_id: series
+                    .first()
+                    .map_or_else(String::new, |s| s.series_id.clone()),
+                reason: reason.into(),
+            })?;
         let scale = clamp_export_scale(scale);
         // A document export covers every area; a panel export the parent's.
         let orig = match scope {
@@ -730,6 +739,22 @@ impl Renderer {
             export_format,
             items,
         );
+        export_target_pipelines.ensure_surface_pipelines(
+            &self.device,
+            &self.transform_bgl,
+            &self.style_bgl,
+            &self.field_bgl,
+            &self.surface_bgl,
+            export_format,
+            items,
+        );
+        export_target_pipelines.ensure_ternary_region_pipelines(
+            &self.device,
+            &self.transform_bgl,
+            &self.region_bgl,
+            export_format,
+            items,
+        );
         export_target_pipelines.ensure_styles_for_items(
             &self.device,
             &self.queue,
@@ -754,6 +779,12 @@ impl Renderer {
             &export_target_pipelines,
         )?;
         lift_annotation_overlays(&mut prepared_items, &group_sizes);
+        self.attach_export_composites(
+            items,
+            &mut prepared_items,
+            export_format,
+            export_sample_count,
+        );
         let PanelDrawStorage {
             configs: panel_configs,
             ..
@@ -772,6 +803,120 @@ impl Renderer {
             #[cfg(target_arch = "wasm32")]
             browser_scopes: Some(browser_scopes),
         })
+    }
+
+    /// Give every 3D panel of an export its composite: the panel-sized
+    /// colour and depth-stencil targets in the export's format and sample
+    /// count, the surfaces drawn into them with the depth test, blitted in
+    /// the data slot as the screen blits its resident composite. Transient:
+    /// charged for the export and dropped with it. Flat panels draw
+    /// directly, as before.
+    fn attach_export_composites(
+        &self,
+        inputs: &[ChartDrawItem<'_>],
+        prepared: &mut [PreparedItem],
+        format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) {
+        let max = self.caps.max_texture_dimension_2d;
+        let mut encoder: Option<wgpu::CommandEncoder> = None;
+        for (input, item) in inputs.iter().zip(prepared.iter_mut()) {
+            let panel = item.view.panel_rect;
+            let (w, h) = (panel.width, panel.height);
+            let needs_attachment = input.chart_config.view_3d.is_some()
+                || super::prepare::panel_stencil(input.chart_config, input.series);
+            if !needs_attachment || item.series.is_empty() || w == 0 || h == 0 || w > max || h > max
+            {
+                continue;
+            }
+            let (Some(data_x), Some(data_y)) = (
+                item.data_area.x.checked_sub(panel.x),
+                item.data_area.y.checked_sub(panel.y),
+            ) else {
+                continue;
+            };
+            if data_x >= w || data_y >= h {
+                continue;
+            }
+            let target = |samples: u32, usage: wgpu::TextureUsages| {
+                TrackedTexture::new(
+                    &self.gpu_ledger,
+                    GpuResourceKind::ExportTarget,
+                    self.device.create_texture(&wgpu::TextureDescriptor {
+                        label: Some("figgy export panel composite"),
+                        size: wgpu::Extent3d {
+                            width: w,
+                            height: h,
+                            depth_or_array_layers: 1,
+                        },
+                        mip_level_count: 1,
+                        sample_count: samples,
+                        dimension: wgpu::TextureDimension::D2,
+                        format,
+                        usage,
+                        view_formats: &[],
+                    }),
+                )
+            };
+            let texture = target(
+                1,
+                wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            );
+            let msaa = (sample_count > 1)
+                .then(|| target(sample_count, wgpu::TextureUsages::RENDER_ATTACHMENT));
+            let depth = super::prepare::create_composite_depth(
+                &self.device,
+                &self.gpu_ledger,
+                (w, h),
+                sample_count,
+            );
+            let view = texture.create_view(&Default::default());
+            let msaa_view = msaa
+                .as_ref()
+                .map(|texture| texture.create_view(&Default::default()));
+            let depth_view = depth.create_view(&Default::default());
+            let series_list: Vec<_> = item.series.iter().map(PreparedSeries::layers).collect();
+            let encoder = encoder.get_or_insert_with(|| {
+                self.device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("figgy export panel composite"),
+                    })
+            });
+            super::prepare::draw_panel_composite(
+                encoder,
+                super::prepare::PanelCompositeTargets {
+                    color: msaa_view.as_ref().unwrap_or(&view),
+                    resolve: msaa_view.as_ref().map(|_| &view),
+                    depth: Some(&depth_view),
+                },
+                (w, h),
+                Rect {
+                    x: data_x,
+                    y: data_y,
+                    width: item.data_area.width,
+                    height: item.data_area.height,
+                },
+                &series_list,
+            );
+            let bind_group = data_render::create_texture_bind_group(
+                &self.device,
+                &self.texture_bgl,
+                &view,
+                &self.sampler,
+            );
+            item.resident_display = Some(super::frame::ResidentDisplayPacket {
+                view: 0,
+                serial: 0,
+                bind_group,
+                _charge: texture.shared_charge(),
+            });
+            // The multisampled and depth targets are done once the encoder
+            // is submitted; the resolved one lives as long as the packet.
+            drop((msaa, depth));
+        }
+        if let Some(encoder) = encoder {
+            self.queue.submit([encoder.finish()]);
+        }
     }
 
     /// The second half of an export: render `panels` of `frame` (a range of

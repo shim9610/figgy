@@ -565,6 +565,7 @@ fn chart_series() -> Vec<SeriesConfig> {
                     opacity: 0.5,
                 },
                 contour,
+                surface: None,
             },
         ),
         declared(

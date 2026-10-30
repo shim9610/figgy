@@ -475,6 +475,7 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
                     bg_padding_px: 2.0,
                 }),
             },
+            surface: None,
         },
     }];
     let view = renderer.create_chart_view(&chart, rect).expect("view");

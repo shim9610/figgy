@@ -284,7 +284,33 @@ impl PrepareContext<'_> {
                     series_id: cfg.series_id.clone(),
                     reason: "a field series needs Config.colorbar".into(),
                 })?;
-        let resolved = self.resolve_grid(cfg, matrix)?;
+        let mut resolved = self.resolve_grid(cfg, matrix)?;
+        // A surface coloured by a second grid on a 3D chart: its columns
+        // follow the height columns in the same table (`color_base` is the
+        // height column count), so the surface reads both through one group.
+        let color_matrix = chart_config
+            .view_3d
+            .as_ref()
+            .and(rt.surface_style())
+            .and_then(|style| style.color_matrix.as_ref());
+        if let Some(color) = color_matrix {
+            let colors = self.resolve_grid(cfg, color)?;
+            if !matrix.columns.is_empty() {
+                resolved.grid.truncate(matrix.columns.len());
+            }
+            resolved
+                .grid
+                .try_reserve(color.columns.len())
+                .and_then(|()| resolved.epochs.try_reserve(color.columns.len()))
+                .map_err(|error| FiggyError::StateAllocationFailed {
+                    resource: "surface colour grid table",
+                    reason: error.to_string(),
+                })?;
+            resolved
+                .grid
+                .extend(colors.grid.iter().take(color.columns.len()).copied());
+            resolved.epochs.extend_from_slice(&colors.epochs);
+        }
 
         let mut flags = 0u32;
         if resolved.columns_are_y {
@@ -350,7 +376,20 @@ impl PrepareContext<'_> {
             return Ok(Arc::clone(&scratch.sources));
         }
 
-        let sources = Self::grid_receipt(matrix, &signature.epochs)?;
+        let sources = match color_matrix {
+            Some(color) => {
+                let mut both = matrix.clone();
+                both.columns
+                    .try_reserve(color.columns.len())
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "surface colour grid receipt",
+                        reason: error.to_string(),
+                    })?;
+                both.columns.extend(color.columns.iter().cloned());
+                Self::grid_receipt(&both, &signature.epochs)?
+            }
+            None => Self::grid_receipt(matrix, &signature.epochs)?,
+        };
         let scratch = self.build_field_scratch(signature, sources)?;
 
         // Bounded like `arc_cache`: a host cycling through thousands of series

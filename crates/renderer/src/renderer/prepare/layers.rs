@@ -12,6 +12,176 @@ impl PrepareContext<'_> {
     /// (and the line strip's vertex count); `None` (precise mode, or the
     /// theoretically-impossible cache miss) selects the precise pipelines.
     /// Everything else is identical between the modes.
+    /// The surface of one heatmap on a 3D chart and, when the chart's
+    /// selection names one of its cells, that sample's patch: the field's
+    /// group 2 snapshot under the surface pipelines, with the camera of the
+    /// panel and the surface's look as group 3.
+    #[allow(clippy::too_many_arguments)]
+    pub(in crate::renderer) fn surface_layers<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series: &Series<'a>,
+        pipelines: &'a TargetPipelines,
+        scratch: &FieldScratch,
+        index: usize,
+        flat: data_render::ColumnFieldLayer<'a>,
+    ) -> Result<(
+        Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
+        Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>>,
+    )> {
+        use data_render::surface_mesh::{self as mesh, SurfacePass};
+        let cfg = series.config;
+        let panel = view.panel_rect;
+        let target = (
+            (f64::from(panel.x), f64::from(panel.y)),
+            (f64::from(panel.width), f64::from(panel.height)),
+        );
+        let (Some(camera), Some(pipeline)) = (
+            mesh::view3d_gpu(chart_config, target, target),
+            pipelines.surface[SurfacePass::Draw as usize].as_ref(),
+        ) else {
+            return Ok((None, None));
+        };
+        let params = &scratch.signature.params;
+        let columns_are_y = params.flags & data_render::FIELD_FLAG_COLUMNS_ARE_Y != 0;
+        let (along, across) = if columns_are_y {
+            (params.rows, params.cols)
+        } else {
+            (params.cols, params.rows)
+        };
+        let quads = if flat.drawable {
+            mesh::surface_quad_count(along, across)
+        } else {
+            0
+        };
+        let style = cfg.render_type.surface_style();
+        let color_base = params.cols;
+        let scale = series.style.display_scale;
+        let pick_id = u32::try_from(index)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(1);
+        let look = mesh::surface_params_gpu(style, color_base, scale, None, pick_id);
+        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+            &self.gpu_ledger,
+            &self.device,
+            &self.surface_bgl,
+            &camera,
+            &look,
+        );
+        let surface = mesh::ColumnSurfaceLayer {
+            pipeline,
+            transform_bg: &view.transform_bg,
+            style_bg: flat.style_bg.clone(),
+            field_bg: flat.field_bg.clone(),
+            surface_bg,
+            quads,
+            charge: Arc::clone(&flat.charge),
+            surface_charge,
+        };
+        // The picked sample: the chart's matrix cell of this series, in
+        // canonical x / y order, as the shader's constituent column and row.
+        let picked = chart_config
+            .picked_data
+            .as_ref()
+            .filter(|selection| selection.visible)
+            .and_then(|selection| {
+                selection.refs.iter().find_map(|picked| match picked {
+                    PickedDataRef::MatrixCell {
+                        series_id,
+                        x_index,
+                        y_index,
+                        ..
+                    } if *series_id == cfg.series_id => Some((selection, *x_index, *y_index)),
+                    _ => None,
+                })
+            });
+        let selected = match (
+            picked,
+            pipelines.surface[SurfacePass::Selected as usize].as_ref(),
+        ) {
+            (Some((selection, x, y)), Some(pipeline)) if quads > 0 => {
+                let (Ok(x), Ok(y)) = (u32::try_from(x), u32::try_from(y)) else {
+                    return Ok((Some(surface), None));
+                };
+                let (c, r) = if columns_are_y { (y, x) } else { (x, y) };
+                let look =
+                    mesh::surface_params_gpu(style, color_base, scale, Some((c, r)), pick_id);
+                let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    &camera,
+                    &look,
+                );
+                let highlight = data_render::create_style_uniform_buffer(
+                    &self.device,
+                    &PrimitiveStyle::from_color(selection.highlight_color),
+                );
+                let style_bg =
+                    data_render::create_style_bind_group(&self.device, &self.style_bgl, &highlight);
+                Some(mesh::ColumnSurfaceLayer {
+                    pipeline,
+                    transform_bg: &view.transform_bg,
+                    style_bg,
+                    field_bg: flat.field_bg.clone(),
+                    surface_bg,
+                    quads,
+                    charge: Arc::clone(&flat.charge),
+                    surface_charge,
+                })
+            }
+            _ => None,
+        };
+        Ok((Some(surface), selected))
+    }
+
+    /// A contour on a 3D chart's floor: the contour's group 2 under the
+    /// floor pipeline (`vs_floor` / `fs_contour`), one instance, with the
+    /// panel camera as group 3.
+    pub(in crate::renderer) fn floor_layer<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series: &Series<'a>,
+        pipelines: &'a TargetPipelines,
+        scratch: &PreparedContourScratch,
+        index: usize,
+    ) -> Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>> {
+        use data_render::surface_mesh::{self as mesh, SurfacePass};
+        if !scratch.drawable {
+            return None;
+        }
+        let panel = view.panel_rect;
+        let target = (
+            (f64::from(panel.x), f64::from(panel.y)),
+            (f64::from(panel.width), f64::from(panel.height)),
+        );
+        let camera = mesh::view3d_gpu(chart_config, target, target)?;
+        let pipeline = pipelines.surface[SurfacePass::FloorContour as usize].as_ref()?;
+        let pick_id = u32::try_from(index)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(1);
+        let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
+        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+            &self.gpu_ledger,
+            &self.device,
+            &self.surface_bgl,
+            &camera,
+            &look,
+        );
+        Some(mesh::ColumnSurfaceLayer {
+            pipeline,
+            transform_bg: &view.transform_bg,
+            style_bg: scratch.style_bg.clone(),
+            field_bg: scratch.field_bg.clone(),
+            surface_bg,
+            quads: 1,
+            charge: Arc::clone(&scratch.charge),
+            surface_charge,
+        })
+    }
+
     pub(in crate::renderer) fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
@@ -193,11 +363,54 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // A heatmap on a 3D chart draws as a surface into the panel
+            // composite, not as the flat field: the same group 2, its own
+            // camera and look as group 3.
+            let (field, surface, selected_surface) = match field {
+                Some(flat)
+                    if chart_config.view_3d.is_some()
+                        && crate::renderer::device::draws_surface(rt) =>
+                {
+                    let scratch = self
+                        .field_cache
+                        .get(cfg.series_id.as_str())
+                        .expect("prepare ensured this field's scratch");
+                    let (surface, selected) = self.surface_layers(
+                        view,
+                        chart_config,
+                        series,
+                        pipelines,
+                        scratch,
+                        idx,
+                        flat,
+                    )?;
+                    (None, surface, selected)
+                }
+                other => (other, None, None),
+            };
+
+            // A contour on a 3D chart draws on the box floor
+            // (`vs_floor`), never as flat isolines over the box.
+            let floor_only = chart_config.view_3d.is_some();
+
             // Contour lines: the same quad the field draws, through
             // `fs_contour`. The group-2 tables were resolved in
             // `ensure_contour_scratches`; the isolines come out of the grid
             // itself, so there is nothing per-level about the draw call.
-            let contour = if primitives.contour {
+            // The floor's contour: the contour's own group 2 under the floor
+            // pipeline, the panel camera as group 3.
+            let floor = if primitives.contour && floor_only {
+                let scratch = products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.scratch.as_ref())
+                    .expect("prepare captured this contour occurrence");
+                self.floor_layer(view, chart_config, series, pipelines, scratch, idx)
+            } else {
+                None
+            };
+
+            let contour = if primitives.contour && !floor_only {
                 let scratch = products
                     .contours
                     .get(idx)
@@ -684,6 +897,60 @@ impl PrepareContext<'_> {
                 None
             };
 
+            // A ternary series' region fill: the closed polygons its samples
+            // outline, drawn into the composite's stencil attachment before
+            // every series' fill and body. Resident only (streamed ternary
+            // sources are rejected).
+            let region = match (rt.ternary_region(), rt.ternary_c_column()) {
+                (Some(style), Some(c)) if chart_config.ternary.is_some() && phase.is_none() => {
+                    let c_h = lookup(c)?;
+                    let lane = |handle: ColumnHandle| -> Result<u32> {
+                        if !handle.offset.is_multiple_of(4) {
+                            return Err(FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "region column byte offset is not f32-aligned".into(),
+                            });
+                        }
+                        u32::try_from(handle.offset / 4).map_err(|_| {
+                            FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "region column lies past the 32-bit lane range".into(),
+                            }
+                        })
+                    };
+                    let count = x_h.len_values.min(y_h.len_values).min(c_h.len_values);
+                    let params = data_render::ternary_region::TernaryRegionParamsGpu {
+                        color_premul: style.color_premul(),
+                        x_base: lane(x_h)?,
+                        y_base: lane(y_h)?,
+                        c_base: lane(c_h)?,
+                        count: u32::try_from(count).unwrap_or(u32::MAX),
+                    };
+                    let (region_bg, charge) =
+                        data_render::ternary_region::create_ternary_region_bind_group(
+                            &self.gpu_ledger,
+                            &self.device,
+                            &self.region_bgl,
+                            column_buffer,
+                            &params,
+                        );
+                    let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
+                        pipelines.ternary_region[pass as usize]
+                            .as_ref()
+                            .expect("prepare ensured the ternary region pipelines")
+                    };
+                    Some(data_render::ternary_region::ColumnTernaryRegionLayer {
+                        stencil: pipeline(data_render::ternary_region::TernaryRegionPass::Stencil),
+                        cover: pipeline(data_render::ternary_region::TernaryRegionPass::Cover),
+                        transform_bg: &view.transform_bg,
+                        region_bg,
+                        count: params.count,
+                        charge,
+                    })
+                }
+                _ => None,
+            };
+
             // Star pass: per-series GPU state is the owned snapshot the
             // prepare phase cloned out of the arc scratch (indirect args +
             // VS bind group) — read from the token, never from `arc_cache`,
@@ -994,6 +1261,10 @@ impl PrepareContext<'_> {
                 selected_fields,
                 picked,
                 value_labels,
+                surface,
+                selected_surface,
+                floor,
+                region,
             });
         }
         Ok(out)

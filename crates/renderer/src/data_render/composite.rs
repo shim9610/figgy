@@ -14,6 +14,19 @@ pub struct SeriesLayers<'a> {
     /// The field covers the whole grid, so it goes under everything else —
     /// see `issue_series_data` for the full order.
     pub field: Option<ColumnFieldLayer<'a>>,
+    /// A heatmap on a 3D chart, drawn as a surface into the panel
+    /// composite with the depth test (`issue_series_surfaces`), never by
+    /// `issue_series_data`.
+    pub surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
+    /// A contour on a 3D chart's floor (`vs_floor`, one instance), drawn
+    /// before every surface without writing depth.
+    pub floor: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
+    /// The picked sample's patch of the surface, in the live highlight slot.
+    pub selected_surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
+    /// A ternary series' region fill, drawn into the panel composite's
+    /// stencil attachment before every series' fill and body
+    /// (`issue_series_regions`), never by `issue_series_data`.
+    pub region: Option<super::ternary_region::ColumnTernaryRegionLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
     pub bar: Option<ColumnBarLayer<'a>>,
     /// A box plot series' violins, under its boxes.
@@ -303,6 +316,19 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
 /// pick rings, after every body. The caller must have already set the
 /// viewport (panel) and scissor (data_area).
 pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &SeriesLayers<'_>) {
+    // The picked surface sample's patch, over whatever is in front of it
+    // (#49 D4): the live slot has no depth.
+    if let Some(patch) = &series.selected_surface {
+        pass.set_pipeline(patch.pipeline);
+        pass.set_bind_group(0, patch.transform_bg, &[]);
+        pass.set_bind_group(1, &patch.style_bg, &[]);
+        pass.set_bind_group(2, &patch.field_bg, &[]);
+        pass.set_bind_group(3, &patch.surface_bg, &[]);
+        pass.draw(
+            0..super::surface_mesh::SURFACE_QUAD_VERTICES,
+            0..super::surface_mesh::SURFACE_SELECTED_INSTANCES,
+        );
+    }
     for selection in &series.selected_bars {
         pass.set_pipeline(selection.pipeline);
         pass.set_bind_group(0, selection.transform_bg, &[]);
@@ -394,6 +420,41 @@ pub(crate) fn issue_series_value_labels(
 /// part of a panel a resident composite caches. The fill loop comes first by
 /// construction so another series' fill can never cover this series' line.
 /// The caller has set the viewport (panel) and the scissor (data area).
+/// Issue every series' surface: the 3D draw, into a pass with the panel
+/// composite's depth-stencil attachment.
+/// Every series' ternary region fill, in series order, into a pass with
+/// the stencil attachment: under every fill and body, as the line fills
+/// are under every body.
+pub(crate) fn issue_series_regions(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
+    for s in series_list {
+        if let Some(region) = &s.region {
+            super::ternary_region::issue_ternary_region_layer(pass, region);
+        }
+    }
+}
+
+pub(crate) fn issue_series_surfaces(
+    pass: &mut wgpu::RenderPass<'_>,
+    series_list: &[SeriesLayers<'_>],
+) {
+    // The floor contours first, without writing depth: the surfaces blend
+    // over them, so an opaque surface covers the floor under it and a
+    // translucent one (`fill.opacity` below 1) shows it through.
+    for s in series_list {
+        if let Some(floor) = &s.floor {
+            super::surface_mesh::issue_surface_layer(pass, floor);
+        }
+    }
+    for s in series_list {
+        if let Some(surface) = &s.surface {
+            super::surface_mesh::issue_surface_layer(pass, surface);
+        }
+    }
+}
+
 pub(crate) fn issue_series_bodies(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
