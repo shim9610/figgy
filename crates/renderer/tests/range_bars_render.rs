@@ -301,6 +301,7 @@ fn selection(series_id: &str, row: usize) -> DataSelectionsConfig {
             source_id: None,
             series_id: series_id.into(),
             bin_index: row,
+            half: None,
         }],
         highlight_color: MAGENTA,
         outline_width_px: 3.0,

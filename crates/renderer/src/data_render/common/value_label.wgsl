@@ -219,31 +219,59 @@ fn value_label_across(y: f32, gap: f32, font: f32, size: vec2<f32>, side: f32) -
 /// edge.
 fn value_label_box_plot(row: u32, size: vec2<f32>) -> ValueLabelBox {
     let s = box_stats(row);
-    if (!s.valid) {
-        return value_label_hidden();
-    }
-    let place = box_layout(s, box_body_style(category_geometry_style(), row));
-    if (!place.valid) {
-        return value_label_hidden();
-    }
+    let style = box_body_style(category_geometry_style(), row);
     let horizontal = category_params.horizontal != 0u;
-    // The top of the box: the smallest y down, or the largest x.
-    var top = box_along(s.position, s.high);
-    if (s.has_mean) {
-        top = value_label_farther(top, box_along(s.position, s.mean), horizontal);
+    var place = box_layout(s, style);
+    var top = bitcast<f32>(0x7fc00000u);
+    var position = s.position;
+    if (s.valid && place.valid) {
+        // The top of the box: the smallest y down, or the largest x.
+        top = box_along(s.position, s.high);
+        if (s.has_mean) {
+            top = value_label_farther(top, box_along(s.position, s.mean), horizontal);
+        }
+        if (s.has_ci) {
+            top = value_label_farther(top, box_along(s.position, s.ci_high), horizontal);
+        }
+        let range = box_outlier_range(row);
+        let values = box_lane(BOX_LANE_OUTLIER_VALUES);
+        for (var k = 0u; k < range.y; k = k + 1u) {
+            let v = category_pair(values, range.x + k);
+            if (category_finite(v)) {
+                top = value_label_farther(top, box_along(s.position, v), horizontal);
+            }
+        }
+    } else {
+        // No box (a violin without one, or hidden): the category's slot.
+        position = category_pair(category_params.positions, row);
+        place.valid = false;
     }
-    if (s.has_ci) {
-        top = value_label_farther(top, box_along(s.position, s.ci_high), horizontal);
-    }
-    let range = box_outlier_range(row);
-    let values = box_lane(BOX_LANE_OUTLIER_VALUES);
-    for (var k = 0u; k < range.y; k = k + 1u) {
-        let v = category_pair(values, range.x + k);
-        if (category_finite(v)) {
-            top = value_label_farther(top, box_along(s.position, v), horizontal);
+    // Each violin curve's ends: its values ascend, so its first and last
+    // values bound it.
+    for (var h = 0u; h < 2u; h = h + 1u) {
+        let values = box_lane(BOX_LANE_VIOLIN_CURVES + 2u * h);
+        let offsets = box_lane(BOX_LANE_VIOLIN_CURVES + 2u * h + 1u);
+        if (values == BOX_LANE_ABSENT || offsets == BOX_LANE_ABSENT || !category_finite(position)) {
+            continue;
+        }
+        let first = box_ragged_offset(offsets, row);
+        let last = box_ragged_offset(offsets, row + 1u);
+        if (last <= first) {
+            continue;
+        }
+        for (var k = 0u; k < 2u; k = k + 1u) {
+            let v = category_pair(values, select(first, last - 1u, k == 1u));
+            if (!category_finite(v)) {
+                continue;
+            }
+            let along = box_along(position, v);
+            top = select(value_label_farther(top, along, horizontal), along, !bar_finite(top));
+            if (!place.valid) {
+                place = box_slot(position, v, style);
+            }
         }
     }
-    if (!bar_finite(top)) {
+    if (!place.valid || !bar_finite(top)) {
         return value_label_hidden();
     }
     let gap = value_label.metrics.x;

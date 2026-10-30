@@ -1297,7 +1297,10 @@ pub(super) fn visit_error_ref_columns(error: &ErrorRef, visit: &mut impl FnMut(&
 /// the next one to answer "does it read anything else?".
 pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut(&str)) {
     visit(&series.x_column);
-    visit(&series.y_column);
+    // A violin without boxes names no record.
+    if !(series.y_column.is_empty() && series.render_type.box_plot().is_some()) {
+        visit(&series.y_column);
+    }
     if let Some(scatter) = extract_scatter(&series.render_type) {
         if let Some(column) = scatter.point_style_index_column.as_deref() {
             visit(column);
@@ -1346,9 +1349,12 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         // Its positions are its x column and its record its y column; the
         // outliers are a referenced ragged column like a matrix' columns, so
         // replacing or removing them invalidates the series.
-        DataRenderType::BoxPlot { outliers, .. } => {
-            if let Some(id) = outliers {
-                visit(id);
+        // So are a violin's curves and the density and raw point columns.
+        DataRenderType::BoxPlot { .. } => {
+            if let Some(boxes) = series.render_type.box_plot() {
+                for id in boxes.ragged_columns().chain(boxes.plain_columns()) {
+                    visit(id);
+                }
             }
         }
         // Its positions and end values are its x and y columns; the start,
@@ -1476,18 +1482,23 @@ pub(super) fn validate_renderer_series(
         }
         validate_registered_column(pool, &item.x_column)?;
         if let Some(boxes) = item.render_type.box_plot() {
-            // A box plot reads a record and a ragged column, not columns.
-            for id in std::iter::once(item.y_column.as_str()).chain(boxes.outliers) {
+            // A box plot reads a record and ragged columns, not columns,
+            // besides its violin's densities and its raw points.
+            let record = (!item.y_column.is_empty()).then_some(item.y_column.as_str());
+            for id in record.into_iter().chain(boxes.ragged_columns()) {
                 if !pool.contains_composite(id) {
                     return Err(FiggyError::InvalidSeriesConfig {
                         series_id: item.series_id.clone(),
                         reason: format!(
                             "box plot {id:?} is not a resident record or ragged column: upload \
-                             the record with `upsert_record` and the outliers with \
-                             `upsert_ragged`"
+                             the record with `upsert_record` and the outliers and violin \
+                             curves with `upsert_ragged`"
                         ),
                     });
                 }
+            }
+            for id in boxes.plain_columns() {
+                validate_registered_column(pool, id)?;
             }
         } else {
             validate_registered_column(pool, &item.y_column)?;

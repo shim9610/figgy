@@ -13,7 +13,10 @@ use super::*;
 /// `sketch_noise.wgsl`, which that fragment reads), and the range bar
 /// entries of its range bar input fragment (`common/range_bars.wgsl`,
 /// §5.18), which share the box plot's slot layout and the category bars'
-/// shading.
+/// shading, and the violin and raw point entries of its violin fragment
+/// (`common/violin.wgsl`, §5.19), placed by the shared category slot
+/// fragment (`common/category_jitter.wgsl`, §5.20) the point pick splices
+/// too.
 pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
@@ -24,10 +27,12 @@ pub(crate) const BAR_SHADER: crate::shader_assembly::Assembled = crate::shader_a
     "data_render/common/category_bars.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
+    "data_render/common/category_jitter.wgsl",
     "data_render/common/marker.wgsl",
     "data_render/common/errorbar_segment.wgsl",
     "data_render/common/box_plot.wgsl",
     "data_render/common/range_bars.wgsl",
+    "data_render/common/violin.wgsl",
     "data_render/bar_columnar.wgsl",
     "data_render/common/contour_label_box.wgsl",
     "data_render/common/label_quad.wgsl",
@@ -314,6 +319,9 @@ pub struct ColumnBarSelectionLayer<'a> {
     pub edges: ColumnHandle,
     pub values: ColumnHandle,
     pub instance: u32,
+    /// Instances from `instance` the highlight draws: one, or a violin's
+    /// every segment (its vertex stage keeps the selected category's).
+    pub instances: u32,
     pub category: Option<CategoryBarData>,
 }
 
@@ -360,9 +368,39 @@ pub(crate) const BOX_LANE_MAX_GROUP: u32 = 12;
 /// A lane with no column: an absent optional record field, or no outlier
 /// column (`BOX_LANE_ABSENT`).
 pub(crate) const BOX_LANE_ABSENT: u32 = u32::MAX;
-/// Entries of a box plot's lane table: the record schema's fields and the
-/// outlier column's four lanes, a fixed schema rather than a count of data.
-pub(crate) const BOX_PLOT_LANES: usize = BOX_LANE_MAX_GROUP as usize + 1;
+/// The box's share of its slot as `f32` bits (`BOX_LANE_BOX_WIDTH`): 1 for
+/// a plain box, a violin's `box_width`.
+pub(crate) const BOX_LANE_BOX_WIDTH: u32 = 13;
+/// The first of the violin curve lanes the value label clears
+/// (`BOX_LANE_VIOLIN_CURVES`): each half's values and offsets lanes.
+pub(crate) const BOX_LANE_VIOLIN_CURVES: u32 = 14;
+/// Entries of a box plot's lane table: the record schema's fields, the
+/// outlier column's four lanes, the box width and the two violin halves'
+/// curve lanes, a fixed schema rather than a count of data.
+pub(crate) const BOX_PLOT_LANES: usize = BOX_LANE_VIOLIN_CURVES as usize + 4;
+
+// ───── Violins and raw points ─────
+
+/// Vertices per violin segment and per raw point: one quad. Must match
+/// `violin.wgsl`'s `VIOLIN_VERTICES`.
+pub const VIOLIN_VERTICES: u32 = 6;
+/// The violin draw's lane table (`VIOLIN_LANE_*`, `VIOLIN_HALF_*`): the
+/// half count, the first half's segment count, then seven lanes per half
+/// (its side, curve values, offsets, group count, value count, density
+/// lane and density scale bits), a fixed schema rather than a count of
+/// data.
+pub(crate) const VIOLIN_LANE_HALVES: usize = 0;
+pub(crate) const VIOLIN_LANE_FIRST_SEGMENTS: usize = 1;
+pub(crate) const VIOLIN_HALF_BASE: usize = 2;
+pub(crate) const VIOLIN_HALF_LANES: usize = 7;
+pub(crate) const VIOLIN_LANES: usize = VIOLIN_HALF_BASE + 2 * VIOLIN_HALF_LANES;
+/// `VIOLIN_HALF_SIDE` values (`VIOLIN_SIDE_*`).
+pub(crate) const VIOLIN_SIDE_BOTH: u32 = 0;
+pub(crate) const VIOLIN_SIDE_LOW: u32 = 1;
+pub(crate) const VIOLIN_SIDE_HIGH: u32 = 2;
+/// A raw point's marker shape code (`finish.w` of its style slot): the
+/// `marker.wgsl` base shape id, plus this when filled.
+pub(crate) const BOX_POINTS_FILLED: u32 = 100;
 
 // ───── Range bars ─────
 
@@ -716,6 +754,53 @@ pub(crate) fn create_range_bar_pipeline_with_sample_count(
             "fs_range_bars",
             "figgy range bar columnar pipeline",
         )
+    };
+    create_category_axis_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, style_map_bgl, data_bgl],
+        target_format,
+        sample_count,
+        entries,
+    )
+}
+
+/// A violin pipeline, over the category bar pipeline's layout:
+/// `vs_violin` / `fs_violin` draw the bodies, `vs_violin_selection` /
+/// `fs_violin_selection` the picked one's highlight; with `points`,
+/// `vs_box_points` / `fs_box_points` draw a box plot's raw points and
+/// `vs_box_point_selection` / `fs_box_point_selection` the picked one's
+/// ring.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_violin_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    data_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    points: bool,
+    selection: bool,
+) -> wgpu::RenderPipeline {
+    let entries = match (points, selection) {
+        (false, false) => ("vs_violin", "fs_violin", "figgy violin columnar pipeline"),
+        (false, true) => (
+            "vs_violin_selection",
+            "fs_violin_selection",
+            "figgy selected violin columnar pipeline",
+        ),
+        (true, false) => (
+            "vs_box_points",
+            "fs_box_points",
+            "figgy box points columnar pipeline",
+        ),
+        (true, true) => (
+            "vs_box_point_selection",
+            "fs_box_point_selection",
+            "figgy selected box point columnar pipeline",
+        ),
     };
     create_category_axis_pipeline(
         device,

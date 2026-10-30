@@ -646,8 +646,8 @@ fn stream_draw_phases(
         DataRenderType::BoxPlot { .. } if primitives.box_plot => {
             Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "box plot series require a GPU-resident record and outlier column; \
-                         streamed sources are not supported"
+                reason: "box plot series require a GPU-resident record, outlier column, violin \
+                         curves and raw point columns; streamed sources are not supported"
                     .into(),
             }
             .into())

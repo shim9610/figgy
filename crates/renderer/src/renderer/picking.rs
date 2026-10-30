@@ -106,6 +106,8 @@ pub(super) struct PickSeriesResource {
     pub(super) line_closed: bool,
     /// A streamline series' arrowheads along its line.
     pub(super) path_arrows: Option<crate::data_config::StreamlineArrows>,
+    /// A box plot's raw points, placed in their category slot.
+    pub(super) category_jitter: Option<crate::gpu_pick::GpuPickCategoryJitter>,
 }
 
 /// A series' error bars in the plan (`GpuPickErrorBar` without its rows,
@@ -137,6 +139,7 @@ impl PartialEq for PickSeriesResource {
             area,
             line_closed,
             path_arrows,
+            category_jitter,
         } = self;
         let Self {
             x_column: other_x_column,
@@ -150,7 +153,21 @@ impl PartialEq for PickSeriesResource {
             area: other_area,
             line_closed: other_line_closed,
             path_arrows: other_path_arrows,
+            category_jitter: other_category_jitter,
         } = other;
+        let jitter_bits = |jitter: &Option<crate::gpu_pick::GpuPickCategoryJitter>| {
+            jitter.map(|j| {
+                (
+                    [j.member, j.members, u32::from(j.horizontal), j.seed],
+                    [
+                        j.group_width.to_bits(),
+                        j.gap_px.to_bits(),
+                        j.jitter.to_bits(),
+                        j.offset.to_bits(),
+                    ],
+                )
+            })
+        };
         let arrow_bits = |arrows: &Option<crate::data_config::StreamlineArrows>| {
             arrows.map(|arrows| {
                 [
@@ -162,6 +179,7 @@ impl PartialEq for PickSeriesResource {
         };
         line_closed == other_line_closed
             && arrow_bits(path_arrows) == arrow_bits(other_path_arrows)
+            && jitter_bits(category_jitter) == jitter_bits(other_category_jitter)
             && x_column == other_x_column
             && y_column == other_y_column
             && scatter == other_scatter
@@ -200,6 +218,7 @@ impl PickSeriesResource {
             area,
             line_closed: _,
             path_arrows: _,
+            category_jitter: _,
         } = self;
         x_column == id
             || y_column == id
@@ -464,6 +483,7 @@ impl OwnedGpuPickSeriesDescriptor {
             area,
             line_closed,
             path_arrows,
+            category_jitter,
         } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
             source_id: source_id.clone(),
@@ -513,7 +533,75 @@ impl OwnedGpuPickSeriesDescriptor {
             area: area.clone(),
             line_closed: *line_closed,
             path_arrows: *path_arrows,
+            category_jitter: *category_jitter,
         }
+    }
+}
+
+/// The pick slot of a box plot series' raw points (`vs_box_points`): its
+/// points' columns as the descriptor's x and y (the category positions on
+/// the category axis' side), its markers and its place in the box group of
+/// `config`'s `series`, as `box_plot_params` places its boxes.
+fn box_points_pick_descriptor(
+    config: &Config,
+    series: &[SeriesConfig],
+    item: &SeriesConfig,
+    points: &crate::data_config::BoxPoints,
+) -> OwnedGpuPickSeriesDescriptor {
+    use crate::data_config::{BoxOutlierShape, CategoryBarDirection};
+    let groups = config.bar_groups.clone().unwrap_or_default();
+    let horizontal = groups.direction == CategoryBarDirection::Horizontal;
+    let boxes = || series.iter().filter(|s| s.render_type.box_plot().is_some());
+    let member = boxes()
+        .position(|s| s.series_id == item.series_id)
+        .unwrap_or(0);
+    let members = boxes().count();
+    let style = &points.style;
+    let shape = match (style.shape, style.filled) {
+        (BoxOutlierShape::Circle, false) => ScatterShape::Circle,
+        (BoxOutlierShape::Circle, true) => ScatterShape::CircleFilled,
+        (BoxOutlierShape::Square, false) => ScatterShape::Square,
+        (BoxOutlierShape::Square, true) => ScatterShape::SquareFilled,
+    };
+    let (x_column, y_column) = if horizontal {
+        (points.values.clone(), points.positions.clone())
+    } else {
+        (points.positions.clone(), points.values.clone())
+    };
+    OwnedGpuPickSeriesDescriptor {
+        series_id: item.series_id.clone(),
+        source_id: item.source_id.clone(),
+        resource: PickSeriesResource {
+            x_column,
+            y_column,
+            scatter: Some(OwnedGpuPickScatter {
+                base_radius_px: style.size * 0.5,
+                base_shape_id: data_render::shape_id(&shape),
+                style_index_column: None,
+                style_slots: Vec::new(),
+                style_overrides: Vec::new(),
+                style_meta: None,
+                size_map: None,
+            }),
+            line_width_px: None,
+            line_interpolation: LineInterpolation::Linear,
+            line_style: LineStylePreset::Solid,
+            vector: None,
+            errorbar: None,
+            area: None,
+            line_closed: false,
+            path_arrows: None,
+            category_jitter: Some(crate::gpu_pick::GpuPickCategoryJitter {
+                member: member as u32,
+                members: members as u32,
+                horizontal,
+                group_width: groups.group_width.clamp(0.0, 1.0),
+                gap_px: groups.bar_gap.max(0.0),
+                jitter: style.jitter,
+                offset: style.offset,
+                seed: crate::sketch::fnv1a(&item.series_id),
+            }),
+        },
     }
 }
 
@@ -628,7 +716,20 @@ impl PickChartPlan {
 
         let all_series = series;
         for series in series {
+            // A box plot's raw points are picked as markers placed in their
+            // category slot; its boxes and violins are data picks.
             let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
+            if let Some(points) = series
+                .render_type
+                .box_plot()
+                .and_then(|b| b.points)
+                .filter(|_| primitives.box_points)
+            {
+                descriptors.push(box_points_pick_descriptor(
+                    config, all_series, series, points,
+                ));
+                continue;
+            }
             // A point vector is picked on the arrows it draws, through the
             // scatter primitive slot.
             let vector = extract_vector(&series.render_type)
@@ -794,6 +895,7 @@ impl PickChartPlan {
                             .streamlines()
                             .and_then(|streamlines| streamlines.arrows.copied())
                     }),
+                    category_jitter: None,
                 },
             });
         }
@@ -1843,6 +1945,39 @@ impl Renderer {
                             )?,
                         },
                     });
+                }
+                // A violin's bodies, from the same params and style map as
+                // its draw, after the boxes: a box painted over its violin
+                // wins a tie. Its raw points are picked by the point picker.
+                if primitives.violin {
+                    let (data, segments) = box_extras_data(
+                        &self.device,
+                        &self.gpu_ledger,
+                        &self.category_bar_data_bgl,
+                        &self.per_point_style_map_bgl,
+                        self.pool.buffer(),
+                        &self.pool,
+                        &display_config,
+                        series.iter().filter(|s| {
+                            effective_series_primitives(&config.draw_style, &s.render_type).box_plot
+                        }),
+                        cfg,
+                        request.display_scale,
+                        |id| {
+                            self.pool
+                                .handle_for(id)
+                                .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                        },
+                        false,
+                    )?;
+                    if segments != 0 {
+                        data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                            source_id: cfg.source_id.clone(),
+                            series_id: cfg.series_id.clone(),
+                            paint_order,
+                            geometry: crate::gpu_data_pick::GpuDataPickGeometry::Violin { data },
+                        });
+                    }
                 }
                 continue;
             }

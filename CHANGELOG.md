@@ -21,9 +21,9 @@ written by model 0.12 and earlier parse and re-serialize byte for byte; the
 new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
-`offsets`, the `value_label` selection and
+`offsets`, the `value_label` selection,
 the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines` and `RangeBars`
-series kinds) are additive.
+series kinds and the box plot's `violin` and `points`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -63,6 +63,39 @@ series kinds) are additive.
   3 categories and 1 series") no longer sees them; an empty categorical axis now fails with
   "a categorical axis needs at least one category".
 
+- **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53),
+  #58 item 23). `DataRenderType::BoxPlot` gains `violin: Option<Violin>`
+  and `points: Option<BoxPoints>`. A `Violin` is
+  `ViolinBody::Symmetric(ViolinHalf)` (one curve mirrored) or
+  `ViolinBody::Split { low, high }` (a curve per side, at least one), with
+  `box_width`, the box's share of the slot (default 0.25, 0 hides it). A
+  `ViolinHalf` names the host's density curve as a ragged column (one group
+  per category, ascending) and an index-aligned density column, its
+  `density_scale` (`fit_density_scale` sets it from the density maximum)
+  and a `ViolinStyle`. `BoxPoints` names two plain columns, each point's
+  category position and value, with a `BoxPointsStyle` (colour, size,
+  shape, filled, `jitter` and `offset` shares of the half slot). A violin
+  without boxes leaves `y_column` empty. `validate_box_plot_series` holds
+  the shares, sizes and widths in range, the scales finite and positive and
+  the column ids distinct. `step_selection` walks a box plot's raw points
+  by row, bounded by the shorter point column. `BoxPlotRef` gains
+  `ragged_columns`, `plain_columns` and `draws_boxes`. The renderer
+  computes no density; there is no limit on curve points, categories or
+  raw points. Both fields are omitted from a document when unset. Code that
+  builds `DataRenderType::BoxPlot` by struct literal adds `violin: None,
+  points: None` (`BoxPlot` is unreleased).
+- **A picked split violin names its half**
+  ([#53](https://github.com/shim9610/figgy/issues/53) D1).
+  `PickedDataRef::HistogramBin` and the renderer's
+  `PickedData::HistogramBin` gain `half: Option<ViolinSide>`: `Some(Low)`
+  or `Some(High)` for a split violin's half under the cursor, `None` for
+  every other bin, a box and a symmetric violin. Selecting a half outlines
+  that half alone; selecting the category (`None`) outlines the whole
+  violin and its box. `step_selection` moves to a whole category
+  (`None`). `ViolinSide` gains serde. The key is omitted when `None`, so
+  documents parse and re-serialize byte for byte. Migration: a
+  `HistogramBin { .. }` literal adds `half: None`, and a pattern that names
+  every field adds `half` or `..`.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52), #58 item 23).
   `DataRenderType::RangeBars` draws a bar from a start to an end value at a
@@ -862,6 +895,30 @@ series kinds) are additive.
   literals `value_map: None`; `VectorParamsGpu::pad0` is now `spacing_px`
   (zero for the point and grid forms).
 
+- **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53)).
+  The bar module draws a box plot's violins and raw points through its
+  violin fragment (`common/violin.wgsl`, SHADER_COMMON.md §5.19), each with
+  a group 3 of its own over the box group's layout, under and over the
+  boxes: one instance per curve segment, finding its category by a binary
+  search over the group offsets, so a long curve costs only its own
+  segments, and one instance per raw point. A pixel belongs to the segment
+  whose value range holds its snapped centre, so the segments tile without
+  seams under multisampling. The violin's data pick (`pick_violin`) tests
+  each category and half once with a binary search inside it and answers
+  the category as a histogram bin; the raw points are picked by the point
+  picker through the exact variant `PICK_VARIANT_CATEGORY_JITTER` (256),
+  placed by the shared fragment `common/category_jitter.wgsl` (§5.20) that
+  the draw places them with, the gates reaching one and a half slots past
+  a point's category. `box_slot` now places members through that
+  fragment's `category_member` (the same arithmetic, so boxes, range bars
+  and category bars draw as before). Box plot lane tables grow to 18
+  entries (the box width and the violin curves the value label clears);
+  `PickQueryParamsGpu` grows from 528 to 560 bytes with the raw points'
+  layout. A box override restyles its category's violin. The fit covers
+  the curves and the points' values; streamed sources are rejected.
+  Two playground scenes (Split violins, Raincloud) join the decoration
+  oracle's catalogue. Picking among 600 violins of 4 096 curve points takes
+  about 4 ms on lavapipe, and a raw point among 3 000 000 about 70 ms.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). The bar module draws
   them through its range bar fragment (`common/range_bars.wgsl`,
@@ -1511,6 +1568,11 @@ series kinds) are additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53)).
+  A box plot series' `violin` and `points` read and write in `set_series`
+  JSON (SCHEMA.md); a picked raw point's `selection_details()` reports its
+  `index`, `position`, `value`, `direction` and category, and a violin
+  without boxes reports its category.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). `RangeBars` series
   read and write in `set_series` JSON (SCHEMA.md); `selection_details()`

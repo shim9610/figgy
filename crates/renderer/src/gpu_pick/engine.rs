@@ -45,18 +45,34 @@ pub(super) fn query_params(
     // Nothing a marker draws lies outside its quad: the visual radius plus
     // the quad margin on either axis, grown by the styled entry's own quad.
     let base_radius = series.base_radius_px * display_scale;
-    let marker_reach = match style.marker {
-        PICK_MARKER_SKETCH => {
-            series.max_extent_px * display_scale
-                + MARKER_QUAD_MARGIN_PX
-                + params[0][0].max(0.0) * 0.5
-        }
-        PICK_MARKER_PLANET => base_radius.max(1.0) * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX,
-        PICK_MARKER_STAR => {
-            (base_radius * CONSTELLATION_STAR_MAX_SCALE).max(0.5) * 4.0 + MARKER_QUAD_MARGIN_PX
-        }
-        _ => series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
-    };
+    // A raw point moves across its category slot: the gates reach past
+    // its category position by one and a half slots, more than the group's
+    // half span plus the largest offset and jitter (two half thicknesses).
+    let jitter_reach = series.category_jitter.map_or(0.0, |jitter| {
+        let axis = usize::from(jitter.horizontal);
+        let t = &query.transform;
+        let range = t.data_max[axis] - t.data_min[axis];
+        let size = if jitter.horizontal {
+            query.chart_rect_px[3]
+        } else {
+            query.chart_rect_px[2]
+        };
+        let slot = (size * t.data_to_panel_scale[axis] / range).abs();
+        if slot.is_finite() { slot * 1.5 } else { 0.0 }
+    });
+    let marker_reach = jitter_reach
+        + match style.marker {
+            PICK_MARKER_SKETCH => {
+                series.max_extent_px * display_scale
+                    + MARKER_QUAD_MARGIN_PX
+                    + params[0][0].max(0.0) * 0.5
+            }
+            PICK_MARKER_PLANET => base_radius.max(1.0) * PLANET_QUAD_EXTENT + MARKER_QUAD_MARGIN_PX,
+            PICK_MARKER_STAR => {
+                (base_radius * CONSTELLATION_STAR_MAX_SCALE).max(0.5) * 4.0 + MARKER_QUAD_MARGIN_PX
+            }
+            _ => series.max_extent_px * display_scale + MARKER_QUAD_MARGIN_PX,
+        };
     // The line shader's `max(line_width_px, 1) / 2`.
     let half_width = (2.0 * series.line_half_width_px * display_scale).max(1.0) * 0.5;
     let ribbon = milkyway_line_half_extent(&params);
@@ -186,6 +202,22 @@ pub(super) fn query_params(
         errorbar_px: series.errorbar.as_ref().map_or([0.0; 4], |bars| bars.px),
         area: series.area.as_ref().map_or([0; 4], |fill| fill.params),
         area_baseline: series.area.as_ref().map_or([0.0; 4], |fill| fill.baseline),
+        category: series.category_jitter.map_or([0.0; 4], |jitter| {
+            [
+                jitter.group_width,
+                jitter.gap_px,
+                jitter.jitter,
+                jitter.offset,
+            ]
+        }),
+        category_slot: series.category_jitter.map_or([0; 4], |jitter| {
+            [
+                jitter.member,
+                jitter.members.max(1),
+                u32::from(jitter.horizontal),
+                jitter.seed,
+            ]
+        }),
     }
 }
 
@@ -1141,9 +1173,13 @@ impl GpuPickEngine {
                     errorbar.is_some(),
                     area.is_some(),
                     descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
+                    descriptor.category_jitter.is_some() && descriptor.scatter.is_some(),
                 ),
                 errorbar,
                 area,
+                category_jitter: descriptor
+                    .category_jitter
+                    .filter(|_| descriptor.scatter.is_some()),
             },
         })
     }

@@ -106,7 +106,7 @@ fn category_invalid() -> CategoryBar {
 
 /// NDC to chart-area render pixels, y down.
 fn category_px(ndc: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>((ndc.x + 1.0) / transform.pixel_to_ndc.x, (1.0 - ndc.y) / transform.pixel_to_ndc.y);
+    return category_frame_px(ndc, transform.pixel_to_ndc);
 }
 
 /// The position half a slot below (`side` -1) or above (`side` 1)

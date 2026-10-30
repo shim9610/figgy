@@ -220,6 +220,7 @@ fn select(config: &mut Config, indices: &[usize]) {
                         source_id: Some("source".into()),
                         series_id: "bar".into(),
                         bin_index: *index,
+                        half: None,
                     },
                 ]
             })

@@ -100,12 +100,12 @@ impl PrepareContext<'_> {
             });
         }
         // Nor to box plots: a box reads a resident record and ragged column
-        // by their pool lanes.
+        // by their pool lanes, and so do its violin and raw points.
         if series.render_type.box_plot().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {
                 series_id: series.series_id.clone(),
-                reason: "box plot series require a GPU-resident record and outlier column; \
-                         streamed sources are not supported"
+                reason: "box plot series require a GPU-resident record, outlier column, violin \
+                         curves and raw point columns; streamed sources are not supported"
                     .into(),
             });
         }

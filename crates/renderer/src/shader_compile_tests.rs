@@ -168,6 +168,7 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_category_bar"
                     | "pick_box_plot"
                     | "pick_range_bar"
+                    | "pick_violin"
                     | "pick_value_labels"
                     | "scan_block"
             )

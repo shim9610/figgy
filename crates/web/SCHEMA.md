@@ -1160,6 +1160,41 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 `labels.text`는 상자 꼭대기 위에 그리고, `labels.offsets`(범주마다 `[dx, dy]` 논리 픽셀)는 라벨을 끌어 옮긴
 거리다. 이 키가 없는 문서는 예전과 같이 읽고 쓴다.
 
+A box plot series can also name a violin and raw points; both keys are
+omitted when unset. `violin.body` is `{"Symmetric": half}` or `{"Split":
+{"low": half, "high": half}}` (either half may be omitted, not both);
+each half names its ragged curve (`register_ragged`, one group per
+category, ascending), its density column (one value per curve value) and
+`density_scale`, the density drawn at the full half slot. `box_width` is
+the box's share of the slot (default 0.25, 0 hides it); a violin without
+boxes leaves `y_column` empty. `points` names the raw points' category
+position and value columns; the jitter is computed in the shader from
+each point's index, so there is no jitter column.
+
+```json
+"violin": {
+  "body": { "Split": { "high": {
+    "curve": "kde.curve", "density": "kde.density", "density_scale": 0.042,
+    "style": { "outline": true, "outline_width": 1.0,
+               "outline_color": { "r": 0.16, "g": 0.2, "b": 0.25, "a": 1.0 } } } } },
+  "box_width": 0.12
+},
+"points": {
+  "positions": "sample.category", "values": "sample.value",
+  "style": { "color": { "r": 0.16, "g": 0.31, "b": 0.47, "a": 1.0 }, "size": 4.0,
+             "shape": "Circle", "filled": true, "jitter": 0.35, "offset": -0.5 }
+}
+```
+
+A picked violin answers like its box (`category_id`, `category_label` and
+the record's statistics, none without a record), with `"half": "Low"` or
+`"High"` for a split violin's half; the selection reference
+(`{"kind": "histogram_bin", …, "half": "Low"}`) outlines that half alone; a picked raw point's
+`selection_details()` carries `index`, `position`, `value`, `direction`
+and, when its position names a category, `category_id` and
+`category_label`. `step_selection(dx, dy)` walks the points and the box
+plot series with points.
+
 <a id="rangebars-render_type"></a>
 
 ## `RangeBars` render_type

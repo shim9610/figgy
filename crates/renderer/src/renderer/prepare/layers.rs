@@ -435,6 +435,47 @@ impl PrepareContext<'_> {
             } else {
                 None
             };
+            // A box plot's violins and raw points: their own group 3 over the
+            // box group's layout, under and over its boxes. No streamed form.
+            let box_group = || {
+                series_specs
+                    .iter()
+                    .filter(|s| {
+                        effective_series_primitives(&chart_config.draw_style, &s.config.render_type)
+                            .box_plot
+                    })
+                    .map(|s| s.config)
+            };
+            let mut box_extra = |points: bool, pipeline: Option<&'a wgpu::RenderPipeline>| {
+                box_extras_data(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.category_bar_data_bgl,
+                    self.per_point_style_map_bgl,
+                    column_buffer,
+                    self.pool,
+                    chart_config,
+                    box_group(),
+                    cfg,
+                    series.style.display_scale,
+                    &mut lookup,
+                    points,
+                )
+                .map(|(data, count)| data_render::ColumnCategoryBarLayer {
+                    pipeline: pipeline.expect("prepare ensured the violin pipelines"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.bar_bg,
+                    data,
+                    count,
+                    vertices: data_render::VIOLIN_VERTICES,
+                })
+            };
+            let violin = (primitives.violin && phase.is_none())
+                .then(|| box_extra(false, pipelines.bar_violin.as_ref()))
+                .transpose()?;
+            let box_points = (primitives.box_points && phase.is_none())
+                .then(|| box_extra(true, pipelines.bar_box_points.as_ref()))
+                .transpose()?;
 
             // Bars: the edge column and the value column are picked from the
             // bar's own orientation — never from the column lengths (design
@@ -841,6 +882,10 @@ impl PrepareContext<'_> {
                         y: y_h,
                         bar: bar.as_ref().map(|layer| (layer.edges, layer.values)),
                         category: category_bars.as_ref().map(|(data, ..)| data.clone()),
+                        violin: violin
+                            .as_ref()
+                            .map(|layer| (layer.data.clone(), layer.count)),
+                        box_points: box_points.as_ref().map(|layer| layer.data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
                     },
@@ -916,7 +961,9 @@ impl PrepareContext<'_> {
                 area,
                 field,
                 bar,
+                violin,
                 category_bars,
+                box_points,
                 contour,
                 vector,
                 errorbar,

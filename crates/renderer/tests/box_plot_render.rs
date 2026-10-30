@@ -185,6 +185,8 @@ fn boxes(id: &str, color: Color) -> SeriesConfig {
             labels: BoxPlotSeriesLabels::default(),
             outliers: (id == "one").then(|| "one.outliers".into()),
             overrides: None,
+            violin: None,
+            points: None,
         },
     }
 }
@@ -690,6 +692,7 @@ fn the_selection_outline_traces_an_overridden_box() {
                     source_id: None,
                     series_id: "two".into(),
                     bin_index: 1,
+                    half: None,
                 }],
                 highlight_color: MAGENTA,
                 outline_width_px: 3.0,
@@ -1187,6 +1190,7 @@ fn six_hundred_boxes_draw_pick_and_highlight() {
             source_id: None,
             series_id: format!("s{}", M - 1),
             bin_index: N - 1,
+            half: None,
         }],
         highlight_color: MAGENTA,
         outline_width_px: 1.0,
@@ -1398,6 +1402,7 @@ fn a_twenty_series_box_group_draws_picks_and_highlights() {
             source_id: None,
             series_id: format!("s{}", M - 1),
             bin_index: N - 1,
+            half: None,
         }],
         highlight_color: MAGENTA,
         outline_width_px: 1.0,

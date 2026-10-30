@@ -221,6 +221,9 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// be set too: they are part of the line primitive), in logical pixels.
     /// The exact pass binds the line's arc prefix for them.
     pub(crate) path_arrows: Option<crate::data_config::StreamlineArrows>,
+    /// A box plot's raw points (`scatter` must be set too: they are its
+    /// markers), placed in their category slot. Resident series only.
+    pub(crate) category_jitter: Option<GpuPickCategoryJitter>,
 }
 
 /// The error bars of a marker series as the error-bar shader draws them
@@ -291,6 +294,27 @@ pub(crate) struct GpuPickVector {
     pub(crate) head_length_px: f32,
     pub(crate) head_width_px: f32,
     pub(crate) min_length_px: f32,
+}
+
+/// A box plot's raw points as `vs_box_points` places them
+/// (`category_jitter.wgsl`): the series' place in its box group, the
+/// group's layout and the points' jitter and offset shares. The point
+/// columns are the descriptor's x and y columns (the category positions on
+/// the category axis' side).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct GpuPickCategoryJitter {
+    pub(crate) member: u32,
+    pub(crate) members: u32,
+    /// The categories run along y.
+    pub(crate) horizontal: bool,
+    /// The share of a slot the group covers.
+    pub(crate) group_width: f32,
+    /// Logical pixels between members.
+    pub(crate) gap_px: f32,
+    pub(crate) jitter: f32,
+    pub(crate) offset: f32,
+    /// The series salt the draw hashes the jitter with.
+    pub(crate) seed: u32,
 }
 
 /// What the chart's draw style draws for markers and lines, as the pick
@@ -762,6 +786,11 @@ pub(crate) struct PickQueryParamsGpu {
     pub(crate) area: [u32; 4],
     /// `(baseline hi, baseline lo, 0, 0)`.
     pub(crate) area_baseline: [f32; 4],
+    /// A box plot's raw points: `(group width, gap in logical pixels,
+    /// jitter, offset)`.
+    pub(crate) category: [f32; 4],
+    /// `(member, members, horizontal 0/1, seed)`; zero without raw points.
+    pub(crate) category_slot: [u32; 4],
 }
 
 #[repr(C)]
@@ -777,7 +806,7 @@ pub(crate) struct PickCandidateGpu {
     pub(crate) _pad: u32,
 }
 
-const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 528);
+const _: () = assert!(std::mem::size_of::<PickQueryParamsGpu>() == 560);
 const _: () = assert!(std::mem::size_of::<PickCandidateGpu>() == CANDIDATE_BYTES as usize);
 
 #[derive(Clone)]
@@ -847,6 +876,8 @@ pub(super) struct PickSeriesGpu {
     /// The per-series part of the exact variant, fixed at build
     /// (`series_exact_key`).
     pub(super) exact_key: PickExactKey,
+    /// [`GpuPickSeriesDescriptor::category_jitter`].
+    pub(super) category_jitter: Option<GpuPickCategoryJitter>,
 }
 
 /// A slot's error bars: the columns it reads in `ERRORBAR_COLUMNS` order

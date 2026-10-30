@@ -16,9 +16,13 @@ pub struct SeriesLayers<'a> {
     pub field: Option<ColumnFieldLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
     pub bar: Option<ColumnBarLayer<'a>>,
+    /// A box plot series' violins, under its boxes.
+    pub violin: Option<ColumnCategoryBarLayer<'a>>,
     /// The bars of a category bar series or the boxes of a box plot
     /// series, issued where histogram bars are.
     pub category_bars: Option<ColumnCategoryBarLayer<'a>>,
+    /// A box plot series' raw points, over its boxes.
+    pub box_points: Option<ColumnCategoryBarLayer<'a>>,
     /// Contour lines go over the field they describe and under the markers.
     pub contour: Option<ColumnContourLayer<'a>>,
     /// Arrows go over the field and contours they annotate, under the series'
@@ -138,8 +142,13 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     }
 
     // Category bars and box plots: area primitives like histogram bars, one
-    // instance per bar or box built from group 3; no vertex buffers.
-    if let Some(c) = series.category_bars.as_ref().filter(|c| c.count > 0) {
+    // instance per bar or box built from group 3; no vertex buffers. A box
+    // plot's violins go under its boxes and its raw points over them.
+    for c in [&series.violin, &series.category_bars, &series.box_points]
+        .into_iter()
+        .flatten()
+        .filter(|c| c.count > 0)
+    {
         pass.set_pipeline(c.pipeline);
         pass.set_bind_group(0, c.transform_bg, &[]);
         pass.set_bind_group(1, c.style_bg, &[]);
@@ -297,7 +306,7 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
             pass.set_bind_group(3, &category.bind_group, &[]);
             pass.draw(
                 0..CATEGORY_BAR_VERTICES,
-                selection.instance..selection.instance + 1,
+                selection.instance..selection.instance.saturating_add(selection.instances),
             );
             continue;
         }

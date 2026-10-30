@@ -320,6 +320,8 @@ fn box_series() -> Vec<SeriesConfig> {
                 labels: Default::default(),
                 outliers: None,
                 overrides: None,
+                violin: None,
+                points: None,
             },
         )
     };

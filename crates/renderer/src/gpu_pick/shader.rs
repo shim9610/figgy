@@ -19,10 +19,19 @@ pub(crate) mod exact_variant {
     pub(crate) const POLAR: u32 = 64;
     /// A streamline series' arrowheads with its line (`gpu_pick/line.wgsl`).
     pub(crate) const PATH_ARROWS: u32 = 128;
+    /// A box plot's raw points, placed in their category slot and jittered
+    /// (`gpu_pick/marker.wgsl`, `category_jitter.wgsl`).
+    pub(crate) const CATEGORY_JITTER: u32 = 256;
     /// Every path: the shader's default.
     #[cfg(test)]
-    pub(crate) const ALL: u32 =
-        STYLED_MARKER | ERRORBAR | AREA | DASH | STYLED_LINE | POLAR | PATH_ARROWS;
+    pub(crate) const ALL: u32 = STYLED_MARKER
+        | ERRORBAR
+        | AREA
+        | DASH
+        | STYLED_LINE
+        | POLAR
+        | PATH_ARROWS
+        | CATEGORY_JITTER;
     /// The override's name in `gpu_pick/core.wgsl`.
     pub(crate) const CONSTANT: &str = "PICK_VARIANT";
 }
@@ -69,6 +78,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/ramp.wgsl",
             "data_render/common/grid_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
+            "data_render/common/category_jitter.wgsl",
             "data_render/common/errorbar_segment.wgsl",
             "data_render/common/marker.wgsl",
             "gpu_pick/marker.wgsl",
@@ -87,6 +97,7 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
             "data_render/common/grid_pair.wgsl",
             "data_render/common/arc_pair.wgsl",
             "data_render/common/sketch_noise.wgsl",
+            "data_render/common/category_jitter.wgsl",
             "data_render/common/errorbar_segment.wgsl",
             "data_render/common/line_stroke.wgsl",
             "data_render/common/line_step.wgsl",

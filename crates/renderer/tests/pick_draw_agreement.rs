@@ -3352,6 +3352,8 @@ fn box_plots_pick_the_box_they_paint() {
                     labels: Default::default(),
                     outliers: Some("outliers".into()),
                     overrides: None,
+                    violin: None,
+                    points: None,
                 },
             }];
             for scale in [1.0, 2.0] {
@@ -3606,6 +3608,186 @@ fn range_bars_pick_the_bar_they_paint() {
             assert!(painted > 400, "{what}: {painted}");
             assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
             assert!(connectors > 0, "{what}: the connector's pixels pick");
+            renderer.remove_chart(probe.id).unwrap();
+        }
+    }
+}
+
+/// A box plot's violin and its jittered raw points pick what they paint: on
+/// the edge band of their ink, every painted pixel picks — a body pixel its
+/// category as a histogram bin, a point pixel a point — and nothing
+/// unpainted picks, in both directions at 1x and 2x. The points are placed
+/// by the draw's and the pick's one function (`category_jitter.wgsl`).
+#[test]
+fn violins_and_raincloud_points_pick_what_they_paint() {
+    use renderer::config::Category;
+    use renderer::data_config::{
+        BarGroups, BoxPlotStyle, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin,
+        ViolinBody, ViolinHalf, ViolinStyle,
+    };
+    let mut renderer = renderer();
+    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
+    let mut values = Vec::new();
+    let mut density = Vec::new();
+    for _ in 0..2 {
+        for j in 0..=40 {
+            let v = 1.0 + 8.0 * f64::from(j) / 40.0;
+            values.push(v);
+            density.push((1.0 - (v - 5.0).abs() / 4.0).max(0.0));
+        }
+    }
+    renderer
+        .upsert_ragged(
+            "curve",
+            &renderer::RaggedSource {
+                values: &col(values),
+                offsets: &col(vec![0.0, 41.0, 82.0]),
+            },
+        )
+        .unwrap();
+    renderer.add_column("density", &col(density)).unwrap();
+    // Twelve points, apart enough that no two markers' edges overlap (two
+    // fringes below half coverage each can paint more than half together,
+    // as for any two markers).
+    renderer
+        .add_column("pt.cat", &col((0..12).map(|i| f64::from(i % 2)).collect()))
+        .unwrap();
+    renderer
+        .add_column(
+            "pt.value",
+            &col((0..12).map(|i| 1.5 + f64::from(i / 2) * 1.2).collect()),
+        )
+        .unwrap();
+    const ORANGE: Color = Color::from_rgb8(255, 128, 0);
+    let is_point = |p: &[u8]| p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60;
+    for direction in [
+        CategoryBarDirection::Vertical,
+        CategoryBarDirection::Horizontal,
+    ] {
+        let mut chart = bare_chart();
+        let config = chart.config_mut();
+        for axis in [
+            &mut config.top_x,
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.line_visible = false;
+        }
+        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
+        match direction {
+            CategoryBarDirection::Vertical => {
+                config.bottom_x.categories = categories;
+                config.left_y.min = 0.0;
+                config.left_y.max = 10.0;
+            }
+            CategoryBarDirection::Horizontal => {
+                config.left_y.categories = categories;
+                config.bottom_x.min = 0.0;
+                config.bottom_x.max = 10.0;
+            }
+        }
+        config.bar_groups = Some(BarGroups {
+            direction,
+            ..BarGroups::default()
+        });
+        let series = [SeriesConfig {
+            series_id: "rain".into(),
+            source_id: None,
+            label: None,
+            x_column: "pos".into(),
+            y_column: String::new(),
+            render_type: DataRenderType::BoxPlot {
+                color: RED,
+                style: BoxPlotStyle::default(),
+                labels: Default::default(),
+                outliers: None,
+                overrides: None,
+                violin: Some(Violin {
+                    body: ViolinBody::Split {
+                        low: None,
+                        high: Some(ViolinHalf {
+                            curve: "curve".into(),
+                            density: "density".into(),
+                            density_scale: 1.0,
+                            style: ViolinStyle {
+                                fill: Some(BLUE),
+                                outline: true,
+                                outline_width: 1.5,
+                                outline_color: RED,
+                            },
+                        }),
+                    },
+                    box_width: 0.0,
+                }),
+                points: Some(BoxPoints {
+                    positions: "pt.cat".into(),
+                    values: "pt.value".into(),
+                    style: BoxPointsStyle {
+                        color: ORANGE,
+                        size: 8.0,
+                        jitter: 0.3,
+                        offset: -0.5,
+                        ..BoxPointsStyle::default()
+                    },
+                }),
+            },
+        }];
+        for scale in [1.0, 2.0] {
+            let what = format!("{direction:?} at {scale}x");
+            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
+            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
+            let window = ink_window(&with, &without, 2);
+            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
+            let painted = count_painted(window, is_painted);
+            let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut failures = Vec::new();
+            let (mut bodies, mut points) = (0usize, 0usize);
+            for (px, py) in edge_band(window, is_painted) {
+                let ink = difference(&with, &without, px, py);
+                let i = ((py * with.width + px) * 4) as usize;
+                let point_pixel = is_point(&with.rgba[i..i + 4]);
+                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                match &hit {
+                    Some(renderer::PickedData::HistogramBin { series_id, .. })
+                    | Some(renderer::PickedData::Point { series_id, .. }) => {
+                        assert_eq!(series_id, "rain", "{what}")
+                    }
+                    None => {}
+                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                }
+                if ink > 160 && hit.is_none() {
+                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                }
+                if ink < MSAA_EDGE.zero_ink && hit.is_some() {
+                    failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
+                }
+                if ink > 240 {
+                    match hit {
+                        Some(renderer::PickedData::Point { .. }) => points += 1,
+                        Some(renderer::PickedData::HistogramBin { .. }) => bodies += 1,
+                        _ => {}
+                    }
+                    if point_pixel && !matches!(hit, Some(renderer::PickedData::Point { .. })) {
+                        failures.push(format!("({px}, {py}) a point's pixel picked {hit:?}"));
+                    }
+                }
+            }
+            assert!(
+                failures.is_empty(),
+                "{what}: {} disagreements, first {:?}",
+                failures.len(),
+                &failures[..failures.len().min(12)]
+            );
+            assert!(painted > 400, "{what}: {painted}");
+            assert!(
+                bodies > 40,
+                "{what}: {bodies} fully painted body edge pixels"
+            );
+            assert!(
+                points > 40,
+                "{what}: {points} fully painted point edge pixels"
+            );
             renderer.remove_chart(probe.id).unwrap();
         }
     }

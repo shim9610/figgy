@@ -638,6 +638,7 @@ fn legacy_selection(
             source_id: None,
             series_id: series_id.to_owned(),
             bin_index: index,
+            half: None,
         });
         config.picked_data = Some(picked);
     }
@@ -845,6 +846,8 @@ impl Config {
                     },
                     outliers: outliers.clone(),
                     overrides: (!overrides.is_empty()).then_some(overrides),
+                    violin: None,
+                    points: None,
                 },
             });
             uploads.push(SeriesUpload {
@@ -1406,6 +1409,7 @@ mod tests {
                 source_id: None,
                 series_id: "t".into(),
                 bin_index: 1,
+                half: None,
             }]
         );
     }
@@ -1825,6 +1829,7 @@ mod box_tests {
                 source_id: None,
                 series_id: "t".into(),
                 bin_index: 1,
+                half: None,
             }]
         );
         assert_eq!(config.active_layer, LayerRef::Annotations);

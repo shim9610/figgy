@@ -138,14 +138,22 @@ fn picked_data_json_string(picked: &renderer::PickedData) -> serde_json::Result<
             source_id,
             series_id,
             bin_index,
+            half,
             distance_px,
-        } => serde_json::json!({
-            "kind": "histogram_bin",
-            "source_id": source_id.as_ref(),
-            "series_id": series_id,
-            "bin_index": bin_index,
-            "distance_px": distance_px,
-        }),
+        } => {
+            let mut json = serde_json::json!({
+                "kind": "histogram_bin",
+                "source_id": source_id.as_ref(),
+                "series_id": series_id,
+                "bin_index": bin_index,
+                "distance_px": distance_px,
+            });
+            // A split violin's half, as `PickedDataRef` serializes it.
+            if let Some(half) = half {
+                json["half"] = serde_json::json!(half);
+            }
+            json
+        }
         renderer::PickedData::MatrixCell {
             source_id,
             series_id,

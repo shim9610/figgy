@@ -253,6 +253,7 @@ fn scatter_descriptor(
         vector: None,
         errorbar: None,
         area: None,
+        category_jitter: None,
     }
 }
 
@@ -419,7 +420,7 @@ fn the_stored_exact_key_is_the_slots_module_dash_and_shape() {
         ),
     ] {
         assert_eq!(
-            series_exact_key(flags, dash_len, 7, errorbar, area, false),
+            series_exact_key(flags, dash_len, 7, errorbar, area, false, false),
             expected,
             "flags {flags:#x}, dash length {dash_len}, errorbar {errorbar}, area {area}"
         );
@@ -595,6 +596,7 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
         vector: None,
         errorbar: None,
         area: None,
+        category_jitter: None,
     };
     for logarithmic in [false, true] {
         let origin = if logarithmic {
@@ -828,6 +830,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             vector: None,
             errorbar: None,
             area: None,
+            category_jitter: None,
         };
         let query = test_query(cursor);
         let mut exact = PickExactPipelines::default();
@@ -1243,6 +1246,7 @@ fn exact_gpu_scatter_style_mapping_matches_cpu_exhaustive_picker() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1357,6 +1361,7 @@ fn size_map_radius_parity_between_cpu_and_gpu_pickers() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1461,6 +1466,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1496,6 +1502,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1516,6 +1523,7 @@ fn display_scale_applies_once_to_pick_geometry_but_not_pick_distance() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1688,6 +1696,7 @@ fn exact_gpu_line_boundary_endpoint_matches_cpu_exhaustive_picker() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1763,6 +1772,7 @@ fn exact_gpu_line_gate_keeps_a_segment_whose_endpoints_are_both_outside() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1831,6 +1841,7 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -1919,6 +1930,7 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -2032,6 +2044,7 @@ fn exact_gpu_log_inverted_and_nonfinite_semantics_match_cpu_picker() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -2166,6 +2179,7 @@ fn exact_gpu_step_lines_match_cpu_picker_on_runs_risers_and_corners() {
                         vector: None,
                         errorbar: None,
                         area: None,
+                        category_jitter: None,
                     },
                 )
                 .unwrap();
@@ -2366,6 +2380,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -2408,6 +2423,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -2472,6 +2488,7 @@ fn exact_gpu_f64_residual_selects_point_index() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -3090,6 +3107,7 @@ fn relocation_rebind_keeps_gate_storage_and_refreshes_all_column_bases() {
                 vector: None,
                 errorbar: None,
                 area: None,
+                category_jitter: None,
             },
         )
         .unwrap();
@@ -3429,7 +3447,13 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
         ),
         (PickShader::Vector, &["vector_points"][..]),
     ] {
-        let expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        let mut expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        // The marker modules pick the raincloud points, whose jitter the bar
+        // module draws.
+        if matches!(shader, PickShader::Marker | PickShader::MarkerLine) {
+            assert!(draw("bar").contains("data_render/common/category_jitter.wgsl"));
+            expected.insert("data_render/common/category_jitter.wgsl");
+        }
         assert!(!expected.is_empty(), "{shader:?}");
         assert_eq!(
             common(shader.fragments()),

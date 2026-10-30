@@ -638,6 +638,8 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
             },
             outliers: Some("box.outliers".into()),
             overrides: None,
+            violin: None,
+            points: None,
         },
     }
 }

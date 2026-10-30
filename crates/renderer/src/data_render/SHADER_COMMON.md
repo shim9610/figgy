@@ -40,7 +40,8 @@ To change shared shader code:
 | `arc_pair.wgsl` (§5.6 arc pairs) | line, line_arc, the path vector module, the pick line modules |
 | `ramp.wgsl` (§5.4) | field, scatter, line (the colour-mapped stroke, §5.6), vector, bar (read by `marker.wgsl`), the pick marker, line and vector modules |
 | `marker.wgsl` (§5.4 size map, §5.5, §5.7) | scatter, bar (box plot means and outliers, §5.15), the pick marker modules |
-| `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl` and `errorbar_segment.wgsl`) and the pick marker modules |
+| `sketch_noise.wgsl`, `line_stroke.wgsl` (§5.6) | line, the pick line modules; the noise also scatter, errorbar, bar (read by `marker.wgsl`, `errorbar_segment.wgsl` and `category_jitter.wgsl`) and the pick marker modules |
+| `category_jitter.wgsl` (§5.20) | bar (the box group's slot layout and raw point placement), the pick marker modules |
 | `line_step.wgsl` | line, line_arc, the pick line modules |
 | `arc_walk.wgsl` (§5.6 arc slots) | line, the path vector module (draw only: the pick walks a segment's arc through `pick_arc`) |
 | `path_arrow.wgsl` (§5.3 path form) | the path vector module, the pick line modules |
@@ -54,6 +55,7 @@ To change shared shader code:
 | `category_bars.wgsl` (§2.4, §5.13) | bar |
 | `box_plot.wgsl` (§2.5, §5.15) | bar |
 | `range_bars.wgsl` (§2.6, §5.18) | bar |
+| `violin.wgsl` (§2.5, §5.19) | bar |
 | `contour_label_box.wgsl` (§5.10) | contour label, field, bar (the value labels' frame, §5.17) |
 | `label_quad.wgsl` (§5.16) | contour label, bar (the value labels, §5.17) |
 | `value_label.wgsl` (§5.17) | bar |
@@ -307,7 +309,11 @@ strokes and caps; mean and outlier markers) are not `Style` lanes but the
 series' bar style slots (§5.15), which the pick reads too. The selected
 box's highlight (`vs_box_plot_selection`) reads a per-selection `Style`
 built from the same function with the highlight colour and the outline
-width, as a category bar's.
+width, as a category bar's. The series' violin and raw point entries
+(§5.19) read the same `Style` for their base (the emphasis), their colours
+being style slots; the violin's highlight also reads `dash_len` (the
+selected category) and `primitive_flags` (0 for every half, else the
+selected half's `VIOLIN_SIDE_*`), and the raw point's highlight the selection's colour and width.
 
 ### 2.6 The range bar entries' `Style`
 
@@ -1184,14 +1190,18 @@ and `errorbar_segment.wgsl` and before `bar_columnar.wgsl`. The entries use
 the category bar pipeline layout and group 3 unchanged: the pool at binding
 8, a `CategoryBarParams` (§5.13) at binding 9 and the lane table at binding
 10, which a box plot reads as follows (CPU writer:
-`renderer/series.rs::box_plot_params`; `BOX_PLOT_LANES`, 13 entries, the
-record schema's fields and the outlier column, not a count of data).
+`renderer/series.rs::box_plot_params`; `BOX_PLOT_LANES`, 18 entries, the
+record schema's fields, the outlier column, the box width and two violin
+curves, not a count of data). A violin without boxes names no record:
+every record lane is `BOX_LANE_ABSENT` and no box draws or picks.
 
 | Entry of `category_lanes` | Meaning for a box plot |
 |---|---|
 | `0..9` | the f32 lane bases of the record's fields in `BOX_PLOT_RECORD` order (median, q1, q3, whisker_low, whisker_high, mean, sample_count, ci_low, ci_high); `BOX_LANE_ABSENT` (`0xffffffff`) for an absent optional field |
 | `9`, `10` | the lane bases of the outlier column's values and offsets (`BOX_LANE_OUTLIER_VALUES`, `_OFFSETS`), `BOX_LANE_ABSENT` without one |
 | `11`, `12` | the outlier groups (one per category) and the longest group (`ragged_stats().max_group`) |
+| `BOX_LANE_BOX_WIDTH` (13) | the box's share of its slot as `f32` bits: 1 for a plain box, a violin's `box_width` (0 hides the box); `box_layout` narrows the box about its middle |
+| `BOX_LANE_VIOLIN_CURVES` (14..18) | each violin half's curve values and offsets lanes, `BOX_LANE_ABSENT` without one: the value label clears the curves' ends (§5.17) |
 
 | Member of `CategoryBarParams` | Meaning for a box plot |
 |---|---|
@@ -1443,6 +1453,101 @@ row; a connector is a candidate of the bar it leaves. A bar's value label
 category bar rule, a range bar counting as grouped. Nothing per bar is
 stored anywhere; the CPU keeps the lane bases, the part colours of the
 configuration and the columns' scalar statistics (the fit).
+
+### 5.19 Violins and raw points (group 3, bindings 8 to 10)
+
+A `DataRenderType::BoxPlot` series' violin (`BoxPlot.violin`) and raw
+points (`BoxPlot.points`), drawn by the input fragment
+[`common/violin.wgsl`](common/violin.wgsl), spliced into the bar module
+after `range_bars.wgsl`, each with a group 3 of its own over the box
+group's layout: the box params of §5.15 (`box_slot` places the violin
+where the box stands), with these lane tables (CPU writers:
+`renderer/series.rs::violin_params`, `box_points_params`).
+
+| Violin lane | Meaning |
+|---|---|
+| `VIOLIN_LANE_HALVES` (0) | the halves drawn: 1 (a symmetric body or one half) or 2 |
+| `VIOLIN_LANE_FIRST_SEGMENTS` (1) | the first half's curve values: instances past them are the second half's |
+| `VIOLIN_HALF_BASE + 7h + 0` | half `h`'s side: `VIOLIN_SIDE_BOTH` (0, mirrored), `_LOW` (1), `_HIGH` (2) |
+| `+ 1`, `+ 2` | its curve's values and offsets lanes (a ragged column, §5.14, one group per category, ascending within a group) |
+| `+ 3`, `+ 4` | its group count and value count |
+| `+ 5` | its density column's lane, index-aligned with the curve's values |
+| `+ 6` | its density scale as `f32` bits: the density drawn at the full half thickness |
+
+`VIOLIN_LANES` (16) is a fixed schema, not a count of data. The style
+map's slot `h` is half `h`'s fill, outline colour and outline width, and
+each box override is one row keyed by its category's row with the
+override's colour as the fill and its style's outline (D7; CPU writer
+`renderer/style.rs::violin_style_map`).
+
+One instance is one curve segment, value `s` to `s + 1` of a half: it finds
+its category by a binary search over the half's group offsets (`log2` of
+the groups steps) and draws nothing at a group's last value, so the draw
+costs `VIOLIN_VERTICES` (6) per curve value and a long curve costs only its
+own segments. The quad covers the trapezoid the two half widths span
+(`density / density_scale · thickness / 2`), the neighbours' widths and
+the outline, one pixel past its value range. A pixel is owned by the
+segment whose half-open value range holds its snapped centre, so the
+segments tile without seams under multisampling; the fill is measured
+across the slanted edge, the outline is the distance to the segment's edge
+and its neighbours' (round joins), the caps at a group's ends and a half's
+straight side at the middle; an edge with no width at either end has no
+outline, so no stalk is drawn where the density is zero. A NaN value or density draws no segment
+there. The renderer scales the density it is given; it estimates nothing.
+
+`vs_violin_selection` draws every segment of the series and keeps the
+selected category's (and half's, §2.5) outline ring with the body's
+emphasis. The compute entry `pick_violin` tests each category and half
+once: the cursor's position along the value axis selects the segment by a
+binary search over the group's values (their pixels are monotone), the
+cursor is inside the fill when within the segment's interpolated half
+width, and otherwise its distance is the outline's as the draw measures
+it, less half the outline width. A hit is a `DATA_PICK_KIND_HISTOGRAM_BIN`
+candidate naming the category, with the half in `index1` (0 for a
+symmetric body, the half's `VIOLIN_SIDE_*` for a split one), which the
+CPU decodes into `PickedData::HistogramBin.half` for a violin's candidates
+only (a histogram's `index1` carries its envelope).
+
+The raw points' params are the box params with `positions` the points'
+category position column and `count` the rows both point columns hold;
+the lane table holds the values lane (`BOX_POINTS_LANE_VALUES`), and style
+slot 0 the colour (fill) and, in `finish`, the radius in render pixels,
+the jitter and offset shares and the shape (`marker.wgsl` base id, plus
+`BOX_POINTS_FILLED` when filled; CPU writer `box_points_style_map`). One
+instance per point draws a marker at its member's middle moved across by
+`category_jitter_cross` (§5.20), with the scatter shader's coverage rule
+(`shape_distance` at the shape's visual radius and `marker_edge`), so the
+point pick measures the same marker. `vs_box_point_selection` rings the
+selected point. The points are picked by the point picker (§5.20), not the
+data pick.
+
+### 5.20 Category slot placement
+
+[`common/category_jitter.wgsl`](common/category_jitter.wgsl) holds the box
+group's member layout and the raw point placement, spliced into the bar
+module (whose `box_slot` places boxes, range bars and violins with
+`category_member`) and into the pick marker modules. Both measure in
+chart-area render pixels with y down (`category_frame_px`).
+`category_member(slot_a, slot_b, members, member, width_ratio, gap_px)`
+gives the member's first edge, thickness and the slot centre: the group
+covers the slot's centred `width_ratio`, its members side by side `gap_px`
+apart. `category_jitter_cross(middle, thickness, offset, jitter, index,
+seed, horizontal)` moves raw point `index` from its member's middle by
+`offset` half thicknesses (negative towards smaller category values) plus
+up to `jitter` either way by `sketch_hash01(index, seed)`: a hash of the
+point's index and the series salt, the same on every draw and pick, so a
+point never moves while the chart is panned, resized or exported.
+
+The point picker places such a point through the exact variant
+`PICK_VARIANT_CATEGORY_JITTER` (256): `pick_category_jitter_px` measures the
+slot of the point's category position as the draw does, from
+`PickQueryParams.category` (group width, gap in logical pixels, jitter,
+offset) and `.category_slot` (member, members, horizontal, seed), and
+returns the marker's centre in the draw's pixel frame. The axis gates are
+not variant-specific: the series' marker reach grows by one and a half
+category slots (`query_params`), so the gate on the category axis covers
+the slot's extent, and the exact pass decides. A hit is a marker
+candidate, `PickedData::Point` with the point's row.
 
 ## Checklist
 

@@ -74,6 +74,9 @@ struct DataPickIdentity {
     source_id: Option<String>,
     series_id: String,
     paint_order: u32,
+    /// A violin's candidates name the half they hit in `index1`
+    /// (`VIOLIN_SIDE_*`, 0 for a symmetric body).
+    violin: bool,
 }
 
 pub(crate) enum GpuDataPickGeometry {
@@ -127,6 +130,13 @@ pub(crate) enum GpuDataPickGeometry {
     /// pick's display scale: the body, the whisker and the connector of a
     /// bar answer it as a histogram bin whose index is its row.
     RangeBars {
+        data: crate::data_render::CategoryBarData,
+    },
+    /// A box plot series' violins, picked by the violin entry
+    /// (`pick_violin`) over the violin draw's group 3 and style map at the
+    /// pick's display scale: one test per category and half, answering the
+    /// category as a histogram bin.
+    Violin {
         data: crate::data_render::CategoryBarData,
     },
     /// A series' value labels, picked by the bar module's label entry
@@ -239,6 +249,7 @@ impl DataPickPipelineBundle {
                     source_id,
                     series_id,
                     paint_order: index as u32,
+                    violin: false,
                 })
                 .collect(),
             transform_bg,
@@ -610,6 +621,7 @@ pub(crate) struct DataPickPipelineBundle {
     category_bar: wgpu::ComputePipeline,
     box_plot: wgpu::ComputePipeline,
     range_bar: wgpu::ComputePipeline,
+    violin: wgpu::ComputePipeline,
     /// Group 1 of the value label pick: the query (1, 2, 3), the series'
     /// label uniform (4) and its label cells (7).
     value_label_query_bgl: wgpu::BindGroupLayout,
@@ -806,6 +818,19 @@ impl DataPickPipelineBundle {
                 },
             )
         });
+        let violin = observe_value(observer, INIT_SCOPE, "pick_violin", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy violin data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_violin"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
         let value_labels = observe_value(observer, INIT_SCOPE, "pick_value_labels", || {
             crate::gpu_compile::compute_pipeline(
                 &device,
@@ -877,6 +902,7 @@ impl DataPickPipelineBundle {
             category_bar,
             box_plot,
             range_bar,
+            violin,
             value_label_query_bgl,
             value_labels,
             empty_bar_style_map,
@@ -912,6 +938,7 @@ impl DataPickPipelineBundle {
                     ("pick_category_bar", "pick_category_bar"),
                     ("pick_box_plot", "pick_box_plot"),
                     ("pick_range_bar", "pick_range_bar"),
+                    ("pick_violin", "pick_violin"),
                     ("pick_value_labels", "pick_value_labels"),
                 ],
                 observer,
@@ -1088,6 +1115,7 @@ impl DataPickPipelineBundle {
             CategoryBars(crate::data_render::CategoryBarData),
             BoxPlot(crate::data_render::CategoryBarData),
             RangeBars(crate::data_render::CategoryBarData),
+            Violin(crate::data_render::CategoryBarData),
             ValueLabels(crate::data_render::CategoryBarData),
         }
         struct PreparedSeries {
@@ -1113,6 +1141,7 @@ impl DataPickPipelineBundle {
             // A value label pick binds the series' label uniform beside the
             // query in group 1.
             let mut label_params = None;
+            let violin = matches!(item.geometry, GpuDataPickGeometry::Violin { .. });
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1216,6 +1245,16 @@ impl DataPickPipelineBundle {
                         PreparedKind::RangeBars(data),
                     )
                 }
+                GpuDataPickGeometry::Violin { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::Violin(data),
+                    )
+                }
                 GpuDataPickGeometry::ValueLabels { data, labels } => {
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
@@ -1296,6 +1335,7 @@ impl DataPickPipelineBundle {
                 source_id: item.source_id,
                 series_id: item.series_id,
                 paint_order: item.paint_order,
+                violin,
             });
             prepared.push(PreparedSeries { query_bg, kind });
         }
@@ -1338,6 +1378,11 @@ impl DataPickPipelineBundle {
                     }
                     PreparedKind::RangeBars(data) => {
                         pass.set_pipeline(&self.range_bar);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::Violin(data) => {
+                        pass.set_pipeline(&self.violin);
                         pass.set_bind_group(2, &data.style_map, &[]);
                         pass.set_bind_group(3, &data.bind_group, &[]);
                     }
@@ -1529,6 +1574,15 @@ fn decode_candidate(
             series_id,
             bin_index: candidate.index0 as usize,
             distance_px,
+            half: match (identity.violin, candidate.index1) {
+                (true, crate::data_render::VIOLIN_SIDE_LOW) => {
+                    Some(crate::data_config::ViolinSide::Low)
+                }
+                (true, crate::data_render::VIOLIN_SIDE_HIGH) => {
+                    Some(crate::data_config::ViolinSide::High)
+                }
+                _ => None,
+            },
         },
         DATA_PICK_KIND_MATRIX_CELL => PickedData::MatrixCell {
             source_id,
