@@ -22,6 +22,9 @@ pub(crate) mod exact_variant {
     /// A box plot's raw points, placed in their category slot and jittered
     /// (`gpu_pick/marker.wgsl`, `category_jitter.wgsl`).
     pub(crate) const CATEGORY_JITTER: u32 = 256;
+    /// A ternary series: the third component read from the pool and the
+    /// samples placed by `ternary_ndc` (`gpu_pick/core.wgsl`).
+    pub(crate) const TERNARY: u32 = 512;
     /// Every path: the shader's default.
     #[cfg(test)]
     pub(crate) const ALL: u32 = STYLED_MARKER
@@ -31,7 +34,8 @@ pub(crate) mod exact_variant {
         | STYLED_LINE
         | POLAR
         | PATH_ARROWS
-        | CATEGORY_JITTER;
+        | CATEGORY_JITTER
+        | TERNARY;
     /// The override's name in `gpu_pick/core.wgsl`.
     pub(crate) const CONSTANT: &str = "PICK_VARIANT";
 }

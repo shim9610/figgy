@@ -6468,6 +6468,39 @@ fn streamed_series_reject_range_bars() {
     ));
 }
 
+/// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
+/// streamed one is rejected with an explicit reason.
+#[test]
+fn streamed_series_reject_ternary_series() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Ternary {
+            c_column: "c".into(),
+            scatter: Some(crate::data_config::DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_shape: crate::ScatterShape::CircleFilled,
+                point_size: 4.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            }),
+            line: None,
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("ternary") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 /// Streaming is not extended to a box plot's violin or raw points (CLAUDE.md
 /// rule 8): a streamed one is rejected with an explicit reason naming them.
 #[test]

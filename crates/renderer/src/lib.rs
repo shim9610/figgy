@@ -156,6 +156,13 @@ pub mod polar {
 pub use model::polar::{
     AngleMap, AngleUnit, GridShape, PolarGeometry, PolarInterpolation, PolarOptions,
 };
+/// Ternary coordinates for the Cartesian chart: `TernaryOptions` for
+/// `Config.ternary` and the `TernaryGeometry` triangle the chart draws into.
+pub mod ternary {
+    #![doc = include_str!("../TERNARY.md")]
+    pub use model::ternary::*;
+}
+pub use model::ternary::{TernaryGeometry, TernaryOptions};
 /// Radar charts: radar series on a polar chart with a categorical angle
 /// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
 pub mod radar {

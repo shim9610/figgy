@@ -108,6 +108,8 @@ pub(super) struct PickSeriesResource {
     pub(super) path_arrows: Option<crate::data_config::StreamlineArrows>,
     /// A box plot's raw points, placed in their category slot.
     pub(super) category_jitter: Option<crate::gpu_pick::GpuPickCategoryJitter>,
+    /// A ternary series' third component.
+    pub(super) ternary_c: Option<ColumnId>,
 }
 
 /// A series' error bars in the plan (`GpuPickErrorBar` without its rows,
@@ -140,6 +142,7 @@ impl PartialEq for PickSeriesResource {
             line_closed,
             path_arrows,
             category_jitter,
+            ternary_c,
         } = self;
         let Self {
             x_column: other_x_column,
@@ -154,6 +157,7 @@ impl PartialEq for PickSeriesResource {
             line_closed: other_line_closed,
             path_arrows: other_path_arrows,
             category_jitter: other_category_jitter,
+            ternary_c: other_ternary_c,
         } = other;
         let jitter_bits = |jitter: &Option<crate::gpu_pick::GpuPickCategoryJitter>| {
             jitter.map(|j| {
@@ -180,6 +184,7 @@ impl PartialEq for PickSeriesResource {
         line_closed == other_line_closed
             && arrow_bits(path_arrows) == arrow_bits(other_path_arrows)
             && jitter_bits(category_jitter) == jitter_bits(other_category_jitter)
+            && ternary_c == other_ternary_c
             && x_column == other_x_column
             && y_column == other_y_column
             && scatter == other_scatter
@@ -219,8 +224,10 @@ impl PickSeriesResource {
             line_closed: _,
             path_arrows: _,
             category_jitter: _,
+            ternary_c,
         } = self;
         x_column == id
+            || ternary_c.as_deref() == Some(id)
             || y_column == id
             || scatter.as_ref().is_some_and(|scatter| {
                 scatter.style_index_column.as_deref() == Some(id)
@@ -484,6 +491,7 @@ impl OwnedGpuPickSeriesDescriptor {
             line_closed,
             path_arrows,
             category_jitter,
+            ternary_c,
         } = resource;
         crate::gpu_pick::GpuPickSeriesDescriptor {
             source_id: source_id.clone(),
@@ -534,6 +542,7 @@ impl OwnedGpuPickSeriesDescriptor {
             line_closed: *line_closed,
             path_arrows: *path_arrows,
             category_jitter: *category_jitter,
+            ternary_c: ternary_c.clone(),
         }
     }
 }
@@ -601,6 +610,7 @@ fn box_points_pick_descriptor(
                 offset: style.offset,
                 seed: crate::sketch::fnv1a(&item.series_id),
             }),
+            ternary_c: None,
         },
     }
 }
@@ -896,6 +906,9 @@ impl PickChartPlan {
                             .and_then(|streamlines| streamlines.arrows.copied())
                     }),
                     category_jitter: None,
+                    // A ternary series' markers and line are placed by
+                    // their third component too.
+                    ternary_c: series.render_type.ternary_c_column().map(ColumnId::from),
                 },
             });
         }
@@ -1717,6 +1730,12 @@ impl Renderer {
                         &series.series_id,
                         &series.x_column,
                         &series.y_column,
+                        match &series.render_type {
+                            crate::data_config::DataRenderType::Ternary { c_column, .. } => {
+                                Some(c_column.as_str())
+                            }
+                            _ => None,
+                        },
                         series_transform,
                         super::prepare::streamline_arrow_pitch(
                             &series.render_type,

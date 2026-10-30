@@ -361,6 +361,10 @@ pub(crate) fn apply_auto_fit_all(
     y_extent: &FitExtent,
     padding_ratio: f64,
 ) {
+    // A ternary chart's axes span the whole triangle, not a data extent.
+    if config.ternary.is_some() {
+        return;
+    }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
         let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
         apply_axis_range(&mut config.bottom_x, min, max, log);
@@ -880,6 +884,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
+            .filter(|chart| chart.ternary.is_none())
             .and_then(|chart| fitted_axis_range(&chart.bottom_x, ext, padding_ratio))
         else {
             return;
@@ -893,6 +898,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
+            .filter(|chart| chart.ternary.is_none())
             .and_then(|chart| fitted_axis_range(&chart.left_y, ext, padding_ratio))
         else {
             return;
@@ -972,7 +978,11 @@ impl Chart {
     /// A successful fit calls [`Self::set_x_range`], so it also chooses ticks
     /// and label formatting for both X axes. For range-only edits, write the
     /// chosen bounds through [`Self::with_axis_range_change`] instead.
+    /// A ternary chart is left as it is: its axes span the triangle.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if self.config.ternary.is_some() {
+            return;
+        }
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
         };
@@ -982,6 +992,9 @@ impl Chart {
     /// Fit the Y axis to a prepared [`FitExtent`] — see
     /// [`Self::auto_fit_x_extent`].
     pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if self.config.ternary.is_some() {
+            return;
+        }
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
             return;
         };
@@ -1079,6 +1092,9 @@ impl Chart {
     /// the series whose extents to union with [`Config::series_fit_roles`];
     /// [`Self::auto_fit_layer_union`] does both from cached column
     /// statistics.
+    ///
+    /// A ternary chart's axes span the whole triangle, not a data extent
+    /// (`Config.ternary`): every fit leaves them as they are.
     pub fn auto_fit_layer_extent(
         &mut self,
         layer: LayerRef,
@@ -1124,6 +1140,7 @@ impl Chart {
     ///
     /// A line offset member (`Config::line_offsets`) contributes its extents
     /// as it is drawn, moved by its shift ([`Self::line_offset_fit_extents`]).
+    /// A ternary chart is left as it is ([`Self::auto_fit_layer_extent`]).
     pub fn auto_fit_layer_union(
         &mut self,
         pool: &ColumnPool,

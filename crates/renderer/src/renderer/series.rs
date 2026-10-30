@@ -80,6 +80,8 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // Streamlines are drawn by the line path: their polylines, NaN rows
         // breaking them, are this line.
         DataRenderType::Streamlines { line, .. } => Some(Cow::Borrowed(line)),
+        // A ternary line, placed by its three components.
+        DataRenderType::Ternary { line, .. } => line.as_ref().map(Cow::Borrowed),
         DataRenderType::Scatter { .. }
         | DataRenderType::ScatterErrorbarX { .. }
         | DataRenderType::ScatterErrorbarY { .. }
@@ -116,6 +118,8 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
             .radar()
             .and_then(|radar| radar.scatter_style())
             .map(Cow::Owned),
+        // Ternary markers, placed by their three components.
+        DataRenderType::Ternary { scatter, .. } => scatter.as_ref().map(Cow::Borrowed),
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
@@ -186,7 +190,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -223,7 +228,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -259,7 +265,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -292,7 +299,8 @@ pub(super) fn extract_vector(
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -351,6 +359,16 @@ pub(super) fn series_draw_info_from_pool(
         }
         DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
             let (count, truncated) = paired(&[x, y]);
+            SeriesDrawInfo {
+                drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        // One sample per row where all three components have a value.
+        DataRenderType::Ternary { c_column, .. } => {
+            let (count, truncated) = paired(&[x, y, len(c_column)]);
             SeriesDrawInfo {
                 drawn_count: count,
                 cols: None,
@@ -546,7 +564,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -579,7 +598,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -603,7 +623,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 
@@ -627,7 +648,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => None,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => None,
     }
 }
 

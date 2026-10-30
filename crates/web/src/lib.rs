@@ -330,6 +330,7 @@ fn err_refs(
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -458,6 +459,8 @@ fn series_extent_request_from(
         | renderer::DataRenderType::BoxPlot { .. }
         | renderer::DataRenderType::RangeBars { .. }
         | renderer::DataRenderType::Radar { .. }
+        // A ternary chart's axes are the triangle: the fit reads no column.
+        | renderer::DataRenderType::Ternary { .. }
         | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
     let vector_factor_bits = match &cfg.render_type {
@@ -875,6 +878,11 @@ fn prepare_demo_declarations(
                 DataRenderType::Heatmap { .. } => cycle.color(index),
                 DataRenderType::Vector { style, .. } => style.color,
                 DataRenderType::Streamlines { line, .. } => line.line_color,
+                DataRenderType::Ternary { scatter, line, .. } => scatter
+                    .as_ref()
+                    .map(|s| s.point_color)
+                    .or(line.as_ref().map(|l| l.line_color))
+                    .unwrap_or_else(|| cycle.color(index)),
             },
             None => cycle.color(next_color_seq),
         };

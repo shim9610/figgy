@@ -139,6 +139,56 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
     fs_entry: &str,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_scatter_mapped_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, style_map_bgl, value_map_bgl],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        false,
+    )
+}
+
+/// The mapped scatter pipeline of a ternary chart's entries
+/// (`vs_ternary_mapped`, `vs_pick_ring_ternary_mapped`): the mapped layout
+/// with the third component at slot 6.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_ternary_mapped_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    value_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    create_scatter_mapped_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl, style_map_bgl, value_map_bgl],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        true,
+    )
+}
+
+/// The mapped scatter pipeline, with the third component of a ternary
+/// chart's entries at slot 6 when `ternary`.
+fn create_scatter_mapped_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    [transform_bgl, style_bgl, style_map_bgl, value_map_bgl]: [&wgpu::BindGroupLayout; 4],
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    (vs_entry, fs_entry, label): (&str, &str, &str),
+    ternary: bool,
+) -> wgpu::RenderPipeline {
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -219,7 +269,17 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
                             shader_location: 5,
                         }],
                     }),
-                ],
+                    // slot 6: a ternary chart's third component.
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: column_stride,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 6,
+                        }],
+                    }),
+                ][..if ternary { 7 } else { 6 }],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -292,6 +352,58 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
     texture_bgl: Option<&wgpu::BindGroupLayout>,
     label: &str,
 ) -> wgpu::RenderPipeline {
+    create_scatter_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        texture_bgl,
+        false,
+    )
+}
+
+/// The precise scatter pipeline of a ternary chart's entries (`vs_ternary`,
+/// `vs_pick_ring_ternary`): the precise layout with the third component at
+/// slot 3.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_ternary_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    create_scatter_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        None,
+        true,
+    )
+}
+
+/// The precise scatter pipeline, with the third component of a ternary
+/// chart's entries at slot 3 when `ternary`.
+#[allow(clippy::too_many_arguments)]
+fn create_scatter_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    [transform_bgl, style_bgl]: [&wgpu::BindGroupLayout; 2],
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    (vs_entry, fs_entry, label): (&str, &str, &str),
+    texture_bgl: Option<&wgpu::BindGroupLayout>,
+    ternary: bool,
+) -> wgpu::RenderPipeline {
     let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
     if let Some(t) = texture_bgl {
         bgls.push(Some(t));
@@ -348,7 +460,17 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
                             shader_location: 2,
                         }],
                     }),
-                ],
+                    // slot 3: a ternary chart's third component.
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: column_stride,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &[wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 3,
+                        }],
+                    }),
+                ][..if ternary { 4 } else { 3 }],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -398,6 +520,10 @@ pub struct ColumnScatterLayer<'a> {
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the constellation planet atlas/ring bind group. `None` otherwise.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
+    /// A ternary series' third component: `pipeline` is a ternary pipeline,
+    /// the column bound at slot 3 (precise) or 6 (mapped). `None` for every
+    /// other series.
+    pub ternary_c: Option<ColumnHandle>,
 }
 
 pub struct ColumnPickRingLayer<'a> {
@@ -415,4 +541,6 @@ pub struct ColumnPickRingLayer<'a> {
     pub color_value: Option<ColumnHandle>,
     pub size_value: Option<ColumnHandle>,
     pub instance: u32,
+    /// See [`ColumnScatterLayer::ternary_c`].
+    pub ternary_c: Option<ColumnHandle>,
 }

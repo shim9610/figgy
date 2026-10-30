@@ -428,6 +428,18 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
                 line_fill_band(line),
             )
         }
+        // A ternary series reads as what it draws: markers, a line, or both.
+        DataRenderType::Ternary { scatter, line, .. } => match (scatter, line) {
+            (Some(scatter), Some(line)) => line_scatter_symbol_with_style(
+                &scatter.point_shape,
+                line.line_color,
+                line.line_style,
+                None,
+            ),
+            (Some(scatter), None) => scatter_symbol(&scatter.point_shape, scatter.point_color),
+            (None, Some(line)) => line_symbol(line.line_color, line.line_style, None),
+            (None, None) => blank_symbol(),
+        },
     }
 }
 

@@ -154,6 +154,21 @@ bin_index }` for the bar, `bin_index` its row; the picked bar's highlight
 rings its body, and `step_selection` moves along the rows and across the
 range series of the layer.
 
+Ternary charts (`Config.ternary`, `DataRenderType::Ternary`,
+[ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md))
+keep every interaction in the triangle's frames. Markers, strokes and
+dashes are picked where they paint as `PickedData::Point { point_index }`;
+the picked ring is drawn on the marker, `step_selection` walks the points
+(bounded by the shortest of the three columns), and `selection_details()`
+reports `x`, `y` and `c`. An edge drags along its outward normal
+(`line_offset`), its tick labels drag along the edge (`label_offset_x`) and
+along the normal (`label_offset_y`), and the titles drag in screen space.
+The slanted edges and their labels hit and outline on their drawn parts;
+the top axis registers nothing. The plot area moves and resizes, and the
+triangle refits. The annotation layer places ratio anchors only, ternary
+subplots carry their own triangle, and overlays and streamed sources are
+rejected.
+
 ### Value labels
 
 The value label of a category bar, box plot or radar series is the

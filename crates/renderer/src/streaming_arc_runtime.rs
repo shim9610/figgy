@@ -406,7 +406,8 @@ impl Renderer {
                         y_base: 0,
                         start: 0,
                         mode: 0,
-                        _pad: [0; 3],
+                        c_base: 0,
+                        _pad: [0; 2],
                     }),
                 )
             });
@@ -419,7 +420,8 @@ impl Renderer {
                         y_base: 0,
                         start: 0,
                         mode: 0,
-                        _pad: [0; 3],
+                        c_base: 0,
+                        _pad: [0; 2],
                     }),
                 )
             });

@@ -160,6 +160,21 @@ impl FiggyChart {
             self.request_host_redraw();
             return Ok(());
         }
+        // A ternary chart's axes span the whole triangle, not a data extent.
+        let ternary = {
+            let config = self.chart_config();
+            match self.renderer.active_layer(self.chart_id).map_err(js_err)? {
+                renderer::LayerRef::Subplot(index)
+                | renderer::LayerRef::SubplotOverlay(index, _) => config
+                    .subplots
+                    .get(index)
+                    .is_some_and(|subplot| subplot.config.ternary.is_some()),
+                _ => config.ternary.is_some(),
+            }
+        };
+        if ternary {
+            return Ok(());
+        }
         let series = self.chart_series().to_vec();
         if series
             .iter()
@@ -312,6 +327,14 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
+                DataRenderType::Ternary {
+                    scatter: Some(scatter),
+                    ..
+                } => {
+                    if let Some(map) = &scatter.point_color_map {
+                        union(&map.column)?;
+                    }
+                }
                 // A vector's colour map: a column or a grid's columns.
                 DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {
                     Some(VectorColumns::Points { color, .. }) => {
@@ -338,7 +361,8 @@ impl FiggyChart {
                 | DataRenderType::CategoryBars { .. }
                 | DataRenderType::BoxPlot { .. }
                 | DataRenderType::RangeBars { .. }
-                | DataRenderType::Radar { .. } => {}
+                | DataRenderType::Radar { .. }
+                | DataRenderType::Ternary { scatter: None, .. } => {}
             }
         }
         let mut chart = Chart::new(self.chart_config().clone());

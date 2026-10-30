@@ -920,6 +920,15 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub polar: Option<crate::polar::PolarOptions>,
+    /// The ternary coordinate system. `None` (default, key absent in JSON)
+    /// is the rectangular chart; `Some` draws a triangle whose corners are
+    /// the 100 % of the three components read on `bottom_x`, `left_y` and
+    /// `right_y`. See [`crate::ternary`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ternary: Option<crate::ternary::TernaryOptions>,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
@@ -1014,6 +1023,8 @@ impl Config {
             colorbar,
             draw_style,
             polar,
+            // The ternary switch holds no pixel dimension.
+            ternary,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.
@@ -1072,7 +1083,11 @@ impl Config {
             (right_y, Side::Right),
         ] {
             scale_axis_in_place(axis, s);
-            scale_label_gap(axis, &side, polar, s);
+            // A ternary chart's labels keep a font-relative gap, which
+            // scales with the font: no fixed gap to make up for.
+            if ternary.is_none() {
+                scale_label_gap(axis, &side, polar, s);
+            }
         }
 
         let GridOptions {

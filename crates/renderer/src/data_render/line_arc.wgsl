@@ -46,7 +46,10 @@ struct ArcParams {
     // Step interpolation mode (LINE_STEP_*): seg_init sums the stepped
     // pieces' pixel lengths so the dash phase follows the drawn path.
     mode: u32,
-    _pad0: u32,
+    // A ternary line's third component's element offset in the pool (its
+    // pixel length is measured through `ternary_ndc` when the transform's
+    // ternary flag is set); unused otherwise.
+    c_base: u32,
     _pad1: u32,
     _pad2: u32,
 };
@@ -73,10 +76,19 @@ fn figgy_zero_workgroup(local_index: u32) {
     }
 }
 
+fn arc_ternary() -> bool {
+    return transform.ternary_r.z > 0.5;
+}
+
 fn point_valid(i: u32) -> bool {
     let xi = params.x_base + i * 2u;
     let yi = params.y_base + i * 2u;
-    return sample_valid(transform, vec2<f32>(pool[xi], pool[xi + 1u]), vec2<f32>(pool[yi], pool[yi + 1u]));
+    let xv = vec2<f32>(pool[xi], pool[xi + 1u]);
+    let yv = vec2<f32>(pool[yi], pool[yi + 1u]);
+    if (arc_ternary()) {
+        return ternary_sample_valid(xv, yv, point_pair(params.c_base, i));
+    }
+    return sample_valid(transform, xv, yv);
 }
 
 fn point_pair(base: u32, i: u32) -> vec2<f32> {
@@ -92,6 +104,12 @@ fn segment_px(i: u32, j: u32) -> f32 {
     let ya = point_pair(params.y_base, i);
     let xb = point_pair(params.x_base, j);
     let yb = point_pair(params.y_base, j);
+    if (arc_ternary()) {
+        // The chord the ternary entry draws (`vs_ternary`).
+        let a = ternary_ndc(transform, xa, ya, point_pair(params.c_base, i)) / transform.pixel_to_ndc;
+        let b = ternary_ndc(transform, xb, yb, point_pair(params.c_base, j)) / transform.pixel_to_ndc;
+        return length(b - a);
+    }
     var total = 0.0;
     let pieces = step_piece_count(params.mode);
     for (var k = 0u; k < pieces; k = k + 1u) {

@@ -176,6 +176,111 @@ pub(super) fn preferred_msaa_sample_count(
     }
 }
 
+/// The ternary pipelines (`TargetPipelines::ternary`).
+pub(super) const TERNARY_PIPELINES: usize = 5;
+
+/// One of a ternary chart's pipelines (`TargetPipelines::ternary`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TernaryPipeline {
+    Line = 0,
+    Scatter = 1,
+    ScatterMapped = 2,
+    Ring = 3,
+    RingMapped = 4,
+}
+
+impl TernaryPipeline {
+    pub(super) const ALL: [Self; TERNARY_PIPELINES] = [
+        Self::Line,
+        Self::Scatter,
+        Self::ScatterMapped,
+        Self::Ring,
+        Self::RingMapped,
+    ];
+
+    fn stage(self) -> &'static str {
+        match self {
+            Self::Line => "ternary line",
+            Self::Scatter => "ternary scatter",
+            Self::ScatterMapped => "mapped ternary scatter",
+            Self::Ring => "ternary picked point ring",
+            Self::RingMapped => "mapped ternary picked point ring",
+        }
+    }
+}
+
+/// The ternary pipeline `kind` over the layouts `[transform, style, style
+/// map, value map]` (the plain ones read the first two).
+fn create_ternary_pipeline(
+    kind: TernaryPipeline,
+    device: &wgpu::Device,
+    shaders: &data_render::ShaderModules,
+    [transform_bgl, style_bgl, style_map_bgl, value_map_bgl]: [&wgpu::BindGroupLayout; 4],
+    surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    match kind {
+        TernaryPipeline::Line => data_render::create_line_ternary_pipeline_with_sample_count(
+            device,
+            &shaders.line,
+            transform_bgl,
+            style_bgl,
+            surface_format,
+            sample_count,
+        ),
+        TernaryPipeline::Scatter | TernaryPipeline::Ring => {
+            let (vs, fs, label) = if kind == TernaryPipeline::Scatter {
+                ("vs_ternary", "fs_main", "figgy scatter ternary pipeline")
+            } else {
+                (
+                    "vs_pick_ring_ternary",
+                    "fs_pick_ring",
+                    "figgy picked point ternary ring pipeline",
+                )
+            };
+            data_render::create_scatter_ternary_pipeline(
+                device,
+                &shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                surface_format,
+                sample_count,
+                vs,
+                fs,
+                label,
+            )
+        }
+        TernaryPipeline::ScatterMapped | TernaryPipeline::RingMapped => {
+            let (vs, fs, label) = if kind == TernaryPipeline::ScatterMapped {
+                (
+                    "vs_ternary_mapped",
+                    "fs_mapped",
+                    "figgy scatter ternary mapped pipeline",
+                )
+            } else {
+                (
+                    "vs_pick_ring_ternary_mapped",
+                    "fs_pick_ring",
+                    "figgy picked point ternary mapped ring pipeline",
+                )
+            };
+            data_render::create_scatter_ternary_mapped_pipeline(
+                device,
+                &shaders.scatter,
+                transform_bgl,
+                style_bgl,
+                style_map_bgl,
+                value_map_bgl,
+                surface_format,
+                sample_count,
+                vs,
+                fs,
+                label,
+            )
+        }
+    }
+}
+
 /// Pipelines compiled against one render-target format. Axis is created with
 /// the target; ordinary renderer use creates the other variants lazily, while
 /// explicit full prewarm materializes every optional field before interaction.
@@ -195,6 +300,12 @@ pub(super) struct TargetPipelines {
     pub(super) scatter_mapped: Option<wgpu::RenderPipeline>,
     pub(super) pick_ring: Option<wgpu::RenderPipeline>,
     pub(super) pick_ring_mapped: Option<wgpu::RenderPipeline>,
+    /// A ternary chart's entries (`Config.ternary`), indexed by
+    /// [`TernaryPipeline`]: the stroke (`vs_ternary`), the markers
+    /// (`vs_ternary`, `vs_ternary_mapped`) and the picked ring
+    /// (`vs_pick_ring_ternary`, `vs_pick_ring_ternary_mapped`), each the
+    /// plain pipeline with the third component's vertex slot.
+    pub(super) ternary: [Option<wgpu::RenderPipeline>; TERNARY_PIPELINES],
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
@@ -343,6 +454,7 @@ impl TargetPipelines {
         let mut need_errorbar_mapped = false;
         let mut need_pick_ring = false;
         let mut need_pick_ring_mapped = false;
+        let mut need_ternary = [false; TERNARY_PIPELINES];
         for item in items {
             let typed_picks = item
                 .chart_config
@@ -464,6 +576,20 @@ impl TargetPipelines {
                     if item.chart_config.picked_points.is_some() || typed_point {
                         need_pick_ring_mapped = true;
                     }
+                }
+                // A ternary series draws through the ternary entries.
+                if series.config.render_type.ternary_c_column().is_some() {
+                    let mapped = series.style.scatter_map.is_some();
+                    let ring = item.chart_config.picked_points.is_some() || typed_point;
+                    need_ternary[TernaryPipeline::Line as usize] |= primitives.line;
+                    need_ternary[TernaryPipeline::Scatter as usize] |=
+                        primitives.scatter && !mapped;
+                    need_ternary[TernaryPipeline::ScatterMapped as usize] |=
+                        primitives.scatter && mapped;
+                    need_ternary[TernaryPipeline::Ring as usize] |=
+                        primitives.scatter && !mapped && ring;
+                    need_ternary[TernaryPipeline::RingMapped as usize] |=
+                        primitives.scatter && mapped && ring;
                 }
                 if has_errorbar(&series.config.render_type) && series.style.errorbar_map.is_some() {
                     need_errorbar_mapped = true;
@@ -857,6 +983,23 @@ impl TargetPipelines {
                 ),
             );
         }
+        for kind in TernaryPipeline::ALL {
+            if need_ternary[kind as usize] && self.ternary[kind as usize].is_none() {
+                self.ternary[kind as usize] = Some(create_ternary_pipeline(
+                    kind,
+                    device,
+                    &self.shaders,
+                    [
+                        transform_bgl,
+                        style_bgl,
+                        per_point_style_map_bgl,
+                        point_value_map_bgl,
+                    ],
+                    surface_format,
+                    self.sample_count,
+                ));
+            }
+        }
         if need_errorbar_mapped && self.errorbar_mapped.is_none() {
             self.errorbar_mapped = Some(
                 data_render::create_errorbar_columnar_mapped_pipeline_from_shader(
@@ -1017,6 +1160,30 @@ impl TargetPipelines {
                 "figgy picked point mapped ring pipeline",
             )
         );
+        for kind in TernaryPipeline::ALL {
+            if self.ternary[kind as usize].is_none()
+                && feature.is_none_or(|f| f.includes_field("ternary"))
+            {
+                self.ternary[kind as usize] = Some(
+                    observe_value_async(observer, "renderer.prewarm", kind.stage(), || {
+                        create_ternary_pipeline(
+                            kind,
+                            device,
+                            &self.shaders,
+                            [
+                                transform_bgl,
+                                style_bgl,
+                                per_point_style_map_bgl,
+                                point_value_map_bgl,
+                            ],
+                            surface_format,
+                            self.sample_count,
+                        )
+                    })
+                    .await,
+                );
+            }
+        }
         ensure!(
             errorbar_mapped,
             "mapped errorbar",
@@ -1488,6 +1655,7 @@ pub(super) fn create_target_pipelines_observed(
         scatter_mapped: None,
         pick_ring: None,
         pick_ring_mapped: None,
+        ternary: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -1576,6 +1744,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         scatter_mapped: None,
         pick_ring: None,
         pick_ring_mapped: None,
+        ternary: Default::default(),
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -2487,6 +2656,7 @@ impl Renderer {
         let had_scatter_mapped = self.pipelines.scatter_mapped.is_some();
         let had_pick_ring = self.pipelines.pick_ring.is_some();
         let had_pick_ring_mapped = self.pipelines.pick_ring_mapped.is_some();
+        let had_ternary = self.pipelines.ternary.each_ref().map(Option::is_some);
         let had_errorbar_mapped = self.pipelines.errorbar_mapped.is_some();
         let had_bar = self.pipelines.bar.is_some();
         let had_bar_mapped = self.pipelines.bar_mapped.is_some();
@@ -2610,6 +2780,23 @@ impl Renderer {
                     "fs_pick_ring",
                     "figgy picked point ring pipeline",
                 ));
+        }
+        for kind in TernaryPipeline::ALL {
+            if had_ternary[kind as usize] {
+                self.pipelines.ternary[kind as usize] = Some(create_ternary_pipeline(
+                    kind,
+                    &self.device,
+                    &self.pipelines.shaders,
+                    [
+                        &self.transform_bgl,
+                        &self.style_bgl,
+                        &self.per_point_style_map_bgl,
+                        &self.point_value_map_bgl,
+                    ],
+                    surface_format,
+                    target_sample_count,
+                ));
+            }
         }
         if had_pick_ring_mapped {
             self.pipelines.pick_ring_mapped = Some(

@@ -134,7 +134,8 @@ pub trait Selectable<C: DragConfig = Config> {
 
     /// Whether the selection outlines each drawn part instead of one box
     /// around them, and the element hits on its parts instead of inside the
-    /// box: polar tick labels and the polar ray, annotations.
+    /// box: polar tick labels and the polar ray, a ternary chart's slanted
+    /// edges and their labels, annotations.
     fn outlines_parts(&self, _cfg: &C) -> bool {
         false
     }
@@ -646,6 +647,7 @@ impl SubplotElement {
                 colorbar,
                 draw_style,
                 polar,
+                ternary,
                 overlays,
                 subplots,
                 // `subplot_config` resets these two; the stored ones stay.
@@ -668,6 +670,7 @@ impl SubplotElement {
                 colorbar,
                 draw_style,
                 polar,
+                ternary,
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,
@@ -985,7 +988,8 @@ pub fn emit_chart_title_in(
 }
 
 /// The axis title on `side`. A polar chart draws no top or right axis, so
-/// their titles are not placed either.
+/// their titles are not placed either; a ternary chart places the titles of
+/// its three edges along them and draws no top title.
 fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     if cfg.polar.is_some() && matches!(side, Side::Top | Side::Right) {
         return;
@@ -999,14 +1003,21 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
         return;
     };
     let m = measure.measure_rich(&to.text);
-    let placement = axis_title_placement(
-        side.clone(),
-        &cfg.chart_area,
-        &da,
-        cfg.title_band(side),
-        (to.offset_x, to.offset_y),
-        m,
-    );
+    let ternary = crate::ternary::side_component(side)
+        .and_then(|k| cfg.ternary_title_placement(k, (to.offset_x, to.offset_y), m));
+    if cfg.ternary.is_some() && ternary.is_none() {
+        return;
+    }
+    let placement = ternary.unwrap_or_else(|| {
+        axis_title_placement(
+            side.clone(),
+            &cfg.chart_area,
+            &da,
+            cfg.title_band(side),
+            (to.offset_x, to.offset_y),
+            m,
+        )
+    });
     sink.text(
         Slot::Above,
         &PlacedText {
@@ -1128,7 +1139,7 @@ impl Selectable for AxisElement {
     }
 
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some()
+        cfg.polar.is_some() || cfg.ternary.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1151,7 +1162,7 @@ impl Selectable for AxisLabelElement {
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
     /// each label is outlined and hit where it is drawn.
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some()
+        cfg.polar.is_some() || cfg.ternary.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {

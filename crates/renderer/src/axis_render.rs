@@ -251,6 +251,11 @@ pub(crate) fn emit_chart_chrome(config: &Config, fp: FontPolicy, sink: &mut dyn 
         // The angle axis is the outer ring, the radius axis the labelled
         // ray; the top and right axes are not drawn.
         polar::emit_polar_axes(config, &da, fp, sink);
+    } else if config.ternary.is_some() {
+        // The triangle's edges are the three components' axes; the top
+        // axis is not drawn.
+        ternary::emit_ternary_grid(config, &da, fp, sink);
+        ternary::emit_ternary_axes(config, &da, fp, sink);
     } else {
         emit_grid(config, &plot, fp, sink);
         for (axis, side) in [
@@ -312,6 +317,16 @@ pub(crate) fn emit_part_of(
                 polar::emit_polar_radius_strokes(config, &da, fp, sink);
             }
         }
+        Element::AxisLabel(side) if config.ternary.is_some() => {
+            if let Some(k) = ternary::side_component(side) {
+                ternary::emit_ternary_labels(config, &da, k, fp, sink);
+            }
+        }
+        Element::Axis(side) if config.ternary.is_some() => {
+            if let Some(k) = ternary::side_component(side) {
+                ternary::emit_ternary_axis_strokes(config, &da, k, fp, sink);
+            }
+        }
         Element::AxisLabel(side) => {
             emit_axis_tick_labels(axis_of(side), side.clone(), &data_area_rect(&da), fp, sink);
         }
@@ -342,6 +357,8 @@ pub(crate) fn emit_part_of(
 
 #[path = "polar_axes.rs"]
 mod polar;
+#[path = "ternary_axes.rs"]
+mod ternary;
 
 #[cfg(test)]
 mod tests;

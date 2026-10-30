@@ -394,6 +394,31 @@ pub enum DataRenderType {
         #[cfg_attr(feature = "serde", serde(default))]
         labels: RadarSeriesLabels,
     },
+    /// A ternary series on a ternary chart (`Config.ternary`): markers and/or
+    /// a line through samples of three components, `x_column`, `y_column`
+    /// and `c_column`, each an ordinary column, unnormalized. A sample is
+    /// placed at `(x·L + y·T + c·R) / (x + y + c)`, the triangle's corners
+    /// weighted by its components (see [`crate::ternary`]); the renderer
+    /// normalizes only to place it and reports the original components. A
+    /// sample with a negative or non-finite component, or a sum ≤ 0, is not
+    /// drawn and breaks the line. The markers and the line take every
+    /// option of a scatter and a line series (style tables, colour and size
+    /// maps, dashes) except step modes and fills. Streamed sources are
+    /// rejected.
+    Ternary {
+        /// The third component's column, read on `right_y`.
+        c_column: ColumnId,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        scatter: Option<DataScatterStyleConfig>,
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        line: Option<DataLineStyleConfig>,
+    },
     /// Streamlines of a flow, electric or magnetic field: polylines the
     /// host integrated from its field, drawn by the line path, with
     /// arrowheads along each drawn line and an optional colour column.
@@ -2064,7 +2089,9 @@ impl DataRenderType {
             | DataRenderType::RangeBars { .. }
             | DataRenderType::Radar { .. }
             // A field's streamlines share its axes; they are not a member.
-            | DataRenderType::Streamlines { .. } => false,
+            | DataRenderType::Streamlines { .. }
+            // A ternary chart has no line offsets.
+            | DataRenderType::Ternary { .. } => false,
         }
     }
 
@@ -2979,6 +3006,15 @@ impl<'a> BoxPlotRef<'a> {
 }
 
 impl DataRenderType {
+    /// The third component's column of a ternary series, or `None` for every
+    /// other kind.
+    pub fn ternary_c_column(&self) -> Option<&str> {
+        match self {
+            DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
     /// The fields of a box plot series, or `None` for every other kind.
     pub fn box_plot(&self) -> Option<BoxPlotRef<'_>> {
         match self {
@@ -4050,6 +4086,8 @@ impl DataRenderType {
             | DataRenderType::LineScatterErrorbarY { .. }
             | DataRenderType::LineScatterErrorbarXY { .. }
             | DataRenderType::Radar { .. }
+            // Its samples, as a scatter or a line series'.
+            | DataRenderType::Ternary { .. }
             // Its vertices, NaN separators included, as a line's (D4).
             | DataRenderType::Streamlines { .. } => true,
             DataRenderType::Vector { components, .. } => {
@@ -4164,6 +4202,10 @@ impl crate::config::Config {
                 } = &next.render_type
                 {
                     count = count.min(len(u)).min(len(v));
+                }
+                // A ternary sample needs its third component too.
+                if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
+                    count = count.min(len(c_column));
                 }
                 Some(PickedDataRef::Point {
                     series_id: next.series_id.clone(),

@@ -62,10 +62,11 @@ pub enum SceneKind {
     Gantt,
     Violins,
     Raincloud,
+    Ternary,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 25] = [
+    pub const ALL: [SceneKind; 26] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -91,6 +92,7 @@ impl SceneKind {
         SceneKind::Gantt,
         SceneKind::Violins,
         SceneKind::Raincloud,
+        SceneKind::Ternary,
     ];
 
     pub fn label(self) -> &'static str {
@@ -120,6 +122,7 @@ impl SceneKind {
             SceneKind::Gantt => "Gantt (range bars)",
             SceneKind::Violins => "Split violins (box plot)",
             SceneKind::Raincloud => "Raincloud (box plot)",
+            SceneKind::Ternary => "Ternary (three components)",
         }
     }
 
@@ -214,6 +217,11 @@ impl SceneKind {
                 "Two conditions per dose as split violins over the host's density \
                  curves, without boxes, a box override restyling one category. \
                  Pick a violin, step with the arrows."
+            }
+            SceneKind::Ternary => {
+                "Alloy compositions as three unnormalized columns placed in a \
+                 triangle, coloured by hardness through the colourbar, with a \
+                 dashed tie-line. Pick a sample; step with the arrows."
             }
             SceneKind::Raincloud => {
                 "Four groups as rainclouds: a half violin on the right, a narrow \
@@ -411,6 +419,7 @@ pub fn build(
         SceneKind::Gantt => gantt(r),
         SceneKind::Violins => violins(r),
         SceneKind::Raincloud => raincloud(r),
+        SceneKind::Ternary => ternary(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -2474,6 +2483,105 @@ fn raincloud(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
     Ok(CartesianScene {
         config: chart.config().clone(),
+        series,
+    })
+}
+
+/// The ternary scene: three clusters of alloy compositions (iron, nickel,
+/// chromium) as unnormalized percentages summing to about 100, coloured by
+/// a hardness column through the colourbar, and a dashed tie-line between
+/// two of them.
+fn ternary(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::ternary::TernaryOptions;
+    let centres = [[70.0, 10.0, 20.0], [20.0, 65.0, 15.0], [30.0, 25.0, 45.0]];
+    let n = 60;
+    let mut columns = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
+    for (k, centre) in centres.iter().enumerate() {
+        for i in 0..n {
+            let seed = 101 + k as u64;
+            let parts: [f64; 3] =
+                std::array::from_fn(|j| (centre[j] + noise(seed, 3 * i + j) * 8.0).max(0.5));
+            // Unnormalized on purpose: the renderer places by the sum.
+            let scale = 1.0 + noise(seed + 7, i) * 0.04;
+            for j in 0..3 {
+                columns[j].push(parts[j] * scale);
+            }
+            columns[3].push(150.0 + 120.0 * parts[2] / 60.0 + noise(seed + 9, i) * 15.0);
+        }
+    }
+    let [fe, ni, cr, hardness] = columns;
+    upload(r, "tn_fe", fe)?;
+    upload(r, "tn_ni", ni)?;
+    upload(r, "tn_cr", cr)?;
+    upload(r, "tn_hv", hardness)?;
+    upload(r, "tn_tie_fe", vec![70.0, 30.0])?;
+    upload(r, "tn_tie_ni", vec![10.0, 25.0])?;
+    upload(r, "tn_tie_cr", vec![20.0, 45.0])?;
+    let mut markers = scatter_style(
+        Color::from_rgb8(31, 119, 180),
+        ScatterShape::CircleFilled,
+        4.5,
+    );
+    markers.point_color_map = Some(PointColorMap {
+        column: "tn_hv".into(),
+    });
+    let mut tie = line_style(Color::from_rgb8(60, 60, 60), 1.6);
+    tie.line_style = LineStylePreset::Dash;
+    let series = vec![
+        series(
+            "alloys",
+            "tn_fe",
+            "tn_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_cr".into(),
+                scatter: Some(markers),
+                line: None,
+            },
+        ),
+        series(
+            "tie-line",
+            "tn_tie_fe",
+            "tn_tie_ni",
+            DataRenderType::Ternary {
+                c_column: "tn_tie_cr".into(),
+                scatter: Some(scatter_style(
+                    Color::from_rgb8(60, 60, 60),
+                    ScatterShape::Diamond,
+                    5.0,
+                )),
+                line: Some(tie),
+            },
+        ),
+    ];
+    let mut config = base_config("Alloy compositions", "Fe %", "Ni %");
+    // The c axis reads like the other two: the left axis' style with its
+    // own title.
+    let mut right = config.left_y.clone();
+    right.title_option.text = RichText::plain(
+        "Cr %",
+        right.title_option.text.color,
+        right.title_option.text.font_size,
+        right.title_option.text.font.clone(),
+    );
+    config.right_y = right;
+    config.ternary = Some(TernaryOptions {});
+    for axis in [
+        &mut config.bottom_x,
+        &mut config.left_y,
+        &mut config.right_y,
+    ] {
+        axis.min = 0.0;
+        axis.max = 100.0;
+        axis.major_spacing = 20.0;
+        axis.minor_count = 1;
+    }
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_colorbar_union(r.pool(), &["tn_hv"], 0.0)?;
+    Ok(CartesianScene {
+        config: with_legend(chart.config().clone(), &series),
         series,
     })
 }

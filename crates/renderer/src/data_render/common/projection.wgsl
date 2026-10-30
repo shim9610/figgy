@@ -42,6 +42,20 @@ fn data_to_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(tx, ty) * 2.0 - 1.0;
 }
 
+// Ternary (Config.ternary): a sample of three components placed at the
+// triangle's corners weighted by them, `(x·L + y·T + c·R) / (x + y + c)`,
+// the corners in NDC (`Transform.ternary_lt`, `ternary_r`). Normalizing only
+// to place the sample is appearance (CLAUDE.md rule 1); nothing is stored.
+// A projective map keeps lines straight, so a segment is its chord. Valid
+// samples only (`ternary_sample_valid`). CPU twin: none; the pick splices
+// this function.
+fn ternary_ndc(t: Transform, xv: vec2<f32>, yv: vec2<f32>, cv: vec2<f32>) -> vec2<f32> {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    let c = cv.x + cv.y;
+    return (t.ternary_lt.xy * x + t.ternary_lt.zw * y + t.ternary_r.xy * c) / (x + y + c);
+}
+
 /// A data point in the draw's pixel frame: render pixels from the target's
 /// centre, y up, as every vertex stage computes it. The exact picker
 /// measures every primitive in this frame (SHADER_COMMON.md, the draw's

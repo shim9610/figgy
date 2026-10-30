@@ -49,7 +49,8 @@ const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
 const PICK_VARIANT_PATH_ARROWS: u32 = 128u; // streamline arrowheads (§5.8)
 const PICK_VARIANT_CATEGORY_JITTER: u32 = 256u; // a box plot's raw points (§5.20)
-override PICK_VARIANT: u32 = 511u;
+const PICK_VARIANT_TERNARY: u32 = 512u;         // a ternary series (`ternary_ndc`)
+override PICK_VARIANT: u32 = 1023u;
 
 fn pick_variant(bits: u32) -> bool {
     return (PICK_VARIANT & bits) != 0u;
@@ -70,6 +71,8 @@ struct Transform {
     style_params: array<vec4<f32>, 3>,
     polar_angle: vec4<f32>,
     polar_extent: vec4<f32>,
+    ternary_lt: vec4<f32>,
+    ternary_r: vec4<f32>,
 };
 
 struct PickQueryParams {
@@ -97,7 +100,9 @@ struct PickQueryParams {
     //  first; reserved). The step mode mirrors the line shader's
     //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
     line: vec4<u32>,
-    // `point_size_map`: (size f32-lane base, size logical length, 0, 0).
+    // `point_size_map`: (size f32-lane base, size logical length, ...); a
+    // ternary series (`PICK_VARIANT_TERNARY`): (..., the third component's
+    // f32-lane base, its logical length).
     size_map: vec4<u32>,
     // (domain_min hi, domain_min lo, domain_max hi, domain_max lo).
     size_domain: vec4<f32>,
@@ -252,6 +257,31 @@ fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
         return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
     }
     return pick_query_params.cursor_chart.w + (1.0 - t) * pick_query_params.chart_limits.y;
+}
+
+// A ternary series (`PICK_VARIANT_TERNARY` on a ternary chart): each sample
+// has a third component, read from the pool at `size_map.z`, and is placed
+// by `ternary_ndc`, the function its draw entries place it with.
+fn pick_ternary() -> bool {
+    return pick_variant(PICK_VARIANT_TERNARY) && pick_query_params.transform.ternary_r.z > 0.5;
+}
+
+// The third component of sample `i`, NaN past its column.
+fn pick_ternary_c(i: u32) -> vec2<f32> {
+    if i >= pick_query_params.size_map.w {
+        return vec2<f32>(bitcast<f32>(0x7fc00000u));
+    }
+    return pick_read_pair(pick_query_params.size_map.z, i);
+}
+
+fn pick_ternary_valid(i: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
+    return ternary_sample_valid(x, y, pick_ternary_c(i));
+}
+
+// Sample `i` in the draw's pixel frame (y up), as `vs_ternary` places it.
+fn pick_ternary_px(i: u32, x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    let t = pick_query_params.transform;
+    return ternary_ndc(t, x, y, pick_ternary_c(i)) / t.pixel_to_ndc;
 }
 
 fn pick_polar() -> bool {

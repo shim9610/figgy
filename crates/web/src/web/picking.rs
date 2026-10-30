@@ -14,6 +14,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::LineScatterErrorbarX { scatter, .. }
         | DataRenderType::LineScatterErrorbarY { scatter, .. }
         | DataRenderType::LineScatterErrorbarXY { scatter, .. } => Some(scatter),
+        // A ternary series' markers, when it draws them.
+        DataRenderType::Ternary { scatter, .. } => scatter.as_ref(),
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::CategoryBars { .. }
@@ -253,7 +255,15 @@ impl FiggyChart {
                     }
                     _ => None,
                 };
+                // A ternary point reports its third component, read last.
+                let ternary_c = series.render_type.ternary_c_column().is_some();
+                if let Some(c) = series.render_type.ternary_c_column() {
+                    samples.push((c.to_owned(), *point_index));
+                }
                 let values = self.read_selection_samples(&samples).await?;
+                if ternary_c {
+                    result["c"] = serde_json::json!(values[values.len() - 1]);
+                }
                 result["index"] = serde_json::json!(point_index);
                 result["x"] = serde_json::json!(values[0]);
                 result["y"] = serde_json::json!(values[1]);

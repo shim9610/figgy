@@ -612,6 +612,8 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         };
         let pairs: Vec<[f32; 2]> = fixture.values.iter().map(|value| [*value, 0.0]).collect();
         let full_pool = buffer_init(

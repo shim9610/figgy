@@ -1501,6 +1501,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::CategoryBars { .. } => "category bars",
         DataRenderType::BoxPlot { .. } => "box plot",
         DataRenderType::RangeBars { .. } => "range bars",
+        DataRenderType::Ternary { .. } => "ternary",
         DataRenderType::Radar { .. } => "radar",
         DataRenderType::Heatmap { .. } => "heatmap",
         DataRenderType::Contour { .. } => "contour",
@@ -1782,6 +1783,15 @@ fn series_controls(
 ) {
     match &mut s.render_type {
         DataRenderType::Line { line } => line_controls(ui, line),
+        // The markers and the line of a ternary series, whichever it draws.
+        DataRenderType::Ternary { scatter, line, .. } => {
+            if let Some(scatter) = scatter {
+                scatter_controls(ui, scatter, columns, r);
+            }
+            if let Some(line) = line {
+                line_controls(ui, line);
+            }
+        }
         DataRenderType::Scatter { scatter } => scatter_controls(ui, scatter, columns, r),
         DataRenderType::ScatterLine { scatter, line } => {
             scatter_controls(ui, scatter, columns, r);

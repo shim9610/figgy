@@ -247,7 +247,11 @@ pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, si
 }
 
 /// One tick label's text and extents, in the axis' label format.
-fn tick_text(axis: &AxisOptions, value: f64, fp: FontPolicy) -> (NumericTickText, TextMetrics) {
+pub(super) fn tick_text(
+    axis: &AxisOptions,
+    value: f64,
+    fp: FontPolicy,
+) -> (NumericTickText, TextMetrics) {
     let ls = &axis.label_style;
     if matches!(ls.format, LabelFormat::Power) {
         let text = format_tick_power(value, ls.significant_digits, ls);
@@ -285,7 +289,7 @@ fn centered_rect(center: (f32, f32), m: TextMetrics) -> RectF {
 /// Place `text` centred on `center`: the label offset fields are read in
 /// polar frames (`PolarOptions::angle_label_offset`,
 /// `PolarOptions::radius_label_offset`) by the walks, not as screen x / y.
-fn place_centered(
+pub(super) fn place_centered(
     sink: &mut dyn Sink,
     text: TickText<'_>,
     center: (f32, f32),
@@ -311,7 +315,7 @@ fn place_centered(
 
 /// The outward tick extent of an axis: how far its ticks reach past the
 /// line, which is where its labels start.
-fn outward_tick(axis: &AxisOptions) -> f32 {
+pub(super) fn outward_tick(axis: &AxisOptions) -> f32 {
     match axis.tick {
         TickVisibility::None | TickVisibility::Inside => 0.0,
         TickVisibility::Outside | TickVisibility::Both => axis.major_tick_length.max(0.0),

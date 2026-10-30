@@ -2,7 +2,7 @@
 
 A native Rust chart renderer for scientific plots, styled dashboards and small
 data charts. Draw lines, scatter plots, error bars, histograms, heatmaps, contours,
-vector fields and polar plots, plus pies, donuts, categorical bars, boxplots and
+vector fields, polar and ternary plots, plus pies, donuts, categorical bars, boxplots and
 radar charts; edit their models and export PNGs.
 Embed charts in an existing wgpu application or render without a window.
 The default library has no GUI framework dependency.
@@ -55,6 +55,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Grouped/notched boxes and outliers | `Renderer` | `BoxPlot` series over a categorical axis, reading a record of supplied statistics and a ragged outlier column, or a legacy `BoxPlotChart` read by `Config::from_boxplot`; [boxplot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md) |
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
+| Ternary plots: markers and lines of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
 
 The renderer re-exports model types: most applications do not need a separate
 `figgy-model` dependency. Pies and donuts are the

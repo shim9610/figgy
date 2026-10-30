@@ -168,9 +168,39 @@ fn line_vertex(in: VsIn, arc: VsArc, vid: u32) -> VsOut {
     let mode = line_step_mode();
     let slot = strip_slot(vid, 4u);
     let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, mode, slot.piece);
+    let a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
+    let b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
+    return line_stroke_vertex(in, arc, mode, slot, piece, a_ndc, b_ndc);
+}
+
+// A ternary chart's line (`Config.ternary`): the third component of each
+// end at slots 6 and 7, the ends placed at `ternary_ndc`. A ternary line is
+// linear (step modes are rejected), so a segment is the single chord a → b.
+struct VsTernaryC {
+    @location(6) c_a: vec2<f32>,
+    @location(7) c_b: vec2<f32>,
+};
+
+@vertex
+fn vs_ternary(in: VsIn, arc: VsArc, c: VsTernaryC, @builtin(vertex_index) vid: u32) -> VsOut {
+    if (!ternary_sample_valid(in.x_a, in.y_a, c.c_a) || !ternary_sample_valid(in.x_b, in.y_b, c.c_b)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
+    let slot = strip_slot(vid, 4u);
+    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    let a_ndc = ternary_ndc(transform, in.x_a, in.y_a, c.c_a);
+    let b_ndc = ternary_ndc(transform, in.x_b, in.y_b, c.c_b);
+    return line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
+}
+
+// The stroke quad of piece `piece` of the segment, its ends projected by
+// the entry to `a_ndc_in` and `b_ndc_in`.
+fn line_stroke_vertex(in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: StepPiece, a_ndc_in: vec2<f32>, b_ndc_in: vec2<f32>) -> VsOut {
     let last_piece = slot.piece + 1u == step_piece_count(mode);
-    var a_ndc = data_to_ndc(transform, piece.x0, piece.y0);
-    var b_ndc = step_piece_end(transform, piece, a_ndc, data_to_ndc(transform, piece.x1, piece.y1));
+    var a_ndc = a_ndc_in;
+    var b_ndc = b_ndc_in;
     if (style.dash_len == 0u) {
         let pad = abs(transform.pixel_to_ndc) * (max(style.line_width_px, 1.0) + 2.0);
         let clipped = clip_solid_segment(a_ndc, b_ndc, pad);

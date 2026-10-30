@@ -83,6 +83,7 @@ pub mod boxplot;
 #[allow(deprecated)]
 pub use boxplot::*;
 pub mod polar;
+pub mod ternary;
 pub use polar::{
     AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
     PolarOptions,

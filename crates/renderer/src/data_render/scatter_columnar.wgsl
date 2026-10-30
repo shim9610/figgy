@@ -34,12 +34,32 @@ struct VsOut {
 
 @vertex
 fn vs_main(in: VsIn) -> VsOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    return scatter_vertex(in, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+}
+
+// A ternary chart's markers (`Config.ternary`): the third component at
+// slot 3, the marker placed at `ternary_ndc`.
+struct VsTernaryIn {
+    @location(0) quad_pos: vec2<f32>,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
+    @location(3) c: vec2<f32>,
+};
+
+@vertex
+fn vs_ternary(in: VsTernaryIn) -> VsOut {
+    let base = VsIn(in.quad_pos, in.x, in.y);
+    return scatter_vertex(base, ternary_sample_valid(in.x, in.y, in.c), ternary_ndc(transform, in.x, in.y, in.c));
+}
+
+// The precise marker's vertex at `center_ndc`, placed by its entry; a
+// sample that is not `valid` is not drawn.
+fn scatter_vertex(in: VsIn, valid: bool, center_ndc: vec2<f32>) -> VsOut {
+    if (!valid) {
         var masked: VsOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(style.shape_id), style.point_radius_px) + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -278,7 +298,32 @@ fn resolve_mapped_style(
 
 @vertex
 fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    return mapped_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+}
+
+// A ternary chart's mapped markers: the third component at slot 6.
+struct VsTernaryMappedIn {
+    @location(0) quad_pos: vec2<f32>,
+    @location(1) x: vec2<f32>,
+    @location(2) y: vec2<f32>,
+    @location(3) style_index: f32,
+    @location(4) color_value: vec2<f32>,
+    @location(5) size_value: vec2<f32>,
+    @location(6) c: vec2<f32>,
+};
+
+fn ternary_mapped_in(in: VsTernaryMappedIn) -> VsMappedIn {
+    return VsMappedIn(in.quad_pos, in.x, in.y, in.style_index, in.color_value, in.size_value);
+}
+
+@vertex
+fn vs_ternary_mapped(in: VsTernaryMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut {
+    return mapped_vertex(ternary_mapped_in(in), inst, ternary_sample_valid(in.x, in.y, in.c), ternary_ndc(transform, in.x, in.y, in.c));
+}
+
+// The mapped marker's vertex at `center_ndc`, placed by its entry.
+fn mapped_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsMappedOut {
+    if (!valid) {
         var masked: VsMappedOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -289,7 +334,6 @@ fn vs_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsMappedOut 
         hidden.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return hidden;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
     let half_px =
         visual_shape_radius(base_shape_id(resolved.shape_id), resolved.radius_px) + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -410,12 +454,22 @@ struct VsPickRingOut {
 // the render scale).
 @vertex
 fn vs_pick_ring(in: VsIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    return ring_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+}
+
+@vertex
+fn vs_pick_ring_ternary(in: VsTernaryIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    let base = VsIn(in.quad_pos, in.x, in.y);
+    return ring_vertex(base, inst, ternary_sample_valid(in.x, in.y, in.c), ternary_ndc(transform, in.x, in.y, in.c));
+}
+
+// The ring's vertex around the marker at `center_ndc`.
+fn ring_vertex(in: VsIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPickRingOut {
+    if (!valid) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
     let radius = max(ring_marker_extent_px(style.shape_id, style.point_radius_px, inst) + style.cap_half_px, 0.0);
     let half_px = radius + max(style.line_width_px, 0.0) * 0.5 + QUAD_MARGIN_PX;
     let world = center_ndc + in.quad_pos * (half_px * transform.pixel_to_ndc);
@@ -432,7 +486,17 @@ fn vs_pick_ring(in: VsIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
 
 @vertex
 fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
-    if (!sample_valid(transform, in.x, in.y)) {
+    return mapped_ring_vertex(in, inst, sample_valid(transform, in.x, in.y), data_to_ndc(transform, in.x, in.y));
+}
+
+@vertex
+fn vs_pick_ring_ternary_mapped(in: VsTernaryMappedIn, @builtin(instance_index) inst: u32) -> VsPickRingOut {
+    return mapped_ring_vertex(ternary_mapped_in(in), inst, ternary_sample_valid(in.x, in.y, in.c), ternary_ndc(transform, in.x, in.y, in.c));
+}
+
+// The mapped ring's vertex around the marker at `center_ndc`.
+fn mapped_ring_vertex(in: VsMappedIn, inst: u32, valid: bool, center_ndc: vec2<f32>) -> VsPickRingOut {
+    if (!valid) {
         var masked: VsPickRingOut;
         masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return masked;
@@ -443,7 +507,6 @@ fn vs_pick_ring_mapped(in: VsMappedIn, @builtin(instance_index) inst: u32) -> Vs
         hidden.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
         return hidden;
     }
-    let center_ndc = data_to_ndc(transform, in.x, in.y);
     // The ring entries use style.cap_half_px as radius_extra_px. The
     // errorbar shader is not involved in this pipeline, so the slot is local
     // to this decoration entry.

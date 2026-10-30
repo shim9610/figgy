@@ -206,6 +206,10 @@ mod tests {
                 "PICK_VARIANT_CATEGORY_JITTER",
                 crate::gpu_pick::exact_variant::CATEGORY_JITTER,
             ),
+            (
+                "PICK_VARIANT_TERNARY",
+                crate::gpu_pick::exact_variant::TERNARY,
+            ),
             ("STYLE_MASK_COLOR", dr::STYLE_MASK_COLOR),
             ("STYLE_MASK_RADIUS", dr::STYLE_MASK_RADIUS),
             ("STYLE_MASK_SHAPE", dr::STYLE_MASK_SHAPE),
@@ -430,6 +434,8 @@ mod tests {
                     style_params,
                     polar_angle,
                     polar_extent,
+                    ternary_lt,
+                    ternary_r,
                 }
             )
             .with(module, wgsl)

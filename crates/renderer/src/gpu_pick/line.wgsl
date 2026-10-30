@@ -158,12 +158,22 @@ fn pick_stroke_candidate(
     by: vec2<f32>,
 ) -> PickCandidate {
     let series_order = pick_query_params.series.y;
-    if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
-        return pick_invalid_candidate(series_order);
-    }
     let t = pick_query_params.transform;
-    if !polar_sample_valid(t, ax, ay) || !polar_sample_valid(t, bx, by) {
-        return pick_invalid_candidate(series_order);
+    // A ternary segment: its ends' third components, read at the segment's
+    // two points; a ternary line is linear, so the segment is its chord.
+    let ternary = pick_ternary();
+    let next_index = pick_next_point(segment_index);
+    if ternary {
+        if !pick_ternary_valid(segment_index, ax, ay) || !pick_ternary_valid(next_index, bx, by) {
+            return pick_invalid_candidate(series_order);
+        }
+    } else {
+        if !pick_coordinate_is_valid(ax, 0u) || !pick_coordinate_is_valid(ay, 1u) || !pick_coordinate_is_valid(bx, 0u) || !pick_coordinate_is_valid(by, 1u) {
+            return pick_invalid_candidate(series_order);
+        }
+        if !polar_sample_valid(t, ax, ay) || !polar_sample_valid(t, bx, by) {
+            return pick_invalid_candidate(series_order);
+        }
     }
     // A step mode tests every axis-aligned piece of the segment and keeps the
     // nearest (lowest piece index on a tie); a linear segment is its single
@@ -193,8 +203,12 @@ fn pick_stroke_candidate(
     var best_length = 0.0;
     for (var k = 0u; k < pieces; k = k + 1u) {
         let piece = step_piece(ax, ay, bx, by, mode, k);
-        let a_px = pick_data_px(piece.x0, piece.y0);
-        let b_px = step_piece_end(t, piece, a_px, pick_data_px(piece.x1, piece.y1));
+        var a_px = pick_data_px(piece.x0, piece.y0);
+        var b_px = step_piece_end(t, piece, a_px, pick_data_px(piece.x1, piece.y1));
+        if ternary {
+            a_px = pick_ternary_px(segment_index, ax, ay);
+            b_px = pick_ternary_px(next_index, bx, by);
+        }
         if !pick_is_finite(a_px.x) || !pick_is_finite(a_px.y) || !pick_is_finite(b_px.x) || !pick_is_finite(b_px.y) {
             return pick_invalid_candidate(series_order);
         }

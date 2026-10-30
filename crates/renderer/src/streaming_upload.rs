@@ -980,6 +980,8 @@ mod tests {
                     style_params: [[0.; 4]; 3],
                     polar_angle: [0.; 4],
                     polar_extent: [0.; 4],
+                    ternary_lt: [0.0; 4],
+                    ternary_r: [0.0; 4],
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);
@@ -1074,6 +1076,7 @@ mod tests {
                                     texture_bg: None,
                                     closed: false,
                                     value_map: None,
+                                    ternary_c: None,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,
@@ -1089,6 +1092,7 @@ mod tests {
                                     color_value: None,
                                     size_value: None,
                                     texture_bg: None,
+                                    ternary_c: None,
                                 }),
                                 selected_bars: vec![],
                                 selected_fields: vec![],

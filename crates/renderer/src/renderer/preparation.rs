@@ -57,6 +57,7 @@ impl PreparationFeature {
                     | "scatter_mapped"
                     | "pick_ring"
                     | "pick_ring_mapped"
+                    | "ternary"
                     | "errorbar"
                     | "errorbar_mapped"
             ),
@@ -121,7 +122,9 @@ impl PreparationFeature {
                 | DataRenderType::LineScatterErrorbarY { .. }
                 | DataRenderType::LineScatterErrorbarXY { .. }
                 // A radar series draws through the line and scatter pipelines.
-                | DataRenderType::Radar { .. } => Self::Basic,
+                | DataRenderType::Radar { .. }
+                // So does a ternary series, through its ternary entries.
+                | DataRenderType::Ternary { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);
@@ -287,6 +290,7 @@ impl Renderer {
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
                     && p.pick_ring_mapped.is_some()
+                    && p.ternary.iter().all(Option::is_some)
                     && p.errorbar.is_some()
                     && p.errorbar_mapped.is_some()
                     && self.arc_pipelines.is_some()
@@ -409,6 +413,7 @@ impl TargetPipelines {
             scatter_mapped: None,
             pick_ring: None,
             pick_ring_mapped: None,
+            ternary: Default::default(),
             errorbar: None,
             errorbar_mapped: None,
             bar: None,
@@ -460,6 +465,11 @@ impl TargetPipelines {
         }
         if self.pick_ring_mapped.is_none() {
             self.pick_ring_mapped = other.pick_ring_mapped;
+        }
+        for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
+            if slot.is_none() {
+                *slot = other;
+            }
         }
         if self.errorbar.is_none() {
             self.errorbar = other.errorbar;

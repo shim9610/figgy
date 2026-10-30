@@ -963,7 +963,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
-        | DataRenderType::Streamlines { .. } => false,
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. } => false,
     }
 }
 

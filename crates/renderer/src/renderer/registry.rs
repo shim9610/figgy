@@ -107,6 +107,7 @@ impl ChartViewState {
             colorbar: _,
             draw_style: _,
             polar: _,
+            ternary: _,
             overlays,
             subplots,
             active_layer: _,
@@ -168,6 +169,7 @@ impl ChartViewState {
             colorbar: _,
             draw_style: _,
             polar: _,
+            ternary: _,
             overlays: config_overlays,
             subplots: config_subplots,
             active_layer: _,
@@ -237,6 +239,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         colorbar,
         draw_style,
         polar,
+        ternary,
         overlays,
         subplots,
         active_layer: _,
@@ -257,6 +260,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && draw_style == &right.draw_style
         // The grid, axes and labels are rings and spokes or a rectangle.
         && polar == &right.polar
+        && ternary == &right.ternary
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
@@ -1339,6 +1343,10 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::CategoryBars { .. }
         // Category indices and values too.
         | DataRenderType::Radar { .. } => {}
+        // Its first two components are its x and y columns; the third is a
+        // referenced column, so replacing it redraws the series and
+        // removing it invalidates it.
+        DataRenderType::Ternary { c_column, .. } => visit(c_column),
         // The polylines are its x and y columns; the colour column is
         // referenced like a scatter's colour map.
         DataRenderType::Streamlines { color_map, .. } => {
@@ -1449,6 +1457,18 @@ pub(super) fn validate_renderer_series(
         });
     }
     validate_radar_rules(config, series)?;
+    // A ternary chart draws only ternary series, and a ternary series needs
+    // a ternary chart; its line is linear and unfilled.
+    if let Err(reason) = config.validate_ternary_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.ternary_c_column().is_some())
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.
     config
@@ -1507,6 +1527,9 @@ pub(super) fn validate_renderer_series(
             for id in bars.extra_columns() {
                 validate_registered_column(pool, id)?;
             }
+        }
+        if let Some(c) = item.render_type.ternary_c_column() {
+            validate_registered_column(pool, c)?;
         }
         if let Some(scatter) = extract_scatter(&item.render_type) {
             if let Some(column) = scatter.point_style_index_column.as_deref() {
@@ -1600,12 +1623,19 @@ pub(super) fn validate_streamline_series(
     Ok(())
 }
 
-/// The polar coordinate system of the chart against its own axes.
+/// The polar and ternary coordinate systems of the chart against its own
+/// axes.
 pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
     config
         .validate_polar()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "polar",
+            reason,
+        })?;
+    config
+        .validate_ternary()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "ternary",
             reason,
         })
 }
@@ -1675,6 +1705,11 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::Streamlines { .. } => {
             return Err(invalid("streamlines are not drawn on polar axes"));
+        }
+        DataRenderType::Ternary { .. } => {
+            return Err(invalid(
+                "ternary series are drawn on ternary charts, not polar axes",
+            ));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

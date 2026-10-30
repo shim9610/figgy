@@ -1173,6 +1173,7 @@ GPU values (or `"null"` for no supported selection). Histogram fields are
 uses a flat `kind` tag. Points and matrix cells are
 also supported; a colour- or size-mapped point adds `color_value` / `size_value`,
 and a vector selection adds `u` / `v` (plus `color_value` with a colour map).
+A point of a ternary series adds `c`, its third component as uploaded.
 `<figgy-chart>` has no forwarding methods for these or for the annotation
 methods; call them through [`element.kernel`](#figgy-chart-kernel).
 See the [selection JSON contract](https://github.com/shim9610/figgy/blob/master/crates/web/SCHEMA.md#resident-selection-details).

@@ -241,8 +241,34 @@ pub(crate) fn create_line_mapped_pipeline_with_sample_count(
 /// at A and B.
 const LINE_SLOTS: usize = 6;
 /// Vertex slots of the colour-mapped stroke: the line's and the colour
-/// value at A and B.
+/// value at A and B; the ternary stroke's are the same with the third
+/// component at A and B.
 const LINE_MAPPED_SLOTS: usize = 8;
+
+/// The stroke of a ternary series (`vs_ternary` / `fs_main`): the six line
+/// slots plus the third component at slots 6/7, over the line's groups.
+pub(crate) fn create_line_ternary_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+) -> wgpu::RenderPipeline {
+    line_slot_pipeline(
+        device,
+        shader,
+        &[Some(transform_bgl), Some(style_bgl)],
+        LINE_MAPPED_SLOTS,
+        target_format,
+        sample_count,
+        "vs_ternary",
+        "fs_main",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        "figgy line ternary pipeline",
+    )
+}
 
 /// The attribute of each per-instance vertex slot the line entries read, in
 /// slot order: the X / Y columns bound twice (the second pair starts one
@@ -379,6 +405,10 @@ pub struct ColumnLineLayer<'a> {
     /// slots 6/7 and the [`LineValueMap`] groups as 2 and 3. `None` for every
     /// other line.
     pub value_map: Option<LineValueMap<'a>>,
+    /// A ternary series' third component: `pipeline` is the ternary line
+    /// pipeline (`vs_ternary`), the column bound as slots 6/7 like the X /
+    /// Y columns. `None` for every other line.
+    pub ternary_c: Option<ColumnHandle>,
 }
 
 /// The colour value of a colour-mapped stroke (`vs_main_mapped`): the value
@@ -423,6 +453,7 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
     let count = l
         .value_map
         .map_or(usize::MAX, |map| map.column.len_values)
+        .min(l.ternary_c.map_or(usize::MAX, |c| c.len_values))
         .min(l.x.len_values)
         .min(l.y.len_values) as u32;
     if count < 2 {
@@ -441,6 +472,12 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
         let value_next = (value.start + crate::data::COLUMN_VALUE_BYTES as u64)..value.end;
         pass.set_vertex_buffer(6, l.pool_buffer.slice(value));
         pass.set_vertex_buffer(7, l.pool_buffer.slice(value_next));
+    }
+    if let Some(c) = l.ternary_c {
+        let c = c.byte_range();
+        let c_next = (c.start + crate::data::COLUMN_VALUE_BYTES as u64)..c.end;
+        pass.set_vertex_buffer(6, l.pool_buffer.slice(c));
+        pass.set_vertex_buffer(7, l.pool_buffer.slice(c_next));
     }
     let x_full = l.x.byte_range();
     let y_full = l.y.byte_range();

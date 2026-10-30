@@ -261,7 +261,8 @@ pub struct TitlePlacement {
 }
 
 impl TitlePlacement {
-    /// Axis-aligned screen rectangle of the placed text envelope.
+    /// Axis-aligned screen rectangle of the placed text envelope, rotated
+    /// by `rotation_degrees` (clockwise on screen) about `rotation_center`.
     pub fn rect(self, extents: TextExtents) -> RectF {
         let local = label_rect(self.origin, extents);
         match self.rotation_degrees {
@@ -277,7 +278,33 @@ impl TitlePlacement {
                 width: local.height,
                 height: local.width,
             },
-            _ => local,
+            0.0 => local,
+            // Any other angle (a ternary chart's slanted titles): the
+            // bounding box of the rectangle turned about the centre.
+            degrees => {
+                let (sin, cos) = degrees.to_radians().sin_cos();
+                let (cx, cy) = self.rotation_center;
+                let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+                for (x, y) in [
+                    (local.x, local.y),
+                    (local.x + local.width, local.y),
+                    (local.x, local.y + local.height),
+                    (local.x + local.width, local.y + local.height),
+                ] {
+                    let (dx, dy) = (x - cx, y - cy);
+                    let (rx, ry) = (cx + cos * dx - sin * dy, cy + sin * dx + cos * dy);
+                    x0 = x0.min(rx);
+                    y0 = y0.min(ry);
+                    x1 = x1.max(rx);
+                    y1 = y1.max(ry);
+                }
+                RectF {
+                    x: x0,
+                    y: y0,
+                    width: x1 - x0,
+                    height: y1 - y0,
+                }
+            }
         }
     }
 }
