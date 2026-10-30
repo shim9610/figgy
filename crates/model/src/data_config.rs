@@ -1183,7 +1183,8 @@ pub enum MatrixOrientation {
     ColumnsAreY,
 }
 
-/// Whether coordinate columns give cell edges or cell centres.
+/// Whether coordinate columns give cell edges, cell centres or the centres
+/// of a hexagonal lattice.
 #[derive(Debug, Clone, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum GridLayout {
@@ -1191,6 +1192,18 @@ pub enum GridLayout {
     Edges,
     /// `n` coordinates at the middle of `n` cells.
     Centers,
+    /// `n` columns by `m` rows of flat-topped hexagons (a hexbin, #134): the
+    /// cell of column `c`, row `r` is centred at `(x[c], y[r] + (c mod 2) ·
+    /// (y[1] − y[0]) / 2)`, so the odd columns are raised by half the row
+    /// pitch. Both coordinate columns are uniform (every step equal to the
+    /// first within 1e-6 relative, at least two coordinates each); the cells
+    /// are regular when the column pitch is `√3 / 2` of the row pitch and
+    /// stretched otherwise. The host bins its samples; the renderer draws
+    /// the grid it is given, shaded flat, as a `Heatmap` on linear axes of a
+    /// flat chart: a contour, an interpolated fill, a grid vector and a 3D
+    /// view read a rectangular lattice and are rejected
+    /// ([`Config::validate_hexagonal_series`](crate::config::Config::validate_hexagonal_series)).
+    Hexagonal,
 }
 
 impl MatrixRef {
@@ -1228,7 +1241,7 @@ impl MatrixRef {
         };
         let cells = |coordinates: usize| match self.grid_layout {
             GridLayout::Edges => coordinates.saturating_sub(1),
-            GridLayout::Centers => coordinates,
+            GridLayout::Centers | GridLayout::Hexagonal => coordinates,
         };
         (cells(along), cells(across))
     }
@@ -4005,6 +4018,60 @@ impl crate::config::Config {
     /// the angle axis' categories. Whether a column holds one value per
     /// category is data: the renderer checks it against the pool when it
     /// prepares.
+    /// The rules a hexagonal grid ([`GridLayout::Hexagonal`]) is held to:
+    /// it is the grid of a `Heatmap` (a contour or a heatmap with contours
+    /// reads a rectangular lattice, as does a grid vector), shaded flat, on a
+    /// flat chart (no `view_3d`) whose x and y axes are linear, so the
+    /// lattice is uniform on screen as it is in data. The coordinate
+    /// columns' uniformity is the renderer's check, from their statistics.
+    pub fn validate_hexagonal_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
+        for item in series {
+            let (matrix, fill) = match &item.render_type {
+                DataRenderType::Heatmap { matrix, fill, .. } => (matrix, Some(fill)),
+                DataRenderType::Contour { matrix, .. }
+                | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                DataRenderType::Vector {
+                    components: VectorComponents::Grid { u, v },
+                    style,
+                } => {
+                    let color = match &style.color_map {
+                        Some(VectorColorMap::Grid(color)) => Some(color),
+                        _ => None,
+                    };
+                    if [Some(u), Some(v), color]
+                        .into_iter()
+                        .flatten()
+                        .any(|grid| grid.grid_layout == GridLayout::Hexagonal)
+                    {
+                        return Err(
+                            "a grid vector reads a rectangular lattice: not a hexagonal grid",
+                        );
+                    }
+                    continue;
+                }
+                _ => continue,
+            };
+            if matrix.grid_layout != GridLayout::Hexagonal {
+                continue;
+            }
+            let Some(fill) = fill else {
+                return Err(
+                    "contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only",
+                );
+            };
+            if fill.shading != Shading::Flat {
+                return Err("a hexagonal grid is shaded flat");
+            }
+            if self.view_3d.is_some() {
+                return Err("a hexagonal grid draws flat: not on a 3D chart");
+            }
+            if self.bottom_x.scale != AxisScale::Linear || self.left_y.scale != AxisScale::Linear {
+                return Err("a hexagonal grid needs linear x and y axes: its lattice is uniform");
+            }
+        }
+        Ok(())
+    }
+
     pub fn validate_radar(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         use crate::layer::LayerRef;
         let radars = || series.iter().filter(|s| s.render_type.radar().is_some());
@@ -4921,6 +4988,24 @@ mod serde_tests {
         assert!(!again.contains("min_length_px"));
         assert!(!again.contains("color_map"));
         assert!(again.contains("\"pivot\":\"Tail\""));
+    }
+
+    #[test]
+    fn a_hexagonal_grid_round_trips_and_counts_a_cell_per_coordinate() {
+        use super::{GridLayout, MatrixOrientation, MatrixRef};
+        let json = serde_json::to_string(&GridLayout::Hexagonal).unwrap();
+        assert_eq!(json, "\"Hexagonal\"");
+        assert_eq!(
+            serde_json::from_str::<GridLayout>(&json).unwrap(),
+            GridLayout::Hexagonal
+        );
+        let matrix = MatrixRef {
+            columns: vec!["z0".into(), "z1".into(), "z2".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: GridLayout::Hexagonal,
+        };
+        assert_eq!(matrix.coordinate_cells(3, 4), (3, 4));
+        assert_eq!(matrix.effective_extent(3, 4, 2), (3, 2));
     }
 
     #[test]
@@ -7804,6 +7889,141 @@ mod range_bar_tests {
         assert_eq!(
             serde_json::from_str::<SeriesConfig>(&again).unwrap(),
             parsed
+        );
+    }
+}
+
+#[cfg(test)]
+mod hexagonal_tests {
+    use super::{
+        ContourConfig, DataLineStyleConfig, DataRenderType, FieldFillConfig, FillMode, GridLayout,
+        LineInterpolation, MatrixOrientation, MatrixRef, SeriesConfig, Shading, VectorComponents,
+        VectorScale, VectorStyle,
+    };
+    use crate::color::Color;
+    use crate::config::AxisScale;
+    use crate::line::LineStylePreset;
+    use crate::view3d::View3d;
+
+    fn matrix(layout: GridLayout) -> MatrixRef {
+        MatrixRef {
+            columns: vec!["z0".into(), "z1".into()],
+            orientation: MatrixOrientation::ColumnsAreX,
+            grid_layout: layout,
+        }
+    }
+
+    fn fill(shading: Shading) -> FieldFillConfig {
+        FieldFillConfig {
+            mode: FillMode::Continuous,
+            shading,
+            opacity: 1.0,
+        }
+    }
+
+    fn series(render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: "hex".into(),
+            source_id: None,
+            label: None,
+            x_column: "x".into(),
+            y_column: "y".into(),
+            render_type,
+        }
+    }
+
+    fn heatmap(layout: GridLayout, shading: Shading) -> SeriesConfig {
+        series(DataRenderType::Heatmap {
+            matrix: matrix(layout),
+            fill: fill(shading),
+            surface: None,
+        })
+    }
+
+    fn contour() -> ContourConfig {
+        ContourConfig {
+            levels: vec![0.5],
+            line: DataLineStyleConfig {
+                line_style: LineStylePreset::Solid,
+                line_color: Color::BLACK,
+                line_width: 1.0,
+                fill: None,
+                fill_color: None,
+                interpolation: LineInterpolation::Linear,
+            },
+            per_level_color: None,
+            labels: None,
+        }
+    }
+
+    /// A hexagonal grid is a flat heatmap on linear axes of a flat chart;
+    /// every other reading of it is named.
+    #[test]
+    fn the_rules_name_each_rejection() {
+        let config = crate::default::default_config();
+        let ok = |series: &[SeriesConfig]| config.validate_hexagonal_series(series);
+        assert_eq!(ok(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]), Ok(()));
+        assert_eq!(
+            ok(&[heatmap(GridLayout::Centers, Shading::Interpolated)]),
+            Ok(()),
+            "a rectangular grid keeps its freedoms"
+        );
+        assert_eq!(
+            ok(&[heatmap(GridLayout::Hexagonal, Shading::Interpolated)]),
+            Err("a hexagonal grid is shaded flat")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::Contour {
+                matrix: matrix(GridLayout::Hexagonal),
+                contour: contour(),
+            })]),
+            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::HeatmapContour {
+                matrix: matrix(GridLayout::Hexagonal),
+                fill: fill(Shading::Flat),
+                contour: contour(),
+                surface: None,
+            })]),
+            Err("contours read a rectangular lattice: a hexagonal grid draws as a Heatmap only")
+        );
+        assert_eq!(
+            ok(&[series(DataRenderType::Vector {
+                components: VectorComponents::Grid {
+                    u: matrix(GridLayout::Hexagonal),
+                    v: matrix(GridLayout::Hexagonal),
+                },
+                style: VectorStyle {
+                    color: Color::BLACK,
+                    width_px: 1.0,
+                    scale: VectorScale::Pixels { px_per_unit: 1.0 },
+                    head_length_px: 4.0,
+                    head_width_px: 3.0,
+                    pivot: Default::default(),
+                    min_length_px: 0.0,
+                    color_map: None,
+                },
+            })]),
+            Err("a grid vector reads a rectangular lattice: not a hexagonal grid")
+        );
+        let mut log = config.clone();
+        log.left_y.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            log.validate_hexagonal_series(&[heatmap(GridLayout::Hexagonal, Shading::Flat)]),
+            Err("a hexagonal grid needs linear x and y axes: its lattice is uniform")
+        );
+        let mut three_d = config.clone();
+        three_d.view_3d = Some(View3d::default());
+        let hex = [heatmap(GridLayout::Hexagonal, Shading::Flat)];
+        assert_eq!(
+            three_d.validate_hexagonal_series(&hex),
+            Err("a hexagonal grid draws flat: not on a 3D chart")
+        );
+        assert_eq!(
+            three_d.validate_view3d_series(&hex),
+            Err("a hexagonal grid draws flat: not on a 3D chart"),
+            "the 3D rules reject it too, whichever runs first"
         );
     }
 }

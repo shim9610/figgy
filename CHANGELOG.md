@@ -31,6 +31,17 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Hexagonal grids (hexbins)**
+  ([#134](https://github.com/shim9610/figgy/issues/134), #58).
+  `GridLayout::Hexagonal`: a `Heatmap`'s grid as `n` columns by `m` rows
+  of flat-topped hexagons centred at `(x[c], y[r] + (c mod 2) · py / 2)`,
+  the odd columns raised by half the row pitch; `MatrixRef::coordinate_cells`
+  counts one cell per coordinate. `Config::validate_hexagonal_series`
+  holds it to a flat-shaded `Heatmap` on linear axes of a flat chart (a
+  contour, an interpolated fill, a grid vector and a 3D view read a
+  rectangular lattice), and `validate_view3d_series` rejects it too.
+  Additive on the wire (`"Hexagonal"`); an exhaustive `GridLayout` match
+  adds the arm.
 - **No count caps on column-backed series**
   ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R3, R4,
   R10).
@@ -765,6 +776,23 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Hexagonal grids (hexbins)**
+  ([#134](https://github.com/shim9610/figgy/issues/134), #58). A heatmap
+  on a `Hexagonal` grid draws its cells as the Voronoi cells of their
+  centres in the data metric (`field_grid.wgsl` `hex_cell`, the nearest
+  centre among the nearest column, its nearest row and the six neighbours;
+  `FIELD_FLAG_HEXAGONAL` in `FieldParams.flags`), and the fill, the cell
+  pick and the selection outline (`hex_edge_distance_px`) all go through
+  that one lookup, O(1) per fragment with nothing stored per cell. The
+  pool measures every column's uniform step as it is written
+  (`ColumnSlot::uniform_step`, `data::UniformStep`; a promoted streamed
+  column has none), and registration requires it of a hexagonal grid's
+  coordinate columns besides the model's rules; streamed sources are
+  rejected (`STREAMED_HEXAGONAL_REASON`). The series fit reaches past the
+  centres-cells bounds by the hexagons' overhang
+  (`GpuSeriesExtentTicket`, a sixth of the column pitch each side and half
+  a row pitch past the raised columns). The `Hexbin` catalogue scene bins
+  a bivariate normal on the host.
 - **f64 columns upload exactly.** `Column<f64>` and `Column<Option<f64>>`
   registered through `ColumnSource` (`add_column`) wrote `(v as f32, 0)`, so
   every bit past f32 was lost unless the host used `add_hilo_column`; past
@@ -1686,6 +1714,10 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Hexagonal grids** ([#134](https://github.com/shim9610/figgy/issues/134)).
+  `"grid_layout": "Hexagonal"` reads and writes in `set_series` JSON
+  (SCHEMA.md); a picked cell's `selection_details()` reports the raised
+  centre of an odd column.
 - **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53)).
   A box plot series' `violin` and `points` read and write in `set_series`
   JSON (SCHEMA.md); a picked raw point's `selection_details()` reports its

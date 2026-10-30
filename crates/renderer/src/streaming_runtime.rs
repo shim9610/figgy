@@ -44,6 +44,10 @@ pub(crate) const STREAMED_RANGE_BARS_REASON: &str =
 pub(crate) const STREAMED_STREAMLINES_REASON: &str =
     "streamline series require GPU-resident columns; streamed sources are not supported";
 
+/// Why a streamed hexagonal grid is rejected (CLAUDE.md rule 8, #134).
+pub(crate) const STREAMED_HEXAGONAL_REASON: &str =
+    "hexagonal grids require GPU-resident columns; streamed sources are not supported";
+
 /// Why a streamed ternary series is rejected (CLAUDE.md rule 8).
 pub(crate) const STREAMED_TERNARY_REASON: &str =
     "ternary series require GPU-resident columns; streamed sources are not supported";

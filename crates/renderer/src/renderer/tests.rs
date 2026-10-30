@@ -6484,6 +6484,39 @@ fn streamed_series_reject_range_bars() {
 
 /// Streaming is not extended to ternary series (CLAUDE.md rule 8): a
 /// streamed one is rejected with an explicit reason.
+/// A hexagonal grid reads its lattice from resident coordinate columns
+/// whose uniform steps the pool measured; a streamed one is rejected (rule
+/// 8, #134).
+#[test]
+fn streamed_series_reject_hexagonal_grids() {
+    let config = basic_errorbar_chart().config().clone();
+    let series = SeriesConfig {
+        series_id: "stream".into(),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        render_type: DataRenderType::Heatmap {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into(), "z1".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Hexagonal,
+            },
+            fill: crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    };
+    assert!(matches!(
+        PrepareContext::validate_stream_series(&config, &series),
+        Err(FiggyError::InvalidSeriesConfig { reason, .. })
+            if reason.contains("hexagonal") && reason.contains("streamed sources are not supported")
+    ));
+}
+
 #[test]
 fn streamed_series_reject_ternary_series() {
     let config = basic_errorbar_chart().config().clone();

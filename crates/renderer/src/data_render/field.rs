@@ -49,6 +49,11 @@ pub const FIELD_FLAG_BANDS: u32 = 8;
 
 pub const FIELD_FLAG_LOG_Z: u32 = 16;
 
+/// The grid is a hexagonal lattice (`GridLayout::Hexagonal`, #134): the
+/// cell lookup is `hex_cell`, the nearest centre on the shifted lattice,
+/// instead of the per-axis binary search.
+pub const FIELD_FLAG_HEXAGONAL: u32 = 32;
+
 /// Everything the field shader needs beyond `Transform` and `Style`.
 ///
 /// GPU twin: `common/field_grid.wgsl::FieldParams`, 64 B. `z_min` / `z_max` are the

@@ -539,6 +539,12 @@ impl FiggyChart {
                         (series.y_column.clone(), y_index + 1),
                     ]);
                 }
+                // A hexagonal grid's odd columns are raised by half the row
+                // pitch (#134): the centre reported is the raised one.
+                let hexagonal = matches!(matrix.grid_layout, GridLayout::Hexagonal);
+                if hexagonal {
+                    samples.extend([(series.y_column.clone(), 0), (series.y_column.clone(), 1)]);
+                }
                 if let Some((v, color)) = vector {
                     samples.push((grid_column(v)?, sample_index));
                     if let Some(color) = color {
@@ -565,10 +571,12 @@ impl FiggyChart {
                 });
                 result["y"] = serde_json::json!(if edges {
                     (values[1] + values[4]) * 0.5
+                } else if hexagonal {
+                    values[1] + (x_index % 2) as f64 * (values[4] - values[3]) * 0.5
                 } else {
                     values[1]
                 });
-                let mut next = if edges { 5 } else { 3 };
+                let mut next = if edges || hexagonal { 5 } else { 3 };
                 match vector {
                     None => {
                         result["value"] = serde_json::json!(values[2]);

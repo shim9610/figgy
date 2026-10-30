@@ -676,7 +676,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | Errorbar appearance. The optional style map applies only to precise errorbars; each table/override slot can replace color, stem width, cap half-size, cap width, or any subset |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
-| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries) or `Centers` (n cell centres). See [Matrix fields and contours](#matrix-fields-and-contours) |
+| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries), `Centers` (n cell centres) or `Hexagonal` (n centres of flat-topped hexagons, a hexbin). See [Matrix fields and contours](#matrix-fields-and-contours) and [Hexagonal grids](#hexagonal-grids-hexbins) |
 | `FieldFillConfig` | `mode, shading, opacity` | Heatmap fill. `mode` is `Continuous` or `Bands` (one colour per interval between the contour levels); `shading` is `Flat` (one colour per cell) or `Interpolated` (bilinear across the cell corners); `opacity` multiplies the colormap alpha |
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | Contour lines. `levels` is an explicit list in data units (at most 1024); `contour.set_nice_levels(&colorbar.axis, n)` writes about `n` round levels strictly inside the colourbar range (`ContourConfig::nice_levels` returns them without writing), and `contour.set_colormap_colors(&colorbar)` fills `per_level_color` from the ramp |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | Inline level labels. `spacing_px` must be finite and positive; empty `anchors` means automatic placement |
@@ -897,9 +897,40 @@ else. There is no separate matrix container: resident drawing reads those column
 from the pool, while supported nonresident Heatmap drawing replays their registered
 sources in bounded ranges.
 `grid_layout` says whether the coordinate
-columns are cell `Edges` (n + 1) or `Centers` (n); it is never inferred from the
-lengths. A declaration that does not line up with the data is **not an error** —
-the smallest common extent is drawn and the truncation is reported.
+columns are cell `Edges` (n + 1), `Centers` (n) or the centres of a
+`Hexagonal` lattice (n, [below](#hexagonal-grids-hexbins)); it is never
+inferred from the lengths. A declaration that does not line up with the data
+is **not an error** — the smallest common extent is drawn and the truncation
+is reported.
+
+<a id="hexagonal-grids-hexbins"></a>
+
+#### Hexagonal grids (hexbins)
+
+`GridLayout::Hexagonal` ([#134](https://github.com/shim9610/figgy/issues/134))
+draws a `Heatmap` as `n` columns by `m` rows of flat-topped hexagons: the cell
+of column `c`, row `r` is centred at `(x[c], y[r] + (c mod 2) · py / 2)`, the
+odd columns raised by half the row pitch `py = y[1] − y[0]`. The host bins
+its samples (the renderer never bins, rule 1) and registers the counts as the
+grid's constituent columns, one per lattice column under `ColumnsAreX` (per
+row under `ColumnsAreY`), exactly as a `Centers` heatmap. The hexagons are
+regular when the column pitch `px = x[1] − x[0]` is `√3 / 2` of the row
+pitch and stretched otherwise. A hexagon is the Voronoi cell of its centre in
+the data metric, so a fragment, the cell pick and the selection outline all
+agree on the nearest centre, and a border cell is a whole hexagon with nothing
+painted past the lattice. The auto-fit covers every hexagon whole: a sixth of
+the column pitch past the centres' half-pitch bounds on each side, and half a
+row pitch past the raised columns' end.
+
+The rules (`Config::validate_hexagonal_series`, at registration): both
+coordinate columns are uniform (at least two values, every step equal to the
+first within 1e-6 relative; the pool measures it as the column is written),
+the series is a `Heatmap` shaded `Flat` (a `Contour`, a `HeatmapContour`, an
+`Interpolated` fill and a grid vector read a rectangular lattice), the x and
+y axes are linear, the chart is flat (no `view_3d`), and the columns are
+resident (streamed sources are rejected). Hover, click, `step_selection`
+and the picked outline are the heatmap's; `selection_details()` reports the
+raised centre of an odd column.
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
 `ContourConfig.levels` is always an explicit list in data units (there is no

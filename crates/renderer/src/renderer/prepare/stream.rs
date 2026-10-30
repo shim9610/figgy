@@ -127,6 +127,16 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Nor to hexagonal grids (#134): the lattice is read from resident
+        // coordinate columns whose uniform steps the pool measured.
+        if extract_matrix(&series.render_type)
+            .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_HEXAGONAL_REASON.into(),
+            });
+        }
         // Nor to ternary series: a sample reads its third component from the
         // resident pool.
         if series.render_type.ternary_c_column().is_some() {

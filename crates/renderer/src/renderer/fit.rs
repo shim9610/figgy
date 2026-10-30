@@ -503,6 +503,19 @@ pub(super) fn begin_series_fit_extent_from_pool(
                     crate::gpu_errorbar::GpuErrorbarError::ValueCountTooLarge { role, len: cells }
                 })
             };
+            // A hexagonal grid's coordinates were registered with uniform
+            // steps; its hexagons reach past the centres-cells bounds (#134).
+            let hexagonal = matches!(
+                matrix.grid_layout,
+                crate::data_config::GridLayout::Hexagonal
+            )
+            .then(|| {
+                Some((
+                    pool.slot(&series.x_column)?.uniform_step?,
+                    pool.slot(&series.y_column)?.uniform_step?,
+                ))
+            })
+            .flatten();
             engine
                 .begin_field(
                     device,
@@ -516,6 +529,10 @@ pub(super) fn begin_series_fit_extent_from_pool(
                         y_cells: checked_cells("field y cells", y_cells)?,
                     },
                 )
+                .map(|ticket| match hexagonal {
+                    Some((x_step, y_step)) => ticket.with_hexagonal_overhang(x_step, y_step),
+                    None => ticket,
+                })
                 .map(Some)
         }
     }

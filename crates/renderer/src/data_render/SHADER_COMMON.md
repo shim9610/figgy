@@ -438,6 +438,22 @@ The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rat
 
 The block is two fragments: [`data_render/common/grid_pair.wgsl`](common/grid_pair.wgsl) (the pair arithmetic and `pair_value`, which the errorbar and fit reduction modules splice too) and [`data_render/common/field_grid.wgsl`](common/field_grid.wgsl) (`GridColumn`, the `FIELD_*` flags, `FieldParams`, the group 2 bindings and the sampling), spliced in that order by `wgsl_module!` (`shader_assembly.rs`).
 
+**Hexagonal lattice** (`FIELD_HEXAGONAL`, `GridLayout::Hexagonal`, #134).
+With the flag set, `field_cell_sample`, `field_pick_cell` and
+`selected_cell_coverage` take `hex_cell(t)` instead of the per-axis `locate`:
+the lattice's origin and pitches are `x[0]`, `y[0]`, `x[1] − x[0]`,
+`y[1] − y[0]` read from the pool (`hex_lattice`), the cell of column `c`,
+row `r` is centred at `(x[c], y[r] + (c & 1) · py / 2)` (`hex_center_t`),
+and the fragment's cell is the nearest centre, in the data metric
+(`hex_data_offset`: axis fractions scaled by the axis ranges over the panel
+share, so the cell is the host's bin whatever the axes' pixel scales), among
+the column nearest its x, the row nearest its y in that column and that
+cell's six neighbours (`hex_neighbor`). A candidate past the lattice's edge
+stays a rival and never answers, so a border cell is a whole hexagon. The
+selection outline is `width_px` inside the nearest of the six bisectors
+(`hex_edge_distance_px`, the bisector's data-metric normal scaled into
+pixels). Nothing per cell is stored; the lookup is O(1) per fragment.
+
 <a id="51-field-only-contour-lookup-metadata--group-2-binding-6"></a>
 
 ### 5.1 행렬 셰이더의 등고선 검색 메타데이터(group 2, binding 6)

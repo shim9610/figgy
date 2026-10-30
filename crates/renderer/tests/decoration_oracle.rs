@@ -917,6 +917,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Raincloud => "Raincloud",
         SceneKind::Ternary => "Ternary",
         SceneKind::Surface => "Surface",
+        SceneKind::Hexbin => "Hexbin",
     }
 }
 

@@ -155,6 +155,18 @@ fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {
     out.fc = 0.0;
     out.fr = 0.0;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    // A hexagonal lattice (#134): the nearest centre, shaded flat.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit) {
+            return out;
+        }
+        let xi = u32(cell.column);
+        let yi = u32(cell.row);
+        out.z00 = grid_value(select(xi, yi, columns_are_y), select(yi, xi, columns_are_y));
+        out.hit = true;
+        return out;
+    }
     // The constituent index runs along x unless the declaration says otherwise;
     // the within-column index runs along the other axis. Never inferred from
     // the lengths.
@@ -493,6 +505,23 @@ fn field_pick_cell(cursor_t: vec2<f32>) -> DataPickCandidate {
             return field_pick_invalid();
         }
     }
+    // A hexagonal lattice (#134): the cell the fill painted at this pixel.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit) {
+            return field_pick_invalid();
+        }
+        return DataPickCandidate(
+            1u,
+            data_pick_query.data.y,
+            DATA_PICK_KIND_MATRIX_CELL,
+            u32(cell.column),
+            u32(cell.row),
+            0u,
+            0.0,
+            0u,
+        );
+    }
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     let along_cells = select(field.cols, field.rows, columns_are_y);
     let across_cells = select(field.rows, field.cols, columns_are_y);
@@ -630,6 +659,15 @@ fn selected_cell_coverage(t: vec2<f32>) -> f32 {
     if (x_index >= x_count || y_index >= y_count
         || !f32_is_finite(width_px) || width_px <= 0.0) {
         return 0.0;
+    }
+    // A hexagonal lattice (#134): inside the picked hexagon, the stroke
+    // runs along its six edges, the bisectors with its neighbours.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit || u32(cell.column) != x_index || u32(cell.row) != y_index) {
+            return 0.0;
+        }
+        return width_px - hex_edge_distance_px(t, cell.column, cell.row) + 0.5;
     }
     let x0 = boundary_t(field.x_base, field.x_len, x_index, 0u, LATTICE_QUADS);
     let x1 = boundary_t(field.x_base, field.x_len, x_index + 1u, 0u, LATTICE_QUADS);

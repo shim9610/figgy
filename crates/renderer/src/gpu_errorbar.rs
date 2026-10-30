@@ -199,6 +199,9 @@ impl GpuSeriesFitMode {
             (GridLayout::Edges, true) => GpuFieldExtentMode::EdgesSamples,
             (GridLayout::Centers, false) => GpuFieldExtentMode::CentersCells,
             (GridLayout::Centers, true) => GpuFieldExtentMode::CentersSamples,
+            // A hexagonal grid's centres reach half a pitch out as centres
+            // cells do; the ticket adds the hexagons' overhang (#134).
+            (GridLayout::Hexagonal, _) => GpuFieldExtentMode::CentersCells,
         };
         Some(Self::Field(mode))
     }
@@ -758,7 +761,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [y_lower.len, y_upper.len, input_len, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Reduce a `Data`-scaled point vector series: every finite anchor plus
@@ -796,7 +802,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [0, v.len, input_len, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Resolve the exact outer bounds of a field's rendered coordinate lattice.
@@ -826,7 +835,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [columns.x_cells, columns.y_cells, 1, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Preserve the original three-column errorbar reducer contract.
@@ -1101,9 +1113,66 @@ impl GpuExtentTicketCore {
 /// Owned one-shot readback for a drawable-series extent.
 pub struct GpuSeriesExtentTicket {
     core: GpuExtentTicketCore,
+    /// A hexagonal grid's overhang past its centres-cells bounds (#134).
+    overhang: Option<HexOverhang>,
+}
+
+/// How far a flat-topped hexagonal grid reaches past the `CentersCells`
+/// bounds of its coordinates (#134): a hexagon's half width is two thirds
+/// of the column pitch, a sixth past the half pitch on each side, and the
+/// raised odd columns reach half a row pitch past the top (the bottom when
+/// the rows descend). From the coordinate columns' uniform steps, so the
+/// fit draws every hexagon whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HexOverhang {
+    x: f64,
+    y_min: f64,
+    y_max: f64,
+}
+
+impl HexOverhang {
+    fn new(x_step: f64, y_step: f64) -> Self {
+        Self {
+            x: x_step.abs() / 6.0,
+            y_min: (-y_step).max(0.0) * 0.5,
+            y_max: y_step.max(0.0) * 0.5,
+        }
+    }
+
+    fn widen(self, extent: GpuSeriesExtent) -> GpuSeriesExtent {
+        GpuSeriesExtent {
+            x: GpuErrorbarExtent {
+                min: extent.x.min - self.x,
+                max: extent.x.max + self.x,
+                min_positive: extent.x.min_positive,
+            },
+            y: GpuErrorbarExtent {
+                min: extent.y.min - self.y_min,
+                max: extent.y.max + self.y_max,
+                min_positive: extent.y.min_positive,
+            },
+        }
+    }
 }
 
 impl GpuSeriesExtentTicket {
+    /// The ticket of a hexagonal grid: its result reaches past the
+    /// centres-cells bounds by the hexagons' overhang (#134).
+    pub(crate) fn with_hexagonal_overhang(mut self, x_step: f64, y_step: f64) -> Self {
+        self.overhang = Some(HexOverhang::new(x_step, y_step));
+        self
+    }
+
+    fn widened(
+        overhang: Option<HexOverhang>,
+        extent: Option<GpuSeriesExtent>,
+    ) -> Option<GpuSeriesExtent> {
+        match overhang {
+            Some(overhang) => extent.map(|extent| overhang.widen(extent)),
+            None => extent,
+        }
+    }
+
     pub(crate) const FIELD_BYTES: u64 =
         SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
 
@@ -1130,11 +1199,13 @@ impl GpuSeriesExtentTicket {
         let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
         drop(mapped);
         self.core.readback.unmap();
-        decode_series_state(state).map(Some)
+        decode_series_state(state).map(|extent| Some(Self::widened(self.overhang, extent)))
     }
 
     pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuErrorbarError> {
+        let overhang = self.overhang;
         decode_series_state(self.core.resolve().await?)
+            .map(|extent| Self::widened(overhang, extent))
     }
 }
 

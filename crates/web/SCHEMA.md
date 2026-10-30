@@ -147,7 +147,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `colormap` (ColorMap) | `"Viridis"` `"Magma"` `"Turbo"` `"GrayScale"` `"RdBu"` `{ "Custom": { "stops": [Color, …] } }` |
 | `orientation` (BarOrientation) | `"Vertical"` `"Horizontal"` |
 | `orientation` (MatrixOrientation) | `"ColumnsAreX"` `"ColumnsAreY"` |
-| `grid_layout` (GridLayout) | `"Edges"` `"Centers"` |
+| `grid_layout` (GridLayout) | `"Edges"` `"Centers"` `"Hexagonal"` |
 | `mode` (FillMode) | `"Continuous"` `"Bands"` |
 | `shading` (Shading) | `"Flat"` `"Interpolated"` |
 | `mode` (DrawStyle, 내부 태그) | `"precise"` `"sketch"` `"milkyway"` `"constellation"` |
@@ -801,7 +801,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - `border_width: 0`이면 외곽선을 숨긴다. 양수이면 지정한 두께와 `border_color`를 사용한다.
 - `bar.bar_style_overrides`는 `index`로 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 바꾼다. 같은 인덱스가 여러 번 나오면 선언 순서대로 적용한다. 기준선과 방향은 시리즈 전체에 적용한다. 그리기·데이터 피킹·선택 테두리는 같은 최종 막대 경계를 사용한다.
 - `MatrixRef.columns`는 격자를 구성하는 컬럼 ID 목록이며, 각 컬럼은 미리 등록해야 한다. 등록되지 않은 컬럼이 있으면 시리즈를 거부한다. 행렬 시리즈의 `x_column` / `y_column`은 격자 좌표 컬럼이다. `orientation: "ColumnsAreX"`이면 각 컬럼이 X 좌표 하나에 해당하고 그 위치의 Y 방향 값을 담으며, `"ColumnsAreY"`이면 각 컬럼이 Y 좌표 하나에 해당하고 X 방향 값을 담는다.
-- `MatrixRef.grid_layout`은 좌표가 셀 경계(`"Edges"`, n+1개)인지 중심(`"Centers"`, n개)인지 지정한다. 길이로 추측하지 않는다.
+- `MatrixRef.grid_layout`은 좌표가 셀 경계(`"Edges"`, n+1개)인지 중심(`"Centers"`, n개)인지, 또는 평평한 윗변을 가진 육각형 격자의 중심(`"Hexagonal"`, n개, 홀수 열은 행 간격의 절반만큼 위로)인지 지정한다. 길이로 추측하지 않는다. `"Hexagonal"`은 좌표 컬럼이 등간격인 `Heatmap`(`Flat` 음영, 선형 축, 평면 차트)에서만 쓸 수 있으며([#134](https://github.com/shim9610/figgy/issues/134)), 선택 결과의 `y`는 홀수 열에서 올라간 중심을 보고한다.
 - 선언과 데이터 크기가 다르면 오류 없이 공통으로 사용할 수 있는 범위까지만 그린다. 실제로 그린 개수와 잘림 여부는 `series_draw_info(series_id)`가 반환하는 `drawn_count`, `cols`, `rows`, `truncated`로 확인한다. `cols` / `rows`는 행렬 시리즈와 격자 벡터에서만 값이 있고 다른 종류에서는 `null`이다.
 <!-- contour-contract: scope=schema max-levels=1024 -->
 - `ContourConfig.levels`에는 데이터 단위의 등고선 값을 명시한다. 레벨을 자동으로 고르려면 웹의 `set_contour_nice_levels(series_id, target_count, use_colormap_colors)`를 호출한다. 색상 막대 Z축 범위 안에서 눈금 규칙으로 고른 값을 이 배열에 기록하고 레벨 수를 반환하며, `use_colormap_colors`가 `true`이면 `per_level_color`도 색상표의 색으로 채운다. `0..=1024`개를 허용하며 1025개 이상이면 `set_series`가 실패한다. 배열을 잘라 처리하지 않고 이전 설정·시리즈·GPU 스타일을 유지한다.

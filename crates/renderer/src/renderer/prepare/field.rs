@@ -11,7 +11,10 @@ pub(in crate::renderer) struct ResolvedGrid {
     pub(in crate::renderer) epochs: Vec<u64>,
     pub(in crate::renderer) extent: MatrixExtent,
     pub(in crate::renderer) columns_are_y: bool,
+    /// The coordinates are centres (`Centers` or `Hexagonal`), not edges.
     pub(in crate::renderer) centers: bool,
+    /// The grid is a hexagonal lattice (#134).
+    pub(in crate::renderer) hexagonal: bool,
 }
 
 /// Per-series field scratch cache limit, mirroring `ARC_PREFIX_CACHE_LIMIT`.
@@ -232,7 +235,11 @@ impl PrepareContext<'_> {
                 matrix.orientation,
                 crate::data_config::MatrixOrientation::ColumnsAreY
             ),
-            centers: matches!(matrix.grid_layout, crate::data_config::GridLayout::Centers),
+            centers: !matches!(matrix.grid_layout, crate::data_config::GridLayout::Edges),
+            hexagonal: matches!(
+                matrix.grid_layout,
+                crate::data_config::GridLayout::Hexagonal
+            ),
         })
     }
 
@@ -318,6 +325,9 @@ impl PrepareContext<'_> {
         }
         if resolved.centers {
             flags |= data_render::FIELD_FLAG_CENTERS;
+        }
+        if resolved.hexagonal {
+            flags |= data_render::FIELD_FLAG_HEXAGONAL;
         }
         let interpolated = matches!(fill.shading, crate::data_config::Shading::Interpolated);
         if interpolated {

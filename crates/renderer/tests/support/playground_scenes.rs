@@ -64,10 +64,11 @@ pub enum SceneKind {
     Raincloud,
     Ternary,
     Surface,
+    Hexbin,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 27] = [
+    pub const ALL: [SceneKind; 28] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -95,6 +96,7 @@ impl SceneKind {
         SceneKind::Raincloud,
         SceneKind::Ternary,
         SceneKind::Surface,
+        SceneKind::Hexbin,
     ];
 
     pub fn label(self) -> &'static str {
@@ -126,6 +128,7 @@ impl SceneKind {
             SceneKind::Raincloud => "Raincloud (box plot)",
             SceneKind::Ternary => "Ternary (three components)",
             SceneKind::Surface => "3D surface",
+            SceneKind::Hexbin => "Hexbin (hexagonal grid)",
         }
     }
 
@@ -236,6 +239,11 @@ impl SceneKind {
                 "Four groups as rainclouds: a half violin on the right, a narrow \
                  box, and the raw points jittered on the left. Pick a point and \
                  step along the points, or a cloud."
+            }
+            SceneKind::Hexbin => {
+                "Thirty thousand samples of a bivariate normal binned by the host \
+                 into 40 by 35 flat-topped hexagons, the counts through the \
+                 colourbar. Pick a cell and step with the arrows."
             }
         }
     }
@@ -430,6 +438,7 @@ pub fn build(
         SceneKind::Raincloud => raincloud(r),
         SceneKind::Ternary => ternary(r),
         SceneKind::Surface => surface(r),
+        SceneKind::Hexbin => hexbin(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -3006,4 +3015,126 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     // weekly tick, so no tick label sits on the plot's right edge.
     config.bottom_x.max = T0 + 27.5 * DAY;
     Ok(CartesianScene { config, series })
+}
+
+/// A hexbin (#134): the host bins samples of a bivariate normal into a
+/// lattice of flat-topped hexagons (the renderer never bins, rule 1) and
+/// registers the counts as a hexagonal grid, coloured through the colourbar.
+fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const COLS: usize = 40;
+    const ROWS: usize = 35;
+    // Regular hexagons of circumradius `radius`: column pitch 1.5 r, row
+    // pitch √3 r, the odd columns raised by half a row pitch.
+    let radius = 1.0 / (1.5 * COLS as f64);
+    let (px, py) = (1.5 * radius, 3f64.sqrt() * radius);
+    let xs: Vec<f64> = (0..COLS).map(|c| radius + c as f64 * px).collect();
+    let ys: Vec<f64> = (0..ROWS).map(|r| py / 2.0 + r as f64 * py).collect();
+    let ids: Vec<String> = (0..COLS).map(|c| format!("hexbin_z{c}")).collect();
+    if r.handle_for("hexbin_x").is_err() {
+        let center = |c: i64, row: i64| {
+            (
+                xs[0] + c as f64 * px,
+                ys[0] + row as f64 * py + (c & 1) as f64 * py / 2.0,
+            )
+        };
+        let mut counts = vec![vec![0.0f64; ROWS]; COLS];
+        for i in 0..30_000 {
+            // Box-Muller from two uniforms, correlated by a shear.
+            let u1 = ((noise(41, i) + 1.0) * 0.5).clamp(1e-9, 1.0 - 1e-9);
+            let u2 = (noise(43, i) + 1.0) * 0.5;
+            let radius_n = (-2.0 * u1.ln()).sqrt();
+            let (g1, g2) = (
+                radius_n * (std::f64::consts::TAU * u2).cos(),
+                radius_n * (std::f64::consts::TAU * u2).sin(),
+            );
+            let x = 0.5 + 0.16 * g1;
+            let y = 0.5 + 0.11 * g2 + 0.06 * g1;
+            // The host's binning: the nearest centre on the lattice among
+            // the nearest column, the nearest row in it and its neighbours.
+            let c0 = ((x - xs[0]) / px).round() as i64;
+            let r0 = ((y - ys[0] - (c0 & 1) as f64 * py / 2.0) / py).round() as i64;
+            let up = c0 & 1;
+            let candidates = [
+                (c0, r0),
+                (c0, r0 - 1),
+                (c0, r0 + 1),
+                (c0 - 1, r0 - 1 + up),
+                (c0 - 1, r0 + up),
+                (c0 + 1, r0 - 1 + up),
+                (c0 + 1, r0 + up),
+            ];
+            let (best, _) = candidates
+                .iter()
+                .map(|&(c, row)| {
+                    let (cx, cy) = center(c, row);
+                    ((c, row), (x - cx).powi(2) + (y - cy).powi(2))
+                })
+                .fold(((0, 0), f64::INFINITY), |acc, item| {
+                    if item.1 < acc.1 { item } else { acc }
+                });
+            if best.0 >= 0 && best.0 < COLS as i64 && best.1 >= 0 && best.1 < ROWS as i64 {
+                counts[best.0 as usize][best.1 as usize] += 1.0;
+            }
+        }
+        let grid: Vec<Column<f64>> = counts
+            .into_iter()
+            .map(|data| {
+                let max = data.iter().copied().fold(0.0f64, f64::max);
+                Column {
+                    data,
+                    min: 0.0,
+                    max,
+                }
+            })
+            .collect();
+        let x = Column {
+            data: xs.clone(),
+            min: xs[0],
+            max: xs[COLS - 1],
+        };
+        let y = Column {
+            data: ys.clone(),
+            min: ys[0],
+            max: ys[ROWS - 1],
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![("hexbin_x", &x), ("hexbin_y", &y)];
+        for (id, column) in ids.iter().zip(&grid) {
+            batch.push((id.as_str(), column as &dyn ColumnSource));
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Hexbin: binned samples", "x", "y");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 120.0;
+    bar.axis.major_spacing = 20.0;
+    config.colorbar = Some(bar);
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, 1.0);
+    chart.set_y_range(0.0, 1.0 + py);
+    let series = vec![series(
+        "hexbin",
+        "hexbin_x",
+        "hexbin_y",
+        DataRenderType::Heatmap {
+            matrix: MatrixRef {
+                columns: ids,
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout: GridLayout::Hexagonal,
+            },
+            fill: FieldFillConfig {
+                mode: FillMode::Continuous,
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    )];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
 }

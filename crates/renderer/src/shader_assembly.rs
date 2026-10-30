@@ -147,6 +147,7 @@ mod tests {
             ("FIELD_INTERPOLATED", dr::FIELD_FLAG_INTERPOLATED),
             ("FIELD_BANDS", dr::FIELD_FLAG_BANDS),
             ("FIELD_LOG_Z", dr::FIELD_FLAG_LOG_Z),
+            ("FIELD_HEXAGONAL", dr::FIELD_FLAG_HEXAGONAL),
             ("VECTOR_FLAG_GRID", vector::VECTOR_FLAG_GRID),
             (
                 "VECTOR_FLAG_COLUMNS_ARE_Y",

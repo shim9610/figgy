@@ -198,6 +198,7 @@ fn grid_fixture(renderer: &mut Renderer, layout: &GridLayout) {
     let (gx, gy) = match layout {
         GridLayout::Edges => (vec![0.0, 1.0, 2.0, 3.0], vec![0.0, 1.0, 2.0]),
         GridLayout::Centers => (vec![0.5, 1.5, 2.5], vec![0.5, 1.5]),
+        GridLayout::Hexagonal => unreachable!("a grid vector reads a rectangular lattice"),
     };
     let two_u = col_f64(vec![20.0, 20.0]);
     let two_v = col_f64(vec![0.0, 0.0]);

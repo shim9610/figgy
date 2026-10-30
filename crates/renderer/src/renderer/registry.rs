@@ -1026,6 +1026,10 @@ pub(super) trait ColumnRegistration {
     fn contains_column(&self, id: &str) -> bool {
         self.column_len(id).is_some()
     }
+
+    /// The uniform step of resident column `id`'s values
+    /// (`ColumnSlot::uniform_step`, #134); `None` for a streamed column.
+    fn uniform_step(&self, id: &str) -> Option<f64>;
 }
 
 impl ColumnRegistration for ColumnPool {
@@ -1041,6 +1045,12 @@ impl ColumnRegistration for ColumnPool {
     fn contains_composite(&self, id: &str) -> bool {
         self.record(id).is_some() || self.ragged(id).is_some()
     }
+
+    fn uniform_step(&self, id: &str) -> Option<f64> {
+        self.slot(id)
+            .filter(|_| !self.is_member_column(id))
+            .and_then(|slot| slot.uniform_step)
+    }
 }
 
 impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
@@ -1053,6 +1063,13 @@ impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamCol
 
     fn contains_composite(&self, id: &str) -> bool {
         self.0.contains_composite(id)
+    }
+
+    fn uniform_step(&self, id: &str) -> Option<f64> {
+        if self.1.contains_key(id) {
+            return None;
+        }
+        self.0.uniform_step(id)
     }
 }
 
@@ -1492,6 +1509,37 @@ pub(super) fn validate_renderer_series(
                 .map_or_else(String::new, |s| s.series_id.clone()),
             reason: reason.to_string(),
         });
+    }
+    // A hexagonal grid (#134) is a flat heatmap on linear axes of a flat
+    // chart, and its coordinate columns are uniform: the lattice the shader
+    // walks is the one the data describes.
+    let hexagonal = |item: &SeriesConfig| {
+        extract_matrix(&item.render_type)
+            .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
+    };
+    if let Err(reason) = config.validate_hexagonal_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| hexagonal(s))
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
+    for item in series.iter().filter(|item| hexagonal(item)) {
+        for (role, id) in [("x", &item.x_column), ("y", &item.y_column)] {
+            if pool.uniform_step(id).is_none() {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "a hexagonal grid's {role} coordinates ({id:?}) are uniform: a resident \
+                         column of at least two values, every step equal to the first within \
+                         1e-6"
+                    ),
+                });
+            }
+        }
     }
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.

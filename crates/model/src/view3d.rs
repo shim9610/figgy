@@ -605,6 +605,9 @@ impl Config {
             if self.view_3d.is_none() {
                 continue;
             }
+            if matrix.grid_layout == GridLayout::Hexagonal {
+                return Err("a hexagonal grid draws flat: not on a 3D chart");
+            }
             if fill.is_some_and(|f| f.mode == FillMode::Bands) {
                 return Err("a surface's fill is continuous: banded fills are not drawn in 3D");
             }
