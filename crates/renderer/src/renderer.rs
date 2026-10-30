@@ -45,6 +45,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 mod selection_prepare;
+mod surface_pick;
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "shader_compile_tests.rs"]

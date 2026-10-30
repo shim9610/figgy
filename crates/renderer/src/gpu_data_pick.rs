@@ -1646,6 +1646,65 @@ enum GpuDataPickTicketState {
         first_member: usize,
     },
     Stream(DataPickTicket),
+    /// A 3D chart's 1×1 ID render (`Renderer::pick_surface`).
+    Surface(SurfacePickTicket),
+}
+
+/// Who a surface ID names: ID `k` is entry `k − 1`.
+pub(crate) struct SurfacePickIdentity {
+    pub(crate) source_id: Option<String>,
+    pub(crate) series_id: String,
+    /// The grid's constituent columns run along y: the ID's `(c, r)` is
+    /// `(y, x)`.
+    pub(crate) columns_are_y: bool,
+}
+
+/// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
+pub(crate) struct SurfacePickTicket {
+    pub(crate) device: Arc<wgpu::Device>,
+    pub(crate) readback: wgpu::Buffer,
+    pub(crate) receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    pub(crate) identities: Vec<SurfacePickIdentity>,
+    pub(crate) _charges: Vec<crate::gpu_memory::SharedCharge>,
+}
+
+impl SurfacePickTicket {
+    async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        self.receiver
+            .await
+            .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
+            .map_err(crate::gpu_pick::GpuPickError::MapFailed)?;
+        let slice = self.readback.slice(..16);
+        let mapped = slice
+            .get_mapped_range()
+            .expect("surface pick readback is mapped after map_async");
+        let words: &[u32] = bytemuck::cast_slice(&mapped);
+        let [id, _kind, c, r] = [words[0], words[1], words[2], words[3]];
+        if id == 0 {
+            return Ok(None);
+        }
+        let identity = self
+            .identities
+            .get(id as usize - 1)
+            .ok_or(crate::gpu_pick::GpuPickError::InvalidGpuResult)?;
+        let (x, y) = if identity.columns_are_y {
+            (r, c)
+        } else {
+            (c, r)
+        };
+        Ok(Some(PickedData::MatrixCell {
+            source_id: identity.source_id.clone(),
+            series_id: identity.series_id.clone(),
+            x_index: x as usize,
+            y_index: y as usize,
+            distance_px: 0.0,
+        }))
+    }
 }
 
 impl GpuDataPickTicket {
@@ -1670,8 +1729,16 @@ impl GpuDataPickTicket {
         }
     }
 
+    /// A ticket for a 3D chart's ID pick.
+    pub(crate) fn surface(ticket: SurfacePickTicket) -> Self {
+        Self {
+            state: GpuDataPickTicketState::Surface(ticket),
+        }
+    }
+
     pub async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
         let (point, data, point_orders, first_member) = match self.state {
+            GpuDataPickTicketState::Surface(ticket) => return ticket.resolve().await,
             GpuDataPickTicketState::Stream(ticket) => {
                 return ticket
                     .resolve()

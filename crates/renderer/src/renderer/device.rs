@@ -445,6 +445,26 @@ impl TargetPipelines {
         if !needed {
             return;
         }
+        for pass in data_render::surface_mesh::SurfacePass::ALL {
+            self.ensure_surface_pass(
+                device,
+                [transform_bgl, style_bgl, field_bgl, surface_bgl],
+                surface_format,
+                pass,
+            );
+        }
+    }
+
+    /// Compile the surface module and the one pipeline `pass` when they are
+    /// missing; `bgls` are the transform, style, field and surface layouts.
+    pub(super) fn ensure_surface_pass(
+        &mut self,
+        device: &wgpu::Device,
+        bgls: [&wgpu::BindGroupLayout; 4],
+        surface_format: wgpu::TextureFormat,
+        pass: data_render::surface_mesh::SurfacePass,
+    ) {
+        let [transform_bgl, style_bgl, field_bgl, surface_bgl] = bgls;
         let shader = self.surface_shader.get_or_insert_with(|| {
             crate::gpu_compile::shader_module(
                 device,
@@ -456,21 +476,19 @@ impl TargetPipelines {
                 },
             )
         });
-        for pass in data_render::surface_mesh::SurfacePass::ALL {
-            let slot = &mut self.surface[pass as usize];
-            if slot.is_none() {
-                *slot = Some(data_render::surface_mesh::create_surface_pipeline(
-                    device,
-                    shader,
-                    transform_bgl,
-                    style_bgl,
-                    field_bgl,
-                    surface_bgl,
-                    surface_format,
-                    self.sample_count,
-                    pass,
-                ));
-            }
+        let slot = &mut self.surface[pass as usize];
+        if slot.is_none() {
+            *slot = Some(data_render::surface_mesh::create_surface_pipeline(
+                device,
+                shader,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
         }
     }
 

@@ -183,3 +183,70 @@ fn a_heatmap_on_a_3d_chart_draws_as_a_surface() {
         "peak at {peak:?}: {p:?}"
     );
 }
+
+/// The ID pick answers the grid sample whose patch the cursor's pixel
+/// shows, at 1x and 2x, and nothing off the surface.
+#[test]
+fn the_id_pick_answers_the_sample_under_the_cursor() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let config = chart_3d();
+    let series = vec![surface_series(21, Shading::Interpolated, None)];
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    for scale in [1.0f32, 2.0] {
+        let displayed = config.scaled(scale);
+        let pick = |r: &mut Renderer, at: [f64; 3]| {
+            let p = displayed.project_3d(at).unwrap();
+            let request = renderer::GpuPickRequest {
+                canvas_position_px: [p[0] as f32, p[1] as f32],
+                display_panel_px: Rect {
+                    x: 0,
+                    y: 0,
+                    width: (WIDTH as f32 * scale) as u32,
+                    height: (HEIGHT as f32 * scale) as u32,
+                },
+                display_scale: scale,
+                max_distance_px: 0.0,
+            };
+            pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap()
+        };
+        let cell = |picked| match picked {
+            Some(renderer::PickedData::MatrixCell {
+                series_id,
+                x_index,
+                y_index,
+                ..
+            }) => {
+                assert_eq!(series_id, "ridge");
+                (x_index, y_index)
+            }
+            other => panic!("{scale}x: picked {other:?}"),
+        };
+        // Sample (10, 3) sits at x = 0.5, y = 0.1875, on the near side of
+        // the peak (the default camera looks from −y).
+        let (x, y) = (0.5, 3.0 / 16.0);
+        assert_eq!(cell(pick(&mut r, [x, y, ridge(x, y)])), (10, 3), "{scale}x");
+        // Sample (10, 8) at y = 0.5 is behind the peak at y = 0.4: the
+        // nearer surface in front of it answers, by the depth test.
+        let hidden = cell(pick(&mut r, [0.5, 0.5, ridge(0.5, 0.5)]));
+        assert_ne!(hidden, (10, 8), "{scale}x: a hidden sample never picks");
+        assert!(hidden.1 < 8, "{scale}x: {hidden:?} is nearer the eye");
+        // Above the box: nothing.
+        let above = displayed.project_3d([0.5, 0.5, 1.0]).unwrap();
+        let p = [above[0], above[1] - 60.0 * f64::from(scale)];
+        let request = renderer::GpuPickRequest {
+            canvas_position_px: [p[0] as f32, p[1] as f32],
+            display_panel_px: Rect {
+                x: 0,
+                y: 0,
+                width: (WIDTH as f32 * scale) as u32,
+                height: (HEIGHT as f32 * scale) as u32,
+            },
+            display_scale: scale,
+            max_distance_px: 0.0,
+        };
+        let miss = pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+        assert_eq!(miss, None, "{scale}x");
+    }
+}

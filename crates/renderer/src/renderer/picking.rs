@@ -1827,6 +1827,11 @@ impl Renderer {
             (inputs.panel, inputs.series, display_config, members)
         };
 
+        // A 3D chart's surfaces are picked by their ID render: the draw's
+        // own rasterizer and depth test, so a hidden quad never answers.
+        if display_config.view_3d.is_some() {
+            return self.pick_surface(&display_config, &series, &request);
+        }
         // Submit the established point/line query first. It stays point-only,
         // so the compatibility API and its registry lifecycle are unchanged.
         let point_ticket = self.pick_chart(id, request)?;
