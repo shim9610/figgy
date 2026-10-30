@@ -70,6 +70,8 @@ struct Transform {
     style_params: array<vec4<f32>, 3>,
     polar_angle: vec4<f32>,
     polar_extent: vec4<f32>,
+    ternary_lt: vec4<f32>,
+    ternary_r: vec4<f32>,
 };
 
 struct PickQueryParams {

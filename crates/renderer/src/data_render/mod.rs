@@ -69,7 +69,7 @@ pub use column_pool::{
 
 // WGSL mirror size guards. Field order and size must remain byte-identical to
 // every shader common block before either CPU structure changes.
-const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 144);
+const _: () = assert!(std::mem::size_of::<ScatterTransform>() == 176);
 
 // Primitive style uniform — color and per-primitive options.
 // Bind groups: group(0) = transform (shared), group(1) = style (per primitive).

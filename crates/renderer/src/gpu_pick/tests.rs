@@ -271,6 +271,8 @@ fn test_query(canvas_position_px: [f32; 2]) -> GpuPickQuery {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         },
         chart_rect_px: [0.0, 0.0, 100.0, 100.0],
         data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -1870,6 +1872,8 @@ fn two_dimensional_gate_dispatch_returns_the_original_index() {
                 style_params: [[0.0; 4]; 3],
                 polar_angle: [0.0; 4],
                 polar_extent: [0.0; 4],
+                ternary_lt: [0.0; 4],
+                ternary_r: [0.0; 4],
             },
             chart_rect_px: [0.0, 0.0, 100.0, 100.0],
             data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -1949,6 +1953,8 @@ fn overlapping_tickets_resolve_after_registry_engine_and_pool_drop() {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         },
         chart_rect_px: [0.0, 0.0, 100.0, 100.0],
         data_area_px: Some([0.0, 0.0, 100.0, 100.0]),
@@ -3447,7 +3453,14 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
         ),
         (PickShader::Vector, &["vector_points"][..]),
     ] {
-        let expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        let mut expected: BTreeSet<_> = draws.iter().flat_map(|name| draw(name)).collect();
+        // The marker modules measure a box plot's raw points too, which the
+        // bar module draws: they splice its placement fragment, not the
+        // whole bar module (#53).
+        if matches!(shader, PickShader::Marker | PickShader::MarkerLine) {
+            assert!(draw("bar").contains("data_render/common/category_jitter.wgsl"));
+            expected.insert("data_render/common/category_jitter.wgsl");
+        }
         assert!(!expected.is_empty(), "{shader:?}");
         assert_eq!(
             common(shader.fragments()),

@@ -5,9 +5,9 @@ use super::*;
 
 /// Shared transform uniform for scatter / line / errorbar shaders.
 ///
-/// 144 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
-/// offset 64, stride 16, and two polar `vec4<f32>` at 112 and 128, WGSL
-/// uniform layout). Pixel sizes (point radius, cap half-length) live in
+/// 176 bytes (eight `vec2<f32>` fields, one `array<vec4<f32>, 3>` at
+/// offset 64, stride 16, two polar `vec4<f32>` at 112 and 128 and two
+/// ternary `vec4<f32>` at 144 and 160, WGSL uniform layout). Pixel sizes (point radius, cap half-length) live in
 /// [`PrimitiveStyle`]; shaders convert them to NDC via `pixel_to_ndc`.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -50,6 +50,14 @@ pub struct ScatterTransform {
     /// full circle, arc pieces per line segment or 0 for chords, outer radius
     /// in pixels)`.
     pub polar_extent: [f32; 4], // offset 128 → 144 byte
+    /// `Config.ternary`, all zero otherwise: the corners L (x's 100 %) and T
+    /// (y's 100 %) in NDC, `(L.x, L.y, T.x, T.y)`. With the flag in
+    /// `ternary_r` set, a ternary entry places a sample at the corners
+    /// weighted by its three components (`ternary_ndc`).
+    pub ternary_lt: [f32; 4], // offset 144
+    /// `(R.x, R.y, flag, 0)`: the corner R (c's 100 %) in NDC and 1 for a
+    /// ternary chart.
+    pub ternary_r: [f32; 4], // offset 160 → 176 byte
 }
 
 /// Admission headroom for one immutable streamed point/errorbar transform.
@@ -233,6 +241,7 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
     let (min_y_hi, min_y_lo) = crate::data::split_f64_to_f32_pair(data_min_y);
     let (max_y_hi, max_y_lo) = crate::data::split_f64_to_f32_pair(data_max_y);
     let (polar_angle, polar_extent) = transform_constants(config);
+    let (ternary_lt, ternary_r) = ternary_constants(config, *ca, chart_w, chart_h);
     ScatterTransform {
         data_min: [min_x_hi, min_y_hi],
         data_max: [max_x_hi, max_y_hi],
@@ -245,7 +254,31 @@ pub fn scatter_transform_from_config(config: &Config) -> ScatterTransform {
         style_params,
         polar_angle,
         polar_extent,
+        ternary_lt,
+        ternary_r,
     }
+}
+
+/// `(ternary_lt, ternary_r)` of [`ScatterTransform`] for `config`: the
+/// triangle's corners ([`Config::ternary_geometry`]) in the NDC of the
+/// panel `ca` of `chart_w × chart_h` pixels, all zero for any other chart.
+pub(crate) fn ternary_constants(
+    config: &Config,
+    ca: crate::layout::Rect,
+    chart_w: f32,
+    chart_h: f32,
+) -> ([f32; 4], [f32; 4]) {
+    let Some(geometry) = config.ternary_geometry() else {
+        return ([0.0; 4], [0.0; 4]);
+    };
+    let ndc = |p: [f32; 2]| {
+        [
+            (p[0] - ca.x as f32) / chart_w * 2.0 - 1.0,
+            1.0 - (p[1] - ca.y as f32) / chart_h * 2.0,
+        ]
+    };
+    let [l, t, r] = geometry.corners.map(ndc);
+    ([l[0], l[1], t[0], t[1]], [r[0], r[1], 1.0, 0.0])
 }
 
 /// `(polar_angle, polar_extent)` of [`ScatterTransform`] for `config`: all

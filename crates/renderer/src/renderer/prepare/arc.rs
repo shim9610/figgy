@@ -30,12 +30,16 @@ pub(in crate::renderer) struct ArcResultKey {
     pub(in crate::renderer) pool_layout_generation: u64,
     pub(in crate::renderer) x_allocation_epoch: u64,
     pub(in crate::renderer) y_allocation_epoch: u64,
-    /// The arc scan reads the first 64 bytes of `ScatterTransform` and its
-    /// polar words (`polar_angle`, `polar_extent`, the last 32 bytes); the
-    /// style parameters between them are left out, so a style change does
-    /// not retraverse the data.
+    /// The arc scan reads the first 64 bytes of `ScatterTransform`, its
+    /// polar words (`polar_angle`, `polar_extent`) and its ternary words
+    /// (`ternary_lt`, `ternary_r`); the style parameters between them are
+    /// left out, so a style change does not retraverse the data.
     pub(in crate::renderer) geometry_transform_bits: [u32; 16],
     pub(in crate::renderer) polar_transform_bits: [u32; 8],
+    pub(in crate::renderer) ternary_transform_bits: [u32; 8],
+    /// A ternary line's third component: its element base and allocation
+    /// epoch (the chord lengths are measured through it).
+    pub(in crate::renderer) c: Option<(u32, u64)>,
     pub(in crate::renderer) star_pitch_bits: Option<u32>,
     /// Step interpolation mode: a stepped path has a different arc length.
     pub(in crate::renderer) step_mode: u32,
@@ -94,6 +98,12 @@ impl PrepareContext<'_> {
                         &cfg.series_id,
                         &cfg.x_column,
                         &cfg.y_column,
+                        match &cfg.render_type {
+                            crate::data_config::DataRenderType::Ternary { c_column, .. } => {
+                                Some(c_column.as_str())
+                            }
+                            _ => None,
+                        },
                         &t,
                         if line {
                             arrow_pitch.or(star_pitch)
@@ -169,6 +179,7 @@ impl PrepareContext<'_> {
         series_id: &str,
         x_id: &str,
         y_id: &str,
+        c_id: Option<&str>,
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
@@ -181,7 +192,22 @@ impl PrepareContext<'_> {
                 &self.device,
             ));
         }
-        let (x_base, y_base, n) = self.arc_source_layout(x_id, y_id)?;
+        let (x_base, y_base, mut n) = self.arc_source_layout(x_id, y_id)?;
+        // A ternary line's third component bounds the polyline too.
+        let c = match c_id {
+            Some(id) => {
+                let slot = self.pool.slot(id)?;
+                n = n.min(u32::try_from(slot.len_values).ok()?);
+                if n < 2 {
+                    return None;
+                }
+                Some((
+                    u32::try_from(slot.offset / 4).ok()?,
+                    self.pool.allocation_epoch(id)?,
+                ))
+            }
+            None => None,
+        };
         let layout_generation = self.pool.layout_generation();
         let x_allocation_epoch = self.pool.allocation_epoch(x_id)?;
         let y_allocation_epoch = self.pool.allocation_epoch(y_id)?;
@@ -190,7 +216,9 @@ impl PrepareContext<'_> {
         let mut geometry_transform_bits = [0u32; 16];
         geometry_transform_bits.copy_from_slice(&transform_bits[..16]);
         let mut polar_transform_bits = [0u32; 8];
-        polar_transform_bits.copy_from_slice(&transform_bits[28..]);
+        polar_transform_bits.copy_from_slice(&transform_bits[28..36]);
+        let mut ternary_transform_bits = [0u32; 8];
+        ternary_transform_bits.copy_from_slice(&transform_bits[36..44]);
         let key = ArcResultKey {
             n,
             x_base,
@@ -200,6 +228,8 @@ impl PrepareContext<'_> {
             y_allocation_epoch,
             geometry_transform_bits,
             polar_transform_bits,
+            ternary_transform_bits,
+            c,
             star_pitch_bits: star_pitch.map(f32::to_bits),
             step_mode,
         };
@@ -245,6 +275,7 @@ impl PrepareContext<'_> {
             chunk_override,
             star_pitch.is_some().then_some(&self.star_data_bgl),
             step_mode,
+            c.map_or(0, |(base, _)| base),
         )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
 
         let mut encoder = self
@@ -318,6 +349,7 @@ impl Renderer {
             series_id,
             x_id,
             y_id,
+            None,
             t,
             star_pitch,
             interpolation,

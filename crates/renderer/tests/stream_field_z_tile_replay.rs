@@ -485,6 +485,8 @@ fn setup_fixture(
         style_params: [[0.0; 4]; 3],
         polar_angle: [0.0; 4],
         polar_extent: [0.0; 4],
+        ternary_lt: [0.0; 4],
+        ternary_r: [0.0; 4],
     };
     let mut style = renderer::data_render::PrimitiveStyle::zeroed();
     style.color_premul = [0.08, 0.13, 0.19, 0.45];

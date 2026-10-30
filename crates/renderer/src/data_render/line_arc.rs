@@ -654,7 +654,11 @@ pub(crate) struct ArcParams {
     /// stepped pieces' pixel lengths. Zero for the sums windows and for
     /// streamed lines, which reject step modes.
     pub(crate) mode: u32,
-    pub(crate) _pad: [u32; 3],
+    /// A ternary line's third component's element offset in the pool;
+    /// `seg_init` measures the chord `vs_ternary` draws when the transform's
+    /// ternary flag is set. Zero otherwise.
+    pub(crate) c_base: u32,
+    pub(crate) _pad: [u32; 2],
 }
 
 const _: () = assert!(std::mem::size_of::<ArcParams>() == 32);
@@ -741,7 +745,8 @@ impl ArcReplayLeaf {
             y_base,
             start: self.local_start,
             mode: 0,
-            _pad: [0; 3],
+            c_base: 0,
+            _pad: [0; 2],
         }
     }
 
@@ -885,6 +890,7 @@ impl ArcScratch {
         chunk_capacity_override: Option<u32>,
         star_data_bgl: Option<&wgpu::BindGroupLayout>,
         step_mode: u32,
+        c_base: u32,
     ) -> Option<Self> {
         let plan = buffer_plan(
             n,
@@ -1016,7 +1022,8 @@ impl ArcScratch {
                     y_base,
                     start,
                     mode: step_mode,
-                    _pad: [0; 3],
+                    c_base,
+                    _pad: [0; 2],
                 },
             );
             let p_s0 = params_buf(
@@ -1027,7 +1034,8 @@ impl ArcScratch {
                     y_base: 0,
                     start: 0,
                     mode: 0,
-                    _pad: [0; 3],
+                    c_base: 0,
+                    _pad: [0; 2],
                 },
             );
             let p_s1 = params_buf(
@@ -1038,7 +1046,8 @@ impl ArcScratch {
                     y_base: 0,
                     start: 0,
                     mode: 0,
-                    _pad: [0; 3],
+                    c_base: 0,
+                    _pad: [0; 2],
                 },
             );
             chunks.push(ChunkBinds {
@@ -1480,6 +1489,8 @@ mod replay_product_tests {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         };
         let transform_buf = init(&device, &transform);
         let transform_bg = pipelines.replay_transform_bind_group(&device, &transform_buf);
@@ -1526,6 +1537,7 @@ mod replay_product_tests {
                 max_workgroups,
                 Some(cap),
                 None,
+                0,
                 0,
             )
             .expect("resident oracle build");
@@ -1621,7 +1633,8 @@ mod replay_product_tests {
                             y_base: 0,
                             start: 0,
                             mode: 0,
-                            _pad: [0; 3],
+                            c_base: 0,
+                            _pad: [0; 2],
                         },
                     );
                     let upper_params = init(
@@ -1632,7 +1645,8 @@ mod replay_product_tests {
                             y_base: 0,
                             start: 0,
                             mode: 0,
-                            _pad: [0; 3],
+                            c_base: 0,
+                            _pad: [0; 2],
                         },
                     );
                     let top_storage = pipelines.replay_storage_bind_group(

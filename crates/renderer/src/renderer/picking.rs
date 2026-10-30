@@ -1717,6 +1717,12 @@ impl Renderer {
                         &series.series_id,
                         &series.x_column,
                         &series.y_column,
+                        match &series.render_type {
+                            crate::data_config::DataRenderType::Ternary { c_column, .. } => {
+                                Some(c_column.as_str())
+                            }
+                            _ => None,
+                        },
                         series_transform,
                         super::prepare::streamline_arrow_pitch(
                             &series.render_type,

@@ -430,6 +430,8 @@ mod tests {
                     style_params,
                     polar_angle,
                     polar_extent,
+                    ternary_lt,
+                    ternary_r,
                 }
             )
             .with(module, wgsl)

@@ -18,6 +18,20 @@ fn polar_sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
     return rt >= 0.0;
 }
 
+// Ternary: every component finite and non-negative, their sum positive.
+// Any other sample has no place in the triangle: it is not drawn and a line
+// breaks there, so nothing needs a fragment clip.
+fn ternary_sample_valid(xv: vec2<f32>, yv: vec2<f32>, cv: vec2<f32>) -> bool {
+    let x = xv.x + xv.y;
+    let y = yv.x + yv.y;
+    let c = cv.x + cv.y;
+    return sample_finite(xv.x) && sample_finite(xv.y)
+        && sample_finite(yv.x) && sample_finite(yv.y)
+        && sample_finite(cv.x) && sample_finite(cv.y)
+        && sample_finite(x) && sample_finite(y) && sample_finite(c)
+        && x >= 0.0 && y >= 0.0 && c >= 0.0 && x + y + c > 0.0;
+}
+
 fn sample_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>) -> bool {
     let x = xv.x + xv.y;
     let y = yv.x + yv.y;

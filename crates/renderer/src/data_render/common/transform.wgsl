@@ -28,7 +28,14 @@ struct Transform {
     //               chords; outer radius in pixels)
     polar_angle: vec4<f32>,
     polar_extent: vec4<f32>,
-};  // 144 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128)
+    // Ternary coordinates (Config.ternary); all zero otherwise.
+    // ternary_lt: (L.x, L.y, T.x, T.y), the corners of x's and y's 100 %
+    //             in NDC
+    // ternary_r:  (R.x, R.y, flag, 0), the corner of c's 100 % in NDC and
+    //             1 for a ternary chart
+    ternary_lt: vec4<f32>,
+    ternary_r: vec4<f32>,
+};  // 176 B (vec4 array at offset 64, stride 16; polar vec4s at 112 and 128; ternary vec4s at 144 and 160)
 
 @group(0) @binding(0) var<uniform> transform: Transform;
 
