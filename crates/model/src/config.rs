@@ -1036,7 +1036,7 @@ impl Config {
             ternary,
             // The camera holds angles, a distance in box half-diagonals and
             // relative lengths: no pixel dimension.
-            view_3d: _,
+            view_3d,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.
@@ -1095,9 +1095,9 @@ impl Config {
             (right_y, Side::Right),
         ] {
             scale_axis_in_place(axis, s);
-            // A ternary chart's labels keep a font-relative gap, which
+            // Ternary and 3D box labels keep a font-relative gap, which
             // scales with the font: no fixed gap to make up for.
-            if ternary.is_none() {
+            if ternary.is_none() && view_3d.is_none() {
                 scale_label_gap(axis, &side, polar, s);
             }
         }

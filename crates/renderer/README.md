@@ -56,6 +56,7 @@ Hosts that already own a matching wgpu 30 device/queue can share them through
 | Radar (spider) charts | `Renderer` with `Config.polar` | `Radar` series over a categorical angle axis, one value column per series, or a legacy `RadarChart` read by `Config::from_radar`; [radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md) |
 | Polar plots: lines, scatter and areas in (angle, radius) | `Renderer` with `Config.polar` | The same columns as rectangular charts with scatter, line and scatter-line `SeriesConfig`; histograms, heatmaps, contours, error bars, vectors, overlay layers and streamed sources are rejected; [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md) |
 | Ternary plots: markers and lines of three-component samples | `Renderer` with `Config.ternary` | Three columns per `Ternary` series (`x_column`, `y_column`, `c_column`), unnormalized; fills, step lines, overlay layers and streamed sources are rejected; [ternary guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/TERNARY.md) |
+| 3D surfaces: a heatmap's grid as a lit surface, contours on the floor | `Renderer` with `Config.view_3d` | The heatmap's own columns; overlays, line offsets and streamed sources are rejected; [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md) |
 
 The renderer re-exports model types: most applications do not need a separate
 `figgy-model` dependency. Pies and donuts are the

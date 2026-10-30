@@ -169,6 +169,21 @@ triangle refits. The annotation layer places ratio anchors only, ternary
 subplots carry their own triangle, and overlays and streamed sources are
 rejected.
 
+3D charts (`Config.view_3d`, a heatmap drawn as a surface,
+[surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
+pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
+depth test: a surface answers `PickedData::MatrixCell` for the grid sample
+nearest the fragment inside its quad, never one hidden behind the surface,
+and a floor contour answers its level. The picked sample's patch is
+outlined and brightened over anything in front of it. `step_selection`
+walks the samples and `selection_details()` reports the sample's values. A
+data-area drag orbits the camera (`Config::orbit_view`) and
+`Config::zoom_view` zooms it; the data area's edges still resize it. A box
+axis drags along its edge's outward screen normal (`line_offset`), its tick
+labels in the edge frame and the titles in screen space. The annotation
+layer places ratio anchors only, 3D subplots carry their own camera, and
+overlays and streamed sources are rejected.
+
 ### Value labels
 
 The value label of a category bar, box plot or radar series is the

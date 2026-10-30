@@ -3074,6 +3074,24 @@ impl Renderer {
             )
             .await;
 
+        // The 3D surface and its floor contours (`Config.view_3d`).
+        started(observer, "renderer.prewarm", "surface");
+        for pass in data_render::surface_mesh::SurfacePass::ALL {
+            self.pipelines.ensure_surface_pass(
+                &self.device,
+                [
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.field_bgl,
+                    &self.surface_bgl,
+                ],
+                self.surface_format,
+                pass,
+            );
+        }
+        finished(observer, "renderer.prewarm", "surface");
+        crate::init::yield_init_frame().await;
+
         if self.arc_pipelines.is_none() {
             self.arc_pipelines = Some(
                 data_render::line_arc::create_arc_scan_pipelines_observed_async(

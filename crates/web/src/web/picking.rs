@@ -545,6 +545,16 @@ impl FiggyChart {
                         samples.push((grid_column(color)?, sample_index));
                     }
                 }
+                // A surface coloured by a second grid also reports the value
+                // its colour came from.
+                let surface_color = series
+                    .render_type
+                    .surface_style()
+                    .and_then(|style| style.color_matrix.as_ref())
+                    .filter(|_| vector.is_none());
+                if let Some(color) = surface_color {
+                    samples.push((grid_column(color)?, sample_index));
+                }
                 let values = self.read_selection_samples(&samples).await?;
                 result["x_index"] = serde_json::json!(x_index);
                 result["y_index"] = serde_json::json!(y_index);
@@ -560,7 +570,12 @@ impl FiggyChart {
                 });
                 let mut next = if edges { 5 } else { 3 };
                 match vector {
-                    None => result["value"] = serde_json::json!(values[2]),
+                    None => {
+                        result["value"] = serde_json::json!(values[2]);
+                        if surface_color.is_some() {
+                            result["color_value"] = serde_json::json!(values[next]);
+                        }
+                    }
                     Some((_, color)) => {
                         result["u"] = serde_json::json!(values[2]);
                         result["v"] = serde_json::json!(values[next]);

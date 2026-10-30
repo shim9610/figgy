@@ -166,6 +166,7 @@ pub use model::ternary::{TernaryGeometry, TernaryOptions};
 /// 3D charts: `View3d` for `Config.view_3d`, the camera a heatmap is drawn
 /// through as a surface, and `SurfaceStyle`, the surface's look.
 pub mod view3d {
+    #![doc = include_str!("../SURFACE.md")]
     pub use model::view3d::*;
 }
 pub use model::view3d::{SurfaceStyle, View3d};

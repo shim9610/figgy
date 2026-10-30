@@ -1242,6 +1242,42 @@ bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 categorical axis; never a difference or a duration. `labels.text` holds one
 host string per row and `labels.offsets` their drag offsets.
 
+<a id="surface-render_type"></a>
+
+## 3D surfaces (`view_3d` and a heatmap's `surface`)
+
+`"view_3d"` on the config (omitted when off) draws a 3D box: `bottom_x` is
+x, `left_y` y and `right_y` z. `"Heatmap"` and `"HeatmapContour"` series
+draw as surfaces and `"Contour"` series on the floor. `"surface"` on a
+heatmap holds its look and is omitted when absent; on a flat chart it is
+kept and unused.
+
+```json
+{
+  "view_3d": { "azimuth_degrees": -60.0, "elevation_degrees": 30.0,
+               "distance": 3.0, "projection": "Orthographic" }
+}
+```
+
+```json
+{
+  "Heatmap": {
+    "matrix": { "columns": ["z0", "z1"], "orientation": "ColumnsAreX", "grid_layout": "Centers" },
+    "fill": { "mode": "Continuous", "shading": "Interpolated", "opacity": 1.0 },
+    "surface": {
+      "wireframe": { "color": { "r": 0.1, "g": 0.1, "b": 0.1, "a": 0.6 }, "width": 1.0 },
+      "material": "Matte", "gloss": 0.45, "texture_strength": 0.2,
+      "texture_scale": 1.0, "emphasis_brightness": 0.12
+    }
+  }
+}
+```
+
+`box_aspect` (`[x, y, z]`) and the surface's `color_matrix` (a matrix of
+the same shape) are omitted when absent. A picked sample's
+`selection_details()` carries `x_index`, `y_index`, `x`, `y` and `value`,
+plus `color_value` with a colour grid.
+
 <a id="ternary-render_type"></a>
 
 ## `Ternary` render_type

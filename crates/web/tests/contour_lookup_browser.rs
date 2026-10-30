@@ -136,6 +136,7 @@ fn band_series(levels: Vec<f64>) -> SeriesConfig {
                 per_level_color: None,
                 labels: None,
             },
+            surface: None,
         },
     }
 }

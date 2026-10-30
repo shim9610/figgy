@@ -23,8 +23,8 @@ new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection,
 the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
-`Ternary` series kinds, the box plot's `violin` and `points`, and
-`ternary`) are additive.
+`Ternary` series kinds, the box plot's `violin` and `points`, `ternary`,
+`view_3d` and the heatmaps' `surface`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -97,6 +97,29 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   documents parse and re-serialize byte for byte. Migration: a
   `HistogramBin { .. }` literal adds `half: None`, and a pattern that names
   every field adds `half` or `..`.
+- **3D surfaces** ([#49](https://github.com/shim9610/figgy/issues/49)).
+  `Config.view_3d: Option<View3d>` turns a chart into a box seen through a
+  camera (`azimuth_degrees`, `elevation_degrees`, `distance`, `projection`
+  and `box_aspect`), with x on `bottom_x`, y on `left_y` and z on
+  `right_y`. A `Heatmap` on it draws as a surface, a `Contour` on the box
+  floor and a `HeatmapContour` both: the data type is the heatmap's, so a
+  chart switches between 2D and 3D by its view alone. `Heatmap` and
+  `HeatmapContour` gain `surface: Option<SurfaceStyle>` (a colour grid, a
+  wireframe, a material and its parameters, the highlight's brightness).
+  `Config::view_matrix` is the one camera matrix; `Config::project_3d`,
+  `Config::box_axis_edge`, `Config::box_title_placement` and
+  `Config::box_back_panes` place the box chrome; `Config::orbit_view` and
+  `Config::zoom_view` turn and zoom the camera, and a data-area drag
+  orbits it. `Config::validate_view_3d` and
+  `Config::validate_view3d_series` hold the rules (linear or logarithmic
+  axes, not polar or ternary, no overlays or line offsets, Precise only;
+  heatmaps, contours and heatmap contours only, continuous fills, no floor
+  labels). Box axes drag along their edge's outward normal, tick labels in
+  the edge frame and titles in screen space. `view_3d`, `surface` and
+  `box_aspect` are omitted when `None`. Migration: a `Config { .. }`
+  literal adds `view_3d: None`; a `Heatmap { .. }` or `HeatmapContour { .. }`
+  literal adds `surface: None`, and a pattern that names every field adds
+  `surface` or `..`.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55),
   #58 item 24). `Config.ternary: Option<TernaryOptions>` turns a chart into
   a triangle, and `DataRenderType::Ternary { c_column, scatter, line }`
@@ -941,6 +964,27 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   Two playground scenes (Split violins, Raincloud) join the decoration
   oracle's catalogue. Picking among 600 violins of 4 096 curve points takes
   about 4 ms on lavapipe, and a raw point among 3 000 000 about 70 ms.
+- **3D surfaces** ([#49](https://github.com/shim9610/figgy/issues/49)).
+  A 3D panel's composite gains a `Depth24PlusStencil8` attachment at the
+  target's sample count, created only for that panel on screen
+  (`ResidentDisplay`) and in export; the 2D pipelines and the shared frame
+  and export passes are unchanged. The surface module
+  (`data_render/surface_mesh/`: `surface_input_grid.wgsl`,
+  `surface_entry.wgsl`, with `common/project_3d.wgsl`) draws one instance
+  per quad from the field group's grid table, its positions, colours and
+  normals computed on every draw; `field_paint.wgsl` moves the heatmap's
+  colour code to `common/` so the surface paints as the heatmap does. The
+  field module gains `vs_floor` and `fs_floor_contour_pick` for floor
+  contours, drawn before the surfaces without writing depth. Picking is a
+  1×1 ID pick (`renderer/surface_pick.rs`, an `Rgba32Uint` target) with the
+  depth test, so a hidden sample is never answered; the picked sample's
+  patch is drawn in the live highlight slot over its occluders. The box
+  grid, axes, ticks, labels and titles are emitted through the sinks
+  (`axis_render/box3d_axes.rs`). `Chart::auto_fit_view_3d_z` fits
+  `right_y` to the height columns' statistics. Annotations place ratio
+  anchors only, streamed sources are rejected, and the compile capture
+  records `depthStencil`. A grid past `1 << 22` quads draws whole.
+  Guide: `SURFACE.md`.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `ScatterTransform` grows from 144 to 176 bytes with `ternary_lt` and
   `ternary_r`, the triangle's corners in data-area NDC; the pick core's copy
@@ -1616,6 +1660,12 @@ the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
   JSON (SCHEMA.md); a picked raw point's `selection_details()` reports its
   `index`, `position`, `value`, `direction` and category, and a violin
   without boxes reports its category.
+- **3D surfaces** ([#49](https://github.com/shim9610/figgy/issues/49)).
+  `set_config` / `get_config` read and write `"view_3d"` and `set_series`
+  a heatmap's `"surface"` (SCHEMA.md, both omitted when absent).
+  `zoom_view(factor)` zooms a 3D chart's camera, a data-area drag orbits
+  it, `auto_fit_all` fits the z axis, and `selection_details()` adds a
+  surface's `color_value` when it has a colour grid.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `set_config` / `get_config` read and write `"ternary"` (omitted when
   absent), `set_series` the `"Ternary"` render type (SCHEMA.md);

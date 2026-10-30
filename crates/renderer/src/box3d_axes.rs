@@ -200,8 +200,16 @@ pub(super) fn emit_box_labels(
     let n = edge.normal;
     let along = edge.direction();
     let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;
+    // The x and y edges meet at the floor corner nearest the eye; the x
+    // label there keeps it, as a ternary corner shows one label.
+    let shared = (k == 1)
+        .then(|| config.box_axis_edge(0))
+        .flatten()
+        .map(|x_edge| x_edge.t0[1]);
     for value in majors {
-        let Some(f) = fraction(axis, value) else {
+        let Some(f) =
+            fraction(axis, value).filter(|f| shared.is_none_or(|corner| (f - corner).abs() > 1e-6))
+        else {
             continue;
         };
         let (text, m) = super::polar::tick_text(axis, value, fp);

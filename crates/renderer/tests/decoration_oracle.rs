@@ -415,6 +415,43 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the slanted title's turned box, as in I2",
         issue: "#55",
     },
+    Exclusion {
+        scene: "Surface",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I2,
+        detail: "box * is * px past the padding from the ink extent*",
+        reason: "a box axis title runs along its slanted edge; its box is the bounding box of \
+                 the turned text box, whose turned corners hold no glyphs",
+        issue: "#49",
+    },
+    Exclusion {
+        scene: "Surface",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
+        reason: "the slanted title's turned box, as in I2",
+        issue: "#49",
+    },
+    Exclusion {
+        scene: "Surface",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "a 3D chart's data-area drag orbits the camera: every drag is a valid turn",
+        issue: "#49",
+    },
+    Exclusion {
+        scene: "Surface",
+        layer: "base",
+        element: "data_area",
+        inv: Inv::I6,
+        detail: "the polar drag did not move it",
+        reason: "a 3D chart's data-area drag turns the camera and leaves the data area in place",
+        issue: "#49",
+    },
     // The radar scene is a polar chart: the outer ring row above (its ray
     // line is hidden, so it has no ray drag row), and its ring labels.
     Exclusion {
@@ -879,6 +916,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Violins => "Violins",
         SceneKind::Raincloud => "Raincloud",
         SceneKind::Ternary => "Ternary",
+        SceneKind::Surface => "Surface",
     }
 }
 
@@ -2884,6 +2922,16 @@ fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
             let d = dx * n[0] + dy * n[1];
             Some((n[0] * d, n[1] * d))
         }
+        // A 3D box axis moves by the drag's component on its edge's outward
+        // screen normal; a data-area drag orbits the camera, which moves
+        // the box, not the data area.
+        Element::Axis(side) if chart.view_3d.is_some() => {
+            let k = renderer::ternary::side_component(side)?;
+            let n = chart.box_axis_edge(k)?.normal;
+            let d = dx * n[0] + dy * n[1];
+            Some((n[0] * d, n[1] * d))
+        }
+        Element::DataArea if chart.view_3d.is_some() => None,
         Element::Axis(Side::Top | Side::Bottom) => Some((0.0, dy)),
         Element::Axis(_) => Some((dx, 0.0)),
         Element::ColorBarAxis => match chart.colorbar.as_ref().map(|b| &b.side) {

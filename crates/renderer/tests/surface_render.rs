@@ -571,3 +571,202 @@ fn the_screen_draws_the_surface_and_redraws_it_when_the_camera_turns() {
         "the peak after the turn: {p:?}"
     );
 }
+
+/// Whether `p` is drawn in Viridis' top colour (yellow).
+fn is_top_color(p: [u8; 4]) -> bool {
+    p[3] > 200 && p[0] > 100 && p[1] > 100 && p[2] < 90
+}
+
+/// The 2x export draws what the 1x export draws, at twice the pixels: the
+/// peak lands where the scaled camera puts it.
+#[test]
+fn the_2x_export_draws_the_1x_surface() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let config = chart_3d();
+    let series = [surface_series(21, Shading::Interpolated, None)];
+    for scale in [1.0f32, 2.0] {
+        let img = export(&mut r, &config, &series, scale);
+        assert_eq!(img.width, (WIDTH as f32 * scale) as u32);
+        let peak = config.scaled(scale).project_3d([0.5, 0.4, 1.0]).unwrap();
+        let p = pixel(&img, (peak[0], peak[1] + 3.0 * f64::from(scale)));
+        assert!(is_top_color(p), "{scale}x peak at {peak:?}: {p:?}");
+    }
+}
+
+/// A perspective camera draws the surface where `project_3d` places it.
+#[test]
+fn a_perspective_camera_draws_the_surface() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let mut config = chart_3d();
+    config.view_3d.as_mut().unwrap().projection = renderer::view3d::Projection3d::Perspective;
+    let series = [surface_series(21, Shading::Interpolated, None)];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("surface-perspective", &img);
+    let peak = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    let ortho = chart_3d().project_3d([0.5, 0.4, 1.0]).unwrap();
+    assert!(
+        (peak[0] - ortho[0]).abs() + (peak[1] - ortho[1]).abs() > 1.0,
+        "the perspective camera moves the peak"
+    );
+    let p = pixel(&img, (peak[0], peak[1] + 3.0));
+    assert!(is_top_color(p), "peak at {peak:?}: {p:?}");
+}
+
+/// A logarithmic z axis places the heights by their logarithm: the peak
+/// of `1 + 99·ridge` reaches the box's top at 100.
+#[test]
+fn a_logarithmic_z_axis_places_the_heights_by_their_logarithm() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, |x, y| 1.0 + 99.0 * ridge(x, y));
+    let mut config = chart_3d();
+    config.right_y.scale = renderer::config::AxisScale::Logarithmic;
+    config.right_y.min = 1.0;
+    config.right_y.max = 100.0;
+    let bar = config.colorbar.as_mut().unwrap();
+    bar.axis.min = 1.0;
+    bar.axis.max = 100.0;
+    let series = [surface_series(21, Shading::Interpolated, None)];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("surface-log-z", &img);
+    let peak = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    let p = pixel(&img, (peak[0], peak[1] + 3.0));
+    assert!(is_top_color(p), "peak at {peak:?}: {p:?}");
+}
+
+/// A NaN sample drops the quads around it, as a NaN breaks a line: the
+/// surface has a hole there and stays whole elsewhere.
+#[test]
+fn a_nan_sample_drops_the_quads_around_it() {
+    let mut r = renderer();
+    upload_grid(&mut r, 11, 11, |x, y| {
+        if (x - 0.5).abs() < 1e-9 && (y - 0.5).abs() < 1e-9 {
+            f64::NAN
+        } else {
+            0.5
+        }
+    });
+    let config = chart_3d();
+    let series = [surface_series(11, Shading::Interpolated, None)];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("surface-nan-hole", &img);
+    // Viridis at 0.5 is teal.
+    let teal = |p: [u8; 4]| p[3] > 200 && p[1] > 110 && p[2] > 110 && p[0] < 80;
+    let hole = config.project_3d([0.5, 0.5, 0.5]).unwrap();
+    assert!(!teal(pixel(&img, (hole[0], hole[1]))), "the hole is open");
+    let whole = config.project_3d([0.2, 0.2, 0.5]).unwrap();
+    assert!(teal(pixel(&img, (whole[0], whole[1]))), "the rest is drawn");
+}
+
+/// A lit material shades the surface: the lit image differs from the
+/// unlit one while the colours stay the ramp's.
+#[test]
+fn a_lit_material_shades_the_surface() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let config = chart_3d();
+    let flat = export(
+        &mut r,
+        &config,
+        &[surface_series(21, Shading::Interpolated, None)],
+        1.0,
+    );
+    let lit_style = SurfaceStyle {
+        material: renderer::Material::Matte,
+        ..SurfaceStyle::default()
+    };
+    let lit = export(
+        &mut r,
+        &config,
+        &[surface_series(21, Shading::Interpolated, Some(lit_style))],
+        1.0,
+    );
+    save("surface-lit", &lit);
+    let changed = flat
+        .rgba
+        .chunks_exact(4)
+        .zip(lit.rgba.chunks_exact(4))
+        .filter(|(a, b)| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 12))
+        .count();
+    assert!(changed > 1000, "lighting changed {changed} pixels");
+}
+
+/// The z fit reads the height columns' statistics: `right_y` spans the
+/// heights of the grid.
+#[test]
+fn the_z_fit_spans_the_heights() {
+    let mut r = renderer();
+    upload_grid(&mut r, 11, 9, |x, y| 3.0 + 4.0 * ridge(x, y));
+    let mut chart = Chart::new(chart_3d());
+    let series = [surface_series(11, Shading::Interpolated, None)];
+    chart
+        .auto_fit_view_3d_z(r.pool(), renderer::LayerRef::Base, &series, 0.0)
+        .unwrap();
+    let z = &chart.config().right_y;
+    let lo = (0..11)
+        .flat_map(|i| (0..9).map(move |j| (i as f64 / 10.0, j as f64 / 8.0)))
+        .map(|(x, y)| 3.0 + 4.0 * ridge(x, y));
+    let (min, max) = lo.fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), v| {
+        (a.min(v), b.max(v))
+    });
+    assert!(
+        (z.min - min).abs() < 1e-9 && (z.max - max).abs() < 1e-9,
+        "{} {}",
+        z.min,
+        z.max
+    );
+}
+
+/// Rule 10: a grid past `1 << 22` quads is drawn whole; the renderer caps
+/// no quad count.
+#[test]
+fn a_grid_past_four_million_quads_draws() {
+    let (device, queue) = shared_device();
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Bgra8Unorm,
+        512 * 1024 * 1024,
+    )
+    .expect("renderer init");
+    let (nx, ny) = (2050, 2049);
+    assert!((nx - 1) * (ny - 1) > 1 << 22);
+    upload_grid(&mut r, nx, ny, ridge);
+    let config = chart_3d();
+    let series = [surface_series(nx, Shading::Interpolated, None)];
+    let img = export(&mut r, &config, &series, 1.0);
+    let peak = config.project_3d([0.5, 0.4, 1.0]).unwrap();
+    let p = pixel(&img, (peak[0], peak[1] + 3.0));
+    assert!(is_top_color(p), "peak at {peak:?}: {p:?}");
+    // The far corner's quads are drawn too.
+    let corner = config
+        .project_3d([0.999, 0.999, ridge(0.999, 0.999)])
+        .unwrap();
+    assert!(
+        pixel(&img, (corner[0], corner[1]))[3] > 200,
+        "the far corner"
+    );
+}
+
+/// The 2x camera is the 1x camera doubled: every box point lands at twice
+/// its 1x pixel position.
+#[test]
+fn the_2x_camera_is_the_1x_camera_doubled() {
+    let mut config = chart_3d();
+    config.legend.visible = true;
+    config.right_y.label_style.label_visible = true;
+    let doubled = config.scaled(2.0);
+    let (a, b) = (
+        config.data_area().unwrap().0,
+        doubled.data_area().unwrap().0,
+    );
+    eprintln!("data area 1x {a:?} 2x {b:?}");
+    for t in [[0.0, 0.0, 0.0], [1.0, 1.0, 1.0], [0.5, 0.2, 0.7]] {
+        let p = config.project_3d(t).unwrap();
+        let q = doubled.project_3d(t).unwrap();
+        assert!(
+            (q[0] - 2.0 * p[0]).abs() < 0.6 && (q[1] - 2.0 * p[1]).abs() < 0.6,
+            "{t:?}: 1x {p:?}, 2x {q:?}"
+        );
+    }
+}

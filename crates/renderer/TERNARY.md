@@ -44,7 +44,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
     let series = [SeriesConfig {
         series_id: "alloys".into(),
         source_id: None,
-        label: Some("alloys".into()),
+        label: None,
         x_column: "fe".into(), // x: the bottom-left corner
         y_column: "ni".into(), // y: the top corner
         render_type: DataRenderType::Ternary {

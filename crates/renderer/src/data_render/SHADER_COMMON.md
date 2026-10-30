@@ -1549,6 +1549,50 @@ category slots (`query_params`), so the gate on the category axis covers
 the slot's extent, and the exact pass decides. A hit is a marker
 candidate, `PickedData::Point` with the point's row.
 
+### 5.21 3D projection and the surface mesh (group 3, bindings 4 and 5)
+
+[`common/project_3d.wgsl`](common/project_3d.wgsl) holds the camera of a 3D
+chart (`Config.view_3d`) at group 3 binding 4: `View3d`, the CPU twin
+`surface_mesh.rs::View3dGpu` (208 B). A point is placed by its three axis
+fractions `t`: `view3d_axis_t` reads x and y on the chart's own axis ranges
+(the transform, without the panel placement the flat draws add) and
+`view3d_z_t` reads a height on `right_y`. `project_box` maps `t` to the
+panel composite's clip space with depth, `project_box_live` to the frame
+target's (the live highlight), and `box_point` to box space for shading.
+`box_visible` clips a fragment to the box. Both matrices are
+`Config::view_matrix` composed on the host with the target's pixel map, so
+the draw, the ID pick and the CPU decorations project through one camera.
+This is the projection layer a later 3D vector glyph reuses (rule 9).
+
+[`common/field_paint.wgsl`](common/field_paint.wgsl) holds the colour a
+field paints: `z_ramp_t`, `field_fill_color` (continuous or banded),
+`contour_paint` and the lookup metadata at group 2 binding 6. The heatmap
+fill (`field_columnar.wgsl`) and the surface splice it, so a surface is
+coloured exactly as the heatmap of its grid.
+
+The surface module (`surface_mesh/`, assembled by `wgsl_module!` with the
+field grid, the field paint, the ramp, the material and the projection)
+reads `SurfaceParams` at group 3 binding 5 (CPU twin
+`surface_mesh.rs::SurfaceParamsGpu`, 80 B: the colour grid's column base,
+the `SURFACE_COLOR_GRID` / `SURFACE_WIREFRAME` / `SURFACE_LIT` flags, the
+picked sample, the wireframe's width and colour, the pick ID and the
+material). `surface_vertex` draws one instance per quad between four
+neighbouring samples, six vertices, from the field group's grid table; a
+quad with an unplaceable sample is dropped. `surface_normal` takes central
+differences of the neighbouring heights for a lit material, a shading value
+computed on every draw. `surface_fill_color` paints a quad with
+`field_fill_color`: bilinear for `Interpolated`, the corners' mean for
+`Flat`. The colour grid's columns follow the height grid's in the grid
+table at `color_base`.
+
+The floor contours are entries of the field module (`vs_floor`,
+`fs_floor_contour_pick`): a quad over the box floor (`t.z = 0`) placed
+through `project_box`, its fragments carrying the floor point in the flat
+entries' cell space, so the unchanged contour search runs per floor
+fragment and the stroke widths are floor-plane pixels (#49 D7). The ID pick writes `(id, 0, c, r)` for a
+surface sample and `(id | 0x80000000, level, c, r)` for a floor contour, to
+an `Rgba32Uint` target with the depth test.
+
 ## Checklist
 
 When shared shader code changes:
