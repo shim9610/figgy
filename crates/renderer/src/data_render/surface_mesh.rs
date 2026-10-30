@@ -225,16 +225,29 @@ pub enum SurfacePass {
     Selected,
     /// The 1×1 ID pick, depth-tested.
     Pick,
+    /// A contour on the box floor (`vs_floor` / `fs_contour` of the field
+    /// module), drawn under the surfaces without writing depth.
+    FloorContour,
+    /// The floor contours' ID pick.
+    FloorContourPick,
 }
 
 impl SurfacePass {
-    pub const ALL: [SurfacePass; 3] = [SurfacePass::Draw, SurfacePass::Selected, SurfacePass::Pick];
+    pub const ALL: [SurfacePass; 5] = [
+        SurfacePass::Draw,
+        SurfacePass::Selected,
+        SurfacePass::Pick,
+        SurfacePass::FloorContour,
+        SurfacePass::FloorContourPick,
+    ];
 
     fn entries(self) -> (&'static str, &'static str) {
         match self {
             SurfacePass::Draw => ("vs_main", "fs_main"),
             SurfacePass::Selected => ("vs_selected", "fs_selected"),
             SurfacePass::Pick => ("vs_main", "fs_pick"),
+            SurfacePass::FloorContour => ("vs_floor", "fs_contour"),
+            SurfacePass::FloorContourPick => ("vs_floor", "fs_floor_contour_pick"),
         }
     }
 
@@ -243,20 +256,38 @@ impl SurfacePass {
             SurfacePass::Draw => "figgy surface pipeline",
             SurfacePass::Selected => "figgy surface selection pipeline",
             SurfacePass::Pick => "figgy surface pick pipeline",
+            SurfacePass::FloorContour => "figgy floor contour pipeline",
+            SurfacePass::FloorContourPick => "figgy floor contour pick pipeline",
         }
     }
 
-    /// The depth state every depth-tested surface pass shares: nearer wins.
+    /// Whether the pass is the field module's (the floor) rather than the
+    /// surface module's.
+    pub fn on_floor(self) -> bool {
+        matches!(
+            self,
+            SurfacePass::FloorContour | SurfacePass::FloorContourPick
+        )
+    }
+
+    fn picks(self) -> bool {
+        matches!(self, SurfacePass::Pick | SurfacePass::FloorContourPick)
+    }
+
+    /// The depth state: a surface writes depth and nearer wins; a floor
+    /// contour, drawn first, writes none, so the surfaces blend over it.
     pub fn depth_stencil(self) -> Option<wgpu::DepthStencilState> {
+        let state = |write: bool| wgpu::DepthStencilState {
+            format: DEPTH_STENCIL_FORMAT,
+            depth_write_enabled: Some(write),
+            depth_compare: Some(wgpu::CompareFunction::Less),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState::default(),
+        };
         match self {
             SurfacePass::Selected => None,
-            SurfacePass::Draw | SurfacePass::Pick => Some(wgpu::DepthStencilState {
-                format: DEPTH_STENCIL_FORMAT,
-                depth_write_enabled: Some(true),
-                depth_compare: Some(wgpu::CompareFunction::Less),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
+            SurfacePass::Draw | SurfacePass::Pick => Some(state(true)),
+            SurfacePass::FloorContour | SurfacePass::FloorContourPick => Some(state(false)),
         }
     }
 }
@@ -291,7 +322,7 @@ pub(crate) fn create_surface_pipeline(
     );
     let (vertex, fragment) = pass.entries();
     let (format, samples, blend) = match pass {
-        SurfacePass::Pick => (SURFACE_PICK_FORMAT, 1, None),
+        _ if pass.picks() => (SURFACE_PICK_FORMAT, 1, None),
         _ => (
             target_format,
             sample_count,

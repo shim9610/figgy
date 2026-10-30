@@ -278,18 +278,34 @@ fn contour_level_distance_px(s: ContourSample, metric: ContourMetric, level: f32
 /// Cost is the data area's pixel count, not the cell count: a 5000 x 5000 grid
 /// costs what a 100 x 100 one does. Per fragment, each 32-level block is searched
 /// by z range and only reachable candidates run the coverage math.
+/// What the contour strokes paint at a fragment: the composited colour and
+/// the declaration index of the topmost level painted there, or
+/// `0xffffffff` where none is. The draw takes the colour; a 3D chart's
+/// floor ID pick (`fs_floor_contour_pick`) the level, so the two agree.
+struct ContourPaint {
+    color: vec4<f32>,
+    level: u32,
+};
+
 fn contour_color(in: FieldOut) -> vec4<f32> {
+    return contour_paint(in).color;
+}
+
+fn contour_paint(in: FieldOut) -> ContourPaint {
+    var out: ContourPaint;
+    out.color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
+    out.level = 0xffffffffu;
     var acc = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     let s = contour_sample(in.axis_t);
     if (!s.hit) {
-        return acc;
+        return out;
     }
     let metric = contour_metric(s);
     if (!metric.valid) {
-        return acc;
+        return out;
     }
     if (!f32_is_finite(field.line_width_px)) {
-        return acc;
+        return out;
     }
     let half_w = max(field.line_width_px, 0.0) * 0.5;
     // The reject below must keep a neighbouring cell's line, which legitimately
@@ -300,7 +316,7 @@ fn contour_color(in: FieldOut) -> vec4<f32> {
     let search_hi = s.z_hi + margin;
     if (!f32_is_finite(half_w) || !f32_is_finite(margin)
         || !f32_is_finite(search_lo) || !f32_is_finite(search_hi)) {
-        return acc;
+        return out;
     }
     for (var block = 0u; block < contour_level_block_count(); block = block + 1u) {
         let start = block * CONTOUR_LEVEL_BLOCK_SIZE;
@@ -339,9 +355,58 @@ fn contour_color(in: FieldOut) -> vec4<f32> {
                 continue;
             }
             acc = composited;
+            if (cov >= 0.5) {
+                out.level = i;
+            }
         }
     }
-    return acc;
+    out.color = acc;
+    return out;
+}
+
+// ── 3D floor (Config.view_3d) ──────────────────────────────────────────────
+//
+// On a 3D chart a contour draws on the box floor: the same quad, projected
+// through the camera (`project_3d.wgsl`), with `axis_t` the floor point in
+// the space the flat entries locate cells in. The unchanged `fs_contour`
+// then finds the isolines in floor coordinates, so its stroke widths are
+// floor-plane pixels and foreshorten with the floor (#49 D7).
+
+@vertex
+fn vs_floor(@builtin(vertex_index) vid: u32) -> FieldOut {
+    var corners = array<vec2<f32>, 6>(
+        vec2<f32>(0.0, 0.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(0.0, 1.0),
+        vec2<f32>(1.0, 0.0),
+        vec2<f32>(1.0, 1.0),
+        vec2<f32>(0.0, 1.0),
+    );
+    let t = corners[vid];
+    var out: FieldOut;
+    out.pos = project_box(vec3<f32>(t, 0.0));
+    out.axis_t = t * transform.data_to_panel_scale + transform.data_to_panel_offset;
+    return out;
+}
+
+/// The floor contours' ID pick: the series (`view3d.flags.w`, its pick
+/// slot plus one, with the top bit marking a floor contour), the topmost
+/// level painted at the pixel and the sample-lattice cell it lies in, as
+/// the flat contour pick names it.
+@fragment
+fn fs_floor_contour_pick(in: FieldOut) -> @location(0) vec4<u32> {
+    let paint = contour_paint(in);
+    if (paint.level == 0xffffffffu) {
+        discard;
+    }
+    let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    let along_cells = select(field.cols, field.rows, columns_are_y);
+    let across_cells = select(field.rows, field.cols, columns_are_y);
+    let x = locate(field.x_base, field.x_len, quad_count(along_cells, LATTICE_SAMPLES), 0u,
+        in.axis_t.x, LATTICE_SAMPLES);
+    let y = locate(field.y_base, field.y_len, quad_count(across_cells, LATTICE_SAMPLES), 1u,
+        in.axis_t.y, LATTICE_SAMPLES);
+    return vec4<u32>(u32(view3d.flags.w) | 0x80000000u, paint.level, x.index, y.index);
 }
 
 /// Whether this contour fragment sits under one of the exact label quads that

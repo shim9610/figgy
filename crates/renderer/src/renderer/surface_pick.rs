@@ -17,17 +17,24 @@ impl Renderer {
         request: &GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
         use data_render::surface_mesh::{self as mesh, SurfacePass};
-        self.pipelines.ensure_surface_pass(
-            &self.device,
-            [
-                &self.transform_bgl,
-                &self.style_bgl,
-                &self.field_bgl,
-                &self.surface_bgl,
-            ],
-            self.surface_format,
-            SurfacePass::Pick,
-        );
+        for pass in [SurfacePass::Pick, SurfacePass::FloorContourPick] {
+            self.pipelines.ensure_surface_pass(
+                &self.device,
+                [
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.field_bgl,
+                    &self.surface_bgl,
+                ],
+                self.surface_format,
+                pass,
+            );
+        }
+        let floors = || {
+            series
+                .iter()
+                .filter(|cfg| crate::renderer::device::draws_floor(&cfg.render_type))
+        };
         let surfaces = || {
             series
                 .iter()
@@ -37,6 +44,9 @@ impl Renderer {
             let (_, mut ctx) = self.preparation_parts();
             for cfg in surfaces() {
                 ctx.ensure_field_scratch(config, cfg)?;
+            }
+            for cfg in floors() {
+                ctx.ensure_contour_scratch(cfg, config, request.display_scale)?;
             }
         }
         let (px, py) = (
@@ -94,8 +104,8 @@ impl Renderer {
         let mut identities = Vec::new();
         let mut charges = Vec::new();
         identities
-            .try_reserve_exact(surfaces().count())
-            .and_then(|()| charges.try_reserve_exact(surfaces().count() + 1))
+            .try_reserve_exact(surfaces().count() + floors().count())
+            .and_then(|()| charges.try_reserve_exact(surfaces().count() + floors().count() + 1))
             .map_err(|error| FiggyError::StateAllocationFailed {
                 resource: "surface pick identities",
                 reason: error.to_string(),
@@ -132,7 +142,50 @@ impl Renderer {
             let pipeline = self.pipelines.surface[SurfacePass::Pick as usize]
                 .as_ref()
                 .expect("the surface pick pipeline was just ensured");
-            for (index, cfg) in surfaces().enumerate() {
+            // The floor contours first, as the draw paints them: a surface
+            // over a floor contour answers for its pixels.
+            let floor_pipeline = self.pipelines.surface[SurfacePass::FloorContourPick as usize]
+                .as_ref()
+                .expect("the floor pick pipeline was just ensured");
+            for cfg in floors() {
+                let Some(camera) = camera.as_ref() else {
+                    continue;
+                };
+                let Some(scratch) = self
+                    .contour_cache
+                    .get(cfg.series_id.as_str())
+                    .and_then(ScratchEntry::contour)
+                else {
+                    continue;
+                };
+                let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
+                let mut floor_camera = *camera;
+                floor_camera.flags[3] = pick_id as f32;
+                let look = mesh::surface_params_gpu(None, 0, request.display_scale, None, pick_id);
+                let (surface_bg, charge) = mesh::create_surface_bind_group(
+                    &self.gpu_ledger,
+                    &self.device,
+                    &self.surface_bgl,
+                    &floor_camera,
+                    &look,
+                );
+                charges.push(charge);
+                identities.push(crate::gpu_data_pick::SurfacePickIdentity {
+                    source_id: cfg.source_id.clone(),
+                    series_id: cfg.series_id.clone(),
+                    columns_are_y: false,
+                });
+                if !scratch.drawable {
+                    continue;
+                }
+                pass.set_pipeline(floor_pipeline);
+                pass.set_bind_group(0, &transform_bg, &[]);
+                pass.set_bind_group(1, &scratch.style_bg, &[]);
+                pass.set_bind_group(2, &scratch.field_bg, &[]);
+                pass.set_bind_group(3, &surface_bg, &[]);
+                pass.draw(0..mesh::SURFACE_QUAD_VERTICES, 0..1);
+            }
+            for cfg in surfaces() {
                 let (Some(camera), Some(scratch)) = (
                     camera.as_ref(),
                     self.field_cache.get(cfg.series_id.as_str()),
@@ -151,7 +204,7 @@ impl Renderer {
                 } else {
                     0
                 };
-                let pick_id = u32::try_from(index + 1).unwrap_or(u32::MAX);
+                let pick_id = u32::try_from(identities.len() + 1).unwrap_or(u32::MAX);
                 let look = mesh::surface_params_gpu(
                     cfg.render_type.surface_style(),
                     params.cols,

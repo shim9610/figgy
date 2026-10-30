@@ -1684,7 +1684,11 @@ impl SurfacePickTicket {
             .get_mapped_range()
             .expect("surface pick readback is mapped after map_async");
         let words: &[u32] = bytemuck::cast_slice(&mapped);
-        let [id, _kind, c, r] = [words[0], words[1], words[2], words[3]];
+        let [word, b, c, r] = [words[0], words[1], words[2], words[3]];
+        // The top bit marks a floor contour: `b` its level, `(c, r)` its
+        // cell in x / y order. Otherwise `(c, r)` is a surface sample.
+        let floor = word & 0x8000_0000 != 0;
+        let id = word & 0x7fff_ffff;
         if id == 0 {
             return Ok(None);
         }
@@ -1692,6 +1696,16 @@ impl SurfacePickTicket {
             .identities
             .get(id as usize - 1)
             .ok_or(crate::gpu_pick::GpuPickError::InvalidGpuResult)?;
+        if floor {
+            return Ok(Some(PickedData::ContourLevel {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                level_index: b as usize,
+                x_index: c as usize,
+                y_index: r as usize,
+                distance_px: 0.0,
+            }));
+        }
         let (x, y) = if identity.columns_are_y {
             (r, c)
         } else {

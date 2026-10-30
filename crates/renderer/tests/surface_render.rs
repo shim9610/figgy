@@ -273,7 +273,10 @@ fn the_picked_sample_patch_is_highlighted() {
     for scale in [1.0f32, 2.0] {
         let img = export(&mut r, &config, &series, scale);
         save(&format!("surface-picked-{scale}x"), &img);
-        let at = config.scaled(scale).project_3d([x, y, ridge(x, y)]).unwrap();
+        let at = config
+            .scaled(scale)
+            .project_3d([x, y, ridge(x, y)])
+            .unwrap();
         let (mut near, mut far) = (0, 0);
         for (i, p) in img.rgba.chunks_exact(4).enumerate() {
             if !(p[3] > 180 && p[0] > 180 && p[1] < 80 && p[2] > 180) {
@@ -289,4 +292,134 @@ fn the_picked_sample_patch_is_highlighted() {
         assert!(near > 10, "{scale}x: {near} outline pixels at the sample");
         assert_eq!(far, 0, "{scale}x: outline pixels away from the sample");
     }
+}
+
+fn contour_config(levels: Vec<f64>) -> renderer::data_config::ContourConfig {
+    renderer::data_config::ContourConfig {
+        levels,
+        line: renderer::DataLineStyleConfig {
+            line_style: renderer::line::LineStylePreset::Solid,
+            line_color: Color::new(1.0, 0.0, 0.0, 1.0),
+            line_width: 2.5,
+            fill: None,
+            fill_color: None,
+            interpolation: renderer::data_config::LineInterpolation::Linear,
+        },
+        per_level_color: None,
+        labels: None,
+    }
+}
+
+/// A contour on a 3D chart draws its isolines on the box floor, where its
+/// level crosses the grid, and the ID pick names the level and its cell.
+#[test]
+fn contours_draw_and_pick_on_the_floor() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let config = chart_3d();
+    let series = vec![SeriesConfig {
+        series_id: "floor".into(),
+        render_type: DataRenderType::Contour {
+            matrix: matrix(21),
+            contour: contour_config(vec![0.5]),
+        },
+        ..surface_series(21, Shading::Interpolated, None)
+    }];
+    let img = export(&mut r, &config, &series, 1.0);
+    save("surface-floor-contour", &img);
+    // The 0.5 isoline of the ridge is the circle of radius sqrt(0.05 ln 2)
+    // around (0.5, 0.4) on the floor.
+    let radius = (0.05f64 * std::f64::consts::LN_2).sqrt();
+    let mut hits = 0;
+    for k in 0..16 {
+        let a = f64::from(k) / 16.0 * std::f64::consts::TAU;
+        let (x, y) = (0.5 + radius * a.cos(), 0.4 + radius * a.sin());
+        let p = config.project_3d([x, y, 0.0]).unwrap();
+        let px = pixel(&img, (p[0], p[1]));
+        if px[3] > 120 && px[0] > 150 && px[1] < 100 {
+            hits += 1;
+        }
+    }
+    assert!(
+        hits >= 12,
+        "{hits} of 16 points of the floor isoline are red"
+    );
+    // Off the isoline, at the circle's centre: no stroke.
+    let centre = config.project_3d([0.5, 0.4, 0.0]).unwrap();
+    let c = pixel(&img, (centre[0], centre[1]));
+    assert!(
+        !(c[0] > 150 && c[1] < 100),
+        "no stroke at the centre: {c:?}"
+    );
+
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    let on = config.project_3d([0.5 + radius, 0.4, 0.0]).unwrap();
+    let request = renderer::GpuPickRequest {
+        canvas_position_px: [on[0] as f32, on[1] as f32],
+        display_panel_px: Rect {
+            x: 0,
+            y: 0,
+            width: WIDTH,
+            height: HEIGHT,
+        },
+        display_scale: 1.0,
+        max_distance_px: 0.0,
+    };
+    match pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap() {
+        Some(renderer::PickedData::ContourLevel {
+            series_id,
+            level_index,
+            ..
+        }) => {
+            assert_eq!(series_id, "floor");
+            assert_eq!(level_index, 0);
+        }
+        other => panic!("picked {other:?}"),
+    }
+}
+
+/// An opaque surface covers the floor contours under it; a translucent one
+/// shows them through.
+#[test]
+fn a_translucent_surface_shows_its_floor_contours() {
+    let mut r = renderer();
+    upload_grid(&mut r, 21, 17, ridge);
+    let config = chart_3d();
+    let series = |opacity: f32| {
+        vec![SeriesConfig {
+            series_id: "both".into(),
+            render_type: DataRenderType::HeatmapContour {
+                matrix: matrix(21),
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Interpolated,
+                    opacity,
+                },
+                contour: contour_config(vec![0.5]),
+                surface: None,
+            },
+            ..surface_series(21, Shading::Interpolated, None)
+        }]
+    };
+    let reds = |img: &RasterImage| {
+        img.rgba
+            .chunks_exact(4)
+            .filter(|p| p[3] > 120 && p[0] > 150 && p[1] < 90 && p[2] < 90)
+            .count()
+    };
+    let opaque = export(&mut r, &config, &series(1.0), 1.0);
+    let clear = export(&mut r, &config, &series(0.3), 1.0);
+    save("surface-floor-opaque", &opaque);
+    save("surface-floor-translucent", &clear);
+    assert!(
+        reds(&opaque) < 20,
+        "the opaque surface covers the floor: {}",
+        reds(&opaque)
+    );
+    assert!(
+        reds(&clear) > 100,
+        "the translucent surface shows it: {}",
+        reds(&clear)
+    );
 }

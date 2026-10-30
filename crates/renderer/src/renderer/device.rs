@@ -185,6 +185,15 @@ pub(super) fn draws_surface(rt: &crate::data_config::DataRenderType) -> bool {
     )
 }
 
+/// Whether a series draws contours on a 3D chart's floor.
+pub(super) fn draws_floor(rt: &crate::data_config::DataRenderType) -> bool {
+    matches!(
+        rt,
+        crate::data_config::DataRenderType::Contour { .. }
+            | crate::data_config::DataRenderType::HeatmapContour { .. }
+    )
+}
+
 /// The ternary pipelines (`TargetPipelines::ternary`).
 pub(super) const TERNARY_PIPELINES: usize = 5;
 
@@ -320,7 +329,7 @@ pub(super) struct TargetPipelines {
     /// the panel composite, the picked patch in the live slot and the ID
     /// pick. Compiled only when a 3D chart is drawn.
     pub(super) surface_shader: Option<wgpu::ShaderModule>,
-    pub(super) surface: [Option<wgpu::RenderPipeline>; 3],
+    pub(super) surface: [Option<wgpu::RenderPipeline>; 5],
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
@@ -437,10 +446,10 @@ impl TargetPipelines {
     ) {
         let needed = items.iter().any(|item| {
             item.chart_config.view_3d.is_some()
-                && item
-                    .series
-                    .iter()
-                    .any(|series| draws_surface(&series.config.render_type))
+                && item.series.iter().any(|series| {
+                    draws_surface(&series.config.render_type)
+                        || draws_floor(&series.config.render_type)
+                })
         });
         if !needed {
             return;
@@ -465,6 +474,23 @@ impl TargetPipelines {
         pass: data_render::surface_mesh::SurfacePass,
     ) {
         let [transform_bgl, style_bgl, field_bgl, surface_bgl] = bgls;
+        if self.surface[pass as usize].is_some() {
+            return;
+        }
+        if pass.on_floor() {
+            self.surface[pass as usize] = Some(data_render::surface_mesh::create_surface_pipeline(
+                device,
+                &self.shaders.field,
+                transform_bgl,
+                style_bgl,
+                field_bgl,
+                surface_bgl,
+                surface_format,
+                self.sample_count,
+                pass,
+            ));
+            return;
+        }
         let shader = self.surface_shader.get_or_insert_with(|| {
             crate::gpu_compile::shader_module(
                 device,

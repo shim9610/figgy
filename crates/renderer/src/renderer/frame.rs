@@ -468,6 +468,7 @@ pub(super) struct PreparedSeries {
     pub(super) area: Option<PreparedAreaLayer>,
     pub(super) field: Option<PreparedFieldLayer>,
     pub(super) surface: Option<PreparedSurfaceLayer>,
+    pub(super) floor: Option<PreparedSurfaceLayer>,
     pub(super) selected_surface: Option<PreparedSurfaceLayer>,
     pub(super) bar: Option<PreparedBarLayer>,
     pub(super) violin: Option<PreparedCategoryBarLayer>,
@@ -834,6 +835,7 @@ impl PreparedSeries {
                 closed: layer.closed,
             }),
             surface: layers.surface.map(PreparedSurfaceLayer::own),
+            floor: layers.floor.map(PreparedSurfaceLayer::own),
             selected_surface: layers.selected_surface.map(PreparedSurfaceLayer::own),
             field: layers.field.map(|layer| PreparedFieldLayer {
                 pipeline: layer.pipeline.clone(),
@@ -1011,6 +1013,7 @@ impl PreparedSeries {
                     closed: layer.closed,
                 }),
             surface: self.surface.as_ref().map(PreparedSurfaceLayer::borrow),
+            floor: self.floor.as_ref().map(PreparedSurfaceLayer::borrow),
             selected_surface: self
                 .selected_surface
                 .as_ref()

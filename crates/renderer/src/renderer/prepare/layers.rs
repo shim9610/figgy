@@ -136,6 +136,52 @@ impl PrepareContext<'_> {
         Ok((Some(surface), selected))
     }
 
+    /// A contour on a 3D chart's floor: the contour's group 2 under the
+    /// floor pipeline (`vs_floor` / `fs_contour`), one instance, with the
+    /// panel camera as group 3.
+    pub(in crate::renderer) fn floor_layer<'a>(
+        &'a self,
+        view: &'a ChartView,
+        chart_config: &'a Config,
+        series: &Series<'a>,
+        pipelines: &'a TargetPipelines,
+        scratch: &PreparedContourScratch,
+        index: usize,
+    ) -> Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>> {
+        use data_render::surface_mesh::{self as mesh, SurfacePass};
+        if !scratch.drawable {
+            return None;
+        }
+        let panel = view.panel_rect;
+        let target = (
+            (f64::from(panel.x), f64::from(panel.y)),
+            (f64::from(panel.width), f64::from(panel.height)),
+        );
+        let camera = mesh::view3d_gpu(chart_config, target, target)?;
+        let pipeline = pipelines.surface[SurfacePass::FloorContour as usize].as_ref()?;
+        let pick_id = u32::try_from(index)
+            .unwrap_or(u32::MAX - 1)
+            .saturating_add(1);
+        let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
+        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+            &self.gpu_ledger,
+            &self.device,
+            &self.surface_bgl,
+            &camera,
+            &look,
+        );
+        Some(mesh::ColumnSurfaceLayer {
+            pipeline,
+            transform_bg: &view.transform_bg,
+            style_bg: scratch.style_bg.clone(),
+            field_bg: scratch.field_bg.clone(),
+            surface_bg,
+            quads: 1,
+            charge: Arc::clone(&scratch.charge),
+            surface_charge,
+        })
+    }
+
     pub(in crate::renderer) fn build_series_layers<'a>(
         &'a self,
         view: &'a ChartView,
@@ -351,6 +397,19 @@ impl PrepareContext<'_> {
             // `fs_contour`. The group-2 tables were resolved in
             // `ensure_contour_scratches`; the isolines come out of the grid
             // itself, so there is nothing per-level about the draw call.
+            // The floor's contour: the contour's own group 2 under the floor
+            // pipeline, the panel camera as group 3.
+            let floor = if primitives.contour && floor_only {
+                let scratch = products
+                    .contours
+                    .get(idx)
+                    .and_then(|series| series.scratch.as_ref())
+                    .expect("prepare captured this contour occurrence");
+                self.floor_layer(view, chart_config, series, pipelines, scratch, idx)
+            } else {
+                None
+            };
+
             let contour = if primitives.contour && !floor_only {
                 let scratch = products
                     .contours
@@ -1150,6 +1209,7 @@ impl PrepareContext<'_> {
                 value_labels,
                 surface,
                 selected_surface,
+                floor,
             });
         }
         Ok(out)

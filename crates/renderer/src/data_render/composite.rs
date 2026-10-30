@@ -18,6 +18,9 @@ pub struct SeriesLayers<'a> {
     /// composite with the depth test (`issue_series_surfaces`), never by
     /// `issue_series_data`.
     pub surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
+    /// A contour on a 3D chart's floor (`vs_floor`, one instance), drawn
+    /// before every surface without writing depth.
+    pub floor: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
     /// The picked sample's patch of the surface, in the live highlight slot.
     pub selected_surface: Option<super::surface_mesh::ColumnSurfaceLayer<'a>>,
     /// Bars are area primitives, so they are issued before the stroked ones.
@@ -419,6 +422,14 @@ pub(crate) fn issue_series_surfaces(
     pass: &mut wgpu::RenderPass<'_>,
     series_list: &[SeriesLayers<'_>],
 ) {
+    // The floor contours first, without writing depth: the surfaces blend
+    // over them, so an opaque surface covers the floor under it and a
+    // translucent one (`fill.opacity` below 1) shows it through.
+    for s in series_list {
+        if let Some(floor) = &s.floor {
+            super::surface_mesh::issue_surface_layer(pass, floor);
+        }
+    }
     for s in series_list {
         if let Some(surface) = &s.surface {
             super::surface_mesh::issue_surface_layer(pass, surface);
