@@ -660,6 +660,7 @@ mod tests {
                     scale,
                     seed,
                     slot_half,
+                    wedge,
                     _reserved,
                 }
             ),

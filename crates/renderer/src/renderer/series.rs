@@ -899,6 +899,7 @@ pub(super) fn category_bar_params<'c>(
     params.scale = display_scale;
     params.seed = crate::sketch::fnv1a(&series.series_id);
     params.slot_half = data_render::CATEGORY_SLOT_HALF;
+    params.wedge = u32::from(config.polar.is_some());
     Ok(params)
 }
 

@@ -191,7 +191,9 @@ pub enum DataRenderType {
     /// axis is the only way to thin them.
     ///
     /// The columns must be GPU resident; a streamed source is rejected with
-    /// an error. Polar charts (`Config.polar`) reject category bars.
+    /// an error. On a polar chart (`Config.polar`) with a categorical angle
+    /// axis the bars fan around the centre as wedges, a rose (#133): the
+    /// group is vertical, the value is the radius.
     CategoryBars {
         /// The fill colour of the series' bars, opaque.
         color: Color,
@@ -2376,9 +2378,11 @@ impl crate::config::Config {
     /// linear numeric value axis, with no cap on the number of bars (#107),
     /// and each series passes [`validate_category_bar_series`] against the
     /// axis' categories. Horizontal bars cannot sit on an overlay layer,
-    /// whose own axis is a value axis on y, and a polar chart draws no
-    /// category bars. Whether a column holds one value per category is
-    /// data: the renderer checks it against the pool when it prepares.
+    /// whose own axis is a value axis on y. On a polar chart the bars are
+    /// a rose (#133): wedges of the categorical angle axis (`bottom_x`)
+    /// along the linear radius axis, so the group is vertical. Whether a
+    /// column holds one value per category is data: the renderer checks it
+    /// against the pool when it prepares.
     pub fn validate_category_bars(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         use crate::layer::LayerRef;
         if let Some(groups) = &self.bar_groups {
@@ -2396,9 +2400,6 @@ impl crate::config::Config {
         };
         if bars().next().is_none() {
             return Ok(());
-        }
-        if self.polar.is_some() {
-            return Err("category bars are not drawn on polar axes");
         }
         for layer in self.panel_layers() {
             let members = || bars().filter(|s| self.layer_of_series(&s.series_id) == layer);
@@ -2421,6 +2422,12 @@ impl crate::config::Config {
                 LayerRef::Base | LayerRef::Overlay(_) | LayerRef::Annotations => None,
             };
             let chart = subplot.as_ref().unwrap_or(self);
+            if horizontal && chart.polar.is_some() {
+                return Err(
+                    "a rose fans its bars around the centre: the group direction on a polar chart \
+                     is vertical",
+                );
+            }
             let category_axis = if horizontal {
                 &chart.left_y
             } else {
@@ -5632,11 +5639,23 @@ mod category_bar_tests {
         );
     }
 
+    /// A polar chart draws its category bars as a rose (#133): vertical
+    /// groups over the categorical angle axis; a horizontal group is named.
     #[test]
-    fn polar_charts_draw_no_category_bars() {
+    fn polar_charts_draw_vertical_roses_only() {
         let mut config = chart(3);
         config.polar = Some(Default::default());
-        assert!(config.validate_category_bars(&[bars("a")]).is_err());
+        assert_eq!(config.validate_category_bars(&[bars("a")]), Ok(()));
+        config.bar_groups = Some(BarGroups {
+            direction: CategoryBarDirection::Horizontal,
+            ..BarGroups::default()
+        });
+        assert_eq!(
+            config.validate_category_bars(&[bars("a")]),
+            Err(
+                "a rose fans its bars around the centre: the group direction on a polar chart is vertical"
+            )
+        );
     }
 
     #[test]

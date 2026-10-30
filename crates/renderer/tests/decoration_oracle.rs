@@ -464,6 +464,26 @@ const EXCLUSIONS: &[Exclusion] = &[
                  belongs to no element",
         issue: "#47",
     },
+    // The rose scene is a polar chart with its ray line drawn: the Polar
+    // scene's two rows (#133).
+    Exclusion {
+        scene: "Rose",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "the polar ray turns around the centre: every drag is a valid turn",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Rose",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring is the data boundary and belongs to no element",
+        issue: "#47",
+    },
 ];
 
 /// Rows only the sweep of the scenes as laid out has: the `LongLabels`
@@ -918,6 +938,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Ternary => "Ternary",
         SceneKind::Surface => "Surface",
         SceneKind::Hexbin => "Hexbin",
+        SceneKind::Rose => "Rose",
     }
 }
 

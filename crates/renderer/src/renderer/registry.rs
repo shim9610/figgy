@@ -1772,9 +1772,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         DataRenderType::Vector { .. } => {
             return Err(invalid("vector series are not drawn on polar axes"));
         }
-        DataRenderType::CategoryBars { .. } => {
-            return Err(invalid("category bars are not drawn on polar axes"));
-        }
+        // Category bars fan around the centre as a rose (#133); the model's
+        // category bar rules hold the group vertical.
+        DataRenderType::CategoryBars { .. } => {}
         DataRenderType::BoxPlot { .. } => {
             return Err(invalid("box plots are not drawn on polar axes"));
         }

@@ -1100,7 +1100,7 @@ pipeline never reads group 3 bindings 8 to 10.
 ```wgsl
 struct CategoryBarParams { positions, count, member, members, mode,
     horizontal: u32, gap_px, group_width, corner_radius_px, emphasis,
-    scale: f32, seed: u32, slot_half: vec2<f32>, _reserved: vec2<u32> };   // 64 bytes
+    scale: f32, seed: u32, slot_half: vec2<f32>, wedge: u32, _reserved: u32 };   // 64 bytes
 @group(3) @binding(8) var<storage, read> category_pool: array<f32>;
 @group(3) @binding(9) var<uniform> category_params: CategoryBarParams;
 @group(3) @binding(10) var<storage, read> category_lanes: array<u32>;
@@ -1125,6 +1125,7 @@ number of series is one storage array of that many `u32`s.
 | `scale` | render pixels per logical pixel: the material's object unit (`Bar.effects.y`) |
 | `seed` | the series salt; the grain seed of a bar is `(seed ^ row · 2654435761) % 4096` |
 | `slot_half` | half a slot along the position axis in data units, a `(hi, lo)` pair: `(0.5, 0)` (half a category, `CATEGORY_SLOT_HALF`) for category bars and boxes, half a range bar series' `slot_width` on a numeric axis (§5.18); the slot's edges are `category_slot_edge(position, ±1)` |
+| `wedge` | 1 on a polar chart (`Config::polar`): the bars are wedges of the angle axis along the radius, a rose (#133), built by `category_wedge` below |
 
 Rust twin: `data_render::CategoryBarParamsGpu` (`bar.rs`), written by
 `renderer/series.rs::category_bar_params`; the lane table is written by
@@ -1136,6 +1137,29 @@ on the CPU;
 category bar lanes `material` and `finish`, read under
 `BAR_STYLE_MASK_MATERIAL`) and `Transform` to their twins. The pool is bound whole as storage, as the
 vector shader binds it, and the values are `(hi, lo)` pairs.
+
+**Roses (#133).** With `wedge` set, `category_bar` hands its stack
+arithmetic (the start and end values, `exposed`) to `category_wedge`: the
+category's slot edges become angles through the transform's `polar_angle`
+lanes (`angle = zero + per_value · position`, as `polar_ndc`), the start
+and end values radii through the y-axis fraction and the `polar_extent`
+ring (`category_radius_px`), the group's `group_width` share of the slot
+is centred and its grouped wedges sit side by side from the slot edge the
+axis arrives from, `gap_px / ring` radians apart (the gap in pixels along
+the ring). The `CategoryBar` then carries `wedge = (centre.xy, ring
+radius, inner fraction)` and `arc = (start, span, inner rounding, outer
+rounding)` in the pixel frame (y down: the polar arc `[θ, θ + span]` is the
+sector arc from `−(θ + span)`), its `rect` the wedge's bounding box (the
+quad and the material's object frame) and its `end_px` the end radius;
+`category_bar_distance`, `category_bar_unowned` and `category_bar_sample`
+branch on `wedge.z > 0`, the distance being the radial chart's sector
+footprint (`radial_sector.wgsl`, spliced into the bar module before this
+fragment) built in registers from the wedge, scaled back to pixels, so the
+fill, the outline, the pick and the highlight share the pie's one shape.
+The shared arcs of a stack have one owner as the shared edges do
+(`CATEGORY_EDGE_BOTTOM` the inner arc, `_TOP` the outer). The value label
+of a wedge (`value_label_wedge`, §5.17) sits past the exposed arc along the
+wedge's middle direction or at its middle radius.
 
 `category_bar(row, resolved)` builds the bar on every draw, and the draw,
 the selection and the pick all call it:

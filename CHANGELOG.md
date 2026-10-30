@@ -31,6 +31,16 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Roses: category bars on a polar chart**
+  ([#133](https://github.com/shim9610/figgy/issues/133), #58).
+  `Config::validate_category_bars` accepts `CategoryBars` series on a polar
+  chart with a categorical angle axis (`bottom_x`) and a linear radius axis:
+  the bars are wedges, a rose. The group direction stays `Vertical`; a
+  `Horizontal` group on a polar chart is refused ("a rose fans its bars
+  around the centre: the group direction on a polar chart is vertical").
+  Migration: code that relied on "category bars are not drawn on polar
+  axes" now gets a drawn rose or the horizontal reason. Nothing on the
+  wire changes.
 - **Hexagonal grids (hexbins)**
   ([#134](https://github.com/shim9610/figgy/issues/134), #58).
   `GridLayout::Hexagonal`: a `Heatmap`'s grid as `n` columns by `m` rows
@@ -776,6 +786,19 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Roses: category bars on a polar chart**
+  ([#133](https://github.com/shim9610/figgy/issues/133), #58). A category
+  bar series on a polar chart draws each bar as the wedge of its category's
+  angular slot between the stack's start and end radii (`category_wedge`
+  in `common/category_bars.wgsl`, `CategoryBarParams.wedge`), the group
+  layout, stack arithmetic, overrides, materials, corner rounding, value
+  labels (`value_label_wedge`), pick, highlight and `step_selection` the
+  bar's; the wedge's footprint is the radial chart's sector
+  (`radial_sector.wgsl`, now spliced into the bar module) built in
+  registers, so nothing is stored per bar. Grouped wedges sit side by side
+  in the categories' order, `bar_gap` pixels apart along the ring. The
+  `Rose` catalogue scene is a wind rose of sixteen directions and three
+  stacked speed bands.
 - **Hexagonal grids (hexbins)**
   ([#134](https://github.com/shim9610/figgy/issues/134), #58). A heatmap
   on a `Hexagonal` grid draws its cells as the Voronoi cells of their

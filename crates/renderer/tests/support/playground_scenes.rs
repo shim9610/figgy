@@ -65,10 +65,11 @@ pub enum SceneKind {
     Ternary,
     Surface,
     Hexbin,
+    Rose,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 28] = [
+    pub const ALL: [SceneKind; 29] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -97,6 +98,7 @@ impl SceneKind {
         SceneKind::Ternary,
         SceneKind::Surface,
         SceneKind::Hexbin,
+        SceneKind::Rose,
     ];
 
     pub fn label(self) -> &'static str {
@@ -129,6 +131,7 @@ impl SceneKind {
             SceneKind::Ternary => "Ternary (three components)",
             SceneKind::Surface => "3D surface",
             SceneKind::Hexbin => "Hexbin (hexagonal grid)",
+            SceneKind::Rose => "Rose (polar bars)",
         }
     }
 
@@ -244,6 +247,11 @@ impl SceneKind {
                 "Thirty thousand samples of a bivariate normal binned by the host \
                  into 40 by 35 flat-topped hexagons, the counts through the \
                  colourbar. Pick a cell and step with the arrows."
+            }
+            SceneKind::Rose => {
+                "A wind rose: the hours of wind from sixteen directions, three \
+                 speed bands stacked outward from the centre. Pick a wedge and \
+                 step around the compass with the arrows."
             }
         }
     }
@@ -439,6 +447,7 @@ pub fn build(
         SceneKind::Ternary => ternary(r),
         SceneKind::Surface => surface(r),
         SceneKind::Hexbin => hexbin(r),
+        SceneKind::Rose => rose(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -3020,6 +3029,90 @@ fn gantt(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 /// A hexbin (#134): the host bins samples of a bivariate normal into a
 /// lattice of flat-topped hexagons (the renderer never bins, rule 1) and
 /// registers the counts as a hexagonal grid, coloured through the colourbar.
+fn rose(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::Category;
+    use renderer::data_config::{BarGroups, CategoryBarMode, CategoryBarStyle};
+    use renderer::polar::PolarOptions;
+    const DIRECTIONS: [&str; 16] = [
+        "N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW",
+        "NW", "NNW",
+    ];
+    // Hours of wind per direction and speed band over a year: a prevailing
+    // south-westerly with a secondary northerly, the faster bands rarer.
+    let hours = |band: usize, k: usize| {
+        let a = (k as f64) * std::f64::consts::TAU / 16.0;
+        let prevailing = (1.0 + (a - 3.9).cos()).powi(2) * 0.25;
+        let secondary = (1.0 + a.cos()).powi(3) * 0.08;
+        let shape = 0.08 + prevailing + secondary;
+        let share = [0.55, 0.32, 0.13][band];
+        (1100.0 * shape * share * (1.0 + 0.08 * noise(70 + band as u64, k))).round()
+    };
+    upload(r, "rose_pos", (0..16).map(|k| k as f64).collect())?;
+    let bands = ["rose_calm", "rose_fresh", "rose_strong"];
+    for (band, id) in bands.iter().enumerate() {
+        upload(r, id, (0..16).map(|k| hours(band, k)).collect())?;
+    }
+    let colors = [
+        Color::from_rgb8(158, 202, 225),
+        Color::from_rgb8(66, 146, 198),
+        Color::from_rgb8(8, 69, 148),
+    ];
+    let labels = ["0 to 5 m/s", "5 to 10 m/s", "over 10 m/s"];
+    let series: Vec<SeriesConfig> = bands
+        .iter()
+        .zip(colors)
+        .zip(labels)
+        .map(|((id, color), label)| {
+            let mut s = series(
+                id,
+                "rose_pos",
+                id,
+                DataRenderType::CategoryBars {
+                    color,
+                    style: CategoryBarStyle {
+                        corner_radius: 0.0,
+                        ..CategoryBarStyle::default()
+                    },
+                    labels: Default::default(),
+                    label_format: Default::default(),
+                    overrides: None,
+                },
+            );
+            s.label = Some(RichText::plain(label, Color::BLACK, 12.0, ""));
+            s
+        })
+        .collect();
+    let mut config = base_config(
+        "Wind rose: hours by direction and speed",
+        "Direction",
+        "Hours",
+    );
+    config.bottom_x.categories = Some(
+        DIRECTIONS
+            .iter()
+            .map(|d| Category::new(d.to_lowercase(), *d))
+            .collect(),
+    );
+    config.polar = Some(PolarOptions {
+        zero_angle_degrees: 90.0,
+        clockwise: true,
+        radial_label_angle_degrees: 90.0,
+        ..PolarOptions::default()
+    });
+    config.bar_groups = Some(BarGroups {
+        mode: CategoryBarMode::Stacked,
+        group_width: 0.9,
+        ..BarGroups::default()
+    });
+    let config = with_legend(config, &series);
+    let mut chart = Chart::new(config);
+    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.05)?;
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
 fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     const COLS: usize = 40;
     const ROWS: usize = 35;

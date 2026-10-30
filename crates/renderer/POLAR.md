@@ -91,12 +91,12 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
   radius. The data area, chart title, legend and margins follow the
   rectangular rules.
 - Scatter, line and scatter-line series draw in polar mode, including line
-  fills (`LineFill`), which draw area charts, and radar series draw their
-  polygons on a categorical angle axis. Histograms, heatmaps, contours,
-  error bars, vector fields, category bars, box plots, overlay layers and
-  streamed sources have no polar form and are rejected with an explicit
-  error (`InvalidSeriesConfig` / `InvalidConfig`), never drawn as a
-  fallback.
+  fills (`LineFill`), which draw area charts; radar series draw their
+  polygons and category bars their wedges (a rose, below) on a categorical
+  angle axis. Histograms, heatmaps, contours, error bars, vector fields,
+  box plots, overlay layers and streamed sources have no polar form and
+  are rejected with an explicit error (`InvalidSeriesConfig` /
+  `InvalidConfig`), never drawn as a fallback.
 
 ## Coordinate options
 
@@ -159,6 +159,29 @@ axis, `grid_shape: Some(GridShape::Polygon)` joins every ring at the
 category angles; [radar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
 (`DataRenderType::Radar`) draw a closed polygon over it, one vertex per
 category.
+
+### Roses (polar bars)
+
+[Category bar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
+(`DataRenderType::CategoryBars`) on a polar chart with a categorical angle
+axis are a rose (#133): each bar is the wedge of its category's angular
+slot between the stack's start and end radii, the value read on the
+radius axis (`left_y`, linear) as `polar_ndc` places it, from the inner
+ring (`inner_radius_fraction`) to the ring; an inverted radius axis grows
+the wedges inward. `Config::bar_groups` keeps its meaning: `Grouped`
+wedges sit side by side in series order inside the centred `group_width`
+share of the slot, `bar_gap` logical pixels apart measured along the ring
+(the gap angle is `bar_gap / radius`, so the gap narrows toward the
+centre), and `Stacked` / `PercentStacked` wedges stack outward from the
+start radius. The group direction is `Vertical` (categories on
+`bottom_x`, values on `left_y`); a `Horizontal` group is refused
+("a rose fans its bars around the centre"). Overrides, materials, the
+corner rounding (on the exposed arc), the value labels (outside: past the
+exposed arc along the wedge's middle direction, inside: at its middle
+radius; `Auto` as for bars), the pick (`PickedData::HistogramBin`, the
+category row), the picked highlight (the wedge's outline) and
+`step_selection` are the bar's. The `Rose` catalogue scene is a wind
+rose: sixteen directions, three stacked speed bands.
 
 ## Picking and selection
 
@@ -245,7 +268,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 축은 로그 스케일이 가능하고, 각도 축은 선형이며 뒤집을 수 없다(방향은 `clockwise`로 정한다).
 플롯은 데이터 영역 안에서 각도 라벨 띠 하나를 남기는 가장 큰 원이며 `Config::polar_geometry`가
 중심과 반지름을 돌려준다. 산점도·선·산점선 시리즈와 면 채움(`LineFill`)을 그리고,
-범주형 각도 축에서는 레이더 시리즈가 다각형을 그린다. 히스토그램·히트맵·등고선·오차 막대·벡터·범주 막대·
+범주형 각도 축에서는 레이더 시리즈가 다각형을, 범주 막대 시리즈가 쐐기(로즈, 아래)를 그린다. 히스토그램·히트맵·등고선·오차 막대·벡터·
 박스플롯·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
 
 ### 좌표 옵션
@@ -290,6 +313,21 @@ draws an antenna-like pattern and a three-leaf rose interactively
 반지름 축은 범주형이 될 수 없다. 범주형 각도 축에서 `grid_shape: Some(GridShape::Polygon)`은 모든
 고리를 범주 각도에서 꺾고, [레이더 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
 (`DataRenderType::Radar`)는 범주마다 꼭짓점 하나인 닫힌 다각형을 그린다.
+
+#### 로즈(극좌표 막대)
+
+범주형 각도 축을 가진 극좌표 차트의 [범주 막대 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
+(`DataRenderType::CategoryBars`)는 로즈다(#133). 막대 하나는 자기 범주의 각도 칸 안에서 누적
+시작 반지름과 끝 반지름 사이의 쐐기이며, 값은 반지름 축(`left_y`, 선형)에서 `polar_ndc`가 놓는
+자리로 읽는다. 안쪽 고리(`inner_radius_fraction`)에서 바깥 고리까지 자라고, 반지름 축을 뒤집으면
+안쪽으로 자란다. `Config::bar_groups`의 뜻은 그대로다. `Grouped`는 칸의 가운데 `group_width`
+비율 안에 시리즈 순서로 나란히 놓이고 간격 `bar_gap`은 바깥 고리에서 잰 논리 픽셀이다(간격
+각도는 `bar_gap / 반지름`이라 중심으로 갈수록 좁아진다). `Stacked`·`PercentStacked`는 시작
+반지름에서 바깥으로 쌓인다. 묶음 방향은 `Vertical`(범주는 `bottom_x`, 값은 `left_y`)만 되고
+`Horizontal`은 거부한다. 개별 편집, 재질, 모서리 둥글림(노출된 호), 값 라벨(바깥: 노출된 호 너머
+쐐기 가운데 방향, 안쪽: 가운데 반지름, `Auto`는 막대와 같음), 피킹(`PickedData::HistogramBin`,
+범주 행), 선택 강조(쐐기 외곽선), `step_selection`은 막대와 같다. 카탈로그의 `Rose` 장면은
+열여섯 방향에 세 속도 띠를 쌓은 바람 장미다.
 
 ### 피킹과 선택
 

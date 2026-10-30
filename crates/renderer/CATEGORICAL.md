@@ -48,7 +48,9 @@ chart.validate()?;
 ## 방향, 스타일과 개별 편집
 
 `direction`은 `Vertical` / `Horizontal`이며 방향을 바꿔도 입력 값이나 범주 배열을 바꿀 필요가
-없다. `value_title`과 `category_title`도 각 축의 역할을 따라 이동한다.
+없다. `value_title`과 `category_title`도 각 축의 역할을 따라 이동한다. 극좌표 차트(`Config::polar`,
+범주형 각도 축)에서는 같은 시리즈가 로즈가 되어 범주의 각도 칸 안에서 반지름 방향으로 쐐기를
+그리며 `Vertical`만 허용한다([POLAR.md](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md#로즈극좌표-막대)).
 
 스타일은 **차트 → 시리즈 → 개별 막대** 순서로 적용한다. `style: Some(...)`은 전체 스타일을
 덮어쓰며 이후 상위 스타일 변경을 상속하지 않는다. `None`으로 돌리면 다시 상속한다.
