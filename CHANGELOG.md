@@ -22,8 +22,9 @@ new keys (`"math"`, `"math_node"`, `"math_parent"`, `{"Plain":{}}`,
 `categories`, `cross_at`, `bar_groups`, `log_ticks`, `line_offsets`,
 `grid_shape`, the radar series style's `fill_opacity`, the value labels'
 `offsets`, the `value_label` selection,
-the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines` and `RangeBars`
-series kinds and the box plot's `violin` and `points`) are additive.
+the `CategoryBars`, `BoxPlot`, `Radar`, `Streamlines`, `RangeBars` and
+`Ternary` series kinds, the box plot's `violin` and `points`, and
+`ternary`) are additive.
 
 <a id="unreleased-model"></a>
 
@@ -96,6 +97,27 @@ series kinds and the box plot's `violin` and `points`) are additive.
   documents parse and re-serialize byte for byte. Migration: a
   `HistogramBin { .. }` literal adds `half: None`, and a pattern that names
   every field adds `half` or `..`.
+- **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55),
+  #58 item 24). `Config.ternary: Option<TernaryOptions>` turns a chart into
+  a triangle, and `DataRenderType::Ternary { c_column, scatter, line }`
+  draws samples of three components named by `x_column`, `y_column` and
+  `c_column`, unnormalized. The convention is fixed: x on `bottom_x` with
+  its 100 % at the bottom-left corner, y on `left_y` at the top, c on
+  `right_y` at the bottom-right, each increasing clockwise; `top_x` is not
+  drawn. `Config::ternary_geometry` gives the triangle, and
+  `Config::ternary_title_placement` places the axis titles along the edges.
+  `Config::validate_ternary` holds the axis rules (linear, not inverted, not
+  categorical, `min` 0 and the same `max`), excludes polar charts,
+  overlays, line offsets, styles other than Precise and subplot links;
+  `Config::validate_ternary_series` holds the series rules (only ternary
+  series on a ternary chart, three distinct columns, markers or a line, a
+  linear line with no fill). Edges drag along their outward normal
+  (`line_offset`), tick labels in the edge frame, titles in screen space,
+  and the slanted parts hit on their drawn shape. `step_selection` walks the
+  points up to the shortest of the three columns. `ternary` is omitted when
+  `None`, and `scatter` / `line` when unset. Migration: a `Config { .. }`
+  literal adds `ternary: None`; an exhaustive `DataRenderType` match adds a
+  `Ternary` arm.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52), #58 item 23).
   `DataRenderType::RangeBars` draws a bar from a start to an end value at a
@@ -919,6 +941,27 @@ series kinds and the box plot's `violin` and `points`) are additive.
   Two playground scenes (Split violins, Raincloud) join the decoration
   oracle's catalogue. Picking among 600 violins of 4 096 curve points takes
   about 4 ms on lavapipe, and a raw point among 3 000 000 about 70 ms.
+- **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
+  `ScatterTransform` grows from 144 to 176 bytes with `ternary_lt` and
+  `ternary_r`, the triangle's corners in data-area NDC; the pick core's copy
+  follows. `common/projection.wgsl` gains `ternary_ndc` and
+  `common/sample_validity.wgsl` `ternary_sample_valid` (a negative or
+  non-finite component or a sum of zero or less is masked). The scatter and
+  line vertex bodies take the placed position, so the Cartesian and polar
+  entries are unchanged and five ternary entries (`vs_ternary`,
+  `vs_ternary_mapped`, `vs_pick_ring_ternary`,
+  `vs_pick_ring_ternary_mapped` and the line's `vs_ternary`) read c from one
+  or two more vertex slots, with pipelines compiled only for a ternary
+  chart. The arc scan reads c through `ArcParams.c_base`, and its cache key
+  names the c column. The pick variant `PICK_VARIANT_TERNARY` (512) places
+  markers, strokes and dashes with the draw's projection, reading c through
+  the size map's unused lanes, and a ternary series always takes the direct
+  scan. The grid, edges, ticks, labels and titles are emitted through the
+  sinks (`axis_render/ternary_axes.rs`), so drawing, hit regions, the
+  selection outline and the vector exports share one placement. Fits leave
+  a ternary chart's axes alone, annotations place ratio anchors only, and
+  streamed sources are rejected. The playground's Ternary scene joins the
+  decoration oracle's catalogue. Guide: `TERNARY.md`.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). The bar module draws
   them through its range bar fragment (`common/range_bars.wgsl`,
@@ -1573,6 +1616,11 @@ series kinds and the box plot's `violin` and `points`) are additive.
   JSON (SCHEMA.md); a picked raw point's `selection_details()` reports its
   `index`, `position`, `value`, `direction` and category, and a violin
   without boxes reports its category.
+- **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
+  `set_config` / `get_config` read and write `"ternary"` (omitted when
+  absent), `set_series` the `"Ternary"` render type (SCHEMA.md);
+  `selection_details()` adds a picked point's `c`, and `auto_fit_all` leaves
+  a ternary chart's axes alone. No new binding.
 - **Range bars** ([#54](https://github.com/shim9610/figgy/issues/54),
   [#52](https://github.com/shim9610/figgy/issues/52)). `RangeBars` series
   read and write in `set_series` JSON (SCHEMA.md); `selection_details()`
@@ -1765,8 +1813,10 @@ entries above describe the changes.
   - Draw the annotation layer after the frame with `draw_overlay` alone;
     drop `set_background(FrameBackground::HostClear)` and `draw_underlay`.
     The radial chart has no value axes, so a span was never drawn on it.
-- **Rust literals and matches.** `Config { .. }` adds `bar_groups: None`
-  and `line_offsets: None` (a subplot's `config` likewise);
+- **Rust literals and matches.** `Config { .. }` adds `bar_groups: None`,
+  `line_offsets: None` and `ternary: None` (a subplot's `config` likewise);
+  a `data_render::ScatterTransform` literal adds `ternary_lt` and
+  `ternary_r` (zeros on a rectangular chart);
   `AxisOptions { .. }` adds `categories: None` and `cross_at: None` (an
   exhaustive destructuring names both); `PolarOptions { .. }` adds
   `grid_shape: None`; a `RadarSeriesStyle` literal that names every field
@@ -1774,7 +1824,7 @@ entries above describe the changes.
   `offsets: Vec::new()`; `data_render::SeriesLayers` adds
   `value_labels: None`; a `DecorationElement` literal drops `followers`
   (`..Default::default()` covers the additions). Exhaustive matches add
-  `DataRenderType::{CategoryBars, BoxPlot, Radar}`,
+  `DataRenderType::{CategoryBars, BoxPlot, Radar, RangeBars, Ternary}`,
   `UploadValues::{BoxRecord, BoxOutliers, Dense}`,
   `PickedDataRef::ValueLabel` and `PickedData::ValueLabel`.
   `layout::axis_anchor(side, plot, cross)` takes the plot as

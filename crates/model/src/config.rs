@@ -1024,7 +1024,7 @@ impl Config {
             draw_style,
             polar,
             // The ternary switch holds no pixel dimension.
-            ternary: _,
+            ternary,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.
@@ -1083,7 +1083,11 @@ impl Config {
             (right_y, Side::Right),
         ] {
             scale_axis_in_place(axis, s);
-            scale_label_gap(axis, &side, polar, s);
+            // A ternary chart's labels keep a font-relative gap, which
+            // scales with the font: no fixed gap to make up for.
+            if ternary.is_none() {
+                scale_label_gap(axis, &side, polar, s);
+            }
         }
 
         let GridOptions {

@@ -377,6 +377,44 @@ const EXCLUSIONS: &[Exclusion] = &[
         reason: "the polar outer ring is the data boundary and belongs to no element",
         issue: "#47",
     },
+    Exclusion {
+        scene: "Ternary",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I2,
+        detail: "box * is * px past the padding from the ink extent*",
+        reason: "a slanted title's box is the bounding box of its text box turned along the \
+                 edge; the turned corners hold no glyphs",
+        issue: "#55",
+    },
+    Exclusion {
+        scene: "Ternary",
+        layer: "base",
+        element: "axis_title_left",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of axis_title_left: box * px past the padding*",
+        reason: "the slanted title's turned box, as in I2",
+        issue: "#55",
+    },
+    Exclusion {
+        scene: "Ternary",
+        layer: "base",
+        element: "axis_title_right",
+        inv: Inv::I2,
+        detail: "box * is * px past the padding from the ink extent*",
+        reason: "a slanted title's box is the bounding box of its text box turned along the \
+                 edge; the turned corners hold no glyphs",
+        issue: "#55",
+    },
+    Exclusion {
+        scene: "Ternary",
+        layer: "base",
+        element: "axis_title_right",
+        inv: Inv::I6,
+        detail: "after the drag, I2 of axis_title_right: box * px past the padding*",
+        reason: "the slanted title's turned box, as in I2",
+        issue: "#55",
+    },
     // The radar scene is a polar chart: the outer ring row above (its ray
     // line is hidden, so it has no ray drag row), and its ring labels.
     Exclusion {
@@ -2832,12 +2870,20 @@ fn chart_of(doc: &Config, name: &str) -> Config {
 
 /// How far a drag by [`DRAG`] moves an element's bounds under the nudge
 /// policy (`layout/nudge.rs`): an axis only across its direction, `None`
-/// for the polar axis and labels, which turn and slide along the ring.
+/// for the polar axis and labels, which turn and slide along the ring. A
+/// ternary edge moves by the drag's component on its outward normal; its
+/// labels move in the edge's orthonormal frame, so by the whole drag.
 fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
     let (dx, dy) = DRAG;
     let polar = chart.polar.is_some();
     match element {
         Element::Axis(_) | Element::AxisLabel(_) if polar => None,
+        Element::Axis(side) if chart.ternary.is_some() => {
+            let k = renderer::ternary::side_component(side)?;
+            let n = chart.ternary_geometry()?.outward_normal(k);
+            let d = dx * n[0] + dy * n[1];
+            Some((n[0] * d, n[1] * d))
+        }
         Element::Axis(Side::Top | Side::Bottom) => Some((0.0, dy)),
         Element::Axis(_) => Some((dx, 0.0)),
         Element::ColorBarAxis => match chart.colorbar.as_ref().map(|b| &b.side) {

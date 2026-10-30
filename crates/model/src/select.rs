@@ -134,7 +134,8 @@ pub trait Selectable<C: DragConfig = Config> {
 
     /// Whether the selection outlines each drawn part instead of one box
     /// around them, and the element hits on its parts instead of inside the
-    /// box: polar tick labels and the polar ray, annotations.
+    /// box: polar tick labels and the polar ray, a ternary chart's slanted
+    /// edges and their labels, annotations.
     fn outlines_parts(&self, _cfg: &C) -> bool {
         false
     }
@@ -1138,7 +1139,7 @@ impl Selectable for AxisElement {
     }
 
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some()
+        cfg.polar.is_some() || cfg.ternary.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {
@@ -1161,7 +1162,7 @@ impl Selectable for AxisLabelElement {
     /// Polar tick labels ring the plot (angle) or line the ray (radius):
     /// each label is outlined and hit where it is drawn.
     fn outlines_parts(&self, cfg: &Config) -> bool {
-        cfg.polar.is_some()
+        cfg.polar.is_some() || cfg.ternary.is_some()
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {

@@ -29,6 +29,7 @@ pub struct Config {
     pub colorbar: Option<ColorBarOptions>,   // the colourbar AND the chart's z scale
     pub draw_style: DrawStyle,
     pub polar: Option<PolarOptions>,         // None = rectangular; Some draws bottom_x as the angle, left_y as the radius
+    pub ternary: Option<TernaryOptions>,     // None = rectangular; Some draws a triangle, bottom_x / left_y / right_y its three components
     pub overlays: Vec<OverlayLayer>,         // secondary right Y axes, each scaling the series it lists
     pub subplots: Vec<Subplot>,              // more charts in the same document, each with its own axes
     pub active_layer: LayerRef,              // interaction target layer; `Base` (default) = the chart's own series and decorations
@@ -251,6 +252,48 @@ ray, positive), so they keep their place when the ray turns. The top and
 right axes are not drawn and register nothing, their titles included. Chart
 title, the bottom and left axis titles, legend, data area and annotations
 keep the rectangular rules.
+
+### `TernaryOptions` (`Config::ternary`)
+
+`ternary: None` (default, key absent in JSON) is the rectangular chart.
+`Some(TernaryOptions {})` (JSON `{ "ternary": {} }`) draws an equilateral
+triangle in the data area and places each sample of a `Ternary` series at
+its three components weighted onto the corners, `(x·L + y·T + c·R) /
+(x + y + c)`. `TernaryOptions` has no field in this release: it is the
+switch, and later options join it additively.
+[TERNARY.md](TERNARY.md) walks through a first ternary chart.
+
+| Component | Column | Axis | 100 % corner |
+|---|---|---|---|
+| x | `x_column` | `bottom_x`, the bottom edge | bottom-left |
+| y | `y_column` | `left_y`, the left edge | top |
+| c | `c_column` | `right_y`, the right edge | bottom-right |
+
+Each axis increases clockwise towards its own corner, and `top_x` is not
+drawn. `Config::ternary_geometry` returns the triangle (the largest that
+leaves a band for each edge's ticks, labels and title), and
+`Config::ternary_title_placement` places each axis title.
+
+Validation (`Config::validate_ternary`, reported as `InvalidConfig { field:
+"ternary" }` where the chart is drawn): the three axes linear, not inverted
+and not categorical, each with `min` 0 and the same positive `max`; not
+polar; no `overlays`, no `line_offsets` members, the `Precise` draw style
+and no subplot axis links. `Config::validate_ternary_series` (reported as
+`InvalidSeriesConfig` at registration): a ternary chart draws only
+`Ternary` series and a `Ternary` series needs a ternary chart; its three
+columns are distinct, it draws markers, a line or both, and its line is
+linear with no fill. Streamed sources are rejected. Fits leave the three
+axes alone. Annotations are placed by ratio only: reference lines, spans
+and data anchors report a skip (`NoValueAxis`). Subplots carry their own
+`ternary`.
+
+Dragging follows the edge frames. An edge (`"axis_bottom"`, `"axis_left"`,
+`"axis_right"`) moves along its outward normal by the drag's component on
+it, into `line_offset`. Its tick labels move with `label_offset_x` along the
+edge (from its 0 towards its 100 % corner) and `label_offset_y` along the
+outward normal. Axis titles move in screen space through `offset_x` /
+`offset_y`. The slanted edges and their labels hit and outline on their
+drawn parts. The top axis is not drawn and registers nothing.
 
 ### `LayerRef` / `AnnotationLayer`
 
@@ -615,6 +658,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `CategoryBars { color, style, labels, label_format, overrides? }` | category bar | One bar per category of the chart's categorical axis: the positions column `0..n` and one value per category (NaN = missing), roles by `Config::bar_groups`' direction. `style` is a `CategoryBarStyle` (material, corners, outline, texture, gloss, emphasis); `overrides` restyle single bars by category id; `labels.text` holds the value label strings `format_labels` writes, drawn at the bar ends; `labels.offsets` holds each label's drag offset. See [Categorical bars](CATEGORICAL.md) |
 | `BoxPlot { color, style, labels, outliers?, overrides?, violin?, points? }` | box plot | One box per category of the chart's categorical axis: `x_column` the positions column `0..n`, `y_column` the id of a record of box statistics (`BOX_PLOT_RECORD`, one row per category, NaN = missing; empty for a violin without boxes), `outliers` an optional ragged column with one group per category; the roles do not swap with the direction. `style` is a `BoxPlotStyle` (material, outline, median, whiskers and caps, notch, mean and outlier markers); `overrides` restyle single boxes (and their violins) by category id; `labels.text` holds the label strings the host writes (`format_box_plot_labels`), drawn past the top of each box; `labels.offsets` holds each label's drag offset. `violin` draws the host's density curves behind the boxes (`ViolinBody::Symmetric` or `Split`, a ragged curve and an index-aligned density column per half, `box_width` the box's share of the slot); `points` draws the raw points jittered across the slot (a raincloud). Unordered statistics are clamped, not checked. See [Box plots](BOXPLOT.md) |
 | `RangeBars { color, style, start, whiskers?, color_by?, progress?, connector?, slot_width?, labels }` | range bar | One bar per row from its `start` to its end (`y_column`) at its position (`x_column`), whatever the direction: waterfalls, candlesticks, state timelines and Gantt charts. `whiskers` adds a low-to-high stroke, `color_by` colours by the series, the direction of the given ends (with a total flag column) or a state index, `progress` shades the unfinished share, `connector` joins each end to the next bar, `slot_width` sizes a slot on a numeric (time) position axis. The host supplies every value; nothing is computed. `labels.text` holds one host string per row. See [Range bars](RANGEBARS.md) |
+| `Ternary { c_column, scatter?, line? }` | ternary | A sample of three components on a ternary chart (`Config.ternary`): `x_column`, `y_column` and `c_column` name the components, unnormalized; each sample is placed at its components weighted onto the triangle's corners. `scatter` draws markers (every scatter style, table, override and map), `line` a linear, unfilled line (every dash pattern); at least one is set, and each is omitted from JSON when unset. A sample with a negative or non-finite component or a sum of zero or less is not drawn and breaks the line. Streamed sources are rejected. See [Ternary plots](TERNARY.md) |
 | `Radar { color, style, labels }` | radar | A closed outline through one value per category of the polar chart's categorical angle axis: `x_column` the positions column `0..n`, `y_column` the values (NaN breaks the outline and the fill there). The closing segment joins the last category to the first. `style` is a `RadarSeriesStyle` (line width, fill colour or `fill_opacity`, vertex marker and size); the fill reaches the inner ring on a full circle; markers are drawn by the scatter path. `labels.text` holds the value label strings `format_radar_labels` writes, drawn outside each vertex along its spoke; `labels.offsets` holds each label's drag offset. Needs `Config.polar` with `Chord` interpolation, any number of radar series per layer; streamed sources are rejected. See [Radar charts](RADAR.md) |
 
 For a runnable vertical/horizontal example and atomic direction changes, see

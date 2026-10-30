@@ -75,6 +75,14 @@ impl TernaryGeometry {
         }
     }
 
+    /// The unit direction of edge `k`, from its 0 to its 100 % corner.
+    pub fn edge_direction(&self, k: usize) -> [f32; 2] {
+        let [a, b] = self.edge(k);
+        let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+        let len = dx.hypot(dy).max(f32::EPSILON);
+        [dx / len, dy / len]
+    }
+
     /// The unit outward normal of edge `k` (pointing away from the
     /// triangle).
     pub fn outward_normal(&self, k: usize) -> [f32; 2] {
@@ -195,7 +203,7 @@ impl Config {
     /// The triangle of this ternary chart, when the chart is ternary and has
     /// a data area: the largest equilateral triangle inside the data area
     /// that leaves a band for each edge's ticks, labels and title outside
-    /// it, centred. The GPU transform, the grid and axes, the decoration hit
+    /// it, centred with its bands. The GPU transform, the grid and axes, the decoration hit
     /// regions and drags all read this triangle.
     pub fn ternary_geometry(&self) -> Option<TernaryGeometry> {
         self.ternary.as_ref()?;
@@ -207,17 +215,24 @@ impl Config {
                 labels + title
             })
             .fold(0.0f32, f32::max);
-        let width = (area.width as f32 - 2.0 * band).max(0.0);
-        let height = (area.height as f32 - 2.0 * band).max(0.0);
-        let side = width.min(height * 2.0 / 3f32.sqrt());
-        let h = side * 3f32.sqrt() * 0.5;
+        // The band outside each edge reaches past the triangle's bounding
+        // box by `band · cos 30°` left and right (the slanted edges), by
+        // `band` below and by `band · sin 30°` above the top corner. The
+        // triangle is the largest whose box grown by those reaches fits the
+        // data area, and that grown box is centred.
+        let (cos30, sin30) = (3f32.sqrt() * 0.5, 0.5);
+        let width = (area.width as f32 - 2.0 * cos30 * band).max(0.0);
+        let height = (area.height as f32 - (1.0 + sin30) * band).max(0.0);
+        let side = width.min(height / cos30);
+        let h = side * cos30;
         let cx = area.x as f32 + area.width as f32 * 0.5;
-        let cy = area.y as f32 + area.height as f32 * 0.5;
+        let top =
+            area.y as f32 + (area.height as f32 - h - (1.0 + sin30) * band) * 0.5 + sin30 * band;
         Some(TernaryGeometry {
             corners: [
-                [cx - side * 0.5, cy + h * 0.5],
-                [cx, cy - h * 0.5],
-                [cx + side * 0.5, cy + h * 0.5],
+                [cx - side * 0.5, top + h],
+                [cx, top],
+                [cx + side * 0.5, top + h],
             ],
             side,
         })
@@ -313,5 +328,274 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::{DataSelectionsConfig, PickedDataRef};
+    use crate::data_config::{
+        DataLineStyleConfig, DataScatterStyleConfig, LineFill, LineInterpolation,
+    };
+    use crate::layer::{OverlayLayer, Subplot};
+    use crate::line::LineStylePreset;
+    use crate::{Color, ScatterShape};
+
+    fn chart() -> Config {
+        let mut config = crate::default::default_config();
+        for axis in [
+            &mut config.bottom_x,
+            &mut config.left_y,
+            &mut config.right_y,
+        ] {
+            axis.min = 0.0;
+            axis.max = 100.0;
+        }
+        config.ternary = Some(TernaryOptions {});
+        config
+    }
+
+    fn scatter() -> DataScatterStyleConfig {
+        DataScatterStyleConfig {
+            point_color: Color::BLACK,
+            point_shape: ScatterShape::CircleFilled,
+            point_size: 4.0,
+            point_style_table: None,
+            point_style_index_column: None,
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        }
+    }
+
+    fn line() -> DataLineStyleConfig {
+        DataLineStyleConfig {
+            line_style: LineStylePreset::Solid,
+            line_color: Color::BLACK,
+            line_width: 1.0,
+            fill: None,
+            fill_color: None,
+            interpolation: LineInterpolation::Linear,
+        }
+    }
+
+    fn series(id: &str, render_type: DataRenderType) -> SeriesConfig {
+        SeriesConfig {
+            series_id: id.into(),
+            source_id: None,
+            label: None,
+            x_column: "a".into(),
+            y_column: "b".into(),
+            render_type,
+        }
+    }
+
+    fn ternary(
+        scatter: Option<DataScatterStyleConfig>,
+        line: Option<DataLineStyleConfig>,
+    ) -> DataRenderType {
+        DataRenderType::Ternary {
+            c_column: "c".into(),
+            scatter,
+            line,
+        }
+    }
+
+    #[test]
+    fn geometry_is_an_equilateral_triangle_centred_in_the_data_area() {
+        let config = chart();
+        let g = config.ternary_geometry().unwrap();
+        let area = config.data_area().unwrap().0;
+        let [l, t, r] = g.corners;
+        for (a, b) in [(l, t), (t, r), (r, l)] {
+            let side = (b[0] - a[0]).hypot(b[1] - a[1]);
+            assert!((side - g.side).abs() < 1e-3, "{side} vs {}", g.side);
+        }
+        assert_eq!(l[1], r[1], "the bottom edge is horizontal");
+        let cx = area.x as f32 + area.width as f32 * 0.5;
+        assert!((t[0] - cx).abs() < 1e-3);
+        for p in g.corners {
+            assert!(p[0] >= area.x as f32 && p[0] <= (area.x + area.width) as f32);
+            assert!(p[1] >= area.y as f32 && p[1] <= (area.y + area.height) as f32);
+        }
+        // Each component's 100 % corner and its outward normals.
+        assert_eq!(g.point([1.0, 0.0, 0.0]), l);
+        assert_eq!(g.point([0.0, 1.0, 0.0]), t);
+        assert_eq!(g.point([0.0, 0.0, 1.0]), r);
+        assert_eq!(
+            g.outward_normal(0),
+            [0.0, 1.0],
+            "the bottom edge points down"
+        );
+        assert!(g.outward_normal(1)[0] < 0.0 && g.outward_normal(2)[0] > 0.0);
+        // No triangle without the switch.
+        let mut plain = config.clone();
+        plain.ternary = None;
+        assert!(plain.ternary_geometry().is_none());
+    }
+
+    #[test]
+    fn the_triangle_scales_with_the_chart_at_2x() {
+        let config = chart();
+        let one = config.ternary_geometry().unwrap();
+        let two = config.scaled(2.0).ternary_geometry().unwrap();
+        for (a, b) in one.corners.iter().zip(two.corners.iter()) {
+            assert!((a[0] * 2.0 - b[0]).abs() < 0.01 && (a[1] * 2.0 - b[1]).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn validation_names_each_rejection() {
+        assert_eq!(chart().validate_ternary(), Ok(()));
+        let reject = |edit: &dyn Fn(&mut Config)| {
+            let mut config = chart();
+            edit(&mut config);
+            config.validate_ternary().unwrap_err()
+        };
+        assert!(reject(&|c| c.left_y.scale = AxisScale::Logarithmic).contains("linear"));
+        assert!(reject(&|c| c.right_y.inverted = true).contains("inverted"));
+        assert!(reject(&|c| c.bottom_x.min = 10.0).contains("min 0"));
+        assert!(reject(&|c| c.right_y.max = 1.0).contains("same"));
+        assert!(
+            reject(&|c| c.polar = Some(crate::polar::PolarOptions::default()))
+                .contains("polar or ternary")
+        );
+        assert!(reject(&|c| c.overlays.push(OverlayLayer::default())).contains("overlay"));
+        assert!(
+            reject(&|c| c.draw_style = crate::config::DrawStyle::Sketch(Default::default()))
+                .contains("Precise")
+        );
+        let mut linked = Subplot::default();
+        linked.link_x = Some(crate::layer::CellRef::Parent);
+        assert!(reject(&|c| c.subplots.push(linked.clone())).contains("links"));
+        // The axes may span 0..1 as well as 0..100.
+        let mut unit = chart();
+        for axis in [&mut unit.bottom_x, &mut unit.left_y, &mut unit.right_y] {
+            axis.max = 1.0;
+        }
+        assert_eq!(unit.validate_ternary(), Ok(()));
+    }
+
+    #[test]
+    fn series_rules_are_checked_both_ways() {
+        let config = chart();
+        let ok = series("t", ternary(Some(scatter()), Some(line())));
+        assert_eq!(config.validate_ternary_series(&[ok.clone()]), Ok(()));
+        let err = |s: SeriesConfig| config.validate_ternary_series(&[s]).unwrap_err();
+        assert!(err(series("t", ternary(None, None))).contains("markers, a line or both"));
+        let mut filled = line();
+        filled.fill = Some(LineFill::ToBaseline(0.0));
+        assert!(err(series("t", ternary(None, Some(filled)))).contains("no fill"));
+        let mut stepped = line();
+        stepped.interpolation = LineInterpolation::StepPost;
+        assert!(err(series("t", ternary(None, Some(stepped)))).contains("linear"));
+        let mut same = ok.clone();
+        same.y_column = "c".into();
+        assert!(err(same).contains("three distinct"));
+        let plain = series("p", DataRenderType::Scatter { scatter: scatter() });
+        assert!(err(plain).contains("only ternary series"));
+        let mut rectangular = config.clone();
+        rectangular.ternary = None;
+        assert!(
+            rectangular
+                .validate_ternary_series(&[ok])
+                .unwrap_err()
+                .contains("on a ternary chart")
+        );
+    }
+
+    #[test]
+    fn step_selection_walks_points_to_the_shortest_column() {
+        let mut config = chart();
+        let s = [series("t", ternary(Some(scatter()), None))];
+        config.picked_data = Some(DataSelectionsConfig {
+            refs: vec![PickedDataRef::Point {
+                source_id: None,
+                series_id: "t".into(),
+                point_index: 1,
+            }],
+            ..DataSelectionsConfig::default()
+        });
+        let len = |id: &str| match id {
+            "a" => Some(10),
+            "b" => Some(8),
+            "c" => Some(3),
+            _ => None,
+        };
+        assert_eq!(config.step_selection(&s, 1, 0, len), Ok(true));
+        assert_eq!(
+            config.step_selection(&s, 5, 0, len),
+            Ok(false),
+            "c has 3 values"
+        );
+        let Some(PickedDataRef::Point { point_index, .. }) =
+            config.picked_data.as_ref().and_then(|p| p.refs.first())
+        else {
+            panic!("a point selection");
+        };
+        assert_eq!(*point_index, 2);
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn serialization_round_trips_and_omits_the_switch_when_off() {
+        let config = chart();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(json.contains("\"ternary\":{}"), "{json}");
+        let back: Config = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.ternary, Some(TernaryOptions {}));
+        let mut plain = config.clone();
+        plain.ternary = None;
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !json.contains("ternary"),
+            "an older document stays as it was"
+        );
+        let s = series("t", ternary(Some(scatter()), None));
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(
+            json.contains("\"c_column\":\"c\"") && !json.contains("\"line\""),
+            "{json}"
+        );
+        let back: SeriesConfig = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, s);
+    }
+
+    #[test]
+    fn titles_sit_past_each_edge_along_it() {
+        let config = chart();
+        let g = config.ternary_geometry().unwrap();
+        let m = TextExtents {
+            width: 40.0,
+            ascent: 10.0,
+            descent: 3.0,
+        };
+        for k in 0..3 {
+            let p = config.ternary_title_placement(k, (0.0, 0.0), m).unwrap();
+            let [a, b] = g.edge(k);
+            let n = g.outward_normal(k);
+            let mid = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            let c = p.rotation_center;
+            let out = (c.0 - mid[0]) * n[0] + (c.1 - mid[1]) * n[1];
+            let along = (c.0 - mid[0]) * n[1] - (c.1 - mid[1]) * n[0];
+            assert!(out > m.height() * 0.5, "{k}: {out}");
+            assert!(along.abs() < 1e-3, "{k}: centred on the edge");
+            assert!(p.rotation_degrees.abs() <= 90.0, "{k}: reads left to right");
+        }
+        assert_eq!(
+            config
+                .ternary_title_placement(0, (0.0, 0.0), m)
+                .unwrap()
+                .rotation_degrees,
+            0.0
+        );
+        // The offset moves the title in screen space.
+        let at = config.ternary_title_placement(1, (0.0, 0.0), m).unwrap();
+        let moved = config.ternary_title_placement(1, (5.0, -7.0), m).unwrap();
+        assert_eq!(
+            moved.rotation_center,
+            (at.rotation_center.0 + 5.0, at.rotation_center.1 - 7.0)
+        );
     }
 }

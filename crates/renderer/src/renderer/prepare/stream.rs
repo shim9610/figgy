@@ -117,6 +117,14 @@ impl PrepareContext<'_> {
                 reason: streaming_runtime::STREAMED_RANGE_BARS_REASON.into(),
             });
         }
+        // Nor to ternary series: a sample reads its third component from the
+        // resident pool.
+        if series.render_type.ternary_c_column().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_TERNARY_REASON.into(),
+            });
+        }
         // The value maps read index-aligned columns on every draw; streaming
         // is not extended to them.
         if let Some(scatter) = extract_scatter(&series.render_type)

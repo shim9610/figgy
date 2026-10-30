@@ -232,9 +232,7 @@ pub(super) fn emit_ternary_labels(
     let side = component_side(k);
     let majors = major_tick_values_for_axis(axis, side, &data_area_rect(da), fp);
     let n = g.outward_normal(k);
-    let [a, b] = g.edge(k);
-    let len = (b[0] - a[0]).hypot(b[1] - a[1]).max(f32::EPSILON);
-    let along = [(b[0] - a[0]) / len, (b[1] - a[1]) / len];
+    let along = g.edge_direction(k);
     // A third of the font as clearance past the tick, as the polar ring's
     // labels keep.
     let gap = super::polar::outward_tick(axis) + ls.font_size.max(0.0) / 3.0;

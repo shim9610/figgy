@@ -1242,6 +1242,37 @@ bar's `selection_details()` carries `index`, `direction`, `position`, `end`,
 categorical axis; never a difference or a duration. `labels.text` holds one
 host string per row and `labels.offsets` their drag offsets.
 
+<a id="ternary-render_type"></a>
+
+## `Ternary` render_type
+
+A ternary series draws on a ternary chart (`"ternary": {}` on the config,
+omitted when off). It reads its three components from `x_column` (the
+bottom-left corner, on `bottom_x`), `y_column` (the top, on `left_y`) and
+`c_column` (the bottom-right, on `right_y`), unnormalized. `scatter` and
+`line` take the scatter and line styles and are omitted when unset; at
+least one is set. The line is linear (`"interpolation": "Linear"`) with no
+`fill`. The three axes have `min` 0 and the same `max` (1 or 100).
+
+```json
+{
+  "series_id": "alloys",
+  "x_column": "fe",
+  "y_column": "ni",
+  "render_type": {
+    "Ternary": {
+      "c_column": "cr",
+      "scatter": { "point_color": { "r": 0.16, "g": 0.35, "b": 0.78, "a": 1.0 },
+                   "point_shape": "CircleFilled", "point_size": 6.0 }
+    }
+  }
+}
+```
+
+A picked point's `selection_details()` carries `index`, `x`, `y` and `c` (the
+uploaded components, never fractions), plus `color_value` or `size_value`
+when mapped.
+
 <a id="radar-render_type"></a>
 
 ## `Radar` render_type
