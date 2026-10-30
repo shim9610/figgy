@@ -49,6 +49,11 @@ fn push_num(out: &mut Vec<u8>, v: f32) {
     }
 }
 
+/// `v` as [`push_num`] writes it: rounded to 0.001.
+fn round_written(v: f32) -> f32 {
+    (f64::from(v) * 1000.0).round() as f32 / 1000.0
+}
+
 fn push_nums(out: &mut Vec<u8>, values: &[f32]) {
     for v in values {
         push_num(out, *v);
@@ -427,17 +432,24 @@ impl VectorOut for PdfOut {
                 }
             };
             if (cos, sin) != (1.0, 0.0) {
-                push_nums(
-                    &mut self.content,
-                    &[
-                        cos,
-                        sin,
-                        -sin,
-                        cos,
-                        cx - cos * cx + sin * cy,
-                        cy - sin * cx - cos * cy,
-                    ],
-                );
+                // The entries are written to 0.001. At an angle other than a
+                // quarter turn (a ternary chart's slanted titles) the
+                // rounding would be multiplied by the page position of the
+                // origin, so the translation is the exact one less the
+                // rounded rotation of the origin: the block lands where the
+                // canvas puts it.
+                let (c, s) = (round_written(cos), round_written(sin));
+                let (e, f) = (cx - cos * cx + sin * cy, cy - sin * cx - cos * cy);
+                let (e, f) = if (c, s) == (cos, sin) {
+                    (e, f)
+                } else {
+                    let (ox, oy) = (origin[0], origin[1]);
+                    (
+                        cos * ox - sin * oy + e - (c * ox - s * oy),
+                        sin * ox + cos * oy + f - (s * ox + c * oy),
+                    )
+                };
+                push_nums(&mut self.content, &[c, s, -s, c, e, f]);
                 self.content.extend_from_slice(b"cm\n");
             }
         }

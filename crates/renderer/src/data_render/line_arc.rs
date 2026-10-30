@@ -198,7 +198,8 @@ mod tests {
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
         assert_eq!(sizes[0], 513 * ARC_PAIR_BYTES);
-        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 144]);
+        // The last is the transform, `ScatterTransform`'s 176 bytes.
+        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 176]);
         assert_eq!(&sizes[6..12], &[32; 6]);
         assert_eq!(&sizes[12..], &[16, 8, 16]);
 
