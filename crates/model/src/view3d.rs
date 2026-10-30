@@ -303,6 +303,55 @@ fn axis_band(axis: &AxisOptions) -> f32 {
     tick + text + title
 }
 
+/// The edge of the box an axis is drawn on: its two box points, their pixel
+/// positions (moved out by the axis' `line_offset`), and the unit screen
+/// direction away from the box, along which the ticks, labels and title
+/// sit.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BoxEdge {
+    /// Box points of the axis' 0 and 1 ends.
+    pub t0: [f64; 3],
+    pub t1: [f64; 3],
+    /// Their pixel positions, `line_offset` applied.
+    pub a: [f32; 2],
+    pub b: [f32; 2],
+    /// Unit screen direction away from the projected box centre,
+    /// perpendicular to the edge.
+    pub normal: [f32; 2],
+}
+
+impl BoxEdge {
+    /// The pixel point at axis fraction `f`, moved `offset` pixels along
+    /// the normal.
+    pub fn point(&self, f: f32, offset: f32) -> [f32; 2] {
+        [
+            self.a[0] + (self.b[0] - self.a[0]) * f + self.normal[0] * offset,
+            self.a[1] + (self.b[1] - self.a[1]) * f + self.normal[1] * offset,
+        ]
+    }
+
+    /// The unit screen direction of the edge, from its 0 to its 1 end.
+    pub fn direction(&self) -> [f32; 2] {
+        let (dx, dy) = (self.b[0] - self.a[0], self.b[1] - self.a[1]);
+        let len = dx.hypot(dy).max(f32::EPSILON);
+        [dx / len, dy / len]
+    }
+}
+
+/// The labels' clearance band outside an edge, without the title: the
+/// tick and a line of labels.
+fn label_band(axis: &AxisOptions) -> f32 {
+    let labels = &axis.label_style;
+    let font = labels.font_size.max(0.0);
+    let tick = axis.major_tick_length.max(0.0);
+    let text = if labels.visible && labels.label_visible {
+        font * 1.4 + font / 3.0
+    } else {
+        font / 9.0
+    };
+    tick + text
+}
+
 /// The axis of box direction `k`: 0 x `bottom_x`, 1 y `left_y`, 2 z
 /// `right_y`.
 pub fn box_axis(config: &Config, k: usize) -> &AxisOptions {
@@ -362,6 +411,95 @@ impl Config {
                 c[3],
             ],
         })
+    }
+
+    /// The box edge axis `k` (0 x, 1 y, 2 z) is drawn on for the current
+    /// camera: x and y on the floor edges nearest the eye, z on the
+    /// vertical edge left-most on screen.
+    pub fn box_axis_edge(&self, k: usize) -> Option<BoxEdge> {
+        let view = self.view_3d.as_ref()?;
+        let m = self.view_matrix()?;
+        let d = view.eye_direction();
+        let front = |i: usize| if d[i] >= 0.0 { 1.0 } else { 0.0 };
+        let (t0, t1) = match k {
+            0 => ([0.0, front(1), 0.0], [1.0, front(1), 0.0]),
+            1 => ([front(0), 0.0, 0.0], [front(0), 1.0, 0.0]),
+            _ => {
+                let corner = [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]]
+                    .into_iter()
+                    .filter_map(|c: [f64; 2]| Some((m.project([c[0], c[1], 0.0])?[0], c)))
+                    .fold(None, |best: Option<(f64, [f64; 2])>, cand| match best {
+                        Some(b) if b.0 <= cand.0 => Some(b),
+                        _ => Some(cand),
+                    })?
+                    .1;
+                ([corner[0], corner[1], 0.0], [corner[0], corner[1], 1.0])
+            }
+        };
+        let pa = m.project(t0)?;
+        let pb = m.project(t1)?;
+        let centre = m.project([0.5, 0.5, 0.5])?;
+        let (dx, dy) = ((pb[0] - pa[0]) as f32, (pb[1] - pa[1]) as f32);
+        let len = dx.hypot(dy).max(f32::EPSILON);
+        let mut normal = [dy / len, -dx / len];
+        let mid = [
+            ((pa[0] + pb[0]) * 0.5) as f32,
+            ((pa[1] + pb[1]) * 0.5) as f32,
+        ];
+        let away = [mid[0] - centre[0] as f32, mid[1] - centre[1] as f32];
+        if away[0] * normal[0] + away[1] * normal[1] < 0.0 {
+            normal = [-normal[0], -normal[1]];
+        }
+        let offset = box_axis(self, k).line_offset;
+        let shift = |p: [f64; 3]| {
+            [
+                p[0] as f32 + normal[0] * offset,
+                p[1] as f32 + normal[1] * offset,
+            ]
+        };
+        Some(BoxEdge {
+            t0,
+            t1,
+            a: shift(pa),
+            b: shift(pb),
+            normal,
+        })
+    }
+
+    /// Where the title of box axis `k` sits: centred past its edge's tick
+    /// and label band along the edge's normal, parallel to the edge and
+    /// reading left to right, moved by the title offsets in screen space.
+    pub fn box_title_placement(
+        &self,
+        k: usize,
+        offset: (f32, f32),
+        extents: crate::text::TextExtents,
+    ) -> Option<crate::layout::TitlePlacement> {
+        let edge = self.box_axis_edge(k)?;
+        let reach = label_band(box_axis(self, k)) + extents.height() * 0.5;
+        let mid = edge.point(0.5, reach);
+        let center = (mid[0] + offset.0, mid[1] + offset.1);
+        let mut dir = edge.direction();
+        if dir[0] < 0.0 || (dir[0] == 0.0 && dir[1] > 0.0) {
+            dir = [-dir[0], -dir[1]];
+        }
+        Some(crate::layout::TitlePlacement {
+            origin: (
+                center.0 - extents.width * 0.5,
+                center.1 + (extents.ascent - extents.descent) * 0.5,
+            ),
+            rotation_center: center,
+            rotation_degrees: dir[1].atan2(dir[0]).to_degrees(),
+        })
+    }
+
+    /// The box's three back panes for the current camera, the faces whose
+    /// outward normal points away from the eye: for each direction `k`,
+    /// the coordinate (0 or 1) of the pane across it. The grid is drawn on
+    /// them.
+    pub fn box_back_panes(&self) -> Option<[f64; 3]> {
+        let d = self.view_3d.as_ref()?.eye_direction();
+        Some([0, 1, 2].map(|i| if d[i] >= 0.0 { 0.0 } else { 1.0 }))
     }
 
     /// The pixel position and depth of box point `t` on this 3D chart

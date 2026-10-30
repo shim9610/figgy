@@ -184,7 +184,7 @@ impl Config {
         Some(match element {
             // A ternary title is placed along its edge with its offset in
             // screen space (`Config::ternary_title_placement`).
-            Element::AxisTitle(_) if self.ternary.is_some() => (dx, dy),
+            Element::AxisTitle(_) if self.ternary.is_some() || self.view_3d.is_some() => (dx, dy),
             Element::AxisTitle(side) => screen_offset_to_axis_title(side.clone(), (dx, dy)),
             Element::ColorBarTitle => {
                 let side = self.colorbar.as_ref()?.side.clone();
@@ -232,6 +232,15 @@ impl Config {
                 Element::Axis(side) => return self.nudge_polar_axis(side.clone(), at, dx, dy),
                 Element::AxisLabel(side) => {
                     return self.nudge_polar_axis_label(side.clone(), measure, at, dx, dy);
+                }
+                _ => {}
+            }
+        }
+        if self.view_3d.is_some() {
+            match &element {
+                Element::Axis(side) => return self.nudge_box_axis(side, measure, dx, dy),
+                Element::AxisLabel(side) => {
+                    return self.nudge_box_axis_label(side, measure, dx, dy);
                 }
                 _ => {}
             }
@@ -417,6 +426,69 @@ impl Config {
             return reject;
         };
         self.set_offset(&element, (previous.0 + delta.0, previous.1 + delta.1));
+        if self.grabbable(&element, measure) != Some(true) {
+            self.set_offset(&element, previous);
+            return reject;
+        }
+        NudgeResult::Moved
+    }
+
+    /// 3D: a box axis moves along its edge's outward screen normal by the
+    /// drag's component on it (`line_offset`), carrying its ticks and
+    /// labels; the top axis is not drawn.
+    fn nudge_box_axis(
+        &mut self,
+        side: &Side,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let Some(edge) = crate::ternary::side_component(side).and_then(|k| self.box_axis_edge(k))
+        else {
+            return reject;
+        };
+        let n = edge.normal;
+        let d = dx * n[0] + dy * n[1];
+        if d == 0.0 {
+            return NudgeResult::Moved;
+        }
+        let previous = axis_ref(self, side).line_offset;
+        axis_mut(self, side).line_offset = previous + d;
+        if self.grabbable(&Element::Axis(side.clone()), measure) != Some(true) {
+            axis_mut(self, side).line_offset = previous;
+            return reject;
+        }
+        NudgeResult::Moved
+    }
+
+    /// 3D: a box axis' tick labels move in its edge frame, `label_offset_x`
+    /// along the edge and `label_offset_y` along its outward normal.
+    fn nudge_box_axis_label(
+        &mut self,
+        side: &Side,
+        measure: &dyn MeasureText,
+        dx: f32,
+        dy: f32,
+    ) -> NudgeResult {
+        let reject = NudgeResult::Rejected(NudgeReject::OutOfBounds);
+        let Some(edge) = crate::ternary::side_component(side).and_then(|k| self.box_axis_edge(k))
+        else {
+            return reject;
+        };
+        let along = edge.direction();
+        let n = edge.normal;
+        let element = Element::AxisLabel(side.clone());
+        let Some(previous) = self.offset_of(&element) else {
+            return reject;
+        };
+        self.set_offset(
+            &element,
+            (
+                previous.0 + dx * along[0] + dy * along[1],
+                previous.1 + dx * n[0] + dy * n[1],
+            ),
+        );
         if self.grabbable(&element, measure) != Some(true) {
             self.set_offset(&element, previous);
             return reject;
