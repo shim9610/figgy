@@ -987,7 +987,8 @@ pub fn emit_chart_title_in(
 }
 
 /// The axis title on `side`. A polar chart draws no top or right axis, so
-/// their titles are not placed either.
+/// their titles are not placed either; a ternary chart places the titles of
+/// its three edges along them and draws no top title.
 fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &mut dyn Sink) {
     if cfg.polar.is_some() && matches!(side, Side::Top | Side::Right) {
         return;
@@ -1001,14 +1002,21 @@ fn emit_axis_title(cfg: &Config, side: &Side, measure: &dyn MeasureText, sink: &
         return;
     };
     let m = measure.measure_rich(&to.text);
-    let placement = axis_title_placement(
-        side.clone(),
-        &cfg.chart_area,
-        &da,
-        cfg.title_band(side),
-        (to.offset_x, to.offset_y),
-        m,
-    );
+    let ternary = crate::ternary::side_component(side)
+        .and_then(|k| cfg.ternary_title_placement(k, (to.offset_x, to.offset_y), m));
+    if cfg.ternary.is_some() && ternary.is_none() {
+        return;
+    }
+    let placement = ternary.unwrap_or_else(|| {
+        axis_title_placement(
+            side.clone(),
+            &cfg.chart_area,
+            &da,
+            cfg.title_band(side),
+            (to.offset_x, to.offset_y),
+            m,
+        )
+    });
     sink.text(
         Slot::Above,
         &PlacedText {

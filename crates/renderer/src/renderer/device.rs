@@ -582,7 +582,8 @@ impl TargetPipelines {
                     let mapped = series.style.scatter_map.is_some();
                     let ring = item.chart_config.picked_points.is_some() || typed_point;
                     need_ternary[TernaryPipeline::Line as usize] |= primitives.line;
-                    need_ternary[TernaryPipeline::Scatter as usize] |= primitives.scatter && !mapped;
+                    need_ternary[TernaryPipeline::Scatter as usize] |=
+                        primitives.scatter && !mapped;
                     need_ternary[TernaryPipeline::ScatterMapped as usize] |=
                         primitives.scatter && mapped;
                     need_ternary[TernaryPipeline::Ring as usize] |=

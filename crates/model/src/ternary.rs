@@ -25,6 +25,8 @@
 
 use crate::config::{AxisOptions, AxisScale, Config};
 use crate::data_config::{DataRenderType, LineInterpolation, SeriesConfig};
+use crate::layout::{Side, TitlePlacement};
+use crate::text::TextExtents;
 
 /// The ternary coordinate system of a `Config`. It has no field in this
 /// release: it is the switch that turns the chart into a triangle, and
@@ -87,6 +89,46 @@ impl TernaryGeometry {
         }
         n
     }
+}
+
+/// The side of component `k`'s axis: x `Bottom`, y `Left`, c `Right`.
+pub fn component_side(k: usize) -> Side {
+    match k {
+        0 => Side::Bottom,
+        1 => Side::Left,
+        _ => Side::Right,
+    }
+}
+
+/// The component of the axis on `side`, `None` for the undrawn top axis.
+pub fn side_component(side: &Side) -> Option<usize> {
+    match side {
+        Side::Bottom => Some(0),
+        Side::Left => Some(1),
+        Side::Right => Some(2),
+        Side::Top => None,
+    }
+}
+
+/// The band outside an edge, in pixels: the tick and a line of labels with
+/// their clearance, then the axis title. Every term is a size
+/// `Config::scaled` scales, so a 2x export is the 1x layout doubled.
+fn edge_band(axis: &AxisOptions) -> (f32, f32) {
+    let labels = &axis.label_style;
+    let font = labels.font_size.max(0.0);
+    let tick = axis.major_tick_length.max(0.0);
+    let text = if labels.visible && labels.label_visible {
+        font * 1.4 + font / 3.0
+    } else {
+        font / 9.0
+    };
+    let title = &axis.title_option;
+    let title = if title.visible && !title.text.segments.is_empty() {
+        title.text.font_size.max(0.0) * 1.4
+    } else {
+        0.0
+    };
+    (tick + text, title)
 }
 
 /// The axis component `k` is read on: 0 `bottom_x`, 1 `left_y`, 2
@@ -158,28 +200,11 @@ impl Config {
     pub fn ternary_geometry(&self) -> Option<TernaryGeometry> {
         self.ternary.as_ref()?;
         let area = self.data_area().ok()?.0;
-        // One band per edge, the widest of the three: the tick, a line of
-        // labels and their clearance, and the axis title. Every term is a
-        // size `Config::scaled` scales, so a 2x export is the 1x layout
-        // doubled.
+        // One band per edge, the widest of the three.
         let band = (0..3)
             .map(|k| {
-                let axis = ternary_axis(self, k);
-                let labels = &axis.label_style;
-                let font = labels.font_size.max(0.0);
-                let tick = axis.major_tick_length.max(0.0);
-                let text = if labels.visible && labels.label_visible {
-                    font * 1.4 + font / 3.0
-                } else {
-                    font / 9.0
-                };
-                let title = &axis.title_option;
-                let title = if title.visible && !title.text.segments.is_empty() {
-                    title.text.font_size.max(0.0) * 1.4
-                } else {
-                    0.0
-                };
-                tick + text + title
+                let (labels, title) = edge_band(ternary_axis(self, k));
+                labels + title
             })
             .fold(0.0f32, f32::max);
         let width = (area.width as f32 - 2.0 * band).max(0.0);
@@ -195,6 +220,40 @@ impl Config {
                 [cx + side * 0.5, cy + h * 0.5],
             ],
             side,
+        })
+    }
+
+    /// Where the title of component `k`'s axis sits: centred past the
+    /// edge's tick and label band along the outward normal, parallel to the
+    /// edge and reading left to right, moved by the title offsets in screen
+    /// space. `None` when the chart is not ternary.
+    pub fn ternary_title_placement(
+        &self,
+        k: usize,
+        offset: (f32, f32),
+        extents: TextExtents,
+    ) -> Option<TitlePlacement> {
+        let g = self.ternary_geometry()?;
+        let (labels, _) = edge_band(ternary_axis(self, k));
+        let [a, b] = g.edge(k);
+        let n = g.outward_normal(k);
+        let reach = labels + extents.height() * 0.5;
+        let center = (
+            (a[0] + b[0]) * 0.5 + n[0] * reach + offset.0,
+            (a[1] + b[1]) * 0.5 + n[1] * reach + offset.1,
+        );
+        // The edge's direction, turned to read left to right.
+        let (mut dx, mut dy) = (b[0] - a[0], b[1] - a[1]);
+        if dx < 0.0 {
+            (dx, dy) = (-dx, -dy);
+        }
+        Some(TitlePlacement {
+            origin: (
+                center.0 - extents.width * 0.5,
+                center.1 + (extents.ascent - extents.descent) * 0.5,
+            ),
+            rotation_center: center,
+            rotation_degrees: dy.atan2(dx).to_degrees(),
         })
     }
 
@@ -217,7 +276,14 @@ impl Config {
                 (DataRenderType::Ternary { .. }, false) => {
                     return Err("a ternary series is drawn on a ternary chart (Config.ternary)");
                 }
-                (DataRenderType::Ternary { c_column, scatter, line }, true) => {
+                (
+                    DataRenderType::Ternary {
+                        c_column,
+                        scatter,
+                        line,
+                    },
+                    true,
+                ) => {
                     if item.x_column.is_empty()
                         || item.y_column.is_empty()
                         || c_column.is_empty()

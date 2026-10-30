@@ -258,11 +258,10 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     }
 
     if let Some(s) = series.scatter.as_ref() {
-        let count = s
-            .x
-            .len_values
-            .min(s.y.len_values)
-            .min(s.ternary_c.map_or(usize::MAX, |c| c.len_values)) as u32;
+        let count =
+            s.x.len_values
+                .min(s.y.len_values)
+                .min(s.ternary_c.map_or(usize::MAX, |c| c.len_values)) as u32;
         if count > 0 {
             pass.set_pipeline(s.pipeline);
             pass.set_bind_group(0, s.transform_bg, &[]);

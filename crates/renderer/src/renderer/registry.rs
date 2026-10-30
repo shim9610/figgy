@@ -1528,6 +1528,9 @@ pub(super) fn validate_renderer_series(
                 validate_registered_column(pool, id)?;
             }
         }
+        if let Some(c) = item.render_type.ternary_c_column() {
+            validate_registered_column(pool, c)?;
+        }
         if let Some(scatter) = extract_scatter(&item.render_type) {
             if let Some(column) = scatter.point_style_index_column.as_deref() {
                 validate_registered_column(pool, column)?;
@@ -1704,7 +1707,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
             return Err(invalid("streamlines are not drawn on polar axes"));
         }
         DataRenderType::Ternary { .. } => {
-            return Err(invalid("ternary series are drawn on ternary charts, not polar axes"));
+            return Err(invalid(
+                "ternary series are drawn on ternary charts, not polar axes",
+            ));
         }
     }
     if let (Some(line), crate::polar::PolarInterpolation::Arc { .. }) =

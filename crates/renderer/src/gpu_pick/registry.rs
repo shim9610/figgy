@@ -18,6 +18,7 @@ pub(super) fn series_exact_key(
     area: bool,
     path_arrows: bool,
     category_jitter: bool,
+    ternary: bool,
 ) -> PickExactKey {
     let scatter = flags & FLAG_SCATTER != 0;
     let line = flags & FLAG_LINE != 0;
@@ -46,6 +47,9 @@ pub(super) fn series_exact_key(
     }
     if scatter && category_jitter {
         bits |= exact_variant::CATEGORY_JITTER;
+    }
+    if ternary {
+        bits |= exact_variant::TERNARY;
     }
     // Without a style map every point has the series' shape.
     let shape = if scatter && flags & FLAG_STYLE_MAP == 0 {

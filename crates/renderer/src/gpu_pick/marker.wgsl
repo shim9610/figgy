@@ -228,7 +228,12 @@ fn pick_marker_candidate(
     // The vertex stage's `sample_valid`: a polar radius below the axis start
     // is not drawn, so it is not picked. The sector and the rings are the
     // fragment clip's, applied at the cursor below.
-    if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u)
+    let ternary = pick_ternary();
+    if ternary {
+        if !pick_ternary_valid(point_index, x, y) {
+            return pick_invalid_candidate(series_order);
+        }
+    } else if !pick_coordinate_is_valid(x, 0u) || !pick_coordinate_is_valid(y, 1u)
         || !polar_sample_valid(pick_query_params.transform, x, y) {
         return pick_invalid_candidate(series_order);
     }
@@ -239,6 +244,9 @@ fn pick_marker_candidate(
     var point_px = pick_data_px(x, y);
     if pick_variant(PICK_VARIANT_CATEGORY_JITTER) && pick_query_params.category_slot.y != 0u {
         point_px = pick_category_jitter_px(point_index, x, y);
+    }
+    if ternary {
+        point_px = pick_ternary_px(point_index, x, y);
     }
     if !pick_is_finite(point_px.x) || !pick_is_finite(point_px.y) {
         return pick_invalid_candidate(series_order);

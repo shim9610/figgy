@@ -224,6 +224,9 @@ pub(crate) struct GpuPickSeriesDescriptor<'a> {
     /// A box plot's raw points (`scatter` must be set too: they are its
     /// markers), placed in their category slot. Resident series only.
     pub(crate) category_jitter: Option<GpuPickCategoryJitter>,
+    /// A ternary series' third component: its markers and line are placed
+    /// by `ternary_ndc` on a ternary chart. Resident series only.
+    pub(crate) ternary_c: Option<ColumnId>,
 }
 
 /// The error bars of a marker series as the error-bar shader draws them
@@ -878,6 +881,19 @@ pub(super) struct PickSeriesGpu {
     pub(super) exact_key: PickExactKey,
     /// [`GpuPickSeriesDescriptor::category_jitter`].
     pub(super) category_jitter: Option<GpuPickCategoryJitter>,
+    /// [`GpuPickSeriesDescriptor::ternary_c`], resolved.
+    pub(super) ternary: Option<PickTernaryGpu>,
+}
+
+/// A slot's ternary third component: the column with its handle and
+/// allocation epoch, and its lane base and length (`PickQueryParams.size_map.zw`).
+#[derive(Clone)]
+pub(super) struct PickTernaryGpu {
+    pub(super) column: ColumnId,
+    pub(super) handle: ColumnHandle,
+    pub(super) epoch: u64,
+    pub(super) base: u32,
+    pub(super) len: u32,
 }
 
 /// A slot's error bars: the columns it reads in `ERRORBAR_COLUMNS` order

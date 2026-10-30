@@ -55,7 +55,9 @@ use shader::{
 pub(crate) use shader::{PickExactKey, PickExactPipelines, PickPipelineBundle, PickShader};
 pub use types::GpuPickError;
 use types::{CANDIDATE_BYTES, FLAG_LINE, FLAG_SCATTER, FLAG_SIZE_AREA, FLAG_SIZE_MAP};
-use types::{ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, create_rows_buffer_checked};
+use types::{
+    ERRORBAR_COLUMNS, PickAreaGpu, PickErrorBarGpu, PickTernaryGpu, create_rows_buffer_checked,
+};
 use types::{FLAG_STYLE_INDEX, FLAG_STYLE_MAP, FLAG_VECTOR, GATE_MASK_BYTES};
 pub(crate) use types::{GpuPickArea, GpuPickErrorBar, GpuPickErrorBarStyle};
 pub(crate) use types::{

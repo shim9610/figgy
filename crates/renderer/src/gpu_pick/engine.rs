@@ -141,7 +141,12 @@ pub(super) fn query_params(
             u32::from(series.line_closed),
             0,
         ],
-        size_map: [series.size_base, series.size_len, 0, 0],
+        size_map: [
+            series.size_base,
+            series.size_len,
+            series.ternary.as_ref().map_or(0, |c| c.base),
+            series.ternary.as_ref().map_or(0, |c| c.len),
+        ],
         size_domain: series.size_domain,
         size_px: [series.size_px[0], series.size_px[1], 0.0, 0.0],
         // A square cap's corner reaches √2 times the half extent past the
@@ -755,6 +760,7 @@ impl GpuPickEngine {
         // extended, rule 8; `encode_chunk_impl` drops them).
         let errorbar_input = descriptor.errorbar.take();
         let area_input = descriptor.area.take();
+        let ternary_input = descriptor.ternary_c.take();
         let resolve = |id: &ColumnId| -> Result<(ColumnHandle, u64), GpuPickError> {
             let pool = resident.ok_or_else(|| GpuPickError::ColumnNotResident(id.clone()))?;
             let handle = pool
@@ -896,6 +902,22 @@ impl GpuPickEngine {
             });
         }
 
+        // A ternary series' third component: a resident column, read at
+        // each sample by the exact pass.
+        let ternary = match ternary_input {
+            Some(id) => {
+                let (handle, epoch) = resolve(&id)?;
+                Some(PickTernaryGpu {
+                    base: lane_base(handle, &descriptor.series_id)?,
+                    len: u32::try_from(handle.len_values).unwrap_or(u32::MAX),
+                    column: id,
+                    handle,
+                    epoch,
+                })
+            }
+            None => None,
+        };
+
         let line_half_width_px = descriptor
             .line_width_px
             .map(|width| nonnegative(width) * 0.5)
@@ -924,10 +946,13 @@ impl GpuPickEngine {
         // per-axis gate bounds them: such a series scans every point.
         // A closed line's closing segment joins its last word to its first,
         // which the per-word gates do not see: it scans every point too.
+        // A ternary placement is not axis-separable either: the gates see
+        // one axis at a time.
         let direct_scan = point_count <= GPU_PICK_DIRECT_SCAN_POINTS
             || flags & FLAG_VECTOR != 0
             || errorbar.is_some()
             || area.is_some()
+            || ternary.is_some()
             || descriptor.line_closed;
         let allocated_gate_words = if direct_scan { 1 } else { gate_word_count };
         let gate_mask_bytes = u64::from(allocated_gate_words)
@@ -1174,12 +1199,14 @@ impl GpuPickEngine {
                     area.is_some(),
                     descriptor.path_arrows.is_some() && descriptor.line_width_px.is_some(),
                     descriptor.category_jitter.is_some() && descriptor.scatter.is_some(),
+                    ternary.is_some(),
                 ),
                 errorbar,
                 area,
                 category_jitter: descriptor
                     .category_jitter
                     .filter(|_| descriptor.scatter.is_some()),
+                ternary,
             },
         })
     }
@@ -1338,6 +1365,11 @@ impl GpuPickEngine {
             area_handle = Some(relocated(id, expected, expected_epoch)?);
         }
 
+        let ternary_handle = match series.ternary.as_ref() {
+            Some(c) => Some(relocated(&c.column, c.handle, c.epoch)?),
+            None => None,
+        };
+
         let storage_unchanged = pool.layout_generation() == series.pool_layout_generation
             && same_storage(x_handle, series.x_handle)
             && same_storage(y_handle, series.y_handle)
@@ -1362,7 +1394,8 @@ impl GpuPickEngine {
             && series
                 .area
                 .as_ref()
-                .is_none_or(|fill| same_optional_storage(area_handle, fill.handle));
+                .is_none_or(|fill| same_optional_storage(area_handle, fill.handle))
+            && same_optional_storage(ternary_handle, series.ternary.as_ref().map(|c| c.handle));
         if storage_unchanged {
             return Ok(series.clone());
         }
@@ -1411,6 +1444,13 @@ impl GpuPickEngine {
         {
             fill.params[0] = lane_base(handle, next_series_id)?;
             fill.handle = Some(handle);
+        }
+        if let Some(c) = rebound.ternary.as_mut()
+            && let Some(handle) = ternary_handle
+        {
+            c.base = lane_base(handle, next_series_id)?;
+            c.len = u32::try_from(handle.len_values).unwrap_or(u32::MAX);
+            c.handle = handle;
         }
         rebound.query_data_bg = query_data_bg;
         Ok(rebound)
@@ -1739,6 +1779,12 @@ impl GpuPickEngine {
                 .area
                 .iter()
                 .map(|fill| (fill.column.as_ref(), fill.handle, fill.epoch)),
+        )
+        .chain(
+            series
+                .ternary
+                .iter()
+                .map(|c| (Some(&c.column), Some(c.handle), Some(c.epoch))),
         )
         .filter_map(|(id, expected, epoch)| Some((id?, expected?, epoch?)))
         {
