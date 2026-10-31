@@ -213,6 +213,10 @@ struct PickCandidate {
 // sketch wobble were drawn with (`line_arc.wgsl`), or a one-pair placeholder
 // when `line.y` is zero.
 @group(2) @binding(0) var<storage, read> pick_arc: array<vec2<u32>>;
+// A region series' ring starts (`PICK_FLAG_REGION`): per row, the row of its
+// ring's first vertex, as the draw's ring-start scan wrote it
+// (`ternary_region.wgsl`, #49). A placeholder for every other series.
+@group(2) @binding(1) var<storage, read> pick_ring_start: array<u32>;
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
 // The region fold beside the candidates: (crossing parity, lowest crossing
@@ -328,17 +332,10 @@ fn pick_region_px(i: u32) -> vec2<f32> {
     return pick_ternary_px(i, x, y);
 }
 
-// The first vertex of the ring that holds vertex `i`, as
-// `region_ring_start` of the draw finds it.
+// The first vertex of the ring that holds vertex `i`, read from the draw's
+// ring-start scan as `region_ring_start` reads it.
 fn pick_region_ring_start(i: u32) -> u32 {
-    var first = i;
-    loop {
-        if first == 0u || !pick_region_valid(first - 1u) {
-            break;
-        }
-        first = first - 1u;
-    }
-    return first;
+    return pick_ring_start[i];
 }
 
 // The vertex edge `i` runs to: the next, or the ring's first past the

@@ -47,6 +47,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "fe".into(), // x: the bottom-left corner
         y_column: "ni".into(), // y: the top corner
+        z_column: None,
         render_type: DataRenderType::Ternary {
             c_column: "cr".into(), // c: the bottom-right corner
             scatter: Some(DataScatterStyleConfig {
@@ -125,10 +126,16 @@ The fill is a stencil-then-cover with the even-odd rule: one triangle per
 edge from the triangle's centre inverts a stencil, and one cover per
 series paints where the stencil is odd. So, within one series, a polygon
 inside another is a hole, and two polygons that overlap leave their
-overlap unfilled. Regions that should overlap go in separate series. The
-cost is one stencil triangle per vertex and one cover per series; nothing
-is stored per polygon, and there is no limit on polygons or vertices (a
-million-vertex polygon is drawn in `ternary_render.rs`).
+overlap unfilled. Regions that should overlap go in separate series. Any
+row that cannot be placed separates polygons as a NaN row does: a
+non-finite or negative component, or a sum of zero or less.
+
+The cost is one stencil triangle per vertex and one cover per series,
+after a GPU scan that finds each polygon's first row so its closing edge
+needs no walk along the polygon (#49). The scan keeps one `u32` per row
+for the draw and for each pick. There is no limit on polygons or
+vertices: `ternary_render.rs` draws and picks one polygon of a million
+vertices.
 
 A ternary chart draws only ternary series, in the Precise draw style. It
 rejects overlays, line offsets, the polar system, subplot axis links to or

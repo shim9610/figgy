@@ -177,6 +177,19 @@ pub(super) fn series_arc(
     })
 }
 
+/// Series `index`'s ring starts (a region series', #49), when one covers its
+/// `point_count` rows.
+pub(super) fn series_ring(
+    rings: &[Option<Arc<wgpu::Buffer>>],
+    index: usize,
+    point_count: u32,
+) -> Option<&wgpu::Buffer> {
+    rings
+        .get(index)
+        .and_then(Option::as_deref)
+        .filter(|buffer| buffer.size() >= u64::from(point_count) * 4)
+}
+
 /// The identities of a registry's series in registry order.
 pub(crate) struct GpuPickSeriesIdentities(pub(super) Arc<[PickIdentity]>);
 

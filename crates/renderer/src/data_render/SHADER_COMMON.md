@@ -1699,23 +1699,45 @@ the projection and the sample validity fragments, fills the closed polygons
 a ternary series outlines (`TernaryRegionStyle`) by stencil-then-cover with
 the even-odd rule into the panel composite's stencil attachment
 (`Depth24PlusStencil8`, shared with the 3D surfaces, #49). Group 1 is the
-pool as storage (binding 0) and `TernaryRegionParams` (binding 1; CPU twin
+pool as storage (binding 0), `TernaryRegionParams` (binding 1; CPU twin
 `ternary_region.rs::TernaryRegionParamsGpu`, 32 B: the premultiplied fill
-colour, the x, y and c lane bases and the vertex count); no vertex slot is
-bound. `vs_stencil` draws one triangle per instance `i`: the triangle's
-centre, vertex `i` and the vertex edge `i` runs to (`region_edge_end`: the
-next valid vertex, or the ring's first past the ring's last, found by
-`region_ring_start` walking back to the previous NaN row), with the stencil
-op `Invert`, colour writes masked. `vs_cover` / `fs_cover` draws the whole
-triangle once per series where the stencil is not zero and resets it
-(`NotEqual`, `Zero`), so one series' polygons combine by even-odd. The
-anchor is fixed (the maintainer's decision on #49): N triangles for N
-vertices, nothing stored per polygon.
+colour, the x, y and c lane bases and the vertex count) and the ring starts
+(binding 2, `region_start: array<u32>`); no vertex slot is bound.
+`vs_stencil` draws one triangle per instance `i`: the triangle's centre,
+vertex `i` and the vertex edge `i` runs to (`region_edge_end`: the next
+valid vertex, or past the ring's last the ring's first,
+`region_ring_start(i) = region_start[i]`), with the stencil op `Invert`,
+colour writes masked. `vs_cover` / `fs_cover` draws the whole triangle once
+per series where the stencil is not zero and resets it (`NotEqual`,
+`Zero`), so one series' polygons combine by even-odd. The anchor is fixed
+(the maintainer's decision on #49): N triangles for N vertices.
+
+The ring starts come from the ring-start scan, three compute entries of the
+same module in group 2 (`ring_pool`, `ring_dst`, `ring_sums`,
+`RingScanParams`; CPU twin `ternary_region.rs::RingScanParamsGpu`, 16 B:
+the entry count of the level and the three lane bases), run by
+`ternary_region.rs::scan_ring_starts` before every region draw and pick
+(the maintainer's approval on #49, 2026-10-31). `ring_init` writes each
+row's candidate, `i + 1` on a row `ternary_sample_valid` rejects and 0
+otherwise; `ring_scan_block` takes the running maximum of each block of
+256 in workgroup memory and writes the block's maximum to the level above;
+the levels are scanned in turn up to one entry, and `ring_apply` folds
+each scanned level into the one below. A row's start is then the row after
+the nearest invalid row at or before it, so the closing edge reads one
+index instead of walking its ring: before the scan, the invocation at a
+ring's last vertex walked back to its first, and a ring of 131 072
+vertices made Metal kill the command buffer and stop drawing (#63). Every
+invocation does a bounded amount of work, the depth is log256 of the rows,
+and dispatches are two-dimensional so no level is bounded by one
+dimension's workgroup limit. The rows' `u32` buffer is the only storage the
+fill adds; the levels above it live for the one submission.
 
 The point picker counts the same rule: under `PICK_FLAG_REGION` (query
 `style.x`) the exact pass's `pick_region_crossing` tests every edge against
 the ray from the cursor towards +x (`pick_region_edge_crosses`, half-open
-in y so a vertex on the ray counts once) and folds its workgroup's
+in y so a vertex on the ray counts once; a ring's closing edge reads its
+first vertex from the same scan, bound as the exact pass's group 2
+`pick_ring_start` beside `pick_arc`) and folds its workgroup's
 crossings to a parity and the lowest crossing index (`pick_shared_region`,
 `pick_region_fold`), written as a `PICK_KIND_REGION` entry after the best
 candidates (the workgroup candidate buffer holds two per group).

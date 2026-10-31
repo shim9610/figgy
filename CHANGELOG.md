@@ -1224,17 +1224,28 @@ additive.
   on screen and in export. The region module
   (`data_render/ternary_region.wgsl`, SHADER_COMMON.md §5.22) fills by
   stencil-then-cover with the even-odd rule: `vs_stencil` draws one
-  triangle per edge from the triangle's centre (the closing edge found by
-  walking back to the ring's first vertex, nothing stored per polygon),
-  `vs_cover` paints the triangle once per series where the stencil is odd.
-  Group 1 binds the pool as storage with the fill's params; no vertex slot.
+  triangle per edge from the triangle's centre, `vs_cover` paints the
+  triangle once per series where the stencil is odd. A ring's closing
+  edge reads its first vertex's row from the ring-start scan, three compute
+  entries of the same module in the arc scan's pattern
+  (`ternary_region.rs::scan_ring_starts`): each row's start is the running
+  maximum of the rows after invalid rows, scanned in blocks of 256 and
+  levels, written once per draw and pick into one `u32` per row. No
+  invocation walks its ring, so the work per vertex is bounded whatever
+  the ring's length. A walk to the ring's first vertex in one invocation
+  had made Metal kill the command buffer for one ring of 131 072 vertices
+  and leave the device drawing nothing (#63). Group 1 binds the pool as
+  storage with the fill's params and the ring starts; no vertex slot.
   The point picker counts the crossings of the cursor's ray with the edges
   under `PICK_FLAG_REGION` and folds the parity in the per-series reduction
   (`PICK_KIND_REGION` entries beside the workgroup candidates): an odd
   count is a fill hit at distance zero on the lowest crossing edge's start,
-  losing every tie to a mark. The compile capture records the stencil
-  state. A million-vertex polygon draws and picks (`ternary_render.rs`);
-  the Ternary scene gains a filled phase field with a hole.
+  losing every tie to a mark. Its closing edges read the same scan, bound
+  as the exact pass's group 2 binding 1 (`pick_ring_start`) beside the arc
+  prefix, so the exact layout binds eight storage buffers. The compile
+  capture records the stencil state. A million-vertex polygon draws and
+  picks (`ternary_render.rs`); the Ternary scene gains a filled phase field
+  with a hole.
 - **Ternary plots** ([#55](https://github.com/shim9610/figgy/issues/55)).
   `ScatterTransform` grows from 144 to 176 bytes with `ternary_lt` and
   `ternary_r`, the triangle's corners in data-area NDC; the pick core's copy

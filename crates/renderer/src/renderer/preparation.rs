@@ -435,6 +435,8 @@ impl TargetPipelines {
             surface: Default::default(),
             ternary_region_shader: source.ternary_region_shader.clone(),
             ternary_region: Default::default(),
+            // Compute pipelines: the target's format does not enter them.
+            ternary_region_scan: source.ternary_region_scan.clone(),
             errorbar: None,
             errorbar_mapped: None,
             bar: None,
@@ -466,6 +468,9 @@ impl TargetPipelines {
         }
     }
     fn merge_preparation(&mut self, other: Self) {
+        if self.ternary_region_scan.is_none() {
+            self.ternary_region_scan = other.ternary_region_scan.clone();
+        }
         if self.line.is_none() {
             self.line = other.line;
         }

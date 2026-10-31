@@ -354,8 +354,11 @@ pub(crate) struct PickPipelineBundle {
     pub(super) reduce: wgpu::ComputePipeline,
     /// The exact pass's group 2: one series' arc prefix (`pick_arc`).
     pub(super) arc_bgl: wgpu::BindGroupLayout,
-    /// Group 2 for a series picked without an arc prefix: one zero.
+    /// Group 2 for a series picked without an arc prefix or ring starts:
+    /// one zero pair in both bindings.
     pub(super) arc_placeholder: wgpu::BindGroup,
+    /// That zero pair, bound in place of whichever buffer a series lacks.
+    pub(super) arc_placeholder_buffer: wgpu::Buffer,
     pub(super) _arc_placeholder_charge: SharedCharge,
 }
 
@@ -424,7 +427,7 @@ pub(super) fn create_pipeline_bundle_observed(
             immediate_size: 0,
         },
     );
-    let (arc_placeholder, arc_placeholder_charge) =
+    let (arc_placeholder, arc_placeholder_buffer, arc_placeholder_charge) =
         create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
@@ -482,19 +485,21 @@ pub(super) fn create_pipeline_bundle_observed(
         reduce_bgl,
         arc_bgl,
         arc_placeholder,
+        arc_placeholder_buffer,
         _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
     })
 }
 
-/// The exact pass's group 2 for a series without an arc prefix: a one-pair
-/// storage buffer the shader never reads (`line.y` is zero).
+/// The exact pass's group 2 for a series without an arc prefix or ring
+/// starts: a one-pair storage buffer in both bindings, which the shader
+/// never reads (`line.y` is zero and `PICK_FLAG_REGION` is clear).
 pub(super) fn create_arc_placeholder(
     device: &wgpu::Device,
     ledger: &Arc<GpuLedger>,
     arc_bgl: &wgpu::BindGroupLayout,
-) -> (wgpu::BindGroup, SharedCharge) {
+) -> (wgpu::BindGroup, wgpu::Buffer, SharedCharge) {
     let tally = ChargeTally::new();
     // gpu-alloc: PickScratch
     let buffer = charged_buffer_init(
@@ -509,27 +514,46 @@ pub(super) fn create_arc_placeholder(
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy GPU pick arc placeholder bg"),
         layout: arc_bgl,
-        entries: &[wgpu::BindGroupEntry {
-            binding: 0,
-            resource: buffer.as_entire_binding(),
-        }],
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: buffer.as_entire_binding(),
+            },
+        ],
     });
     (
         bind_group,
+        buffer,
         shared_charge(tally, ledger, GpuResourceKind::PickScratch),
     )
 }
 
 impl PickPipelineBundle {
-    /// The exact pass's group 2 holding one series' arc prefix.
-    pub(super) fn arc_bind_group(&self, buffer: &wgpu::Buffer) -> wgpu::BindGroup {
+    /// The exact pass's group 2 holding one series' arc prefix and ring
+    /// starts, the placeholder pair standing in for either it lacks.
+    pub(super) fn arc_bind_group(
+        &self,
+        arc: Option<&wgpu::Buffer>,
+        ring: Option<&wgpu::Buffer>,
+    ) -> wgpu::BindGroup {
+        let placeholder = &self.arc_placeholder_buffer;
         self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy GPU pick arc prefix bg"),
             layout: &self.arc_bgl,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: buffer.as_entire_binding(),
-            }],
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: arc.unwrap_or(placeholder).as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: ring.unwrap_or(placeholder).as_entire_binding(),
+                },
+            ],
         })
     }
 }
@@ -612,7 +636,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
             immediate_size: 0,
         },
     );
-    let (arc_placeholder, arc_placeholder_charge) =
+    let (arc_placeholder, arc_placeholder_buffer, arc_placeholder_charge) =
         create_arc_placeholder(&device, &ledger, &arc_bgl);
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
@@ -677,6 +701,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
         reduce_bgl,
         arc_bgl,
         arc_placeholder,
+        arc_placeholder_buffer,
         _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
@@ -699,8 +724,10 @@ pub(super) const QUERY_WORK_ENTRIES: [wgpu::BindGroupLayoutEntry; 4] = [
     storage_entry(2, true),
     storage_entry(3, false),
 ];
-/// Group 2 of the exact pass: the arc prefix.
-pub(super) const ARC_ENTRIES: [wgpu::BindGroupLayoutEntry; 1] = [storage_entry(0, true)];
+/// Group 2 of the exact pass: the arc prefix and a region series' ring
+/// starts (#49).
+pub(super) const ARC_ENTRIES: [wgpu::BindGroupLayoutEntry; 2] =
+    [storage_entry(0, true), storage_entry(1, true)];
 /// The exact pass's layout (`exact_layout`), in group order: the widest
 /// layout a pick pipeline uses, so the one the device limits are checked
 /// against.

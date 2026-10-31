@@ -464,6 +464,7 @@ pub(super) struct PreparedTernaryRegionLayer {
     pub(super) region_bg: wgpu::BindGroup,
     pub(super) count: u32,
     pub(super) charge: crate::gpu_memory::SharedCharge,
+    pub(super) ring_charge: crate::gpu_memory::SharedCharge,
 }
 
 impl PreparedTernaryRegionLayer {
@@ -475,6 +476,7 @@ impl PreparedTernaryRegionLayer {
             region_bg: layer.region_bg,
             count: layer.count,
             charge: layer.charge,
+            ring_charge: layer.ring_charge,
         }
     }
 
@@ -486,6 +488,7 @@ impl PreparedTernaryRegionLayer {
             region_bg: self.region_bg.clone(),
             count: self.count,
             charge: self.charge.clone(),
+            ring_charge: self.ring_charge.clone(),
         }
     }
 }
