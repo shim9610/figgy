@@ -10,7 +10,6 @@
 //! `<clipPath>` rectangle.
 
 use std::collections::HashMap;
-use std::fmt::Write as _;
 
 use swash::FontRef;
 
@@ -21,10 +20,20 @@ use crate::layout::Rect;
 use crate::renderer::{RasterImage, encode_png};
 use crate::sketch::PathSegment;
 
+/// `write!` into a `String`, which accepts every write: `String`'s
+/// `fmt::Write` never fails, and every argument written here is a
+/// number or a string, whose `Display` cannot fail. There is no error to
+/// report, so none is returned.
+fn put(out: &mut String, args: std::fmt::Arguments<'_>) {
+    if std::fmt::Write::write_fmt(out, args).is_err() {
+        // Unreachable, as above: nothing is lost.
+    }
+}
+
 /// Write `v` with at most three decimals, trailing zeros dropped.
 pub(crate) fn push_num(out: &mut String, v: f32) {
     let start = out.len();
-    let _ = write!(out, "{v:.3}");
+    put(out, format_args!("{v:.3}"));
     if out[start..].contains('.') {
         while out.ends_with('0') {
             out.pop();
@@ -45,12 +54,14 @@ pub(crate) fn channel(v: f32) -> u8 {
 }
 
 fn push_color(out: &mut String, c: Color) {
-    let _ = write!(
+    put(
         out,
-        "#{:02x}{:02x}{:02x}",
-        channel(c.r),
-        channel(c.g),
-        channel(c.b)
+        format_args!(
+            "#{:02x}{:02x}{:02x}",
+            channel(c.r),
+            channel(c.g),
+            channel(c.b)
+        ),
     );
 }
 
@@ -58,7 +69,7 @@ fn push_color(out: &mut String, c: Color) {
 fn push_opacity(out: &mut String, name: &str, c: Color) {
     let a = c.a.clamp(0.0, 1.0);
     if a < 1.0 {
-        let _ = write!(out, " {name}=\"");
+        put(out, format_args!(" {name}=\""));
         push_num(out, a);
         out.push('"');
     }
@@ -204,7 +215,10 @@ impl SvgOut {
         push_num(&mut svg, page[0]);
         svg.push_str("pt\" height=\"");
         push_num(&mut svg, page[1]);
-        let _ = write!(svg, "pt\" viewBox=\"0 0 {} {}\">\n", size.0, size.1);
+        put(
+            &mut svg,
+            format_args!("pt\" viewBox=\"0 0 {} {}\">\n", size.0, size.1),
+        );
         let defs_at = svg.len();
         Self {
             svg,
@@ -236,7 +250,7 @@ impl SvgOut {
         }
         let id = self.glyphs.len() as u32 + 1;
         self.glyphs.insert(key, id);
-        let _ = write!(self.defs, "<path id=\"g{id}\" d=\"");
+        put(&mut self.defs, format_args!("<path id=\"g{id}\" d=\""));
         let defs = &mut self.defs;
         crate::text_render::glyph_outline(font, glyph, size, &mut |segment| {
             if segment_is_finite(&segment) {
@@ -362,7 +376,7 @@ impl VectorOut for SvgOut {
         }
         let id = self.glyph_id(font, glyph, size);
         let svg = &mut self.svg;
-        let _ = write!(svg, "<use xlink:href=\"#g{id}\" x=\"");
+        put(svg, format_args!("<use xlink:href=\"#g{id}\" x=\""));
         push_num(svg, pen[0]);
         svg.push_str("\" y=\"");
         push_num(svg, pen[1]);
@@ -380,11 +394,13 @@ impl VectorOut for SvgOut {
     fn push_clip(&mut self, rect: Rect) {
         self.clips += 1;
         let n = self.clips;
-        let _ = write!(
-            self.svg,
-            "<clipPath id=\"c{n}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n\
+        put(
+            &mut self.svg,
+            format_args!(
+                "<clipPath id=\"c{n}\"><rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\"/></clipPath>\n\
              <g clip-path=\"url(#c{n})\">\n",
-            rect.x, rect.y, rect.width, rect.height
+                rect.x, rect.y, rect.width, rect.height
+            ),
         );
     }
 
@@ -397,11 +413,13 @@ impl VectorOut for SvgOut {
             return Ok(());
         }
         let png = encode_png(image)?;
-        let _ = write!(
-            self.svg,
-            "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" \
+        put(
+            &mut self.svg,
+            format_args!(
+                "<image x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" preserveAspectRatio=\"none\" \
              xlink:href=\"data:image/png;base64,",
-            origin[0], origin[1], image.width, image.height
+                origin[0], origin[1], image.width, image.height
+            ),
         );
         push_base64(&mut self.svg, &png);
         self.svg.push_str("\"/>\n");

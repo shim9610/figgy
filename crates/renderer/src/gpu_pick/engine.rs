@@ -954,8 +954,8 @@ impl GpuPickEngine {
             return Err(GpuPickError::NoPickPrimitive(descriptor.series_id));
         }
 
-        let _ = lane_base(x_handle, &descriptor.series_id)?;
-        let _ = lane_base(y_handle, &descriptor.series_id)?;
+        lane_base(x_handle, &descriptor.series_id)?;
+        lane_base(y_handle, &descriptor.series_id)?;
         let (gate_word_count, workgroup_count, dispatch_x, dispatch_y) =
             gate_dispatch_layout(point_count, limits.max_compute_workgroups_per_dimension)?;
         // An arrow reaches as far from its anchor as its component says, an
@@ -1302,8 +1302,8 @@ impl GpuPickEngine {
 
         let x_handle = relocated(&series.x_column, series.x_handle, series.x_allocation_epoch)?;
         let y_handle = relocated(&series.y_column, series.y_handle, series.y_allocation_epoch)?;
-        let _ = lane_base(x_handle, next_series_id)?;
-        let _ = lane_base(y_handle, next_series_id)?;
+        lane_base(x_handle, next_series_id)?;
+        lane_base(y_handle, next_series_id)?;
         let (style_index_handle, style_index_base, style_index_len) =
             if let Some(id) = series.style_index_column.as_ref() {
                 let expected = series
