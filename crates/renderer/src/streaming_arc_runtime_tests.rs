@@ -144,6 +144,7 @@ fn parity_with_samples(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type,
     }];
     let id = streamed

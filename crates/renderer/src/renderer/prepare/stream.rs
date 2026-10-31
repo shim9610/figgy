@@ -13,6 +13,15 @@ impl PrepareContext<'_> {
             series_id: series.series_id.clone(),
             reason: "stream pass does not yet support contours or arc-driven stars".into(),
         };
+        // Streaming is not extended to images (#139): the three channel
+        // grids are read from the resident pool through one table. Named
+        // before the generic field gate so the reason is the image's.
+        if series.render_type.rgb_image().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_IMAGE_REASON.into(),
+            });
+        }
         let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
         if primitives.contour
             || (primitives.field && !streaming_runtime::is_stream_heatmap(&series.render_type))
@@ -28,6 +37,14 @@ impl PrepareContext<'_> {
                 reason: "radar series require GPU-resident columns; streamed sources are not \
                          supported"
                     .into(),
+            });
+        }
+        // Streaming is not extended to parallel coordinates (rule 8, #141):
+        // every row reads one value per axis from the resident pool.
+        if series.render_type.parallel().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
             });
         }
         // Streaming is not extended to streamlines (rule 8).
@@ -125,6 +142,16 @@ impl PrepareContext<'_> {
                 reason: "3D chart series require GPU-resident columns; streamed sources are not \
                          supported"
                     .into(),
+            });
+        }
+        // Nor to hexagonal grids (#134): the lattice is read from resident
+        // coordinate columns whose uniform steps the pool measured.
+        if extract_matrix(&series.render_type)
+            .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
+        {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_HEXAGONAL_REASON.into(),
             });
         }
         // Nor to ternary series: a sample reads its third component from the

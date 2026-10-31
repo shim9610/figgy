@@ -14,6 +14,7 @@ pub(crate) const FIELD_SHADER: crate::shader_assembly::Assembled = crate::shader
     "data_render/common/ramp.wgsl",
     "data_render/common/field_paint.wgsl",
     "data_render/common/data_pick.wgsl",
+    "data_render/common/sample_validity.wgsl",
     "data_render/common/project_3d.wgsl",
     "data_render/field_columnar.wgsl",
 );
@@ -49,9 +50,20 @@ pub const FIELD_FLAG_BANDS: u32 = 8;
 
 pub const FIELD_FLAG_LOG_Z: u32 = 16;
 
+/// The grid is a hexagonal lattice (`GridLayout::Hexagonal`, #134): the
+/// cell lookup is `hex_cell`, the nearest centre on the shifted lattice,
+/// instead of the per-axis binary search.
+pub const FIELD_FLAG_HEXAGONAL: u32 = 32;
+
+/// The grid is a colour image (`DataRenderType::RgbImage`, #139): the red,
+/// green and blue tables follow each other `image[0]` entries apart in the
+/// grid table, each channel mapped linearly from `z_min..z_max` to 0..1; no
+/// colourbar is read.
+pub const FIELD_FLAG_RGB: u32 = 64;
+
 /// Everything the field shader needs beyond `Transform` and `Style`.
 ///
-/// GPU twin: `common/field_grid.wgsl::FieldParams`, 64 B. `z_min` / `z_max` are the
+/// GPU twin: `common/field_grid.wgsl::FieldParams`, 80 B. `z_min` / `z_max` are the
 /// colourbar's bounds as the pool's `(hi, lo)` f32 pair, **already
 /// log-transformed** when [`FIELD_FLAG_LOG_Z`] is set: the bounds are f64 on the
 /// host, so taking the logarithm here keeps precision the shader would lose.
@@ -79,6 +91,10 @@ pub struct FieldParamsGpu {
     pub level_color_count: u32,
     pub z_min: [f32; 2],
     pub z_max: [f32; 2],
+    /// `[channel stride, 0, 0, 0]`: for an image (`FIELD_FLAG_RGB`) the
+    /// green table starts `image[0]` entries after the red one and the blue
+    /// table `2 · image[0]`; zero otherwise.
+    pub image: [u32; 4],
 }
 
 impl FieldParamsGpu {
@@ -110,11 +126,12 @@ impl FieldParamsGpu {
             level_color_count: 0,
             z_min: [0.0, 0.0],
             z_max: [1.0, 0.0],
+            image: [0; 4],
         }
     }
 }
 
-const _: () = assert!(std::mem::size_of::<FieldParamsGpu>() == 64);
+const _: () = assert!(std::mem::size_of::<FieldParamsGpu>() == 80);
 
 /// Bind group layout for the field's own data (group 2).
 ///

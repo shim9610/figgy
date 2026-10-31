@@ -51,6 +51,22 @@ fn project_box(t: vec3<f32>) -> vec4<f32> {
     return view3d.view_proj * vec4<f32>(t, 1.0);
 }
 
+/// Clip position of box point `t` moved `radius_px` output pixels towards
+/// the eye: the depth of the front of a ball of that radius at `t`. A 3D
+/// marker is drawn at the front of a ball of its radius and a stroke at
+/// the front of a tube of its half width (#132), so each is in front of a
+/// surface it sits on by its radius and a marker in front of its own stroke
+/// by the difference; the mark's screen place is the centre's.
+fn project_box_front(t: vec3<f32>, radius_px: f32) -> vec4<f32> {
+    let shift = view3d.eye.xyz * (radius_px / view3d.flags.z) / (2.0 * view3d.half_extents.xyz);
+    return project_box(t + shift);
+}
+
+/// The clip position `clip` of a point at the depth of `front`.
+fn clip_at_depth(clip: vec4<f32>, front: vec4<f32>) -> vec4<f32> {
+    return vec4<f32>(clip.xy, front.z / front.w * clip.w, clip.w);
+}
+
 /// Clip position of box point `t` in the frame target.
 fn project_box_live(t: vec3<f32>) -> vec4<f32> {
     return view3d.view_proj_live * vec4<f32>(t, 1.0);
@@ -66,4 +82,28 @@ fn box_space_point(t: vec3<f32>) -> vec3<f32> {
 fn box_visible(t: vec3<f32>) -> bool {
     let e = 1e-4;
     return all(t >= vec3<f32>(-e)) && all(t <= vec3<f32>(1.0 + e));
+}
+
+/// The box point of a sample of three columns (x, y and the height z of a
+/// scatter or line series' `z_column`, #132).
+fn view3d_point_t(xv: vec2<f32>, yv: vec2<f32>, zv: vec2<f32>) -> vec3<f32> {
+    return vec3<f32>(view3d_axis_t(xv, 0u), view3d_axis_t(yv, 1u), view3d_z_t(zv));
+}
+
+/// Whether a sample of three columns is drawn on a 3D chart: a valid flat
+/// sample, a finite height (positive on a logarithmic z axis) and a box
+/// point inside the box. A sample outside the box is not drawn and a line
+/// breaks there, the 3D form of the data-area clip for a point primitive.
+fn view3d_point_valid(t: Transform, xv: vec2<f32>, yv: vec2<f32>, zv: vec2<f32>) -> bool {
+    let z = zv.x + zv.y;
+    return sample_valid(t, xv, yv)
+        && sample_finite(zv.x) && sample_finite(zv.y) && sample_finite(z)
+        && (view3d.flags.x == 0.0 || z > 0.0)
+        && box_visible(view3d_point_t(xv, yv, zv));
+}
+
+/// The ID the 1×1 pick writes for this series: its pick slot plus one,
+/// carried in `flags.w` by every 3D pick bind group.
+fn view3d_pick_id() -> u32 {
+    return u32(view3d.flags.w);
 }

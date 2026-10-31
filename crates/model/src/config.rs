@@ -938,6 +938,16 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub view_3d: Option<crate::view3d::View3d>,
+    /// The parallel coordinate system (#141). `None` (default, key absent
+    /// in JSON) is the rectangular chart; `Some` draws one vertical axis per
+    /// category of `bottom_x`, each with its own range, and every
+    /// `Parallel` series as one polyline per row across them. See
+    /// [`crate::parallel`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub parallel: Option<crate::parallel::ParallelOptions>,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
@@ -1037,6 +1047,9 @@ impl Config {
             // The camera holds angles, a distance in box half-diagonals and
             // relative lengths: no pixel dimension.
             view_3d,
+            // The axes' ranges are data; their label offsets are logical
+            // pixels, scaled below.
+            parallel,
             overlays,
             subplots,
             // Which layer receives the pointer: not a dimension.
@@ -1047,6 +1060,16 @@ impl Config {
             // dimension.
             line_offsets: _,
         } = self;
+        // A parallel axis's labels sit to its left with the fixed label gap,
+        // as `left_y`'s: its scaled offset makes up the gap as
+        // `scale_label_gap` does.
+        if let Some(parallel) = parallel {
+            let extra = (s - 1.0) * crate::layout::LABEL_GAP;
+            for axis in &mut parallel.axes {
+                axis.label_offset[0] = axis.label_offset[0] * s - extra;
+                axis.label_offset[1] *= s;
+            }
+        }
 
         let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
         let ChartArea(Rect {

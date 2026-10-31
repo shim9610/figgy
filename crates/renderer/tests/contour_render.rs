@@ -159,6 +159,7 @@ fn contour_only(columns: &[&str], levels: Vec<f64>, colors: Option<Vec<Color>>) 
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: matrix(columns),
             contour: contour_config(levels, colors),
@@ -173,6 +174,7 @@ fn heatmap_contour(columns: &[&str], levels: Vec<f64>) -> SeriesConfig {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: matrix(columns),
             fill: FieldFillConfig {
@@ -771,6 +773,7 @@ fn flat_y_series(levels: Vec<f64>, line_width: f32) -> SeriesConfig {
         label: None,
         x_column: "hx".into(),
         y_column: "hy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: matrix(&["h0", "h1", "h2"]),
             contour,
@@ -845,6 +848,7 @@ fn a_dense_grid_draws_an_unbroken_isoline() {
         label: None,
         x_column: "dx".into(),
         y_column: "dy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: ids,
@@ -908,6 +912,7 @@ fn a_saddle_needs_no_tie_break() {
         label: None,
         x_column: "qx".into(),
         y_column: "qy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: matrix(&ids),
             contour: contour_config(vec![0.0], None),
@@ -1030,6 +1035,7 @@ fn the_isoline_lands_on_its_level_at_tight_curvature() {
             label: None,
             x_column: "hyx".into(),
             y_column: "hyy".into(),
+            z_column: None,
             render_type: DataRenderType::Contour {
                 matrix: MatrixRef {
                     columns: ids.clone(),
@@ -1509,6 +1515,7 @@ fn fine_labelled(ids: &[String], levels: Vec<f64>, labels: ContourLabelConfig) -
         label: None,
         x_column: "fx".into(),
         y_column: "fy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: ids.to_vec(),
@@ -2013,6 +2020,7 @@ fn the_demo_field_panel_uploads_once_and_draws_fill_contours_and_labels() {
         label: None,
         x_column: "bx".into(),
         y_column: "by".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: MatrixRef {
                 columns: ids,

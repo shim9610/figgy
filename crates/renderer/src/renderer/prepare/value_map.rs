@@ -29,6 +29,9 @@ impl PartialEq for ValueMapSignature {
 pub(in crate::renderer) struct ValueMapScratch {
     pub(in crate::renderer) signature: ValueMapSignature,
     pub(in crate::renderer) bind_group: wgpu::BindGroup,
+    /// The group's buffers, bound again with the camera on a 3D chart
+    /// (#132).
+    pub(in crate::renderer) buffers: data_render::PointValueMapBuffers,
     pub(in crate::renderer) _charge: crate::gpu_memory::SharedCharge,
 }
 
@@ -84,14 +87,20 @@ impl PrepareContext<'_> {
         // A scatter's value maps, or the colour column a streamline series'
         // stroke is mapped by (the same colour map, read by the mapped line
         // pipeline as its group 3).
+        // A parallel series' colour column is mapped the same way (#141).
         let scatter = extract_scatter(&cfg.render_type);
-        let (color_mapped, size_map) = match (&scatter, cfg.render_type.streamlines()) {
-            (Some(scatter), _) => (
+        let (color_mapped, size_map) = match (
+            &scatter,
+            cfg.render_type.streamlines(),
+            cfg.render_type.parallel(),
+        ) {
+            (Some(scatter), _, _) => (
                 scatter.point_color_map.is_some(),
                 scatter.point_size_map.as_ref(),
             ),
-            (None, Some(streamlines)) => (streamlines.color_map.is_some(), None),
-            (None, None) => return Ok(()),
+            (None, Some(streamlines), _) => (streamlines.color_map.is_some(), None),
+            (None, None, Some(parallel)) => (parallel.color_column.is_some(), None),
+            (None, None, None) => return Ok(()),
         };
         if !color_mapped && size_map.is_none() {
             return Ok(());
@@ -171,16 +180,18 @@ impl PrepareContext<'_> {
             .colormap
             .as_ref()
             .map_or(&[], |colormap| colormap.stops());
-        let (bind_group, charge) = data_render::create_point_value_map_bind_group(
+        let (buffers, charge) = data_render::create_point_value_map_buffers(
             &self.device,
             &self.gpu_ledger,
-            &self.point_value_map_bgl,
             &signature.params,
             stops,
         );
+        let bind_group =
+            data_render::bind_point_value_map(&self.device, &self.point_value_map_bgl, &buffers);
         ValueMapScratch {
             signature,
             bind_group,
+            buffers,
             _charge: charge,
         }
     }

@@ -140,6 +140,66 @@ impl ColumnRangeWriteError {
     }
 }
 
+/// The uniform step of a column's values, measured while they are written
+/// (#134): `Some(step)` when at least two values were written in index
+/// order, every one finite, and every consecutive difference equals the
+/// first within 1e-6 relative; `None` otherwise, including a zero step. A
+/// hexagonal grid's coordinate columns are held to it at registration; the
+/// pool keeps the one scalar, never the values (rule 2).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UniformStep {
+    next: usize,
+    prev: f64,
+    step: f64,
+    count: usize,
+    uniform: bool,
+}
+
+impl UniformStep {
+    pub(crate) fn new() -> Self {
+        Self {
+            next: 0,
+            prev: 0.0,
+            step: 0.0,
+            count: 0,
+            uniform: true,
+        }
+    }
+
+    pub(crate) fn record(&mut self, index: usize, hi: f32, lo: f32) {
+        if !self.uniform {
+            return;
+        }
+        let value = hi as f64 + lo as f64;
+        if index != self.next || !value.is_finite() {
+            self.uniform = false;
+            return;
+        }
+        match self.count {
+            0 => {}
+            1 => {
+                self.step = value - self.prev;
+                if self.step == 0.0 || !self.step.is_finite() {
+                    self.uniform = false;
+                }
+            }
+            _ => {
+                let step = value - self.prev;
+                if (step - self.step).abs() > 1e-6 * self.step.abs() {
+                    self.uniform = false;
+                }
+            }
+        }
+        self.prev = value;
+        self.count += 1;
+        self.next += 1;
+    }
+
+    pub(crate) fn finish(self) -> Option<f64> {
+        (self.uniform && self.count >= 2).then_some(self.step)
+    }
+}
+
 #[derive(Default)]
 struct EncodedBounds {
     min: f64,

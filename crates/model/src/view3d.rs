@@ -19,7 +19,8 @@
 
 use crate::config::{AxisOptions, AxisScale, Config};
 use crate::data_config::{
-    DataRenderType, FillMode, GridLayout, MatrixOrientation, MatrixRef, SeriesConfig,
+    DataRenderType, FillMode, GridLayout, LineInterpolation, MatrixOrientation, MatrixRef,
+    SeriesConfig,
 };
 use crate::material::Material;
 use crate::{Color, ColumnId};
@@ -573,15 +574,48 @@ impl Config {
     }
 
     /// The rules the series of a chart are held to with a 3D view: a 3D
-    /// chart draws heatmaps (as surfaces), contours (on the floor) and
-    /// heatmaps with contours; a surface's colour grid matches its height
-    /// grid, its style is in range, its fill is continuous, and a floor
-    /// contour has no labels. A heatmap's `surface` style on a flat chart is
-    /// kept and unused, so a chart switches between 2D and 3D by its view
-    /// alone.
+    /// chart draws heatmaps (as surfaces), contours (on the floor), heatmaps
+    /// with contours, and scatter, line and scatter-line series that name a
+    /// `z_column` (#132); a surface's colour grid matches its height grid,
+    /// its style is in range, its fill is continuous, a floor contour has no
+    /// labels, and a 3D line is linear without an area fill. A heatmap's
+    /// `surface` style and a series' `z_column` on a flat chart are kept
+    /// and unused, so a chart switches between 2D and 3D by its view alone.
     pub fn validate_view3d_series(&self, series: &[SeriesConfig]) -> Result<(), &'static str> {
         for item in series {
             let (surface, matrix, fill, contour) = match &item.render_type {
+                DataRenderType::Scatter { .. }
+                | DataRenderType::Line { .. }
+                | DataRenderType::ScatterLine { .. }
+                    if self.view_3d.is_some() =>
+                {
+                    if item.z_column.as_deref().is_none_or(str::is_empty) {
+                        return Err(
+                            "a scatter or line series on a 3D chart names its height column \
+                             (z_column)",
+                        );
+                    }
+                    let line = match &item.render_type {
+                        DataRenderType::Line { line }
+                        | DataRenderType::ScatterLine { line, .. } => Some(line),
+                        _ => None,
+                    };
+                    if let Some(line) = line {
+                        if line.interpolation != LineInterpolation::Linear {
+                            return Err("a line on a 3D chart is linear: no step interpolation");
+                        }
+                        if line.fill.is_some() {
+                            return Err("a line on a 3D chart has no area fill");
+                        }
+                    }
+                    continue;
+                }
+                DataRenderType::RgbImage { .. } if self.view_3d.is_some() => {
+                    return Err("an image draws flat: not on a 3D chart");
+                }
+                DataRenderType::Parallel { .. } if self.view_3d.is_some() => {
+                    return Err("a parallel series draws flat: not on a 3D chart");
+                }
                 DataRenderType::Heatmap {
                     matrix,
                     fill,
@@ -595,7 +629,10 @@ impl Config {
                 } => (surface, matrix, Some(fill), Some(contour)),
                 DataRenderType::Contour { matrix, contour } => (&None, matrix, None, Some(contour)),
                 _ if self.view_3d.is_some() => {
-                    return Err("a 3D chart draws only heatmaps, contours and heatmap contours");
+                    return Err(
+                        "a 3D chart draws only heatmaps, contours, heatmap contours and the \
+                         scatter and line series that name a z_column",
+                    );
                 }
                 _ => continue,
             };
@@ -604,6 +641,9 @@ impl Config {
             }
             if self.view_3d.is_none() {
                 continue;
+            }
+            if matrix.grid_layout == GridLayout::Hexagonal {
+                return Err("a hexagonal grid draws flat: not on a 3D chart");
             }
             if fill.is_some_and(|f| f.mode == FillMode::Bands) {
                 return Err("a surface's fill is continuous: banded fills are not drawn in 3D");
@@ -694,6 +734,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Heatmap {
                 matrix: matrix(3),
                 fill: FieldFillConfig {
@@ -860,11 +901,60 @@ mod tests {
             },
             ..heatmap(None)
         };
-        assert!(err(scatter.clone()).contains("only heatmaps"));
-        // A flat chart draws the scatter and keeps a heatmap's surface style.
+        assert!(err(scatter.clone()).contains("z_column"));
+        // With a height column the scatter draws in 3D (#132); a line too,
+        // when linear and without a fill; an error bar series never.
+        let mut scatter_3d = scatter.clone();
+        scatter_3d.z_column = Some("z".into());
+        assert_eq!(config.validate_view3d_series(&[scatter_3d.clone()]), Ok(()));
+        let line = |line: crate::data_config::DataLineStyleConfig| SeriesConfig {
+            render_type: DataRenderType::Line { line },
+            ..scatter_3d.clone()
+        };
+        let plain = crate::data_config::DataLineStyleConfig::default();
+        assert_eq!(
+            config.validate_view3d_series(&[line(plain.clone())]),
+            Ok(())
+        );
+        let stepped = crate::data_config::DataLineStyleConfig {
+            interpolation: LineInterpolation::StepPost,
+            ..plain.clone()
+        };
+        assert!(err(line(stepped)).contains("linear"));
+        let filled = crate::data_config::DataLineStyleConfig {
+            fill: Some(crate::data_config::LineFill::ToBaseline(0.0)),
+            ..plain
+        };
+        assert!(err(line(filled)).contains("area fill"));
+        let bars = SeriesConfig {
+            render_type: DataRenderType::ScatterErrorbarY {
+                scatter: match &scatter.render_type {
+                    DataRenderType::Scatter { scatter } => scatter.clone(),
+                    _ => unreachable!(),
+                },
+                err_y: crate::data_config::ErrorRef::Symmetric { column: "e".into() },
+                err_style: crate::data_config::DataErrorBarStyleConfig {
+                    error_bar_color: Color::BLACK,
+                    error_bar_width: 1.0,
+                    error_bar_cap_size: 3.0,
+                    cap_width: 1.0,
+                    error_bar_style_table: None,
+                    error_bar_style_index_column: None,
+                    error_bar_style_overrides: None,
+                },
+            },
+            ..scatter_3d.clone()
+        };
+        assert!(err(bars).contains("only heatmaps"));
+        // A flat chart draws the scatter and keeps a heatmap's surface style
+        // and a series' z column.
         let flat = crate::default::default_config();
         assert_eq!(
-            flat.validate_view3d_series(&[scatter, heatmap(Some(SurfaceStyle::default()))]),
+            flat.validate_view3d_series(&[
+                scatter,
+                scatter_3d,
+                heatmap(Some(SurfaceStyle::default()))
+            ]),
             Ok(())
         );
         let mut banded = heatmap(None);

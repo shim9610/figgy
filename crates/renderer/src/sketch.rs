@@ -360,6 +360,41 @@ impl DecoStroker {
         }
     }
 
+    /// Stroke a closed polygon outline (a shape annotation's border):
+    /// `points` in drawing order, closed on the first. `Precise` is one
+    /// [`Canvas::draw_polyline`] through the closed path, so a dash pattern
+    /// runs around the corners; `Sketch` is one arc-continuous wobble
+    /// polyline through the same path via [`sketch_polyline`].
+    pub(crate) fn stroke_polygon_outline(
+        &self,
+        canvas: &mut Canvas,
+        points: &[(f32, f32)],
+        paint: &Paint,
+        tag: &str,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        let closed: Vec<(f32, f32)> = points
+            .iter()
+            .copied()
+            .chain(points.first().copied())
+            .collect();
+        match self {
+            DecoStroker::Precise => canvas.draw_polyline(&closed, paint),
+            DecoStroker::Sketch {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            } => {
+                let pts =
+                    sketch_polyline(&closed, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
+                let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
+                canvas.draw_polyline_smooth(&pts, &paint);
+            }
+        }
+    }
+
     /// Stroke a rectangle outline (e.g. the legend border). `Precise` is a
     /// single [`Canvas::draw_rect`] with the given (stroke) paint; `Sketch`
     /// chains the four edges into one arc-continuous wobble polyline via

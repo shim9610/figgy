@@ -2009,6 +2009,7 @@ impl Sink for TextLog {
     fn stroke(&mut self, _: Slot, _: [f32; 2], _: [f32; 2], _: &StrokeStyle<'_>) {}
     fn rect(&mut self, _: Slot, _: RectF, _: Option<Color>, _: Option<crate::sink::Border<'_>>) {}
     fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+    fn polygon(&mut self, _: Slot, _: &[[f32; 2]], _: Option<Color>, _: Option<&StrokeStyle<'_>>) {}
     fn ramp(&mut self, _: Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
 }
 
@@ -2233,6 +2234,14 @@ fn category_ticks_and_grid_lines_are_at_the_category_positions() {
         ) {
         }
         fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], _: Color) {}
+        fn polygon(
+            &mut self,
+            _: Slot,
+            _: &[[f32; 2]],
+            _: Option<Color>,
+            _: Option<&StrokeStyle<'_>>,
+        ) {
+        }
         fn ramp(&mut self, _: Slot, _: RectF, _: &crate::config::ColorBarOptions) {}
     }
     cfg.grid.show_major_x = true;

@@ -109,6 +109,10 @@ impl ChartViewState {
             polar: _,
             ternary: _,
             view_3d: _,
+            // The parallel axes' ranges place each column on its axis; the
+            // panel's own axes are the categorical positions and the
+            // normalized band.
+            parallel: _,
             overlays,
             subplots,
             active_layer: _,
@@ -172,6 +176,7 @@ impl ChartViewState {
             polar: _,
             ternary: _,
             view_3d: _,
+            parallel: _,
             overlays: config_overlays,
             subplots: config_subplots,
             active_layer: _,
@@ -243,6 +248,7 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         polar,
         ternary,
         view_3d,
+        parallel,
         overlays,
         subplots,
         active_layer: _,
@@ -266,6 +272,8 @@ pub(super) fn raster_config_equal(left: &Config, right: &Config) -> bool {
         && ternary == &right.ternary
         // The box's grid, axes and labels follow the camera.
         && view_3d == &right.view_3d
+        // Each parallel axis's line, ticks and labels are its range's.
+        && parallel == &right.parallel
         // Every overlay field is chrome of its own panel (its axis, its
         // legend) or decides which panel draws a series.
         && overlays == &right.overlays
@@ -1026,6 +1034,10 @@ pub(super) trait ColumnRegistration {
     fn contains_column(&self, id: &str) -> bool {
         self.column_len(id).is_some()
     }
+
+    /// The uniform step of resident column `id`'s values
+    /// (`ColumnSlot::uniform_step`, #134); `None` for a streamed column.
+    fn uniform_step(&self, id: &str) -> Option<f64>;
 }
 
 impl ColumnRegistration for ColumnPool {
@@ -1041,6 +1053,12 @@ impl ColumnRegistration for ColumnPool {
     fn contains_composite(&self, id: &str) -> bool {
         self.record(id).is_some() || self.ragged(id).is_some()
     }
+
+    fn uniform_step(&self, id: &str) -> Option<f64> {
+        self.slot(id)
+            .filter(|_| !self.is_member_column(id))
+            .and_then(|slot| slot.uniform_step)
+    }
 }
 
 impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamColumn>) {
@@ -1053,6 +1071,13 @@ impl ColumnRegistration for (&ColumnPool, &HashMap<ColumnId, RegisteredStreamCol
 
     fn contains_composite(&self, id: &str) -> bool {
         self.0.contains_composite(id)
+    }
+
+    fn uniform_step(&self, id: &str) -> Option<f64> {
+        if self.1.contains_key(id) {
+            return None;
+        }
+        self.0.uniform_step(id)
     }
 }
 
@@ -1352,6 +1377,21 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         // referenced column, so replacing it redraws the series and
         // removing it invalidates it.
         DataRenderType::Ternary { c_column, .. } => visit(c_column),
+        // The first two axis columns are its x and y columns; the rest and
+        // the colour column are referenced, so replacing one redraws the
+        // rows and removing one invalidates the series.
+        DataRenderType::Parallel {
+            columns,
+            color_column,
+            ..
+        } => {
+            for column in columns.iter().skip(2) {
+                visit(column);
+            }
+            if let Some(column) = color_column {
+                visit(column);
+            }
+        }
         // The polylines are its x and y columns; the colour column is
         // referenced like a scatter's colour map.
         DataRenderType::Streamlines { color_map, .. } => {
@@ -1389,6 +1429,19 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
         | DataRenderType::Contour { matrix, .. }
         | DataRenderType::HeatmapContour { matrix, .. } => {
             for column in &matrix.columns {
+                visit(column);
+            }
+        }
+        // An image's three channel grids are referenced columns alike.
+        DataRenderType::RgbImage {
+            red, green, blue, ..
+        } => {
+            for column in red
+                .columns
+                .iter()
+                .chain(&green.columns)
+                .chain(&blue.columns)
+            {
                 visit(column);
             }
         }
@@ -1474,6 +1527,19 @@ pub(super) fn validate_renderer_series(
             reason: reason.to_string(),
         });
     }
+    // A parallel chart draws only parallel series, and a parallel series
+    // needs a parallel chart; each names one column per axis, its line
+    // solid and linear without a fill (#141).
+    if let Err(reason) = config.validate_parallel_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| s.render_type.parallel().is_some())
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
     // A 3D chart draws heatmaps as surfaces and contours on its floor; a
     // surface's look and colour grid are checked wherever they are set.
     if let Err(reason) = config.validate_view3d_series(series) {
@@ -1492,6 +1558,37 @@ pub(super) fn validate_renderer_series(
                 .map_or_else(String::new, |s| s.series_id.clone()),
             reason: reason.to_string(),
         });
+    }
+    // A hexagonal grid (#134) is a flat heatmap on linear axes of a flat
+    // chart, and its coordinate columns are uniform: the lattice the shader
+    // walks is the one the data describes.
+    let hexagonal = |item: &SeriesConfig| {
+        extract_matrix(&item.render_type)
+            .is_some_and(|m| m.grid_layout == crate::data_config::GridLayout::Hexagonal)
+    };
+    if let Err(reason) = config.validate_hexagonal_series(series) {
+        return Err(FiggyError::InvalidSeriesConfig {
+            series_id: series
+                .iter()
+                .find(|s| hexagonal(s))
+                .or(series.first())
+                .map_or_else(String::new, |s| s.series_id.clone()),
+            reason: reason.to_string(),
+        });
+    }
+    for item in series.iter().filter(|item| hexagonal(item)) {
+        for (role, id) in [("x", &item.x_column), ("y", &item.y_column)] {
+            if pool.uniform_step(id).is_none() {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "a hexagonal grid's {role} coordinates ({id:?}) are uniform: a resident \
+                         column of at least two values, every step equal to the first within \
+                         1e-6"
+                    ),
+                });
+            }
+        }
     }
     // The line offset group is the chart's too: its members, their kinds
     // and the fills between them.
@@ -1602,12 +1699,43 @@ pub(super) fn validate_renderer_series(
         validate_contour_label_config(&item.series_id, &item.render_type)?;
         validate_line_fill(pool, series.iter(), item)?;
         validate_polar_series(config, item)?;
+        // Every axis column of a parallel series is read on the GPU, and
+        // its colour column maps through the colourbar (#141).
+        if let Some(parallel) = item.render_type.parallel() {
+            for column in parallel.columns {
+                validate_registered_column(pool, column)?;
+            }
+            if let Some(column) = parallel.color_column {
+                validate_registered_column(pool, column)?;
+                if config.colorbar.is_none() {
+                    return Err(FiggyError::InvalidSeriesConfig {
+                        series_id: item.series_id.clone(),
+                        reason: "a colour-mapped parallel series needs Config.colorbar: it \
+                                 owns the z range and colormap, so without it there is no \
+                                 colour to draw"
+                            .to_string(),
+                    });
+                }
+            }
+        }
         if let Some(matrix) = extract_matrix(&item.render_type) {
             // A grid column that is not registered would read whatever else
             // happens to be at that offset. Count mismatches between the
             // declaration and the data are *not* checked here — those are drawn
             // to the smallest common extent and reported, never rejected.
             for column in &matrix.columns {
+                validate_registered_column(pool, column)?;
+            }
+        }
+        // An image's other two channels alike (#139), after its own rules.
+        if let Some([_, green, blue]) = item.render_type.rgb_image() {
+            if let Err(reason) = config.validate_rgb_image_series(std::slice::from_ref(item)) {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: reason.to_string(),
+                });
+            }
+            for column in green.columns.iter().chain(&blue.columns) {
                 validate_registered_column(pool, column)?;
             }
         }
@@ -1667,6 +1795,12 @@ pub(super) fn validate_polar_config(config: &Config) -> Result<()> {
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "view_3d",
             reason,
+        })?;
+    config
+        .validate_parallel()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "parallel",
+            reason,
         })
 }
 
@@ -1707,6 +1841,7 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
             return Err(invalid("histogram series are not drawn on polar axes"));
         }
         DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Contour { .. } => {
             return Err(invalid(
@@ -1724,9 +1859,9 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         DataRenderType::Vector { .. } => {
             return Err(invalid("vector series are not drawn on polar axes"));
         }
-        DataRenderType::CategoryBars { .. } => {
-            return Err(invalid("category bars are not drawn on polar axes"));
-        }
+        // Category bars fan around the centre as a rose (#133); the model's
+        // category bar rules hold the group vertical.
+        DataRenderType::CategoryBars { .. } => {}
         DataRenderType::BoxPlot { .. } => {
             return Err(invalid("box plots are not drawn on polar axes"));
         }
@@ -1735,6 +1870,11 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
         }
         DataRenderType::Streamlines { .. } => {
             return Err(invalid("streamlines are not drawn on polar axes"));
+        }
+        DataRenderType::Parallel { .. } => {
+            return Err(invalid(
+                "parallel series are drawn on parallel charts, not polar axes",
+            ));
         }
         DataRenderType::Ternary { .. } => {
             return Err(invalid(

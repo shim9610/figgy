@@ -361,8 +361,10 @@ pub(crate) fn apply_auto_fit_all(
     y_extent: &FitExtent,
     padding_ratio: f64,
 ) {
-    // A ternary chart's axes span the whole triangle, not a data extent.
-    if config.ternary.is_some() {
+    // A ternary chart's axes span the whole triangle, not a data extent; a
+    // parallel chart's are the categorical positions and the normalized band
+    // (`Chart::auto_fit_parallel_axes` fits its axes).
+    if config.ternary.is_some() || config.parallel.is_some() {
         return;
     }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
@@ -884,7 +886,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
-            .filter(|chart| chart.ternary.is_none())
+            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
             .and_then(|chart| fitted_axis_range(&chart.bottom_x, ext, padding_ratio))
         else {
             return;
@@ -898,7 +900,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
-            .filter(|chart| chart.ternary.is_none())
+            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
             .and_then(|chart| fitted_axis_range(&chart.left_y, ext, padding_ratio))
         else {
             return;
@@ -980,7 +982,7 @@ impl Chart {
     /// chosen bounds through [`Self::with_axis_range_change`] instead.
     /// A ternary chart is left as it is: its axes span the triangle.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if self.config.ternary.is_some() {
+        if self.config.ternary.is_some() || self.config.parallel.is_some() {
             return;
         }
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
@@ -992,7 +994,7 @@ impl Chart {
     /// Fit the Y axis to a prepared [`FitExtent`] — see
     /// [`Self::auto_fit_x_extent`].
     pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
-        if self.config.ternary.is_some() {
+        if self.config.ternary.is_some() || self.config.parallel.is_some() {
             return;
         }
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
@@ -1148,6 +1150,12 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        // A parallel chart fits each of its axes to its columns (#141); the
+        // categorical positions and the normalized band stay.
+        if self.config.parallel.is_some() && matches!(layer, LayerRef::Base | LayerRef::Annotations)
+        {
+            return self.auto_fit_parallel_axes(pool, series, padding_ratio);
+        }
         let mut x = FitExtent::EMPTY;
         let mut y = FitExtent::EMPTY;
         for cfg in series {
@@ -1237,10 +1245,56 @@ impl Chart {
         Ok(())
     }
 
+    /// On a parallel chart (`Config.parallel`, #141), fit each parallel
+    /// axis's range to the union of the cached statistics of the column
+    /// every parallel series names for it, padded by `padding_ratio` (a
+    /// logarithmic axis from the columns' smallest positive value): a
+    /// display parameter from column statistics (rule 1), nothing read back.
+    /// An axis no series names, or whose columns' extent is degenerate, is
+    /// left as it is; a flat chart is left as it is.
+    pub fn auto_fit_parallel_axes(
+        &mut self,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let axes = match self.config.parallel.as_ref() {
+            Some(parallel) => parallel.axes.len(),
+            None => return Ok(()),
+        };
+        for i in 0..axes {
+            let mut ext = FitExtent::EMPTY;
+            for cfg in series {
+                if let Some(column) = cfg.render_type.parallel().and_then(|p| p.columns.get(i)) {
+                    ext.union(&Self::slot_extent(pool, column)?);
+                }
+            }
+            let Some(axis) = self
+                .config
+                .parallel
+                .as_ref()
+                .map(|parallel| parallel.axes[i].axis_options(&self.config.left_y))
+            else {
+                return Ok(());
+            };
+            let Some((min, max)) = fitted_axis_range(&axis, &ext, padding_ratio) else {
+                continue;
+            };
+            self.with_axis_range_change(|c| {
+                if let Some(axis) = c.parallel.as_mut().and_then(|p| p.axes.get_mut(i)) {
+                    axis.min = min;
+                    axis.max = max;
+                }
+            });
+        }
+        Ok(())
+    }
+
     /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
     /// union of the height columns' cached statistics of the layer's
-    /// heatmaps and contours. A display parameter from column statistics
-    /// (rule 1): nothing is read back. A flat chart is left as it is.
+    /// heatmaps and contours and of the `z_column` of its scatter and line
+    /// series (#132). A display parameter from column statistics (rule 1):
+    /// nothing is read back. A flat chart is left as it is.
     pub fn auto_fit_view_3d_z(
         &mut self,
         pool: &ColumnPool,
@@ -1270,7 +1324,12 @@ impl Chart {
                 DataRenderType::Heatmap { matrix, .. }
                 | DataRenderType::Contour { matrix, .. }
                 | DataRenderType::HeatmapContour { matrix, .. } => matrix,
-                _ => continue,
+                _ => {
+                    if let Some(id) = cfg.z_column.as_deref() {
+                        z.union(&Self::slot_extent(pool, id)?);
+                    }
+                    continue;
+                }
             };
             for id in &matrix.columns {
                 z.union(&Self::slot_extent(pool, id)?);

@@ -143,7 +143,7 @@ fn value_label_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
 /// a range bar counting as grouped (outside under `VALUE_LABEL_AUTO`).
 fn value_label_range_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     let r = range_bar(row, category_geometry_style());
-    let bar = CategoryBar(r.valid, r.rect, r.radii, 0u, r.end_px, true);
+    let bar = CategoryBar(r.valid, r.rect, r.radii, 0u, r.end_px, true, vec4<f32>(0.0), vec4<f32>(0.0));
     return value_label_bar_at(row, bar, true, size, placement);
 }
 
@@ -152,6 +152,9 @@ fn value_label_range_bar(row: u32, size: vec2<f32>, placement: u32) -> ValueLabe
 fn value_label_bar_at(row: u32, bar: CategoryBar, grouped: bool, size: vec2<f32>, placement: u32) -> ValueLabelBox {
     if (!bar.valid) {
         return value_label_hidden();
+    }
+    if (bar.wedge.z > 0.0) {
+        return value_label_wedge(row, bar, grouped, size, placement);
     }
     let horizontal = category_params.horizontal != 0u;
     let gap = value_label.metrics.x;
@@ -198,6 +201,49 @@ fn value_label_bar_at(row: u32, bar: CategoryBar, grouped: bool, size: vec2<f32>
         }
     }
     return value_label_box_at(row, centre, size);
+}
+
+/// A rose wedge's label (#133): inside, centred on the wedge's middle
+/// radius along its middle direction; outside, past the exposed end (the
+/// outer arc of a bar growing outward, the inner arc of one growing
+/// inward) along that direction, by the gap and the box's reach along it.
+/// `VALUE_LABEL_AUTO` is the bar rule: outside grouped wedges, inside a
+/// stack's segments whose radial depth and arc fit the label. An outside
+/// label that would cross the data area's edge goes to the other side of
+/// the end.
+fn value_label_wedge(row: u32, bar: CategoryBar, grouped: bool, size: vec2<f32>, placement: u32) -> ValueLabelBox {
+    let centre = bar.wedge.xy;
+    let r_outer = bar.wedge.z;
+    let r_inner = r_outer * bar.wedge.w;
+    let mid = bar.arc.x + bar.arc.y * 0.5;
+    let dir = vec2<f32>(cos(mid), sin(mid));
+    let gap = value_label.metrics.x;
+    let font = value_label.metrics.z;
+    let reach = abs(dir.x) * size.x * 0.5 + abs(dir.y) * size.y * 0.5;
+    var inside = placement == VALUE_LABEL_INSIDE;
+    if (placement == VALUE_LABEL_AUTO) {
+        inside = !grouped;
+        let pad = VALUE_LABEL_FIT_PAD * value_label.metrics.w;
+        let depth = r_outer - r_inner;
+        let width = (r_outer + r_inner) * 0.5 * bar.arc.y;
+        if (inside && (size.x + pad > max(width, depth) || font * VALUE_LABEL_FIT_HEIGHT > min(width, depth))) {
+            return value_label_hidden();
+        }
+    }
+    if (inside) {
+        return value_label_box_at(row, centre + dir * (r_outer + r_inner) * 0.5, size);
+    }
+    if (!bar.exposed) {
+        return value_label_hidden();
+    }
+    let outward = bar.end_px >= r_outer - 0.001;
+    let anchor = centre + dir * select(r_inner, r_outer, outward);
+    let away = select(-dir, dir, outward);
+    var box_centre = anchor + away * (gap + reach);
+    if (value_label_crosses(box_centre, size, away)) {
+        box_centre = anchor - away * (gap + reach);
+    }
+    return value_label_box_at(row, box_centre, size);
 }
 
 /// The centre's x of a label `gap` beside the anchor `x`, to its right

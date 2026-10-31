@@ -76,6 +76,13 @@ fn on_item(map: &AnnotationMap, layer: &AnnotationLayer, id: HitId) -> [f32; 2] 
             (t[0][1] + t[1][1] + t[2][1]) / 3.0,
         ],
         DrawnPart::Rect(r) | DrawnPart::Text(r) => [r.x + r.width * 0.5, r.y + r.height * 0.5],
+        DrawnPart::Polygon { points, .. } => {
+            let n = points.len() as f32;
+            [
+                points.iter().map(|p| p[0]).sum::<f32>() / n,
+                points.iter().map(|p| p[1]).sum::<f32>() / n,
+            ]
+        }
     }
 }
 

@@ -19,7 +19,7 @@ use renderer::{
 };
 
 use crate::HostCtx;
-use crate::scenes::radial::radial_chart;
+use crate::scenes::{self, SceneKind};
 use crate::widgets::{choice, color, section, slider};
 
 const FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -77,8 +77,8 @@ pub struct RadialHost {
 }
 
 impl RadialHost {
-    pub fn create(gpu: RendererDevice) -> Result<Self, String> {
-        let chart = radial_chart();
+    pub fn create(gpu: RendererDevice, kind: SceneKind) -> Result<Self, String> {
+        let chart = scenes::radial::document(kind);
         Ok(Self {
             renderer: RadialRenderer::new(gpu, FORMAT).map_err(|e| e.to_string())?,
             initial: chart.clone(),

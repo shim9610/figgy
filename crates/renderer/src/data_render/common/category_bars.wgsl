@@ -46,7 +46,10 @@ struct CategoryBarParams {
     /// pair: `(0.5, 0)`, half a category, for category bars and boxes; half
     /// a range bar series' `slot_width` on a numeric axis.
     slot_half: vec2<f32>,
-    _reserved: vec2<u32>,
+    /// 1 on a polar chart: the bars are wedges of the angle axis along the
+    /// radius, a rose (#133), built by `category_wedge`.
+    wedge: u32,
+    _reserved: u32,
 };
 
 const CATEGORY_BAR_MODE_GROUPED: u32 = 0u;
@@ -98,10 +101,165 @@ struct CategoryBar {
     end_px: f32,
     /// Whether the value end is not covered by a later bar of its stack.
     exposed: bool,
+    /// A rose wedge (#133), zero for a rectangular bar: the ring's centre
+    /// in chart-area render pixels, the wedge's outer radius in render
+    /// pixels and its inner radius as a fraction of the outer. `rect` is
+    /// then the wedge's bounding box and `end_px` its value end's radius.
+    wedge: vec4<f32>,
+    /// The wedge's start angle and span in the pixel frame (y down, the
+    /// polar angle's sign flipped) and its inner and outer corner rounding
+    /// as fractions of the outer radius.
+    arc: vec4<f32>,
 };
 
 fn category_invalid() -> CategoryBar {
-    return CategoryBar(false, vec4<f32>(0.0), vec4<f32>(0.0), 0u, 0.0, false);
+    return CategoryBar(false, vec4<f32>(0.0), vec4<f32>(0.0), 0u, 0.0, false, vec4<f32>(0.0), vec4<f32>(0.0));
+}
+
+// ───── Rose wedges (polar charts, #133) ─────
+//
+// On a polar chart the category axis is the angle (`bottom_x`, categorical)
+// and the value axis the radius (`left_y`, linear): a bar is the wedge of
+// its category's angular slot between the stack's start and end radii,
+// built from the same group layout, stack arithmetic and lanes as the
+// rectangular bar by `category_wedge`. Its footprint is the radial chart's
+// sector (`radial_sector.wgsl`), built in registers from the wedge, so the
+// rounded corners and the pick come from the one footprint the pie draws
+// with. The pixel frame has y down, so a polar angle θ (counter-clockwise
+// with y up) is the direction `(cos θ, −sin θ)`: the sector's angle −θ.
+
+/// The radius in render pixels of value `v` on the radius axis: the axis
+/// fraction between the inner ring and the ring, as `polar_ndc` places it.
+fn category_radius_px(v: vec2<f32>) -> f32 {
+    let t = transform;
+    let ty = axis_pair_to_t(v, t.data_min.y, t.data_max.y, t.data_min_lo.y, t.data_max_lo.y, t.scale_log.y, t.data_to_panel_scale.y, t.data_to_panel_offset.y);
+    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
+    return mix(t.polar_angle.w, 1.0, max(rt, 0.0)) * t.polar_extent.w;
+}
+
+/// The bounding box of the annular sector between `r_inner` and `r_outer`
+/// from `start` (in `[0, 2π)`) over `span` (pixel-frame angles),
+/// `(x0, y0, x1, y1)`: its four corners and the axis extremes of the outer
+/// arc inside the span.
+fn category_wedge_bounds(centre: vec2<f32>, r_inner: f32, r_outer: f32, start: f32, span: f32) -> vec4<f32> {
+    var lo = vec2<f32>(3.4e38);
+    var hi = vec2<f32>(-3.4e38);
+    for (var k = 0u; k < 4u; k = k + 1u) {
+        let a = select(start, start + span, (k & 1u) != 0u);
+        let r = select(r_inner, r_outer, k >= 2u);
+        let q = centre + vec2<f32>(cos(a), sin(a)) * r;
+        lo = min(lo, q);
+        hi = max(hi, q);
+    }
+    // `start` is in [0, 2π): the axis extremes up to 4π cover the span.
+    for (var k = 0; k <= 8; k = k + 1) {
+        let a = f32(k) * TAU * 0.25;
+        if (a >= start && a <= start + span) {
+            let q = centre + vec2<f32>(cos(a), sin(a)) * r_outer;
+            lo = min(lo, q);
+            hi = max(hi, q);
+        }
+    }
+    return vec4<f32>(lo, hi);
+}
+
+/// The wedge of a category's bar: the stack's `start` and `end` values as
+/// radii, the category's slot as the angles, the group's wedges side by
+/// side `gap_px` (at the ring) apart inside the centred `group_width` share
+/// of the slot. A slot too narrow for the group, or a wedge of no depth,
+/// draws nothing.
+fn category_wedge(resolved: ResolvedBarStyle, position: vec2<f32>, start: vec2<f32>, end: vec2<f32>, exposed: bool) -> CategoryBar {
+    let p = transform.polar_angle;
+    let ring = transform.polar_extent.w;
+    if (!(ring > 0.0)) {
+        return category_invalid();
+    }
+    let low = category_slot_edge(position, -1.0);
+    let high = category_slot_edge(position, 1.0);
+    // The slot's angles, from the edge the axis arrives from: grouped
+    // wedges follow the categories' own order around the circle.
+    let a_low = p.y + p.z * (low.x + low.y);
+    let a_high = p.y + p.z * (high.x + high.y);
+    let dir = sign(a_high - a_low);
+    let slot_span = abs(a_high - a_low);
+    let r_start = category_radius_px(start);
+    let r_end = category_radius_px(end);
+    if (!bar_finite(r_start) || !bar_finite(r_end) || !bar_finite(slot_span)) {
+        return category_invalid();
+    }
+    let grouped = category_params.mode == CATEGORY_BAR_MODE_GROUPED;
+    let per_slot = select(1.0, f32(category_params.members), grouped);
+    let span = slot_span * clamp(resolved.width_ratio, 0.0, 1.0);
+    let gap = max(resolved.gap_px, 0.0) / ring;
+    let thickness = (span - gap * (per_slot - 1.0)) / per_slot;
+    let r_outer = max(r_start, r_end);
+    let r_inner = min(r_start, r_end);
+    if (!(thickness > 0.0) || !(r_outer > r_inner) || !(r_outer > 0.0)) {
+        return category_invalid();
+    }
+    let first = a_low + dir * ((slot_span - span) * 0.5
+        + select(0.0, f32(category_params.member) * (thickness + gap), grouped));
+    let centre = category_px((transform.data_to_panel_offset + transform.data_to_panel_scale * 0.5) * 2.0 - 1.0);
+    // The pixel frame has y down: the polar arc [θ, θ + thickness] is the
+    // sector arc from −(θ + thickness), brought into [0, 2π).
+    let raw_start = -(min(first, first + dir * thickness) + thickness);
+    let arc_start = raw_start - floor(raw_start / TAU) * TAU;
+    let rect = category_wedge_bounds(centre, r_inner, r_outer, arc_start, thickness);
+    // Only the exposed end is rounded: the outer arc of a wedge growing
+    // outward, the inner arc of one growing inward; the sector's rounding
+    // is a fraction of its radius.
+    let outward = r_end >= r_start;
+    let r = min(min(max(resolved.finish.x, 0.0), (r_outer - r_inner) * 0.5), thickness * r_outer * 0.5) / r_outer;
+    var rounding = vec2<f32>(0.0);
+    if (exposed) {
+        rounding = select(vec2<f32>(r, 0.0), vec2<f32>(0.0, r), outward);
+    }
+    // A stack's shared arcs have one pixel owner, as a stack's shared edges
+    // do: the inner arc is the bar's bottom, the outer its top.
+    var edges = 0u;
+    if (!grouped) {
+        let start_edge = select(CATEGORY_EDGE_TOP, CATEGORY_EDGE_BOTTOM, outward);
+        let end_edge = select(CATEGORY_EDGE_BOTTOM, CATEGORY_EDGE_TOP, outward);
+        if (start.x + start.y != 0.0) {
+            edges = edges | start_edge;
+        }
+        if (!exposed) {
+            edges = edges | end_edge;
+        }
+    }
+    return CategoryBar(
+        true,
+        rect,
+        vec4<f32>(0.0),
+        edges,
+        r_end,
+        exposed,
+        vec4<f32>(centre, r_outer, r_inner / r_outer),
+        vec4<f32>(arc_start, thickness, rounding.x, rounding.y),
+    );
+}
+
+/// The radial chart's sector of a wedge, in registers: the footprint's
+/// inputs only (no colour, material, lift or light).
+fn category_wedge_sector(bar: CategoryBar) -> Sector {
+    return Sector(
+        bar.wedge,
+        vec4<f32>(bar.arc.x, bar.arc.y, 0.0, 0.0),
+        vec4<f32>(0.0),
+        Material(vec4<f32>(0.0), vec4<f32>(0.0)),
+        vec4<f32>(0.0),
+        vec4<f32>(bar.arc.z, bar.arc.w, 0.0, 0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+        vec4<f32>(0.0),
+    );
+}
+
+/// The signed distance from `p` to the wedge, in pixels: the sector's
+/// footprint in its own radius units, scaled back.
+fn category_wedge_distance(p: vec2<f32>, bar: CategoryBar) -> f32 {
+    return footprint((p - bar.wedge.xy) / bar.wedge.z, category_wedge_sector(bar)) * bar.wedge.z;
 }
 
 /// NDC to chart-area render pixels, y down.
@@ -228,6 +386,9 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
         end = start + v;
     }
 
+    if (category_params.wedge != 0u) {
+        return category_wedge(resolved, position, start, end, exposed);
+    }
     let horizontal = category_params.horizontal != 0u;
     // The value axis: from the stack start to its end.
     var a: f32;
@@ -303,12 +464,16 @@ fn category_bar(row: u32, resolved: ResolvedBarStyle) -> CategoryBar {
             edges = edges | end_edge;
         }
     }
-    return CategoryBar(true, rect, radii, edges, b, exposed);
+    return CategoryBar(true, rect, radii, edges, b, exposed, vec4<f32>(0.0), vec4<f32>(0.0));
 }
 
 /// The signed distance from `p` to the rounded rect of `bar`, in pixels:
-/// `bounded_shading.wgsl`'s `sdf` of the bar's shape.
+/// `bounded_shading.wgsl`'s `sdf` of the bar's shape; a rose wedge's is
+/// the sector footprint's.
 fn category_bar_distance(p: vec2<f32>, bar: CategoryBar) -> f32 {
+    if (bar.wedge.z > 0.0) {
+        return category_wedge_distance(p, bar);
+    }
     let shape = Bar(
         bar.rect,
         bar.radii,
@@ -321,16 +486,38 @@ fn category_bar_distance(p: vec2<f32>, bar: CategoryBar) -> f32 {
     return sdf(p, shape);
 }
 
-/// Whether `p` is outside a shared edge `bar` does not own.
+/// Whether `p` is outside a shared edge `bar` does not own; a wedge's
+/// shared edges are its inner (bottom) and outer (top) arcs.
 fn category_bar_unowned(p: vec2<f32>, bar: CategoryBar) -> bool {
+    if (bar.wedge.z > 0.0) {
+        let r = length(p - bar.wedge.xy);
+        return ((bar.edges & CATEGORY_EDGE_BOTTOM) != 0u && r < bar.wedge.z * bar.wedge.w)
+            || ((bar.edges & CATEGORY_EDGE_TOP) != 0u && r >= bar.wedge.z);
+    }
     return ((bar.edges & CATEGORY_EDGE_LEFT) != 0u && p.x < bar.rect.x)
         || ((bar.edges & CATEGORY_EDGE_RIGHT) != 0u && p.x >= bar.rect.z)
         || ((bar.edges & CATEGORY_EDGE_TOP) != 0u && p.y < bar.rect.y)
         || ((bar.edges & CATEGORY_EDGE_BOTTOM) != 0u && p.y >= bar.rect.w);
 }
 
-/// A subpixel sample kept on its own side of the shared edges.
+/// A subpixel sample kept on its own side of the shared edges; on a wedge,
+/// between its shared arcs along its ray.
 fn category_bar_sample(p: vec2<f32>, bar: CategoryBar) -> vec2<f32> {
+    if (bar.wedge.z > 0.0) {
+        let d = p - bar.wedge.xy;
+        let r = length(d);
+        if (!(r > 0.0)) {
+            return p;
+        }
+        var rc = r;
+        if ((bar.edges & CATEGORY_EDGE_BOTTOM) != 0u) {
+            rc = max(rc, bar.wedge.z * bar.wedge.w);
+        }
+        if ((bar.edges & CATEGORY_EDGE_TOP) != 0u) {
+            rc = min(rc, bar.wedge.z);
+        }
+        return bar.wedge.xy + d * (rc / r);
+    }
     var s = p;
     if ((bar.edges & CATEGORY_EDGE_LEFT) != 0u) { s.x = max(s.x, bar.rect.x); }
     if ((bar.edges & CATEGORY_EDGE_RIGHT) != 0u) { s.x = min(s.x, bar.rect.z); }
@@ -352,6 +539,9 @@ struct CategoryVsOut {
     @location(5) @interpolate(flat) material: vec4<f32>,
     /// x = outline width, y = emphasis, z = grain seed, w = shared edges.
     @location(6) @interpolate(flat) metrics: vec4<f32>,
+    /// A rose wedge's centre, radii and arc (`CategoryBar.wedge`, `.arc`).
+    @location(7) @interpolate(flat) wedge: vec4<f32>,
+    @location(8) @interpolate(flat) arc: vec4<f32>,
 };
 
 /// One corner of the bar's quad, one pixel past the rect so the edge's
@@ -363,6 +553,8 @@ fn category_vertex(vi: u32, row: u32, resolved: ResolvedBarStyle) -> CategoryVsO
     out.local = vec2<f32>(0.0);
     out.rect = bar.rect;
     out.radii = bar.radii;
+    out.wedge = bar.wedge;
+    out.arc = bar.arc;
     out.fill = resolved.fill_color_premul;
     out.outline_color = resolved.border_color_premul;
     out.material = resolved.material;
@@ -404,7 +596,7 @@ struct Bar {
 
 /// The bar from the fragment's flat inputs.
 fn category_fragment_bar(in: CategoryVsOut) -> CategoryBar {
-    return CategoryBar(true, in.rect, in.radii, u32(in.metrics.w), 0.0, true);
+    return CategoryBar(true, in.rect, in.radii, u32(in.metrics.w), 0.0, true, in.wedge, in.arc);
 }
 
 /// Four subpixel samples of the rounded rect: `(coverage, outline coverage)`.

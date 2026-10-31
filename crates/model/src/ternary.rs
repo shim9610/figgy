@@ -445,6 +445,7 @@ mod tests {
             label: None,
             x_column: "a".into(),
             y_column: "b".into(),
+            z_column: None,
             render_type,
         }
     }

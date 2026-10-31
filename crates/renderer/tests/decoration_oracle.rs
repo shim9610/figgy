@@ -464,6 +464,26 @@ const EXCLUSIONS: &[Exclusion] = &[
                  belongs to no element",
         issue: "#47",
     },
+    // The rose scene is a polar chart with its ray line drawn: the Polar
+    // scene's two rows (#133).
+    Exclusion {
+        scene: "Rose",
+        layer: "base",
+        element: "axis_left",
+        inv: Inv::I6,
+        detail: "a drag by (10000.0, 10000.0) gave Moved*",
+        reason: "the polar ray turns around the centre: every drag is a valid turn",
+        issue: "#47",
+    },
+    Exclusion {
+        scene: "Rose",
+        layer: "document",
+        element: "axis_bottom",
+        inv: Inv::I7,
+        detail: "*px of orphan ink: the element has no bounds*",
+        reason: "the polar outer ring is the data boundary and belongs to no element",
+        issue: "#47",
+    },
 ];
 
 /// Rows only the sweep of the scenes as laid out has: the `LongLabels`
@@ -917,6 +937,11 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Raincloud => "Raincloud",
         SceneKind::Ternary => "Ternary",
         SceneKind::Surface => "Surface",
+        SceneKind::Hexbin => "Hexbin",
+        SceneKind::Rose => "Rose",
+        SceneKind::Image => "Image",
+        SceneKind::Sunburst => "Sunburst",
+        SceneKind::Parallel => "Parallel",
     }
 }
 
@@ -1078,11 +1103,23 @@ fn overlay_names(prefix: &str, overlay: usize) -> Vec<String> {
     .collect()
 }
 
+/// The code of a parallel chart's axis lines and ticks, drawn in `left_y`'s
+/// line colour and belonging to no element (#141).
+const PARALLEL_AXES: &str = "parallel_axes";
+
+/// The code of a parallel chart's axis tick labels, drawn in `left_y`'s
+/// label colour: one colour for every `parallel_axis_labels_{i}` element
+/// (#141).
+const PARALLEL_AXIS_LABELS: &str = "parallel_axis_labels";
+
 /// The registration set of `layer`, derived from the documented policy of
 /// `HitMap::standard_chart` and `HitMap::for_active_layer`, not from the
-/// map: the oracle's side of I7.
-fn expected_names(layer: LayerRef) -> Vec<String> {
-    match layer {
+/// map: the oracle's side of I7. `cfg` is the document with `layer` active:
+/// a parallel chart (`Config.parallel`, #141) registers one
+/// `parallel_axis_labels_{i}` element per axis after the standard set, in
+/// its base layer and in a parallel subplot's.
+fn expected_names(layer: LayerRef, cfg: &Config) -> Vec<String> {
+    let mut names = match layer {
         LayerRef::Base => standard_names(""),
         LayerRef::Annotations => shared_names(""),
         LayerRef::Overlay(i) => {
@@ -1097,7 +1134,20 @@ fn expected_names(layer: LayerRef) -> Vec<String> {
             names.extend(overlay_names(&prefix, j));
             names
         }
+    };
+    let parallel = match layer {
+        LayerRef::Base => cfg.parallel.as_ref().map(|p| (String::new(), p.axes.len())),
+        LayerRef::Subplot(i) => cfg
+            .subplots
+            .get(i)
+            .and_then(|s| s.config.parallel.as_ref())
+            .map(|p| (format!("subplot_{i}:"), p.axes.len())),
+        _ => None,
+    };
+    if let Some((prefix, axes)) = parallel {
+        names.extend((0..axes).map(|i| format!("{prefix}{PARALLEL_AXIS_LABELS}_{i}")));
     }
+    names
 }
 
 /// The registration index of a hit id. `HitId` only exposes it through its
@@ -1285,7 +1335,7 @@ fn measure_layer(
 ) -> (HitMap, Vec<Measured>) {
     let map = HitMap::for_active_layer(cfg);
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
-    let names = expected_names(layer);
+    let names = expected_names(layer, cfg);
     report.check(at, "<map>", Inv::I7, map.len() == names.len(), || {
         format!(
             "map.len() {} but the documented set has {}",
@@ -1483,14 +1533,29 @@ impl Painter {
     /// The elements of one chart: its four axes with their labels and
     /// titles, the chart title, the legend and the colourbar chrome.
     fn chart(&mut self, cfg: &mut Config, prefix: &str, panel: LayerRef) {
+        let parallel = cfg.parallel.is_some();
         for (side, axis) in [
             ("top", &mut cfg.top_x),
             ("bottom", &mut cfg.bottom_x),
             ("left", &mut cfg.left_y),
             ("right", &mut cfg.right_y),
         ] {
-            axis.line_color = self.code(format!("{prefix}axis_{side}"), panel);
-            axis.label_style.color = self.code(format!("{prefix}tick_labels_{side}"), panel);
+            // A parallel chart draws nothing for `left_y` and every parallel
+            // axis in its colours: those two codes name the chrome
+            // (`check_owners`).
+            let (line, labels) = if parallel && side == "left" {
+                (
+                    format!("{prefix}{PARALLEL_AXES}"),
+                    format!("{prefix}{PARALLEL_AXIS_LABELS}"),
+                )
+            } else {
+                (
+                    format!("{prefix}axis_{side}"),
+                    format!("{prefix}tick_labels_{side}"),
+                )
+            };
+            axis.line_color = self.code(line, panel);
+            axis.label_style.color = self.code(labels, panel);
             self.text(
                 &mut axis.title_option.text,
                 format!("{prefix}axis_title_{side}"),
@@ -2194,8 +2259,8 @@ fn check_parts_near_ink(
     let mut far = Vec::new();
     for part in parts {
         let outline = part_outline(part);
-        match *part {
-            DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+        match part {
+            &DrawnPart::Text(r) | &DrawnPart::Rect(r) => {
                 let o = r.expanded(SELECTION_PADDING);
                 let (x0, y0, x1, y1) = window(ink, o);
                 let inside =
@@ -2218,9 +2283,15 @@ fn check_parts_near_ink(
                     }
                 }
             }
-            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) => {
+            // A shape annotation's polygon is grabbed anywhere inside it:
+            // every point of it is near its fill or border ink (the scene's
+            // shapes are filled).
+            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) | DrawnPart::Polygon { .. } => {
                 let reach = match *part {
                     DrawnPart::Segment { width, .. } => segment_grab_half_width(width) + STROKE_FIT,
+                    DrawnPart::Polygon { width, .. } => {
+                        width * 0.5 + SELECTION_PADDING + STROKE_FIT
+                    }
                     _ => SELECTION_PADDING + STROKE_FIT,
                 };
                 let c = outline.corners();
@@ -2286,6 +2357,13 @@ fn check_parts_near_ink(
 /// Orphan ink: pixels no code explains, and ink of an element that no layer
 /// registers or that has no bounds. A ghost: an element with bounds and no
 /// ink. The data area paints nothing by design and has no code.
+///
+/// A parallel chart's chrome (#141) has two codes of its own: the axes'
+/// lines and ticks ([`PARALLEL_AXES`]) belong to no element, as the grid,
+/// and must draw; the axes' tick labels ([`PARALLEL_AXIS_LABELS`]) are one
+/// colour for every `parallel_axis_labels_{i}` element, so that code's ink
+/// is owned when every pixel lies in some axis's label bounds and an axis
+/// with bounds has ink.
 fn check_owners(
     report: &mut Report,
     at: &At<'_>,
@@ -2316,6 +2394,56 @@ fn check_owners(
     }
     for (code, (_, name, _)) in ink.codes.iter().enumerate() {
         let pixels = &ink.by_code[code];
+        if name.ends_with(PARALLEL_AXES) {
+            report.check(at, name, Inv::I7, !pixels.is_empty(), || {
+                "ghost: a parallel chart's axes drew no line or tick".into()
+            });
+            report.count(at, "ink pixels", pixels.len());
+            continue;
+        }
+        if let Some(prefix) = name.strip_suffix(PARALLEL_AXIS_LABELS) {
+            let family = format!("{prefix}{PARALLEL_AXIS_LABELS}_");
+            let owners: Vec<&RectF> = registered
+                .iter()
+                .filter(|(n, _)| n.starts_with(&family))
+                .filter_map(|(_, b)| b.as_ref())
+                .collect();
+            // Antialiased text spills past its measured box by a pixel.
+            let inside = |b: &RectF, (x, y): (f32, f32)| {
+                x >= b.x - 1.5
+                    && x <= b.x + b.width + 1.5
+                    && y >= b.y - 1.5
+                    && y <= b.y + b.height + 1.5
+            };
+            let stray: Vec<u32> = pixels
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let p = ink.point(i as usize % ink.w, i as usize / ink.w);
+                    !owners.iter().any(|b| inside(b, p))
+                })
+                .collect();
+            let owned = owners.is_empty() == pixels.is_empty() && stray.is_empty();
+            report.check(at, name, Inv::I7, owned, || {
+                if owners.is_empty() {
+                    format!(
+                        "{} px of orphan ink: no parallel axis has label bounds",
+                        pixels.len()
+                    )
+                } else if pixels.is_empty() {
+                    format!("ghost: {} axes have label bounds but no ink", owners.len())
+                } else {
+                    let i = stray[0] as usize;
+                    format!(
+                        "{} px outside every axis's label bounds, first {:?}",
+                        stray.len(),
+                        ink.point(i % ink.w, i / ink.w)
+                    )
+                }
+            });
+            report.count(at, "ink pixels", pixels.len());
+            continue;
+        }
         match registered.get(name) {
             None => report.check(at, name, Inv::I7, pixels.is_empty(), || {
                 format!(
@@ -2768,12 +2896,18 @@ const TEXT_SCALE_SHARE: f64 = 0.65;
 const STROKE_SCALE_SHARE: f64 = 0.05;
 
 /// The I5 ink-share limit of the element `name`: text elements carry glyphs
-/// (tick labels, titles, the legend and annotations), everything else is a
-/// stroke.
+/// (tick labels, a parallel chart's axis labels, titles, the legend and
+/// annotations), everything else is a stroke.
 fn scale_share_limit(name: &str) -> f64 {
-    if ["tick_labels", "title", "legend", "annotation"]
-        .iter()
-        .any(|kind| name.contains(kind))
+    if [
+        "tick_labels",
+        PARALLEL_AXIS_LABELS,
+        "title",
+        "legend",
+        "annotation",
+    ]
+    .iter()
+    .any(|kind| name.contains(kind))
     {
         TEXT_SCALE_SHARE
     } else {
@@ -2814,7 +2948,7 @@ fn check_i5(report: &mut Report, scene: &'static str, one: &ScaleRun, two: &Scal
                 format!("bounds {b1:?} at 1x but {b2:?} at 2x")
             }),
         }
-        if name.contains("tick_labels") {
+        if name.contains("tick_labels") || name.contains(PARALLEL_AXIS_LABELS) {
             report.check(&at, name, Inv::I5, t1 == t2, || {
                 format!("{t1} labels drawn at 1x, {t2} at 2x")
             });
@@ -2947,7 +3081,7 @@ fn expected_delta(chart: &Config, element: &Element) -> Option<(f32, f32)> {
 fn measure_quiet(cfg: &Config, layer: LayerRef) -> (HitMap, Vec<Measured>) {
     let map = HitMap::for_active_layer(cfg);
     let measure = CpuTextMeasure::for_style(&cfg.draw_style);
-    let measured = expected_names(layer)
+    let measured = expected_names(layer, cfg)
         .into_iter()
         .filter_map(|name| {
             let id = map.find(&name)?;
@@ -3147,7 +3281,7 @@ impl Radial {
 fn radial_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
     let scene = scene_name(kind);
     match RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm) {
-        Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::radial_chart()),
+        Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::document(kind)),
         Err(e) => {
             let at = At {
                 scene,
@@ -3323,9 +3457,28 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
                 || "drawn at 2x only".into(),
             );
         }
-        // The 2x export box-filtered back to 1x.
+        // The 2x export box-filtered back to 1x. A text element's box is
+        // held to the Cartesian text share (glyph edges differ at most of
+        // their pixels); the rest of the canvas, the sectors and leaders,
+        // to the radial share.
         let (w, h) = (base1.width as usize, base1.height as usize);
+        let texts: Vec<(&RadialEntry, RectF)> = one
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.key,
+                    DecorationId::ChartTitle | DecorationId::RadialLabel(_)
+                )
+            })
+            .filter_map(|e| e.text.or(e.bounds).map(|b| (e, b)))
+            .collect();
+        let in_box = |b: &RectF, x: usize, y: usize| {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            px >= b.x && px <= b.x + b.width && py >= b.y && py <= b.y + b.height
+        };
         let mut differ = 0usize;
+        let mut outside = 0usize;
+        let mut text_differ = vec![(0usize, 0usize); texts.len()];
         for y in 0..h {
             for x in 0..w {
                 let mut worst = 0;
@@ -3338,18 +3491,41 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
                     let one = u32::from(base1.rgba[(y * w + x) * 4 + k]);
                     worst = worst.max((sum / 4).abs_diff(one));
                 }
-                if worst as i32 > SCALE_DIFF {
-                    differ += 1;
+                let changed = worst as i32 > SCALE_DIFF;
+                let mut in_text = false;
+                for (k, (_, b)) in texts.iter().enumerate() {
+                    if in_box(b, x, y) {
+                        in_text = true;
+                        text_differ[k].1 += 1;
+                        if changed {
+                            text_differ[k].0 += 1;
+                        }
+                    }
+                }
+                if !in_text {
+                    outside += 1;
+                    if changed {
+                        differ += 1;
+                    }
                 }
             }
         }
-        let share = differ as f64 / (w * h) as f64;
+        let share = differ as f64 / outside.max(1) as f64;
         report.check(&at, "<export>", Inv::I5, share < RADIAL_SCALE_SHARE, || {
             format!(
-                "{differ} pixels ({:.2} %) of the 2x export box-filtered differ by more than {SCALE_DIFF} from 1x",
+                "{differ} pixels ({:.2} %) of the 2x export box-filtered differ by more than {SCALE_DIFF} from 1x outside the text boxes",
                 share * 100.0
             )
         });
+        for ((e, _), (changed, total)) in texts.iter().zip(&text_differ) {
+            let share = *changed as f64 / (*total).max(1) as f64;
+            report.check(&at, &e.name, Inv::I5, share < TEXT_SCALE_SHARE, || {
+                format!(
+                    "{changed} of the {total} pixels of its box differ by more than {SCALE_DIFF} from 1x ({:.0} %)",
+                    share * 100.0
+                )
+            });
+        }
     }
 }
 

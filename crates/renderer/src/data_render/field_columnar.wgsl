@@ -130,6 +130,10 @@ fn fs_main(in: FieldOut) -> @location(0) vec4<f32> {
     if (!s.hit) {
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }
+    // An image (#139): its three channels are its colour.
+    if (field_flag(FIELD_RGB)) {
+        return field_image_color(s.c, s.r, s.fc, s.fr);
+    }
     return field_fill_color(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr, style.color_premul);
 }
 
@@ -144,6 +148,10 @@ struct FieldCellSample {
     z11: GridValue,
     fc: f32,
     fr: f32,
+    /// The located constituent and in-column indices (an image reads its
+    /// other channels at them).
+    c: u32,
+    r: u32,
 };
 
 /// The fill fragment's cell lookup at pixel-centre axis `t`
@@ -154,7 +162,23 @@ fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {
     out.hit = false;
     out.fc = 0.0;
     out.fr = 0.0;
+    out.c = 0u;
+    out.r = 0u;
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
+    // A hexagonal lattice (#134): the nearest centre, shaded flat.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit) {
+            return out;
+        }
+        let xi = u32(cell.column);
+        let yi = u32(cell.row);
+        out.c = select(xi, yi, columns_are_y);
+        out.r = select(yi, xi, columns_are_y);
+        out.z00 = grid_value(out.c, out.r);
+        out.hit = true;
+        return out;
+    }
     // The constituent index runs along x unless the declaration says otherwise;
     // the within-column index runs along the other axis. Never inferred from
     // the lengths.
@@ -167,6 +191,8 @@ fn field_cell_sample(t: vec2<f32>) -> FieldCellSample {
     }
     let c = select(x.index, y.index, columns_are_y);
     let r = select(y.index, x.index, columns_are_y);
+    out.c = c;
+    out.r = r;
     out.fc = select(x.frac, y.frac, columns_are_y);
     out.fr = select(y.frac, x.frac, columns_are_y);
     out.z00 = grid_value(c, r);
@@ -486,12 +512,36 @@ fn field_pick_cell(cursor_t: vec2<f32>) -> DataPickCandidate {
     if ((data_pick_query.data.x & DATA_PICK_FLAG_PAINTED) != 0u) {
         t = field_fragment_center_t(cursor_t);
         let s = field_cell_sample(t);
-        if (!s.hit || !field_fill_paints(
+        if (!s.hit) {
+            return field_pick_invalid();
+        }
+        if (field_flag(FIELD_RGB)) {
+            if (!field_image_paints(s.c, s.r, s.fc, s.fr)) {
+                return field_pick_invalid();
+            }
+        } else if (!field_fill_paints(
             field_fill_value(s.z00, s.z10, s.z01, s.z11, s.fc, s.fr),
             data_pick_query.baseline,
         )) {
             return field_pick_invalid();
         }
+    }
+    // A hexagonal lattice (#134): the cell the fill painted at this pixel.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit) {
+            return field_pick_invalid();
+        }
+        return DataPickCandidate(
+            1u,
+            data_pick_query.data.y,
+            DATA_PICK_KIND_MATRIX_CELL,
+            u32(cell.column),
+            u32(cell.row),
+            0u,
+            0.0,
+            0u,
+        );
     }
     let columns_are_y = field_flag(FIELD_COLUMNS_ARE_Y);
     let along_cells = select(field.cols, field.rows, columns_are_y);
@@ -630,6 +680,15 @@ fn selected_cell_coverage(t: vec2<f32>) -> f32 {
     if (x_index >= x_count || y_index >= y_count
         || !f32_is_finite(width_px) || width_px <= 0.0) {
         return 0.0;
+    }
+    // A hexagonal lattice (#134): inside the picked hexagon, the stroke
+    // runs along its six edges, the bisectors with its neighbours.
+    if (field_flag(FIELD_HEXAGONAL)) {
+        let cell = hex_cell(t);
+        if (!cell.hit || u32(cell.column) != x_index || u32(cell.row) != y_index) {
+            return 0.0;
+        }
+        return width_px - hex_edge_distance_px(t, cell.column, cell.row) + 0.5;
     }
     let x0 = boundary_t(field.x_base, field.x_len, x_index, 0u, LATTICE_QUADS);
     let x1 = boundary_t(field.x_base, field.x_len, x_index + 1u, 0u, LATTICE_QUADS);

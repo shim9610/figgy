@@ -31,6 +31,93 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Shape annotations**
+  ([#138](https://github.com/shim9610/figgy/issues/138), #58).
+  `AnnotationKind::Rect { from, to, style }`, `Ellipse { from, to, style }`
+  and `Polygon { vertices, style }` with `ShapeStyle { fill, border, below }`:
+  the shape's screen polygon clipped to the plot area
+  (`AnnotationGeometry::Polygon`, `annotation::clip_polygon`), a rectangle's
+  eight box handles (`AnnotationHandle::Box`), a polygon's vertex handles
+  (`AnnotationHandle::Vertex`, `AnnotationElement::hit_vertex`), the hit
+  test anywhere inside the polygon (`PartOutline::Polygon`, non-zero
+  winding, `select::polygon_contains`). `Sink` gains `polygon(slot, points,
+  fill, border)` and `DrawnPart` / `PartOutline` a `Polygon(Vec<[f32; 2]>)`
+  variant; both lose `Copy` (they are `Clone`). Migration: every `Sink`
+  implementation adds `polygon`; code that copied a `DrawnPart` or a
+  `PartOutline` clones it; an exhaustive match on `AnnotationKind`,
+  `AnnotationGeometry`, `AnnotationHandle`, `DrawnPart` or `PartOutline`
+  adds the new arms. Additive on the wire.
+- **Roses: category bars on a polar chart**
+  ([#133](https://github.com/shim9610/figgy/issues/133), #58).
+  `Config::validate_category_bars` accepts `CategoryBars` series on a polar
+  chart with a categorical angle axis (`bottom_x`) and a linear radius axis:
+  the bars are wedges, a rose. The group direction stays `Vertical`; a
+  `Horizontal` group on a polar chart is refused ("a rose fans its bars
+  around the centre: the group direction on a polar chart is vertical").
+  Migration: code that relied on "category bars are not drawn on polar
+  axes" now gets a drawn rose or the horizontal reason. Nothing on the
+  wire changes.
+- **Parallel coordinates**
+  ([#141](https://github.com/shim9610/figgy/issues/141), #58).
+  `Config.parallel: Option<ParallelOptions>` (`ParallelOptions { axes }`,
+  `ParallelAxis { min, max, inverted, scale, label_offset }`, module
+  `parallel`): one vertical axis per category of `bottom_x`, each with its
+  own range; `ParallelAxis::fraction` places a value on its axis and
+  `axis_options` gives the tick planner its options.
+  `DataRenderType::Parallel { columns, line, color_column }` draws one
+  polyline per row across the axes; `DataRenderType::parallel()` answers
+  `ParallelRef`. `Config::validate_parallel` (two or more axes with finite
+  ordered ranges, a categorical `bottom_x` with one category per axis,
+  `left_y` linear over `0..1`, not polar, ternary or 3D, no overlays or
+  line offsets, the `Precise` style, no subplot axis links) and
+  `Config::validate_parallel_series` (only parallel series on a parallel
+  chart and vice versa, one column per axis with `x_column` / `y_column`
+  the first two, a solid linear unfilled line, a colour column with
+  `Config.colorbar`); `validate_view3d_series` rejects it too.
+  `Element::ParallelAxisLabel(usize)` and `ParallelAxisLabelElement`
+  (`parallel_axis_labels_{i}`) are each axis's tick labels, registered by
+  `HitMap::for_active_layer` on a parallel chart and dragged into the
+  axis's `label_offset` (`nudge`). `step_selection` walks the rows bounded
+  by every axis column; the legend symbol is the line's. Additive on the
+  wire (`parallel` omitted when `None`, `"Parallel"`); a `Config` literal
+  adds `parallel`, an exhaustive `DataRenderType` or `Element` match adds
+  the arm.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
+  `RadialSlice.children: Vec<RadialSlice>` (omitted when empty): a chart
+  whose slices have children is a sunburst, its tree's rings drawn outward
+  from the centre, each node over its share of its parent's span.
+  `RadialTarget { group, index }` is then the ring and the node's position
+  on it in document order; `slice()`, `slice_mut()`, `step_selection`
+  (ring by ring outward), `format_labels` (a node's percentage is its share
+  of its parent) and `labels_have_text` walk the tree, and `group_count()`,
+  `group_len()`, `node_count()` and `node_span()` are new. The rules
+  (`validate`): a flat chart, no `split`, children summing to at most the
+  parent, at most `MAX_SUNBURST_DEPTH` (8) rings of at most
+  `MAX_RADIAL_SLICES` (64) nodes, the limits approved on #140. Additive on
+  the wire; a `RadialSlice` literal adds `children`.
+- **Colour images (imshow)**
+  ([#139](https://github.com/shim9610/figgy/issues/139), #58).
+  `DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`:
+  three `MatrixRef`s on one lattice drawn as a colour image, each channel
+  mapped linearly from `range` (`[0, 1]` by default) to 0..1 and clamped,
+  no colourbar. `DataRenderType::rgb_image()` answers the three grids;
+  `Config::validate_rgb_image_series` holds the channels to one lattice
+  (the same column count, orientation and grid layout), a finite ordered
+  `range`, an `opacity` in `0..=1` and a flat chart, and
+  `validate_view3d_series` rejects it too. `range`, `shading` and `opacity`
+  are defaulted on the wire. Additive (`"RgbImage"`); an exhaustive
+  `DataRenderType` match adds the arm.
+- **Hexagonal grids (hexbins)**
+  ([#134](https://github.com/shim9610/figgy/issues/134), #58).
+  `GridLayout::Hexagonal`: a `Heatmap`'s grid as `n` columns by `m` rows
+  of flat-topped hexagons centred at `(x[c], y[r] + (c mod 2) · py / 2)`,
+  the odd columns raised by half the row pitch; `MatrixRef::coordinate_cells`
+  counts one cell per coordinate. `Config::validate_hexagonal_series`
+  holds it to a flat-shaded `Heatmap` on linear axes of a flat chart (a
+  contour, an interpolated fill, a grid vector and a 3D view read a
+  rectangular lattice), and `validate_view3d_series` rejects it too.
+  Additive on the wire (`"Hexagonal"`); an exhaustive `GridLayout` match
+  adds the arm.
 - **No count caps on column-backed series**
   ([#107](https://github.com/shim9610/figgy/issues/107) R1, R2, R3, R4,
   R10).
@@ -121,6 +208,15 @@ additive.
   literal adds `view_3d: None`; a `Heatmap { .. }` or `HeatmapContour { .. }`
   literal adds `surface: None`, and a pattern that names every field adds
   `surface` or `..`.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  `SeriesConfig` gains `z_column: Option<ColumnId>`, the height column a
+  `Scatter`, `Line` or `ScatterLine` series draws with on a 3D chart
+  (`right_y`); `Config::validate_view3d_series` accepts those kinds with it
+  (linear, no area fill) and rejects them without it, and
+  `Chart::auto_fit_view_3d_z` unions the z columns. `z_column` is omitted
+  when `None` and kept and unused on a flat chart. Migration: a
+  `SeriesConfig { .. }` literal adds `z_column: None`, and a pattern that
+  names every field adds `z_column` or `..`.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)).
   `DataRenderType::Ternary` gains `region: Option<TernaryRegionStyle>`
@@ -765,6 +861,107 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Shape annotations**
+  ([#138](https://github.com/shim9610/figgy/issues/138), #58). The
+  annotation raster and the vector export draw the shape kinds through the
+  new `Sink::polygon` (`CanvasSink`: `Canvas::fill_polygon` and the
+  stroker's `stroke_polygon_outline`, one closed path so a dash runs around
+  the corners; `VectorSink`: a closed path with fill and stroke); the
+  selection box strokes a part's outline as its own point list; the
+  annotation map gains `hit_vertex` and `drag_vertex`. The `Annotations`
+  catalogue scene gains a rectangle below the data, an ellipse and a
+  concave polygon.
+- **Roses: category bars on a polar chart**
+  ([#133](https://github.com/shim9610/figgy/issues/133), #58). A category
+  bar series on a polar chart draws each bar as the wedge of its category's
+  angular slot between the stack's start and end radii (`category_wedge`
+  in `common/category_bars.wgsl`, `CategoryBarParams.wedge`), the group
+  layout, stack arithmetic, overrides, materials, corner rounding, value
+  labels (`value_label_wedge`), pick, highlight and `step_selection` the
+  bar's; the wedge's footprint is the radial chart's sector
+  (`radial_sector.wgsl`, now spliced into the bar module) built in
+  registers, so nothing is stored per bar. Grouped wedges sit side by side
+  in the categories' order, `bar_gap` pixels apart along the ring. The
+  `Rose` catalogue scene is a wind rose of sixteen directions and three
+  stacked speed bands.
+- **Parallel coordinates**
+  ([#141](https://github.com/shim9610/figgy/issues/141), #58). A
+  `Parallel` series draws through the line module's new
+  `parallel_columnar.wgsl` entries: `vs_parallel` / `fs_parallel` draw one
+  stroke quad per segment instance with no vertex slot, both ends read
+  from the column pool through the series' axis lane table and placed by
+  its axis range table (group 3: the point value map, the pool,
+  `ParallelParams`, the lane table and the range table;
+  `create_parallel_data_bind_group_layout` /
+  `create_parallel_data_bind_group`, `ParallelParamsGpu`,
+  `ParallelAxisGpu`), the normalization computed on every draw and never
+  stored; a row's colour is its colour column's value through the
+  colourbar ramp or the series colour; `vs_parallel_selected` redraws the
+  picked row in the selection's style over every body; `pick_parallel`
+  answers the nearest segment's row as a point (`GpuDataPickGeometry::Parallel`,
+  `DataPickPipelineBundle.parallel`, `DataPickShaders.line`).
+  `TargetPipelines.line_parallel` / `line_parallel_selection`,
+  `ColumnParallelLayer` / `ParallelSelection` / `draw_parallel_layer` /
+  `draw_parallel_selection`, `SeriesLayers.parallel`,
+  `EffectiveSeriesPrimitives.parallel`, the parallel layout in
+  `Renderer`, `PrepareContext` and the pick bundle; the resident display
+  key carries `Config::parallel`. `parallel_axes.rs` draws each axis's
+  line, ticks (`paxis_{i}`, `ptick_{i}_{k}`) and tick labels in `left_y`'s
+  style over its range; `Element::ParallelAxisLabel(i)` places them, the
+  chart's `left_y` and `right_y` draw nothing, and the grid is not drawn.
+  `Chart::auto_fit_parallel_axes` fits each axis's range from the columns'
+  statistics (`auto_fit_layer_union` on a parallel chart too); the x and y
+  fits leave a parallel chart alone. Registration validates the model's
+  rules, every axis column and the colour column's colourbar; a polar
+  chart and a streamed source are rejected (`STREAMED_PARALLEL_REASON`).
+  `series_draw_info` reports the rows' segments. The `Parallel` catalogue
+  scene is 150 iris-like flowers over four axes coloured by species.
+  Migration: `ensure_precise_variants_for_items`, `prewarm_all_observed`
+  and `DataPickPipelineBundle::new_observed` take the parallel layout, and
+  `DataPickShaders` the line module; an exhaustive `DataRenderType` match
+  adds the arm.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
+  The radial layout lays a sunburst's rings as equal bands between the hole
+  and the rim (`ring_band`), a node's sector the existing `Sector` with its
+  ring's outer radius and inner fraction, so the shader, the pick, the
+  highlight and the hover are unchanged; the sector buffer holds the rings
+  in order, the material seed is `(ring · 97 + index) · 13.17`. Outside
+  labels are the outermost ring's, an inner ring's `Outside` draws inside
+  its band (`placement`); every node's label is a decoration. The
+  `Sunburst` catalogue document is a three-ring budget, swept by the oracle
+  and the vector export.
+- **Colour images (imshow)**
+  ([#139](https://github.com/shim9610/figgy/issues/139), #58). An
+  `RgbImage` series draws through the field module with `FIELD_FLAG_RGB`:
+  the three channel grids share one `GridColumn` table (the green and blue
+  tables `FieldParamsGpu.image[0]` entries after the red one, read through
+  `grid_value_in`), and `fs_main` paints `field_image_color` (each channel
+  sampled flat or bilinearly, mapped from the `range` pair and clamped,
+  premultiplied by `opacity`) instead of the ramp; a cell with a
+  non-finite channel is unpainted and not picked (`field_image_paints`).
+  No colourbar is read; the cell pick, the selection outline and
+  `step_selection` are the heatmap's. `FieldParamsGpu` grows from 64 to
+  80 bytes (`image: [u32; 4]`). Registration validates the three grids'
+  columns and the model's rules; a polar chart and a streamed source are
+  rejected (`STREAMED_IMAGE_REASON`). The `Image` catalogue scene is a 256
+  by 192 test card the host composes as bytes, with markers over it.
+- **Hexagonal grids (hexbins)**
+  ([#134](https://github.com/shim9610/figgy/issues/134), #58). A heatmap
+  on a `Hexagonal` grid draws its cells as the Voronoi cells of their
+  centres in the data metric (`field_grid.wgsl` `hex_cell`, the nearest
+  centre among the nearest column, its nearest row and the six neighbours;
+  `FIELD_FLAG_HEXAGONAL` in `FieldParams.flags`), and the fill, the cell
+  pick and the selection outline (`hex_edge_distance_px`) all go through
+  that one lookup, O(1) per fragment with nothing stored per cell. The
+  pool measures every column's uniform step as it is written
+  (`ColumnSlot::uniform_step`, `data::UniformStep`; a promoted streamed
+  column has none), and registration requires it of a hexagonal grid's
+  coordinate columns besides the model's rules; streamed sources are
+  rejected (`STREAMED_HEXAGONAL_REASON`). The series fit reaches past the
+  centres-cells bounds by the hexagons' overhang
+  (`GpuSeriesExtentTicket`, a sixth of the column pitch each side and half
+  a row pitch past the raised columns). The `Hexbin` catalogue scene bins
+  a bivariate normal on the host.
 - **f64 columns upload exactly.** `Column<f64>` and `Column<Option<f64>>`
   registered through `ColumnSource` (`add_column`) wrote `(v as f32, 0)`, so
   every bit past f32 was lost unless the host used `add_hilo_column`; past
@@ -998,6 +1195,28 @@ additive.
   `right_y` to the height columns' statistics. Annotations place ratio
   anchors only, streamed sources are rejected, and the compile capture
   records `depthStencil`. A grid past `1 << 22` quads draws whole.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  A scatter, line or scatter-line series with a `z_column` draws on a 3D
+  chart through new entries of the scatter, line and arc modules (`vs_3d`,
+  `vs_3d_mapped`, `vs_3d_pick`, `vs_3d_mapped_pick`, `vs_pick_ring_3d`,
+  `vs_pick_ring_3d_mapped`, the line's `vs_3d` / `vs_3d_pick`, the arc
+  scan's `seg_init_3d`; `common/project_3d.wgsl` gains `view3d_point_t`,
+  `view3d_point_valid` and `view3d_pick_id`): markers are camera-facing
+  quads of their pixel size at the depth of the front of a ball of their
+  radius, strokes keep their pixel width between the projected ends at the
+  front of a tube of their half width with the dashes measured along the
+  projected chord (`project_box_front`), both depth tested against the
+  surfaces and each other with alpha to coverage on a multisampled composite.
+  They are drawn into the panel composite after
+  the surfaces (`SeriesLayers::line_3d` / `scatter_3d`), picked by the 1×1
+  ID pick (kind 1: `PickedData::Point`, the marker or the segment's nearer
+  end, never a mark behind a surface) and ringed in the live slot. Eight
+  pipelines (`TargetPipelines::view3d`) and one compute pipeline, and one
+  bind group layout for the mapped markers (the point value map and the
+  camera in one group, `surface_mesh::create_view3d_value_map_bind_group_layout`;
+  `ValueMapScratch` keeps its buffers for it). The `Surface` catalogue
+  scene gains a trajectory. A trajectory past `1 << 20` rows draws whole
+  and picks.
   Guide: `SURFACE.md`.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)). A ternary panel with
@@ -1686,6 +1905,32 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Shape annotations** ([#138](https://github.com/shim9610/figgy/issues/138)).
+  `Rect`, `Ellipse` and `Polygon` items through the config JSON
+  (SCHEMA.md); `annotations()` names them; `annotation_vertex(index, x, y)`
+  answers a polygon's vertex handle (`"v3"`) and `drag_annotation` takes a
+  vertex name beside the compass names, on `FiggyChart` and
+  `FiggyBoundedChart` alike.
+- **Parallel coordinates** ([#141](https://github.com/shim9610/figgy/issues/141)).
+  `parallel` reads and writes in the config JSON and `"Parallel"` in
+  `set_series` JSON (SCHEMA.md); the axis columns past the first two and
+  the colour column are referenced columns; `auto_fit_all` fits each
+  parallel axis from its columns' statistics; a picked row's
+  `selection_details()` reports `values` (one per axis) and, mapped,
+  `color_value`; each axis's tick labels hit and drag as
+  `parallel_axis_labels_<i>`.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140)).
+  A radial document's slices carry `children` (SCHEMA.md); `pick`, hover
+  and `step_selection` answer the `{ group, index }` of a ring's node.
+- **Colour images** ([#139](https://github.com/shim9610/figgy/issues/139)).
+  `"RgbImage"` reads and writes in `set_series` JSON (SCHEMA.md); the
+  three channel grids are referenced columns, and a picked cell's
+  `selection_details()` reports `red`, `green` and `blue` beside the cell's
+  position.
+- **Hexagonal grids** ([#134](https://github.com/shim9610/figgy/issues/134)).
+  `"grid_layout": "Hexagonal"` reads and writes in `set_series` JSON
+  (SCHEMA.md); a picked cell's `selection_details()` reports the raised
+  centre of an odd column.
 - **Violins and rainclouds** ([#53](https://github.com/shim9610/figgy/issues/53)).
   A box plot series' `violin` and `points` read and write in `set_series`
   JSON (SCHEMA.md); a picked raw point's `selection_details()` reports its
@@ -1697,6 +1942,10 @@ additive.
   `zoom_view(factor)` zooms a 3D chart's camera, a data-area drag orbits
   it, `auto_fit_all` fits the z axis, and `selection_details()` adds a
   surface's `color_value` when it has a colour grid.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  `set_series` reads and writes a series' `"z_column"` (SCHEMA.md, omitted
+  when absent) and `selection_details()` adds a point's `z` when its
+  series has one. No new binding.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)). `set_series` reads and
   writes a ternary series' `"region"` (SCHEMA.md, omitted when absent); a

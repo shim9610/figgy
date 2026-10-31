@@ -308,7 +308,7 @@ impl ColorCycle {
             | DataRenderType::HeatmapContour { contour, .. } => {
                 contour.line.line_color = c;
             }
-            DataRenderType::Heatmap { .. } => {}
+            DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {}
             // The arrow colour joins the cycle; a colour map, when set, still
             // draws from the colourbar.
             DataRenderType::Vector { style, .. } => {
@@ -343,6 +343,11 @@ impl ColorCycle {
             // The line and its arrowheads join the cycle; a colour map, when
             // set, still draws from the colourbar.
             DataRenderType::Streamlines { line, .. } => {
+                line.line_color = c;
+            }
+            // The rows join the cycle; a colour column, when set, still
+            // draws from the colourbar.
+            DataRenderType::Parallel { line, .. } => {
                 line.line_color = c;
             }
         }
@@ -446,6 +451,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::LineScatterErrorbarXY {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -553,6 +559,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type,
         };
         let expected = ColorCycle::Classic.color(2);

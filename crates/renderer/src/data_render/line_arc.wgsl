@@ -48,11 +48,16 @@ struct ArcParams {
     mode: u32,
     // A ternary line's third component's element offset in the pool (its
     // pixel length is measured through `ternary_ndc` when the transform's
-    // ternary flag is set); unused otherwise.
+    // ternary flag is set), or a 3D line's height column's (`ARC_FLAG_3D`,
+    // measured through `project_box` by `seg_init_3d`); unused otherwise.
     c_base: u32,
-    _pad1: u32,
+    // `ARC_FLAG_*`.
+    flags: u32,
     _pad2: u32,
 };
+
+// `ArcParams.flags`: the line is a 3D chart's, its height at `c_base`.
+const ARC_FLAG_3D: u32 = 1u;
 
 @group(1) @binding(0) var<storage, read> pool: array<f32>;
 @group(1) @binding(1) var<storage, read_write> dst: array<vec2<u32>>;
@@ -118,6 +123,16 @@ fn segment_px(i: u32, j: u32) -> f32 {
     return total;
 }
 
+// The segment length `d` of point `g`, or zero when an end is not `valid`.
+// Finite guard: NaN fails `d == d`, infinities fail the magnitude check.
+fn seg_store(g: u32, valid: bool, d: f32) {
+    if (!valid) {
+        dst[g] = vec2<u32>(0u, 0u);
+        return;
+    }
+    dst[g] = arc_from_px(select(0.0, d, d == d && d < 1e30));
+}
+
 @compute @workgroup_size(256)
 fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
     let i = gid.x;
@@ -130,12 +145,47 @@ fn seg_init(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
     if (!point_valid(g - 1u) || !point_valid(g)) {
-        dst[g] = vec2<u32>(0u, 0u);
+        seg_store(g, false, 0.0);
         return;
     }
-    let d = segment_px(g - 1u, g);
-    // Finite guard: NaN fails `d == d`, infinities fail the magnitude check.
-    dst[g] = arc_from_px(select(0.0, d, d == d && d < 1e30));
+    seg_store(g, true, segment_px(g - 1u, g));
+}
+
+// A 3D line's segments (#132): the chord `vs_3d` draws between the
+// projected ends, in the target's pixels, so the dash phase follows the
+// drawn stroke. Its own entry, so the flat `seg_init` reads no camera and
+// keeps its two-group layout; this one binds the camera as group 3.
+fn point_valid_3d(i: u32) -> bool {
+    return view3d_point_valid(
+        transform,
+        point_pair(params.x_base, i),
+        point_pair(params.y_base, i),
+        point_pair(params.c_base, i),
+    );
+}
+
+fn segment_px_3d(i: u32, j: u32) -> f32 {
+    let a = project_box(view3d_point_t(point_pair(params.x_base, i), point_pair(params.y_base, i), point_pair(params.c_base, i)));
+    let b = project_box(view3d_point_t(point_pair(params.x_base, j), point_pair(params.y_base, j), point_pair(params.c_base, j)));
+    return length((b.xy / b.w - a.xy / a.w) / transform.pixel_to_ndc);
+}
+
+@compute @workgroup_size(256)
+fn seg_init_3d(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if (i >= params.len) {
+        return;
+    }
+    let g = params.start + i;
+    if (g == 0u) {
+        dst[0] = vec2<u32>(0u, 0u);
+        return;
+    }
+    if (!point_valid_3d(g - 1u) || !point_valid_3d(g)) {
+        seg_store(g, false, 0.0);
+        return;
+    }
+    seg_store(g, true, segment_px_3d(g - 1u, g));
 }
 
 @compute @workgroup_size(256)

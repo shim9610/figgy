@@ -201,6 +201,7 @@ fn bars(
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::CategoryBars {
             color,
             style: CategoryBarStyle {
@@ -628,6 +629,7 @@ fn boxes(direction: CategoryBarDirection, text: &[&str]) -> SeriesConfig {
         label: None,
         x_column: "pos".into(),
         y_column: "box".into(),
+        z_column: None,
         render_type: DataRenderType::BoxPlot {
             color: RED,
             style,
@@ -715,6 +717,7 @@ fn radar(placement: RadarLabels) -> SeriesConfig {
         label: None,
         x_column: "cat".into(),
         y_column: "radar".into(),
+        z_column: None,
         render_type: DataRenderType::Radar {
             color: RED,
             style: RadarSeriesStyle {

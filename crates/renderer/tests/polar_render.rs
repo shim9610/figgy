@@ -106,6 +106,7 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: RED,
@@ -139,6 +140,7 @@ fn line(id: &str, line: DataLineStyleConfig) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Line { line },
     }
 }
@@ -696,6 +698,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: RED,

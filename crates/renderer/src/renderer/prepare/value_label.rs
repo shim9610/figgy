@@ -299,6 +299,7 @@ mod tests {
             label: None,
             x_column: "pos".into(),
             y_column: "v".into(),
+            z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color,
                 style: CategoryBarStyle::default(),

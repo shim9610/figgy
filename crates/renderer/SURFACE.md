@@ -67,6 +67,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Heatmap {
             matrix: MatrixRef {
                 columns,
@@ -135,6 +136,24 @@ which is how a host places its own overlay on the box.
 look; `None` (omitted from JSON) takes every default. On a flat chart the
 field is kept and unused.
 
+- **`Scatter`, `Line` and `ScatterLine`** draw points and trajectories in
+  the box when the series names its height column in
+  `SeriesConfig.z_column` (read on `right_y`, as the surface heights are).
+  A marker is a camera-facing quad of `point_size` pixels on screen under
+  either projection, at the depth of the front of a ball of its radius at
+  the point; a line is a stroke of `line_width` pixels on screen between
+  the projected samples, at the depth of the front of a tube of its half
+  width, with its dashes measured along the projected chord. Both are
+  depth tested against the surfaces and each other, so a mark on a surface
+  stays visible, a marker covers its own stroke at the sample, and a mark
+  behind a surface is hidden. A 3D line is
+  linear (a step interpolation is rejected) without an area fill; a sample
+  outside the box is not drawn and breaks the line, as a NaN does. Colour
+  and size maps, per-point style tables and overrides apply as on a flat
+  chart. `z_column: None` on a 3D chart is rejected; on a flat chart it is
+  kept and unused, so a trajectory switches between 2D and 3D with the
+  view too.
+
 | Field | Default | Meaning |
 |---|---|---|
 | `color_matrix` | `None` | A second grid of the same shape to colour by; `None` colours by height |
@@ -143,10 +162,10 @@ field is kept and unused.
 | `gloss`, `texture_strength`, `texture_scale` | 0.45, 0.2, 1 | The material's parameters |
 | `emphasis_brightness` | 0.12 | The brightness the picked sample's patch gains |
 
-A 3D chart draws only these three kinds, in the Precise draw style. It
-rejects overlays, line offsets, the polar and ternary systems and streamed
-sources, each with an explicit error. There is no limit on the grid's
-size: every quad is drawn.
+A 3D chart draws only these kinds, in the Precise draw style. It rejects
+overlays, line offsets, the polar and ternary systems and streamed sources,
+each with an explicit error. There is no limit on the grid's size or on a
+series' rows: every quad, marker and segment is drawn.
 
 ## Interaction
 
@@ -154,13 +173,18 @@ size: every quad is drawn.
   shows, with the depth test, and answers the grid sample nearest the
   fragment inside its quad: `PickedData::MatrixCell` with the sample's
   column and row. A sample hidden behind the surface is never answered.
-  A floor contour answers its level, as on a flat chart.
+  A floor contour answers its level, as on a flat chart. A marker answers
+  `PickedData::Point` with its index, a stroke the index of its segment's
+  nearer end (its dashes, not its gaps); a mark behind a surface never
+  answers.
 - **Highlight.** The picked sample's patch, the halves of the quads around
   it nearest the sample, is outlined and brightened. It is drawn over
-  anything in front of it, so a selection is visible from every side.
-- **`step_selection`** walks the grid samples, as on a flat heatmap.
+  anything in front of it, so a selection is visible from every side. A
+  picked point is ringed at its projected place, over its occluders too.
+- **`step_selection`** walks the grid samples, as on a flat heatmap, and a
+  point series' rows.
 - **`selection_details()`** reports the sample's x, y and height, plus the
-  colour grid's value when set.
+  colour grid's value when set; a point's x, y and `z`.
 - **Camera.** Dragging the data area orbits the camera
   (`Config::orbit_view`, half a degree per pixel). `Config::zoom_view`
   zooms it (the WASM kernel's `zoom_view(factor)`). The data area's edges
@@ -187,8 +211,15 @@ The surface draws into the panel composite with a depth-stencil
 attachment (`Depth24PlusStencil8`, at the target's sample count), created
 only for a 3D panel. Floor contours draw first without writing depth, then
 the surfaces with the depth test, so a translucent surface shows the
-contours below it. The 2D pipelines and the shared frame and export passes
-are unchanged.
+contours below it; then every series' 3D line and every series' 3D markers,
+depth tested at the front of their tube and ball
+(`project_box_front`, `surface_mesh::point_depth_stencil`), with alpha to
+coverage on a multisampled composite so a mark's antialiased fringe writes
+depth only where it covers a sample and a dense trajectory stays solid. The 2D pipelines and
+the shared frame and export passes are unchanged: the 3D markers and
+strokes are the scatter and line modules' own entries (`vs_3d`,
+`vs_3d_mapped`, `vs_3d_pick`, `vs_pick_ring_3d`) placing the flat marker
+and stroke through the camera.
 
 Expected memory: 4 bytes per sample of the attachment, about 12 MB for an
 1100 × 700 panel at 4x MSAA.

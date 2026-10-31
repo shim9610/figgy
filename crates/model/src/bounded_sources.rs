@@ -444,6 +444,7 @@ impl Config {
                 label: Some(text(&s.label)),
                 x_column: ColumnId::new(),
                 y_column: ColumnId::new(),
+                z_column: None,
                 render_type: DataRenderType::CategoryBars {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
@@ -834,6 +835,7 @@ impl Config {
                 label: Some(text(&s.label)),
                 x_column: BOX_PLOT_POSITIONS_COLUMN.into(),
                 y_column: record.clone(),
+                z_column: None,
                 render_type: DataRenderType::BoxPlot {
                     color: s.color,
                     style: s.style.clone().unwrap_or_else(|| chart.style.clone()),
@@ -1053,6 +1055,7 @@ impl Config {
                 label: Some(text(&s.label)),
                 x_column: RADAR_POSITIONS_COLUMN.into(),
                 y_column: column.clone(),
+                z_column: None,
                 render_type: DataRenderType::Radar {
                     color: s.color,
                     style: s.style.clone().unwrap_or_default().resolved_from(style),

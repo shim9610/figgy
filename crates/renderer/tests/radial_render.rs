@@ -1010,6 +1010,7 @@ fn radial_ssot_fields_are_explicit() {
         label_format: _,
         label_color: _,
         text: _,
+        children: _,
     } = RadialSlice::new("A", 1.0, Color::WHITE);
     let RadialOutline {
         rim: _,

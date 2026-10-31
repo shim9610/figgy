@@ -46,6 +46,7 @@ pub(crate) const SCATTER_SHADER: crate::shader_assembly::Assembled = crate::shad
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
+    "data_render/common/project_3d.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
     "data_render/common/marker.wgsl",
@@ -147,6 +148,7 @@ pub(crate) fn create_scatter_columnar_mapped_pipeline_with_entries(
         sample_count,
         (vs_entry, fs_entry, label),
         false,
+        None,
     )
 }
 
@@ -175,11 +177,15 @@ pub(crate) fn create_scatter_ternary_mapped_pipeline(
         sample_count,
         (vs_entry, fs_entry, label),
         true,
+        None,
     )
 }
 
 /// The mapped scatter pipeline, with the third component of a ternary
-/// chart's entries at slot 6 when `ternary`.
+/// chart's entries (or a 3D chart's height) at slot 6 when `third`, and the
+/// pass's depth state and target for a 3D chart's entries (`three_d`; its
+/// group 3 is the combined value map and camera layout the caller passes).
+#[allow(clippy::too_many_arguments)]
 fn create_scatter_mapped_pipeline(
     device: &wgpu::Device,
     shader: &wgpu::ShaderModule,
@@ -187,8 +193,20 @@ fn create_scatter_mapped_pipeline(
     target_format: wgpu::TextureFormat,
     sample_count: u32,
     (vs_entry, fs_entry, label): (&str, &str, &str),
-    ternary: bool,
+    third: bool,
+    three_d: Option<View3dPass>,
 ) -> wgpu::RenderPipeline {
+    let (depth_stencil, color_target) = match three_d {
+        Some(pass) => (pass.depth_stencil(), pass.color_target(target_format)),
+        None => (
+            None,
+            wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        ),
+    };
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -279,7 +297,7 @@ fn create_scatter_mapped_pipeline(
                             shader_location: 6,
                         }],
                     }),
-                ][..if ternary { 7 } else { 6 }],
+                ][..if third { 7 } else { 6 }],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -290,17 +308,16 @@ fn create_scatter_mapped_pipeline(
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
+            depth_stencil,
+            multisample: three_d.map_or_else(
+                || multisample_state(sample_count),
+                |pass| pass.multisample(sample_count),
+            ),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some(fs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(color_target)],
             }),
             multiview_mask: None,
             cache: None,
@@ -361,6 +378,124 @@ pub(crate) fn create_scatter_columnar_pipeline_full(
         (vs_entry, fs_entry, label),
         texture_bgl,
         false,
+        None,
+    )
+}
+
+/// Which target a 3D chart's point pipeline draws into (#132): the panel
+/// composite with the depth test (`Draw`), the 1×1 ID pick target with the
+/// depth test (`Pick`), or the frame's live highlight slot without depth
+/// (`Live`, the picked ring).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum View3dPass {
+    Draw,
+    Pick,
+    Live,
+}
+
+impl View3dPass {
+    pub(crate) fn depth_stencil(self) -> Option<wgpu::DepthStencilState> {
+        match self {
+            View3dPass::Draw | View3dPass::Pick => Some(super::surface_mesh::point_depth_stencil()),
+            View3dPass::Live => None,
+        }
+    }
+
+    /// The multisample state: the draw converts its coverage to sample
+    /// coverage (alpha to coverage) on a multisampled target, so a mark's
+    /// antialiased fringe writes depth only on the samples it covers and a
+    /// dense trajectory stays solid instead of fading where an earlier
+    /// fringe's depth hid the later marks; the pick (one sample) and the
+    /// live ring (no depth) blend as every data draw.
+    pub(crate) fn multisample(self, sample_count: u32) -> wgpu::MultisampleState {
+        wgpu::MultisampleState {
+            alpha_to_coverage_enabled: self == View3dPass::Draw && sample_count > 1,
+            ..multisample_state(sample_count)
+        }
+    }
+
+    /// The colour target: the integer ID target for the pick, else the
+    /// given format blended as every data draw.
+    pub(crate) fn color_target(self, target_format: wgpu::TextureFormat) -> wgpu::ColorTargetState {
+        match self {
+            View3dPass::Pick => wgpu::ColorTargetState {
+                format: super::surface_mesh::SURFACE_PICK_FORMAT,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+            View3dPass::Draw | View3dPass::Live => wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        }
+    }
+}
+
+/// The precise scatter pipeline of a 3D chart's entries (`vs_3d`,
+/// `vs_3d_pick`, `vs_pick_ring_3d`): the precise layout with the height at
+/// slot 3 and the camera group (`surface_mesh::create_surface_data_bind_group_layout`)
+/// as group 3.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_view3d_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    camera_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    pass: View3dPass,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    create_scatter_pipeline(
+        device,
+        shader,
+        [transform_bgl, style_bgl],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        None,
+        true,
+        Some((camera_bgl, pass)),
+    )
+}
+
+/// The mapped scatter pipeline of a 3D chart's entries (`vs_3d_mapped`,
+/// `vs_3d_mapped_pick`, `vs_pick_ring_3d_mapped`): the mapped layout with
+/// the height at slot 6 and the combined value map and camera group
+/// (`surface_mesh::create_view3d_value_map_bind_group_layout`) as group 3.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_scatter_view3d_mapped_pipeline(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    style_map_bgl: &wgpu::BindGroupLayout,
+    view3d_value_map_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    pass: View3dPass,
+    vs_entry: &str,
+    fs_entry: &str,
+    label: &str,
+) -> wgpu::RenderPipeline {
+    create_scatter_mapped_pipeline(
+        device,
+        shader,
+        [
+            transform_bgl,
+            style_bgl,
+            style_map_bgl,
+            view3d_value_map_bgl,
+        ],
+        target_format,
+        sample_count,
+        (vs_entry, fs_entry, label),
+        true,
+        Some(pass),
     )
 }
 
@@ -388,11 +523,14 @@ pub(crate) fn create_scatter_ternary_pipeline(
         (vs_entry, fs_entry, label),
         None,
         true,
+        None,
     )
 }
 
 /// The precise scatter pipeline, with the third component of a ternary
-/// chart's entries at slot 3 when `ternary`.
+/// chart's entries (or a 3D chart's height) at slot 3 when `third`, and
+/// the camera group as group 3 with the pass's depth state and target for
+/// a 3D chart's entries (`three_d`).
 #[allow(clippy::too_many_arguments)]
 fn create_scatter_pipeline(
     device: &wgpu::Device,
@@ -402,12 +540,28 @@ fn create_scatter_pipeline(
     sample_count: u32,
     (vs_entry, fs_entry, label): (&str, &str, &str),
     texture_bgl: Option<&wgpu::BindGroupLayout>,
-    ternary: bool,
+    third: bool,
+    three_d: Option<(&wgpu::BindGroupLayout, View3dPass)>,
 ) -> wgpu::RenderPipeline {
     let mut bgls: Vec<Option<&wgpu::BindGroupLayout>> = vec![Some(transform_bgl), Some(style_bgl)];
     if let Some(t) = texture_bgl {
         bgls.push(Some(t));
     }
+    if let Some((camera_bgl, _)) = three_d {
+        bgls.resize(3, None);
+        bgls.push(Some(camera_bgl));
+    }
+    let (depth_stencil, color_target) = match three_d {
+        Some((_, pass)) => (pass.depth_stencil(), pass.color_target(target_format)),
+        None => (
+            None,
+            wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        ),
+    };
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -470,7 +624,7 @@ fn create_scatter_pipeline(
                             shader_location: 3,
                         }],
                     }),
-                ][..if ternary { 4 } else { 3 }],
+                ][..if third { 4 } else { 3 }],
             },
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
@@ -481,17 +635,16 @@ fn create_scatter_pipeline(
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
+            depth_stencil,
+            multisample: three_d.map_or_else(
+                || multisample_state(sample_count),
+                |(_, pass)| pass.multisample(sample_count),
+            ),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some(fs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(color_target)],
             }),
             multiview_mask: None,
             cache: None,
@@ -520,10 +673,14 @@ pub struct ColumnScatterLayer<'a> {
     /// Style textures (group 2) when `pipeline`'s layout includes them —
     /// the constellation planet atlas/ring bind group. `None` otherwise.
     pub texture_bg: Option<&'a wgpu::BindGroup>,
-    /// A ternary series' third component: `pipeline` is a ternary pipeline,
-    /// the column bound at slot 3 (precise) or 6 (mapped). `None` for every
-    /// other series.
-    pub ternary_c: Option<ColumnHandle>,
+    /// A ternary series' third component, or a 3D series' height (#132):
+    /// `pipeline` is a ternary or 3D pipeline, the column bound at slot 3
+    /// (precise) or 6 (mapped). `None` for every other series.
+    pub third: Option<ColumnHandle>,
+    /// A 3D series' camera group, bound as group 3 (#132): `pipeline` is a
+    /// 3D pipeline, drawn into the panel composite with the depth test by
+    /// `issue_series_surfaces`. `None` for every other series.
+    pub view3d: Option<super::surface_mesh::View3dBinding>,
 }
 
 pub struct ColumnPickRingLayer<'a> {
@@ -541,6 +698,9 @@ pub struct ColumnPickRingLayer<'a> {
     pub color_value: Option<ColumnHandle>,
     pub size_value: Option<ColumnHandle>,
     pub instance: u32,
-    /// See [`ColumnScatterLayer::ternary_c`].
-    pub ternary_c: Option<ColumnHandle>,
+    /// See [`ColumnScatterLayer::third`].
+    pub third: Option<ColumnHandle>,
+    /// See [`ColumnScatterLayer::view3d`]: the ring of a 3D series, in the
+    /// live slot through `vs_pick_ring_3d`.
+    pub view3d: Option<super::surface_mesh::View3dBinding>,
 }

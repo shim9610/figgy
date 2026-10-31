@@ -168,7 +168,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
@@ -765,7 +765,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,

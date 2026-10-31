@@ -99,6 +99,7 @@ fn ranges(id: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: "pos".into(),
         y_column: "end".into(),
+        z_column: None,
         render_type: DataRenderType::RangeBars {
             color,
             style: flat_style(),

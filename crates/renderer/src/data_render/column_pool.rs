@@ -113,6 +113,12 @@ pub struct ColumnSlot {
     /// per-point geometry (dashed-line arc length) is computed on the GPU
     /// (`line_arc.wgsl`). Do not reintroduce CPU shadows.
     pub min_positive: Option<f64>,
+    /// The values' uniform step, measured while they were written
+    /// (`data::UniformStep`, #134): `Some` when the column holds at least
+    /// two finite values written in order with every step equal to the
+    /// first within 1e-6 relative. A hexagonal grid's coordinate columns
+    /// are registered against it. `None` for a promoted streamed column.
+    pub uniform_step: Option<f64>,
 }
 
 /// The most fields one record holds. The box plot's schema has nine;

@@ -94,6 +94,7 @@ async fn dawn_accepts_stream_histogram_shader_entries_on_resident_prepare() {
         label: None,
         x_column: "browser-edges".into(),
         y_column: "browser-values".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: Color::new(0.0, 0.6, 0.0, 1.0),

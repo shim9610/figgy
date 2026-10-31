@@ -841,6 +841,9 @@ pub(super) struct EffectiveSeriesPrimitives {
     pub(super) box_points: bool,
     /// A vector (quiver) series' arrows. Precise mode only, like fields.
     pub(super) vector: bool,
+    /// A parallel coordinates series' rows (#141). Precise mode only, like
+    /// fields: its stroke has no stylized entry.
+    pub(super) parallel: bool,
 }
 
 pub(super) fn effective_series_primitives(
@@ -860,6 +863,7 @@ pub(super) fn effective_series_primitives(
             violin: false,
             box_points: false,
             vector: false,
+            parallel: false,
         };
     }
     EffectiveSeriesPrimitives {
@@ -902,6 +906,8 @@ pub(super) fn effective_series_primitives(
         // entry draws them, and a precise arrow in a sketch panel would mix
         // two visual languages. A stylized chart draws no arrows.
         vector: matches!(draw_style, DrawStyle::Precise) && has_vector(render_type),
+        // A parallel series' rows are precise for the same reason.
+        parallel: matches!(draw_style, DrawStyle::Precise) && render_type.parallel().is_some(),
     }
 }
 
@@ -956,6 +962,7 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
@@ -964,7 +971,8 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => false,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => false,
     }
 }
 
@@ -1024,10 +1032,16 @@ impl Renderer {
             label: _,
             x_column: _,
             y_column: _,
+            z_column: _,
             render_type,
         } = cfg;
         let series_salt = crate::sketch::fnv1a(series_id);
-        let line = match extract_line(render_type).as_deref() {
+        // A parallel series' rows take its line's colour and width (#141);
+        // `extract_line` answers none for it, since its rows are not the
+        // polyline through `(x_column, y_column)`.
+        let line_style = extract_line(render_type)
+            .or_else(|| render_type.parallel().map(|p| Cow::Borrowed(p.line)));
+        let line = match line_style.as_deref() {
             Some(DataLineStyleConfig {
                 line_style,
                 line_color,

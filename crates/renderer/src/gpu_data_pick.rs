@@ -147,6 +147,13 @@ pub(crate) enum GpuDataPickGeometry {
         data: crate::data_render::CategoryBarData,
         labels: crate::data_render::ValueLabelData,
     },
+    /// A parallel coordinates series' rows (#141), picked by the line
+    /// module's entry (`pick_parallel`) over the draw's group 3 at the
+    /// pick's display scale: the nearest segment's row answers as a point
+    /// whose index is the row.
+    Parallel {
+        data: crate::data_render::ParallelData,
+    },
 }
 
 pub(crate) struct GpuDataPickSeries {
@@ -591,6 +598,8 @@ pub(crate) struct DataPickShaders<'a> {
     pub(crate) field: &'a wgpu::ShaderModule,
     /// The assembled grid vector module (`VectorInput::Grid`).
     pub(crate) vector_grid: &'a wgpu::ShaderModule,
+    /// The line module, whose `pick_parallel` answers parallel rows (#141).
+    pub(crate) line: &'a wgpu::ShaderModule,
 }
 
 /// Immutable pipelines shared by every chart and pick query on one renderer.
@@ -622,6 +631,8 @@ pub(crate) struct DataPickPipelineBundle {
     box_plot: wgpu::ComputePipeline,
     range_bar: wgpu::ComputePipeline,
     violin: wgpu::ComputePipeline,
+    /// The parallel row pick over the parallel data layout as group 3.
+    parallel: wgpu::ComputePipeline,
     /// Group 1 of the value label pick: the query (1, 2, 3), the series'
     /// label uniform (4) and its label cells (7).
     value_label_query_bgl: wgpu::BindGroupLayout,
@@ -647,12 +658,14 @@ impl DataPickPipelineBundle {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
         let DataPickShaders {
             bar: bar_shader,
             field: field_shader,
             vector_grid: vector_grid_shader,
+            line: line_shader,
         } = shaders;
         started(observer, INIT_SCOPE, "setup");
         let query_bgl = crate::gpu_compile::bind_group_layout(
@@ -708,6 +721,19 @@ impl DataPickPipelineBundle {
                     Some(&query_bgl),
                     Some(bar_style_bgl),
                     Some(category_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
+        let parallel_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy parallel data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    None,
+                    Some(parallel_bgl),
                 ],
                 immediate_size: 0,
             },
@@ -775,6 +801,19 @@ impl DataPickPipelineBundle {
                     module: vector_grid_shader,
                     entry_point: Some("pick_vector_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let parallel = observe_value(observer, INIT_SCOPE, "pick_parallel", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy parallel data pick pipeline"),
+                    layout: Some(&parallel_layout),
+                    module: line_shader,
+                    entry_point: Some("pick_parallel"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
                     cache: None,
                 },
             )
@@ -903,6 +942,7 @@ impl DataPickPipelineBundle {
             box_plot,
             range_bar,
             violin,
+            parallel,
             value_label_query_bgl,
             value_labels,
             empty_bar_style_map,
@@ -925,10 +965,20 @@ impl DataPickPipelineBundle {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         #[cfg(target_arch = "wasm32")]
         {
+            crate::init::prewarm_compute_entries_js(
+                &device,
+                "gpu.data_pick.line.async",
+                crate::data_render::LINE_SHADER.source,
+                &[("pick_parallel", "pick_parallel")],
+                observer,
+            )
+            .await
+            .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.bar.async",
@@ -986,6 +1036,7 @@ impl DataPickPipelineBundle {
             bar_style_bgl,
             vector_bgl,
             category_bgl,
+            parallel_bgl,
             observer,
         ))
     }
@@ -1117,6 +1168,7 @@ impl DataPickPipelineBundle {
             RangeBars(crate::data_render::CategoryBarData),
             Violin(crate::data_render::CategoryBarData),
             ValueLabels(crate::data_render::CategoryBarData),
+            Parallel(crate::data_render::ParallelData),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -1255,6 +1307,16 @@ impl DataPickPipelineBundle {
                         PreparedKind::Violin(data),
                     )
                 }
+                GpuDataPickGeometry::Parallel { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::Parallel(data),
+                    )
+                }
                 GpuDataPickGeometry::ValueLabels { data, labels } => {
                     field_charges.push(FieldPickHold {
                         _charge: Arc::clone(&data.charge),
@@ -1389,6 +1451,10 @@ impl DataPickPipelineBundle {
                     PreparedKind::ValueLabels(data) => {
                         pass.set_pipeline(&self.value_labels);
                         pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::Parallel(data) => {
+                        pass.set_pipeline(&self.parallel);
                         pass.set_bind_group(3, &data.bind_group, &[]);
                     }
                 }
@@ -1659,6 +1725,10 @@ pub(crate) struct SurfacePickIdentity {
     pub(crate) columns_are_y: bool,
 }
 
+/// The kind word a 3D point pick writes (`fs_3d_pick`, #132): the ID's
+/// third word is the point's index.
+pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
+
 /// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
 pub(crate) struct SurfacePickTicket {
     /// Polled for the readback on native; the browser's device polls itself.
@@ -1705,6 +1775,17 @@ impl SurfacePickTicket {
                 level_index: b as usize,
                 x_index: c as usize,
                 y_index: r as usize,
+                distance_px: 0.0,
+            }));
+        }
+        // A 3D scatter or line series' point (#132): the marker or the
+        // segment end under the cursor, at distance zero as the surface's
+        // sample is.
+        if b == SURFACE_PICK_KIND_POINT {
+            return Ok(Some(PickedData::Point {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                point_index: c as usize,
                 distance_px: 0.0,
             }));
         }
@@ -1845,6 +1926,14 @@ mod stream_tests {
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bgl = data_render::create_category_bar_data_bind_group_layout(&device);
+        let parallel_bgl = data_render::create_parallel_data_bind_group_layout(&device);
+        let line = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::LINE_SHADER.source.into()),
+            },
+        );
         DataPickPipelineBundle::new_observed(
             device,
             queue,
@@ -1853,12 +1942,14 @@ mod stream_tests {
                 bar: &bar,
                 field: &field,
                 vector_grid: &vector_grid,
+                line: &line,
             },
             &transform,
             &field_bgl,
             &style,
             &vector_bgl,
             &category_bgl,
+            &parallel_bgl,
             &mut |_| {},
         )
     }

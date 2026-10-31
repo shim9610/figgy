@@ -21,6 +21,7 @@ pub const SURFACE_SHADER: crate::shader_assembly::Assembled = crate::shader_asse
     "data_render/common/transform.wgsl",
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
     "data_render/common/grid_pair.wgsl",
     "data_render/common/field_grid.wgsl",
     "data_render/common/ramp.wgsl",
@@ -213,6 +214,131 @@ pub fn create_surface_data_bind_group_layout(device: &wgpu::Device) -> wgpu::Bin
             entries: &[uniform(4), uniform(5)],
         },
     )
+}
+
+/// Group 3 of a 3D chart's mapped scatter entries (#132): the point value
+/// map (bindings 0 and 1, `value_map.rs`) and the camera and params of the
+/// surface group (bindings 4 and 5) in one group, because the mapped
+/// scatter pipeline already fills groups 0 to 3.
+pub fn create_view3d_value_map_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let buffer = |binding, ty| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+        ty: wgpu::BindingType::Buffer {
+            ty,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let uniform = wgpu::BufferBindingType::Uniform;
+    crate::gpu_compile::bind_group_layout(
+        &device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy view3d value map bgl"),
+            entries: &[
+                buffer(0, uniform),
+                buffer(1, wgpu::BufferBindingType::Storage { read_only: true }),
+                buffer(4, uniform),
+                buffer(5, uniform),
+            ],
+        },
+    )
+}
+
+/// A 3D series' camera group (#132): the bind group a 3D scatter, line or
+/// ring draw binds as group 3 and the charge of its uniforms.
+#[derive(Clone)]
+pub struct View3dBinding {
+    pub bind_group: wgpu::BindGroup,
+    pub charge: crate::gpu_memory::SharedCharge,
+}
+
+/// The camera group of a 3D scatter or line series: the surface layout
+/// (`create_surface_data_bind_group_layout`) with `camera` and a default
+/// look carrying `pick_id`, or, when `value_map` is given, the combined
+/// layout above with the series' value map beside them.
+pub(crate) fn create_view3d_binding(
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    camera: &View3dGpu,
+    scale: f32,
+    pick_id: u32,
+    value_map: Option<&super::PointValueMapBuffers>,
+) -> View3dBinding {
+    let look = surface_params_gpu(None, 0, scale, None, pick_id);
+    let tally = crate::gpu_memory::ChargeTally::new();
+    let uniform = |label, contents: &[u8]| {
+        crate::gpu_memory::charged_buffer_init(
+            &tally,
+            device,
+            &wgpu::util::BufferInitDescriptor {
+                label: Some(label),
+                contents,
+                usage: wgpu::BufferUsages::UNIFORM,
+            },
+        )
+    };
+    let view_buf = uniform("figgy view3d camera uniform", bytemuck::bytes_of(camera));
+    let look_buf = uniform("figgy view3d params uniform", bytemuck::bytes_of(&look));
+    let camera_entries = [
+        wgpu::BindGroupEntry {
+            binding: 4,
+            resource: view_buf.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 5,
+            resource: look_buf.as_entire_binding(),
+        },
+    ];
+    let bind_group = match value_map {
+        Some(map) => device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy view3d value map bg"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: map.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: map.stops.as_entire_binding(),
+                },
+                camera_entries[0].clone(),
+                camera_entries[1].clone(),
+            ],
+        }),
+        None => device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("figgy view3d bg"),
+            layout,
+            entries: &camera_entries,
+        }),
+    };
+    View3dBinding {
+        bind_group,
+        charge: crate::gpu_memory::shared_charge(
+            tally,
+            ledger,
+            crate::gpu_memory::GpuResourceKind::Uniform,
+        ),
+    }
+}
+
+/// The depth state of a 3D scatter or line draw (#132): depth tested and
+/// written against the surfaces and each other, `LessEqual` so the later
+/// draw wins a tie. No bias: the shader places a marker at the front of a
+/// ball of its radius and a stroke at the front of a tube of its half width
+/// (`project_box_front`), so a mark on a surface shows whole and a marker
+/// covers its own stroke at the sample.
+pub fn point_depth_stencil() -> wgpu::DepthStencilState {
+    wgpu::DepthStencilState {
+        format: DEPTH_STENCIL_FORMAT,
+        depth_write_enabled: Some(true),
+        depth_compare: Some(wgpu::CompareFunction::LessEqual),
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    }
 }
 
 /// Which surface pipeline.

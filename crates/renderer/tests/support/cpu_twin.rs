@@ -561,6 +561,7 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::ScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         // A category bar is picked per (category, series) bar by the typed
@@ -576,8 +577,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         // The twin does not model the ternary placement either; its GPU
-        // pick is held to the paint by `pick_draw_agreement`.
-        | DataRenderType::Ternary { .. } => None,
+        // pick is held to the paint by `pick_draw_agreement`. A parallel
+        // row is a typed data pick (`pick_parallel`), never a point.
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -594,6 +597,7 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
@@ -603,7 +607,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         // Radar vertex markers and ternary markers: see `extract_line`.
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -1544,6 +1549,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Solid,
@@ -1574,6 +1580,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -1602,6 +1609,7 @@ mod tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -1807,6 +1815,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Vector {
                 components: crate::data_config::VectorComponents::Points {
                     u: u.into(),

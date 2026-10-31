@@ -198,6 +198,7 @@ fn scatter_series(
         label: None,
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
+        z_column: None,
         render_type: DataRenderType::Scatter { scatter },
     }
 }
@@ -216,6 +217,7 @@ fn line_series(
         label: None,
         x_column: x_column.to_owned(),
         y_column: y_column.to_owned(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -2354,6 +2356,7 @@ fn exact_gpu_equal_distance_ties_match_cpu_series_and_primitive_order() {
         label: None,
         x_column: "parity-tie-x0".into(),
         y_column: "parity-tie-y0".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine { scatter, line },
     };
     let later_series = scatter_series(
@@ -3452,18 +3455,27 @@ fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
 /// error bars', Line the line's (its fill included), MarkerLine all three,
 /// Vector the point vector's. Only `transform.wgsl`
 /// (its uniform takes the binding the pick's pool holds), `style.wgsl` (the
-/// pick reads its own style rows) and `arc_walk.wgsl` (the arc-driven passes'
-/// group 3) are the draw's alone.
+/// pick reads its own style rows), `arc_walk.wgsl` (the arc-driven passes'
+/// group 3), `project_3d.wgsl` (the camera of a 3D chart, whose marks
+/// the 1×1 ID pick answers, #132) and `data_pick.wgsl` (the typed data
+/// pick's query, which the line module's parallel row pick reads, #141)
+/// are the draw's alone.
 #[test]
 fn pick_modules_splice_their_draw_modules_common_fragments() {
     use std::collections::BTreeSet;
     // `arc_walk.wgsl` is the draw's too: its group-3 bindings are the
     // arc-driven instance passes' own, and the pick walks a segment's arc
-    // through `pick_arc` instead.
-    const DRAW_ONLY: [&str; 3] = [
+    // through `pick_arc` instead. So is `project_3d.wgsl`: a 3D chart's
+    // markers and strokes are picked by `surface_pick` through the draw's
+    // own 3D entries, never by this scan. And `data_pick.wgsl`: the line
+    // module's `pick_parallel` is a typed data pick (`gpu_data_pick`), and
+    // a parallel row is never a point of this scan.
+    const DRAW_ONLY: [&str; 5] = [
         "data_render/common/transform.wgsl",
         "data_render/common/style.wgsl",
         "data_render/common/arc_walk.wgsl",
+        "data_render/common/project_3d.wgsl",
+        "data_render/common/data_pick.wgsl",
     ];
     let common = |fragments: &[&'static str]| -> BTreeSet<&'static str> {
         fragments

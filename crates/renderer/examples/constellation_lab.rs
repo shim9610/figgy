@@ -105,6 +105,7 @@ fn build_state(
         label: None,
         x_column: "sample_x".into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: DataScatterStyleConfig {
                 point_color: color,
