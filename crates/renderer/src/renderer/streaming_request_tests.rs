@@ -6756,3 +6756,180 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
     }
     drop(font);
 }
+
+/// The eight streamed columns of the ticket tests, eight rows each.
+const TICKET_COLUMNS: [&str; 8] = ["x", "y", "ex_lo", "ex_hi", "ey_lo", "ey_hi", "ps", "es"];
+
+/// A line, styled markers and styled asymmetric XY error bars: the
+/// errorbar phase names seven columns, the line two and the markers three.
+fn seven_column_declaration(id: &str) -> SeriesConfig {
+    let mut series = declaration(id, "x", "y");
+    let DataRenderType::Line { line } = series.render_type.clone() else {
+        unreachable!()
+    };
+    series.render_type = DataRenderType::LineScatterErrorbarXY {
+        scatter: DataScatterStyleConfig {
+            point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            point_shape: ScatterShape::CircleFilled,
+            point_size: 5.0,
+            point_style_table: Some(vec![Default::default(), Default::default()]),
+            point_style_index_column: Some("ps".into()),
+            point_style_overrides: None,
+            point_color_map: None,
+            point_size_map: None,
+        },
+        line,
+        err_x: ErrorRef::Asymmetric {
+            lower: "ex_lo".into(),
+            upper: "ex_hi".into(),
+        },
+        err_y: ErrorRef::Asymmetric {
+            lower: "ey_lo".into(),
+            upper: "ey_hi".into(),
+        },
+        err_style: DataErrorBarStyleConfig {
+            error_bar_color: Color::new(0.0, 0.0, 0.0, 1.0),
+            error_bar_width: 2.0,
+            error_bar_cap_size: 4.0,
+            cap_width: 2.0,
+            error_bar_style_table: Some(vec![Default::default(), Default::default()]),
+            error_bar_style_index_column: Some("es".into()),
+            error_bar_style_overrides: None,
+        },
+    };
+    series
+}
+
+/// A renderer with the eight ticket columns streamed (eight zero rows each,
+/// style indices 0) and a stream runtime of `slots` slots.
+fn ticket_renderer(slots: usize) -> Renderer {
+    let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+    let mut r = Renderer::try_new(
+        RendererDevice::new(device, queue),
+        wgpu::TextureFormat::Rgba8Unorm,
+        4096,
+    )
+    .unwrap();
+    let mut budget = limits(slots);
+    budget.max_chunk_bytes = 256;
+    r.configure_streaming_runtime(budget).unwrap();
+    r.register_streamed_columns(TICKET_COLUMNS.map(|id| source(id, 1)).to_vec())
+        .unwrap();
+    r
+}
+
+/// STREAM_TICKET_COLUMNS_MATCH_REQUEST (#152): every ticket an explicit
+/// draw issues names exactly the ranges its scheduler slot reserved, one
+/// per column of its phase (1 for a line on one column, 7, 2 and 3 for the
+/// error bars, line and markers of the styled XY series); an empty request
+/// and one past `max_columns_per_request` are refused, as is a request past
+/// the chunk byte limit; a supply one input short or one long is refused
+/// and the ticket still takes the right supply.
+#[test]
+fn stream_tickets_name_the_ranges_their_slots_reserved() {
+    let mut r = ticket_renderer(2);
+    let series = vec![
+        declaration("same", "x", "x"),
+        seven_column_declaration("bars"),
+    ];
+    let config = crate::default::default_config();
+    let chart = r.register_chart(config.clone(), series).unwrap();
+    let view = r
+        .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+        .unwrap();
+    let target = draw_target(&r, 1);
+    let job = r.begin_chart_stream_draw(chart, &view, &target, 4).unwrap();
+
+    assert!(matches!(
+        r.request_stream_columns(job, &[]),
+        Err(StreamRequestError::Scheduler(StreamError::InvalidRange))
+    ));
+    let ranges = |count: usize, len: u64| -> Vec<StreamSourceRange<'static>> {
+        (0..count)
+            .map(|_| StreamSourceRange {
+                column: "x",
+                offset: 0,
+                len,
+            })
+            .collect()
+    };
+    assert!(matches!(
+        r.request_stream_columns(job, &ranges(33, 1)),
+        Err(StreamRequestError::Scheduler(StreamError::InvalidRange))
+    ));
+    let wide = ranges(32, 8);
+    assert!(matches!(
+        r.request_stream_columns(job, &wide),
+        Err(StreamRequestError::Scheduler(StreamError::TooLarge))
+    ));
+    assert_eq!(r.check_stream_tickets_for_test(), 0);
+
+    let zeros = [0u8; 64];
+    let mut seen = Vec::new();
+    loop {
+        wait_stream_slots(&mut r, 0);
+        let ticket = match r.request_chart_stream_draw(job).unwrap() {
+            StreamDrawRequestStatus::Ready(ticket) => ticket,
+            StreamDrawRequestStatus::AllSubmitted => break,
+            StreamDrawRequestStatus::Backpressure => panic!("completed slots were drained"),
+        };
+        assert_eq!(r.check_stream_tickets_for_test(), 1);
+        let columns: Vec<_> = r
+            .stream_request_columns(ticket)
+            .unwrap()
+            .iter()
+            .map(|column| (column.column.clone(), column.range))
+            .collect();
+        let count = columns.len();
+        if !seen.contains(&count) {
+            seen.push(count);
+        }
+        let inputs: Vec<_> = columns
+            .iter()
+            .map(|(id, range)| StreamInput {
+                column: id,
+                bytes: &zeros[..range.byte_len().unwrap() as usize],
+            })
+            .collect();
+        let short = r.submit_chart_stream_draw(ticket, &inputs[..count - 1], &view, &target);
+        assert!(
+            matches!(
+                short,
+                Err(StreamRequestError::Scheduler(StreamError::InvalidPayload))
+            ),
+            "{count} columns, one short: {short:?}"
+        );
+        let mut long: Vec<_> = columns
+            .iter()
+            .map(|(id, range)| StreamInput {
+                column: id,
+                bytes: &zeros[..range.byte_len().unwrap() as usize],
+            })
+            .collect();
+        long.push(StreamInput {
+            column: "x",
+            bytes: &zeros[..4],
+        });
+        let long = r.submit_chart_stream_draw(ticket, &long, &view, &target);
+        assert!(
+            matches!(
+                long,
+                Err(StreamRequestError::Scheduler(StreamError::InvalidPayload))
+            ),
+            "{count} columns, one long: {long:?}"
+        );
+        assert_eq!(r.check_stream_tickets_for_test(), 1);
+        let submission = r
+            .submit_chart_stream_draw(ticket, &inputs, &view, &target)
+            .unwrap();
+        r.device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submission),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+    }
+    seen.sort_unstable();
+    assert_eq!(seen, [1, 2, 3, 7]);
+    r.cancel_chart_stream(chart).unwrap();
+}

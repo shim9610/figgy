@@ -274,6 +274,7 @@ fn parity_with_samples(
             match streamed.request_stream_operation_ranges(operation).unwrap() {
                 crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                     assert!(ranges.iter().all(|range| range.len <= io));
+                    assert!(streamed.check_stream_tickets_for_test() >= 1);
                     let data: Vec<_> = ranges
                         .iter()
                         .map(|range| {

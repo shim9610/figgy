@@ -201,6 +201,7 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                 reads += 1;
                 assert_eq!(ranges.len(), 1);
+                assert!(f.renderer.check_stream_tickets_for_test() >= 1);
                 let range = &ranges[0];
                 let original = &f.columns.iter().find(|(id, _)| *id == range.id).unwrap().1;
                 let payload = column(
@@ -477,6 +478,7 @@ fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
         {
             crate::AutoStreamingRangeRequest::Ready { ranges, .. } => {
                 assert_eq!(ranges.len(), 1);
+                assert!(f.renderer.check_stream_tickets_for_test() >= 1);
                 let range = &ranges[0];
                 assert!(
                     range.id == "x" || range.id == "y",

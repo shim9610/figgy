@@ -270,6 +270,7 @@ fn pump(r: &mut Renderer, id: ChartId, values: &[(&str, crate::Column<f32>)]) {
     loop {
         match r.request_stream_selection_ranges(id).unwrap() {
             StreamingSelectionRequest::Ready { ticket, ranges, .. } => {
+                assert!(r.check_stream_tickets_for_test() >= 1);
                 supply(r, ticket, &ranges, values)
             }
             StreamingSelectionRequest::Backpressure { .. } => r.wait_idle().unwrap(),

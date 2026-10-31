@@ -1976,6 +1976,31 @@ impl Renderer {
         Ok(())
     }
 
+    /// STREAM_TICKET_COLUMNS_MATCH_REQUEST (#152): every live requested
+    /// ticket's named columns and its scheduler slot's ranges have the same
+    /// length, between 1 and `max_columns_per_request`. Returns how many
+    /// tickets were checked.
+    #[cfg(test)]
+    pub(crate) fn check_stream_tickets_for_test(&self) -> usize {
+        let Some(runtime) = self.stream_runtime.as_ref() else {
+            return 0;
+        };
+        let max = runtime.scheduler.limits().max_columns_per_request;
+        let mut checked = 0;
+        for request in &runtime.requests {
+            let Some(slot) = runtime.scheduler.requested_columns(request.ticket.ticket) else {
+                continue;
+            };
+            assert_eq!(request.columns.len(), slot.len(), "{:?}", request.ticket);
+            assert!((1..=max).contains(&slot.len()), "{} columns", slot.len());
+            for (named, reserved) in request.columns.iter().zip(slot) {
+                assert_eq!(named.range, *reserved);
+            }
+            checked += 1;
+        }
+        checked
+    }
+
     #[cfg(test)]
     pub(crate) fn view_cache_test_status(&self, chart: ChartId) -> Option<(usize, u64)> {
         self.stream_runtime
