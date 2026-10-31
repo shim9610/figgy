@@ -32,7 +32,7 @@ pub fn fit_display_panel(logical_size: (u32, u32), surface_size: (u32, u32)) -> 
 pub(super) fn annotation_raster_for_chart(
     chart: &Chart,
     selected: Option<usize>,
-) -> crate::annotation::AnnotationRaster {
+) -> Result<crate::annotation::AnnotationRaster> {
     let config = chart.config();
     let Config {
         chart_area,
@@ -1928,7 +1928,7 @@ impl Renderer {
         // pass. One layer per document, on the base view, anchored in the
         // parent's own axis space (the group data area).
         let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
-        let annotations = annotation_raster_for_chart(chart, None);
+        let annotations = annotation_raster_for_chart(chart, None)?;
         view.annotation_underlay = annotations
             .underlay
             .as_deref()
@@ -2079,7 +2079,7 @@ impl Renderer {
         panel_rect: Rect,
     ) -> Result<()> {
         let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
-        let raster = annotation_raster_for_chart(chart, view.annotation_selected);
+        let raster = annotation_raster_for_chart(chart, view.annotation_selected)?;
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
             raster.underlay.as_deref(),

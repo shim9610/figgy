@@ -916,7 +916,7 @@ impl Renderer {
                     preparation.per_point_style_map_bgl,
                     u32::try_from(entry.index).map_err(|_| StreamError::TooLarge)?,
                     &tally,
-                )),
+                )?),
                 None => None,
             };
             let map_charge = mapped.then(|| {

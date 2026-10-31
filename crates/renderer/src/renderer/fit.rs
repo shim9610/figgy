@@ -767,11 +767,13 @@ impl Renderer {
         warm_result: std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError>,
     ) -> std::result::Result<(), crate::gpu_errorbar::GpuErrorbarError> {
         warm_result?;
-        self.errorbar_extent_engine =
-            Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+        self.errorbar_extent_engine = Some(
+            crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
                 self.device.as_ref(),
                 Arc::clone(&self.gpu_ledger),
-            ));
+            )
+            .with_health(self.health.clone()),
+        );
         Ok(())
     }
 

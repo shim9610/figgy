@@ -384,32 +384,38 @@ impl Canvas {
         color: &Color,
         turn: u8,
     ) {
-        if w == 0 || h == 0 || alpha.len() < (w as usize * h as usize) {
+        let Some(cells) = (w as usize).checked_mul(h as usize) else {
+            return;
+        };
+        if w == 0 || h == 0 || alpha.len() < cells {
             return;
         }
         let c = ts_color(color);
         let (cr, cg, cb, ca) = (c.red(), c.green(), c.blue(), c.alpha());
-        let dst_w = self.pix.width() as i32;
-        let dst_h = self.pix.height() as i32;
+        // Pixel arithmetic in i64: the positions come from saturating float
+        // casts, so `ix + col` or `-y - 1` can leave the i32 range.
+        let dst_w = i64::from(self.pix.width());
+        let dst_h = i64::from(self.pix.height());
         let px = self.pix.pixels_mut();
 
-        for row in 0..h as i32 {
-            for col in 0..w as i32 {
-                let x = ix + col;
-                let y = iy + row;
+        for row in 0..h {
+            for col in 0..w {
+                let x = i64::from(ix) + i64::from(col);
+                let y = i64::from(iy) + i64::from(row);
                 // Map pixel cells, not their top-left points: a reversed axis
-                // needs -1 so [x, x+1) becomes [-x-1, -x).
-                let (dx, dy) = match turn {
+                // needs -1 so [x, x+1) becomes [-x-1, -x). `turn` counts
+                // quarter turns, taken modulo four.
+                let (dx, dy) = match turn % 4 {
                     0 => (x, y),
                     1 => (-y - 1, x),
                     2 => (-x - 1, -y - 1),
-                    3 => (y, -x - 1),
-                    _ => unreachable!("quarter turn must be in 0..4"),
+                    _ => (y, -x - 1),
                 };
                 if dx < 0 || dx >= dst_w || dy < 0 || dy >= dst_h {
                     continue;
                 }
-                let a = alpha[(row * w as i32 + col) as usize];
+                // `row * w + col < w * h = cells <= alpha.len()`.
+                let a = alpha[row as usize * w as usize + col as usize];
                 if a == 0 {
                     continue;
                 }
@@ -419,6 +425,7 @@ impl Canvas {
                 let sg = ((cg * af * 255.0 + 0.5) as u16).min(sa);
                 let sb = ((cb * af * 255.0 + 0.5) as u16).min(sa);
 
+                // Inside the canvas, checked above: no overflow.
                 let di = (dy * dst_w + dx) as usize;
                 let d = px[di];
                 let inv = 255 - sa;

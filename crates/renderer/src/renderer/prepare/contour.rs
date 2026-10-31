@@ -381,7 +381,7 @@ impl PrepareContext<'_> {
                 _pad0: 0,
             },
             &entry.field_bg,
-        )))
+        )?))
     }
 
     /// The label snapshot a contour pick of `cfg` sees: the one the draw at
@@ -602,7 +602,7 @@ impl PrepareContext<'_> {
                 lookup_metadata: &lookup_tables.metadata,
                 params: &signature.params,
             },
-        );
+        )?;
 
         let label = match signature.label.as_ref() {
             Some(label_sig) => self.build_contour_label(cfg.series_id.as_str(), label_sig)?,

@@ -324,7 +324,7 @@ impl PrepareContext<'_> {
             step_mode,
             c.map_or(0, |(base, _)| base),
             third.and_then(|third| third.camera()),
-        )
+        )?
         .ok_or(FiggyError::internal(
             "the arc scan has a dispatch grid (try_new rejects zero-limit adapters)",
         ))?;
@@ -389,10 +389,10 @@ impl Renderer {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
-    ) -> Option<PreparedArc> {
+    ) -> Option<Result<PreparedArc>> {
         self.preparation_parts()
             .1
             .ensure_arc_prefix(series_id, x_id, y_id, None, t, star_pitch, interpolation)
-            .expect("test arc prefix scan")
+            .transpose()
     }
 }

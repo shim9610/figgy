@@ -401,7 +401,7 @@ fn handwritten_font(bold: bool) -> FontRef<'static> {
     } else {
         (&REGULAR, HANDWRITTEN_REGULAR)
     };
-    *cell.get_or_init(|| FontRef::from_index(bytes, 0).expect("corrupted bundled font"))
+    *cell.get_or_init(|| bundled_face(bytes))
 }
 
 /// Resolve the font for ONE glyph under `policy`. The handwritten policy
@@ -458,6 +458,18 @@ fn find_fallback(ch: char, bold: bool, italic: bool) -> Option<FontRef<'static>>
         .or_else(|| lookup_system_fallback(ch, bold, italic))
 }
 
+/// A bundled font file as a face. Every bundled file is a single face whose
+/// table directory is at offset 0 (`bundled_fonts_are_single_faces` checks
+/// it), so the reference is built without a fallible parse; a corrupted
+/// bundle would draw nothing instead of panicking.
+pub(crate) fn bundled_face(data: &'static [u8]) -> FontRef<'static> {
+    FontRef {
+        data,
+        offset: 0,
+        key: swash::CacheKey::new(),
+    }
+}
+
 /// Bundled fonts parsed exactly once — `FontRef::from_index` mints a fresh
 /// `CacheKey` per call, and a stable key is what makes the glyph caches below
 /// actually hit.
@@ -472,9 +484,7 @@ fn embedded_font(bold: bool, italic: bool) -> FontRef<'static> {
         (false, true) => &ITALIC,
         (true, true) => &BOLD_ITALIC,
     };
-    *cell.get_or_init(|| {
-        FontRef::from_index(embedded_bytes(bold, italic), 0).expect("corrupted bundled font")
-    })
+    *cell.get_or_init(|| bundled_face(embedded_bytes(bold, italic)))
 }
 
 /// Bumped when `register_font_bytes` accepts previously unseen file contents.
@@ -615,12 +625,43 @@ type MetricsKey = (swash::CacheKey, u32, u16);
 /// Mask key: metrics key + horizontal subpixel bin (quarter-pixel phases).
 type MaskKey = (swash::CacheKey, u32, u16, u8);
 
+/// The largest glyph size in pixels the raster draws. A glyph mask holds
+/// about `size²` bytes, so this bounds one mask at about 16 MiB; a larger
+/// glyph is rejected with an error instead of allocating gigabytes (#152).
+pub(crate) const MAX_GLYPH_PX: f32 = 4096.0;
+
+/// Mask bytes one thread's glyph mask cache holds before it is cleared. The
+/// caches are keyed by exact pixel size, so a canvas redrawn at a changing
+/// display scale would otherwise add a full set of masks per scale (#152).
+const MASK_CACHE_BUDGET_BYTES: usize = 64 << 20;
+
+/// Entries one thread's glyph metrics cache holds before it is cleared.
+const METRICS_CACHE_MAX_ENTRIES: usize = 65_536;
+
 thread_local! {
     static SCALE_CTX: RefCell<ScaleContext> = RefCell::new(ScaleContext::new());
     static METRICS_CACHE: RefCell<HashMap<MetricsKey, GlyphExtents>> =
         RefCell::new(HashMap::new());
-    static MASK_CACHE: RefCell<HashMap<MaskKey, Option<GlyphMask>>> =
-        RefCell::new(HashMap::new());
+    static MASK_CACHE: RefCell<MaskCache> = RefCell::new(MaskCache::default());
+}
+
+/// The glyph masks of one thread and the bytes they hold. Thread-local, so
+/// it needs no lock; past [`MASK_CACHE_BUDGET_BYTES`] it is cleared.
+#[derive(Default)]
+struct MaskCache {
+    masks: HashMap<MaskKey, Option<GlyphMask>>,
+    bytes: usize,
+}
+
+impl MaskCache {
+    /// Room for a mask of `bytes`: the cache is cleared when it would pass
+    /// its budget.
+    fn make_room(&mut self, bytes: usize) {
+        if self.bytes.saturating_add(bytes) > MASK_CACHE_BUDGET_BYTES {
+            self.masks.clear();
+            self.bytes = 0;
+        }
+    }
 }
 
 /// True for the bundled handwritten face (either weight). It rasterizes with
@@ -693,26 +734,39 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
         ink_left,
         ink_right,
     };
-    METRICS_CACHE.with(|c| c.borrow_mut().insert(key, extents));
+    METRICS_CACHE.with(|c| {
+        let mut cache = c.borrow_mut();
+        if cache.len() >= METRICS_CACHE_MAX_ENTRIES {
+            cache.clear();
+        }
+        cache.insert(key, extents);
+    });
     extents
 }
 
 /// Rasterize (or fetch) the glyph mask for a quarter-pixel horizontal phase
 /// and hand it to `use_mask`. AA happens exactly once, here in swash — the
 /// subpixel offset is baked into the rasterization instead of resampling the
-/// finished mask, which is what kept text crisp under skia.
+/// finished mask, which is what kept text crisp under skia. A size above
+/// [`MAX_GLYPH_PX`] (or not a number) is an error, nothing is rasterized.
 fn with_glyph_mask_id(
     font: FontRef<'static>,
     size: f32,
     glyph: u16,
     xbin: u8,
     use_mask: impl FnOnce(&GlyphMask),
-) {
+) -> crate::Result<()> {
+    if !(size <= MAX_GLYPH_PX) {
+        return Err(crate::FiggyError::InvalidConfig {
+            field: "font size",
+            reason: "a glyph larger than 4096 px (MAX_GLYPH_PX) is not rasterized",
+        });
+    }
     let key = (font.key, size.to_bits(), glyph, xbin);
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
-        let entry = cache.entry(key).or_insert_with(|| {
-            SCALE_CTX.with(|cx| {
+        if !cache.masks.contains_key(&key) {
+            let mask = SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
                 let mut scaler = cx
                     .builder(font)
@@ -738,12 +792,17 @@ fn with_glyph_mask_id(
                         data: image.data.into_boxed_slice(),
                     })
                 })
-            })
-        });
-        if let Some(mask) = entry {
+            });
+            let bytes = mask.as_ref().map_or(0, |mask| mask.data.len());
+            cache.make_room(bytes);
+            cache.bytes = cache.bytes.saturating_add(bytes);
+            cache.masks.insert(key, mask);
+        }
+        if let Some(Some(mask)) = cache.masks.get(&key) {
             use_mask(mask);
         }
     });
+    Ok(())
 }
 
 /// The outline of glyph id `glyph` of `font` at `size`, in pixels relative
@@ -831,7 +890,7 @@ fn draw_glyph(
     pen_x: f32,
     baseline: f32,
     color: &Color,
-) {
+) -> crate::Result<()> {
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
         // into the rasterizer, and blit without any filtering.
@@ -856,22 +915,20 @@ fn draw_glyph(
                     color,
                     turn,
                 );
-            });
+            })
         }
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
-        None => {
-            with_glyph_mask_id(font, size, glyph, 0, |m| {
-                canvas.draw_mask(
-                    pen_x + m.left as f32,
-                    baseline - m.top as f32,
-                    m.width,
-                    m.height,
-                    &m.data,
-                    color,
-                );
-            });
-        }
+        None => with_glyph_mask_id(font, size, glyph, 0, |m| {
+            canvas.draw_mask(
+                pen_x + m.left as f32,
+                baseline - m.top as f32,
+                m.width,
+                m.height,
+                &m.data,
+                color,
+            );
+        }),
     }
 }
 
@@ -1029,8 +1086,23 @@ impl GlyphSink for MeasureSink {
     fn rect(&mut self, _: RectF, _: &Color) {}
 }
 
-/// The sink of [`draw_rich_text`]: paints onto the canvas.
-struct CanvasSink<'a>(&'a mut Canvas);
+/// The sink of [`draw_rich_text`]: paints onto the canvas. The first glyph
+/// that cannot be rasterized stops the painting of glyphs, and its error is
+/// what the draw returns ([`Self::finish`]).
+struct CanvasSink<'a>(&'a mut Canvas, Option<crate::FiggyError>);
+
+impl<'a> CanvasSink<'a> {
+    fn new(canvas: &'a mut Canvas) -> Self {
+        Self(canvas, None)
+    }
+
+    fn finish(self) -> crate::Result<()> {
+        match self.1 {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+}
 
 impl GlyphSink for CanvasSink<'_> {
     fn paints(&self) -> bool {
@@ -1044,7 +1116,12 @@ impl GlyphSink for CanvasSink<'_> {
         pen: (f32, f32),
         color: &Color,
     ) {
-        draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color);
+        if self.1.is_some() {
+            return;
+        }
+        if let Err(error) = draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color) {
+            self.1 = Some(error);
+        }
     }
     fn rect(&mut self, r: RectF, color: &Color) {
         self.0.draw_rect(
@@ -1077,18 +1154,21 @@ fn place_cell(
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
     // A cell whose math tree is malformed draws flat, as a consumer that
-    // ignores math nodes would, identically in measure and draw.
-    let math = segments
+    // ignores math nodes would, identically in measure and draw; so does a
+    // cell without a math face.
+    let math = (segments
         .iter()
         .any(|s| s.math_node.is_some() || s.math_parent.is_some())
-        && crate::text::math::validate_math_segments(segments).is_ok();
+        && crate::text::math::validate_math_segments(segments).is_ok())
+    .then(|| math_font::MathFace::for_family(&rt.font))
+    .flatten();
 
     let mut i = 0;
     while i < segments.len() {
         let seg = &segments[i];
         i += 1;
         let mut position = ScriptPosition::of(seg);
-        if math {
+        if let Some(face) = math {
             if let Some(node) = seg.math_node {
                 if matches!(node.kind, crate::text::MathKind::Math(_)) {
                     // A formula: one atom of the cell, laid out from the
@@ -1101,6 +1181,7 @@ fn place_cell(
                         (i - 1, end),
                         (pen_x, baseline),
                         policy,
+                        face,
                     );
                     max_ascent = max_ascent.max(f.ascent);
                     max_descent = max_descent.max(f.descent);
@@ -1302,6 +1383,90 @@ mod dashed_rule_tests {
     use super::*;
     use crate::text::TextAlign;
 
+    /// The mask cache stays inside its byte budget however many sizes a
+    /// thread rasterizes, and the metrics cache inside its entry cap (#152).
+    #[test]
+    fn glyph_caches_stay_bounded() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'M');
+        let glyph = font.charmap().map('M');
+        let mut cleared = false;
+        let mut previous = 0usize;
+        for step in 0..12u16 {
+            let size = 4000.0 + f32::from(step);
+            with_glyph_mask_id(font, size, glyph, 0, |_| {}).unwrap();
+            let bytes = MASK_CACHE.with(|cache| cache.borrow().bytes);
+            assert!(
+                bytes <= MASK_CACHE_BUDGET_BYTES,
+                "{bytes} mask bytes cached"
+            );
+            cleared |= bytes < previous;
+            previous = bytes;
+        }
+        assert!(
+            cleared,
+            "twelve 4000 px masks pass the budget and clear the cache"
+        );
+
+        for step in 0..(METRICS_CACHE_MAX_ENTRIES as u32 + 10) {
+            glyph_extents_id(font, 8.0 + step as f32 * 0.001, glyph);
+            let entries = METRICS_CACHE.with(|cache| cache.borrow().len());
+            assert!(entries <= METRICS_CACHE_MAX_ENTRIES);
+        }
+    }
+
+    /// A glyph above `MAX_GLYPH_PX` is an error, not a mask of gigabytes,
+    /// and the error reaches the caller of the draw (#152).
+    #[test]
+    fn a_glyph_above_the_size_limit_is_an_error() {
+        let font = glyph_font(FontPolicy::Standard, "", false, false, 'x');
+        let glyph = font.charmap().map('x');
+        assert!(with_glyph_mask_id(font, MAX_GLYPH_PX, glyph, 0, |_| {}).is_ok());
+        for size in [MAX_GLYPH_PX + 1.0, 50_000.0, f32::INFINITY, f32::NAN] {
+            assert!(matches!(
+                with_glyph_mask_id(font, size, glyph, 0, |_| {}),
+                Err(crate::FiggyError::InvalidConfig {
+                    field: "font size",
+                    ..
+                })
+            ));
+        }
+        let mut canvas = Canvas::new(16, 16).unwrap();
+        let rt = RichText::plain("x", Color::BLACK, 50_000.0, "");
+        assert!(draw_rich_text(&mut canvas, &rt, (0.0, 8.0), FontPolicy::Standard).is_err());
+        assert!(
+            draw_plain_text(
+                &mut canvas,
+                "x",
+                (0.0, 8.0),
+                Color::BLACK,
+                "",
+                50_000.0,
+                false,
+                false,
+                FontPolicy::Standard,
+            )
+            .is_err()
+        );
+    }
+
+    /// Every bundled font file is a single face at offset 0, which
+    /// `bundled_face` relies on to skip the fallible parse.
+    #[test]
+    fn bundled_fonts_are_single_faces() {
+        for bytes in [
+            HANDWRITTEN_REGULAR,
+            HANDWRITTEN_BOLD,
+            embedded_bytes(false, false),
+            embedded_bytes(true, false),
+            embedded_bytes(false, true),
+            embedded_bytes(true, true),
+        ] {
+            let parsed = FontRef::from_index(bytes, 0).expect("bundled font parses");
+            assert_eq!(parsed.offset, 0);
+        }
+        assert!(math_font::MathFace::for_family("").is_some());
+    }
+
     // The band of a filled line's legend mark is painted under the rule in
     // the band colour, inside the rule's fixed field, and leaves the measured
     // width and height of the mark unchanged.
@@ -1325,7 +1490,7 @@ mod dashed_rule_tests {
         );
 
         let mut canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut canvas, &banded, (4.0, 24.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &banded, (4.0, 24.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let px =
             |x: u32, y: u32| &rgba[((y * 48 + x) * 4) as usize..((y * 48 + x) * 4 + 4) as usize];
@@ -1342,7 +1507,7 @@ mod dashed_rule_tests {
         assert_eq!(px(20, 26)[3], 0);
         assert_eq!(px(40, 22)[3], 0);
         let mut plain_canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut plain_canvas, &plain, (4.0, 24.0), FontPolicy::Standard);
+        draw_rich_text(&mut plain_canvas, &plain, (4.0, 24.0), FontPolicy::Standard).unwrap();
         assert_eq!(
             plain_canvas.into_rgba()[((22 * 48 + 20) * 4 + 3) as usize],
             0
@@ -1363,7 +1528,7 @@ mod dashed_rule_tests {
             align: TextAlign::Left,
         };
         let mut canvas = Canvas::new(48, 32).unwrap();
-        draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (4.0, 20.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let ink_cols: Vec<u32> = (0..48u32)
             .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
@@ -1390,8 +1555,17 @@ mod dashed_rule_tests {
 /// cells move with it.
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
-pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
-    place_rich_text(&mut CanvasSink(canvas), rt, origin, policy);
+///
+/// A glyph above [`MAX_GLYPH_PX`] is an error; the glyphs before it are drawn.
+pub fn draw_rich_text(
+    canvas: &mut Canvas,
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::new(canvas);
+    place_rich_text(&mut sink, rt, origin, policy);
+    sink.finish()
 }
 
 /// The placement of [`draw_rich_text`]: every glyph and rule of `rt` at
@@ -1612,7 +1786,8 @@ pub(crate) fn script_placement(position: ScriptPosition, base: f32) -> ScriptPla
 // Shares the same font resolution and per-glyph fallback as RichText via
 // `glyph_font`.
 
-/// Draw single-style text at `origin` (left, baseline).
+/// Draw single-style text at `origin` (left, baseline). A glyph above
+/// [`MAX_GLYPH_PX`] is an error.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_plain_text(
     canvas: &mut Canvas,
@@ -1624,18 +1799,12 @@ pub fn draw_plain_text(
     bold: bool,
     italic: bool,
     policy: FontPolicy,
-) {
+) -> crate::Result<()> {
+    let mut sink = CanvasSink::new(canvas);
     place_plain_text(
-        &mut CanvasSink(canvas),
-        text,
-        origin,
-        color,
-        family,
-        size,
-        bold,
-        italic,
-        policy,
+        &mut sink, text, origin, color, family, size, bold, italic, policy,
     );
+    sink.finish()
 }
 
 /// The placement of [`draw_plain_text`]: each character's glyph, from the
@@ -1771,7 +1940,8 @@ mod tests {
                 let mut seen = None;
                 with_glyph_mask_id(font, size, font.charmap().map(ch), 0, |m| {
                     seen = Some((m.width, m.height))
-                });
+                })
+                .unwrap();
                 let (w, h) = seen.expect("basic Latin glyph must rasterize");
                 let rel_h = h as f32 / size;
                 let rel_w = w as f32 / size;
@@ -1801,7 +1971,8 @@ mod tests {
             false,
             false,
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let inked = rgba.chunks_exact(4).filter(|p| p[3] > 0).count();
         assert!(inked > 20, "expected glyph pixels, got {inked}");
@@ -1979,7 +2150,8 @@ mod tests {
                 bold,
                 italic,
                 policy,
-            );
+            )
+            .unwrap();
         }
         canvas.into_rgba()
     }
@@ -2248,7 +2420,8 @@ mod tests {
             &mk(&LegendEntryKind::Line),
             (4.0, 20.0),
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let ink_cols: Vec<u32> = (0..48u32)
             .filter(|&x| (0..32u32).any(|y| rgba[((y * 48 + x) * 4 + 3) as usize] > 0))
@@ -2287,7 +2460,7 @@ mod tests {
 
         // Drawing: the leftmost ink of each line's second cell must agree.
         let mut canvas = Canvas::new(120, 60).unwrap();
-        draw_rich_text(&mut canvas, &rt, (4.0, 18.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (4.0, 18.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let leftmost_ink = |y0: u32, y1: u32| -> Option<u32> {
             (0..120u32).find(|&x| (y0..y1).any(|y| rgba[((y * 120 + x) * 4 + 3) as usize] > 0))
@@ -2315,7 +2488,7 @@ mod tests {
 
     fn draw_to_rgba(rt: &RichText, size: (u32, u32), origin: (f32, f32)) -> Vec<u8> {
         let mut canvas = Canvas::new(size.0, size.1).unwrap();
-        draw_rich_text(&mut canvas, rt, origin, FontPolicy::Standard);
+        draw_rich_text(&mut canvas, rt, origin, FontPolicy::Standard).unwrap();
         canvas.into_rgba()
     }
 
@@ -2342,7 +2515,7 @@ mod tests {
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
                     place_cell(
-                        &mut CanvasSink(canvas),
+                        &mut CanvasSink::new(canvas),
                         cell,
                         rt,
                         cell_origin,
@@ -2461,7 +2634,8 @@ mod tests {
             &mk("ab\nab"),
             (5.0, 18.0),
             FontPolicy::Standard,
-        );
+        )
+        .unwrap();
         let rgba = canvas.into_rgba();
         let row_has_ink = |y: u32| (0..60u32).any(|x| rgba[((y * 60 + x) * 4 + 3) as usize] > 0);
         // Ink near the first baseline, a gap is not guaranteed (descenders),
@@ -2487,7 +2661,7 @@ mod tests {
         };
 
         let mut canvas = Canvas::new(60, 40).unwrap();
-        draw_rich_text(&mut canvas, &rt, (5.0, 30.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &rt, (5.0, 30.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         let red_ink = rgba
             .chunks_exact(4)
@@ -2566,7 +2740,7 @@ mod tests {
         );
 
         let mut canvas = Canvas::new(80, 40).unwrap();
-        draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
+        draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard).unwrap();
         let rgba = canvas.into_rgba();
         assert!(rgba.chunks_exact(4).any(|p| p[3] > 0));
     }

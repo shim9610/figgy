@@ -260,11 +260,11 @@ pub fn try_configure_surface(
         desired_maximum_frame_latency: 2,
     };
 
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    crate::renderer::gpu_checked(device, "surface configuration", || {
         surface.configure(device, &config);
-    }))
-    .map_err(|_| crate::FiggyError::SurfaceConfigurationFailed {
-        reason: "wgpu Surface::configure panicked".into(),
+    })
+    .map_err(|error| crate::FiggyError::SurfaceConfigurationFailed {
+        reason: error.to_string(),
     })?;
 
     Ok(config)

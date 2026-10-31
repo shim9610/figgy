@@ -24,7 +24,7 @@ static NEW_CM_MATH: &[u8] = include_bytes!("../../fonts/NewCMMath-Regular.otf");
 /// The bundled math face, parsed once.
 pub(in crate::text_render) fn bundled_math_font() -> FontRef<'static> {
     static FACE: OnceLock<FontRef<'static>> = OnceLock::new();
-    *FACE.get_or_init(|| FontRef::from_index(NEW_CM_MATH, 0).expect("corrupted bundled font"))
+    *FACE.get_or_init(|| super::bundled_face(NEW_CM_MATH))
 }
 
 /// A face with a MATH table, read through `ttf-parser`.
@@ -85,13 +85,15 @@ impl Assembly {
 impl MathFace {
     /// The math face of a text whose family is `family`: the family's face
     /// when it has a MATH table with constants, the bundled face otherwise.
-    pub(in crate::text_render) fn for_family(family: &str) -> MathFace {
+    /// `None` only if the bundled face has no MATH table (a corrupted
+    /// bundle; a test checks it has one): math then lays out flat.
+    pub(in crate::text_render) fn for_family(family: &str) -> Option<MathFace> {
         if !family.is_empty()
             && let Some(face) = MathFace::of(super::resolve_font(family, false, false))
         {
-            return face;
+            return Some(face);
         }
-        MathFace::of(bundled_math_font()).expect("the bundled math face has a MATH table")
+        MathFace::of(bundled_math_font())
     }
 
     /// The MATH table view of `font`, or `None` when it has none.
@@ -328,7 +330,7 @@ mod tests {
     use super::*;
 
     fn face() -> MathFace {
-        MathFace::for_family("")
+        MathFace::for_family("").unwrap()
     }
 
     #[test]
@@ -345,7 +347,7 @@ mod tests {
         assert_eq!(f.italic_correction(f.glyph('1')), 0.0);
         // A family without a MATH table falls back to the bundled face.
         assert_eq!(
-            MathFace::for_family("Liberation Sans").font.key,
+            MathFace::for_family("Liberation Sans").unwrap().font.key,
             bundled_math_font().key
         );
     }

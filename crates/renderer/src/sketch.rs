@@ -171,7 +171,9 @@ fn sketch_finite_run(
                 out.push(a);
                 emitted_start = true;
             }
-            let last = *out.last().expect("emitted_start guarantees non-empty");
+            // `emitted_start` guarantees `out` is not empty; were it, the
+            // last position would be the `a` just pushed.
+            let last = out.last().copied().unwrap_or(a);
             out.push(last);
             continue;
         }

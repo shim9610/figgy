@@ -74,7 +74,7 @@ impl PrepareContext<'_> {
             self.pool.buffer(),
             &params,
             self.caps.max_compute_workgroups_per_dimension,
-        )
+        )?
         .ok_or_else(|| ring_scan_too_large(&series.series_id))?;
         Ok(Some(Arc::new(buffer)))
     }
@@ -144,7 +144,7 @@ impl PrepareContext<'_> {
             &self.surface_bgl,
             &camera,
             &look,
-        );
+        )?;
         let surface = mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
@@ -189,7 +189,7 @@ impl PrepareContext<'_> {
                     &self.surface_bgl,
                     &camera,
                     &look,
-                );
+                )?;
                 let highlight = data_render::create_style_uniform_buffer(
                     &self.device,
                     &PrimitiveStyle::from_color(selection.highlight_color),
@@ -223,7 +223,7 @@ impl PrepareContext<'_> {
         pipelines: &'a TargetPipelines,
         scratch: &PreparedContourScratch,
         index: usize,
-    ) -> Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>> {
+    ) -> Option<Result<data_render::surface_mesh::ColumnSurfaceLayer<'a>>> {
         use data_render::surface_mesh::{self as mesh, SurfacePass};
         if !scratch.drawable {
             return None;
@@ -239,14 +239,17 @@ impl PrepareContext<'_> {
             .unwrap_or(u32::MAX - 1)
             .saturating_add(1);
         let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
-        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+        let (surface_bg, surface_charge) = match mesh::create_surface_bind_group(
             &self.gpu_ledger,
             &self.device,
             &self.surface_bgl,
             &camera,
             &look,
-        );
-        Some(mesh::ColumnSurfaceLayer {
+        ) {
+            Ok(group) => group,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
             style_bg: scratch.style_bg.clone(),
@@ -255,7 +258,7 @@ impl PrepareContext<'_> {
             quads: 1,
             charge: Arc::clone(&scratch.charge),
             surface_charge,
-        })
+        }))
     }
 
     pub(in crate::renderer) fn build_series_layers<'a>(
@@ -426,7 +429,7 @@ impl PrepareContext<'_> {
                 _ => None,
             };
             let camera_binding = |mapped: bool| -> Result<_> {
-                Ok(data_render::surface_mesh::create_view3d_binding(
+                data_render::surface_mesh::create_view3d_binding(
                     &self.gpu_ledger,
                     &self.device,
                     if mapped {
@@ -440,7 +443,7 @@ impl PrepareContext<'_> {
                     series.style.display_scale,
                     0,
                     self.scatter_value_map_buffers(cfg, mapped),
-                ))
+                )
             };
             // A box plot's `y_column` is its record, not a column: its
             // member columns are looked up with its params below.
@@ -523,6 +526,7 @@ impl PrepareContext<'_> {
                         "prepare captured this contour occurrence",
                     ))?;
                 self.floor_layer(view, chart_config, series, pipelines, scratch, idx)
+                    .transpose()?
             } else {
                 None
             };
@@ -659,7 +663,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     bars,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -709,7 +713,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     boxes,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -854,7 +858,7 @@ impl PrepareContext<'_> {
                                     &view.transform_bg,
                                     &series.style.bar_bg,
                                     style_map.map(|map| &map.bind_group),
-                                ),
+                                )?,
                         )
                     } else {
                         None
@@ -1064,7 +1068,7 @@ impl PrepareContext<'_> {
                         column_buffer,
                         &params,
                         self.caps.max_compute_workgroups_per_dimension,
-                    )
+                    )?
                     .ok_or_else(|| ring_scan_too_large(&cfg.series_id))?;
                     let (region_bg, charge) =
                         data_render::ternary_region::create_ternary_region_bind_group(
@@ -1074,7 +1078,7 @@ impl PrepareContext<'_> {
                             column_buffer,
                             &params,
                             &ring_starts,
-                        );
+                        )?;
                     let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
                         pipelines.ternary_region[pass as usize].as_ref().ok_or(
                             FiggyError::internal("prepare ensured the ternary region pipelines"),

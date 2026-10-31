@@ -686,7 +686,7 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         selected_fields.push(ColumnFieldSelectionLayer {
                             pipeline: pipelines.field_selection.as_ref().ok_or(
                                 FiggyError::internal("prepare ensured field selection pipeline"),
@@ -731,7 +731,7 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         selected_fields.push(ColumnFieldSelectionLayer {
                             pipeline: pipelines.field_selection.as_ref().ok_or(
                                 FiggyError::internal("prepare ensured field selection pipeline"),
@@ -781,7 +781,7 @@ impl PrepareContext<'_> {
                                 &self.device,
                                 &self.data_selection_bgl,
                                 &selection,
-                            );
+                            )?;
                         // A labelled contour's highlight leaves its label
                         // gaps; the draw binds the label group with it.
                         let pipeline = if scratch.label.is_some() {
@@ -1185,6 +1185,7 @@ mod tests {
                                     2,
                                     &tally,
                                 )
+                                .unwrap()
                             })
                         })
                         .flatten();

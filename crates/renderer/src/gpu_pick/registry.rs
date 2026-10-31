@@ -153,15 +153,12 @@ pub(crate) enum GpuPickRegistrySlot<'a> {
 #[must_use = "a prepared GPU-pick transition has no effect until it is committed"]
 pub(crate) struct PreparedPickRegistryTransition<'engine> {
     pub(super) engine: &'engine mut GpuPickEngine,
-    pub(super) next: Option<PickRegistry>,
+    pub(super) next: PickRegistry,
 }
 
 impl PreparedPickRegistryTransition<'_> {
-    pub(crate) fn commit(mut self) {
-        self.engine.registry = self
-            .next
-            .take()
-            .expect("prepared GPU-pick transition always owns a successor");
+    pub(crate) fn commit(self) {
+        self.engine.registry = self.next;
     }
 }
 

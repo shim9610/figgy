@@ -226,7 +226,8 @@ mod tests {
                 lookup_metadata: &lookup.metadata,
                 params: &params,
             },
-        );
+        )
+        .unwrap();
 
         let expected = std::mem::size_of::<GridColumnGpu>()
             + std::mem::size_of::<f32>()
@@ -511,10 +512,11 @@ mod tests {
                 has_index: 1,
                 _pad: 0,
             },
-        );
+        )
+        .unwrap();
         assert_eq!(map.meta._pad, 0);
         let tally = crate::gpu_memory::ChargeTally::new();
-        let streamed = map.stream_bind_group(&device, &layout, 17, &tally);
+        let streamed = map.stream_bind_group(&device, &layout, 17, &tally).unwrap();
         assert_eq!(tally.bytes(), 16);
         drop(map);
         let _ = streamed;

@@ -180,10 +180,10 @@ impl PickShader {
         PICK_MODULES[self as usize].0
     }
 
-    pub(super) fn exact_index(self) -> usize {
+    pub(super) fn exact_index(self) -> Result<usize, GpuPickError> {
         (self as usize)
             .checked_sub(1)
-            .expect("the gate module has no exact entry")
+            .ok_or(GpuPickError::Internal("the gate module has no exact entry"))
     }
 }
 
@@ -238,7 +238,7 @@ impl PickExactPipelines {
                     })?;
                 let device = &bundle.device;
                 let shader = key.shader;
-                let module = self.modules[shader.exact_index()].get_or_insert_with(|| {
+                let module = self.modules[shader.exact_index()?].get_or_insert_with(|| {
                     crate::gpu_compile::shader_module(
                         device,
                         wgpu::ShaderModuleDescriptor {
@@ -344,6 +344,8 @@ pub(crate) struct PickPipelineBundle {
     /// Where pick scratch is charged. Carried by the bundle so every
     /// `&self` query path can charge without a per-call argument.
     pub(super) ledger: Arc<GpuLedger>,
+    /// The device's health record; every pick readback polls through it.
+    pub(super) health: crate::renderer::DeviceHealth,
     pub(super) query_data_bgl: wgpu::BindGroupLayout,
     pub(super) query_work_bgl: wgpu::BindGroupLayout,
     pub(super) reduce_bgl: wgpu::BindGroupLayout,
@@ -369,8 +371,9 @@ pub(super) fn create_pipeline_bundle_observed(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     ledger: Arc<GpuLedger>,
+    health: crate::renderer::DeviceHealth,
     observer: &mut dyn FnMut(InitEvent),
-) -> Arc<PickPipelineBundle> {
+) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
     started(observer, INIT_SCOPE, "setup");
     // The gate module only: the exact modules compile on first use
     // (`PickExactPipelines`), the variant a series needs.
@@ -428,7 +431,7 @@ pub(super) fn create_pipeline_bundle_observed(
         },
     );
     let (arc_placeholder, arc_placeholder_buffer, arc_placeholder_charge) =
-        create_arc_placeholder(&device, &ledger, &arc_bgl);
+        create_arc_placeholder(&device, &ledger, &arc_bgl)?;
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -456,8 +459,9 @@ pub(super) fn create_pipeline_bundle_observed(
         )
     };
 
-    Arc::new(PickPipelineBundle {
+    Ok(Arc::new(PickPipelineBundle {
         ledger,
+        health,
         gate_x: observe_value(observer, INIT_SCOPE, "pick_gate_x", || {
             pipeline(
                 &query_layout,
@@ -489,7 +493,7 @@ pub(super) fn create_pipeline_bundle_observed(
         _arc_placeholder_charge: arc_placeholder_charge,
         device,
         queue,
-    })
+    }))
 }
 
 /// The exact pass's group 2 for a series without an arc prefix or ring
@@ -499,7 +503,7 @@ pub(super) fn create_arc_placeholder(
     device: &wgpu::Device,
     ledger: &Arc<GpuLedger>,
     arc_bgl: &wgpu::BindGroupLayout,
-) -> (wgpu::BindGroup, wgpu::Buffer, SharedCharge) {
+) -> Result<(wgpu::BindGroup, wgpu::Buffer, SharedCharge), GpuPickError> {
     let tally = ChargeTally::new();
     // gpu-alloc: PickScratch
     let buffer = charged_buffer_init(
@@ -510,7 +514,8 @@ pub(super) fn create_arc_placeholder(
             contents: bytemuck::bytes_of(&[0u32; 2]),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )
+    .map_err(|error| super::engine::pick_gpu_error("GPU pick arc placeholder", error))?;
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy GPU pick arc placeholder bg"),
         layout: arc_bgl,
@@ -525,11 +530,11 @@ pub(super) fn create_arc_placeholder(
             },
         ],
     });
-    (
+    Ok((
         bind_group,
         buffer,
         shared_charge(tally, ledger, GpuResourceKind::PickScratch),
-    )
+    ))
 }
 
 impl PickPipelineBundle {
@@ -563,6 +568,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     ledger: Arc<GpuLedger>,
+    health: crate::renderer::DeviceHealth,
     observer: &mut dyn FnMut(InitEvent),
 ) -> Result<Arc<PickPipelineBundle>, GpuPickError> {
     use crate::init::{observe_value_async, yield_init_frame};
@@ -637,7 +643,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
         },
     );
     let (arc_placeholder, arc_placeholder_buffer, arc_placeholder_charge) =
-        create_arc_placeholder(&device, &ledger, &arc_bgl);
+        create_arc_placeholder(&device, &ledger, &arc_bgl)?;
     let reduce_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -692,6 +698,7 @@ pub(super) async fn create_pipeline_bundle_observed_async(
     .await;
 
     Ok(Arc::new(PickPipelineBundle {
+        health,
         gate_x,
         gate_y,
         exact_layout,
@@ -793,21 +800,21 @@ impl PickPipelineBundle {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        Ok(create_pipeline_bundle_observed(
-            device, queue, ledger, observer,
-        ))
+        create_pipeline_bundle_observed(device, queue, ledger, health, observer)
     }
 
     pub(crate) async fn new_observed_async(
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, GpuPickError> {
         validate_device_limits(&device)?;
-        create_pipeline_bundle_observed_async(device, queue, ledger, observer).await
+        create_pipeline_bundle_observed_async(device, queue, ledger, health, observer).await
     }
 }

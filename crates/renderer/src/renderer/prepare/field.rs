@@ -575,7 +575,7 @@ impl PrepareContext<'_> {
                 lookup_metadata: &lookup_tables.metadata,
                 params,
             },
-        );
+        )?;
         Ok(FieldScratch {
             signature,
             style_bg,

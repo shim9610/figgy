@@ -246,7 +246,7 @@ mod tests {
 
     fn pixels(rt: &RichText, policy: FontPolicy) -> Vec<u8> {
         let mut canvas = Canvas::new(120, 48).unwrap();
-        draw_rich_text(&mut canvas, rt, (6.3, 30.6), policy);
+        draw_rich_text(&mut canvas, rt, (6.3, 30.6), policy).unwrap();
         canvas.into_rgba()
     }
 

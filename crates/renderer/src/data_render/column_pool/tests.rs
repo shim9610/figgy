@@ -779,7 +779,7 @@ fn scalar_source_expands_to_pairs_without_changing_bits() {
 
     let stats = write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
     );
 
     assert_eq!(stats.min_positive, Some(f32::from_bits(0x3f80_0001) as f64));
@@ -796,7 +796,7 @@ fn scalar_source_expansion_accepts_empty_input() {
 
     let stats = write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice()),
+        ColumnPairWriter::from_bytes_for_test(dst.as_mut_slice(), &std::cell::Cell::new(false)),
     );
 
     assert!(dst.is_empty());
@@ -3544,10 +3544,10 @@ fn a_ragged_column_uploads_with_offset_statistics() {
     assert_eq!(pool.ragged_stats("outliers"), Some(ragged.stats()));
     // The offsets are `u32` index lanes: the index, then 0.
     assert_eq!(
-        read_column_words(ctx(), &pool, ragged.offsets()),
+        read_column_words(ctx(), &pool, ragged.offsets().unwrap()),
         [0, 0, 2, 0, 2, 0, 5, 0]
     );
-    let read = read_column_values(ctx(), &pool, ragged.values());
+    let read = read_column_values(ctx(), &pool, ragged.values().unwrap());
     assert_eq!((read[0], read[1], read[3], read[4]), (4.0, -2.0, 9.0, 1.0));
     assert!(read[2].is_nan());
     assert_eq!(
@@ -3557,6 +3557,44 @@ fn a_ragged_column_uploads_with_offset_statistics() {
     assert_eq!(pool.composite_kind("outliers"), Some("a ragged column"));
     assert!(pool.is_member_column(&ragged.slot().offsets));
     assert_eq!(pool.used_bytes(), 2 * ALIGN);
+}
+
+/// A standalone pool refuses to remove or replace a ragged column's member
+/// through the plain column API, so the ragged column stays readable (#152).
+#[test]
+fn a_standalone_pool_rejects_member_column_removal_and_upsert() {
+    let Some((device, queue, mut pool)) = mk_pool(16 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    let values = col_f64(vec![4.0, -2.0, 9.0]);
+    let offsets = col_f64(vec![0.0, 1.0, 3.0]);
+    pool.upsert_ragged(
+        "r",
+        &RaggedSource {
+            values: &values,
+            offsets: &offsets,
+        },
+        ctx(),
+    )
+    .unwrap();
+    let slot = pool.ragged("r").unwrap().slot().clone();
+
+    assert_eq!(
+        pool.remove_column(&slot.values),
+        Err(AllocError::MemberColumn(slot.values.clone()))
+    );
+    let replacement = col_f64(vec![1.0]);
+    assert!(matches!(
+        pool.upsert_column(slot.offsets.clone(), &replacement, ctx()),
+        Err(AllocError::MemberColumn(_))
+    ));
+
+    let ragged = pool.ragged("r").unwrap();
+    assert!(ragged.values().is_some());
+    assert!(ragged.offsets().is_some());
+    assert_eq!(ragged.values().unwrap().len_values, 3);
+    assert!(pool.remove_ragged("r").unwrap());
 }
 
 /// Offsets that decrease, do not start at 0, do not end at the value count
@@ -3626,7 +3664,7 @@ fn invalid_ragged_offsets_are_rejected_and_roll_the_batch_back() {
     assert_eq!(pool.ragged_stats("outliers"), Some(stats));
     let ragged = pool.ragged("outliers").unwrap();
     assert_eq!(
-        read_column_values(ctx(), &pool, ragged.values()),
+        read_column_values(ctx(), &pool, ragged.values().unwrap()),
         [1.0, 2.0, 3.0, 4.0, 5.0]
     );
 }
@@ -3838,8 +3876,8 @@ fn a_shader_reads_a_record_field_and_a_ragged_group_by_pool_offset() {
     let params: [u32; 8] = [
         lane(record.field("q3").unwrap()),
         2,
-        lane(ragged.values()),
-        lane(ragged.offsets()),
+        lane(ragged.values().unwrap()),
+        lane(ragged.offsets().unwrap()),
         2,
         0,
         0,
@@ -4056,7 +4094,8 @@ fn f64_columns_upload_their_exact_split() {
     let mut lanes = [0u8; 4 * COLUMN_VALUE_BYTES];
     write_scalar_source_as_pairs(
         &column,
-        ColumnPairWriter::from_bytes_for_test(&mut lanes).with_index_lanes(true),
+        ColumnPairWriter::from_bytes_for_test(&mut lanes, &std::cell::Cell::new(false))
+            .with_index_lanes(true),
     );
     let word =
         |bytes: &[u8], k: usize| u32::from_le_bytes(bytes[4 * k..4 * k + 4].try_into().unwrap());
@@ -4067,7 +4106,10 @@ fn f64_columns_upload_their_exact_split() {
     );
     assert_eq!(word(&lanes, 2), u32::MAX - 1);
     let mut pairs = [0u8; 4 * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(&column, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    write_scalar_source_as_pairs(
+        &column,
+        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
+    );
     let float = |k: usize| f32::from_bits(word(&pairs, k));
     // The split keeps about 48 significant bits: integers below 2^48 are
     // exact, any other value is within 2^-47 of itself, where an f32 alone
@@ -4097,7 +4139,8 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     let mut bytes = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
     write_scalar_source_as_pairs(
         &source,
-        ColumnPairWriter::from_bytes_for_test(&mut bytes).with_index_lanes(true),
+        ColumnPairWriter::from_bytes_for_test(&mut bytes, &std::cell::Cell::new(false))
+            .with_index_lanes(true),
     );
     let word = |bytes: &[u8], k: usize| {
         u32::from_le_bytes([
@@ -4128,7 +4171,10 @@ fn index_lanes_store_offsets_exactly_at_and_past_2_pow_24() {
     );
 
     let mut pairs = [0u8; INDEX_LANE_PROBES.len() * COLUMN_VALUE_BYTES];
-    write_scalar_source_as_pairs(&source, ColumnPairWriter::from_bytes_for_test(&mut pairs));
+    write_scalar_source_as_pairs(
+        &source,
+        ColumnPairWriter::from_bytes_for_test(&mut pairs, &std::cell::Cell::new(false)),
+    );
     let (hi, lo) = crate::data::split_f64_to_f32_pair(f64::from((1u32 << 24) + 1));
     assert_eq!(
         (word(&pairs, 6), word(&pairs, 7)),

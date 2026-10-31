@@ -153,6 +153,7 @@ impl Renderer {
                         &self.device,
                         Arc::clone(&self.gpu_ledger),
                     )
+                    .with_health(self.health.clone())
                 });
                 let handle = |offset| data_render::ColumnHandle {
                     generation: 0,

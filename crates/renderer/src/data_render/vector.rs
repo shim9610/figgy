@@ -302,7 +302,7 @@ pub fn create_vector_data_bind_group(
     layout: &wgpu::BindGroupLayout,
     pool_buffer: &wgpu::Buffer,
     tables: VectorTables<'_>,
-) -> VectorDataBindGroup {
+) -> crate::Result<VectorDataBindGroup> {
     use crate::gpu_memory::{ChargeTally, charged_buffer_init};
     let tally = ChargeTally::new();
     let grid_buf = charged_buffer_init(
@@ -313,7 +313,7 @@ pub fn create_vector_data_bind_group(
             contents: bytemuck::cast_slice(tables.grid),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let stop_buf = charged_buffer_init(
         &tally,
         device,
@@ -322,7 +322,7 @@ pub fn create_vector_data_bind_group(
             contents: bytemuck::cast_slice(tables.stops),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )?;
     let param_buf = charged_buffer_init(
         &tally,
         device,
@@ -331,7 +331,7 @@ pub fn create_vector_data_bind_group(
             contents: bytemuck::bytes_of(tables.params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
@@ -359,11 +359,11 @@ pub fn create_vector_data_bind_group(
             },
         ],
     });
-    VectorDataBindGroup {
+    Ok(VectorDataBindGroup {
         bind_group,
         grid: grid_buf,
         charge,
-    }
+    })
 }
 
 /// The vector pipeline for one input form. No vertex buffers: the quad is

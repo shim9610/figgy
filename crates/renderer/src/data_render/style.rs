@@ -454,7 +454,7 @@ impl ScatterStyleMap {
         layout: &wgpu::BindGroupLayout,
         global_base: u32,
         tally: &crate::gpu_memory::ChargeTally,
-    ) -> wgpu::BindGroup {
+    ) -> crate::Result<wgpu::BindGroup> {
         let stream_meta = ScatterStyleMapMeta {
             _pad: global_base,
             ..self.meta
@@ -467,8 +467,8 @@ impl ScatterStyleMap {
                 contents: bytemuck::bytes_of(&stream_meta),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        )?;
+        Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy streamed point style map bg"),
             layout,
             entries: &[
@@ -485,7 +485,7 @@ impl ScatterStyleMap {
                     resource: meta_buf.as_entire_binding(),
                 },
             ],
-        })
+        }))
     }
 }
 
@@ -597,7 +597,7 @@ pub fn create_scatter_style_map(
     style_slots: &[ScatterStyleSlotGpu],
     overrides: &[ScatterStyleOverrideGpu],
     meta: ScatterStyleMapMeta,
-) -> ScatterStyleMap {
+) -> crate::Result<ScatterStyleMap> {
     let dummy_style = [ScatterStyleSlotGpu {
         color_premul: [0.0; 4],
         meta: [0.0; 4],
@@ -619,17 +619,21 @@ pub fn create_scatter_style_map(
         overrides
     };
     // gpu-alloc: caller
-    let style_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("figgy scatter style rows"),
-        contents: bytemuck::cast_slice(style_slots),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
+    let style_buf = crate::renderer::gpu_checked(device, "scatter style rows", || {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("figgy scatter style rows"),
+            contents: bytemuck::cast_slice(style_slots),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    })?;
     // gpu-alloc: caller
-    let override_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-        label: Some("figgy scatter style override rows"),
-        contents: bytemuck::cast_slice(overrides),
-        usage: wgpu::BufferUsages::STORAGE,
-    });
+    let override_buf = crate::renderer::gpu_checked(device, "scatter style override rows", || {
+        device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("figgy scatter style override rows"),
+            contents: bytemuck::cast_slice(overrides),
+            usage: wgpu::BufferUsages::STORAGE,
+        })
+    })?;
     // gpu-alloc: caller
     let meta_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("figgy scatter style map meta"),
@@ -654,13 +658,13 @@ pub fn create_scatter_style_map(
             },
         ],
     });
-    ScatterStyleMap {
+    Ok(ScatterStyleMap {
         bind_group,
         has_index: meta.has_index != 0,
         style_buf,
         override_buf,
         meta,
-    }
+    })
 }
 
 pub fn create_errorbar_style_map(
@@ -669,7 +673,7 @@ pub fn create_errorbar_style_map(
     style_slots: &[ErrorBarStyleSlotGpu],
     overrides: &[ErrorBarStyleOverrideGpu],
     meta: ErrorBarStyleMapMeta,
-) -> ErrorBarStyleMap {
+) -> crate::Result<ErrorBarStyleMap> {
     create_scatter_style_map(device, bgl, style_slots, overrides, meta)
 }
 
@@ -677,7 +681,7 @@ pub fn create_bar_style_map(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     overrides: &[BarStyleOverrideGpu],
-) -> BarStyleMap {
+) -> crate::Result<BarStyleMap> {
     create_bar_style_map_with_slots(device, layout, &[], overrides)
 }
 
@@ -688,7 +692,7 @@ pub fn create_bar_style_map_with_slots(
     layout: &wgpu::BindGroupLayout,
     slots: &[BarStyleSlotGpu],
     overrides: &[BarStyleOverrideGpu],
-) -> BarStyleMap {
+) -> crate::Result<BarStyleMap> {
     create_bar_style_map_writing(device, layout, slots, overrides.len(), |push| {
         for row in overrides {
             push(row);
@@ -709,7 +713,7 @@ pub(crate) fn create_bar_style_map_writing(
     slots: &[BarStyleSlotGpu],
     capacity: usize,
     write: impl FnOnce(&mut dyn FnMut(&BarStyleOverrideGpu)),
-) -> BarStyleMap {
+) -> crate::Result<BarStyleMap> {
     create_bar_style_map_written(
         device,
         layout,
@@ -737,21 +741,31 @@ pub(crate) fn create_bar_style_map_written(
     write_slots: impl FnOnce(&mut dyn FnMut(&BarStyleSlotGpu)),
     capacity: usize,
     write: impl FnOnce(&mut dyn FnMut(&BarStyleOverrideGpu)),
-) -> BarStyleMap {
+) -> crate::Result<BarStyleMap> {
     const ROW: usize = std::mem::size_of::<BarStyleOverrideGpu>();
     const SLOT: usize = std::mem::size_of::<BarStyleSlotGpu>();
-    // gpu-alloc: caller
-    let style_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("figgy bar style slots"),
-        size: (slot_count.max(1) as u64).saturating_mul(SLOT as u64),
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: true,
-    });
-    {
-        let mut view = style_buf
+    let mapped = |buffer: &wgpu::Buffer, resource: &'static str| {
+        buffer
             .slice(..)
             .get_mapped_range_mut()
-            .expect("the style slots are mapped at creation");
+            .map_err(|error| crate::FiggyError::GpuValidation {
+                resource,
+                reason: error.to_string(),
+            })
+    };
+    // gpu-alloc: caller
+    let style_buf = crate::renderer::create_buffer_checked(
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some("figgy bar style slots"),
+            size: (slot_count.max(1) as u64).saturating_mul(SLOT as u64),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+        "bar style slots",
+    )?;
+    {
+        let mut view = mapped(&style_buf, "bar style slots")?;
         let mut pushed = 0usize;
         write_slots(&mut |slot| {
             if pushed < slot_count {
@@ -764,18 +778,19 @@ pub(crate) fn create_bar_style_map_written(
     }
     style_buf.unmap();
     // gpu-alloc: caller
-    let override_buf = device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("figgy histogram style override rows"),
-        size: (capacity.max(1) as u64).saturating_mul(ROW as u64),
-        usage: wgpu::BufferUsages::STORAGE,
-        mapped_at_creation: true,
-    });
+    let override_buf = crate::renderer::create_buffer_checked(
+        device,
+        &wgpu::BufferDescriptor {
+            label: Some("figgy histogram style override rows"),
+            size: (capacity.max(1) as u64).saturating_mul(ROW as u64),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: true,
+        },
+        "bar style override rows",
+    )?;
     let mut written = 0usize;
     {
-        let mut view = override_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("the override rows are mapped at creation");
+        let mut view = mapped(&override_buf, "bar style override rows")?;
         write(&mut |row| {
             if written < capacity {
                 let at = written * ROW;
@@ -816,5 +831,5 @@ pub(crate) fn create_bar_style_map_written(
             },
         ],
     });
-    BarStyleMap { bind_group }
+    Ok(BarStyleMap { bind_group })
 }

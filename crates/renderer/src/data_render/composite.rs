@@ -306,12 +306,12 @@ pub(crate) fn draw_scatter_layer(pass: &mut wgpu::RenderPass<'_>, s: &ColumnScat
         pass.set_bind_group(2, map, &[]);
         // A 3D series binds its value map and camera as one group.
         if s.view3d.is_none() {
-            pass.set_bind_group(
-                3,
-                s.value_map_bg
-                    .expect("mapped scatter draw binds its value map group"),
-                &[],
-            );
+            // A mapped scatter layer always carries its value map group;
+            // a layer without one would fail draw validation, which the
+            // device health reports.
+            if let Some(value_map) = s.value_map_bg {
+                pass.set_bind_group(3, value_map, &[]);
+            }
         }
     } else if let Some(tex) = s.texture_bg {
         pass.set_bind_group(2, tex, &[]);
@@ -411,12 +411,10 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
         if let Some(map) = p.style_map_bg {
             pass.set_bind_group(2, map, &[]);
             if p.view3d.is_none() {
-                pass.set_bind_group(
-                    3,
-                    p.value_map_bg
-                        .expect("mapped pick ring draw binds its value map group"),
-                    &[],
-                );
+                // As for the mapped scatter draw above.
+                if let Some(value_map) = p.value_map_bg {
+                    pass.set_bind_group(3, value_map, &[]);
+                }
             }
         }
         // A 3D series' ring: the camera (with its value map when mapped).

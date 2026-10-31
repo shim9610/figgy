@@ -530,6 +530,7 @@ fn shared_bundle_creates_pipelines_once_for_multiple_engines() {
         Arc::clone(&device),
         Arc::clone(&queue),
         Arc::new(GpuLedger::new()),
+        crate::renderer::DeviceHealth::default(),
         &mut |event| events.push(event),
     )
     .unwrap();
@@ -700,7 +701,8 @@ fn streamed_exact_matches_resident_at_seams_with_global_styles_and_ties() {
                                     contents: bytemuck::cast_slice(&pairs),
                                     usage: wgpu::BufferUsages::STORAGE,
                                 },
-                            );
+                            )
+                            .unwrap();
                             let handle = |column| ColumnHandle {
                                 generation: 0,
                                 offset: (column * len * 8) as u64,
@@ -778,7 +780,8 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
             contents: bytemuck::cast_slice(&pairs),
             usage: wgpu::BufferUsages::STORAGE,
         },
-    );
+    )
+    .unwrap();
     let columns = GpuStreamPickColumns {
         x: ColumnHandle {
             generation: 0,
@@ -800,6 +803,7 @@ fn streamed_gates_keep_boundary_segment_and_exclude_unowned_halo() {
         Arc::clone(&device),
         Arc::clone(&queue),
         Arc::new(GpuLedger::new()),
+        crate::renderer::DeviceHealth::default(),
         &mut |_| {},
     )
     .unwrap();

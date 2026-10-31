@@ -187,7 +187,7 @@ fn ring_grid(entries: u32, max_per_dimension: u32) -> Option<(u32, u32)> {
 /// scan). The scan is recorded and submitted here, so it runs before any
 /// later submission that reads the buffer. Every level is a buffer of its
 /// own: the rows, then one entry per block of 256 below, up to one entry.
-/// `None` on an adapter whose dispatch grid cannot cover the rows.
+/// `Ok(None)` on an adapter whose dispatch grid cannot cover the rows.
 pub(crate) fn scan_ring_starts(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
@@ -196,7 +196,7 @@ pub(crate) fn scan_ring_starts(
     pool_buffer: &wgpu::Buffer,
     params: &TernaryRegionParamsGpu,
     max_workgroups_per_dimension: u32,
-) -> Option<(wgpu::Buffer, crate::gpu_memory::SharedCharge)> {
+) -> crate::Result<Option<(wgpu::Buffer, crate::gpu_memory::SharedCharge)>> {
     // The row level outlives the call and is charged while it is held. The
     // levels above and the params live only until the submission completes,
     // so their tally is not held.
@@ -223,10 +223,22 @@ pub(crate) fn scan_ring_starts(
         )
     };
     // A single row is its own level: the scan above it writes nothing.
-    let levels_buf: [Option<wgpu::Buffer>; 5] = std::array::from_fn(|k| {
-        (k < levels.max(2)).then(|| buffer(sizes[k].max(1), if k == 0 { &tally } else { &scratch }))
-    });
-    let level = |k: usize| levels_buf[k].as_ref().expect("allocated level");
+    let mut levels_buf: [Option<wgpu::Buffer>; 5] = Default::default();
+    for (k, slot) in levels_buf.iter_mut().enumerate().take(levels.max(2)) {
+        *slot = Some(buffer(
+            sizes[k].max(1),
+            if k == 0 { &tally } else { &scratch },
+        )?);
+    }
+    // The record below reads only levels `0..levels.max(2)`, all allocated.
+    let level = |k: usize| {
+        levels_buf
+            .get(k)
+            .and_then(Option::as_ref)
+            .ok_or(crate::FiggyError::internal(
+                "every ternary ring scan level read is allocated",
+            ))
+    };
     let group = |len: u32, dst: &wgpu::Buffer, sums: &wgpu::Buffer| {
         let params_buf = crate::gpu_memory::charged_buffer_init(
             &scratch,
@@ -241,8 +253,8 @@ pub(crate) fn scan_ring_starts(
                 }),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
-        device.create_bind_group(&wgpu::BindGroupDescriptor {
+        )?;
+        crate::Result::Ok(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy ternary ring scan bg"),
             layout: &pipelines.bgl,
             entries: &[
@@ -263,7 +275,7 @@ pub(crate) fn scan_ring_starts(
                     resource: params_buf.as_entire_binding(),
                 },
             ],
-        })
+        }))
     };
     let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
         label: Some("figgy ternary ring scan"),
@@ -281,40 +293,52 @@ pub(crate) fn scan_ring_starts(
             pass.dispatch_workgroups(x, y, 1);
             Some(())
         };
-        let mut record = || {
+        // `Ok(None)`: the dispatch grid cannot cover a level.
+        let mut record = || -> crate::Result<Option<()>> {
             // Each row's candidate, then each level scanned into the next.
             let rows = params.count;
             if rows > 0 {
-                dispatch(&pipelines.init, rows, &group(rows, level(0), level(1)))?;
+                let bg = group(rows, level(0)?, level(1)?)?;
+                if dispatch(&pipelines.init, rows, &bg).is_none() {
+                    return Ok(None);
+                }
             }
             for k in 0..levels.saturating_sub(1) {
                 let len = if k == 0 { rows } else { sizes[k] };
-                dispatch(
-                    &pipelines.scan_block,
-                    len,
-                    &group(len, level(k), level(k + 1)),
-                )?;
+                let bg = group(len, level(k)?, level(k + 1)?)?;
+                if dispatch(&pipelines.scan_block, len, &bg).is_none() {
+                    return Ok(None);
+                }
             }
             // The scanned levels folded downwards, the top one complete.
             for k in (1..levels.saturating_sub(1)).rev() {
                 let len = if k == 1 { rows } else { sizes[k - 1] };
-                dispatch(&pipelines.apply, len, &group(len, level(k - 1), level(k)))?;
+                let bg = group(len, level(k - 1)?, level(k)?)?;
+                if dispatch(&pipelines.apply, len, &bg).is_none() {
+                    return Ok(None);
+                }
             }
-            Some(())
+            Ok(Some(()))
         };
         recorded = record();
     }
-    recorded?;
+    if recorded?.is_none() {
+        return Ok(None);
+    }
     queue.submit([encoder.finish()]);
-    let [rows, ..] = levels_buf;
-    Some((
-        rows.expect("the row level"),
+    let [Some(rows), ..] = levels_buf else {
+        return Err(crate::FiggyError::internal(
+            "the ternary ring scan row level is allocated",
+        ));
+    };
+    Ok(Some((
+        rows,
         crate::gpu_memory::shared_charge(
             tally,
             ledger,
             crate::gpu_memory::GpuResourceKind::ArcScan,
         ),
-    ))
+    )))
 }
 
 /// Which region pipeline.
@@ -451,7 +475,7 @@ pub(crate) fn create_ternary_region_bind_group(
     pool_buffer: &wgpu::Buffer,
     params: &TernaryRegionParamsGpu,
     ring_starts: &wgpu::Buffer,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     let tally = crate::gpu_memory::ChargeTally::new();
     let params_buf = crate::gpu_memory::charged_buffer_init(
         &tally,
@@ -461,7 +485,7 @@ pub(crate) fn create_ternary_region_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy ternary region bg"),
         layout,
@@ -485,7 +509,7 @@ pub(crate) fn create_ternary_region_bind_group(
         ledger,
         crate::gpu_memory::GpuResourceKind::Uniform,
     );
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }
 
 /// One series' region fill: its stencil and cover pipelines, the panel
@@ -600,6 +624,7 @@ mod tests {
                 &params,
                 max_per_dimension,
             )
+            .unwrap()
             .expect("the grid covers the rows");
             let bytes = (n * 4) as u64;
             let readback = device.create_buffer(&wgpu::BufferDescriptor {

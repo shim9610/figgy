@@ -346,7 +346,8 @@ fn raster(text: &str, family: &str, size: f32, color: Color) -> RasterImage {
         false,
         false,
         policy,
-    );
+    )
+    .unwrap();
     // The canvas is premultiplied; the export is straight alpha.
     let mut rgba = canvas.into_rgba();
     for p in rgba.chunks_exact_mut(4) {

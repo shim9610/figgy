@@ -185,6 +185,8 @@ pub(crate) enum ContourLabelAtlasError {
     /// The dimensions passed the device limit, but the CPU raster allocation
     /// failed before upload.
     AllocationFailed { width: u32, height: u32 },
+    /// A label could not be drawn (a glyph above `MAX_GLYPH_PX`).
+    Text(String),
 }
 
 impl std::fmt::Display for ContourLabelAtlasError {
@@ -207,6 +209,7 @@ impl std::fmt::Display for ContourLabelAtlasError {
                     "could not allocate a {width}x{height} contour label atlas"
                 )
             }
+            Self::Text(reason) => write!(f, "contour label text: {reason}"),
         }
     }
 }
@@ -265,7 +268,17 @@ pub(crate) fn contour_label_atlas_grid(
             best = Some((score, area, columns, rows));
         }
     }
-    let (_, _, columns, rows) = best.expect("capacity check guarantees a valid label grid");
+    // The capacity check above guarantees a grid; without one the levels do
+    // not fit, which is the capacity error.
+    let Some((_, _, columns, rows)) = best else {
+        return Err(ContourLabelAtlasError::DeviceLimit {
+            level_count: levels,
+            capacity,
+            cell_stride_w,
+            cell_stride_h,
+            max_dimension,
+        });
+    };
     Ok(LabelAtlasGrid {
         columns,
         rows,
@@ -501,7 +514,8 @@ pub(crate) fn bake_contour_label_atlas(
             false,
             false,
             fp,
-        );
+        )
+        .map_err(|error| ContourLabelAtlasError::Text(error.to_string()))?;
     }
 
     Ok(Some(BakedLabelAtlas {

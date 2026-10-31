@@ -4,8 +4,10 @@ use js_sys::{Array, Function, Object, Promise, Reflect};
 use wasm_bindgen::{JsCast, JsValue};
 
 thread_local! {
-    static CONTRACT: JsValue = js_sys::JSON::parse(include_str!("shader_pipeline_contract.json"))
-        .expect("validated shader pipeline contract");
+    /// The bundled contract, parsed once per thread. A parse failure (a
+    /// corrupted bundle) is returned by every prewarm that reads it.
+    static CONTRACT: Result<JsValue, JsValue> =
+        js_sys::JSON::parse(include_str!("shader_pipeline_contract.json"));
 }
 
 fn error(e: JsValue) -> String {
@@ -31,6 +33,7 @@ fn call(device: &JsValue, method: &str, desc: &JsValue) -> Result<JsValue, Strin
 fn descriptors(source: &str, kind: &str) -> Result<Vec<JsValue>, String> {
     let key = crate::gpu_compile::source_key(source);
     CONTRACT.with(|contract| {
+        let contract = contract.as_ref().map_err(|e| error(e.clone()))?;
         let mut out = Vec::new();
         for p in Array::from(&get(contract, "pipelines")?).iter() {
             if get(&p, "source")?.as_string().as_deref() != Some(&key)
@@ -43,7 +46,7 @@ fn descriptors(source: &str, kind: &str) -> Result<Vec<JsValue>, String> {
                 &js_sys::JSON::stringify(&original)
                     .map_err(error)?
                     .as_string()
-                    .unwrap(),
+                    .ok_or("a pipeline descriptor does not stringify")?,
             )
             .map_err(error)?;
             if let Some(index) = get(&desc, "layout")?.as_f64() {
@@ -110,17 +113,13 @@ pub(crate) async fn compute(
     let candidates = descriptors(source, "compute")?;
     let module = shader(&device, source, scope)?;
     for (index, (stage, entry)) in entries.iter().enumerate() {
-        let matching: Vec<_> = candidates
-            .iter()
-            .filter(|desc| {
-                get(desc, "compute")
-                    .and_then(|s| get(&s, "entryPoint"))
-                    .ok()
-                    .and_then(|s| s.as_string())
-                    .as_deref()
-                    == Some(entry)
-            })
-            .collect();
+        let mut matching = Vec::new();
+        for desc in &candidates {
+            let entry_point = get(&get(desc, "compute")?, "entryPoint")?;
+            if entry_point.as_string().as_deref() == Some(entry) {
+                matching.push(desc);
+            }
+        }
         if matching.len() != 1 {
             return Err(format!(
                 "Expected one checked layout for {scope}/{entry}, found {}",
@@ -178,12 +177,13 @@ pub(crate) async fn render(
         if get(&get(&desc, "multisample")?, "count")?.as_f64() != Some(f64::from(samples)) {
             continue;
         }
-        if feature.is_none_or(|f| {
-            get(&desc, "label")
-                .ok()
-                .and_then(|v| v.as_string())
-                .is_some_and(|label| f.includes_label(&label))
-        }) {
+        let included = match feature {
+            None => true,
+            Some(f) => get(&desc, "label")?
+                .as_string()
+                .is_some_and(|label| f.includes_label(&label)),
+        };
+        if included {
             candidates.push(desc);
         }
     }
@@ -235,6 +235,8 @@ async fn shader_compilation_errors(shader: &wasm_bindgen::JsValue) -> Vec<String
     use wasm_bindgen::{JsCast, JsValue};
     use wasm_bindgen_futures::JsFuture;
 
+    // Best-effort diagnostics for a compilation failure that is reported
+    // anyway: a browser that cannot describe the failure yields no lines.
     let Ok(method) = Reflect::get(shader, &JsValue::from_str("getCompilationInfo")) else {
         return Vec::new();
     };

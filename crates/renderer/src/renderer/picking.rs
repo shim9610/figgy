@@ -1068,6 +1068,7 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -1093,25 +1094,32 @@ impl RendererPicker {
             Arc::clone(&device),
             Arc::clone(&queue),
             Arc::clone(&gpu_ledger),
+            health.clone(),
             observer,
         ) {
-            Ok(point) => {
-                let data = crate::gpu_data_pick::DataPickPipelineBundle::new_observed(
-                    device,
-                    queue,
-                    gpu_ledger,
-                    shaders,
-                    transform_bgl,
-                    field_bgl,
-                    bar_style_bgl,
-                    vector_bgl,
-                    category_bgl,
-                    parallel_bgl,
-                    observer,
-                );
-                self.pipeline_state = PickerPipelineState::Ready { point, data };
-                Ok(())
-            }
+            Ok(point) => match crate::gpu_data_pick::DataPickPipelineBundle::new_observed(
+                device,
+                queue,
+                gpu_ledger,
+                health,
+                shaders,
+                transform_bgl,
+                field_bgl,
+                bar_style_bgl,
+                vector_bgl,
+                category_bgl,
+                parallel_bgl,
+                observer,
+            ) {
+                Ok(data) => {
+                    self.pipeline_state = PickerPipelineState::Ready { point, data };
+                    Ok(())
+                }
+                Err(error) => {
+                    self.pipeline_state = PickerPipelineState::Failed(error.clone());
+                    Err(error)
+                }
+            },
             Err(error) => {
                 self.pipeline_state = PickerPipelineState::Failed(error.clone());
                 Err(error)
@@ -1125,6 +1133,7 @@ impl RendererPicker {
         device: Arc<wgpu::Device>,
         queue: Arc<wgpu::Queue>,
         gpu_ledger: Arc<GpuLedger>,
+        health: crate::renderer::DeviceHealth,
         shaders: crate::gpu_data_pick::DataPickShaders<'_>,
         transform_bgl: &wgpu::BindGroupLayout,
         field_bgl: &wgpu::BindGroupLayout,
@@ -1150,6 +1159,7 @@ impl RendererPicker {
             Arc::clone(&device),
             Arc::clone(&queue),
             Arc::clone(&gpu_ledger),
+            health.clone(),
             observer,
         )
         .await
@@ -1159,6 +1169,7 @@ impl RendererPicker {
                     device,
                     queue,
                     gpu_ledger,
+                    health,
                     shaders,
                     transform_bgl,
                     field_bgl,
@@ -1531,7 +1542,7 @@ impl Renderer {
                 category_bar_categories(display_config).unwrap_or(&[]),
                 bars,
                 scale,
-            );
+            )?;
             return data_render::create_category_bar_data_bind_group(
                 &self.device,
                 &self.gpu_ledger,
@@ -1571,7 +1582,7 @@ impl Renderer {
                 category_bar_categories(display_config).unwrap_or(&[]),
                 boxes,
                 scale,
-            );
+            )?;
             return data_render::create_category_bar_data_bind_group(
                 &self.device,
                 &self.gpu_ledger,
@@ -1641,6 +1652,7 @@ impl Renderer {
             Arc::clone(&self.device),
             Arc::clone(&self.queue),
             Arc::clone(&self.gpu_ledger),
+            self.health.clone(),
             crate::gpu_data_pick::DataPickShaders {
                 bar: &self.pipelines.shaders.bar,
                 field: &self.pipelines.shaders.field,
@@ -1674,6 +1686,7 @@ impl Renderer {
                 Arc::clone(&self.device),
                 Arc::clone(&self.queue),
                 Arc::clone(&self.gpu_ledger),
+                self.health.clone(),
                 crate::gpu_data_pick::DataPickShaders {
                     bar: &self.pipelines.shaders.bar,
                     field: &self.pipelines.shaders.field,
@@ -2001,7 +2014,7 @@ impl Renderer {
                     let (baseline_hi, baseline_lo) =
                         crate::data::split_f64_to_f32_pair(bar.baseline);
                     let style_map = self
-                        .create_bar_style_map_for(bar, request.display_scale)
+                        .create_bar_style_map_for(bar, request.display_scale)?
                         .map(|map| map.bind_group);
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
@@ -2049,7 +2062,7 @@ impl Renderer {
                         category_bar_categories(&display_config).unwrap_or(&[]),
                         boxes,
                         request.display_scale,
-                    );
+                    )?;
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
                         series_id: cfg.series_id.clone(),
@@ -2168,7 +2181,7 @@ impl Renderer {
                         category_bar_categories(&display_config).unwrap_or(&[]),
                         bars,
                         request.display_scale,
-                    );
+                    )?;
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
                         series_id: cfg.series_id.clone(),

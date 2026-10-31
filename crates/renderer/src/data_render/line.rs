@@ -790,7 +790,7 @@ pub fn create_parallel_data_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let table = |label, entry: usize| -> crate::Result<wgpu::Buffer> {
         let bytes = (axes.max(1) as u64).checked_mul(entry as u64).ok_or(
             crate::FiggyError::GpuResourceLimit {
@@ -799,7 +799,7 @@ pub fn create_parallel_data_bind_group(
                 limit: u64::MAX / entry as u64,
             },
         )?;
-        Ok(charged_buffer(
+        charged_buffer(
             &tally,
             device,
             &wgpu::BufferDescriptor {
@@ -808,19 +808,23 @@ pub fn create_parallel_data_bind_group(
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: true,
             },
-        ))
+        )
     };
     let lane_buf = table("figgy parallel lane table", LANE)?;
     let range_buf = table("figgy parallel axis range table", RANGE)?;
     let written = {
+        let mapping_error = |error: wgpu::MapRangeError| crate::FiggyError::GpuValidation {
+            resource: "parallel axis tables",
+            reason: error.to_string(),
+        };
         let mut lanes = lane_buf
             .slice(..)
             .get_mapped_range_mut()
-            .expect("the lane table is mapped at creation");
+            .map_err(mapping_error)?;
         let mut ranges = range_buf
             .slice(..)
             .get_mapped_range_mut()
-            .expect("the axis range table is mapped at creation");
+            .map_err(mapping_error)?;
         let mut written = 0usize;
         let result = write(&mut |lane, range| {
             if written < axes {

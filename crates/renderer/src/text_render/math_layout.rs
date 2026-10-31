@@ -240,11 +240,12 @@ pub(super) fn place_formula(
     (start, end): (usize, usize),
     pen: (f32, f32),
     policy: FontPolicy,
+    face: MathFace,
 ) -> FormulaExtents {
     let f = Formula {
         rt,
         segs,
-        face: MathFace::for_family(&rt.font),
+        face,
         policy,
     };
     let base = super::segment_base_size(&segs[start], rt);
@@ -281,7 +282,7 @@ pub(super) fn math_text_glyph(
     seg: &RichSegment,
     ch: char,
 ) -> Option<(FontRef<'static>, u16)> {
-    let face = MathFace::for_family(&rt.font);
+    let face = MathFace::for_family(&rt.font)?;
     let mapped = face.glyph(math_alphanumeric(ch, seg.bold, seg.italic));
     let glyph = if mapped != 0 { mapped } else { face.glyph(ch) };
     (glyph != 0).then_some((face.font, glyph))
@@ -1579,7 +1580,7 @@ mod tests {
         // A whole-pixel baseline: the glyph raster snaps baselines to the
         // pixel grid, which would add half a pixel to every bound below.
         let origin = (8.0, (8.0 + m.ascent).ceil());
-        draw_rich_text(&mut canvas, rt, origin, policy);
+        draw_rich_text(&mut canvas, rt, origin, policy).unwrap();
         (canvas.into_rgba(), w, h, origin)
     }
 
@@ -1624,7 +1625,7 @@ mod tests {
                     assert!((y0 as f32 - (oy - m.ascent)).abs() <= 1.0, "{size}: {m:?}");
                     let mut canvas = Canvas::new(w, h).unwrap();
                     let drawn = place_cell(
-                        &mut CanvasSink(&mut canvas),
+                        &mut CanvasSink::new(&mut canvas),
                         &rt.segments,
                         &rt,
                         (ox, oy),
@@ -1789,7 +1790,7 @@ mod tests {
     // above and below; a text root keeps the base glyph and side limits.
     #[test]
     fn the_root_style_chooses_the_operator_variant_and_its_limits() {
-        let face = MathFace::for_family("");
+        let face = MathFace::for_family("").unwrap();
         let sum = face.glyph('∑');
         let (text, display) = (tex(r"$\sum_{i=1}^{n} i$"), tex(r"$$\sum_{i=1}^{n} i$$"));
         assert!(glyphs(&text).contains(&sum));
@@ -1828,7 +1829,7 @@ mod tests {
     // the face's script prime, not the base glyph scaled.
     #[test]
     fn script_styles_take_the_script_alternates() {
-        let face = MathFace::for_family("");
+        let face = MathFace::for_family("").unwrap();
         let rt = text(
             vec![node(Z, 0, MathKind::Math(MathStyle::Text), None)],
             16.0,

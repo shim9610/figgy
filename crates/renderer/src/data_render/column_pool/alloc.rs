@@ -62,6 +62,7 @@ pub struct FreeRegion {
     pub size: u64,
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum RegionReservationRollback {
     ExactFit,
     Split,
@@ -78,7 +79,10 @@ pub(super) struct RegionReservation<'a> {
     pub(super) free: &'a mut Vec<FreeRegion>,
     pub(super) index: usize,
     pub(super) original: FreeRegion,
-    pub(super) rollback: Option<RegionReservationRollback>,
+    pub(super) rollback: RegionReservationRollback,
+    /// Cleared by `commit` and `into_undo`; an armed guard restores the
+    /// free list when dropped.
+    pub(super) armed: bool,
 }
 
 /// The free-list edit `alloc_region` made, in undo form.
@@ -96,21 +100,19 @@ pub(super) struct RegionUndo {
 impl RegionUndo {
     pub(super) fn apply(self, free: &mut Vec<FreeRegion>) {
         match self.rollback {
+            // The reservation's exclusive borrow (or the guard that holds
+            // the pool) keeps the list exactly as `alloc_region` left it, so
+            // `index` is in range. Rollback runs from `Drop` and cannot
+            // report an error, so the index is bounded rather than trusted.
             RegionReservationRollback::ExactFit => {
                 // `remove` retained enough Vec capacity for this insertion,
                 // so rollback itself does not allocate.
-                debug_assert!(
-                    self.index <= free.len(),
-                    "free list shrank under a reservation"
-                );
-                free.insert(self.index, self.original);
+                free.insert(self.index.min(free.len()), self.original);
             }
             RegionReservationRollback::Split => {
-                debug_assert!(
-                    self.index < free.len(),
-                    "free list shrank under a reservation"
-                );
-                free[self.index] = self.original;
+                if let Some(region) = free.get_mut(self.index) {
+                    *region = self.original;
+                }
             }
         }
     }
@@ -122,7 +124,7 @@ impl RegionReservation<'_> {
     }
 
     pub(super) fn commit(mut self) {
-        self.rollback = None;
+        self.armed = false;
     }
 
     /// Defuse the guard and hand back its undo record.
@@ -130,25 +132,23 @@ impl RegionReservation<'_> {
     /// The free list stays edited; the caller becomes responsible for replaying
     /// the record if its own transaction fails.
     pub(super) fn into_undo(mut self) -> RegionUndo {
-        let rollback = self
-            .rollback
-            .take()
-            .expect("a live reservation still carries its undo record");
+        self.armed = false;
         RegionUndo {
             index: self.index,
             original: self.original,
-            rollback,
+            rollback: self.rollback,
         }
     }
 }
 
 impl Drop for RegionReservation<'_> {
     fn drop(&mut self) {
-        if let Some(rollback) = self.rollback.take() {
+        if self.armed {
+            self.armed = false;
             RegionUndo {
                 index: self.index,
                 original: self.original,
-                rollback,
+                rollback: self.rollback,
             }
             .apply(&mut *self.free);
         }
@@ -177,7 +177,8 @@ pub(super) fn alloc_region(
         free,
         index,
         original,
-        rollback: Some(rollback),
+        rollback,
+        armed: true,
     })
 }
 
@@ -285,7 +286,9 @@ pub(super) fn plan_batch_chunks(
     let mut region_offset = 0u64;
 
     for (index, (_, source)) in columns.iter().enumerate() {
-        let byte_size = column_region_bytes(source.len()).expect("sized by batch_region_bytes");
+        let byte_size = column_region_bytes(source.len()).ok_or(AllocError::Internal {
+            invariant: "every batch column was sized by batch_region_bytes",
+        })?;
         if chunk_bytes + byte_size > ceiling && index > start {
             chunks.try_reserve(1).map_err(alloc_failed)?;
             chunks.push(BatchChunk {

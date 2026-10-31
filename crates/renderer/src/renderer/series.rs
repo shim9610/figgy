@@ -1443,7 +1443,7 @@ pub(super) fn box_extras_data<'c>(
             style_map_bgl,
             style,
             display_scale,
-        );
+        )?;
         Ok((create(&params, &lanes, style_map)?, params.count))
     } else {
         let (params, lanes, segments) =
@@ -1458,7 +1458,7 @@ pub(super) fn box_extras_data<'c>(
             boxes,
             violin,
             display_scale,
-        );
+        )?;
         Ok((create(&params, &lanes, style_map)?, segments))
     }
 }
@@ -1630,7 +1630,7 @@ pub(super) fn range_bar_data<'c>(
             })?;
     let (params, lanes) = range_bar_params(config, group, series, display_scale, lookup)?;
     let style_map =
-        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale);
+        crate::renderer::style::range_bar_style_map(device, style_map_bgl, ranges, display_scale)?;
     let data = data_render::create_category_bar_data_bind_group(
         device,
         ledger,

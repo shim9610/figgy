@@ -375,15 +375,9 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
             u64::MAX,
         )
     }));
-    assert!(matches!(
-        result.expect("writer panic must be contained"),
-        Err(FiggyError::Pool(
-            data_render::AllocError::AllocationFailed {
-                resource: "streamed promotion source",
-                ..
-            }
-        ))
-    ));
+    // A host source that panics unwinds through the promotion (figgy no
+    // longer catches panics, #152); the promotion leaves nothing behind.
+    assert!(result.is_err(), "the writer panic reaches the host");
     assert!(renderer.pool.slot("panicking-writer").is_none());
     assert!(renderer.streaming_sources.contains_key("panicking-writer"));
     assert_eq!(renderer.stream_revision_lineage["panicking-writer"], 1);
@@ -7819,6 +7813,7 @@ fn gpu_arc_prefix_matches_cpu_reference() {
                 LineInterpolation::Linear,
             )
             .expect("arc prefix")
+            .unwrap()
             .prefix;
 
         // Read the GPU result back.
@@ -7936,6 +7931,7 @@ fn gpu_arc_prefix_stays_exact_past_two_to_the_twenty_four_pixels() {
             LineInterpolation::Linear,
         )
         .expect("arc prefix")
+        .unwrap()
         .prefix;
     assert_eq!(len_bytes, n as u64 * data_render::line_arc::ARC_PAIR_BYTES);
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
@@ -8116,6 +8112,7 @@ fn gpu_arc_prefix_follows_the_stepped_path_per_interpolation_mode() {
         let (arc_buf, len_bytes) = r
             .ensure_arc_prefix("stepped", "step_ax", "step_ay", &t, None, mode)
             .expect("arc prefix")
+            .unwrap()
             .prefix;
         // Arc pairs (SHADER_COMMON.md §5.6): fixed-point (low, high) words.
         let gpu: Vec<f32> = read(&device, &queue, &arc_buf, len_bytes)
@@ -8338,7 +8335,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("changed geometry arc result");
+        .expect("changed geometry arc result")
+        .unwrap();
     let changed_arc = Arc::clone(&changed.prefix.0);
     assert!(
         !Arc::ptr_eq(&arc_of(&r.prepare(&items_a).unwrap()), &changed_arc),
@@ -8355,7 +8353,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("cached changed geometry arc result");
+        .expect("cached changed geometry arc result")
+        .unwrap();
     assert!(
         Arc::ptr_eq(&changed_arc, &changed_again.prefix.0),
         "an exact changed key should reuse its immutable result"
@@ -8372,7 +8371,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("style-only arc result");
+        .expect("style-only arc result")
+        .unwrap();
     assert!(
         Arc::ptr_eq(&changed_arc, &style_only_result.prefix.0),
         "style-only changes must not retraverse geometry columns"
@@ -8389,7 +8389,8 @@ fn arc_results_reuse_only_exact_compute_keys() {
             None,
             LineInterpolation::Linear,
         )
-        .expect("changed data generation arc result");
+        .expect("changed data generation arc result")
+        .unwrap();
     assert!(
         !Arc::ptr_eq(&changed_arc, &changed_data.prefix.0),
         "a new source generation must not reuse an old prefix"

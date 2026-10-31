@@ -45,7 +45,9 @@ fn assembled_module_for(path_rel: &str) -> Option<&'static str> {
 /// part of (see [`assembled_module_for`]).
 fn read(path_rel: &str) -> String {
     if let Some(name) = assembled_module_for(path_rel) {
-        return renderer::shader_assembly::module(name).to_string();
+        return renderer::shader_assembly::module(name)
+            .expect("assembled module")
+            .to_string();
     }
     let p = workspace_root().join(path_rel);
     let raw = fs::read_to_string(&p).unwrap_or_else(|e| panic!("Failed to read {:?}: {}", p, e));

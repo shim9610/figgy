@@ -43,6 +43,12 @@ impl RendererDevice {
     pub fn queue(&self) -> &Arc<wgpu::Queue> {
         &self.queue
     }
+    /// The device's health record, shared by every user of this bundle.
+    /// Read by the native polls; the browser's device polls itself.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) fn health(&self) -> &DeviceHealth {
+        &self.health
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2975,7 +2981,7 @@ impl Renderer {
                 &gpu_ledger,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
-            );
+            )?;
         let neutral_point_value_map_bg = data_render::bind_point_value_map(
             &device,
             &point_value_map_bgl,
@@ -3141,7 +3147,7 @@ impl Renderer {
                 &gpu_ledger,
                 &data_render::PointValueMapParamsGpu::NEUTRAL,
                 &[],
-            );
+            )?;
         let neutral_point_value_map_bg = data_render::bind_point_value_map(
             &device,
             &point_value_map_bgl,
