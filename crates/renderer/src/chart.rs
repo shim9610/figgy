@@ -1913,4 +1913,47 @@ mod tests {
             .is_ok()
         );
     }
+
+    /// LINK_ROOT_IN_RANGE (#152): a subplot range edit writes the root of
+    /// the subplot's link chain, which is the parent or a listed subplot for
+    /// any links (none, down to the parent, self, forward, cycles, targets
+    /// past the list), with 0, 1 and 64 subplots and indices past the list.
+    #[test]
+    fn subplot_range_edits_follow_any_links_without_panicking() {
+        use crate::{CellRef, Subplot};
+        for n in [0usize, 1, 64] {
+            let patterns: [&dyn Fn(usize) -> Option<CellRef>; 8] = [
+                &|_| None,
+                &|i| Some(i.checked_sub(1).map_or(CellRef::Parent, CellRef::Subplot)),
+                &|i| Some(CellRef::Subplot(i)),
+                &|i| Some(CellRef::Subplot(i + 1)),
+                &|i| Some(CellRef::Subplot(if i ^ 1 < n { i ^ 1 } else { i })),
+                &|i| Some(CellRef::Subplot((i + 1) % n.max(1))),
+                &|_| Some(CellRef::Subplot(n)),
+                &|_| Some(CellRef::Subplot(usize::MAX)),
+            ];
+            for (k, x) in patterns.iter().enumerate() {
+                let y = patterns[(k + 3) % patterns.len()];
+                let mut cfg = dummy_config();
+                cfg.subplots = (0..n)
+                    .map(|i| Subplot {
+                        link_x: x(i),
+                        link_y: y(i),
+                        ..Default::default()
+                    })
+                    .collect();
+                let mut c = Chart::new(cfg);
+                for index in 0..n + 2 {
+                    c.set_subplot_x_range(index, -1.0 - index as f64, 2.0);
+                    c.set_subplot_y_range(index, 0.5, 9.0 + index as f64);
+                }
+                c.set_subplot_x_range(usize::MAX, 0.0, 1.0);
+                assert_eq!(c.config().subplots.len(), n);
+                if n > 0 && k == 0 {
+                    // Unlinked: each subplot keeps its own last edit.
+                    assert_eq!(c.config().subplots[n - 1].config.bottom_x.min, -(n as f64));
+                }
+            }
+        }
+    }
 }

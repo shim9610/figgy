@@ -2471,4 +2471,108 @@ mod tests {
             assert_eq!(beyond, cfg);
         }
     }
+
+    /// The link patterns `linked_documents` builds: subplot `i`'s target
+    /// for `n` subplots, `None` for no link.
+    fn link_patterns(n: usize) -> Vec<Vec<Option<CellRef>>> {
+        let all = |f: &dyn Fn(usize) -> Option<CellRef>| (0..n).map(f).collect();
+        vec![
+            all(&|_| None),
+            // A chain down to the parent.
+            all(&|i| Some(i.checked_sub(1).map_or(CellRef::Parent, CellRef::Subplot))),
+            all(&|i| Some(CellRef::Subplot(i))),
+            // Forward links, the last one past the list.
+            all(&|i| Some(CellRef::Subplot(i + 1))),
+            // 2-cycles (the odd last one links to itself).
+            all(&|i| Some(CellRef::Subplot(if i ^ 1 < n { i ^ 1 } else { i }))),
+            // One cycle through every subplot.
+            all(&|i| Some(CellRef::Subplot((i + 1) % n.max(1)))),
+            all(&|_| Some(CellRef::Subplot(n))),
+            all(&|_| Some(CellRef::Subplot(usize::MAX))),
+            // Every other subplot unlinked, the rest pointing past the list.
+            all(&|i| (i % 2 == 1).then_some(CellRef::Subplot(usize::MAX - i))),
+        ]
+    }
+
+    /// Documents with 0, 1 and 64 subplots and every pair of link
+    /// patterns on X and Y, validated or not.
+    fn linked_documents() -> Vec<Config> {
+        use crate::layer::Subplot;
+        let mut documents = Vec::new();
+        for n in [0, 1, 64] {
+            let patterns = link_patterns(n);
+            for (k, x) in patterns.iter().enumerate() {
+                // Y uses the next pattern, so the axes' chains differ.
+                let y = &patterns[(k + 1) % patterns.len()];
+                let mut cfg = default_config();
+                cfg.subplots = (0..n)
+                    .map(|i| Subplot {
+                        link_x: x[i],
+                        link_y: y[i],
+                        ..Default::default()
+                    })
+                    .collect();
+                documents.push(cfg);
+            }
+        }
+        documents
+    }
+
+    /// LINK_ROOT_IN_RANGE (#152): the root of any subplot's link chain is
+    /// the parent or a subplot in the list, for any index and any links (a
+    /// lower index, itself, forward, cycles, targets past the list), before
+    /// and after every path that edits the links' axes or reads them back
+    /// from JSON.
+    #[test]
+    fn a_link_root_is_the_parent_or_a_listed_subplot() {
+        let check = |cfg: &Config| {
+            let len = cfg.subplots.len();
+            for index in 0..len + 2 {
+                for x in [true, false] {
+                    match cfg.subplot_link_root(index, x) {
+                        CellRef::Parent => {}
+                        CellRef::Subplot(k) => {
+                            assert!(k < len, "root {k} of {index} (x {x}) past {len}")
+                        }
+                    }
+                }
+                if index < len {
+                    assert!(cfg.subplot_config(index).is_some());
+                } else {
+                    assert!(cfg.subplot_config(index).is_none());
+                }
+            }
+        };
+        for cfg in linked_documents() {
+            check(&cfg);
+            let mut synced = cfg.clone();
+            synced.sync_subplot_links(None);
+            check(&synced);
+            // A host edit of every linked axis is carried to its root.
+            let mut edited = synced.clone();
+            for subplot in &mut edited.subplots {
+                subplot.config.bottom_x.max += 7.0;
+                subplot.config.left_y.min -= 3.0;
+            }
+            edited.sync_subplot_links(Some(&synced));
+            check(&edited);
+            // An edit of the parent with no subplot edit.
+            let mut parent = synced.clone();
+            parent.bottom_x.min -= 1.0;
+            parent.sync_subplot_links(Some(&synced));
+            check(&parent);
+            // Removing subplots leaves links past the shorter list.
+            let mut fewer = edited.clone();
+            fewer.subplots.truncate(fewer.subplots.len() / 2);
+            fewer.sync_subplot_links(Some(&edited));
+            check(&fewer);
+            #[cfg(feature = "serde")]
+            {
+                let json = serde_json::to_string(&cfg).unwrap();
+                let back: Config = serde_json::from_str(&json).unwrap();
+                assert_eq!(back.subplots.len(), cfg.subplots.len());
+                check(&back);
+            }
+        }
+    }
 }

@@ -320,3 +320,92 @@ fn a_sketch_chart_draws_math_from_the_math_face() {
         try_raster_chart_to_rgba(&sketch).unwrap()
     );
 }
+
+/// MATH_RANGES_IN_SEGMENTS (#152): the formula layout walks ranges that
+/// `subtree_end` computes from the segments. Measuring and drawing parsed
+/// formulas (nesting to the depth limit, `\middle`, several formulas and a
+/// line break) and hand-built lists a host may send (a node past the depth
+/// limit, an unknown parent, slot 7, a `Math` node last, a parent cycle,
+/// repeated ids, children before their node) answers metrics and a draw
+/// result without panicking, at every font policy.
+#[test]
+fn any_math_segment_list_measures_and_draws() {
+    use renderer::text::math::{FracStyle, MathKind, MathNode, MathSlot, MathStyle};
+    const Z: char = '\u{200B}';
+    let depth = renderer::text::math::MAX_MATH_DEPTH;
+    let node = |id: u32, kind: MathKind, parent: Option<(u32, u8)>| RichSegment {
+        math_node: Some(MathNode { id, kind }),
+        math_parent: parent.map(|(id, slot)| MathSlot { id, slot }),
+        ..RichSegment::plain(Z)
+    };
+    let leaf = |text: char, id: u32, slot: u8| RichSegment {
+        math_parent: Some(MathSlot { id, slot }),
+        ..RichSegment::plain(text)
+    };
+    let math = || node(0, MathKind::Math(MathStyle::Text), None);
+    let sqrt = MathKind::Sqrt;
+    let frac = MathKind::Frac(FracStyle::Auto);
+    let mut deep = vec![math()];
+    for id in 1..depth as u32 + 4 {
+        deep.push(node(id, sqrt, Some((id - 1, 0))));
+    }
+    deep.push(leaf('x', depth as u32 + 3, 0));
+    let nest = |n: usize| format!("${}x{}$", r"\frac{".repeat(n), "}{y}".repeat(n));
+    let mut lists: Vec<Vec<RichSegment>> = [
+        r"$x^a_b + y_{i_j^k}$",
+        r"$\left(\frac{a}{b}\middle|\frac{c}{d}\right)^2_k$",
+        "$\\sqrt[3]{\\sum_{i=0}^{n} x_i^2}$ and\t$$\\binom{n}{k}$$\n$\\xrightarrow[b]{a}$",
+        &nest(depth - 2),
+    ]
+    .iter()
+    .map(|src| tex(src, 14.0).segments)
+    .collect();
+    lists.extend([
+        Vec::new(),
+        vec![math()],
+        vec![leaf('a', 0, 0)],
+        vec![RichSegment::plain('a'), math()],
+        vec![math(), leaf('a', 9, 0), leaf('b', 0, 0)],
+        vec![math(), leaf('a', 0, 7), leaf('b', 0, 255)],
+        vec![
+            math(),
+            node(1, sqrt, Some((2, 0))),
+            node(2, sqrt, Some((1, 0))),
+            leaf('a', 1, 0),
+            leaf('b', 2, 0),
+        ],
+        vec![
+            math(),
+            node(1, frac, Some((0, 0))),
+            node(1, frac, Some((1, 0))),
+            leaf('a', 1, 1),
+            math(),
+            leaf('c', 0, 0),
+        ],
+        vec![
+            leaf('a', 3, 0),
+            math(),
+            node(3, MathKind::Scripts, Some((0, 0))),
+        ],
+        vec![
+            math(),
+            node(u32::MAX, MathKind::Scripts, Some((0, 0))),
+            leaf('a', u32::MAX, 2),
+            leaf('b', u32::MAX, 3),
+        ],
+        deep,
+    ]);
+    let mut canvas = renderer::raster::Canvas::new(320, 160).unwrap();
+    for segments in lists {
+        let mut rt = RichText::plain("", Color::BLACK, 14.0, "");
+        rt.segments = segments;
+        for policy in [
+            renderer::FontPolicy::Standard,
+            renderer::FontPolicy::Handwritten,
+        ] {
+            let m = renderer::text_render::measure_rich_text(&rt, policy);
+            assert!(m.width.is_finite() && m.height().is_finite(), "{m:?}");
+            renderer::text_render::draw_rich_text(&mut canvas, &rt, (4.0, 40.0), policy).unwrap();
+        }
+    }
+}
