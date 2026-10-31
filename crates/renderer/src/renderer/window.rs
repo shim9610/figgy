@@ -981,7 +981,7 @@ impl<'w> WindowedRenderer<'w> {
                 reason,
             })?;
         #[cfg(not(target_arch = "wasm32"))]
-        self.inner.wait_submitted_work().await;
+        self.inner.wait_submitted_work().await?;
         Ok(())
     }
 

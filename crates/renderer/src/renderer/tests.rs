@@ -4848,7 +4848,7 @@ fn empty_prepare_compiles_only_axis_and_leaves_extent_engine_idle() {
     assert!(renderer.pipelines.errorbar_mapped.is_none());
     assert!(renderer.pipelines.pick_ring_mapped.is_none());
     assert!(!renderer.errorbar_extent_engine_ready());
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 #[test]

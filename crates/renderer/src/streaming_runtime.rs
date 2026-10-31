@@ -3201,7 +3201,7 @@ impl Renderer {
     pub async fn cancel_streaming_chart_and_wait(&mut self, chart: ChartId) -> Result<()> {
         self.cancel_streaming_chart(chart)?;
         self.end_gpu_frame();
-        self.wait_submitted_work().await;
+        self.wait_submitted_work().await?;
         self.service_stream_requests();
         if self.stream_status(chart)?.in_flight_chunks != 0 {
             return Err(FiggyError::StaleStateToken {
