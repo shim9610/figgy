@@ -708,7 +708,6 @@ impl DemoApp {
             label: None,
             x_column: "stream-x".into(),
             y_column: "stream-y".into(),
-            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: renderer::Color::new(0.15, 0.65, 1.0, 0.35),

@@ -35,13 +35,8 @@ fn definition(source: &str, kind: &str, name: &str) -> String {
 fn generate(out: &Path, root: &Path) {
     fs::create_dir_all(out).unwrap();
     let production = fs::read_to_string(root.join("crates/renderer/src/gpu_pick/core.wgsl")).unwrap();
-    // The projection the picker splices from the draw shaders.
-    let projection = fs::read_to_string(
-        root.join("crates/renderer/src/data_render/common/projection.wgsl"),
-    )
-    .unwrap();
     let mut source = String::new();
-    for name in ["Transform", "PickQueryParams"] {
+    for name in ["PickQueryTransform", "PickQueryParams"] {
         source.push_str(&definition(&production, "struct", name));
     }
     source.push_str(
@@ -51,25 +46,21 @@ fn generate(out: &Path, root: &Path) {
 @group(1) @binding(0) var<uniform> pick_query_params: PickQueryParams;
 "#,
     );
-    for name in ["maybe_log", "axis_pair_to_t"] {
-        source.push_str(&definition(&projection, "fn", name));
+    for name in [
+        "pick_log10",
+        "pick_axis_pair_to_t",
+        "pick_project_axis_pair",
+        "pick_project_pair",
+    ] {
+        source.push_str(&definition(&production, "fn", name));
     }
-    source.push_str(&definition(&production, "fn", "pick_project_axis_pair"));
-    // The rectangular branch of `pick_project_pair`: the fixtures are
-    // rectangular, and the polar branch reads pipeline overrides.
     source.push_str(
         r#"
-fn probe_axis_t(v: vec2<f32>, axis: u32) -> f32 {
-    let tr = pick_query_params.transform;
-    return axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
-        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis]);
-}
-
 @compute @workgroup_size(64)
 fn precision_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     let v = inputs[gid.x];
-    let p = vec2(pick_project_axis_pair(v.xy, 0u), pick_project_axis_pair(v.zw, 1u));
-    outputs[gid.x] = vec4(p, probe_axis_t(v.xy, 0u), probe_axis_t(v.zw, 1u));
+    let p = pick_project_pair(v.xy, v.zw);
+    outputs[gid.x] = vec4(p, pick_axis_pair_to_t(v.xy, 0u), pick_axis_pair_to_t(v.zw, 1u));
 }
 "#,
     );
@@ -84,7 +75,7 @@ fn precision_probe(@builtin(global_invocation_id) gid: vec3<u32>) {
     // code for the manually packed host uniform below.
     for (name, expected_span, expected_offsets) in [
         (
-            "Transform",
+            "PickQueryTransform",
             112,
             vec![0, 8, 16, 24, 32, 40, 48, 56, 64],
         ),

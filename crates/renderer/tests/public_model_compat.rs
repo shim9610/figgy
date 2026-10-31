@@ -1,7 +1,5 @@
 //! Consumers can opt into serde through the renderer without importing model.
 #![cfg(feature = "serde")]
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 
 #[test]
 fn renderer_serde_feature_covers_reexported_chart_models() {
@@ -66,24 +64,4 @@ fn renderer_serde_feature_covers_reexported_chart_models() {
     let restored: renderer::RadarChart =
         serde_json::from_str(&serde_json::to_string(&radar).unwrap()).unwrap();
     assert_eq!(radar, restored);
-}
-
-/// Bars, boxes and sectors take the one `Material`, re-exported by the
-/// renderer, and write it as the bare variant name.
-#[test]
-fn one_material_type_serves_every_bounded_family() {
-    let material = renderer::Material::Wood;
-    let mut radial = renderer::RadialStyle::default();
-    let mut bars = renderer::CategoryBarStyle::default();
-    let mut boxes = renderer::BoxPlotStyle::default();
-    radial.material = material;
-    bars.material = material;
-    boxes.material = material;
-    for json in [
-        serde_json::to_value(&radial).unwrap(),
-        serde_json::to_value(&bars).unwrap(),
-        serde_json::to_value(&boxes).unwrap(),
-    ] {
-        assert_eq!(json["material"], "Wood");
-    }
 }

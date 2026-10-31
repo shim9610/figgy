@@ -132,8 +132,6 @@ pub(super) fn fixture_data(case: Fixture) -> SourceFixture {
         style_params: [[0.0; 4]; 3],
         polar_angle: [0.0; 4],
         polar_extent: [0.0; 4],
-        ternary_lt: [0.0; 4],
-        ternary_r: [0.0; 4],
     };
     if case.log {
         transform.data_min = transform.data_min.map(f32::log10);
@@ -163,7 +161,6 @@ pub(super) fn fixture_data(case: Fixture) -> SourceFixture {
         level_color_count: 0,
         z_min: [1_000_000_000.0, 0.0],
         z_max: [1_000_000_000.0, 1.0],
-        image: [0; 4],
     };
     SourceFixture {
         transform,

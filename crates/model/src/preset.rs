@@ -308,47 +308,11 @@ impl ColorCycle {
             | DataRenderType::HeatmapContour { contour, .. } => {
                 contour.line.line_color = c;
             }
-            DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {}
+            DataRenderType::Heatmap { .. } => {}
             // The arrow colour joins the cycle; a colour map, when set, still
             // draws from the colourbar.
             DataRenderType::Vector { style, .. } => {
                 style.color = c;
-            }
-            // The bar fill joins the cycle; per-bar override colours stay.
-            DataRenderType::CategoryBars { color, .. } => {
-                *color = c;
-            }
-            // The box fill joins the cycle; per-box override colours stay.
-            DataRenderType::BoxPlot { color, .. } => {
-                *color = c;
-            }
-            // The series fill joins the cycle; direction and state colours
-            // stay, since they carry the bars' meaning.
-            DataRenderType::RangeBars { color, .. } => {
-                *color = c;
-            }
-            // The outline and markers join the cycle, and the fill follows
-            // them unless the style names its own.
-            DataRenderType::Radar { color, .. } => {
-                *color = c;
-            }
-            DataRenderType::Ternary { scatter, line, .. } => {
-                if let Some(scatter) = scatter {
-                    scatter.point_color = c;
-                }
-                if let Some(line) = line {
-                    line.line_color = c;
-                }
-            }
-            // The line and its arrowheads join the cycle; a colour map, when
-            // set, still draws from the colourbar.
-            DataRenderType::Streamlines { line, .. } => {
-                line.line_color = c;
-            }
-            // The rows join the cycle; a colour column, when set, still
-            // draws from the colourbar.
-            DataRenderType::Parallel { line, .. } => {
-                line.line_color = c;
             }
         }
     }
@@ -451,7 +415,6 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            z_column: None,
             render_type: DataRenderType::LineScatterErrorbarXY {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -559,7 +522,6 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            z_column: None,
             render_type,
         };
         let expected = ColorCycle::Classic.color(2);
@@ -591,7 +553,6 @@ mod tests {
                 matrix: matrix(),
                 fill: fill(),
                 contour: contour(),
-                surface: None,
             },
         ] {
             let mut item = series(render_type);
@@ -609,7 +570,6 @@ mod tests {
         let mut heatmap = series(DataRenderType::Heatmap {
             matrix: matrix(),
             fill: fill(),
-            surface: None,
         });
         let before = heatmap.clone();
         ColorCycle::Classic.apply_to_series(&mut heatmap, 2);

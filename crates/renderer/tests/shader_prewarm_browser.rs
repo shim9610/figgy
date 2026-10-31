@@ -128,7 +128,6 @@ async fn real_prewarm_reuses_pipelines_and_draws_contour_labels() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["z0".into(), "z1".into(), "z2".into()],

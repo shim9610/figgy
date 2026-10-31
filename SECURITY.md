@@ -23,7 +23,7 @@ is no guaranteed response deadline.
 | Code | Supported |
 | --- | --- |
 | Latest crates.io release: `figgy-renderer` 0.18.1 and `figgy-model` 0.12.1 | Yes |
-| Default branch (`master`), including `figgy` 0.15.1, the browser product in `crates/web`, which is built from this repository and not published to a registry | Yes |
+| Default branch (`master`), including the `figgy` 0.15.1 WebAssembly example in `crates/web`, which is not published to crates.io | Yes |
 | Older releases and pinned Git revisions | No |
 
 Security fixes target the supported code above. Older releases and pinned Git
@@ -32,7 +32,7 @@ versions are still welcome; please state whether the issue also reproduces on th
 current code.
 
 This repository contains the `figgy-model` and `figgy-renderer` Rust libraries and
-their examples, and `figgy`, the browser product in `crates/web`. It does not
+their examples, including the WebAssembly integration example. It does not
 operate or distribute the separate figgyplot.com Studio application. If the
 affected component is unclear, describe the application and the renderer revision
 in the private report so the scope can be determined.

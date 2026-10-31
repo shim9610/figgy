@@ -66,7 +66,6 @@ fn series(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: renderer::Color::new(0.1, 0.2, 0.8, 1.0),
@@ -159,6 +158,35 @@ fn batches_reject_invalid_late_members_without_partial_publication() {
 }
 
 #[test]
+fn replacement_and_removal_touch_only_dependent_chart() {
+    let mut renderer = renderer();
+    renderer
+        .register_streamed_columns(vec![source("x", 8), source("a", 8), source("b", 8)])
+        .unwrap();
+    let a = renderer
+        .register_chart(default_config(), vec![series("s", "x", "a")])
+        .unwrap();
+    let b = renderer
+        .register_chart(default_config(), vec![series("s", "x", "b")])
+        .unwrap();
+    let stamp_a = renderer.chart_render_stamp(a).unwrap();
+    let stamp_b = renderer.chart_render_stamp(b).unwrap();
+    let mut newer = registered(&renderer, "a");
+    newer.revision = 2;
+    newer.len = 4;
+    renderer.replace_streamed_columns(vec![newer]).unwrap();
+    assert_ne!(renderer.chart_render_stamp(a).unwrap(), stamp_a);
+    assert_eq!(renderer.chart_render_stamp(b).unwrap(), stamp_b);
+    assert_eq!(renderer.series_draw_info(a, "s").unwrap().drawn_count, 4);
+    assert!(renderer.remove_column("a").unwrap());
+    assert!(renderer.logical_column("a").is_none());
+    assert!(renderer.chart_series(a).unwrap().is_empty());
+    assert_eq!(renderer.chart_series(b).unwrap().len(), 1);
+    assert_eq!(renderer.chart_render_stamp(b).unwrap(), stamp_b);
+    assert!(!renderer.remove_column("a").unwrap());
+}
+
+#[test]
 fn resident_and_streamed_ids_cannot_shadow_each_other() {
     let mut renderer = renderer();
     let values = Column {
@@ -187,4 +215,69 @@ fn resident_and_streamed_ids_cannot_shadow_each_other() {
     ));
     assert_eq!(registered(&renderer, "stream"), source("stream", 200));
     assert_eq!(renderer.gpu_memory_usage(), before);
+}
+
+#[test]
+fn nonresident_queries_do_not_report_unknown_or_empty_during_resident_transaction() {
+    let mut renderer = renderer();
+    renderer
+        .register_streamed_columns(vec![source("x", 8), source("y", 8)])
+        .unwrap();
+    let declaration = series("s", "x", "y");
+    let chart = renderer
+        .register_chart(default_config(), vec![declaration.clone()])
+        .unwrap();
+    let ids = renderer::GpuSeriesExtentColumnIds {
+        x: "x",
+        y: "y",
+        x_lower: None,
+        x_upper: None,
+        y_lower: None,
+        y_upper: None,
+    };
+    assert!(matches!(
+        renderer.handle_for("x"),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.web_derived_snapshot(chart),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_errorbar_extent("x", "y", "y"),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_series_extent(renderer::GpuSeriesExtentMode::Points, ids),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        renderer.begin_series_fit_extent(&declaration),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    let values = Column {
+        data: vec![1.0f32, 2.0],
+        min: 1.0,
+        max: 2.0,
+    };
+    let transaction = renderer.begin_upsert_column("resident", &values).unwrap();
+    assert!(matches!(
+        transaction.web_derived_snapshot(chart),
+        Err(FiggyError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        transaction.begin_errorbar_extent("x", "y", "y"),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        transaction.begin_series_extent(renderer::GpuSeriesExtentMode::Points, ids),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    assert!(matches!(
+        transaction.begin_series_fit_extent(&declaration),
+        Err(renderer::GpuErrorbarError::ColumnNotResident { .. })
+    ));
+    drop(transaction);
+    assert!(renderer.logical_column("resident").is_none());
+    assert_eq!(renderer.chart_series(chart).unwrap(), &[declaration]);
 }

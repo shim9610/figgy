@@ -39,7 +39,6 @@ pub async fn check(gpu: RendererDevice) {
         },
         ..Default::default()
     };
-    chart.format_labels();
     for scale in [1., 2.] {
         chart.interaction = Default::default();
         let rest = r

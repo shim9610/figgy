@@ -94,7 +94,6 @@ async fn dawn_accepts_mapped_scatter_and_errorbar_entries() {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::ScatterErrorbarX {
             scatter: DataScatterStyleConfig {
                 point_color: Color::BLACK,

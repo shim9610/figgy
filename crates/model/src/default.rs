@@ -21,7 +21,7 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::config::{
     AxisOptions, AxisScale, AxisTitleOptions, BarAlign, ChartTitleOptions, ColorBarOptions, Config,
-    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, LogTickPolicy, TickVisibility,
+    DrawStyle, GridOptions, LabelStyle, Legend, LegendCorner, TickVisibility,
 };
 use crate::format::LabelFormat;
 use crate::layer::{AnnotationLayer, LayerRef};
@@ -115,9 +115,6 @@ pub fn default_axis_options_x() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        categories: None,
-        cross_at: None,
-        log_ticks: LogTickPolicy::Decades,
     }
 }
 
@@ -142,9 +139,6 @@ pub fn default_axis_options_y() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        categories: None,
-        cross_at: None,
-        log_ticks: LogTickPolicy::Decades,
     }
 }
 
@@ -179,9 +173,6 @@ pub fn default_axis_options_colorbar() -> AxisOptions {
         line_style: LineStylePreset::Solid,
         major_tick_length: 5.0,
         minor_tick_length: 3.0,
-        categories: None,
-        cross_at: None,
-        log_ticks: LogTickPolicy::Decades,
     }
 }
 
@@ -318,16 +309,9 @@ pub fn default_config() -> Config {
         // Precise mode. Stylized modes are opt-in (`DrawStyle::Sketch(..)`).
         draw_style: DrawStyle::Precise,
         polar: None,
-        ternary: None,
-        parallel: None,
-        view_3d: None,
         overlays: Vec::new(),
         subplots: Vec::new(),
         active_layer: LayerRef::Base,
         annotations: AnnotationLayer::default(),
-        // Grouped vertical bars until a chart sets its own.
-        bar_groups: None,
-        // Every series drawn where its values are.
-        line_offsets: None,
     }
 }

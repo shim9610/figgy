@@ -4,12 +4,11 @@
 //! event loop, this file owns the wgpu surface, and egui (through
 //! `egui-winit` + `egui-wgpu`, no eframe) draws the control panel over it.
 //!
-//! - Cartesian and polar scenes (lines/areas/steps, scatter + error bars,
-//!   histogram, heatmap + contours, log axes, twin Y axes, subplots,
-//!   annotations, category bars, box plots, radar, up to 100 million
-//!   resident points) are registered charts of one `Renderer`. The renderer
-//!   paints them straight into the surface pass; egui draws on top.
-//! - The radial scene (the DataLess pie and donut chart) renders into an
+//! - Cartesian scenes (lines/areas/steps, scatter + error bars, histogram,
+//!   heatmap + contours, log axes, twin Y axes, subplots, annotations, up to
+//!   100 million resident points) are registered charts of one `Renderer`. The renderer paints
+//!   them straight into the surface pass; egui draws on top.
+//! - Bounded scenes (radial, categorical bars, box plots) render into an
 //!   offscreen texture that egui shows as an image.
 //!
 //! Pointer, on the chart:
@@ -24,10 +23,8 @@
 //! `cargo run --manifest-path tools/playground/Cargo.toml` (from the repo root)
 
 mod big_data;
+mod bounded;
 mod cartesian;
-mod radial;
-/// The scene catalogue, shared with the renderer's decoration oracle.
-#[path = "../../../crates/renderer/tests/support/playground_scenes.rs"]
 mod scenes;
 mod widgets;
 
@@ -43,8 +40,8 @@ use winit::window::{Window, WindowId};
 use renderer::data_render;
 use renderer::{Renderer, RendererDevice};
 
+use crate::bounded::BoundedScene;
 use crate::cartesian::CartesianHost;
-use crate::radial::RadialHost;
 use crate::scenes::SceneKind;
 
 const POOL_CAPACITY: u64 = 128 * 1024 * 1024;
@@ -140,7 +137,7 @@ pub struct HostCtx<'a> {
 /// Exactly one scene is live at a time.
 enum Active {
     Cartesian(Box<CartesianHost>),
-    Radial(Box<RadialHost>),
+    Bounded(Box<dyn BoundedScene>),
 }
 
 struct Playground {
@@ -173,8 +170,8 @@ impl Playground {
     }
 
     fn switch(&mut self, kind: SceneKind, gpu: &Gpu, egui_renderer: &mut egui_wgpu::Renderer) {
-        let next = if kind.is_radial() {
-            RadialHost::create(gpu.renderer_device(), kind).map(|r| Active::Radial(Box::new(r)))
+        let next = if kind.is_bounded() {
+            bounded::create(kind, gpu.renderer_device()).map(Active::Bounded)
         } else {
             CartesianHost::new(&mut self.cartesian, kind)
                 .map(|c| Active::Cartesian(Box::new(c)))
@@ -184,7 +181,7 @@ impl Playground {
             Ok(next) => {
                 match std::mem::replace(&mut self.active, next) {
                     Active::Cartesian(old) => old.remove(&mut self.cartesian),
-                    Active::Radial(mut old) => old.release(egui_renderer),
+                    Active::Bounded(mut old) => old.release(egui_renderer),
                 }
                 self.kind = kind;
                 self.status = format!("Scene: {}", kind.label());
@@ -223,7 +220,7 @@ impl App {
             });
         }
         if let (Some(p), Some(r)) = (self.playground.as_mut(), self.egui_renderer.as_mut())
-            && let Active::Radial(scene) = &mut p.active
+            && let Active::Bounded(scene) = &mut p.active
         {
             scene.release(r);
         }
@@ -261,7 +258,7 @@ impl App {
             egui::Panel::top("scene_tabs").show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
                     ui.strong("Cartesian");
-                    for k in SceneKind::ALL.iter().filter(|k| !k.is_radial()) {
+                    for k in SceneKind::ALL.iter().filter(|k| !k.is_bounded()) {
                         if ui
                             .selectable_label(playground.kind == *k, k.label())
                             .clicked()
@@ -271,8 +268,8 @@ impl App {
                         }
                     }
                     ui.separator();
-                    ui.strong("Radial");
-                    for k in SceneKind::ALL.iter().filter(|k| k.is_radial()) {
+                    ui.strong("Bounded");
+                    for k in SceneKind::ALL.iter().filter(|k| k.is_bounded()) {
                         if ui
                             .selectable_label(playground.kind == *k, k.label())
                             .clicked()
@@ -298,7 +295,7 @@ impl App {
                             Active::Cartesian(c) => {
                                 c.controls(ui, &mut playground.cartesian, &mut host)
                             }
-                            Active::Radial(b) => b.controls(ui, &mut host),
+                            Active::Bounded(b) => b.controls(ui, &mut host),
                         }
                     });
                 });
@@ -311,7 +308,7 @@ impl App {
                         Active::Cartesian(c) => {
                             c.viewport(ui, rect, &response, &mut playground.cartesian, &mut host)
                         }
-                        Active::Radial(b) => b.viewport(ui, rect, &response, &mut host),
+                        Active::Bounded(b) => b.viewport(ui, rect, &response, &mut host),
                     }
                 });
         });
@@ -325,7 +322,7 @@ impl App {
         let frame_start = Instant::now();
         let prepared = match &mut playground.active {
             Active::Cartesian(c) => c.prepare(&mut playground.cartesian),
-            Active::Radial(_) => None,
+            Active::Bounded(_) => None,
         };
         let prepare_time = frame_start.elapsed();
         let timed = matches!(&playground.active, Active::Cartesian(c) if c.wants_frame_timing());

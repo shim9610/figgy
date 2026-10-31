@@ -258,11 +258,8 @@ fn columns_for<'a>(
     }
     if !entry.bar
         && matches!(config.draw_style, DrawStyle::Precise)
-        && let Some(id) = extract_scatter(&series.render_type).and_then(|scatter| match scatter {
-            std::borrow::Cow::Borrowed(scatter) => scatter.point_style_index_column.as_deref(),
-            // A derived (radar) marker style reads no style-index column.
-            std::borrow::Cow::Owned(_) => None,
-        })
+        && let Some(id) = extract_scatter(&series.render_type)
+            .and_then(|scatter| scatter.point_style_index_column.as_deref())
     {
         add(id, 1);
     }
@@ -426,7 +423,13 @@ impl Renderer {
             let overhead = if entry.field.is_some() {
                 field::OVERHEAD
             } else {
-                std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
+                std::mem::size_of::<PrimitiveStyle>() as u64
+                    + if entry.bar {
+                        std::mem::size_of::<data_render::DataSelectionGpu>() as u64
+                    } else {
+                        0
+                    }
+                    + if mapped { 16 } else { 0 }
             };
             bytes = bytes
                 .checked_add(work + overhead)
@@ -653,13 +656,9 @@ impl Renderer {
             &self.style_bgl,
             &self.per_point_style_map_bgl,
             &self.point_value_map_bgl,
-            [&self.surface_bgl, &self.view3d_value_map_bgl],
             &self.data_selection_bgl,
             &self.field_bgl,
             &self.vector_bgl,
-            &self.star_data_bgl,
-            &self.category_bar_data_bgl,
-            &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             &[ChartDrawItem {
@@ -701,16 +700,12 @@ impl Renderer {
                     x,
                     y,
                     bar: None,
-                    category: None,
-                    violin: None,
-                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
                         packed_instance: Some(local),
                     },
                     mapped_point_bg: None,
-                    view3d: None,
                 },
                 None,
                 true,
@@ -908,13 +903,9 @@ impl Renderer {
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
                 &self.point_value_map_bgl,
-                [&self.surface_bgl, &self.view3d_value_map_bgl],
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
-                &self.star_data_bgl,
-                &self.category_bar_data_bgl,
-                &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {
@@ -930,7 +921,13 @@ impl Renderer {
         let headroom = if entry.field.is_some() {
             field::OVERHEAD
         } else {
-            std::mem::size_of::<PrimitiveStyle>() as u64 + if mapped { 16 } else { 0 }
+            std::mem::size_of::<PrimitiveStyle>() as u64
+                + if entry.bar {
+                    std::mem::size_of::<data_render::DataSelectionGpu>() as u64
+                } else {
+                    0
+                }
+                + if mapped { 16 } else { 0 }
         };
         let mut encoder = self
             .device
@@ -1035,16 +1032,12 @@ impl Renderer {
                     x,
                     y,
                     bar,
-                    category: None,
-                    violin: None,
-                    box_points: None,
                     rows: SelectionRows {
                         global_start: entry.index,
                         refs: entry.filter,
                         packed_instance: None,
                     },
                     mapped_point_bg: map.as_ref(),
-                    view3d: None,
                 },
                 None,
                 matches!(config.draw_style, DrawStyle::Precise),

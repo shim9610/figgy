@@ -8,8 +8,6 @@
 //! - `terrain` writes `concept-terrain.png`: a custom colour ramp under isolines.
 //!
 //! cargo run --locked -p figgy-renderer --example gallery_concepts -- target/concepts
-// Legacy documents are read through their deprecated reader types.
-#![allow(deprecated)]
 
 #[allow(dead_code)]
 #[path = "support/gallery.rs"]
@@ -19,7 +17,7 @@ mod gallery;
 mod styled;
 use gallery::{Result, column, line, scatter, series};
 use renderer::{
-    Color, ColorMap, Material, Renderer, RendererDevice,
+    Color, ColorMap, Renderer, RendererDevice,
     categorical::*,
     config::{DrawStyle, LegendEntryKind, SketchOptions},
     data_config::{
@@ -127,9 +125,8 @@ fn editorial(r: &mut Renderer, out: &Path) -> Result {
     save(&image, bg, &out.join("concept-editorial.png"))
 }
 
-// 3. A product analytics card: horizontal stacks and rounded ends, a
-// categorical document opened as a Cartesian chart of category bars.
-fn revenue(r: &mut Renderer, out: &Path) -> Result {
+// 3. A product analytics card: horizontal stacks, restrained labels, rounded ends.
+fn revenue(gpu: &RendererDevice, out: &Path) -> Result {
     let bg = rgb(247, 248, 253);
     let chart = CategoricalChart {
         title: "Revenue mix / by region".into(),
@@ -169,33 +166,18 @@ fn revenue(r: &mut Renderer, out: &Path) -> Result {
         text_color: rgb(52, 57, 85),
         grid: false,
         style: CategoryBarStyle {
-            material: Material::Matte,
+            material: CategoryBarMaterial::Matte,
             corner_radius: 12.,
             texture_strength: 0.,
             ..Default::default()
         },
         ..Default::default()
     };
-    let (mut config, specs, uploads) = renderer::config::Config::from_categorical(&chart);
-    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-        x: 0,
-        y: 0,
-        width: SIZE.0,
-        height: SIZE.1,
-    });
-    // The positions, then the value columns as one batch.
-    let (positions, values) = uploads.split_first().expect("the positions column");
-    r.add_column(positions.column.clone(), &positions.values)?;
-    let columns: Vec<(&str, &dyn renderer::ColumnSource)> = values
-        .iter()
-        .map(|u| (u.column.as_str(), &u.values as &dyn renderer::ColumnSource))
-        .collect();
-    r.add_columns(&columns)?;
-    let mut cartesian = renderer::Chart::new(config);
-    cartesian.auto_fit_layer_union(r.pool(), renderer::LayerRef::Base, &specs, 0.0)?;
-    let image =
-        pollster::block_on(r.export_panel_rgba_with_clear_async(&cartesian, &specs, 1., bg))?;
-    save(&image, bg, &out.join("concept-revenue.png"))
+    let mut r = CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let image = r.export_rgba(&chart, SIZE, 1.)?;
+    save(&image, bg, &out.join("concept-revenue.png"))?;
+    r.end_frame();
+    Ok(())
 }
 
 // 4–5. The same named-value contract, with two very different material choices.
@@ -214,7 +196,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         label_color: rgb(49, 43, 59),
         background: rgb(255, 248, 237),
         style: RadialStyle {
-            material: Material::Toon,
+            material: RadialMaterial::Toon,
             tilt_degrees: 45.,
             depth: 0.14,
             bevel: 0.,
@@ -234,7 +216,6 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         },
         ..Default::default()
     };
-    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-pop-art.png"))?;
     r.end_frame();
@@ -250,7 +231,7 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         RadialSlice::new("Cash", 12., rgb(218, 200, 146)),
     ];
     chart.style = RadialStyle {
-        material: Material::Pearl,
+        material: RadialMaterial::Pearl,
         tilt_degrees: 55.,
         depth: 0.19,
         bevel: 0.025,
@@ -264,7 +245,6 @@ fn radial_concepts(gpu: &RendererDevice, out: &Path) -> Result {
         shadow: true,
         ..Default::default()
     };
-    chart.format_labels();
     let image = r.export_rgba(&chart, SIZE, 1.)?;
     save(&image, chart.background, &out.join("concept-portfolio.png"))?;
     r.end_frame();
@@ -325,7 +305,6 @@ fn terrain(r: &mut Renderer, out: &Path) -> Result {
                 per_level_color: None,
                 labels: None,
             },
-            surface: None,
         },
     )];
     let mut bar = renderer::default::default_colorbar_options();
@@ -365,7 +344,7 @@ fn main() -> Result {
     )?;
     observability(&mut r, &out)?;
     editorial(&mut r, &out)?;
-    revenue(&mut r, &out)?;
+    revenue(&gpu, &out)?;
     radial_concepts(&gpu, &out)?;
     terrain(&mut r, &out)?;
     r.wait_idle();

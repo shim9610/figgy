@@ -68,7 +68,6 @@ fn setup(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: if histogram {
             DataRenderType::Histogram {
                 bar: DataBarStyleConfig {

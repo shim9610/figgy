@@ -2,10 +2,6 @@ name: Rust packages
 "on":
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
-    # Only pull requests into master run the matrix. Work collected on an
-    # integration branch runs it once, on the final pull request, or on demand.
-    branches: [master]
-  workflow_dispatch:
 permissions:
   contents: read
 concurrency:
@@ -24,21 +20,13 @@ env:
 jobs:
   packages:
     # Standard public runners only; draft PRs wait until ready for review.
-    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
-    name: ${{ matrix.os }} / ${{ matrix.backend }}${{ matrix.shard != 'main' && format(' / {0}', matrix.shard) || '' }}
+    if: github.event.repository.private == false && github.event.pull_request.draft == false
+    name: ${{ matrix.os }} / ${{ matrix.backend }}
     runs-on: ${{ matrix.os }}
-    # The packaged suite on the software adapters (WARP, lavapipe) outgrew
-    # 90 minutes; the limit matches the repository job.
-    timeout-minutes: 300
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, windows-2025, macos-15]
-        # The package tests in three jobs per backend that run at once
-        # (`ci/verify.py` SHARDS): `main` the library, the other
-        # integration tests, the doctests and the static checks; `picks`
-        # and `decorations` the two slowest groups of binaries.
-        shard: [main, picks, decorations]
         include:
           - os: ubuntu-24.04
             backend: vulkan
@@ -48,8 +36,6 @@ jobs:
             backend: metal
     env:
       WGPU_BACKEND: ${{ matrix.backend }}
-      # A fixed extraction path, so the package build can be cached.
-      FIGGY_PACKAGE_DIR: ${{ github.workspace }}/../figgy-packages
     steps:
       - uses: actions/checkout@v4
         with:
@@ -91,96 +77,17 @@ jobs:
       - name: Install pinned Windows DXC and WARP
         if: steps.scope.outputs.checks == 'true' && runner.os == 'Windows'
         run: python ci/setup_windows.py
-      # Dependencies' build outputs, keyed by the lockfile and toolchain.
-      # Workspace crates are pruned before saving; the main shard saves.
-      - name: Restore the cargo build cache
-        if: steps.scope.outputs.checks == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: packages-${{ matrix.backend }}
-          save-if: ${{ matrix.shard == 'main' }}
-          workspaces: |
-            . -> target
-            ../figgy-packages -> target
       - name: Formatting, native and WASM checks, strict API documentation
-        if: steps.scope.outputs.checks == 'true' && matrix.shard == 'main'
+        if: steps.scope.outputs.checks == 'true'
         run: python ci/verify.py static
       - name: Package, extract, run rendering and pixel regressions
         if: steps.scope.outputs.checks == 'true'
-        run: python ci/verify.py packages --shard ${{ matrix.shard }}
+        run: python ci/verify.py packages
       - name: Upload verification logs and rendered images
         if: always() && steps.scope.outputs.checks == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: verification-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.shard }}
+          name: verification-${{ matrix.os }}-${{ matrix.backend }}
           path: target/ci-results/
-          retention-days: 7
-          if-no-files-found: warn
-  repository:
-    # The repository half of the release gate (#58): the whole workspace,
-    # figgy-web included, which `verify.py packages` does not package, and the
-    # playground selftest, whose rendered scenes are uploaded for review.
-    if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
-    name: repository / ubuntu-24.04 / vulkan
-    runs-on: ubuntu-24.04
-    timeout-minutes: 300
-    env:
-      WGPU_BACKEND: vulkan
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-          fetch-depth: 2
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Decide whether the change needs the repository checks
-        id: scope
-        run: python ci/change_scope.py
-      - name: Install Rust
-        if: steps.scope.outputs.checks == 'true'
-        run: rustup toolchain install 1.99.0 --profile minimal
-      - name: Restore the cargo build cache
-        if: steps.scope.outputs.checks == 'true'
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: repository
-          workspaces: |
-            . -> target
-            tools/playground -> target
-      - name: Install Linux build and Vulkan prerequisites
-        if: steps.scope.outputs.checks == 'true'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y pkg-config libx11-dev libxkbcommon-dev libwayland-dev libegl1-mesa-dev mesa-vulkan-drivers libvulkan1
-      - name: Configure headless Linux rendering
-        if: steps.scope.outputs.checks == 'true'
-        shell: bash
-        run: |
-          runtime_dir="$RUNNER_TEMP/figgy-runtime"
-          mkdir -p "$runtime_dir"
-          chmod 700 "$runtime_dir"
-          echo "XDG_RUNTIME_DIR=$runtime_dir" >> "$GITHUB_ENV"
-          if ! compgen -G '/dev/dri/renderD*' > /dev/null; then
-            icd=$(find /usr/share/vulkan/icd.d -name 'lvp_icd*.json' -print -quit)
-            test -n "$icd"
-            echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
-            echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-            echo "LP_NUM_THREADS=3" >> "$GITHUB_ENV"
-            echo "GPU-less runner: using Mesa lavapipe for Vulkan tests"
-          fi
-      - name: Whole workspace tests and doctests
-        if: steps.scope.outputs.checks == 'true'
-        run: cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast -- --test-threads=1
-      - name: Playground selftest
-        if: steps.scope.outputs.checks == 'true'
-        working-directory: tools/playground
-        run: cargo run --locked -- --selftest
-      - name: Upload the selftest scenes
-        if: always() && steps.scope.outputs.checks == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: playground-selftest
-          path: tools/playground/target/playground/selftest/
           retention-days: 7
           if-no-files-found: warn

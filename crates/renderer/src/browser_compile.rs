@@ -213,11 +213,7 @@ pub(crate) async fn render(
         for desc in selected {
             populate(&device, &desc, &module)?;
             for target in Array::from(&get(&get(&desc, "fragment")?, "targets")?).iter() {
-                // A colour target takes the canvas format; an ID target
-                // (the 3D pick's `rgba32uint`) keeps its own.
-                if !target.is_null()
-                    && get(&target, "format")?.as_string().as_deref() != Some("rgba32uint")
-                {
+                if !target.is_null() {
                     set(&target, "format", &format.into())?;
                 }
             }

@@ -16,20 +16,6 @@ from package_docs import audit_document_links, check_checkout
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("figgy-model", "figgy-renderer")
-# The package tests split across CI jobs that run at once. Each named shard
-# runs only its integration test binaries; `main` runs the library tests,
-# every other integration test, the doctests and the GPU numeric and
-# missing-GPU checks; `all` runs everything in one job.
-SHARDS = {
-    "picks": ("pick_draw_agreement",),
-    "decorations": ("decoration_oracle", "vector_export"),
-}
-# The extracted workspace's profile: the root manifest's (see Cargo.toml),
-# which `cargo package` does not carry.
-TEST_PROFILE = (
-    "[profile.test]\nopt-level = 1\n\n"
-    "[profile.test.package.\"*\"]\nopt-level = 3\n"
-)
 RESULTS = ROOT / "target" / "ci-results"
 LOG = None
 
@@ -41,25 +27,18 @@ def report(message):
         LOG.flush()
 
 
-def run(args, *, cwd=ROOT, env=None, capture=False, collect=False):
-    """Run `args`; `capture` returns the output silently, `collect` streams
-    it line by line (so a timeout does not hide it) and returns it too."""
+def run(args, *, cwd=ROOT, env=None, capture=False):
     report(f"+ {shlex.join(map(str, args))}")
     if capture:
         return subprocess.run(args, cwd=cwd, env=env, check=True, text=True,
                               encoding="utf-8", stdout=subprocess.PIPE).stdout
-    lines = []
     with subprocess.Popen(args, cwd=cwd, env=env, text=True, encoding="utf-8",
                           errors="replace", stdout=subprocess.PIPE,
                           stderr=subprocess.STDOUT) as process:
         for line in process.stdout:
-            line = line.rstrip("\r\n")
-            report(line)
-            if collect:
-                lines.append(line)
+            report(line.rstrip("\r\n"))
         if process.wait():
             raise subprocess.CalledProcessError(process.returncode, args)
-    return "\n".join(lines) if collect else None
 
 
 def static():
@@ -117,56 +96,6 @@ def audit_archive(archive, source):
         return result
 
 
-# The GPU numeric tests (#47): the CPU and GPU place points and lines alike
-# at every magnitude, the f64 residual pick selects the right index, the
-# projection oracles match bit for bit, and the shared shader blocks agree
-# with their CPU twins. Each entry names the renderer features it runs with
-# (the full run's, so the binaries are shared), the test target and the
-# test; `None` runs the whole binary.
-NUMERIC_TESTS = (
-    ("serde,cpu-twin", ["--test", "pick_draw_agreement"],
-     "cpu_and_gpu_place_points_alike_at_every_magnitude"),
-    ("serde,cpu-twin", ["--test", "line_area_step"], "log_axis_places_lines_at_every_magnitude"),
-    ("serde,cpu-twin", ["--lib"], "gpu_pick::tests::exact_gpu_f64_residual_selects_point_index"),
-    ("serde,cpu-twin", ["--lib"],
-     "gpu_pick::tests::split_linear_projection_preserves_independent_hi_lo_subtraction"),
-    ("serde,cpu-twin", ["--lib"],
-     "renderer::tests::contour_projection_matches_fixed_four_step_gpu_oracle"),
-    ("serde,cpu-twin", ["--lib"],
-     "data_render::tests::gpu_transform_uses_auto_fit_ssot_bounds_bit_for_bit"),
-    ("serde,cpu-twin", ["--test", "shader_consistency"], None),
-)
-
-
-def numeric_checks(cwd):
-    """Run the GPU numeric tests first and raise on the first red one: a
-    precision regression is not qualified by the hour of tests that follows,
-    so this step is the exception to the policy that a failed binary must
-    not hide the others. Every listed name must produce its result line, so
-    a renamed or feature-gated test cannot drop out of the set silently."""
-    for features, target, name in NUMERIC_TESTS:
-        args = ["cargo", "test", "--offline", "--locked", "-p", "figgy-renderer",
-                "--features", features, *target]
-        if name is None:
-            args += ["--", "--nocapture", "--test-threads=1"]
-        else:
-            args += [name, "--", "--exact", "--nocapture", "--test-threads=1"]
-        label = name or f"{target[-1]} (whole binary)"
-        try:
-            output = run(args, cwd=cwd, collect=True)
-        except subprocess.CalledProcessError as error:
-            raise RuntimeError(f"GPU numeric test red: {label} ({error})") from None
-        # `--nocapture` interleaves the test's own output between its name
-        # and its verdict, so the result summary is the line to read.
-        if name is None:
-            ran = "running 0 tests" not in output and "test result: ok." in output
-        else:
-            ran = "running 1 test" in output and "test result: ok. 1 passed" in output
-        if not ran:
-            raise RuntimeError(f"GPU numeric test did not run: {label}")
-        report(f"PASS: GPU numeric test {label}")
-
-
 def gpu_failure_checks(cwd, *, missing_driver=None):
     env = os.environ.copy()
     if missing_driver is None:
@@ -196,55 +125,7 @@ def gpu_failure_checks(cwd, *, missing_driver=None):
         report(f"PASS: {name} failed on adapter initialization (exit {result.returncode})")
 
 
-def test_targets(extracted):
-    """The integration test binaries of the extracted packages."""
-    metadata = json.loads(run(["cargo", "metadata", "--offline", "--no-deps",
-                               "--format-version", "1"], cwd=extracted, capture=True))
-    return sorted({target["name"] for package in metadata["packages"]
-                   for target in package["targets"] if "test" in target["kind"]})
-
-
-def shard_targets(shard, targets):
-    """The cargo target arguments `shard` runs out of `targets`: a named
-    shard its own binaries, `main` the library and every binary no named
-    shard owns, `all` both. A named binary missing from `targets` is an
-    error, so a renamed suite cannot drop out of CI."""
-    owned = {name for names in SHARDS.values() for name in names}
-    missing = sorted(owned - set(targets))
-    if missing:
-        raise RuntimeError(f"shard test binaries not found: {missing}")
-    if shard == "all":
-        return ["--lib", "--tests"]
-    if shard == "main":
-        return ["--lib", *[arg for name in targets if name not in owned
-                           for arg in ("--test", name)]]
-    return [arg for name in SHARDS[shard] for arg in ("--test", name)]
-
-
-def package_directory():
-    """Where the packages are extracted: `FIGGY_PACKAGE_DIR` when set (a
-    fixed path, so CI can cache its `target/`; the sources are replaced and
-    `target/` kept), else a new temporary directory."""
-    fixed = os.environ.get("FIGGY_PACKAGE_DIR")
-    if not fixed:
-        return tempfile.TemporaryDirectory(prefix="figgy-packages-")
-    directory = Path(fixed).resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    for entry in directory.iterdir():
-        if entry.name != "target":
-            shutil.rmtree(entry) if entry.is_dir() else entry.unlink()
-
-    class Fixed:
-        def __enter__(self):
-            return str(directory)
-
-        def __exit__(self, *exc):
-            return False
-
-    return Fixed()
-
-
-def packages(allow_dirty, shard="all"):
+def packages(allow_dirty):
     # Fetch the locked graph, including test dependencies, before offline extraction.
     run(["cargo", "fetch", "--locked"])
     metadata = json.loads(run(["cargo", "metadata", "--locked", "--no-deps",
@@ -261,7 +142,7 @@ def packages(allow_dirty, shard="all"):
         audits.append(audit_archive(archive, Path(info["manifest_path"]).parent))
     (RESULTS / "package-audit.json").write_text(json.dumps(audits, indent=2) + "\n", encoding="utf-8")
     # A directory outside the checkout catches accidental sibling/source dependencies.
-    with package_directory() as directory:
+    with tempfile.TemporaryDirectory(prefix="figgy-packages-") as directory:
         extracted = Path(directory).resolve()
         if extracted.is_relative_to(ROOT):
             raise RuntimeError("TMPDIR must be outside the source checkout")
@@ -283,8 +164,7 @@ def packages(allow_dirty, shard="all"):
                 package.extractall(extracted, filter="data")
         (extracted / "Cargo.toml").write_text(
             '[workspace]\nresolver = "3"\nmembers = ' + json.dumps(members)
-            + '\n[patch.crates-io]\nfiggy-model = { path = ' + json.dumps(members[0]) + ' }\n\n'
-            + TEST_PROFILE)
+            + '\n[patch.crates-io]\nfiggy-model = { path = ' + json.dumps(members[0]) + ' }\n')
         shutil.copyfile(ROOT / "Cargo.lock", extracted / "Cargo.lock")
         # Normalize only local workspace identities; no external dependency upgrades.
         run(["cargo", "metadata", "--offline", "--format-version", "1"],
@@ -292,47 +172,32 @@ def packages(allow_dirty, shard="all"):
         added = locked_external_packages(extracted / "Cargo.lock") - locked_external_packages(ROOT / "Cargo.lock")
         if added:
             raise RuntimeError(f"extracted tests changed locked dependencies: {added}")
-        # The renderer's own tests enable `cpu-twin` through a path
-        # dev-dependency on itself, which `cargo package` strips, so the
-        # extracted tests name the feature; otherwise the CPU-twin tests
-        # silently drop out of the packaged run (#47).
-        features = "figgy-model/serde,figgy-renderer/serde,figgy-renderer/cpu-twin"
+        features = "figgy-model/serde,figgy-renderer/serde"
         base = ["cargo", "test", "--offline", "--locked", "--workspace", "--features", features]
         # Record the actual backend and adapter even when all tests pass.
         run(["cargo", "test", "--offline", "--locked", "-p", "figgy-renderer",
              "--features", "serde", "--test", "gpu_required", "--", "--nocapture",
              "--test-threads=1"], cwd=extracted)
-        targets = shard_targets(shard, test_targets(extracted))
-        whole = shard in ("all", "main")
-        # The GPU numeric tests come first and a red one raises at once; the
-        # full run below repeats them with the same binaries.
-        if whole:
-            numeric_checks(extracted)
         # A failed unit-test binary must not hide independent chart integration
-        # tests or doctests (the numeric step above is the one exception).
-        # Collect failures, but keep the final exit nonzero.
+        # tests or doctests. Collect failures, but keep the final exit nonzero.
         failures = []
-        runs = [[*base, "--no-fail-fast", *targets, "--", "--test-threads=1", "--nocapture"]]
-        if whole:
-            runs.append([*base, "--no-fail-fast", "--doc"])
-        for args in runs:
+        for args in (
+            [*base, "--no-fail-fast", "--lib", "--tests", "--", "--test-threads=1", "--nocapture"],
+            [*base, "--no-fail-fast", "--doc"],
+        ):
             try:
                 run(args, cwd=extracted)
             except subprocess.CalledProcessError as error:
                 failures.append(str(error))
-        if whole:
-            try:
-                gpu_failure_checks(extracted)
-                if sys.platform.startswith("linux"):
-                    gpu_failure_checks(extracted, missing_driver=extracted / "missing-vulkan-driver.json")
-            except RuntimeError as error:
-                failures.append(str(error))
+        try:
+            gpu_failure_checks(extracted)
+            if sys.platform.startswith("linux"):
+                gpu_failure_checks(extracted, missing_driver=extracted / "missing-vulkan-driver.json")
+        except RuntimeError as error:
+            failures.append(str(error))
         if failures:
             raise RuntimeError("Package verification failed:\n" + "\n".join(failures))
-        if whole:
-            report("PASS: extracted package tests, doctests, and missing-GPU failure checks")
-        else:
-            report(f"PASS: extracted package tests of the {shard} shard")
+        report("PASS: extracted package tests, doctests, and missing-GPU failure checks")
 
 
 def main():
@@ -341,8 +206,6 @@ def main():
     parser.add_argument("stage", choices=("static", "packages"))
     parser.add_argument("--allow-dirty", action="store_true",
                         help="allow local uncommitted sources when creating archives")
-    parser.add_argument("--shard", choices=("all", "main", *SHARDS), default="all",
-                        help="the package tests to run (packages stage only)")
     args = parser.parse_args()
     RESULTS.mkdir(parents=True, exist_ok=True)
     images = RESULTS / "images"
@@ -351,15 +214,14 @@ def main():
                 "FIGGY_INTERACTION_ARTIFACTS"):
         os.environ.setdefault(key, str(images))
     os.environ.setdefault("FIGGY_SHADER_COMPILE_REPORT", str(RESULTS / "shader-compilation-native.json"))
-    log_name = args.stage if args.shard == "all" else f"{args.stage}-{args.shard}"
-    with (RESULTS / f"{log_name}.log").open("w", encoding="utf-8") as log:
+    with (RESULTS / f"{args.stage}.log").open("w", encoding="utf-8") as log:
         LOG = log
         report(f"Platform: {sys.platform}; requested backend: {os.environ.get('WGPU_BACKEND', 'automatic')}")
         try:
             if args.stage == "static":
                 static()
             else:
-                packages(args.allow_dirty, args.shard)
+                packages(args.allow_dirty)
         except Exception as error:
             report(f"FAIL: {error}")
             raise

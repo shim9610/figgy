@@ -7,9 +7,7 @@
 use renderer::axis_render::try_raster_chart_to_rgba;
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, Rect, Side};
-use renderer::{
-    AxisElement, ColorBarAxisElement, Config, CpuTextMeasure, Selectable, SelectionGeometry,
-};
+use renderer::{AxisElement, ColorBarAxisElement, Config, CpuTextMeasure, Selectable};
 
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
@@ -80,7 +78,7 @@ fn check(name: &str, cfg: &Config, hidden: &Config, element: &dyn Selectable, ru
     let selection = element
         .selection_box(cfg, &measure)
         .unwrap_or_else(|| panic!("{name}: no selection box"))
-        .rect()
+        .rect
         .expanded(1.0);
     let mut strong = 0;
     for y in 0..h {
@@ -312,7 +310,7 @@ fn an_axis_title_is_hit_where_its_panel_draws_it() {
     let selection = element
         .selection_box(&cfg, &measure)
         .unwrap()
-        .rect()
+        .rect
         .expanded(1.0);
     let (w, h) = (WIDTH as usize, HEIGHT as usize);
     let mut strong = 0;

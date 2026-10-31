@@ -167,16 +167,8 @@ fn remap_resident(series: &mut SeriesConfig, remove_maps: bool) {
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
-        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::CategoryBars { .. }
-        | DataRenderType::BoxPlot { .. }
-        | DataRenderType::RangeBars { .. }
-        | DataRenderType::Radar { .. }
-        | DataRenderType::Ternary { .. }
-        | DataRenderType::Parallel { .. }
-        | DataRenderType::Streamlines { .. }
         | DataRenderType::Vector { .. } => unreachable!(),
     };
     scatter.point_style_index_column = (!remove_maps).then(|| "rindex".into());
@@ -1424,17 +1416,12 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                             bar_style_overrides: None,
                         },
                     },
-                    1 => DataRenderType::Heatmap {
-                        matrix,
-                        fill,
-                        surface: None,
-                    },
+                    1 => DataRenderType::Heatmap { matrix, fill },
                     2 => DataRenderType::Contour { matrix, contour },
                     3 => DataRenderType::HeatmapContour {
                         matrix,
                         fill,
                         contour,
-                        surface: None,
                     },
                     _ => unreachable!(),
                 };
@@ -1443,7 +1430,6 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                 resident.y_column = "ry".into();
                 match &mut resident.render_type {
                     DataRenderType::Heatmap { matrix, .. }
-                    | DataRenderType::RgbImage { red: matrix, .. }
                     | DataRenderType::Contour { matrix, .. }
                     | DataRenderType::HeatmapContour { matrix, .. } => {
                         matrix.columns = vec!["rz".into()]
@@ -1458,13 +1444,6 @@ fn styled_stream_suppressed_histogram_and_fields_are_exact_noops() {
                     | DataRenderType::LineScatterErrorbarY { .. }
                     | DataRenderType::LineScatterErrorbarXY { .. }
                     | DataRenderType::Histogram { .. }
-                    | DataRenderType::CategoryBars { .. }
-                    | DataRenderType::BoxPlot { .. }
-                    | DataRenderType::RangeBars { .. }
-                    | DataRenderType::Radar { .. }
-                    | DataRenderType::Ternary { .. }
-                    | DataRenderType::Parallel { .. }
-                    | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
                 let resident_id = r.register_chart(config.clone(), vec![resident]).unwrap();
@@ -1580,7 +1559,6 @@ fn streamed_line_capability_matches_connected_arc_and_heatmap_paths() {
             shading: Shading::Flat,
             opacity: 1.0,
         },
-        surface: None,
     };
     assert!(
         PrepareContext::validate_stream_series(&crate::default::default_config(), &series).is_ok()

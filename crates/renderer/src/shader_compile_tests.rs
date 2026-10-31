@@ -120,7 +120,11 @@ fn all_shader_compilation_times_and_entry_coverage() {
             },
         );
     }
-    crate::radial::RadialRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::radial::RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::categorical::CategoricalRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)
+        .unwrap();
+    crate::boxplot::BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    crate::radar::RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm).unwrap();
     let capture = session.finish();
     if let Some(path) = std::env::var_os("FIGGY_SHADER_COMPILE_REPORT") {
         std::fs::write(path, serde_json::to_vec_pretty(&capture.json()).unwrap()).unwrap();
@@ -165,11 +169,6 @@ fn all_shader_compilation_times_and_entry_coverage() {
                     | "pick_exact_candidates"
                     | "pick_reduce_candidates"
                     | "pick_histogram_bin"
-                    | "pick_category_bar"
-                    | "pick_box_plot"
-                    | "pick_range_bar"
-                    | "pick_violin"
-                    | "pick_value_labels"
                     | "scan_block"
             )
         ) {

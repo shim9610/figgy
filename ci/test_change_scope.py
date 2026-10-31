@@ -11,7 +11,7 @@ class ChangeScopeTests(unittest.TestCase):
                                        ".github/PULL_REQUEST_TEMPLATE.md"]))
 
     def test_crate_markdown_runs(self):
-        # Packaged and link-checked; the included guides are doctested.
+        # Packaged, doctested and parsed by tests.
         for path in ("crates/renderer/INTERACTION.md", "crates/model/README.md",
                      "crates/renderer/src/data_render/SHADER_COMMON.md"):
             self.assertTrue(needs_checks(["README.md", path]), path)

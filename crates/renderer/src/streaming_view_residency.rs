@@ -968,7 +968,6 @@ mod tests {
                 label: None,
                 x_column: "x".into(),
                 y_column: "y".into(),
-                z_column: None,
                 render_type: DataRenderType::Line {
                     line: crate::data_config::DataLineStyleConfig {
                         line_color: crate::Color::BLACK,

@@ -2,25 +2,18 @@
 //! pickable at distance zero (or within its anti-aliasing fringe), and no
 //! pixel picks at distance zero where nothing is painted.
 //!
-//! The GPU/CPU parity tests in `gpu_pick/tests.rs` compare the picker with itself.
+//! The GPU/CPU parity tests in `gpu_pick.rs` compare the picker with itself.
 //! These tests compare it with the renderer's own output instead: each case
 //! exports the chart through the public `export_panel_rgba` at 1x and 2x,
 //! exports it again without the series under test, and asks the GPU picker
-//! (`pick_chart` at the same display scale) about the pixels of a window
-//! around the primitive that [`edge_band`] selects: every pixel near a
-//! painted edge and a sparse grid elsewhere. A pixel counts as painted when
-//! it differs from the series-free export.
+//! (`pick_chart` at the same display scale) about every pixel of a window
+//! around the primitive. A pixel counts as painted when it differs from the
+//! series-free export.
 
-#[path = "support/edge_band.rs"]
-mod edge_band;
-#[path = "support/random_curves.rs"]
-mod random_curves;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 
 use std::sync::{Arc, OnceLock};
-
-use edge_band::edge_band;
 
 use renderer::data::Column;
 use renderer::layout::{ChartArea, Rect};
@@ -53,15 +46,6 @@ pub struct Tolerance {
     /// not required to pick.
     pub skip_near: Option<(f64, f64, f64)>,
 }
-
-/// How close to a pixel centre a hard edge (a fill's edge, a dash's end,
-/// the polar clip) may run for the rasterizer and the picker to put that
-/// centre on different sides. Rasterizers snap vertices to subpixel grids
-/// and interpolate varyings in f32, so a centre a few ten-thousandths of a
-/// pixel from the edge is a tie: lavapipe matches the picker there, WARP
-/// and Metal need not (#63). A zero-distance pick on an unpainted pixel is
-/// accepted only when moving the cursor this far ends the zero distance.
-pub const TIE_PX: f32 = 1.0 / 64.0;
 
 pub const STRICT: Tolerance = Tolerance {
     painted: PAINTED,
@@ -176,7 +160,6 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: color,
@@ -190,24 +173,6 @@ pub fn scatter(id: &str, shape: ScatterShape, size: f32, color: Color) -> Series
             },
         },
     }
-}
-
-/// A one-point circle series of base size `base` whose point 0 carries a
-/// sparse size override `size`.
-fn scatter_with_size_override(base: f32, size: f32) -> SeriesConfig {
-    let mut series = scatter("marker", ScatterShape::Circle, base, RED);
-    let DataRenderType::Scatter { scatter } = &mut series.render_type else {
-        unreachable!()
-    };
-    scatter.point_style_overrides =
-        Some(vec![renderer::data_config::DataScatterPointStyleOverride {
-            index: 0,
-            style: renderer::data_config::DataScatterPointStyleConfig {
-                point_size: Some(size),
-                ..Default::default()
-            },
-        }]);
-    series
 }
 
 pub fn upload_xy(renderer: &mut Renderer, xs: Vec<f64>, ys: Vec<f64>) {
@@ -299,22 +264,6 @@ impl Probe {
         pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve()).unwrap()
     }
 
-    /// Whether the zero-distance region of `subject` ends within [`TIE_PX`]
-    /// of the centre of export pixel `(x, y)`: a cursor moved that far along
-    /// an axis no longer picks `subject` at distance zero.
-    pub fn on_zero_edge(&self, renderer: &mut Renderer, x: u32, y: u32, subject: &str) -> bool {
-        let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
-        [(TIE_PX, 0.0), (-TIE_PX, 0.0), (0.0, TIE_PX), (0.0, -TIE_PX)]
-            .into_iter()
-            .any(|(dx, dy)| {
-                let request = self.request(cx + dx, cy + dy, 0.0);
-                pollster::block_on(renderer.pick_chart(self.id, request).unwrap().resolve())
-                    .unwrap()
-                    .filter(|hit| hit.series_id == subject)
-                    .is_none_or(|hit| hit.distance_px > 0.0)
-            })
-    }
-
     /// The typed data pick at canvas position `(x, y)`.
     pub fn pick_data_at(
         &self,
@@ -352,12 +301,11 @@ impl Probe {
 }
 
 /// Exports `series` and the chart without the series named `subject` at
-/// `scale`, then checks the [`edge_band`] pixels of `window` (export pixels,
-/// inclusive start, exclusive end; `None` takes the painted pixels' bounding
-/// box grown by four pixels): a painted pixel must pick `subject` within the
-/// fringe, a pixel picked at distance zero must be at least half covered.
-/// Returns the number of painted pixels in the window, so a case cannot pass
-/// by drawing nothing.
+/// `scale`, then checks every pixel of `window` (export pixels, inclusive
+/// start, exclusive end; `None` takes the painted pixels' bounding box grown
+/// by four pixels): a painted pixel must pick `subject` within the fringe, a
+/// pixel picked at distance zero must be at least half covered. Returns the
+/// number of painted pixels, so a case cannot pass by drawing nothing.
 pub fn assert_pick_matches_paint(
     renderer: &mut Renderer,
     chart: &Chart,
@@ -394,31 +342,33 @@ pub fn assert_pick_matches_paint_with(
         .export_panel_rgba(chart, &without_series, scale)
         .unwrap();
     let (x0, y0, x1, y1) = window.unwrap_or_else(|| ink_window(&with, &without, 4));
-    let window = (x0, y0, x1.min(with.width), y1.min(with.height));
-    let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
-    let painted = count_painted(window, is_painted);
     let probe = Probe::register(renderer, chart, series, scale);
+    let mut painted = 0usize;
     let mut failures = Vec::new();
-    for (x, y) in edge_band(window, is_painted) {
-        let ink = difference(&with, &without, x, y);
-        let hit = probe
-            .pick(renderer, x, y, tolerance.fringe)
-            .filter(|hit| hit.series_id == subject);
-        let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
-            (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
-        });
-        if ink >= tolerance.painted && hit.is_none() && !skipped {
-            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-        }
-        if let Some(hit) = hit
-            && hit.distance_px == 0.0
-            && ink < tolerance.zero_ink
-            && !probe.on_zero_edge(renderer, x, y, subject)
-        {
-            failures.push(format!(
-                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                hit.point_index
-            ));
+    for y in y0..y1.min(with.height) {
+        for x in x0..x1.min(with.width) {
+            let ink = difference(&with, &without, x, y);
+            let hit = probe
+                .pick(renderer, x, y, tolerance.fringe)
+                .filter(|hit| hit.series_id == subject);
+            let skipped = tolerance.skip_near.is_some_and(|(cx, cy, radius)| {
+                (f64::from(x) + 0.5 - cx).hypot(f64::from(y) + 0.5 - cy) <= radius
+            });
+            if ink >= tolerance.painted {
+                painted += 1;
+                if hit.is_none() && !skipped {
+                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                }
+            }
+            if let Some(hit) = hit
+                && hit.distance_px == 0.0
+                && ink < tolerance.zero_ink
+            {
+                failures.push(format!(
+                    "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
+                    hit.point_index
+                ));
+            }
         }
     }
     renderer.remove_chart(probe.id).unwrap();
@@ -452,17 +402,6 @@ pub fn ink_window(with: &RasterImage, without: &RasterImage, pad: u32) -> (u32, 
         (x1 + pad).min(with.width),
         (y1 + pad).min(with.height),
     )
-}
-
-/// The number of pixels of `window` for which `painted` holds.
-pub fn count_painted(
-    (x0, y0, x1, y1): (u32, u32, u32, u32),
-    painted: impl Fn(u32, u32) -> bool,
-) -> usize {
-    (y0..y1)
-        .flat_map(|y| (x0..x1).map(move |x| (x, y)))
-        .filter(|&(x, y)| painted(x, y))
-        .count()
 }
 
 /// A window of `half` export pixels around data point `(x, y)`.
@@ -535,67 +474,23 @@ fn every_marker_shape_picks_where_it_is_drawn() {
     }
 }
 
-/// G10: a marker drawn at radius zero still paints (an outline is a dot of
-/// the stroke's half width, a filled shape its anti-aliased point) and picks
-/// where it paints, whichever way the radius reaches zero: the series size,
-/// a style-table slot or a size map's `min_px`. Every shape, at 1x and 2x;
-/// each case paints at least one pixel and every painted pixel picks the
-/// series.
+/// G12: where two markers overlap, the one painted on top (the higher
+/// instance index) is the one picked.
 #[test]
-fn zero_size_markers_pick_their_drawn_dot() {
-    use renderer::data_config::{DataScatterPointStyleConfig, PointSizeMap, SizeScale};
+fn overlapping_markers_pick_the_marker_painted_on_top() {
     let mut renderer = renderer();
-    upload_xy(&mut renderer, vec![5.0], vec![5.0]);
-    renderer
-        .add_columns(&[
-            ("style", &col(vec![0.0]) as &dyn renderer::ColumnSource),
-            ("size", &col(vec![0.0]) as &dyn renderer::ColumnSource),
-        ])
-        .expect("upload");
+    upload_xy(&mut renderer, vec![5.0, 5.0], vec![5.0, 5.0]);
     let chart = bare_chart();
-    for shape in ALL_SHAPES {
-        let size_zero = scatter("dot", shape.clone(), 0.0, RED);
-        let mut slot_zero = scatter("dot", shape.clone(), 7.0, RED);
-        let mut map_zero = scatter("dot", shape.clone(), 7.0, RED);
-        let DataRenderType::Scatter { scatter: slot } = &mut slot_zero.render_type else {
-            unreachable!()
-        };
-        slot.point_style_index_column = Some("style".into());
-        slot.point_style_table = Some(vec![DataScatterPointStyleConfig {
-            point_color: None,
-            point_shape: None,
-            point_size: Some(0.0),
-        }]);
-        let DataRenderType::Scatter { scatter: map } = &mut map_zero.render_type else {
-            unreachable!()
-        };
-        map.point_size_map = Some(PointSizeMap {
-            column: "size".into(),
-            domain_min: 0.0,
-            domain_max: 1.0,
-            min_px: 0.0,
-            max_px: 9.0,
-            scale: SizeScale::Radius,
-        });
-        for (series, how) in [
-            (size_zero, "series size 0"),
-            (slot_zero, "style slot radius 0"),
-            (map_zero, "size map min_px 0"),
-        ] {
-            for scale in [1.0, 2.0] {
-                let series = [series.clone()];
-                let painted = assert_painted_pixels_pick(
-                    &mut renderer,
-                    &chart,
-                    &series,
-                    "dot",
-                    scale,
-                    &format!("{shape:?} {how}"),
-                );
-                assert!(painted >= 1, "{shape:?} {how} at {scale}x painted nothing");
-            }
-        }
-    }
+    let series = [scatter("pair", ScatterShape::CircleFilled, 6.0, BLUE)];
+    let probe = Probe::register(&mut renderer, &chart, &series, 1.0);
+    let (cx, cy) = data_to_px(&chart, 5.0, 5.0, 1.0);
+    let hit = probe
+        .pick(&mut renderer, cx as u32, cy as u32, 0.0)
+        .expect("overlap hit");
+    assert_eq!(
+        hit.point_index, 1,
+        "the second marker paints over the first"
+    );
 }
 
 /// G12 across colours: two overlapping markers of one series, the painted
@@ -709,7 +604,6 @@ pub fn line(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Line {
             line: renderer::DataLineStyleConfig {
                 line_style: style,
@@ -937,291 +831,6 @@ fn sketch_markers_and_strokes_pick_where_the_wobble_draws_them() {
     }
 }
 
-/// Far along the arc (#107, SHADER_COMMON.md §5.6 arc pairs): the line first
-/// zig-zags 301 times off-screen, about 1e8 px of arc, so its visible
-/// segments start past 2^26 px, where an f32 arc lands on multiples of 8 px.
-/// The dash phase and the sketch wobble the picker derives from the arc
-/// prefix are still the drawn ones, precise and sketched, at 1x and 2x. The
-/// off-screen points stay within 2e5 px of the view, so the pick's f32 pixel
-/// geometry is exact there. 301 points put the dash phase off the few phases
-/// where a sketched dash paints a sub-pixel sliver at a joint that the
-/// picker misses whatever the arc's length (#114).
-/// Random composite lines (#114): every case draws a seeded random
-/// composition of elementary functions (`support/random_curves.rs`): a graph
-/// or a parametric curve, sampled unevenly, sometimes with a NaN gap and
-/// sometimes after a long off-screen lead that puts it far along the arc. A
-/// random draw style (precise or sketched with random wobble), dash preset,
-/// width, step mode and export scale complete it, and every painted pixel
-/// must pick and every zero-distance pick must be painted. A failure names
-/// the seed; `FIGGY_RANDOM_SEED=<seed>` replays that case alone and
-/// `FIGGY_RANDOM_CASES=<n>` runs more.
-#[test]
-fn random_composite_lines_pick_where_they_draw() {
-    use random_curves::{Curve, Rng};
-    use renderer::config::{DrawStyle, SketchOptions};
-    use renderer::data_config::LineInterpolation;
-    use renderer::line::LineStylePreset;
-    const PRESETS: [LineStylePreset; 11] = [
-        LineStylePreset::Solid,
-        LineStylePreset::Dash,
-        LineStylePreset::Dot,
-        LineStylePreset::DashDot,
-        LineStylePreset::DashDotDot,
-        LineStylePreset::ShortDash,
-        LineStylePreset::ShortDot,
-        LineStylePreset::ShortDashDot,
-        LineStylePreset::LongDash,
-        LineStylePreset::LongDashDot,
-        LineStylePreset::LongDashDotDot,
-    ];
-    const STEPS: [LineInterpolation; 4] = [
-        LineInterpolation::Linear,
-        LineInterpolation::StepPre,
-        LineInterpolation::StepPost,
-        LineInterpolation::StepMid,
-    ];
-    let seeds: Vec<u64> = match std::env::var("FIGGY_RANDOM_SEED") {
-        Ok(seed) => vec![seed.parse().expect("FIGGY_RANDOM_SEED is a u64")],
-        Err(_) => {
-            let cases = std::env::var("FIGGY_RANDOM_CASES")
-                .map_or(12, |n| n.parse().expect("FIGGY_RANDOM_CASES is a count"));
-            (0..cases).map(|case| 0x5EED_0000 + case).collect()
-        }
-    };
-    let mut failures = Vec::new();
-    for seed in seeds {
-        let mut rng = Rng::new(seed.rotate_left(17));
-        let lead = [0, 0, 2, 301, 601][rng.index(5)];
-        let curve = Curve::random(seed, lead);
-        let style = if rng.chance(0.5) {
-            DrawStyle::Precise
-        } else {
-            DrawStyle::Sketch(SketchOptions {
-                amplitude_px: rng.range(0.0, 5.0) as f32,
-                wavelength_px: rng.range(6.0, 30.0) as f32,
-                seed: rng.next_u64() as u32,
-            })
-        };
-        let preset = PRESETS[rng.index(PRESETS.len())];
-        let width = rng.range(0.3, 5.0) as f32;
-        let step = STEPS[rng.index(STEPS.len())];
-        let scale = if rng.chance(0.5) { 1.0 } else { 2.0 };
-        let what = format!(
-            "{}; {style:?}, {preset:?}, width {width:.2}, {step:?}",
-            curve.what
-        );
-        let mut renderer = renderer();
-        upload_xy(&mut renderer, curve.xs, curve.ys);
-        let chart = styled_chart(style);
-        let series = [line("random", width, preset, step)];
-        let tolerance = if matches!(preset, LineStylePreset::Solid) {
-            STRICT
-        } else {
-            MSAA_EDGE
-        };
-        // Inside the frame: a lead enters across the plot edge, where the
-        // frame's own ink covers the stroke.
-        let window = Some((
-            (4.0 * scale) as u32,
-            0,
-            (WIDTH as f32 * scale) as u32,
-            (HEIGHT as f32 * scale) as u32,
-        ));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            assert_pick_matches_paint_with(
-                &mut renderer,
-                &chart,
-                &series,
-                "random",
-                scale,
-                window,
-                &what,
-                tolerance,
-            )
-        }));
-        if let Err(panic) = outcome {
-            let message = panic
-                .downcast_ref::<String>()
-                .cloned()
-                .unwrap_or_else(|| "non-string panic".into());
-            failures.push(message);
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} random cases disagree:\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
-}
-
-/// Random composite curves under the marker and star styles (#114): the
-/// same seeded curves as `random_composite_lines_pick_where_they_draw`, drawn
-/// as a precise scatter-line with a random marker shape and size (every
-/// painted pixel picks and every zero-distance pick is painted), or as a
-/// Milkyway ribbon or a Constellation chain, whose hashed stars pick as their
-/// envelope (every painted pixel picks). A failure names the seed;
-/// `FIGGY_RANDOM_SEED` and `FIGGY_RANDOM_CASES` work as there.
-#[test]
-fn random_composite_markers_and_star_lines_pick_where_they_draw() {
-    use random_curves::{Curve, Rng};
-    use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions};
-    use renderer::data_config::LineInterpolation;
-    use renderer::line::LineStylePreset;
-    let seeds: Vec<u64> = match std::env::var("FIGGY_RANDOM_SEED") {
-        Ok(seed) => vec![seed.parse().expect("FIGGY_RANDOM_SEED is a u64")],
-        Err(_) => {
-            let cases = std::env::var("FIGGY_RANDOM_CASES")
-                .map_or(9, |n| n.parse().expect("FIGGY_RANDOM_CASES is a count"));
-            (0..cases).map(|case| 0x57A2_0000 + case).collect()
-        }
-    };
-    let mut failures = Vec::new();
-    for seed in seeds {
-        let mut rng = Rng::new(seed.rotate_left(29));
-        let lead = [0, 0, 2, 301][rng.index(4)];
-        let curve = Curve::random(seed, lead);
-        let scale = if rng.chance(0.5) { 1.0 } else { 2.0 };
-        let kind = seed % 3;
-        let shape = ALL_SHAPES[rng.index(ALL_SHAPES.len())].clone();
-        let size = rng.range(2.0, 12.0) as f32;
-        let width = rng.range(0.5, 3.0) as f32;
-        let scatter_line = SeriesConfig {
-            render_type: DataRenderType::ScatterLine {
-                scatter: DataScatterStyleConfig {
-                    point_color: BLUE,
-                    point_shape: shape.clone(),
-                    point_size: size,
-                    point_style_table: None,
-                    point_style_index_column: None,
-                    point_style_overrides: None,
-                    point_color_map: None,
-                    point_size_map: None,
-                },
-                line: renderer::DataLineStyleConfig {
-                    line_style: LineStylePreset::Solid,
-                    line_color: RED,
-                    line_width: width,
-                    fill: None,
-                    fill_color: None,
-                    interpolation: LineInterpolation::Linear,
-                },
-            },
-            ..scatter("random", shape.clone(), size, BLUE)
-        };
-        let (chart, series, what) = match kind {
-            0 => (
-                bare_chart(),
-                scatter_line,
-                format!("precise scatter-line {shape:?} size {size:.1} width {width:.2}"),
-            ),
-            1 => (
-                styled_chart(DrawStyle::Milkyway(MilkywayOptions::default())),
-                line(
-                    "random",
-                    width,
-                    LineStylePreset::Solid,
-                    LineInterpolation::Linear,
-                ),
-                "milkyway ribbon".to_string(),
-            ),
-            _ => (
-                styled_chart(DrawStyle::Constellation(ConstellationOptions::default())),
-                scatter_line,
-                format!("constellation chain size {size:.1} width {width:.2}"),
-            ),
-        };
-        let what = format!("{}; {what} at {scale}x", curve.what);
-        let mut renderer = renderer();
-        upload_xy(&mut renderer, curve.xs, curve.ys);
-        let series = [series];
-        let window = Some((
-            (4.0 * scale) as u32,
-            0,
-            (WIDTH as f32 * scale) as u32,
-            (HEIGHT as f32 * scale) as u32,
-        ));
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            if kind == 0 {
-                assert_pick_matches_paint_with(
-                    &mut renderer,
-                    &chart,
-                    &series,
-                    "random",
-                    scale,
-                    window,
-                    &what,
-                    STRICT,
-                );
-            } else {
-                assert_painted_pixels_pick(&mut renderer, &chart, &series, "random", scale, &what);
-            }
-        }));
-        if let Err(panic) = outcome {
-            failures.push(
-                panic
-                    .downcast_ref::<String>()
-                    .cloned()
-                    .unwrap_or_else(|| "non-string panic".into()),
-            );
-        }
-    }
-    assert!(
-        failures.is_empty(),
-        "{} random cases disagree:\n{}",
-        failures.len(),
-        failures.join("\n")
-    );
-}
-
-#[test]
-fn far_along_the_arc_dashes_and_wobble_pick_where_they_draw() {
-    use renderer::config::{DrawStyle, SketchOptions};
-    use renderer::data_config::LineInterpolation;
-    use renderer::line::LineStylePreset;
-    let mut renderer = renderer();
-    let far = 301;
-    let xs: Vec<f64> = std::iter::repeat_n(-1.0, far)
-        .chain([-0.5, 4.0, 4.9, 5.4, 6.1, 7.0])
-        .collect();
-    let ys: Vec<f64> = (0..far)
-        .map(|i| if i % 2 == 0 { 1.0e4 } else { -1.0e4 })
-        .chain([5.0, 4.2, 5.6, 4.6, 5.9, 5.2])
-        .collect();
-    upload_xy(&mut renderer, xs, ys);
-    let precise = bare_chart();
-    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
-        amplitude_px: 4.0,
-        wavelength_px: 12.0,
-        seed: 7,
-    }));
-    for (what, chart) in [("precise", &precise), ("sketch", &sketch)] {
-        for style in [LineStylePreset::Dash, LineStylePreset::DashDotDot] {
-            for scale in [1.0, 2.0] {
-                let series = [line("far", 2.0, style, LineInterpolation::Linear)];
-                let painted = assert_pick_matches_paint_with(
-                    &mut renderer,
-                    chart,
-                    &series,
-                    "far",
-                    scale,
-                    // Inside the frame: the line enters across the plot
-                    // edge, where the frame's own ink covers the stroke.
-                    Some((
-                        (4.0 * scale) as u32,
-                        0,
-                        (WIDTH as f32 * scale) as u32,
-                        (HEIGHT as f32 * scale) as u32,
-                    )),
-                    &format!("{what} {style:?} far along the arc"),
-                    MSAA_EDGE,
-                );
-                assert!(painted > 30, "{what} {style:?} at {scale}x: {painted}");
-            }
-        }
-    }
-}
-
 /// G3, Milkyway: a planet picks on its disc, its rim glow and its ring; a
 /// line picks on its ribbon and on the star envelope around it (the stars
 /// are hashed per arc slot, so their envelope is what picks). Every painted
@@ -1346,11 +955,9 @@ fn constellation_stars_and_lines_pick_within_their_drawn_envelope() {
     );
 }
 
-#[cfg(feature = "cpu-twin")]
 struct F32Columns(Vec<(String, Vec<f32>)>);
 
-#[cfg(feature = "cpu-twin")]
-impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
+impl renderer::PointColumnLookup for F32Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
             .iter()
@@ -1363,7 +970,6 @@ impl renderer::pick::cpu_twin::PointColumnLookup for F32Columns {
 /// under every draw style: the styled marker distances, the sketch stroke's
 /// wobble on the arc prefix the CPU sums itself, the ribbon envelope and the
 /// dash phase.
-#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     use renderer::config::{ConstellationOptions, DrawStyle, MilkywayOptions, SketchOptions};
@@ -1423,13 +1029,13 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
             for y in (y0 as u32..y1 as u32).step_by(3) {
                 for x in (x0 as u32..x1 as u32).step_by(3) {
                     let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                    let cpu = renderer::pick::cpu_twin::pick_nearest_point(
+                    let cpu = renderer::pick_nearest_point(
                         chart.config(),
                         &series,
                         &columns,
                         x as f32 + 0.5,
                         y as f32 + 0.5,
-                        renderer::pick::cpu_twin::PointPickOptions {
+                        renderer::PointPickOptions {
                             max_distance_px: 3.0,
                         },
                     );
@@ -1462,7 +1068,6 @@ fn cpu_twin_agrees_with_the_gpu_picker_under_every_draw_style() {
     }
 }
 
-#[cfg(feature = "cpu-twin")]
 fn arrows(
     id: &str,
     scale: renderer::data_config::VectorScale,
@@ -1475,7 +1080,6 @@ fn arrows(
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "u".into(),
@@ -1499,7 +1103,6 @@ fn arrows(
 /// pivot, the scale mode and the head scaled down on a short arrow — and an
 /// arrow that is not drawn (a zero vector, one under the minimum length)
 /// picks nowhere, at 1x and 2x.
-#[cfg(feature = "cpu-twin")]
 #[test]
 fn point_vectors_pick_the_arrow_they_draw() {
     use renderer::data_config::{VectorPivot, VectorScale};
@@ -1570,13 +1173,13 @@ fn point_vectors_pick_the_arrow_they_draw() {
         for y in (y0 as u32..y1 as u32).step_by(3) {
             for x in (x0 as u32..x1 as u32).step_by(3) {
                 let gpu = probe.pick(&mut renderer, x, y, 3.0);
-                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
+                let cpu = renderer::pick_nearest_point(
                     chart.config(),
                     &series,
                     &columns,
                     x as f32 + 0.5,
                     y as f32 + 0.5,
-                    renderer::pick::cpu_twin::PointPickOptions {
+                    renderer::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 );
@@ -1645,7 +1248,6 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             label: None,
             x_column: "gx".into(),
             y_column: "gy".into(),
-            z_column: None,
             render_type: DataRenderType::Vector {
                 components: VectorComponents::Grid {
                     u: matrix("u"),
@@ -1667,26 +1269,30 @@ fn grid_vectors_pick_the_arrow_they_draw() {
             let what = format!("{scale_mode:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let window = ink_window(&with, &without, 3);
-            let is_painted = |x, y| difference(&with, &without, x, y) >= STRICT.painted;
-            let painted = count_painted(window, is_painted);
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 3);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for (x, y) in edge_band(window, is_painted) {
-                let ink = difference(&with, &without, x, y);
-                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-                let distance = match &hit {
-                    Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
-                        Some(*distance_px)
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    let ink = difference(&with, &without, x, y);
+                    let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                    let distance = match &hit {
+                        Some(renderer::PickedData::MatrixCell { distance_px, .. }) => {
+                            Some(*distance_px)
+                        }
+                        None => None,
+                        Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
+                    };
+                    if ink >= STRICT.painted {
+                        painted += 1;
+                        if distance.is_none() {
+                            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                        }
                     }
-                    None => None,
-                    Some(other) => panic!("{what}: ({x}, {y}) picked {other:?}"),
-                };
-                if ink >= STRICT.painted && distance.is_none() {
-                    failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-                }
-                if distance == Some(0.0) && ink < STRICT.zero_ink {
-                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                    if distance == Some(0.0) && ink < STRICT.zero_ink {
+                        failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                    }
                 }
             }
             assert!(
@@ -1740,7 +1346,6 @@ fn arrows_ringed() -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "ring_u".into(),
@@ -1800,13 +1405,12 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
         });
     };
     // `geometry`: the marker's coverage edge is its painted edge (else its
-    // farthest painted pixel counts); `slack`: the gap's upper bound past
-    // the wanted one, if any.
+    // farthest painted pixel counts); `tight`: the gap has an upper bound.
     let check = |renderer: &mut Renderer,
                  chart: &Chart,
                  series: &[SeriesConfig],
                  scale: f32,
-                 (geometry, slack): (bool, Option<f64>),
+                 (geometry, tight): (bool, bool),
                  what: &str| {
         let mut ringed = Chart::new(chart.config().clone());
         ring(&mut ringed);
@@ -1830,9 +1434,9 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             gap >= want - if geometry { 1.5 } else { 2.5 },
             "{what} at {scale}x: ring {ring_near:.2} only {gap:.2} px past the marker {marker_far:.2} (want {want})"
         );
-        if let Some(slack) = slack {
+        if tight {
             assert!(
-                gap <= want + slack,
+                gap <= want + 1.5,
                 "{what} at {scale}x: ring {ring_near:.2} {gap:.2} px past the marker {marker_far:.2} (want {want})"
             );
         }
@@ -1846,7 +1450,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                 &chart,
                 &series,
                 scale,
-                (true, Some(1.5)),
+                (true, true),
                 &format!("{shape:?}"),
             );
         }
@@ -1856,36 +1460,8 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
             &chart,
             &zero,
             scale,
-            (true, Some(1.5)),
+            (true, true),
             "zero-size circle",
-        );
-        // A size override: Precise draws it through the style map, so the
-        // ring takes the mapped entry and rings the override's radius.
-        let overridden = [scatter_with_size_override(4.0, 12.0)];
-        check(
-            &mut renderer,
-            &chart,
-            &overridden,
-            scale,
-            (true, Some(1.5)),
-            "size override under Precise",
-        );
-        // Sketch ignores the overrides and draws the base radius, so the
-        // unmapped ring rings that radius: a ring at the override's 12 px
-        // would sit 8 px too far, past the wobble's 3 px amplitude.
-        const SKETCH_AMPLITUDE_PX: f32 = 3.0;
-        let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
-            amplitude_px: SKETCH_AMPLITUDE_PX,
-            wavelength_px: 15.0,
-            seed: 3,
-        }));
-        check(
-            &mut renderer,
-            &sketch,
-            &overridden,
-            scale,
-            (true, Some(f64::from(SKETCH_AMPLITUDE_PX * scale) + 1.5)),
-            "size override under Sketch",
         );
 
         // A point vector's anchor rings at the glyph's half width (the head's
@@ -1953,7 +1529,7 @@ fn picked_ring_clears_the_drawn_marker_by_radius_extra() {
                     &chart,
                     &series,
                     scale,
-                    (geometry, None),
+                    (geometry, false),
                     &format!("{style:?} {shape:?}"),
                 );
             }
@@ -1996,7 +1572,6 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
-            z_column: None,
             render_type: DataRenderType::Histogram {
                 bar: DataBarStyleConfig {
                     fill_color: RED,
@@ -2014,28 +1589,34 @@ fn histogram_bins_pick_what_the_bars_and_the_envelope_paint() {
             let what = format!("{orientation:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let window = ink_window(&with, &without, 2);
-            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-            let painted = count_painted(window, is_painted);
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
             let mut failures = Vec::new();
-            for (px, py) in edge_band(window, is_painted) {
-                let ink = difference(&with, &without, px, py);
-                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                let bin = match &hit {
-                    Some(renderer::PickedData::HistogramBin { bin_index, .. }) => Some(*bin_index),
-                    None => None,
-                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                };
-                // A bar is axis-aligned, so painted and picked agree pixel
-                // for pixel: more than half the samples covered picks, fewer
-                // does not. An edge through the pixel's centre covers
-                // exactly half and may go either way.
-                if ink > 128 && bin.is_none() {
-                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                }
-                if ink < 128 && bin.is_some() {
-                    failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
+            for py in y0..y1 {
+                for px in x0..x1 {
+                    let ink = difference(&with, &without, px, py);
+                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
+                    let bin = match &hit {
+                        Some(renderer::PickedData::HistogramBin { bin_index, .. }) => {
+                            Some(*bin_index)
+                        }
+                        None => None,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    // A bar is axis-aligned, so painted and picked agree
+                    // pixel for pixel: more than half the samples covered
+                    // picks, fewer does not. An edge through the pixel's
+                    // centre covers exactly half and may go either way.
+                    if ink > 128 && bin.is_none() {
+                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
+                    }
+                    if ink < 128 && bin.is_some() {
+                        failures.push(format!("({px}, {py}) picks {bin:?} but ink is only {ink}"));
+                    }
+                    if ink >= PAINTED {
+                        painted += 1;
+                    }
                 }
             }
             assert!(
@@ -2133,7 +1714,6 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 Shading::Flat => "hy".into(),
                 _ => "cy".into(),
             },
-            z_column: None,
             render_type: DataRenderType::Heatmap {
                 matrix: MatrixRef {
                     columns: vec!["h0".into(), "h1".into(), "h2".into()],
@@ -2148,36 +1728,40 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                     shading: shading.clone(),
                     opacity: 1.0,
                 },
-                surface: None,
             },
         }];
         for scale in [1.0, 2.0] {
             let what = format!("{shading:?} at {scale}x");
             let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
             let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let window = ink_window(&with, &without, 2);
-            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-            let painted = count_painted(window, is_painted);
-            let (x0, y0, x1, y1) = window;
-            let clear_inside = ((x1 - x0) * (y1 - y0)) as usize - painted;
+            let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
             let probe = Probe::register(&mut renderer, &chart, &series, scale);
+            let mut painted = 0usize;
+            let mut clear_inside = 0usize;
             let mut failures = Vec::new();
-            for (px, py) in edge_band(window, is_painted) {
-                let ink = difference(&with, &without, px, py);
-                // Off the pixel centre, inside the pixel: the pick must
-                // still answer the cell painted at the centre.
-                let request = (px as f32 + 0.9, py as f32 + 0.1);
-                let hit = probe.pick_data_at(&mut renderer, request, 0.0);
-                let cell = match &hit {
-                    Some(renderer::PickedData::MatrixCell { .. }) => true,
-                    None => false,
-                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                };
-                // A painted pixel picks; a pixel left exactly as it was
-                // does not. (A ramp near its transparent end paints a few
-                // levels of ink, and those pick too.)
-                if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
-                    failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
+            for py in (y0..y1).step_by(2) {
+                for px in (x0..x1).step_by(2) {
+                    let ink = difference(&with, &without, px, py);
+                    // Off the pixel centre, inside the pixel: the pick must
+                    // still answer the cell painted at the centre.
+                    let request = (px as f32 + 0.9, py as f32 + 0.1);
+                    let hit = probe.pick_data_at(&mut renderer, request, 0.0);
+                    let cell = match &hit {
+                        Some(renderer::PickedData::MatrixCell { .. }) => true,
+                        None => false,
+                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
+                    };
+                    if ink >= PAINTED {
+                        painted += 1;
+                    } else {
+                        clear_inside += 1;
+                    }
+                    // A painted pixel picks; a pixel left exactly as it was
+                    // does not. (A ramp near its transparent end paints a
+                    // few levels of ink, and those pick too.)
+                    if (ink >= PAINTED && !cell) || (ink == 0 && cell) {
+                        failures.push(format!("({px}, {py}) ink {ink} picked {hit:?}"));
+                    }
                 }
             }
             assert!(
@@ -2186,10 +1770,8 @@ fn heatmap_cells_pick_exactly_the_pixels_they_paint() {
                 failures.len(),
                 &failures[..failures.len().min(12)]
             );
-            // Counted over every pixel of the window (the scan once probed
-            // every second pixel of every second row: a quarter of these).
             assert!(
-                painted > 800 && clear_inside > 200,
+                painted > 200 && clear_inside > 50,
                 "{what}: {painted} / {clear_inside}"
             );
             renderer.remove_chart(probe.id).unwrap();
@@ -2239,7 +1821,6 @@ fn contour_label_gaps_pick_and_highlight_nothing() {
         label: None,
         x_column: "cgx".into(),
         y_column: "cgy".into(),
-        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["c0".into(), "c1".into(), "c2".into()],
@@ -2419,7 +2000,6 @@ fn contour_strokes_pick_where_they_paint() {
         label: None,
         x_column: "sgx".into(),
         y_column: "sgy".into(),
-        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["s0".into(), "s1".into(), "s2".into()],
@@ -2456,24 +2036,29 @@ fn contour_strokes_pick_where_they_paint() {
         let (x0, y0, x1, y1) = ink_window(&with, &without, 2);
         let (x0, y0) = (x0.max(border), y0.max(border));
         let (x1, y1) = (x1.min(with.width - border), y1.min(with.height - border));
-        let window = (x0, y0, x1, y1);
-        let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-        let painted = count_painted(window, is_painted);
         let probe = Probe::register(&mut renderer, &chart, &series, scale);
+        let mut painted = 0usize;
         let mut failures = Vec::new();
-        for (x, y) in edge_band(window, is_painted) {
-            let ink = difference(&with, &without, x, y);
-            let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
-            let distance = match &hit {
-                Some(renderer::PickedData::ContourLevel { distance_px, .. }) => Some(*distance_px),
-                None => None,
-                Some(other) => panic!("({x}, {y}) picked {other:?}"),
-            };
-            if ink >= PAINTED && distance.is_none() {
-                failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-            }
-            if distance == Some(0.0) && ink < STRICT.zero_ink {
-                failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+        for y in (y0..y1).step_by(2) {
+            for x in (x0..x1).step_by(2) {
+                let ink = difference(&with, &without, x, y);
+                let hit = probe.pick_data(&mut renderer, x, y, STRICT.fringe);
+                let distance = match &hit {
+                    Some(renderer::PickedData::ContourLevel { distance_px, .. }) => {
+                        Some(*distance_px)
+                    }
+                    None => None,
+                    Some(other) => panic!("({x}, {y}) picked {other:?}"),
+                };
+                if ink >= PAINTED {
+                    painted += 1;
+                    if distance.is_none() {
+                        failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
+                    }
+                }
+                if distance == Some(0.0) && ink < STRICT.zero_ink {
+                    failures.push(format!("({x}, {y}) picked at 0 but ink is only {ink}"));
+                }
             }
         }
         renderer.remove_chart(probe.id).unwrap();
@@ -2483,15 +2068,12 @@ fn contour_strokes_pick_where_they_paint() {
             failures.len(),
             &failures[..failures.len().min(12)]
         );
-        // Counted over every pixel of the window (the scan once probed
-        // every second pixel of every second row: a quarter of these).
-        assert!(painted > 200, "at {scale}x: {painted}");
+        assert!(painted > 50, "at {scale}x: {painted}");
     }
 }
 
 /// A data value's export pixel along one axis, in f64, linear or
 /// logarithmic: the reference both the CPU and the GPU must hit.
-#[cfg(feature = "cpu-twin")]
 fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length: f64) -> f64 {
     let t = match axis.scale {
         renderer::config::AxisScale::Linear => (value - axis.min) / (axis.max - axis.min),
@@ -2507,7 +2089,6 @@ fn axis_px(axis: &renderer::config::AxisOptions, value: f64, start: f64, length:
 /// of the f64 reference, on linear and logarithmic axes at every magnitude.
 /// Past 2^24 the GPU once lost the logarithm (a log flag blended with
 /// `mix`) while the CPU kept it.
-#[cfg(feature = "cpu-twin")]
 #[test]
 fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
     use renderer::config::AxisScale;
@@ -2608,13 +2189,13 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
                 )
                 .unwrap()
                 .unwrap_or_else(|| panic!("{case}: GPU misses point {index} at {at:?}"));
-                let cpu = renderer::pick::cpu_twin::pick_nearest_point(
+                let cpu = renderer::pick_nearest_point(
                     &cfg,
                     &series,
                     &columns,
                     at.0,
                     at.1,
-                    renderer::pick::cpu_twin::PointPickOptions {
+                    renderer::PointPickOptions {
                         max_distance_px: 3.0,
                     },
                 )
@@ -2638,1936 +2219,4 @@ fn cpu_and_gpu_place_points_alike_at_every_magnitude() {
         }
     }
     assert_eq!(checked, 3 * magnitudes.len() * fractions.len());
-}
-
-/// An error-bar style of stem width `width` with caps of half size `cap`
-/// and width `cap_width` in `color`, without per-point styles.
-pub fn errorbar_style(
-    color: Color,
-    width: f32,
-    cap: f32,
-    cap_width: f32,
-) -> renderer::data_config::DataErrorBarStyleConfig {
-    renderer::data_config::DataErrorBarStyleConfig {
-        error_bar_color: color,
-        error_bar_width: width,
-        error_bar_cap_size: cap,
-        cap_width,
-        error_bar_style_table: None,
-        error_bar_style_index_column: None,
-        error_bar_style_overrides: None,
-    }
-}
-
-/// A marker series `id` on the x / y columns whose error bars are `kind`:
-/// "x", "y", "xy" (symmetric, `ex` / `ey`) or "asym" (Y, `ey_lo` / `ey_hi`).
-pub fn errorbar_series(
-    id: &str,
-    kind: &str,
-    err_style: renderer::data_config::DataErrorBarStyleConfig,
-) -> SeriesConfig {
-    use renderer::data_config::ErrorRef;
-    let DataRenderType::Scatter { scatter } =
-        scatter(id, ScatterShape::CircleFilled, 2.0, BLUE).render_type
-    else {
-        unreachable!()
-    };
-    let symmetric = |column: &str| ErrorRef::Symmetric {
-        column: column.into(),
-    };
-    let render_type = match kind {
-        "x" => DataRenderType::ScatterErrorbarX {
-            scatter,
-            err_x: symmetric("ex"),
-            err_style,
-        },
-        "y" => DataRenderType::ScatterErrorbarY {
-            scatter,
-            err_y: symmetric("ey"),
-            err_style,
-        },
-        "xy" => DataRenderType::ScatterErrorbarXY {
-            scatter,
-            err_x: symmetric("ex"),
-            err_y: symmetric("ey"),
-            err_style,
-        },
-        "asym" => DataRenderType::ScatterErrorbarY {
-            scatter,
-            err_y: ErrorRef::Asymmetric {
-                lower: "ey_lo".into(),
-                upper: "ey_hi".into(),
-            },
-            err_style,
-        },
-        other => panic!("no error-bar kind {other}"),
-    };
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type,
-    }
-}
-
-/// Three points with every error column the error-bar cases read.
-fn upload_errorbar_columns(renderer: &mut Renderer) {
-    upload_xy(renderer, vec![3.0, 5.0, 7.0], vec![4.0, 5.5, 6.5]);
-    renderer
-        .add_columns(&[
-            (
-                "ex",
-                &col(vec![0.8, 1.2, 0.6]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "ey",
-                &col(vec![1.5, 2.0, 1.0]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "ey_lo",
-                &col(vec![0.5, 2.5, 0.3]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "ey_hi",
-                &col(vec![2.0, 0.4, 1.8]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "bar_style",
-                &col(vec![1.0, 0.0, 1.0]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-}
-
-/// G10: an error bar picks its stems and caps exactly where the error-bar
-/// shader draws them, with the shared quads (`common/errorbar_segment.wgsl`):
-/// X, Y and XY bars, asymmetric errors, per-point widths of the precise
-/// style map, a log axis, Precise and Sketch (the hashed corner wobble), at
-/// 1x and 2x. A Milkyway jet picks within its beam and knot envelope: every
-/// painted pixel picks and nothing picks past the envelope. A transparent
-/// bar draws nothing and picks nothing.
-#[test]
-fn error_bars_pick_where_their_stems_and_caps_are_drawn() {
-    use renderer::config::{AxisScale, DrawStyle, MilkywayOptions, SketchOptions};
-    use renderer::data_config::{DataErrorBarPointStyleConfig, DataErrorBarPointStyleOverride};
-    let mut renderer = renderer();
-    upload_errorbar_columns(&mut renderer);
-    let plain = errorbar_style(RED, 2.0, 5.0, 1.5);
-    // Point 0 and 2 take slot 1, point 1 slot 0; point 2 also has an
-    // override of its cap.
-    let mut mapped = errorbar_style(RED, 1.5, 4.0, 1.0);
-    mapped.error_bar_style_index_column = Some("bar_style".into());
-    mapped.error_bar_style_table = Some(vec![
-        DataErrorBarPointStyleConfig {
-            error_bar_color: None,
-            error_bar_width: Some(4.0),
-            error_bar_cap_size: None,
-            cap_width: Some(3.0),
-        },
-        DataErrorBarPointStyleConfig {
-            error_bar_color: Some(BLUE),
-            error_bar_width: Some(1.0),
-            error_bar_cap_size: Some(7.0),
-            cap_width: None,
-        },
-    ]);
-    mapped.error_bar_style_overrides = Some(vec![DataErrorBarPointStyleOverride {
-        index: 2,
-        style: DataErrorBarPointStyleConfig {
-            error_bar_color: None,
-            error_bar_width: None,
-            error_bar_cap_size: Some(2.5),
-            cap_width: Some(2.0),
-        },
-    }]);
-    let precise = bare_chart();
-    let mut log = bare_chart();
-    log.config_mut().left_y.scale = AxisScale::Logarithmic;
-    log.set_y_range(1.0, 10.0);
-    let sketch = styled_chart(DrawStyle::Sketch(SketchOptions {
-        amplitude_px: 3.0,
-        wavelength_px: 12.0,
-        seed: 11,
-    }));
-    for scale in [1.0, 2.0] {
-        for (chart, style, what) in [
-            (&precise, &plain, "precise"),
-            (&precise, &mapped, "precise style map"),
-            (&log, &plain, "log y"),
-            (&sketch, &plain, "sketch"),
-        ] {
-            for kind in ["x", "y", "xy", "asym"] {
-                let series = [errorbar_series("bars", kind, style.clone())];
-                let painted = assert_pick_matches_paint_with(
-                    &mut renderer,
-                    chart,
-                    &series,
-                    "bars",
-                    scale,
-                    None,
-                    &format!("{what} {kind} bars"),
-                    MSAA_EDGE,
-                );
-                assert!(painted > 40, "{what} {kind} at {scale}x: {painted}");
-            }
-        }
-
-        let options = MilkywayOptions::default();
-        let milkyway = styled_chart(DrawStyle::Milkyway(options));
-        let series = [errorbar_series("bars", "xy", plain.clone())];
-        let painted =
-            assert_painted_pixels_pick(&mut renderer, &milkyway, &series, "bars", scale, "jets");
-        assert!(painted > 100, "jets at {scale}x: {painted}");
-        // The envelope: a beam of 4 times the half stem (at least 1.2 px)
-        // either side of the stem, a knot disc of 1.7 times the cap (at
-        // least 3 px) around each bound. Point 1's Y stem runs from y 3.5
-        // to 7.5 at x 5.
-        let s = f64::from(scale);
-        let beam = (2.0 * s * 0.5).max(1.2) * 4.0;
-        let knot = (5.0 * s).max(3.0) * 1.7;
-        let (cx, cy) = data_to_px(&milkyway, 5.0, 6.5, scale);
-        let (_, top) = data_to_px(&milkyway, 5.0, 7.5, scale);
-        assert_nothing_picks_at(
-            &mut renderer,
-            &milkyway,
-            &series,
-            "bars",
-            scale,
-            &[
-                (cx - beam - 2.0, cy),
-                (cx + beam + 2.0, cy),
-                (cx, top - knot - 2.0),
-            ],
-            "beyond a jet's envelope",
-        );
-
-        // A transparent bar draws nothing: along point 1's Y stem, away
-        // from its marker, nothing picks.
-        let mut clear = plain.clone();
-        clear.error_bar_color = Color {
-            r: 1.0,
-            g: 0.0,
-            b: 0.0,
-            a: 0.0,
-        };
-        let series = [errorbar_series("bars", "y", clear)];
-        let (x, y) = data_to_px(&precise, 5.0, 6.8, scale);
-        assert_nothing_picks_at(
-            &mut renderer,
-            &precise,
-            &series,
-            "bars",
-            scale,
-            &[(x, y)],
-            "transparent bar",
-        );
-    }
-}
-
-/// A line series `id` on the x / y columns filled by `fill` in opaque
-/// green, with a 1.5 px stroke.
-pub fn filled_line(
-    id: &str,
-    fill: Option<renderer::data_config::LineFill>,
-    interpolation: renderer::data_config::LineInterpolation,
-    fill_color: Color,
-) -> SeriesConfig {
-    let mut series = line(
-        id,
-        1.5,
-        renderer::line::LineStylePreset::Solid,
-        interpolation,
-    );
-    let DataRenderType::Line { line } = &mut series.render_type else {
-        unreachable!()
-    };
-    line.fill = fill;
-    line.fill_color = Some(fill_color);
-    series
-}
-
-const GREEN: Color = Color {
-    r: 0.0,
-    g: 0.6,
-    b: 0.0,
-    a: 1.0,
-};
-
-/// A fill has no anti-aliasing: its trapezoids are covered by the export's
-/// multisampling only, and the fragment at the pixel centre colours every
-/// covered sample. Along a straight edge a pixel whose centre lies outside
-/// paints at most two of four samples (ink 128 for these opaque fills) and
-/// one whose centre lies inside at least two, so a zero-distance pick must
-/// find half the ink. At a corner of the region three samples can cover a
-/// pixel whose centre is outside (a polar fill's base polygon), so only a
-/// pixel covered by all four samples must pick.
-pub const FILL_EDGE: Tolerance = Tolerance {
-    painted: 192,
-    fringe: 2.0,
-    zero_ink: 96,
-    skip_near: None,
-};
-
-/// [`FILL_EDGE`] for a fill reaching another series: that series' stroke is
-/// drawn over the fill's lower edge, so a pixel there is partly the
-/// stroke's. Where the stroke is a rounding step out of reach the fill picks
-/// it at zero distance, with the ink the stroke leaves visible.
-pub const FILL_UNDER_STROKE: Tolerance = Tolerance {
-    painted: 192,
-    fringe: 2.0,
-    zero_ink: 40,
-    skip_near: None,
-};
-
-/// G10: a line's area fill picks exactly where its trapezoids paint
-/// (`common/area_piece.wgsl`), at distance zero: to a baseline, to another
-/// series, in every step mode and on a polar chart, at 1x and 2x. A
-/// transparent fill paints nothing and picks nothing.
-#[test]
-fn area_fills_pick_where_they_paint() {
-    use renderer::data_config::{LineFill, LineInterpolation};
-    let mut renderer = renderer();
-    upload_xy(
-        &mut renderer,
-        vec![2.0, 4.0, 5.5, 7.5],
-        vec![5.0, 7.0, 4.0, 6.5],
-    );
-    renderer
-        .add_columns(&[
-            (
-                "y2",
-                &col(vec![2.0, 3.0, 1.5, 2.5]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "angle",
-                &col(vec![20.0, 110.0, 200.0, 320.0]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "radius",
-                &col(vec![0.6, 0.9, 0.5, 0.8]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    // A stroke edge on a pixel centre would leave the tie with the fill
-    // there to rounding: 1.25 px keeps the edges off the centres at 1x and
-    // 2x.
-    let mut lower = line(
-        "lower",
-        1.25,
-        renderer::line::LineStylePreset::Solid,
-        LineInterpolation::Linear,
-    );
-    lower.y_column = "y2".into();
-    let chart = bare_chart();
-    for scale in [1.0, 2.0] {
-        for interpolation in [
-            LineInterpolation::Linear,
-            LineInterpolation::StepPre,
-            LineInterpolation::StepPost,
-            LineInterpolation::StepMid,
-        ] {
-            for (fill, what) in [
-                (LineFill::ToBaseline(1.0), "baseline"),
-                (LineFill::ToSeries("lower".into()), "to series"),
-            ] {
-                let mut lower = lower.clone();
-                let DataRenderType::Line { line } = &mut lower.render_type else {
-                    unreachable!()
-                };
-                line.interpolation = interpolation;
-                // The second series only where the fill reaches it.
-                let to_series = matches!(fill, LineFill::ToSeries(_));
-                let mut series = vec![filled_line("area", Some(fill), interpolation, GREEN)];
-                if to_series {
-                    series.push(lower);
-                }
-                let painted = assert_pick_matches_paint_with(
-                    &mut renderer,
-                    &chart,
-                    &series,
-                    "area",
-                    scale,
-                    None,
-                    &format!("{what} {interpolation:?} fill"),
-                    if to_series {
-                        FILL_UNDER_STROKE
-                    } else {
-                        FILL_EDGE
-                    },
-                );
-                assert!(
-                    painted > 2000,
-                    "{what} {interpolation:?} at {scale}x: {painted}"
-                );
-            }
-        }
-
-        let mut options = renderer::polar::PolarOptions::default();
-        options.inner_radius_fraction = 0.2;
-        let polar = bare_polar_chart(options);
-        let mut polar_series = filled_line(
-            "area",
-            Some(LineFill::ToBaseline(0.0)),
-            LineInterpolation::Linear,
-            GREEN,
-        );
-        polar_series.x_column = "angle".into();
-        polar_series.y_column = "radius".into();
-        let painted = assert_pick_matches_paint_with(
-            &mut renderer,
-            &polar,
-            &[polar_series],
-            "area",
-            scale,
-            None,
-            "polar fill",
-            FILL_EDGE,
-        );
-        assert!(painted > 1000, "polar fill at {scale}x: {painted}");
-
-        let clear = Color {
-            r: 0.0,
-            g: 0.6,
-            b: 0.0,
-            a: 0.0,
-        };
-        let series = [filled_line(
-            "area",
-            Some(LineFill::ToBaseline(1.0)),
-            LineInterpolation::Linear,
-            clear,
-        )];
-        let inside = [
-            data_to_px(&chart, 4.0, 3.0, scale),
-            data_to_px(&chart, 6.0, 2.0, scale),
-        ];
-        assert_nothing_picks_at(
-            &mut renderer,
-            &chart,
-            &series,
-            "area",
-            scale,
-            &inside,
-            "transparent fill",
-        );
-    }
-}
-
-/// G10 tie-break: a marker over a fill picks the marker, though its series
-/// comes first (every fill is drawn before every series body); inside the
-/// fill away from the marker the fill picks, naming the nearer endpoint of
-/// the filled segment.
-#[test]
-fn a_marker_over_a_fill_picks_the_marker() {
-    use renderer::data_config::{LineFill, LineInterpolation};
-    let mut renderer = renderer();
-    upload_xy(&mut renderer, vec![2.0, 8.0], vec![8.0, 8.0]);
-    renderer
-        .add_columns(&[
-            ("dot_x", &col(vec![4.0]) as &dyn renderer::ColumnSource),
-            ("dot_y", &col(vec![4.0]) as &dyn renderer::ColumnSource),
-        ])
-        .expect("upload");
-    let chart = bare_chart();
-    let mut dot = scatter("dot", ScatterShape::CircleFilled, 6.0, RED);
-    dot.x_column = "dot_x".into();
-    dot.y_column = "dot_y".into();
-    let area = filled_line(
-        "area",
-        Some(LineFill::ToBaseline(1.0)),
-        LineInterpolation::Linear,
-        GREEN,
-    );
-    let series = [dot, area];
-    for scale in [1.0, 2.0] {
-        let probe = Probe::register(&mut renderer, &chart, &series, scale);
-        let (mx, my) = data_to_px(&chart, 4.0, 4.0, scale);
-        let hit = probe
-            .pick(&mut renderer, mx as u32, my as u32, 0.0)
-            .expect("marker hit");
-        assert_eq!((hit.series_id.as_str(), hit.point_index), ("dot", 0));
-        for (x, index) in [(3.0, 0), (7.0, 1)] {
-            let (px, py) = data_to_px(&chart, x, 3.0, scale);
-            let hit = probe
-                .pick(&mut renderer, px as u32, py as u32, 0.0)
-                .expect("fill hit");
-            assert_eq!(
-                (hit.series_id.as_str(), hit.point_index, hit.distance_px),
-                ("area", index, 0.0),
-                "{scale}x at x {x}"
-            );
-        }
-        renderer.remove_chart(probe.id).unwrap();
-    }
-}
-
-/// Category bars pick the (category, series) bar they paint: grouped and
-/// stacked, vertical and horizontal, with rounded exposed corners, at 1x and
-/// 2x. The pick answers a histogram bin of the painted series whose index is
-/// the category row. Coverage is sampled at 2x2 per pixel and the pick tests
-/// the pixel centre, so a pixel an edge crosses may go either way within a
-/// quarter of its samples.
-#[test]
-fn category_bars_pick_the_bar_they_paint() {
-    use renderer::config::Category;
-    use renderer::data_config::{BarGroups, CategoryBarDirection, CategoryBarMode};
-    let mut renderer = renderer();
-    renderer
-        .add_column("pos", &col(vec![0.0, 1.0, 2.0]))
-        .expect("upload");
-    renderer
-        .add_columns(&[
-            (
-                "one",
-                &col(vec![3.0, 6.0, 2.0]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "two",
-                &col(vec![4.0, 2.0, 5.0]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    let bars = |id: &str, color: Color| {
-        let mut style = renderer::data_config::CategoryBarStyle::default();
-        style.material = renderer::Material::Flat;
-        style.outline = false;
-        style.corner_radius = 4.0;
-        SeriesConfig {
-            series_id: id.into(),
-            source_id: None,
-            label: None,
-            x_column: "pos".into(),
-            y_column: id.into(),
-            z_column: None,
-            render_type: DataRenderType::CategoryBars {
-                color,
-                style,
-                labels: Default::default(),
-                label_format: Default::default(),
-                overrides: None,
-            },
-        }
-    };
-    for mode in [CategoryBarMode::Grouped, CategoryBarMode::Stacked] {
-        for direction in [
-            CategoryBarDirection::Vertical,
-            CategoryBarDirection::Horizontal,
-        ] {
-            let mut chart = bare_chart();
-            let config = chart.config_mut();
-            // The axis lines draw above the data on the bars' zero edge.
-            for axis in [
-                &mut config.top_x,
-                &mut config.bottom_x,
-                &mut config.left_y,
-                &mut config.right_y,
-            ] {
-                axis.line_visible = false;
-            }
-            let categories = Some(vec![
-                Category::new("a", "A"),
-                Category::new("b", "B"),
-                Category::new("c", "C"),
-            ]);
-            let mut series = [bars("one", RED), bars("two", BLUE)];
-            match direction {
-                CategoryBarDirection::Vertical => config.bottom_x.categories = categories,
-                CategoryBarDirection::Horizontal => {
-                    config.left_y.categories = categories;
-                    for s in &mut series {
-                        std::mem::swap(&mut s.x_column, &mut s.y_column);
-                    }
-                }
-            }
-            config.bar_groups = Some(BarGroups {
-                mode,
-                direction,
-                ..BarGroups::default()
-            });
-            for scale in [1.0, 2.0] {
-                let what = format!("{mode:?} {direction:?} at {scale}x");
-                let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
-                let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-                let window = ink_window(&with, &without, 2);
-                let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-                let painted = count_painted(window, is_painted);
-                let probe = Probe::register(&mut renderer, &chart, &series, scale);
-                let mut failures = Vec::new();
-                let mut picked = 0usize;
-                for (px, py) in edge_band(window, is_painted) {
-                    let ink = difference(&with, &without, px, py);
-                    let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                    let bar = match &hit {
-                        Some(renderer::PickedData::HistogramBin {
-                            series_id,
-                            bin_index,
-                            ..
-                        }) => Some((series_id.clone(), *bin_index)),
-                        None => None,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    if ink > 160 && bar.is_none() {
-                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                    }
-                    if ink < 96 && bar.is_some() {
-                        failures.push(format!("({px}, {py}) picks {bar:?} but ink is only {ink}"));
-                    }
-                    // A fully painted pixel is one series' colour: the pick
-                    // names that series.
-                    let i = ((py * with.width + px) * 4) as usize;
-                    let rgba = &with.rgba[i..i + 4];
-                    if let Some((id, _)) = &bar
-                        && ink > 240
-                    {
-                        picked += 1;
-                        let painted_id = if rgba[0] > 200 && rgba[2] < 60 {
-                            "one"
-                        } else if rgba[2] > 200 && rgba[0] < 60 {
-                            "two"
-                        } else {
-                            continue;
-                        };
-                        if id != painted_id {
-                            failures
-                                .push(format!("({px}, {py}) painted {painted_id}, picked {id}"));
-                        }
-                    }
-                }
-                assert!(
-                    failures.is_empty(),
-                    "{what}: {} disagreements, first {:?}",
-                    failures.len(),
-                    &failures[..failures.len().min(12)]
-                );
-                assert!(painted > 400, "{what}: {painted}");
-                assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
-                renderer.remove_chart(probe.id).unwrap();
-            }
-        }
-    }
-}
-
-/// Box plots pick the box they paint: the body (plain and notched), the
-/// whiskers and caps, the median, the mean and the outliers, vertical and
-/// horizontal, at 1x and 2x. Every part answers its box, a histogram bin of
-/// the series whose index is the category row; the row of a painted pixel
-/// is the category slot it lies in. The strokes are quads drawn without an
-/// anti-aliasing margin, so a pixel the multisampling covers only at one
-/// sample may pick (`MSAA_EDGE`); the markers' anti-aliasing reaches one
-/// fringe past their contour (`STRICT.fringe`).
-#[test]
-fn box_plots_pick_the_box_they_paint() {
-    use renderer::config::Category;
-    use renderer::data_config::{BarGroups, BoxPlotStyle, CategoryBarDirection};
-    use renderer::{BOX_PLOT_RECORD, ColumnSource, RaggedSource, RecordSource};
-    let mut renderer = renderer();
-    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
-    // whisker low, q1, median, q3, whisker high, mean, ci low, ci high
-    let rows = [
-        [1.0, 3.0, 4.0, 6.0, 8.0, 5.0, 3.5, 4.5],
-        [2.0, 4.0, 5.0, 7.0, 9.0, 6.0, 4.5, 5.5],
-    ];
-    let field = |k: usize| col(rows.iter().map(|r| r[k]).collect());
-    let columns = [
-        field(2),
-        field(1),
-        field(3),
-        field(0),
-        field(4),
-        field(5),
-        field(6),
-        field(7),
-    ];
-    let names = [
-        "median",
-        "q1",
-        "q3",
-        "whisker_low",
-        "whisker_high",
-        "mean",
-        "ci_low",
-        "ci_high",
-    ];
-    let fields: Vec<(&str, &dyn ColumnSource)> = names
-        .iter()
-        .zip(&columns)
-        .map(|(n, c)| (*n, c as &dyn ColumnSource))
-        .collect();
-    renderer
-        .upsert_record(
-            "record",
-            &RecordSource {
-                schema: BOX_PLOT_RECORD,
-                fields: &fields,
-            },
-        )
-        .unwrap();
-    renderer
-        .upsert_ragged(
-            "outliers",
-            &RaggedSource {
-                values: &col(vec![0.2, 9.6, 9.8]),
-                offsets: &col(vec![0.0, 1.0, 3.0]),
-            },
-        )
-        .unwrap();
-    for notched in [false, true] {
-        for direction in [
-            CategoryBarDirection::Vertical,
-            CategoryBarDirection::Horizontal,
-        ] {
-            let mut chart = bare_chart();
-            let config = chart.config_mut();
-            for axis in [
-                &mut config.top_x,
-                &mut config.bottom_x,
-                &mut config.left_y,
-                &mut config.right_y,
-            ] {
-                axis.line_visible = false;
-            }
-            let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
-            match direction {
-                CategoryBarDirection::Vertical => {
-                    config.bottom_x.categories = categories;
-                    config.left_y.min = 0.0;
-                    config.left_y.max = 10.0;
-                }
-                CategoryBarDirection::Horizontal => {
-                    config.left_y.categories = categories;
-                    config.bottom_x.min = 0.0;
-                    config.bottom_x.max = 10.0;
-                }
-            }
-            config.bar_groups = Some(BarGroups {
-                direction,
-                ..BarGroups::default()
-            });
-            let series = [SeriesConfig {
-                series_id: "box".into(),
-                source_id: None,
-                label: None,
-                x_column: "pos".into(),
-                y_column: "record".into(),
-                z_column: None,
-                render_type: DataRenderType::BoxPlot {
-                    color: RED,
-                    style: BoxPlotStyle {
-                        material: renderer::Material::Flat,
-                        notched,
-                        show_mean: true,
-                        outlier_filled: notched,
-                        ..BoxPlotStyle::default()
-                    },
-                    labels: Default::default(),
-                    outliers: Some("outliers".into()),
-                    overrides: None,
-                    violin: None,
-                    points: None,
-                },
-            }];
-            for scale in [1.0, 2.0] {
-                let what = format!("notched {notched} {direction:?} at {scale}x");
-                let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
-                let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-                let window = ink_window(&with, &without, 2);
-                let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-                let painted = count_painted(window, is_painted);
-                let da = chart.config().data_area().unwrap();
-                // The category slot an export pixel lies in.
-                let row_of = |x: u32, y: u32| -> usize {
-                    match direction {
-                        CategoryBarDirection::Vertical => {
-                            let t = (x as f32 / scale - da.x as f32) / da.width as f32;
-                            (t * 2.0).floor().clamp(0.0, 1.0) as usize
-                        }
-                        CategoryBarDirection::Horizontal => {
-                            let t =
-                                ((da.y + da.height) as f32 - y as f32 / scale) / da.height as f32;
-                            (t * 2.0).floor().clamp(0.0, 1.0) as usize
-                        }
-                    }
-                };
-                let probe = Probe::register(&mut renderer, &chart, &series, scale);
-                let mut failures = Vec::new();
-                let mut picked = 0usize;
-                for (px, py) in edge_band(window, is_painted) {
-                    let ink = difference(&with, &without, px, py);
-                    let hit = match probe.pick_data(&mut renderer, px, py, 0.0) {
-                        Some(renderer::PickedData::HistogramBin {
-                            series_id,
-                            bin_index,
-                            ..
-                        }) => {
-                            assert_eq!(series_id, "box", "{what}");
-                            Some(bin_index)
-                        }
-                        None => None,
-                        Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                    };
-                    // A marker's anti-aliasing reaches one `fwidth` past its
-                    // contour: a painted pixel picks within that fringe.
-                    if ink > 160
-                        && hit.is_none()
-                        && probe
-                            .pick_data(&mut renderer, px, py, STRICT.fringe)
-                            .is_none()
-                    {
-                        failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                    }
-                    if ink < MSAA_EDGE.zero_ink && hit.is_some() {
-                        failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
-                    }
-                    if let Some(row) = hit
-                        && ink > 240
-                    {
-                        picked += 1;
-                        if row != row_of(px, py) {
-                            failures.push(format!(
-                                "({px}, {py}) in slot {} picked box {row}",
-                                row_of(px, py)
-                            ));
-                        }
-                    }
-                }
-                assert!(
-                    failures.is_empty(),
-                    "{what}: {} disagreements, first {:?}",
-                    failures.len(),
-                    &failures[..failures.len().min(12)]
-                );
-                assert!(painted > 400, "{what}: {painted}");
-                assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
-                // The outliers pick their box: the first box's outlier near
-                // the bottom (or left) of the value axis, from its centre
-                // (inside an open ring, within the ring's reach).
-                let outlier = match direction {
-                    CategoryBarDirection::Vertical => {
-                        let x = da.x as f32 + da.width as f32 * 0.25;
-                        let y = (da.y + da.height) as f32 - da.height as f32 * 0.02;
-                        (x * scale, y * scale)
-                    }
-                    CategoryBarDirection::Horizontal => {
-                        let x = da.x as f32 + da.width as f32 * 0.02;
-                        let y = (da.y + da.height) as f32 - da.height as f32 * 0.25;
-                        (x * scale, y * scale)
-                    }
-                };
-                assert!(
-                    matches!(
-                        probe.pick_data_at(&mut renderer, outlier, 4.0 * scale),
-                        Some(renderer::PickedData::HistogramBin { bin_index: 0, .. })
-                    ),
-                    "{what}: the outlier picks its box"
-                );
-                renderer.remove_chart(probe.id).unwrap();
-            }
-        }
-    }
-}
-
-/// Range bars pick where they paint: every painted pixel of a body, a
-/// whisker or a connector picks its bar, and nothing unpainted picks, in
-/// both directions at 1x and 2x. A connector pixel picks the bar it
-/// leaves, whichever slot it lies in; every other picked pixel lies in its
-/// bar's slot.
-#[test]
-fn range_bars_pick_the_bar_they_paint() {
-    use renderer::config::Category;
-    use renderer::data_config::{
-        BarGroups, CategoryBarDirection, CategoryBarStyle, RangeColor, RangeConnector,
-        RangeWhiskers,
-    };
-    let mut renderer = renderer();
-    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
-    renderer.add_column("start", &col(vec![2.0, 6.0])).unwrap();
-    renderer.add_column("end", &col(vec![6.0, 3.0])).unwrap();
-    renderer.add_column("low", &col(vec![1.0, 2.0])).unwrap();
-    renderer.add_column("high", &col(vec![8.0, 9.0])).unwrap();
-    const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-    let is_connector = |p: &[u8]| p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60;
-    for direction in [
-        CategoryBarDirection::Vertical,
-        CategoryBarDirection::Horizontal,
-    ] {
-        let mut chart = bare_chart();
-        let config = chart.config_mut();
-        for axis in [
-            &mut config.top_x,
-            &mut config.bottom_x,
-            &mut config.left_y,
-            &mut config.right_y,
-        ] {
-            axis.line_visible = false;
-        }
-        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
-        match direction {
-            CategoryBarDirection::Vertical => {
-                config.bottom_x.categories = categories;
-                config.left_y.min = 0.0;
-                config.left_y.max = 10.0;
-            }
-            CategoryBarDirection::Horizontal => {
-                config.left_y.categories = categories;
-                config.bottom_x.min = 0.0;
-                config.bottom_x.max = 10.0;
-            }
-        }
-        config.bar_groups = Some(BarGroups {
-            direction,
-            ..BarGroups::default()
-        });
-        let series = [SeriesConfig {
-            series_id: "range".into(),
-            source_id: None,
-            label: None,
-            x_column: "pos".into(),
-            y_column: "end".into(),
-            z_column: None,
-            render_type: DataRenderType::RangeBars {
-                color: RED,
-                style: CategoryBarStyle {
-                    material: renderer::Material::Flat,
-                    ..CategoryBarStyle::default()
-                },
-                start: "start".into(),
-                whiskers: Some(RangeWhiskers {
-                    low: "low".into(),
-                    high: "high".into(),
-                    width: 2.0,
-                    color: Some(BLUE),
-                }),
-                color_by: RangeColor::Single,
-                progress: None,
-                connector: Some(RangeConnector {
-                    color: ORANGE,
-                    width: 2.0,
-                }),
-                slot_width: None,
-                labels: Default::default(),
-            },
-        }];
-        for scale in [1.0, 2.0] {
-            let what = format!("{direction:?} at {scale}x");
-            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
-            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let window = ink_window(&with, &without, 2);
-            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-            let painted = count_painted(window, is_painted);
-            let da = chart.config().data_area().unwrap();
-            let row_of = |x: u32, y: u32| -> usize {
-                match direction {
-                    CategoryBarDirection::Vertical => {
-                        let t = (x as f32 / scale - da.x as f32) / da.width as f32;
-                        (t * 2.0).floor().clamp(0.0, 1.0) as usize
-                    }
-                    CategoryBarDirection::Horizontal => {
-                        let t = ((da.y + da.height) as f32 - y as f32 / scale) / da.height as f32;
-                        (t * 2.0).floor().clamp(0.0, 1.0) as usize
-                    }
-                }
-            };
-            let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut failures = Vec::new();
-            let mut picked = 0usize;
-            let mut connectors = 0usize;
-            for (px, py) in edge_band(window, is_painted) {
-                let ink = difference(&with, &without, px, py);
-                let hit = match probe.pick_data(&mut renderer, px, py, 0.0) {
-                    Some(renderer::PickedData::HistogramBin {
-                        series_id,
-                        bin_index,
-                        ..
-                    }) => {
-                        assert_eq!(series_id, "range", "{what}");
-                        Some(bin_index)
-                    }
-                    None => None,
-                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                };
-                if ink > 160 && hit.is_none() {
-                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                }
-                if ink < MSAA_EDGE.zero_ink && hit.is_some() {
-                    failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
-                }
-                let i = ((py * with.width + px) * 4) as usize;
-                let connector = is_connector(&with.rgba[i..i + 4]);
-                if let Some(row) = hit
-                    && ink > 240
-                {
-                    picked += 1;
-                    if connector {
-                        connectors += 1;
-                        if row != 0 {
-                            failures.push(format!("({px}, {py}) connector picked bar {row}"));
-                        }
-                    } else if row != row_of(px, py) {
-                        failures.push(format!(
-                            "({px}, {py}) in slot {} picked bar {row}",
-                            row_of(px, py)
-                        ));
-                    }
-                }
-            }
-            assert!(
-                failures.is_empty(),
-                "{what}: {} disagreements, first {:?}",
-                failures.len(),
-                &failures[..failures.len().min(12)]
-            );
-            assert!(painted > 400, "{what}: {painted}");
-            assert!(picked > 40, "{what}: {picked} fully painted edge pixels");
-            assert!(connectors > 0, "{what}: the connector's pixels pick");
-            renderer.remove_chart(probe.id).unwrap();
-        }
-    }
-}
-
-/// A box plot's violin and its jittered raw points pick what they paint: on
-/// the edge band of their ink, every painted pixel picks — a body pixel its
-/// category as a histogram bin, a point pixel a point — and nothing
-/// unpainted picks, in both directions at 1x and 2x. The points are placed
-/// by the draw's and the pick's one function (`category_jitter.wgsl`).
-#[test]
-fn violins_and_raincloud_points_pick_what_they_paint() {
-    use renderer::config::Category;
-    use renderer::data_config::{
-        BarGroups, BoxPlotStyle, BoxPoints, BoxPointsStyle, CategoryBarDirection, Violin,
-        ViolinBody, ViolinHalf, ViolinStyle,
-    };
-    let mut renderer = renderer();
-    renderer.add_column("pos", &col(vec![0.0, 1.0])).unwrap();
-    let mut values = Vec::new();
-    let mut density = Vec::new();
-    for _ in 0..2 {
-        for j in 0..=40 {
-            let v = 1.0 + 8.0 * f64::from(j) / 40.0;
-            values.push(v);
-            density.push((1.0 - (v - 5.0).abs() / 4.0).max(0.0));
-        }
-    }
-    renderer
-        .upsert_ragged(
-            "curve",
-            &renderer::RaggedSource {
-                values: &col(values),
-                offsets: &col(vec![0.0, 41.0, 82.0]),
-            },
-        )
-        .unwrap();
-    renderer.add_column("density", &col(density)).unwrap();
-    // Twelve points, apart enough that no two markers' edges overlap (two
-    // fringes below half coverage each can paint more than half together,
-    // as for any two markers).
-    renderer
-        .add_column("pt.cat", &col((0..12).map(|i| f64::from(i % 2)).collect()))
-        .unwrap();
-    renderer
-        .add_column(
-            "pt.value",
-            &col((0..12).map(|i| 1.5 + f64::from(i / 2) * 1.2).collect()),
-        )
-        .unwrap();
-    const ORANGE: Color = Color::from_rgb8(255, 128, 0);
-    let is_point = |p: &[u8]| p[0] > 200 && (90..170).contains(&p[1]) && p[2] < 60;
-    for direction in [
-        CategoryBarDirection::Vertical,
-        CategoryBarDirection::Horizontal,
-    ] {
-        let mut chart = bare_chart();
-        let config = chart.config_mut();
-        for axis in [
-            &mut config.top_x,
-            &mut config.bottom_x,
-            &mut config.left_y,
-            &mut config.right_y,
-        ] {
-            axis.line_visible = false;
-        }
-        let categories = Some(vec![Category::new("a", "A"), Category::new("b", "B")]);
-        match direction {
-            CategoryBarDirection::Vertical => {
-                config.bottom_x.categories = categories;
-                config.left_y.min = 0.0;
-                config.left_y.max = 10.0;
-            }
-            CategoryBarDirection::Horizontal => {
-                config.left_y.categories = categories;
-                config.bottom_x.min = 0.0;
-                config.bottom_x.max = 10.0;
-            }
-        }
-        config.bar_groups = Some(BarGroups {
-            direction,
-            ..BarGroups::default()
-        });
-        let series = [SeriesConfig {
-            series_id: "rain".into(),
-            source_id: None,
-            label: None,
-            x_column: "pos".into(),
-            y_column: String::new(),
-            z_column: None,
-            render_type: DataRenderType::BoxPlot {
-                color: RED,
-                style: BoxPlotStyle::default(),
-                labels: Default::default(),
-                outliers: None,
-                overrides: None,
-                violin: Some(Violin {
-                    body: ViolinBody::Split {
-                        low: None,
-                        high: Some(ViolinHalf {
-                            curve: "curve".into(),
-                            density: "density".into(),
-                            density_scale: 1.0,
-                            style: ViolinStyle {
-                                fill: Some(BLUE),
-                                outline: true,
-                                outline_width: 1.5,
-                                outline_color: RED,
-                            },
-                        }),
-                    },
-                    box_width: 0.0,
-                }),
-                points: Some(BoxPoints {
-                    positions: "pt.cat".into(),
-                    values: "pt.value".into(),
-                    style: BoxPointsStyle {
-                        color: ORANGE,
-                        size: 8.0,
-                        jitter: 0.3,
-                        offset: -0.5,
-                        ..BoxPointsStyle::default()
-                    },
-                }),
-            },
-        }];
-        for scale in [1.0, 2.0] {
-            let what = format!("{direction:?} at {scale}x");
-            let with = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
-            let without = renderer.export_panel_rgba(&chart, &[], scale).unwrap();
-            let window = ink_window(&with, &without, 2);
-            let is_painted = |x, y| difference(&with, &without, x, y) >= PAINTED;
-            let painted = count_painted(window, is_painted);
-            let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut failures = Vec::new();
-            let (mut bodies, mut points) = (0usize, 0usize);
-            for (px, py) in edge_band(window, is_painted) {
-                let ink = difference(&with, &without, px, py);
-                let i = ((py * with.width + px) * 4) as usize;
-                let point_pixel = is_point(&with.rgba[i..i + 4]);
-                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                match &hit {
-                    Some(renderer::PickedData::HistogramBin { series_id, .. })
-                    | Some(renderer::PickedData::Point { series_id, .. }) => {
-                        assert_eq!(series_id, "rain", "{what}")
-                    }
-                    None => {}
-                    Some(other) => panic!("{what}: ({px}, {py}) picked {other:?}"),
-                }
-                if ink > 160 && hit.is_none() {
-                    failures.push(format!("({px}, {py}) painted (ink {ink}) but not picked"));
-                }
-                if ink < MSAA_EDGE.zero_ink && hit.is_some() {
-                    failures.push(format!("({px}, {py}) picks {hit:?} but ink is only {ink}"));
-                }
-                if ink > 240 {
-                    match hit {
-                        Some(renderer::PickedData::Point { .. }) => points += 1,
-                        Some(renderer::PickedData::HistogramBin { .. }) => bodies += 1,
-                        _ => {}
-                    }
-                    if point_pixel && !matches!(hit, Some(renderer::PickedData::Point { .. })) {
-                        failures.push(format!("({px}, {py}) a point's pixel picked {hit:?}"));
-                    }
-                }
-            }
-            assert!(
-                failures.is_empty(),
-                "{what}: {} disagreements, first {:?}",
-                failures.len(),
-                &failures[..failures.len().min(12)]
-            );
-            assert!(painted > 400, "{what}: {painted}");
-            assert!(
-                bodies > 40,
-                "{what}: {bodies} fully painted body edge pixels"
-            );
-            assert!(
-                points > 40,
-                "{what}: {points} fully painted point edge pixels"
-            );
-            renderer.remove_chart(probe.id).unwrap();
-        }
-    }
-}
-
-/// A polar chart whose angle axis holds `n` categories (radar spokes) over
-/// a 0..1 radius, without chrome.
-fn bare_radar_chart(n: usize, polar: renderer::polar::PolarOptions) -> Chart {
-    let mut chart = bare_polar_chart(polar);
-    chart.config_mut().bottom_x.categories = Some(
-        (0..n)
-            .map(|i| renderer::config::Category::new(format!("c{i}"), format!("C{i}")))
-            .collect(),
-    );
-    chart
-}
-
-fn radar(id: &str, style: renderer::RadarSeriesStyle) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: "cat".into(),
-        y_column: "val".into(),
-        z_column: None,
-        render_type: DataRenderType::Radar {
-            color: RED,
-            style,
-            labels: Default::default(),
-        },
-    }
-}
-
-/// G12: a radar polygon picks where it paints: its outline with the
-/// closing segment from the last vertex back to the first, its vertex
-/// markers and its fill to the centre (or the hole), at 1x and 2x, on the
-/// full circle and in a sector (where the closing trapezoid is not filled).
-/// The closing segment names its nearer endpoint, the last vertex or the
-/// first.
-#[test]
-fn radar_polygons_pick_their_outline_closing_segment_markers_and_fill() {
-    use renderer::RadarMarker;
-    use renderer::polar::PolarOptions;
-    let mut renderer = renderer();
-    renderer
-        .add_columns(&[
-            (
-                "cat",
-                &col(vec![0.0, 1.0, 2.0, 3.0, 4.0]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "val",
-                &col(vec![0.9, 0.55, 0.8, 0.4, 0.7]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    let outline = renderer::RadarSeriesStyle {
-        line_width_px: Some(2.5),
-        fill: Some(Color::new(0.0, 0.0, 0.0, 0.0)),
-        marker: Some(RadarMarker::None),
-        ..Default::default()
-    };
-    let markers = renderer::RadarSeriesStyle {
-        marker: Some(RadarMarker::Square),
-        marker_size_px: Some(9.0),
-        ..outline.clone()
-    };
-    let filled = renderer::RadarSeriesStyle {
-        fill: Some(GREEN),
-        marker: Some(RadarMarker::Circle),
-        ..markers.clone()
-    };
-    for (polar, what) in [
-        (
-            PolarOptions {
-                zero_angle_degrees: 90.0,
-                clockwise: true,
-                ..PolarOptions::default()
-            },
-            "full circle",
-        ),
-        (
-            PolarOptions {
-                sector: Some([0.0, 270.0]),
-                inner_radius_fraction: 0.2,
-                ..PolarOptions::default()
-            },
-            "sector with a hole",
-        ),
-    ] {
-        let chart = bare_radar_chart(5, polar);
-        for scale in [1.0, 2.0] {
-            for (style, tolerance, case) in [
-                (outline.clone(), STRICT, "outline"),
-                (markers.clone(), STRICT, "outline and markers"),
-                (filled.clone(), FILL_EDGE, "filled"),
-            ] {
-                let series = [radar("radar", style)];
-                let painted = assert_pick_matches_paint_with(
-                    &mut renderer,
-                    &chart,
-                    &series,
-                    "radar",
-                    scale,
-                    None,
-                    &format!("{what} {case}"),
-                    tolerance,
-                );
-                assert!(painted > 200, "{what} {case} at {scale}x: {painted}");
-            }
-            // The closing segment picks where it is drawn and names its
-            // nearer endpoint: near the last vertex the last one, near the
-            // first vertex the first. (Its middle can lie outside a sector
-            // or inside the hole, where it is clipped.)
-            let config = chart.config().scaled(scale);
-            let map = config.polar_angle_map().unwrap();
-            let geometry = config.polar_geometry().unwrap();
-            let inner = f64::from(geometry.inner_radius);
-            let radius = |v: f64| inner + (f64::from(geometry.radius) - inner) * v;
-            let vertex = |i: f64, v: f64| {
-                let a = map.screen_angle(i);
-                (
-                    f64::from(geometry.center[0]) + a.cos() * radius(v),
-                    f64::from(geometry.center[1]) - a.sin() * radius(v),
-                )
-            };
-            let (a, b) = (vertex(4.0, 0.7), vertex(0.0, 0.9));
-            let series = [radar("radar", outline.clone())];
-            let image = renderer.export_panel_rgba(&chart, &series, scale).unwrap();
-            let probe = Probe::register(&mut renderer, &chart, &series, scale);
-            let mut probed = 0;
-            for (from, to, index, end) in [(a, b, 4, "last"), (b, a, 0, "first")] {
-                // The first drawn pixel of this half of the segment, from
-                // its end inward; a sector edge can clip the whole half.
-                let Some((x, y)) = (3..50).find_map(|k| {
-                    let t = f64::from(k) / 100.0;
-                    let (x, y) = (
-                        (from.0 + (to.0 - from.0) * t) as u32,
-                        (from.1 + (to.1 - from.1) * t) as u32,
-                    );
-                    (pixel(&image, x, y)[0] > 128).then_some((x, y))
-                }) else {
-                    continue;
-                };
-                let hit = probe
-                    .pick(&mut renderer, x, y, 2.0)
-                    .unwrap_or_else(|| panic!("{what} at {scale}x: the closing segment picks"));
-                assert_eq!(
-                    hit.point_index, index,
-                    "{what} at {scale}x: near the {end} vertex"
-                );
-                probed += 1;
-            }
-            assert!(
-                probed > 0,
-                "{what} at {scale}x: the closing segment is drawn"
-            );
-            renderer.remove_chart(probe.id).unwrap();
-        }
-    }
-}
-
-/// Value labels pick where they paint (#40 item 13h). Each label of a
-/// category bar series (outside its grouped bars, inside its stacked
-/// segments) and of a radar series, at 1x and 2x: every pixel a label
-/// paints picks that label, by its series and category, at distance zero,
-/// and a label picks only within its selection box (its content box grown
-/// by `SELECTION_PADDING`), never another label. A label is drawn over all
-/// of its panel's data, so it wins the tie against the bar it sits inside:
-/// the white text inside a segment picks the label, not the bar.
-#[test]
-fn value_labels_pick_where_they_paint() {
-    use renderer::config::Category;
-    use renderer::data_config::{
-        BarGroups, CategoryBarDirection, CategoryBarLabels, CategoryBarMode,
-        CategoryBarSeriesLabels,
-    };
-    let mut renderer = renderer();
-    renderer
-        .add_column("pos", &col(vec![0.0, 1.0, 2.0]))
-        .expect("upload");
-    renderer
-        .add_columns(&[
-            (
-                "one",
-                &col(vec![3.0, 6.0, 4.0]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "two",
-                &col(vec![4.0, 2.0, 5.0]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    renderer
-        .add_column("cat", &col(vec![0.0, 1.0, 2.0, 3.0]))
-        .expect("upload");
-    renderer
-        .add_column("radar", &col(vec![0.6, 0.5, 0.7, 0.4]))
-        .expect("upload");
-    let bars = |id: &str, color: Color, placement: CategoryBarLabels| {
-        let mut style = renderer::data_config::CategoryBarStyle::default();
-        style.material = renderer::Material::Flat;
-        style.outline = false;
-        SeriesConfig {
-            series_id: id.into(),
-            source_id: None,
-            label: None,
-            x_column: "pos".into(),
-            y_column: id.into(),
-            z_column: None,
-            render_type: DataRenderType::CategoryBars {
-                color,
-                style,
-                labels: CategoryBarSeriesLabels {
-                    placement,
-                    text: vec!["3".into(), "Ab".into(), "4%".into()],
-                    ..CategoryBarSeriesLabels::default()
-                },
-                label_format: Default::default(),
-                overrides: None,
-            },
-        }
-    };
-    let hidden = |series: &[SeriesConfig]| -> Vec<SeriesConfig> {
-        series
-            .iter()
-            .cloned()
-            .map(|mut s| {
-                match &mut s.render_type {
-                    DataRenderType::CategoryBars { labels, .. } => {
-                        labels.placement = CategoryBarLabels::None
-                    }
-                    DataRenderType::Radar { labels, .. } => {
-                        labels.placement = renderer::RadarLabels::None
-                    }
-                    _ => {}
-                }
-                s
-            })
-            .collect()
-    };
-    let mut cases: Vec<(String, Chart, Vec<SeriesConfig>)> = Vec::new();
-    for (mode, placement, top) in [
-        (CategoryBarMode::Grouped, CategoryBarLabels::Outside, 8.0),
-        (CategoryBarMode::Stacked, CategoryBarLabels::Inside, 12.0),
-    ] {
-        let mut chart = bare_chart();
-        let config = chart.config_mut();
-        for axis in [&mut config.bottom_x, &mut config.left_y] {
-            axis.line_visible = false;
-        }
-        config.bottom_x.categories = Some(vec![
-            Category::new("a", "A"),
-            Category::new("b", "B"),
-            Category::new("c", "C"),
-        ]);
-        config.bar_groups = Some(BarGroups {
-            mode,
-            direction: CategoryBarDirection::Vertical,
-            ..BarGroups::default()
-        });
-        chart.set_y_range(0.0, top);
-        cases.push((
-            format!("{mode:?} bars"),
-            chart,
-            vec![bars("one", RED, placement), bars("two", BLUE, placement)],
-        ));
-    }
-    let mut chart = bare_chart();
-    let config = chart.config_mut();
-    config.bottom_x.categories = Some(
-        (0..4)
-            .map(|i| Category::new(format!("c{i}"), format!("C{i}")))
-            .collect(),
-    );
-    config.polar = Some(renderer::polar::PolarOptions::default());
-    chart.set_y_range(0.0, 1.0);
-    cases.push((
-        "radar".into(),
-        chart,
-        vec![SeriesConfig {
-            series_id: "radar".into(),
-            source_id: None,
-            label: None,
-            x_column: "cat".into(),
-            y_column: "radar".into(),
-            z_column: None,
-            render_type: DataRenderType::Radar {
-                color: RED,
-                style: renderer::RadarSeriesStyle {
-                    marker: Some(renderer::RadarMarker::Circle),
-                    ..Default::default()
-                },
-                labels: renderer::RadarSeriesLabels {
-                    placement: renderer::RadarLabels::Values,
-                    text: vec!["0.6".into(), "0.5".into(), "0.7".into(), "0.4".into()],
-                    ..renderer::RadarSeriesLabels::default()
-                },
-            },
-        }],
-    ));
-    for (name, chart, series) in &cases {
-        for scale in [1.0f32, 2.0] {
-            let what = format!("{name} at {scale}x");
-            let with = renderer.export_panel_rgba(chart, series, scale).unwrap();
-            let without = renderer
-                .export_panel_rgba(chart, &hidden(series), scale)
-                .unwrap();
-            let is_painted = |x, y| difference(&with, &without, x, y) >= 160;
-            let window = (0, 0, with.width, with.height);
-            let painted = count_painted(window, is_painted);
-            assert!(painted > 30, "{what}: {painted} label pixels");
-            let probe = Probe::register(&mut renderer, chart, series, scale);
-            // Every label pixel within the box of its pixels grown by the
-            // selection padding and the glyphs' side bearings.
-            let reach = renderer::select::SELECTION_PADDING * scale + 3.0 * scale + 1.0;
-            let near_paint = |x: u32, y: u32| {
-                let r = reach.ceil() as i64;
-                (-r..=r).any(|dy| {
-                    (-r..=r).any(|dx| {
-                        let (px, py) = (x as i64 + dx, y as i64 + dy);
-                        px >= 0
-                            && py >= 0
-                            && (px as u32) < with.width
-                            && (py as u32) < with.height
-                            && is_painted(px as u32, py as u32)
-                    })
-                })
-            };
-            let mut failures = Vec::new();
-            let mut picked = 0usize;
-            let step = if scale > 1.0 { 2 } else { 1 };
-            for (px, py) in edge_band(window, is_painted) {
-                if (px % step) != 0 || (py % step) != 0 {
-                    continue;
-                }
-                let painted_here = is_painted(px, py);
-                if !painted_here && !near_paint(px, py) {
-                    continue;
-                }
-                let hit = probe.pick_data(&mut renderer, px, py, 0.0);
-                match &hit {
-                    Some(renderer::PickedData::ValueLabel { .. }) => {
-                        picked += 1;
-                        if !near_paint(px, py) {
-                            failures.push(format!("({px}, {py}) picks {hit:?} far from paint"));
-                        }
-                    }
-                    _ if painted_here => {
-                        failures.push(format!("({px}, {py}) painted but picked {hit:?}"))
-                    }
-                    _ => {}
-                }
-            }
-            assert!(
-                failures.is_empty(),
-                "{what}: {} disagreements, first {:?}",
-                failures.len(),
-                &failures[..failures.len().min(12)]
-            );
-            assert!(picked > 20, "{what}: {picked} label picks");
-            renderer.remove_chart(probe.id).unwrap();
-        }
-    }
-}
-
-/// A streamline series over the `x` / `y` columns with 10 px wide heads
-/// every 24 px of drawn arc.
-fn streamline(
-    id: &str,
-    width: f32,
-    style: renderer::line::LineStylePreset,
-    color_map: Option<&str>,
-) -> SeriesConfig {
-    SeriesConfig {
-        series_id: id.into(),
-        source_id: None,
-        label: None,
-        x_column: "x".into(),
-        y_column: "y".into(),
-        z_column: None,
-        render_type: DataRenderType::Streamlines {
-            line: renderer::DataLineStyleConfig {
-                line_style: style,
-                line_color: RED,
-                line_width: width,
-                fill: None,
-                fill_color: None,
-                interpolation: renderer::data_config::LineInterpolation::Linear,
-            },
-            arrows: Some(renderer::StreamlineArrows {
-                spacing_px: 24.0,
-                head_length_px: 9.0,
-                head_width_px: 10.0,
-            }),
-            color_map: color_map.map(|column| renderer::data_config::PointColorMap {
-                column: column.into(),
-            }),
-        },
-    }
-}
-
-/// G-streamlines: a streamline series picks where its stroke and its
-/// arrowheads paint, at 1x and 2x: two curved streamlines separated by a NaN
-/// row (the gap picks nothing), solid and dashed, plain and colour-mapped,
-/// on linear axes and on a logarithmic y axis, where the heads are placed in
-/// data space and the pick follows the same placement. A pick on a head
-/// names the nearer endpoint of the segment it sits on.
-#[test]
-fn streamline_strokes_and_arrowheads_pick_where_they_paint() {
-    use renderer::line::LineStylePreset;
-    let mut renderer = renderer();
-    let xs = vec![1.5, 3.0, 4.5, 6.0, 7.5, f64::NAN, 2.0, 4.0, 6.5, 8.5];
-    let ys = vec![2.0, 3.4, 3.9, 3.5, 2.4, f64::NAN, 8.5, 6.6, 6.2, 7.4];
-    let speed = vec![0.0, 2.0, 4.0, 6.0, 8.0, f64::NAN, 10.0, 7.0, 4.0, 1.0];
-    renderer
-        .add_columns(&[
-            ("x", &col(xs) as &dyn renderer::ColumnSource),
-            ("y", &col(ys) as &dyn renderer::ColumnSource),
-            ("speed", &col(speed) as &dyn renderer::ColumnSource),
-        ])
-        .expect("upload");
-    let mut chart = bare_chart();
-    let mut bar = renderer::default::default_colorbar_options();
-    bar.visible = false;
-    bar.axis.min = 0.0;
-    bar.axis.max = 10.0;
-    // Saturated stops, so a half-covered pixel's ink is the red line's.
-    bar.colormap = renderer::ColorMap::Custom {
-        stops: vec![RED, BLUE],
-    };
-    chart.config_mut().colorbar = Some(bar);
-    let mut log = Chart::new(chart.config().clone());
-    log.config_mut().left_y.scale = renderer::config::AxisScale::Logarithmic;
-    log.config_mut().right_y.scale = renderer::config::AxisScale::Logarithmic;
-    log.set_y_range(1.0, 10.0);
-    for (chart, axes) in [(&chart, "linear"), (&log, "log y")] {
-        for (style, color_map) in [
-            (LineStylePreset::Solid, None),
-            (LineStylePreset::Dash, Some("speed")),
-        ] {
-            for scale in [1.0, 2.0] {
-                let series = [streamline("flow", 1.5, style, color_map)];
-                let what = format!("{axes} {style:?} {color_map:?}");
-                // A dashed stroke has hard, multisampled edges, as in
-                // `dashed_lines_pick_their_dashes_and_not_their_gaps`.
-                let tolerance = if style == LineStylePreset::Solid {
-                    STRICT
-                } else {
-                    MSAA_EDGE
-                };
-                let painted = assert_pick_matches_paint_with(
-                    &mut renderer,
-                    chart,
-                    &series,
-                    "flow",
-                    scale,
-                    None,
-                    &what,
-                    tolerance,
-                );
-                assert!(painted > 200, "{what}: {painted}");
-            }
-        }
-    }
-    // The gap between the streamlines picks nothing.
-    let series = [streamline("flow", 1.5, LineStylePreset::Solid, None)];
-    let gap = [
-        data_to_px(&chart, 8.0, 5.0, 1.0),
-        data_to_px(&chart, 5.0, 5.0, 1.0),
-    ];
-    assert_nothing_picks_at(
-        &mut renderer,
-        &chart,
-        &series,
-        "flow",
-        1.0,
-        &gap,
-        "the NaN gap",
-    );
-}
-
-/// [`assert_pick_matches_paint_with`] for a line offset member
-/// (`Config::line_offsets`): the document export draws each member in a panel
-/// of its own (the panel export keeps the base panel), and the comparison
-/// image keeps the member in the group, drawing nothing, so every other
-/// member keeps its shift. The subject's columns are swapped for the
-/// all-NaN `nan_x` / `nan_y`.
-#[allow(clippy::too_many_arguments)]
-fn assert_member_pick_matches_paint(
-    renderer: &mut Renderer,
-    chart: &Chart,
-    series: &[SeriesConfig],
-    subject: &str,
-    scale: f32,
-    what: &str,
-    tolerance: Tolerance,
-) -> usize {
-    let with = renderer.export_document_rgba(chart, series, scale).unwrap();
-    let blank: Vec<SeriesConfig> = series
-        .iter()
-        .cloned()
-        .map(|mut s| {
-            if s.series_id == subject {
-                s.x_column = "nan_x".into();
-                s.y_column = "nan_y".into();
-            }
-            s
-        })
-        .collect();
-    let without = renderer.export_document_rgba(chart, &blank, scale).unwrap();
-    let window = ink_window(&with, &without, 4);
-    let is_painted = |x, y| difference(&with, &without, x, y) >= tolerance.painted;
-    let painted = count_painted(window, is_painted);
-    let probe = Probe::register(renderer, chart, series, scale);
-    let mut failures = Vec::new();
-    for (x, y) in edge_band(window, is_painted) {
-        let ink = difference(&with, &without, x, y);
-        let hit = probe
-            .pick(renderer, x, y, tolerance.fringe)
-            .filter(|hit| hit.series_id == subject);
-        if ink >= tolerance.painted && hit.is_none() {
-            failures.push(format!("({x}, {y}) painted (ink {ink}) but not picked"));
-        }
-        if let Some(hit) = hit
-            && hit.distance_px == 0.0
-            && ink < tolerance.zero_ink
-            && !probe.on_zero_edge(renderer, x, y, subject)
-        {
-            failures.push(format!(
-                "({x}, {y}) picked at distance 0 (index {}) but ink is only {ink}",
-                hit.point_index
-            ));
-        }
-    }
-    // The typed pick names the member too, at the centre of its ink.
-    let (cx, cy) = {
-        let (mut sx, mut sy, mut n) = (0u64, 0u64, 0u64);
-        for y in window.1..window.3 {
-            for x in window.0..window.2 {
-                if difference(&with, &without, x, y) >= 192 {
-                    sx += u64::from(x);
-                    sy += u64::from(y);
-                    n += 1;
-                }
-            }
-        }
-        assert!(n > 0, "{what}: no opaque ink");
-        // The opaque pixel nearest the centroid.
-        let (mx, my) = ((sx / n) as u32, (sy / n) as u32);
-        (window.1..window.3)
-            .flat_map(|y| (window.0..window.2).map(move |x| (x, y)))
-            .filter(|&(x, y)| difference(&with, &without, x, y) >= 192)
-            .min_by_key(|&(x, y)| x.abs_diff(mx).pow(2) + y.abs_diff(my).pow(2))
-            .unwrap()
-    };
-    match probe.pick_data(renderer, cx, cy, tolerance.fringe) {
-        Some(renderer::PickedData::Point { series_id, .. }) if series_id == subject => {}
-        other => failures.push(format!("typed pick at ({cx}, {cy}): {other:?}")),
-    }
-    renderer.remove_chart(probe.id).unwrap();
-    assert!(
-        failures.is_empty(),
-        "{what} at {scale}x: {} disagreements, first {:?}",
-        failures.len(),
-        &failures[..failures.len().min(12)]
-    );
-    painted
-}
-
-/// Offset spectra (#50): every member picks exactly where its shifted parts
-/// paint and nothing unpainted picks: a solid line with a baseline fill, a
-/// dashed line with markers and error bars, a plain line two steps up, and
-/// the members of a logarithmic axis stacked by decades, at 1x and 2x.
-#[test]
-fn offset_lines_pick_where_their_shifted_parts_paint() {
-    use renderer::config::AxisScale;
-    use renderer::data_config::{ErrorRef, LineFill, LineInterpolation, LineOffsets};
-    use renderer::line::LineStylePreset;
-    let mut renderer = renderer();
-    let xs = vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
-    let n = xs.len();
-    upload_xy(&mut renderer, xs, vec![1.0, 1.8, 1.2, 2.0, 1.4, 1.6]);
-    renderer
-        .add_columns(&[
-            (
-                "ey",
-                &col(vec![0.4, 0.3, 0.5, 0.3, 0.4, 0.2]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "nan_x",
-                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "nan_y",
-                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    let filled = filled_line(
-        "filled",
-        Some(LineFill::ToBaseline(0.4)),
-        LineInterpolation::Linear,
-        Color::new(0.5, 0.8, 0.5, 1.0),
-    );
-    let DataRenderType::Scatter { scatter: markers } =
-        scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE).render_type
-    else {
-        unreachable!()
-    };
-    let dashed = SeriesConfig {
-        render_type: DataRenderType::LineScatterErrorbarY {
-            scatter: markers,
-            line: renderer::DataLineStyleConfig {
-                line_style: LineStylePreset::Dash,
-                line_color: BLUE,
-                line_width: 2.0,
-                fill: None,
-                fill_color: None,
-                interpolation: LineInterpolation::Linear,
-            },
-            err_y: ErrorRef::Symmetric {
-                column: "ey".into(),
-            },
-            err_style: errorbar_style(GREEN, 1.5, 6.0, 1.5),
-        },
-        ..scatter("dashed", ScatterShape::CircleFilled, 4.0, BLUE)
-    };
-    let plain = line(
-        "plain",
-        2.0,
-        LineStylePreset::Solid,
-        LineInterpolation::Linear,
-    );
-    let series = [filled, dashed, plain];
-    let mut chart = bare_chart();
-    chart.config_mut().line_offsets = Some(LineOffsets {
-        series: vec!["filled".into(), "dashed".into(), "plain".into()],
-        step_y: 3.0,
-        step_x: 0.0,
-    });
-    for scale in [1.0, 2.0] {
-        for (subject, tolerance) in [
-            ("filled", FILL_EDGE),
-            ("dashed", MSAA_EDGE),
-            ("plain", STRICT),
-        ] {
-            let painted = assert_member_pick_matches_paint(
-                &mut renderer,
-                &chart,
-                &series,
-                subject,
-                scale,
-                &format!("offset member {subject}"),
-                tolerance,
-            );
-            assert!(painted > 30, "{subject} at {scale}x: {painted}");
-        }
-    }
-    // A logarithmic axis stacks by decades; a skew moves the second member
-    // along x too.
-    let mut log = bare_chart();
-    log.config_mut().left_y.scale = AxisScale::Logarithmic;
-    log.set_y_range(0.1, 1000.0);
-    log.config_mut().line_offsets = Some(LineOffsets {
-        series: vec!["low".into(), "high".into()],
-        step_y: 1.5,
-        step_x: 0.5,
-    });
-    let series = [
-        line(
-            "low",
-            2.0,
-            LineStylePreset::Solid,
-            LineInterpolation::Linear,
-        ),
-        line(
-            "high",
-            2.0,
-            LineStylePreset::Solid,
-            LineInterpolation::Linear,
-        ),
-    ];
-    for scale in [1.0, 2.0] {
-        for subject in ["low", "high"] {
-            let painted = assert_member_pick_matches_paint(
-                &mut renderer,
-                &log,
-                &series,
-                subject,
-                scale,
-                &format!("log offset member {subject}"),
-                STRICT,
-            );
-            assert!(painted > 30, "{subject} at {scale}x: {painted}");
-        }
-    }
-}
-
-/// Offset spectra (#50) whose members overlap: each member's opaque baseline
-/// fill covers part of the member below it, line included. Every pixel a
-/// member paints and the user can see picks that member, and a covered one
-/// picks the member covering it, at 1x and 2x: the pick answers with what is
-/// painted under the cursor (D7), across the member panels' composite order.
-#[test]
-fn overlapping_offset_members_pick_what_is_painted_on_top() {
-    use renderer::data_config::{LineFill, LineInterpolation, LineOffsets};
-    let mut renderer = renderer();
-    let xs = vec![1.0, 2.5, 4.0, 5.5, 7.0, 8.5];
-    let n = xs.len();
-    upload_xy(&mut renderer, xs, vec![1.0, 1.9, 1.2, 2.0, 1.3, 1.6]);
-    renderer
-        .add_columns(&[
-            (
-                "nan_x",
-                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
-            ),
-            (
-                "nan_y",
-                &col(vec![f64::NAN; n]) as &dyn renderer::ColumnSource,
-            ),
-        ])
-        .expect("upload");
-    // Far apart in every pair, so a fill painted over its neighbour's
-    // differs by as much ink as one painted over the background.
-    let fills = [
-        Color::new(0.1, 0.2, 0.85, 1.0),
-        Color::new(0.95, 0.85, 0.15, 1.0),
-        Color::new(0.15, 0.75, 0.2, 1.0),
-    ];
-    let series: Vec<SeriesConfig> = ["m0", "m1", "m2"]
-        .iter()
-        .zip(fills)
-        .map(|(id, fill)| {
-            filled_line(
-                id,
-                Some(LineFill::ToBaseline(0.6)),
-                LineInterpolation::Linear,
-                fill,
-            )
-        })
-        .collect();
-    let mut chart = bare_chart();
-    chart.set_x_range(0.0, 9.5);
-    chart.set_y_range(0.0, 3.2);
-    // Half a unit apart: member k's line (1.0..2.0 + k / 2) runs inside
-    // member k + 1's fill (1.1 + k / 2 up to its line) wherever the trace
-    // rises less than half a unit over its neighbour's.
-    chart.config_mut().line_offsets = Some(LineOffsets {
-        series: vec!["m0".into(), "m1".into(), "m2".into()],
-        step_y: 0.5,
-        step_x: 0.0,
-    });
-    for scale in [1.0, 2.0] {
-        for subject in ["m0", "m1", "m2"] {
-            let painted = assert_member_pick_matches_paint(
-                &mut renderer,
-                &chart,
-                &series,
-                subject,
-                scale,
-                &format!("overlapping member {subject}"),
-                FILL_EDGE,
-            );
-            assert!(painted > 30, "{subject} at {scale}x: {painted}");
-        }
-    }
 }

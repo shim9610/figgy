@@ -60,7 +60,7 @@ use renderer::line::LineStylePreset;
 use renderer::{
     AxisPreset, Chart, ChartDrawItem, ChartStyle, ChartView, ColorCycle, ColumnSource,
     CpuTextMeasure, DataLineStyleConfig, DataRenderType, HitId, HitMap, Renderer, ResizeHandle,
-    Series, SeriesConfig, WindowedRenderer, encode_png,
+    SelectionBox, Series, SeriesConfig, WindowedRenderer, encode_png,
 };
 
 const AXIS_PRESETS: [AxisPreset; 5] = [
@@ -212,7 +212,6 @@ fn build_sine_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEnt
         label: None,
         x_column: "sine_x".into(),
         y_column: "sine_y".into(),
-        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -289,7 +288,6 @@ fn build_rc_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEntry
         label: None,
         x_column: x.into(),
         y_column: y.into(),
-        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -357,7 +355,6 @@ fn build_cross_section_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) ->
         label: None,
         x_column: "xs_e".into(),
         y_column: "xs_sigma".into(),
-        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -441,7 +438,6 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
         label: None,
         x_column: "bump_x".into(),
         y_column: "bump_y".into(),
-        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: MatrixRef {
                 columns: ids,
@@ -479,7 +475,6 @@ fn build_field_panel(renderer: &mut WindowedRenderer<'_>, rect: Rect) -> PanelEn
                     bg_padding_px: 2.0,
                 }),
             },
-            surface: None,
         },
     }];
     let view = renderer.create_chart_view(&chart, rect).expect("view");
@@ -690,8 +685,7 @@ impl App {
         let Some(drag) = panel.hitmap.get(id).and_then(|el| el.as_draggable()) else {
             return;
         };
-        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
-        if drag.drag_by(panel.chart.config_mut(), &measure, dx, dy) == NudgeResult::Moved
+        if drag.drag_by(panel.chart.config_mut(), dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -709,8 +703,7 @@ impl App {
         let Some(rz) = panel.hitmap.get(id).and_then(|el| el.as_resizable()) else {
             return;
         };
-        let measure = CpuTextMeasure::for_style(&panel.chart.config().draw_style);
-        if rz.resize_by(panel.chart.config_mut(), &measure, handle, dx, dy) == NudgeResult::Moved
+        if rz.resize_by(panel.chart.config_mut(), handle, dx, dy) == NudgeResult::Moved
             && let Some(w) = self.window.as_ref()
         {
             w.request_redraw();
@@ -809,15 +802,23 @@ impl App {
         let rects = compute_panel_rects(w, h);
         for (i, (panel, rect)) in self.panels.iter_mut().zip(rects.iter()).enumerate() {
             panel.chart.config_mut().chart_area = ChartArea(*rect);
-            let selected_id: Option<String> = match selected {
-                Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
-                _ => None,
+            let sel_boxes: Vec<SelectionBox> = match selected {
+                Some((pi, id)) if pi == i => panel
+                    .hitmap
+                    .selection_box(
+                        id,
+                        panel.chart.config(),
+                        &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                    )
+                    .into_iter()
+                    .collect(),
+                _ => Vec::new(),
             };
             if let Err(e) = renderer.refresh_axis_with_selection(
                 &mut panel.view,
                 &panel.chart,
                 *rect,
-                selected_id.as_deref(),
+                &sel_boxes,
             ) {
                 eprintln!("[refresh_axis] {e}");
                 return;
@@ -849,15 +850,23 @@ impl App {
             // only needs resetting.
             let _ = panel.chart.consume_data_dirty();
             if raster_dirty {
-                let selected_id: Option<String> = match selected {
-                    Some((pi, id)) if pi == i => panel.hitmap.get(id).map(|el| el.element_id()),
-                    _ => None,
+                let sel_boxes: Vec<SelectionBox> = match selected {
+                    Some((pi, id)) if pi == i => panel
+                        .hitmap
+                        .selection_box(
+                            id,
+                            panel.chart.config(),
+                            &CpuTextMeasure::for_style(&panel.chart.config().draw_style),
+                        )
+                        .into_iter()
+                        .collect(),
+                    _ => Vec::new(),
                 };
                 if let Err(e) = renderer.refresh_axis_with_selection(
                     &mut panel.view,
                     &panel.chart,
                     panel_rect,
-                    selected_id.as_deref(),
+                    &sel_boxes,
                 ) {
                     eprintln!("[refresh_axis] {e}");
                     return;

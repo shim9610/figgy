@@ -104,21 +104,14 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Error bars | X, Y and error columns | [error_bars.rs](crates/renderer/examples/error_bars.rs) |
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
-| Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
-| Colour images (imshow) | Three channel grids on one lattice, mapped from a `range` (`RgbImage`) | [Colour images](crates/renderer/CONFIG.md#colour-images-imshow) |
-| Parallel coordinates | One column per axis (`Parallel`) on a chart with `Config.parallel`, each axis its own range | [Parallel coordinates](crates/renderer/CONFIG.md#parallel-coordinates) |
 | Vector fields (quiver) | Anchors and (u, v) columns, or two matrices on a grid | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
 | Colour and size maps (bubbles) | A value column per point, mapped by `PointColorMap` through the colorbar (`Config.colorbar`) or by `PointSizeMap` through its size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
-| Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
+| Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text and arrows | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
-| Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
-| 3D surfaces | A heatmap's grid drawn as a surface in a box with `Config.view_3d`, with points and trajectories from a `z_column` | [Surface](crates/renderer/SURFACE.md) |
-| Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
-| Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
-| Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
-| Radar charts | A categorical angle axis on a polar chart, category positions and one value column per radar series (`Radar`); legacy `RadarChart` documents open through `Config::from_radar` | [Radar](crates/renderer/RADAR.md) |
 | Pies and donuts | `RadialChart` values | [Radial (in Korean)](crates/renderer/RADIAL.md) |
-| Sunbursts | `RadialChart` slices with `children`: nested rings over their parents' spans | [Radial (in Korean)](crates/renderer/RADIAL.md#선버스트중첩-고리) |
+| Categorical bars | `CategoricalChart` categories and series | [Bars (in Korean)](crates/renderer/CATEGORICAL.md) |
+| Box plots | `BoxPlotChart` summaries | [Boxes](crates/renderer/BOXPLOT.md) |
+| Radar charts | `RadarChart` categories and one value per category per series | [Radar](crates/renderer/RADAR.md) |
 
 Every row above pies and donuts is a column-backed chart: its data enters
 through `ColumnSource` into one GPU column pool, and these charts share one
@@ -127,9 +120,9 @@ charts, except that a polar chart takes no overlay axes. Streamed, non-resident
 sources draw lines, scatter, error bars, histograms and heatmaps in a
 single-panel document. Contours, fills and step lines, vector fields, colour and
 size maps, polar plots, and documents with overlays or subplots reject streamed
-sources with an explicit error, and so do categorical bars, box plots, range
-bars and radar series. Pies and donuts keep their values in their own small model, with
-no `ColumnSource`, and have their own renderer. The annotation layer works on
+sources with an explicit error. Pies and donuts, categorical bars, box plots and
+radar charts keep their categories and values in their own small model, with no
+`ColumnSource`, and each has its own renderer. The annotation layer works on
 both kinds.
 
 ## Quick start
@@ -219,7 +212,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
-        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -280,14 +272,12 @@ chart.config_mut().bottom_x.major_spacing = 30.0; // spokes every 30°
 chart.config_mut().bottom_x.label_style.format = LabelFormat::Degrees; // "30°"
 ```
 
-A radar chart is a polar chart whose angle axis is categorical, drawn with
-`DataRenderType::Radar` series. A `RadarChart` document opens through
-`Config::from_radar`, which returns the chart, its series and the columns to
-upload, borrowed from the document:
+A radar chart keeps its categories and values in a `RadarChart` model, with no
+columns to upload, and has its own renderer:
 
 ```rust,ignore
-use renderer::radar::{RadarChart, RadarSeries};
-use renderer::{Category, Chart, Color, config::Config, encode_png};
+use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
+use renderer::{Category, Color, encode_png};
 
 let mut chart = RadarChart::default();
 chart.categories = ["Speed", "Safety", "Size", "Docs", "Tests"]
@@ -298,16 +288,12 @@ chart.series = vec![
     RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
     RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
 ];
-chart.value_range = Some([0.0, 10.0]);
-chart.validate()?;
-// `renderer` is the quick start's `Renderer`.
-let (mut config, series, uploads) = Config::from_radar(&chart);
-config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y: 0, width: 720, height: 520 });
-for upload in &uploads {
-    renderer.add_column(upload.column.clone(), &upload.values)?;
-}
-let image = renderer.export_panel_rgba(&Chart::new(config), &series, 1.0)?;
+// `gpu` is a `RendererDevice`. In the quick start, bind it with
+// `let gpu = RendererDevice::new(...)` and pass `gpu.clone()` to `Renderer::try_new`.
+let mut radar = RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+let image = radar.export_rgba(&chart, (720, 520), 1.0)?;
 std::fs::write("radar.png", encode_png(&image)?)?;
+// In a render pass instead: radar.prepare(&chart, (720, 520), 1.0)?.draw(&mut pass);
 ```
 
 The complete programs are [polar_plot.rs](crates/renderer/examples/polar_plot.rs)
@@ -346,33 +332,26 @@ animations and interactive examples.
 |---|---|
 | Draw in a native window | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | Embed in egui | [egui_embed.rs](crates/renderer/examples/egui_embed.rs), run with `--features egui_demo` |
-| Edit pies or donuts | [Native editors](crates/renderer/examples/README.md#interactive-examples) |
+| Edit pies, donuts, bars, box plots or radar charts | [Native editors](crates/renderer/examples/README.md#interactive-examples) |
 | Connect picking, dragging and plot-area resizing | [Interaction guide](crates/renderer/INTERACTION.md) |
-| Fit margins, title offsets and label formats so labels and titles do not overlap | `layout::auto_layout` in the [convenience helpers](crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers); `autoLayout(configJson)` in the browser |
 | Render data that does not fit in GPU memory | [Streaming and residency](crates/renderer/ARCHITECTURE.md#exact-streaming-and-residency) |
 
 The Rust renderer can share a device with a **wgpu 30** host. No GUI framework is
 required by default.
 
-## WebAssembly and the browser
+## WebAssembly example
 
 The Rust renderer also compiles to `wasm32-unknown-unknown` and renders through
-WebGPU. [`crates/web`](crates/web/README.md) is figgy's **browser product**: the
-wasm-bindgen wrapper and the `<figgy-chart>` custom element, which connect a
-canvas, events and async calls. It is maintained with the renderer, and every
-renderer feature ships its wrapper methods. Its JavaScript API is the wrapper's
-own, separate from the Rust library's API. The `FiggyChart` export and
-`<figgy-chart>` element cover Cartesian charts, categorical bars and box
-plots included, and polar charts, radar charts included
-(`set_radar_document`); `FiggyBoundedChart`, the radial chart host,
-covers pies and donuts, and the host
-handles their canvas events. The wrapper is the Cargo package `figgy`, built from
-this repository (`publish = false`); the `figgy` crate on crates.io and the
-`figgy` package on npm are unrelated projects.
+WebGPU. [`crates/web`](crates/web/README.md) demonstrates how an application can
+wrap it with wasm-bindgen and connect a canvas, events and async calls. This is a
+**browser integration example**, separate from the Rust library's API. Its
+`FiggyChart` export and `<figgy-chart>` element cover Cartesian and polar charts;
+`FiggyBoundedChart` covers pies, donuts, categorical bars, box plots and radar
+charts, and the host handles their canvas events.
 
-[Build and run figgy in the browser](crates/web/README.md).
+[Build and run the browser example](crates/web/README.md).
 [figgyplot.com Studio](https://figgyplot.com/) is a separate web application, not
-part of the `figgy-renderer` crate or the browser product.
+part of the `figgy-renderer` crate or the browser example.
 
 ## Documentation
 
@@ -380,7 +359,7 @@ part of the `figgy-renderer` crate or the browser product.
 |---|---|
 | Native setup, data adapters, embedding and export | [Usage](crates/renderer/USAGE.md) |
 | Axes, labels, legends, series and color maps | [Configuration reference](crates/renderer/CONFIG.md) |
-| Pies/donuts · categorical bars · box plots · range bars · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Range bars](crates/renderer/RANGEBARS.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
+| Pies/donuts · categorical bars · box plots · radar · polar · histograms | [Radial (in Korean)](crates/renderer/RADIAL.md) · [Bars (in Korean)](crates/renderer/CATEGORICAL.md) · [Boxes](crates/renderer/BOXPLOT.md) · [Radar](crates/renderer/RADAR.md) · [Polar](crates/renderer/POLAR.md) · [Histograms](crates/renderer/HISTOGRAM.md) |
 | Ownership, prepared frames and API compatibility | [API contracts](crates/renderer/API.md) |
 | Memory flow, caching, streaming and shader details | [Architecture](crates/renderer/ARCHITECTURE.md) |
 | Source versions and migration notes | [Changelog](CHANGELOG.md) |
@@ -398,7 +377,5 @@ requests. Report suspected vulnerabilities privately using [SECURITY.md](SECURIT
 ## License
 
 Code: [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE).
-Bundled fonts retain their OFL and GUST notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
-and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt) (SIL OFL 1.1), and
-[New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt) (GUST Font License),
-the face formulas in rich text are drawn with.
+Bundled fonts retain their OFL notices: [Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt)
+and [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt).

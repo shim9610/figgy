@@ -346,14 +346,6 @@ function makeKernel(name, options = {}) {
       calls.push(["export", scale]);
       return this.exportImpl(scale);
     },
-    export_svg(scale) {
-      calls.push(["export_svg", scale]);
-      return Promise.resolve("<svg/>");
-    },
-    export_pdf(scale) {
-      calls.push(["export_pdf", scale]);
-      return Promise.resolve(new Uint8Array([37, 80, 68, 70]));
-    },
     first_frame_ready() {
       calls.push(["first_frame_ready"]);
       return options.firstFrameImpl?.() ?? Promise.resolve();
@@ -554,33 +546,6 @@ test("completed stream export reuses source views and picking delegates without 
   assert.equal(kernel.calls.filter(([name]) => name === "handle-free").length, 1);
   assert.equal(kernel.calls.filter(([name]) => name === "request-free").length, 2);
   assert.equal(kernel.calls.filter(([name]) => name === "progress-free").length, 1);
-  assert.equal(element.busy, false);
-});
-
-test("SVG and PDF export run as the export operation on a resident chart", async () => {
-  const kernel = makeKernel("vector");
-  const { Element } = await loadFacade({ createImpl: () => Promise.resolve(kernel) });
-  const element = new Element();
-  connect(element);
-  await element.ready;
-  await waitForIdle(element);
-  const svg = element.export_svg(2);
-  assert.equal(element.busy, true, "the export holds the operation gate");
-  await assert.rejects(element.export_pdf(), /busy/);
-  assert.equal(await svg, "<svg/>");
-  assert.equal(element.busy, false);
-  assert.deepEqual(Array.from(await element.export_pdf()), [37, 80, 68, 70]);
-  assert.deepEqual(
-    kernel.calls.filter(([name]) => name.startsWith("export")),
-    [["export_svg", 2], ["export_pdf", 1]],
-  );
-});
-
-test("SVG and PDF export reject a chart shown from a stream without calling the kernel", async () => {
-  const { kernel, element } = await completedReplayFixture({ typed: true });
-  await assert.rejects(element.export_svg(2), /SVG export does not support streamed sources/);
-  await assert.rejects(element.export_pdf(2), /PDF export does not support streamed sources/);
-  assert.equal(kernel.calls.filter(([name]) => name === "export_svg" || name === "export_pdf").length, 0);
   assert.equal(element.busy, false);
 });
 

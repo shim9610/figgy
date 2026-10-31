@@ -172,7 +172,6 @@ impl Renderer {
             level_color_count: 0,
             z_min: bound(bar.axis.min),
             z_max: bound(bar.axis.max),
-            image: [0; 4],
         };
         let size = (draw.target.width(), draw.target.height());
         let data_rect = config.data_area().map_err(|_| StreamError::InvalidRange)?.0;
@@ -225,7 +224,9 @@ impl Renderer {
             &self.device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("stream field runtime"),
-                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
+                source: wgpu::ShaderSource::Wgsl(
+                    include_str!("data_render/field_columnar.wgsl").into(),
+                ),
             },
         );
         let pipelines = Arc::new(field::Pipelines::new(

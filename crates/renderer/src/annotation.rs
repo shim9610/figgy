@@ -11,7 +11,8 @@
 //! edit re-rasterizes only this layer.
 //!
 //! Hit testing uses the same measured geometry as the raster through an
-//! [`AnnotationMap`], a [`HitMap`] of the layer: the renderer measures
+//! [`AnnotationMap`], the annotation twin of
+//! [`DecorationMap`](crate::decoration::DecorationMap): the renderer measures
 //! text at the output scale when it registers an element, and the model's
 //! `Selectable` / `Draggable` / `Resizable` implementations for
 //! [`AnnotationElement`] turn pointer deltas back into anchors.
@@ -22,19 +23,16 @@ use crate::config::{AxisOptions, AxisScale, Config};
 use crate::decoration::scaled_rich_text;
 use crate::gpu_memory::{GpuLedger, GpuResourceKind, TrackedTexture};
 use crate::layout::RectF;
-use crate::raster::Canvas;
+use crate::raster::{Canvas, Paint};
 use crate::render_warning::{AnnotationSkip, RenderWarning};
-use crate::text_render::{FontPolicy, measure_rich_text};
+use crate::text_render::{FontPolicy, draw_rich_text, measure_rich_text};
 use crate::{CpuTextMeasure, HitId, HitMap, RendererDevice};
 use model::annotation::geometry;
 pub use model::annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationGeometry,
-    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
-    AxisSpace, BoxStyle, MeasuredText, PixelSpace, emit_annotation,
+    AnnotationHandle, AnnotationKind, AnnotationLineStyle, AnnotationShape, AnnotationSpace,
+    ArrowStyle, AxisMap, AxisSpace, BoxStyle, PixelSpace, annotation_shapes,
 };
-use model::drag::DragConfig;
-use model::select::SelectionGeometry;
-use model::sink::{Sink, Slot};
 use model::{AnnotationLayer, DecorationId, LayerRef, layout::NudgeResult};
 
 /// The anchor space of a Cartesian chart: the chart area is the panel, the
@@ -48,10 +46,10 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
         .data_area()
         .map(|area| RectF::from_rect(&area.0))
         .unwrap_or(panel);
-    // A polar, ternary or 3D chart has no separable axes: data anchors,
-    // reference lines and spans are reported as `NoValueAxis` skips, and
-    // ratio anchors stay relative to the data area.
-    let (x, y) = if config.polar.is_some() || config.ternary.is_some() || config.view_3d.is_some() {
+    // A polar chart has no separable axes: data anchors, reference lines and
+    // spans are reported as `NoValueAxis` skips, and ratio anchors stay
+    // relative to the data area.
+    let (x, y) = if config.polar.is_some() {
         (AxisSpace::NONE, AxisSpace::NONE)
     } else {
         (axis_space(&config.bottom_x), axis_space(&config.left_y))
@@ -61,11 +59,6 @@ pub fn pixel_space_for_config(config: &Config) -> PixelSpace {
 
 fn axis_space(axis: &AxisOptions) -> AxisSpace {
     let map = match axis.scale {
-        // Category `i` is centred at coordinate `i`, where category bars
-        // and boxes are centred.
-        _ if axis.categories.is_some() => AxisMap::Index {
-            count: axis.category_count().unwrap_or(0),
-        },
         AxisScale::Linear => AxisMap::Linear {
             min: axis.min,
             max: axis.max,
@@ -83,7 +76,7 @@ fn axis_space(axis: &AxisOptions) -> AxisSpace {
 
 /// Renderer-measured annotation hit map for one frame. Coordinates and drag
 /// deltas are logical pixels in the frame's own space: chart-local for
-/// the radial chart; for Cartesian charts, the config pixel space of the
+/// bounded charts; for Cartesian charts, the config pixel space of the
 /// chart's [`HitMap`], where `chart_area` sits at its own `x` / `y`.
 pub struct AnnotationMap {
     state: AnnotationLayer,
@@ -179,12 +172,7 @@ impl AnnotationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(
-            self.map
-                .get(id)?
-                .as_draggable()?
-                .drag_by(layer, &CpuTextMeasure::default(), dx, dy),
-        )
+        Some(self.map.get(id)?.as_draggable()?.drag_by(layer, dx, dy))
     }
 
     pub fn hit_resize_handle(
@@ -208,51 +196,19 @@ impl AnnotationMap {
         dx: f32,
         dy: f32,
     ) -> Option<NudgeResult> {
-        Some(self.map.get(id)?.as_resizable()?.resize_by(
-            layer,
-            &CpuTextMeasure::default(),
-            handle,
-            dx,
-            dy,
-        ))
-    }
-
-    /// The vertex of a polygon item whose handle square covers `position`.
-    pub fn hit_vertex(&self, id: HitId, position: [f32; 2]) -> Option<usize> {
-        self.element(id)?
-            .hit_vertex(&self.state, position[0], position[1])
-    }
-
-    /// Move one vertex of a polygon item by a screen delta, through the
-    /// item's anchor space; `None` for an item that is not a drawn
-    /// polygon.
-    pub fn drag_vertex(
-        &self,
-        layer: &mut AnnotationLayer,
-        id: HitId,
-        vertex: usize,
-        dx: f32,
-        dy: f32,
-    ) -> Option<NudgeResult> {
-        let element = self.element(id)?;
-        if !matches!(
-            layer.items.get(element.index).map(|item| &item.kind),
-            Some(AnnotationKind::Polygon { .. })
-        ) {
-            return None;
-        }
-        let moved = AnnotationElement {
-            handle: Some(model::annotation::AnnotationHandle::Vertex(vertex)),
-            ..element.clone()
-        };
-        Some(layer.nudge(moved, &CpuTextMeasure::default(), dx, dy))
+        Some(
+            self.map
+                .get(id)?
+                .as_resizable()?
+                .resize_by(layer, handle, dx, dy),
+        )
     }
 }
 
 /// What a pointer hit on the active layer's route names: an annotation item
 /// or an element of the chart's own hit map (the Cartesian
-/// [`HitMap::for_active_layer`] map or the radial frame's
-/// [`RadialFrame::decorations`](crate::radial::RadialFrame::decorations)).
+/// [`HitMap::for_active_layer`] map or a bounded frame's
+/// [`DecorationMap`](crate::decoration::DecorationMap)).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LayerHit {
     /// An annotation item: its index in `annotations.items` (the
@@ -322,7 +278,7 @@ pub(crate) struct RasterRequest<'a> {
     /// The frame's anchor space, in the map's logical coordinates.
     pub space: PixelSpace,
     /// The logical origin of the raster's top-left pixel (the chart area's
-    /// origin for Cartesian charts, zero for the radial chart).
+    /// origin for Cartesian charts, zero for bounded charts).
     pub origin: [f32; 2],
     /// Raster size in physical pixels.
     pub size: (u32, u32),
@@ -333,27 +289,31 @@ pub(crate) struct RasterRequest<'a> {
     pub policy: FontPolicy,
 }
 
-/// Measure a text block in logical pixels: the renderer's glyph stack at
-/// the raster's physical scale, so the hit map and the raster agree at every
-/// output scale.
+/// Measured size of a text block in logical pixels, plus the first line's
+/// ascent in physical pixels for baseline placement.
+struct Measured {
+    size: [f32; 2],
+    ascent: f32,
+    padding: f32,
+}
+
 fn measure(
     text: &model::text::RichText,
     padding: f32,
     scale: f32,
     policy: FontPolicy,
-) -> Option<MeasuredText> {
+) -> Option<Measured> {
     if text.segments.is_empty() {
         return None;
     }
     let m = measure_rich_text(&scaled_rich_text(text, scale), policy);
-    Some(MeasuredText {
+    Some(Measured {
         size: [
             m.width / scale + padding * 2.0,
             m.height() / scale + padding * 2.0,
         ],
-        ascent: m.ascent / scale,
+        ascent: m.ascent,
         padding,
-        em: text.font_size,
     })
 }
 
@@ -411,124 +371,16 @@ fn skip_reason(
                 AnnotationSkip::OutOfRange
             }
         }
-        AnnotationKind::Rect { from, to, .. } | AnnotationKind::Ellipse { from, to, .. } => {
-            if !finite_anchor(from) || !finite_anchor(to) {
-                AnnotationSkip::NonFinite
-            } else if !anchor_has_axes(from) || !anchor_has_axes(to) {
-                AnnotationSkip::NoValueAxis
-            } else {
-                AnnotationSkip::OutOfRange
-            }
-        }
-        AnnotationKind::Polygon { vertices, .. } => {
-            if !vertices.iter().all(finite_anchor) {
-                AnnotationSkip::NonFinite
-            } else if !vertices.iter().all(anchor_has_axes) {
-                AnnotationSkip::NoValueAxis
-            } else {
-                AnnotationSkip::OutOfRange
-            }
-        }
     }
 }
 
-/// The annotation raster's sink: one canvas per slot, each created by the
-/// first part placed into it, so a layer with nothing below (or above) the
-/// data has no texture for that slot.
-struct LayerSink {
-    underlay: Option<Canvas>,
-    overlay: Option<Canvas>,
-    size: (u32, u32),
-    origin: [f32; 2],
-    scale: f32,
-    policy: FontPolicy,
-}
-
-impl LayerSink {
-    fn ensure(&mut self, slot: Slot) {
-        let (w, h) = self.size;
-        let canvas = match slot {
-            Slot::Below => &mut self.underlay,
-            Slot::Above => &mut self.overlay,
-        };
-        if canvas.is_none() {
-            *canvas = Canvas::new(w, h);
-        }
-    }
-
-    fn canvas_sink(&mut self) -> crate::decoration_render::CanvasSink<'_> {
-        crate::decoration_render::CanvasSink::placed(
-            self.underlay.as_mut(),
-            self.overlay.as_mut(),
-            crate::sketch::DecoStroker::Precise,
-            self.policy,
-            self.origin,
-            self.scale,
-        )
-    }
-}
-
-impl Sink for LayerSink {
-    fn text(&mut self, slot: Slot, text: &model::sink::PlacedText<'_>) {
-        self.ensure(slot);
-        self.canvas_sink().text(slot, text);
-    }
-
-    fn stroke(
-        &mut self,
-        slot: Slot,
-        a: [f32; 2],
-        b: [f32; 2],
-        style: &model::sink::StrokeStyle<'_>,
-    ) {
-        self.ensure(slot);
-        self.canvas_sink().stroke(slot, a, b, style);
-    }
-
-    fn rect(
-        &mut self,
-        slot: Slot,
-        rect: RectF,
-        fill: Option<model::Color>,
-        border: Option<model::sink::Border<'_>>,
-    ) {
-        if fill.is_none() && border.is_none() {
-            return;
-        }
-        self.ensure(slot);
-        self.canvas_sink().rect(slot, rect, fill, border);
-    }
-
-    fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: model::Color) {
-        self.ensure(slot);
-        self.canvas_sink().triangle(slot, points, color);
-    }
-
-    fn polygon(
-        &mut self,
-        slot: Slot,
-        points: &[[f32; 2]],
-        fill: Option<model::Color>,
-        border: Option<&model::sink::StrokeStyle<'_>>,
-    ) {
-        if fill.is_none() && border.is_none() {
-            return;
-        }
-        self.ensure(slot);
-        self.canvas_sink().polygon(slot, points, fill, border);
-    }
-
-    fn ramp(&mut self, slot: Slot, rect: RectF, bar: &model::config::ColorBarOptions) {
-        self.ensure(slot);
-        self.canvas_sink().ramp(slot, rect, bar);
-    }
+fn dash(style: &model::line::LineStylePreset, scale: f32) -> Vec<f32> {
+    style.pattern().iter().map(|v| v * scale).collect()
 }
 
 /// Rasterize `request.layer` into the underlay and overlay and register the
 /// drawn items in an [`AnnotationMap`]. Items are drawn in index order; a
 /// hidden or unplaceable item is skipped and, when unplaceable, reported.
-/// Each item is placed once, through [`AnnotationElement::emit`]: the
-/// canvas sink paints the parts and the hit map's sinks read the same parts.
 pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
     let (w, h) = request.size;
     let scale = request.scale;
@@ -543,51 +395,17 @@ pub(crate) fn rasterize(request: &RasterRequest<'_>) -> AnnotationRaster {
             map,
         };
     }
-    let mut sink = LayerSink {
-        underlay: None,
-        overlay: None,
-        size: (w, h),
-        origin,
-        scale,
-        policy: request.policy,
-    };
-    let mut registered = Vec::new();
-    emit_annotation_layer(request, &mut sink, &mut |placed| match placed {
-        Ok(element) => registered.push(element),
-        Err(warning) => map.warnings.push(warning),
-    });
-    for element in registered {
-        let id = map.map.register(element.clone());
-        map.entries.push((id, element));
-    }
-    if let Some(index) = request.selected
-        && let Some(id) = map.find(index)
-        && let Some(selection) = map.selection_box(id)
-    {
-        sink.ensure(Slot::Above);
-        if let Some(c) = sink.overlay.as_mut() {
-            crate::axis_render::draw_selection_box(c, &selection, origin, scale);
+    let mut underlay: Option<Canvas> = None;
+    let mut overlay: Option<Canvas> = None;
+    fn canvas(slot: &mut Option<Canvas>, w: u32, h: u32) -> Option<&mut Canvas> {
+        if slot.is_none() {
+            *slot = Canvas::new(w, h);
         }
+        slot.as_mut()
     }
-    AnnotationRaster {
-        underlay: sink.underlay.map(Canvas::into_rgba),
-        overlay: sink.overlay.map(Canvas::into_rgba),
-        map,
-    }
-}
-
-/// Place every item of `request.layer` into `sink`, in index order, through
-/// [`AnnotationElement::emit`]: the one placement of the layer, which the
-/// raster paints and the vector export writes. A hidden item is skipped; an
-/// item that cannot be placed is reported to `placed` as its warning, a
-/// placed one as its element.
-pub(crate) fn emit_annotation_layer(
-    request: &RasterRequest<'_>,
-    sink: &mut dyn Sink,
-    placed: &mut dyn FnMut(Result<AnnotationElement, RenderWarning>),
-) {
-    let scale = request.scale;
-    let space = request.space;
+    // Logical map coordinate -> physical raster pixel.
+    let px = |p: [f32; 2]| ((p[0] - origin[0]) * scale, (p[1] - origin[1]) * scale);
+    let mut registered = Vec::new();
     for (index, item) in request.layer.items.iter().enumerate() {
         if !item.visible {
             continue;
@@ -596,10 +414,7 @@ pub(crate) fn emit_annotation_layer(
             AnnotationKind::ReferenceLine { label, .. } => label
                 .as_ref()
                 .and_then(|t| measure(t, 0.0, scale, request.policy)),
-            AnnotationKind::Span { .. }
-            | AnnotationKind::Rect { .. }
-            | AnnotationKind::Ellipse { .. }
-            | AnnotationKind::Polygon { .. } => None,
+            AnnotationKind::Span { .. } => None,
             AnnotationKind::Text {
                 text, box_style, ..
             } => measure(
@@ -612,32 +427,157 @@ pub(crate) fn emit_annotation_layer(
                 .as_ref()
                 .and_then(|t| measure(t, 0.0, scale, request.policy)),
         };
-        let text_size = measured.map(|m| m.size);
-        if geometry(&item.kind, &space, text_size).is_none() {
-            placed(Err(RenderWarning::AnnotationSkipped {
+        let text_size = measured.as_ref().map(|m| m.size);
+        let Some(geometry) = geometry(&item.kind, &space, text_size) else {
+            map.warnings.push(RenderWarning::AnnotationSkipped {
                 index,
                 reason: skip_reason(&item.kind, &space, text_size),
-            }));
+            });
             continue;
-        }
+        };
         let element = AnnotationElement {
             index,
             space,
-            text: measured,
+            text_size,
             handle: None,
         };
-        element.emit(request.layer, sink);
-        placed(Ok(element));
+        // Paint exactly the item's shapes; its bounds, hit test and
+        // selection box are computed from the same shapes.
+        for shape in annotation_shapes(&item.kind, &geometry, text_size)
+            .into_iter()
+            .flatten()
+        {
+            match (&item.kind, shape) {
+                (AnnotationKind::Span { fill, .. }, AnnotationShape::Rect(rect)) => {
+                    if let Some(c) = canvas(&mut underlay, w, h) {
+                        let (x, y) = px([rect.x, rect.y]);
+                        c.draw_rect(
+                            x,
+                            y,
+                            rect.width * scale,
+                            rect.height * scale,
+                            &Paint::fill(fill),
+                        );
+                    }
+                }
+                (
+                    AnnotationKind::Text {
+                        text, box_style, ..
+                    },
+                    AnnotationShape::Rect(rect),
+                ) => {
+                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
+                        let (x, y) = px([rect.x, rect.y]);
+                        if let Some(b) = box_style {
+                            let (pw, ph) = (rect.width * scale, rect.height * scale);
+                            if b.fill.a > 0.0 {
+                                c.draw_rect(x, y, pw, ph, &Paint::fill(&b.fill));
+                            }
+                            if b.border_width > 0.0 && b.border_color.a > 0.0 {
+                                let bw = b.border_width * scale;
+                                c.draw_rect(
+                                    x + bw * 0.5,
+                                    y + bw * 0.5,
+                                    (pw - bw).max(0.0),
+                                    (ph - bw).max(0.0),
+                                    &Paint::stroke(&b.border_color, bw),
+                                );
+                            }
+                        }
+                        let pad = m.padding * scale;
+                        draw_rich_text(
+                            c,
+                            &scaled_rich_text(text, scale),
+                            (x + pad, y + pad + m.ascent),
+                            request.policy,
+                        );
+                    }
+                }
+                (
+                    AnnotationKind::ReferenceLine { style, .. }
+                    | AnnotationKind::Arrow {
+                        style: model::annotation::ArrowStyle { line: style, .. },
+                        ..
+                    },
+                    AnnotationShape::Stroke { a, b, width },
+                ) => {
+                    if let Some(c) = canvas(&mut overlay, w, h) {
+                        c.draw_line(
+                            px(a),
+                            px(b),
+                            &Paint::stroke(&style.color, width * scale)
+                                .with_dash(&dash(&style.style, scale)),
+                        );
+                    }
+                }
+                (AnnotationKind::Arrow { style, .. }, AnnotationShape::Triangle(t)) => {
+                    if let Some(c) = canvas(&mut overlay, w, h) {
+                        c.fill_polygon(
+                            &[px(t[0]), px(t[1]), px(t[2])],
+                            &Paint::fill(&style.line.color),
+                        );
+                    }
+                }
+                (
+                    AnnotationKind::ReferenceLine {
+                        label: Some(text), ..
+                    }
+                    | AnnotationKind::Arrow {
+                        text: Some(text), ..
+                    },
+                    AnnotationShape::Label(rect),
+                ) => {
+                    if let (Some(c), Some(m)) = (canvas(&mut overlay, w, h), &measured) {
+                        let (x, y) = px([rect.x, rect.y]);
+                        draw_rich_text(
+                            c,
+                            &scaled_rich_text(text, scale),
+                            (x, y + m.ascent),
+                            request.policy,
+                        );
+                    }
+                }
+                _ => unreachable!("the shapes follow the item kind"),
+            }
+        }
+        registered.push(element);
+    }
+    for element in registered {
+        let id = map.map.register(element.clone());
+        map.entries.push((id, element));
+    }
+    if let Some(index) = request.selected
+        && let Some(id) = map.find(index)
+        && let Some(mut selection) = map.selection_box(id)
+        && let Some(c) = canvas(&mut overlay, w, h)
+    {
+        let shift = |r: RectF| RectF {
+            x: (r.x - origin[0]) * scale,
+            y: (r.y - origin[1]) * scale,
+            width: r.width * scale,
+            height: r.height * scale,
+        };
+        selection.rect = shift(selection.rect);
+        selection.stroke_width *= scale;
+        for handle in &mut selection.handles {
+            *handle = shift(*handle);
+        }
+        crate::axis_render::draw_selection_boxes(c, &[selection]);
+    }
+    AnnotationRaster {
+        underlay: underlay.map(Canvas::into_rgba),
+        overlay: overlay.map(Canvas::into_rgba),
+        map,
     }
 }
 
-/// The selected annotation index named by the radial chart's decoration
+/// The selected annotation index named by a bounded chart's decoration
 /// selection.
 pub(crate) fn selected_index(selected: Option<&DecorationId>) -> Option<usize> {
     AnnotationLayer::selected_index(selected)
 }
 
-// GPU side of the radial chart's annotation layer.
+// GPU side shared by the bounded renderers.
 
 /// One uploaded annotation raster and its bind group.
 pub(crate) struct LayerTexture {
@@ -645,8 +585,23 @@ pub(crate) struct LayerTexture {
     pub bind_group: wgpu::BindGroup,
 }
 
-/// The fullscreen textured pipeline of the radial renderer's annotation
-/// layer, created on the first frame that has an annotation to draw.
+/// How a bounded frame treats its background.
+///
+/// `Opaque` (default) draws the chart's `background` colour inside the
+/// frame's single draw, as every bounded chart always has. `HostClear`
+/// leaves the background to the host's clear colour, which lets an
+/// annotation underlay drawn before the frame show through; the host must
+/// then clear with the chart's background colour. Pixels of a chart without
+/// an underlay are the same under both modes up to premultiplied rounding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum FrameBackground {
+    #[default]
+    Opaque,
+    HostClear,
+}
+
+/// The fullscreen textured pipeline of one bounded renderer, created on the
+/// first frame that has an annotation to draw.
 pub(crate) struct AnnotationPipeline {
     pub layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
@@ -728,18 +683,19 @@ impl AnnotationPipeline {
     }
 }
 
-/// The GPU texture of one radial annotation raster, shared between frames
+/// The GPU textures of one bounded annotation raster, shared between frames
 /// that differ only in the layer's `visible` flag.
 pub(crate) struct AnnotationRasters {
+    underlay: Option<LayerTexture>,
     overlay: Option<LayerTexture>,
     map: AnnotationMap,
 }
 
-/// The annotation layer of one radial chart frame: its texture and its hit
-/// map. Draw [`Self::draw_overlay`] after the chart frame, into the same
-/// attachment, with the same size and format as the frame; it is a no-op
-/// for a hidden layer and for a layer that draws nothing. The radial chart
-/// has no value axes, so the layer draws no span below the slices.
+/// The annotation layer of one bounded chart frame: the two textures and
+/// their hit map. Draw [`Self::draw_underlay`] before the chart frame and
+/// [`Self::draw_overlay`] after it, into the same attachment, with the same
+/// size and format as the frame. Both are no-ops for a hidden layer and for
+/// an empty texture.
 pub struct BoundedAnnotationFrame {
     rasters: Arc<AnnotationRasters>,
     /// `None` until the renderer has drawn an annotation; a layer with no
@@ -760,31 +716,37 @@ impl BoundedAnnotationFrame {
         self.rasters.map.warnings()
     }
 
-    /// The pointer route of a radial chart whose active layer is `active`
+    /// The pointer route of a bounded chart whose active layer is `active`
     /// (an `Overlay` reads as `Base`): while the annotation layer is active
-    /// and shown, its items sit on top of every decoration of the frame,
-    /// which all stay registered below them; otherwise the items are not
-    /// part of the route and the decorations answer alone. `decorations`
-    /// names the decoration at `position` when the items do not take it:
-    /// the radial frame's `decoration_at`, in the same chart-local
-    /// coordinates. Slices are not part of either map and keep answering
-    /// through the frame's GPU `pick` on every layer.
-    pub fn route_active_layer(
+    /// and shown, its items sit on top of every decoration of `decorations`
+    /// (the chart frame's map, in the same chart-local coordinates), which
+    /// all stay registered below them; otherwise the items are not part of
+    /// the route and the decorations answer alone. Data targets are not
+    /// part of either map and keep answering through the frame's own
+    /// `hit_test` on every layer.
+    pub fn hit_test_active_layer(
         &self,
         active: LayerRef,
+        decorations: &crate::decoration::DecorationMap,
         position: [f32; 2],
-        decorations: impl FnOnce() -> Option<HitId>,
     ) -> Option<LayerHit> {
         self.rasters.map.route_when(
             active.bounded() == LayerRef::Annotations && self.visible,
             position,
-            decorations,
+            || decorations.hit_test(position),
         )
     }
 
     /// Physical size of the textures, matching the chart frame.
     pub fn size(&self) -> (u32, u32) {
         self.size
+    }
+
+    /// `true` when [`Self::draw_underlay`] draws something, so the host must
+    /// render the chart frame with [`FrameBackground::HostClear`] and clear
+    /// with the chart's background for the underlay to show.
+    pub fn draws_underlay(&self) -> bool {
+        self.visible && self.rasters.underlay.is_some()
     }
 
     /// `true` when [`Self::draw_overlay`] draws something.
@@ -795,6 +757,14 @@ impl BoundedAnnotationFrame {
     /// True when the GPU rasters are shared (a `visible` toggle only).
     pub fn shares_rasters_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.rasters, &other.rasters)
+    }
+
+    pub fn draw_underlay(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if self.visible
+            && let Some(layer) = &self.rasters.underlay
+        {
+            self.draw(pass, layer);
+        }
     }
 
     pub fn draw_overlay(&self, pass: &mut wgpu::RenderPass<'_>) {
@@ -818,60 +788,26 @@ impl BoundedAnnotationFrame {
 }
 
 /// Everything the raster depends on besides the layer's `visible` flag.
-///
-/// The key owns every field of the [`RasterRequest`] the raster is drawn
-/// from, and [`Self::request`] builds that request from the key alone, so a
-/// field the raster reads that the key does not compare does not compile.
-/// The layer is held with `visible` cleared: a visibility toggle shares
-/// the rasters (the frame is keyed on `visible` separately), and a new
-/// layer field is a compile error here, where its place in the key is
-/// decided.
 #[derive(Clone, PartialEq)]
 struct RasterKey {
-    layer: AnnotationLayer,
+    items: Vec<Annotation>,
     space: PixelSpace,
-    origin: [f32; 2],
     size: (u32, u32),
     scale: f32,
-    selected: Option<usize>,
-    policy: FontPolicy,
     fonts: u64,
+    selected: Option<usize>,
 }
 
-impl RasterKey {
-    fn request(&self) -> RasterRequest<'_> {
-        let RasterKey {
-            layer,
-            space,
-            origin,
-            size,
-            scale,
-            selected,
-            policy,
-            fonts: _,
-        } = self;
-        RasterRequest {
-            layer,
-            space: *space,
-            origin: *origin,
-            size: *size,
-            scale: *scale,
-            selected: *selected,
-            policy: *policy,
-        }
-    }
-}
-
-/// Per-renderer cache of the radial chart's annotation layer: one GPU
+/// Per-renderer cache of the annotation layer for bounded charts: one GPU
 /// raster per distinct input, one frame per raster and visibility.
-pub(crate) struct RadialAnnotationCache {
+pub(crate) struct BoundedAnnotationCache {
     format: wgpu::TextureFormat,
     pipeline: Option<AnnotationPipeline>,
     rasters: Option<(RasterKey, Arc<AnnotationRasters>)>,
     frame: Option<(RasterKey, bool, Arc<BoundedAnnotationFrame>)>,
 }
 
-impl RadialAnnotationCache {
+impl BoundedAnnotationCache {
     pub fn new(format: wgpu::TextureFormat) -> Self {
         Self {
             format,
@@ -887,12 +823,22 @@ impl RadialAnnotationCache {
     }
 
     /// Bytes a fresh raster of `layer` at `size` would allocate, for the
-    /// renderer's admission check before any GPU work: one texture when a
-    /// visible item is drawn above the slices. A span is never drawn on the
-    /// radial chart (it has no value axes), so it needs none.
+    /// renderer's admission check before any GPU work.
     pub fn bytes_needed(&self, layer: &AnnotationLayer, size: (u32, u32)) -> u64 {
-        let overlay = layer.items.iter().any(|i| i.visible && !i.is_underlay());
-        u64::from(size.0) * u64::from(size.1) * 4 * u64::from(overlay)
+        let (underlay, overlay) =
+            layer
+                .items
+                .iter()
+                .filter(|i| i.visible)
+                .fold((false, false), |(u, o), i| {
+                    if i.is_underlay() {
+                        (true, o)
+                    } else {
+                        (u, true)
+                    }
+                });
+        let texture = u64::from(size.0) * u64::from(size.1) * 4;
+        texture * (u64::from(underlay) + u64::from(overlay))
     }
 
     fn key(
@@ -903,20 +849,12 @@ impl RadialAnnotationCache {
         selected: Option<usize>,
     ) -> RasterKey {
         RasterKey {
-            layer: {
-                let AnnotationLayer { visible: _, items } = layer;
-                AnnotationLayer {
-                    visible: false,
-                    items: items.clone(),
-                }
-            },
+            items: layer.items.clone(),
             space,
-            origin: [0.0, 0.0],
             size,
             scale,
-            selected,
-            policy: FontPolicy::Standard,
             fonts: crate::text_render::font_generation(),
+            selected,
         }
     }
 
@@ -956,7 +894,15 @@ impl RadialAnnotationCache {
         let rasters = match &self.rasters {
             Some((k, rasters)) if *k == key => Arc::clone(rasters),
             _ => {
-                let raster = rasterize(&key.request());
+                let raster = rasterize(&RasterRequest {
+                    layer,
+                    space,
+                    origin: [0.0, 0.0],
+                    size,
+                    scale,
+                    selected,
+                    policy: FontPolicy::Standard,
+                });
                 // The fullscreen pipeline is compiled on the first frame that
                 // has an annotation to draw, not by the renderer constructor.
                 let mut upload = |rgba: Option<Vec<u8>>, label: &str| {
@@ -968,10 +914,10 @@ impl RadialAnnotationCache {
                             .upload(gpu, ledger, label, size, &rgba)
                     })
                 };
-                // The radial space has no value axes: a span is skipped
-                // with a warning and the raster has no underlay.
+                let underlay = upload(raster.underlay, "annotation underlay");
                 let overlay = upload(raster.overlay, "annotation overlay");
                 let rasters = Arc::new(AnnotationRasters {
+                    underlay,
                     overlay,
                     map: raster.map,
                 });
@@ -1095,13 +1041,13 @@ mod tests {
         let _ = map.register(AnnotationElement {
             index: 0,
             space: space(),
-            text: None,
+            text_size: None,
             handle: None,
         });
         map.register(AnnotationElement {
             index: 1,
             space: space(),
-            text: None,
+            text_size: None,
             handle: None,
         })
     }
@@ -1221,7 +1167,7 @@ mod tests {
             assert_eq!(index_at([80., 64.]), Some(0));
             assert_eq!(raster.map.hit_test([5., 5.]), None);
             let selection = raster.map.selection_box(hit).unwrap();
-            assert_eq!(selection.handles().len(), 2);
+            assert_eq!(selection.handles.len(), 2);
         }
     }
 

@@ -1,456 +1,264 @@
 # Box plots / 박스플롯
 
-A box plot is a Cartesian chart. Its boxes are `DataRenderType::BoxPlot`
-series on a `Config` with a categorical axis (`AxisOptions::categories`), and
-the Cartesian `Renderer` draws them: one box per category, with its median,
-whiskers and caps, its mean and its outliers. The statistics are precomputed
-by the host and uploaded through `ColumnSource`: a **record** of box
-statistics per series and, when the series has outliers, a **ragged column**
-of them. Streamed sources are rejected. `BoxPlotChart` is the document format
-of the releases up to 0.12; `Config::from_boxplot` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+`BoxPlotRenderer` draws small, precomputed box-and-whisker charts. It shares the
+host's wgpu device/queue and owns a separate resource ledger. This API
+is independent of `ColumnSource` and automatic streaming. Multiple series are
+placed side by side in each category. Stacking is not a box-plot operation.
 
-## Series and uploads
+The native and WASM renderer APIs are available. A browser host must wire its own
+events and UI to them; the separate
+[WASM wrapper](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)
+exposes `FiggyBoundedChart` for this purpose. When using the Rust renderer in WASM,
+await `BoxPlotRenderer::new_async(gpu, format)` before preparing frames.
 
-A `BoxPlot` series names three sources:
-
-| Field | Holds |
-|---|---|
-| `x_column` | the category index column, `0, 1, …, n - 1` |
-| `y_column` | the id of the series' record (`BOX_PLOT_RECORD`), one row per category |
-| `outliers` | the id of a ragged column with one group of outliers per category, or `None` |
-
-The record schema `BOX_PLOT_RECORD` has the fields `median`, `q1`, `q3`,
-`whisker_low`, `whisker_high` (required) and `mean`, `sample_count`,
-`ci_low`, `ci_high` (optional). A missing box is a row of NaN; a NaN optional
-field leaves that mark out. Unlike a category bar, the roles do not swap with
-the direction: the series names its record in the value column slot either
-way.
+## Input and first render
 
 ```rust,no_run
-use renderer::{
-    BOX_PLOT_RECORD, Chart, Color, Column, ColumnSource, DataRenderType, LayerRef,
-    RaggedSource, RecordSource, Renderer, SeriesConfig,
+use renderer::{Category, Color, RendererDevice, boxplot::*};
+# fn example(gpu: RendererDevice) -> Result<(), Box<dyn std::error::Error>> {
+let mut control = BoxSummary::new(12., 30., 42., 55., 78.);
+control.outliers = vec![90.];
+control.median_ci = Some([37., 47.]);
+control.mean = Some(44.);
+control.sample_count = Some(80);
+let mut chart = BoxPlotChart {
+    categories: vec![Category::new("control", "Control")],
+    series: vec![BoxPlotSeries::new(
+        "response", "Response", vec![Some(control)],
+        Color::from_rgb8(65, 144, 208),
+    )],
+    value_title: "Response".into(),
+    ..Default::default()
 };
-/// A host column with its range (NaN is a missing value).
-fn column(data: Vec<f64>) -> Column<f64> {
-    let finite = data.iter().copied().filter(|v| v.is_finite());
-    let min = finite.clone().fold(f64::INFINITY, f64::min);
-    let max = finite.fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
-}
-# fn open(r: &mut Renderer, config: renderer::config::Config,
-#         template: SeriesConfig) -> Result<(), Box<dyn std::error::Error>> {
-// Two categories: `config.bottom_x.categories` holds them and
-// `config.bar_groups` is grouped and vertical.
-let nan = f64::NAN;
-r.add_column("positions", &column(vec![0.0, 1.0]))?;
-let stats = [
-    column(vec![42.0, 55.0]), // median
-    column(vec![30.0, 42.0]), // q1
-    column(vec![55.0, 68.0]), // q3
-    column(vec![12.0, 20.0]), // whisker_low
-    column(vec![78.0, 85.0]), // whisker_high
-    column(vec![44.0, nan]),  // mean
-    column(vec![80.0, 64.0]), // sample_count
-    column(vec![37.0, nan]),  // ci_low
-    column(vec![47.0, nan]),  // ci_high
-];
-let fields: [(&str, &dyn ColumnSource); 9] =
-    std::array::from_fn(|k| (BOX_PLOT_RECORD[k].0, &stats[k] as &dyn ColumnSource));
-r.upsert_record(
-    "response.record",
-    &RecordSource { schema: BOX_PLOT_RECORD, fields: &fields },
-)?;
-// Category 0 has the outliers 90 and 94, category 1 none.
-r.upsert_ragged(
-    "response.outliers",
-    &RaggedSource {
-        values: &column(vec![90.0, 94.0]),
-        offsets: &column(vec![0.0, 2.0, 2.0]),
-    },
-)?;
-let series = [SeriesConfig {
-    x_column: "positions".into(),
-    y_column: "response.record".into(),
-    render_type: DataRenderType::BoxPlot {
-        color: Color::from_rgb8(65, 144, 208),
-        style: Default::default(),
-        labels: Default::default(),
-        outliers: Some("response.outliers".into()),
-        overrides: None,
-    },
-    ..template
-}];
-let mut chart = Chart::new(config);
-chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
+chart.style.material = BoxPlotMaterial::SatinMetal;
+let mut renderer = BoxPlotRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
+let frame = renderer.prepare(&chart, (960, 640), 1.0)?;
+// frame.draw(&mut render_pass); // same-format, same-size, single-sample target
 # Ok(())
 # }
 ```
 
-`Renderer::upsert_record` and `upsert_ragged` replace a source of the same id
-in place; `remove_record` and `remove_ragged` delete one. The record and the
-ragged column live in the GPU column pool only; the CPU keeps their scalar
-statistics (`record_stats`, `ragged_stats`) and nothing per box.
+`BoxSummary::new(low, q1, median, q3, high)` receives the **actual whisker
+endpoints**. The host decides whether these mean min/max, observed endpoints
+inside 1.5 IQR fences, or another documented policy. The renderer does not sort
+samples, calculate quartiles, or infer that policy. `mean`, `sample_count`,
+`median_ci` and `outliers` are optional statistics.
 
-A ragged column has no value cap below the `u32` index space: the pool
-stores its offsets as `u32` indices. An offset is the integer its source
-writes, and `Column<f64>` writes a value as f32, exact to 2^24, so a host
-with more outliers than that writes its offsets through a `ColumnSource`
-that writes the `(hi, lo)` split (`renderer::data::split_f64_to_f32_pair`),
-as `Config::from_boxplot`'s uploads and the WASM `register_ragged` do.
+- Required order: `whisker_low <= q1 <= median <= q3 <= whisker_high`, all finite.
+- Supplied outliers must be finite and strictly outside the whiskers.
+- CI must contain the median; it may extend beyond Q1/Q3 or the whiskers.
+- `notched = true` requires an explicit CI for each affected nonmissing box.
+  Extended notches retain their original endpoints, including the standard
+  flipped shape outside the box. Equal CI endpoints are permitted.
+- `None` is a missing category/series observation; it leaves its group slot empty.
+  Equal Q1/Q3 has no filled body but still draws enabled median/whisker/cap/mean marks.
+- Counts, when supplied, must be positive. Missing counts display `n=—`.
 
-## Box groups and layout
+Limits: 1–64 categories, 1–16 series, at most 512 category×series entries including
+missing entries, at most 128 outliers per box and 4096 total. Invalid input is
+rejected before replacing the previous cached frame.
 
-The `BoxPlot` series of one layer form its box group. They stand side by side
-in each category slot in series order, laid out by `Config.bar_groups`:
+## SSOT editing and picking
 
-| `BarGroups` field | For box plots |
-|---|---|
-| `mode` | must be `Grouped`; stacking is not a box-plot operation |
-| `direction` | `Vertical` (categories on `bottom_x`) or `Horizontal` (categories on `left_y`) |
-| `group_width` | the slot share the group covers, 0.1–0.95 |
-| `bar_gap` | the gap between the boxes of a group, logical px 0–24 |
-
-`Config::validate_box_plots` (applied by the renderer) requires the
-categorical axis of the direction and a linear value axis, and allows any
-number of box plot series per layer and of boxes (#107). A layer draws either category bars
-or box plots, not both. Horizontal box groups stand on the base panel only;
-polar charts reject box plots.
-
-## Statistics and clamping
-
-The renderer does not sort samples, compute quartiles or infer the whisker
-policy; whether the whiskers are the extremes, the last points inside 1.5 IQR
-fences or something else is the host's choice. It also does not check the
-order of a record it cannot read on the CPU. The drawing clamps instead:
-
-- the body spans `min(q1, q3)` to `max(q1, q3)`;
-- the median is clamped into the body;
-- the low stem runs from `min(whisker_low, body low)` to the body, the high
-  stem from the body to `max(whisker_high, body high)`;
-- a notch is drawn only where both CI endpoints are finite;
-- a row with a missing required field (or a missing position) draws no box,
-  no mean and no outliers.
-
-A `BoxPlotChart` document still validates the order (see
-[the document rules](#document-rules)), so a document drawn through the
-reader never needs the clamping.
-
-## Styles and per-box overrides
-
-`BoxPlotStyle` holds the look of a series' boxes:
-
-| Option | Default / accepted values |
-|---|---|
-| `material` | Matte; any [`Material`](RADIAL.md#materials) except Toon and Pearl |
-| `corner_radius` | 0 logical px, 0–3; capped by body size; notched silhouettes use the CI polygon |
-| `outline`, `outline_width`, `outline_color` | true, 1.2 px (0–8), dark ink |
-| `median_width`, `median_color` | 1.2 px (0–8), dark ink; zero hides the median |
-| `whisker_width`, `whisker_color` | 1.2 px (0–8), dark ink; zero hides whiskers and caps |
-| `caps`, `cap_ratio` | true, 0.5 (0–1 of box width) |
-| `notched`, `notch_depth` | false, 0.22 (0–0.45 of box width per side) |
-| `show_mean`, `mean_size`, `mean_color` | false, 7 px (1–24), red diamond |
-| `show_outliers`, `outlier_size`, `outlier_color` | true, 7 px (1–24), dark ink |
-| `outlier_shape`, `outlier_filled` | Circle (or Square), false; an unfilled marker is a 1.5 px ring |
-| `texture_strength`, `texture_scale`, `gloss` | 0.2 (0–1), 1 (0.1–8), 0.45 (0–1) |
-| `emphasis_brightness` | 0.08 (0–0.5), additive surface brightness on hover and selection |
-
-All colors accept RGBA channels in 0–1. Materials affect only the box surface,
-shaded like a flat pie top (see the [shared material table](RADIAL.md#materials));
-whiskers, caps, the median, the mean and the outliers are flat. Turning the
-outline off does not hide the median, the whiskers or the outliers.
-
-`overrides` holds at most one `BoxPlotOverride` per box, keyed by
-`BoxPlotTarget { category_id, series_id }`; its `color`, `style` and `labels`
-replace the series' for that box only. A style override replaces the whole
-style, so clone the series style first when changing one property, and clear
-the `Option` to inherit again.
+`BoxPlotChart` is the single source of truth (SSOT). The host edits its fields and
+calls `prepare` again; model edits need no manual cache invalidation.
 
 ```rust,no_run
-# use renderer::{BoxPlotOverride, BoxPlotStyle, BoxPlotTarget, Color, Material};
-# fn edit(style: &BoxPlotStyle, overrides: &mut Vec<BoxPlotOverride>) {
+# use renderer::{Color, boxplot::*};
+# fn edit(chart: &mut BoxPlotChart) {
 let target = BoxPlotTarget::new("control", "response");
 let mut individual = BoxPlotOverride::new(target.clone());
 individual.color = Some(Color::from_rgb8(42, 168, 162));
 individual.style = Some(BoxPlotStyle {
-    material: Material::Matte,
+    material: BoxPlotMaterial::Matte,
     outline: false,
-    ..style.clone()
+    ..chart.style.clone()
 });
-// Replace an existing override with the same target instead of adding a duplicate.
-overrides.retain(|o| o.target != target);
-overrides.push(individual);
+individual.labels = Some(BoxPlotLabels::MedianAndCount);
+// Replace an existing override with the same target instead of adding duplicates.
+chart.overrides.retain(|o| o.target != target);
+chart.overrides.push(individual);
+chart.selected = Some(target);
+chart.direction = BoxPlotDirection::Horizontal;
 # }
 ```
 
-## Violins and rainclouds
+Style precedence: chart → series → individual. A style override replaces the
+whole style; clone the parent first when changing only one property. Clear the
+`Option` to inherit again. Color and label overrides reset independently.
+Category and series IDs remain stable across reordering; use `reorder_categories`
+to move category labels and all aligned summary columns atomically.
 
-A box plot series can draw a **violin** behind its boxes (`violin:
-Option<Violin>`) and its **raw points** beside them (`points:
-Option<BoxPoints>`): violin plots, split violins and rainclouds. The host
-computes the density (a KDE evaluated on its own grid, the way matplotlib
-evaluates 100 points and R's `density` 512) and uploads it; the renderer
-draws the curve it is given and estimates nothing.
+`frame.hit_test([x, y])` accepts chart-local **logical** coordinates and returns a
+`BoxPlotPick { target, part }`. Parts are `Box`, `Median`, `WhiskerLow/High`,
+`CapLow/High`, `Mean`, and `Outlier(index)`. Outlier indices follow the supplied
+list; category/series identity is stable. Hollow-marker interiors, notch holes
+and geometry outside the data viewport do not pick. Later visible components
+win at overlaps. The caller builds a tooltip with `chart.summary(&pick.target)`.
+Set `hovered`/`selected` and prepare again for emphasis; no statistical endpoint
+moves during hover. `part_rect`, `box_rect`, `plot_rect` return physical pixels.
+A notched box rectangle includes extended CI; a degenerate body returns `None`.
 
-| Field | Holds |
+## Styles and layout
+
+| Option | Default / accepted values |
 |---|---|
-| `Violin.body` | `ViolinBody::Symmetric(half)`: one curve mirrored about the category position, one scale and one style; or `ViolinBody::Split { low, high }`: a curve per side, at least one (`low` left of a vertical violin, below a horizontal one) |
-| `Violin.box_width` | the box's share of the slot, `0..=1`, centred on the member's middle (default 0.25); 0 hides the box |
-| `ViolinHalf.curve` | a ragged column, one group per category: the positions along the value axis the density was evaluated at, ascending within a group |
-| `ViolinHalf.density` | a plain column index-aligned with the curve's values: the density at each position, drawn as the half width |
-| `ViolinHalf.density_scale` | the density drawn at the full half slot; `fit_density_scale(max)` sets it from the density column's maximum |
-| `ViolinHalf.style` | `ViolinStyle`: the fill (`None` takes the series colour), the outline, its width and colour |
-| `BoxPoints.positions`, `.values` | two plain columns: each point's category position (the index `x_column` uses) and its value |
-| `BoxPoints.style` | `BoxPointsStyle`: colour, size (1–24 px), circle or square, filled, `jitter` (0–1 of the half slot, either way) and `offset` (−1–1 of the half slot, negative on the low side) |
+| `direction` | Vertical / Horizontal |
+| `material` | Matte; also Flat, SatinMetal |
+| `corner_radius` | 0 logical px, 0–3; capped by body size; notched silhouettes use the CI polygon |
+| `outline`, `outline_width`, `outline_color` | true, 1.2 px (0–8), dark ink |
+| `median_width`, `median_color` | 1.2 px (0–8), dark ink; zero hides median |
+| `whisker_width`, `whisker_color` | 1.2 px (0–8), dark ink; zero hides whiskers/caps |
+| `caps`, `cap_ratio` | true, 0.5 (0–1 of box width) |
+| `notched`, `notch_depth` | false, 0.22 (0–0.45 of box width per side) |
+| `show_mean`, `mean_size`, `mean_color` | false, 7 px (1–24), red diamond |
+| `show_outliers`, `outlier_size`, `outlier_color` | true, 7 px (1–24), dark ink |
+| `outlier_shape`, `outlier_filled` | Circle (or Square), false; hollow stroke is at most 1.2 px |
+| `texture_strength`, `texture_scale`, `gloss` | 0.2 (0–1), 1 (0.1–8), 0.45 (0–1) |
+| `emphasis_brightness` | 0.08 (0–0.5), additive surface brightness |
+| `labels` | None / Median / MedianAndCount; labels sit beyond the high endpoint |
+| `label_decimals`, `value_suffix` | 1 (0–6), empty |
+| `value_range` | `None` fits all supplied statistics; `Some([min, max])` fixes a linear viewport |
+| `group_width`, `box_gap` | 0.65 (0.1–0.95), 8 logical px (0–24) |
+| `font_size`, `font_family` | 14 (8–32), sans-serif |
+| `grid`, `legend` | true |
 
-A violin without boxes leaves `y_column` empty: no record is read and no
-box is drawn. A raincloud is a split violin with one half and the points on
-the other side (a negative `offset` with only `high`). A box override's
-colour and outline restyle its category's violin too. The jitter is a hash
-of each point's index, computed in the shader on every draw and pick: a
-point never moves while the chart is panned, resized or exported, and there
-is no jitter column. A curve that does not ascend draws its segments as
-given and picks undefined; a NaN value or density breaks the body there.
+All colors accept RGBA channels in 0–1. Disabling the box outline does not disable
+median, whiskers or outliers. Fill alpha does not alter the independent mark colors.
+Materials affect only the box surface. Small corner radii stay within its bounds.
+There is no perspective displacement of quartiles or whiskers.
 
-```rust
-use renderer::data_config::{
-    BoxPoints, BoxPointsStyle, Violin, ViolinBody, ViolinHalf, ViolinStyle,
-};
+Auto range includes **all supplied statistics**, even hidden means/outliers/CI,
+so toggling their visibility does not silently rescale the chart. It adds padding
+and linear nice ticks. Fixed ranges clip all data components and picking to the
+plot. The value axis is linear; there is no logarithmic scale. Unrepresentable ranges
+or indistinguishable tick strings return a layout error rather than misleading
+labels. All-missing charts get a finite default range.
 
-// A raincloud: the host's density on the high side, a narrow box, the
-// raw points jittered on the low side.
-let mut half = ViolinHalf {
-    curve: "kde".into(),
-    density: "kde.density".into(),
-    density_scale: 1.0,
-    style: ViolinStyle::default(),
-};
-half.fit_density_scale(0.042); // the density column's maximum
-let violin = Violin {
-    body: ViolinBody::Split { low: None, high: Some(half) },
-    box_width: 0.12,
-};
-let points = BoxPoints {
-    positions: "sample.category".into(),
-    values: "sample.value".into(),
-    style: BoxPointsStyle {
-        offset: -0.5,
-        jitter: 0.35,
-        ..BoxPointsStyle::default()
-    },
-};
-# let _ = (violin, points);
-```
+Minimum logical canvas: 240×200; scale: 0.5–4. Axis and label text use a
+two-layer atlas, so the physical width and twice the physical height (logical
+size × scale) must fit the device's maximum 2D texture size; a larger output
+returns `BoxPlotError::Invalid`. Text is rasterized at the actual
+output resolution. Four geometric subpixel samples smooth the data silhouettes.
+Once the chart is prepared, use `frame.decorations().hit_test([x, y])` to select
+a value label and `frame.decorations().drag_by(&mut chart.decorations, hit, dx, dy)`
+to position it.
+Movement uses logical pixels and accepts fractional deltas for fine adjustments.
+Each value label has its own category/series identity; axis tick labels move as a
+group. Prepare a new frame after moving a label and use its updated hit map.
+Export preserves those offsets. See the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#manual-label-placement).
 
-There is no limit on curve points, categories or raw points beyond the
-column pool and `u32`. The violin is drawn one instance per curve segment,
-so a long curve costs only its own segments; the cost grows with the data
-and is the host's to budget. On the software Vulkan adapter the tests run
-on, picking among 600 violins of 4 096 curve points takes about 4 ms, and
-a raw point among 3 000 000 about 70 ms
-(`long_curves_many_categories_and_a_million_points_draw_and_pick` in
-`tests/violin_render.rs` prints both).
+## Ownership, caching, export
 
-## Value labels
+Frames are immutable `Arc<BoxPlotFrame>` snapshots, holding their GPU resources.
+A new model/size/scale/font generation produces a new frame; identical calls
+return the same Arc. Surface styles, individual color, hover/selection and
+background changes reuse the frame's axis and label text atlas. Geometry/text/layout
+edits and legend colors rebuild it. `shares_annotations_with` reports whether two
+frames share this text atlas, for diagnostics; it does not concern the annotation
+layer (`chart.annotations`). Changing a box color changes the box, not the series
+legend swatch.
 
-`labels: BoxPlotSeriesLabels` holds the placement (`None`, `Median`,
-`MedianAndCount`), the decimals (0–6), the suffix and `text`, the drawn string
-of every box in category order. The renderer never writes `text`: the median
-and the count are per-box data the configuration does not hold. A host that
-uploads its own records writes it, for example with `format_box_plot_labels`
-from the statistics it holds; `Config::from_boxplot` writes it from the
-document. The renderer draws each string `10` px past the top of its box (the
-highest of its high whisker, mean, notch and outliers, and of its violin's
-curves), centred across the box, in the value axis' tick label face, unless the placement (or the box's
-override) is `None`; a label that would cross the data area's edge sits on
-the other side of that top instead. An empty string draws nothing and labels
-never displace each other. A label is a typed pick target (`PickedData::ValueLabel`), its
-selection box is its frame, and a drag writes `labels.offsets` (logical
-pixels, one per category); see Value labels in the
-[interaction guide](INTERACTION.md).
+The default separate GPU budget is 256 MiB. `set_memory_budget` changes the
+admission limit without evicting existing frames; a call that would allocate past
+it returns `BoxPlotError::Budget`. `gpu_memory_usage` counts live resources plus
+resources awaiting submission completion. `clear_cache` drops the renderer's
+internal frame, text-atlas and annotation-layer references. After submitting or
+discarding all recorded frames, call `end_frame` to schedule retired resource
+destruction at queue completion. External snapshots keep their resources alive.
+Native hosts must poll the device; browser callbacks complete through the event
+loop. The host owns target textures and their budget separately.
 
-## Value axis
+`export_rgba_async(&chart, size, scale).await` works on native and WebGPU. Native
+also has `export_rgba`. The result is straight-alpha RGBA; `encode_png` produces
+PNG bytes. Export uses the current SSOT, including hover and selection: clear
+those fields in a clone when a presentation should omit interaction emphasis.
+RGBA8/BGRA8, linear/sRGB targets are supported. Render passes must use the format
+chosen at renderer creation and sample count 1.
 
-`Chart::auto_fit_layer_union` fits the value axis to the pool's statistics of
-every value field of the records (whiskers, quartiles, median, mean and CI;
-not `sample_count`), of the outlier columns, of the violin curves and of the
-raw points' values, so toggling `show_mean` or
-`show_outliers` does not rescale the chart. `auto_ticks` rounds it to nice
-ticks. A fixed range is set on the value axis like any other Cartesian range;
-the data and the pick are clipped to the plot.
+## Decorations and the annotation layer
 
-## Picking, selection and interaction
-
-`pick_chart_data` answers a box with `PickedData::HistogramBin`, its category
-row as `bin_index`. Every drawn part answers its box: the body, the whiskers
-and caps, the median, the mean and each outlier marker. Select a box through
-`Config.picked_data` with `PickedDataRef::HistogramBin`; the selected box
-draws an inside outline in the highlight colour around its painted shape
-(the notch included) and gains its emphasis brightness. A host's hover and
-click use the same pick (`pick_data` in the WASM wrapper); no statistic moves
-on hover or selection. In the browser, `step_selection` walks the categories and the series of
-the box group (the boxes, never their outliers), and `selection_details()`
-reports the box's category and the statistics read back from its record.
-
-A violin answers its category as a box does (`PickedData::HistogramBin`):
-inside its fill or on its outline, measured as the draw measures them; its
-highlight outlines the selected category's violin under the box's ring. A
-split violin's pick also names the half under the cursor (`half:
-Some(ViolinSide::Low | High)`, a symmetric one's `None`), and selecting a
-half (`PickedDataRef::HistogramBin { half: Some(..), .. }`) outlines that
-half alone. Inside the box, which is painted over the violin, the pick
-answers the box (`half: None`). A
-raw point answers `PickedData::Point` with its row, placed by the function
-its draw uses, and its highlight rings it; `step_selection` walks the points
-(`dx`) and the box plot series with points (`dy`), and `selection_details()`
-reports a point's `position`, `value` and category.
-
-The title, legend, axes, tick labels and axis titles are selected and dragged,
-the plot area dragged and resized, the annotation layer drawn and edited,
-overlays and subplots added and the chart exported to PNG as in every
-Cartesian chart; see the
+`frame.decorations()` also hit-tests the title, axes, tick labels, axis titles,
+legend and data area, separately from the data `hit_test`. The host applies the
+shared `Selectable`, `Draggable` and `Resizable` contracts to
+`chart.decorations` and prepares again. Coordinate units, per-element drag
+rules, caching, serialization and the web wiring are in the
 [interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
-`AnnotationAxis::X` is the screen's horizontal axis: with vertical boxes, `X`
-is the category index (the first category centred at 0) and `Y` the value.
 
-## Opening a legacy document
-
-```rust,no_run
-use renderer::{
-    BOX_PLOT_RECORD, Chart, ColumnSource, LayerRef, RaggedSource, RecordSource, Renderer,
-    UploadValues, boxplot::BoxPlotChart,
-};
-# fn open(r: &mut Renderer, json: &str) -> Result<(), Box<dyn std::error::Error>> {
-let document: BoxPlotChart = serde_json::from_str(json)?;
-document.validate()?;
-let (mut config, series, uploads) = renderer::config::Config::from_boxplot(&document);
-config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
-    x: 0, y: 0, width: 960, height: 640,
-});
-// The uploads borrow the document's summaries; nothing is copied.
-for upload in &uploads {
-    match &upload.values {
-        UploadValues::BoxRecord(_) => {
-            let fields = upload.values.box_fields().ok_or("record fields")?;
-            let pairs: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
-                (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
-            });
-            r.upsert_record(
-                upload.column.clone(),
-                &RecordSource { schema: BOX_PLOT_RECORD, fields: &pairs },
-            )?;
-        }
-        UploadValues::BoxOutliers(_) => {
-            let (values, offsets) = upload.values.box_outliers().ok_or("outliers")?;
-            r.upsert_ragged(
-                upload.column.clone(),
-                &RaggedSource { values: &values, offsets: &offsets },
-            )?;
-        }
-        values => {
-            r.add_column(upload.column.clone(), values)?;
-        }
-    }
-}
-let mut chart = Chart::new(config);
-if document.value_range.is_none() {
-    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
-}
-# Ok(())
-# }
-```
-
-`Config::from_boxplot` moves the categories to the categorical axis of the
-direction (`bottom_x` for vertical boxes, `left_y` for horizontal ones,
-top-down as before), `direction`, `group_width` and `box_gap` to a grouped
-`Config.bar_groups`, and each document series to a `BoxPlot` series reading
-`boxplot.positions`, its record `boxplot.record.<series id>` and, when any of
-its boxes has an outlier, `boxplot.outliers.<series id>`. The series takes its
-colour, its style (or the chart's), the chart's label settings with the text
-written from the medians and counts, and its overrides. `value_range` becomes
-the fixed value axis range; the titles, grid, legend, font, text colour, chart
-title, annotations, active layer, selection and decoration offsets map onto
-their Cartesian options. The hover state, the background colour (the host's
-clear colour draws) and an explicit `decorations.data_area` are not carried;
-the data label offsets become the series' `labels.offsets`. In the browser, `FiggyChart.set_boxplot_document(json)`
-does the same.
-
-### Document rules
-
-`BoxSummary::new(low, q1, median, q3, high)` receives the **actual whisker
-endpoints**. `mean`, `sample_count`, `median_ci` and `outliers` are optional.
-`BoxPlotChart::validate` requires `whisker_low <= q1 <= median <= q3 <=
-whisker_high`, all finite; outliers finite and strictly outside the whiskers;
-a CI that contains the median (it may extend beyond the body); an explicit CI
-for every box of a notched series; positive counts. `None` is a missing box
-that leaves its group slot empty. Limits: at least one category and one
-series; the number of series, categories, boxes and outliers has no cap.
+Reference lines, spans, text boxes and arrows in `chart.annotations` draw in
+separate passes around the box frame. `AnnotationAxis::X` is the screen's
+horizontal axis and `Y` its vertical axis. With `Vertical` boxes, `X` is the
+category index (the first category is centred at 0) and `Y` the value axis;
+`Horizontal` swaps them, and the category index then runs top-down. Value
+coordinates follow the drawn range (`value_range` or the automatic range).
+Spans draw under the data, so a chart with spans is prepared after
+`set_background(FrameBackground::HostClear)` and the host clears with
+`chart.background`; `export_rgba` handles this itself. Draw the
+`BoundedAnnotationFrame` from `prepare_annotations(chart, size, scale)` with
+`draw_underlay`, then `frame.draw`, then `draw_overlay`; its hit map is
+`annotations()`. Annotation edits and `decorations.selected = Annotation(i)`
+reuse the box frame and its text atlas. See the
+[annotation layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
 ## Examples and tests
 
 ```bash
 cargo run --locked -p figgy-renderer --example boxplot_gallery -- target/boxplot-gallery
-cargo test --locked -p figgy-model --features serde box_plot
-cargo test --locked -p figgy-renderer --features serde --test box_plot_render -- --test-threads=1
+cargo run --locked -p figgy-renderer --example boxplot_editor --features egui_demo
+cargo test --locked -p figgy-model --features serde boxplot
+cargo test --locked -p figgy-renderer --test boxplot_render
+NO_HEADLESS=1 CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER=wasm-bindgen-test-runner \
+  cargo test --locked -p figgy-renderer --test boxplot_browser --target wasm32-unknown-unknown
 ```
 
-The gallery writes five 960 × 640 PNGs (matte, satin, horizontal, grouped
-notch and mean with a selected box) from synthetic documents opened through
-the reader. The playground's Cartesian `BoxPlot` scene edits the series
-style. The browser test `crates/web/tests/boxplot_document_browser.rs` opens a
-document in `FiggyChart`.
+The browser runner must match the locked wasm-bindgen version; open its URL in
+a WebGPU browser. The browser test calls the renderer crate directly, without the
+WASM wrapper.
+The native gallery produces five actual GPU PNGs: matte, satin, horizontal,
+grouped notch, and mean/selection. All statistics are synthetic. The editor
+supports component picking, summary tooltips, whole-chart and individual style
+editing, color changes, resets, direction, grid, legend and category reordering.
 
 ## 한국어 사용법
 
-박스플롯은 직교 좌표 차트다. 범주형 축(`AxisOptions::categories`)이 있는 `Config`에 시리즈마다
-`DataRenderType::BoxPlot` 시리즈 하나를 두고, 직교 좌표 `Renderer`가 그린다. 시리즈의 `x_column`은
-범주 인덱스(`0..n-1`) 컬럼, `y_column`은 박스 통계 레코드(`BOX_PLOT_RECORD`)의 ID, `outliers`는
-범주마다 이상치 묶음 하나를 담은 가변 길이 컬럼의 ID다. 레코드와 가변 길이 컬럼은
-`Renderer::upsert_record`, `upsert_ragged`로 올리며 스트리밍 소스는 거부한다.
-`BoxPlotChart`는 0.12까지의 문서 형식이고, `Config::from_boxplot`이 이 문서를 박스플롯 차트로 읽는다.
-`BoxPlotChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
-
-박스플롯은 집계한 통계값을 받는다. 문서에서는 `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
+박스플롯은 집계한 통계값을 받는다. `BoxSummary::new(수염 하한, Q1, 중앙값, Q3,
 수염 상한)`으로 만들고, 평균·표본 수·이상치·중앙값 신뢰구간은 필요할 때 추가한다.
 수염이 최솟값/최댓값인지, 1.5 IQR 안의 관측값인지 등은 호스트에서 결정한다.
-렌더러는 원본 표본으로 통계를 계산하거나 수염 규칙을 추측하지 않는다. 레코드의 순서도 검사하지 않고
-그릴 때 맞춘다. 상자는 Q1·Q3 중 작은 값부터 큰 값까지, 중앙값은 상자 안으로, 수염은 상자 바깥으로
-그리며 신뢰구간 양 끝이 모두 있을 때만 노치를 그린다. 필수 값이 없는 행은 그리지 않는다.
-문서의 `validate`는 예전처럼 순서를 검사한다.
+렌더러는 원본 표본으로 통계를 계산하거나 수염 규칙을 추측하지 않는다.
 
 노치를 켜려면 `median_ci`를 넣어야 한다. 신뢰구간이 상자 밖으로 나와도 잘라서
 통계적 의미를 바꾸지 않는다. Q1과 Q3가 같으면 채운 상자는 없지만 중앙값과 수염 등은
 설정에 따라 표시한다. `None`은 누락값이며, 그 범주·시리즈의 자리는 그대로 둔다.
 
-가로형은 `Config.bar_groups`의 `direction = Horizontal`, 그룹형은 한 레이어에 박스플롯 시리즈를 여러 개
-두면 된다. `bar_groups`의 `mode`는 `Grouped`여야 한다. 각 상자의 색·재질·외곽선·노치·표기는
-`BoxPlotOverride`로 바꾼다. 스타일은 전체 교체이므로 부모 스타일을 복제한 뒤 필요한 값만 바꾸면 된다.
-개별 설정을 `None`으로 되돌리면 상위 설정을 따른다. 외곽선을 꺼도 중앙값과 수염은 별도 설정을 유지한다.
+가로형은 `direction = Horizontal`, 그룹형은 범주마다 여러 시리즈를 넣으면 된다.
+각 상자의 색·재질·외곽선·노치·표기는 `BoxPlotOverride`로 바꾼다. 스타일은 전체
+교체이므로 부모 스타일을 복제한 뒤 필요한 값만 바꾸면 된다. 개별 설정을 `None`으로
+되돌리면 상위 설정을 따른다. 외곽선을 꺼도 중앙값과 수염은 별도 설정을 유지한다.
 
-색이나 호버 강조를 바꿔도 통계값의 좌표는 움직이지 않는다. `Chart::auto_fit_layer_union`은 숨긴
-평균·이상치·신뢰구간까지 포함해 값 축을 맞추므로 표시 옵션을 켜고 끄는 것만으로 축이 바뀌지 않는다.
+색이나 호버 강조를 바꿔도 통계값의 좌표는 움직이지 않는다. 기본 자동 범위는 숨긴
+평균·이상치·신뢰구간까지 포함하므로 표시 옵션을 켜고 끄는 것만으로 축이 바뀌지 않는다.
 직접 범위를 지정하면 영역 밖의 도형과 선택 판정을 함께 자른다.
 
-상자는 `pick_chart_data`가 `PickedData::HistogramBin`(범주 행이 `bin_index`)으로 고른다. 상자 몸통,
-수염, 캡, 중앙값, 평균, 이상치 모두 자기 상자를 가리킨다. `Config.picked_data`의
-`PickedDataRef::HistogramBin`으로 선택하면 그린 모양 안쪽에 강조 테두리를 그린다. 값 라벨 문자열은
-`labels.text`에 두며, 렌더러는 상자 꼭대기(높은 수염·평균·노치·이상치 중 가장 높은 곳)에서 10px 위에
-그린다. 데이터 영역 가장자리를 넘으면 꼭대기 아래에 그린다. 라벨은 `PickedData::ValueLabel`로 고르고 드래그하면
-`labels.offsets`에 기록된다.
-시리즈·범주·상자·이상치 수에는 상한이 없다(#107).
+네이티브 예제와 WASM으로 컴파일할 수 있는 Rust 렌더러 API를 제공한다.
+입력 상한은 64범주·16시리즈·총 512항목, 이상치 4096개이며 상자 하나에는 이상치를 최대 128개
+받는다. 대용량 스트리밍은 이 계약에 포함하지 않는다.
 
 ## 제목·축·라벨·범례 선택과 이동
 
-제목·범례·축·눈금 라벨·축 제목의 선택과 이동, 그리기 영역 이동·크기 조정, 오버레이와 서브플롯,
-PNG 내보내기는 직교 좌표 차트와 같다. 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은
-[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
-브라우저에서는 `FiggyChart.set_boxplot_document(json)`로 문서를 연다.
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
+
 
 ### 주석 층
 
-주석 층은 직교 좌표 차트의 주석 층이다. `AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다.
-세로 상자이면 `X`가 범주 인덱스(첫 범주 중심이 0), `Y`가 값 축이다. 자세한 계약은
-[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.
+`chart.annotations`의 기준선·구간·텍스트 상자·화살표는 박스 프레임 주위에 별도 패스로 그린다.
+`AnnotationAxis::X`는 화면 가로, `Y`는 화면 세로다. `Vertical`이면 `X`가 범주 인덱스(첫 범주 중심이 0),
+`Y`가 값 축이고 `Horizontal`이면 반대이며, 이때 범주 인덱스는 위에서 아래로 증가한다. 값 축의 좌표는
+그려진 축 범위(`value_range` 또는 자동 범위)를 따른다. 구간은 데이터 아래(underlay)에 그리므로
+구간이 있을 때는 `set_background(FrameBackground::HostClear)`로 프레임을 준비하고 호스트가
+`chart.background`로 지운다. `export_rgba`는 이를 스스로 처리한다. `prepare_annotations(chart, size, scale)`의
+`BoundedAnnotationFrame`을 `draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고 히트 맵은
+`annotations()`로 얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 박스 프레임과
+글자 아틀라스를 다시 만들지 않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

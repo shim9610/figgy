@@ -8,9 +8,9 @@
 //! that can (registered faces, the bundled face, then system faces on native),
 //! so it does not render as a `.notdef` box.
 //!
-//! Layering: the segment layout policy (the script layout of
-//! `script_placement`, underline bars, character-set mapping, the measure
-//! envelope) lives here and is backend-independent. The glyph layer below it — metrics and
+//! Layering: the segment layout policy (super/subscript scaling and shifts,
+//! kerning gaps, underline bars, greek mapping, the measure envelope) lives
+//! here and is backend-independent. The glyph layer below it — metrics and
 //! alpha-mask rasterization — is fontdb (font lookup) + swash (scaling), all
 //! pure Rust, so the whole stack compiles for wasm32-unknown-unknown.
 
@@ -27,10 +27,7 @@ use swash::scale::{Render, ScaleContext, Source};
 use crate::color::Color;
 use crate::layout::RectF;
 use crate::raster::Canvas;
-use crate::text::{RichSegment, RichText};
-
-mod math_font;
-mod math_layout;
+use crate::text::{RichSegment, RichText, greek_char};
 
 type FontLookupKey = (String, bool, bool);
 /// Per-character fallback decisions depend only on the character and the
@@ -591,10 +588,6 @@ struct GlyphExtents {
     advance: f32,
     ink_top: f32,
     ink_bottom: f32,
-    /// Horizontal ink extent from the pen (the math layout keeps every
-    /// glyph's ink inside the measured box); both 0 for a glyph without ink.
-    ink_left: f32,
-    ink_right: f32,
 }
 
 /// Rendered glyph alpha mask. `left`/`top` are the pen-relative placement
@@ -607,13 +600,9 @@ struct GlyphMask {
     data: Box<[u8]>,
 }
 
-/// Metrics key: the face, the size's bits and the glyph id. Keyed by glyph
-/// id rather than character, so a glyph no character maps to (a size
-/// variant, a stretchy piece, a script alternate) shares the caches; the
-/// character entry points map through the face's charmap first.
-type MetricsKey = (swash::CacheKey, u32, u16);
+type MetricsKey = (swash::CacheKey, u32, char);
 /// Mask key: metrics key + horizontal subpixel bin (quarter-pixel phases).
-type MaskKey = (swash::CacheKey, u32, u16, u8);
+type MaskKey = (swash::CacheKey, u32, char, u8);
 
 thread_local! {
     static SCALE_CTX: RefCell<ScaleContext> = RefCell::new(ScaleContext::new());
@@ -660,17 +649,13 @@ fn font_embolden(font: FontRef<'static>, size: f32) -> f32 {
 }
 
 fn glyph_extents(font: FontRef<'static>, size: f32, ch: char) -> GlyphExtents {
-    glyph_extents_id(font, size, font.charmap().map(ch))
-}
-
-/// [`glyph_extents`] of glyph id `glyph` of `font`.
-fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExtents {
-    let key = (font.key, size.to_bits(), glyph);
+    let key = (font.key, size.to_bits(), ch);
     if let Some(hit) = METRICS_CACHE.with(|c| c.borrow().get(&key).copied()) {
         return hit;
     }
+    let glyph = font.charmap().map(ch);
     let advance = font.glyph_metrics(&[]).scale(size).advance_width(glyph);
-    let (ink_top, ink_bottom, ink_left, ink_right) = SCALE_CTX.with(|cx| {
+    let (ink_top, ink_bottom) = SCALE_CTX.with(|cx| {
         let mut cx = cx.borrow_mut();
         let mut scaler = cx
             .builder(font)
@@ -681,17 +666,15 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
             // zeno bounds are y-up; flip into the y-down baseline convention.
             Some(outline) => {
                 let b = outline.bounds();
-                (-b.max.y, -b.min.y, b.min.x, b.max.x)
+                (-b.max.y, -b.min.y)
             }
-            None => (0.0, 0.0, 0.0, 0.0),
+            None => (0.0, 0.0),
         }
     });
     let extents = GlyphExtents {
         advance,
         ink_top,
         ink_bottom,
-        ink_left,
-        ink_right,
     };
     METRICS_CACHE.with(|c| c.borrow_mut().insert(key, extents));
     extents
@@ -701,17 +684,18 @@ fn glyph_extents_id(font: FontRef<'static>, size: f32, glyph: u16) -> GlyphExten
 /// and hand it to `use_mask`. AA happens exactly once, here in swash — the
 /// subpixel offset is baked into the rasterization instead of resampling the
 /// finished mask, which is what kept text crisp under skia.
-fn with_glyph_mask_id(
+fn with_glyph_mask(
     font: FontRef<'static>,
     size: f32,
-    glyph: u16,
+    ch: char,
     xbin: u8,
     use_mask: impl FnOnce(&GlyphMask),
 ) {
-    let key = (font.key, size.to_bits(), glyph, xbin);
+    let key = (font.key, size.to_bits(), ch, xbin);
     MASK_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let entry = cache.entry(key).or_insert_with(|| {
+            let glyph = font.charmap().map(ch);
             SCALE_CTX.with(|cx| {
                 let mut cx = cx.borrow_mut();
                 let mut scaler = cx
@@ -746,92 +730,19 @@ fn with_glyph_mask_id(
     });
 }
 
-/// The outline of glyph id `glyph` of `font` at `size`, in pixels relative
-/// to its pen, y down, handed to `out` segment by segment: what the mask of
-/// [`with_glyph_mask_id`] covers, from the same scaler with the same hinting
-/// and synthetic embolden, without the mask's subpixel phase. Quadratic
-/// segments come out as the equal cubics. A glyph without an outline hands
-/// out nothing.
-pub(crate) fn glyph_outline(
-    font: FontRef<'static>,
-    glyph: u16,
-    size: f32,
-    out: &mut dyn FnMut(crate::sketch::PathSegment),
-) {
-    use crate::sketch::PathSegment;
-    use swash::zeno::Verb;
-    SCALE_CTX.with(|cx| {
-        let mut cx = cx.borrow_mut();
-        let mut scaler = cx
-            .builder(font)
-            .size(size)
-            .hint(font_hinting(font, size))
-            .build();
-        let Some(mut outline) = scaler.scale_outline(glyph) else {
-            return;
-        };
-        let embolden = font_embolden(font, size);
-        if embolden > 0.0 {
-            outline.embolden(embolden, embolden);
-        }
-        // zeno outlines are y-up; flip into the y-down pixel convention.
-        let flip = |p: &swash::zeno::Point| (p.x, -p.y);
-        let points = outline.points();
-        let mut next = 0;
-        let mut current = (0.0f32, 0.0f32);
-        for verb in outline.verbs() {
-            match verb {
-                Verb::MoveTo => {
-                    current = flip(&points[next]);
-                    next += 1;
-                    out(PathSegment::Move(current));
-                }
-                Verb::LineTo => {
-                    current = flip(&points[next]);
-                    next += 1;
-                    out(PathSegment::Line(current));
-                }
-                Verb::CurveTo => {
-                    let (c1, c2, p) = (
-                        flip(&points[next]),
-                        flip(&points[next + 1]),
-                        flip(&points[next + 2]),
-                    );
-                    next += 3;
-                    current = p;
-                    out(PathSegment::Cubic(c1, c2, p));
-                }
-                Verb::QuadTo => {
-                    let (q, p) = (flip(&points[next]), flip(&points[next + 1]));
-                    next += 2;
-                    let c1 = (
-                        current.0 + (q.0 - current.0) * (2.0 / 3.0),
-                        current.1 + (q.1 - current.1) * (2.0 / 3.0),
-                    );
-                    let c2 = (
-                        p.0 + (q.0 - p.0) * (2.0 / 3.0),
-                        p.1 + (q.1 - p.1) * (2.0 / 3.0),
-                    );
-                    current = p;
-                    out(PathSegment::Cubic(c1, c2, p));
-                }
-                Verb::Close => out(PathSegment::Close),
-            }
-        }
-    });
-}
-
-/// Rasterize glyph id `glyph` of `font` and blit it with `color` at
-/// (`pen_x`, `baseline`).
-fn draw_glyph(
+/// Rasterize one glyph and blit it with `color` at (`pen_x`, `baseline`).
+/// Returns the advance.
+fn draw_char(
     canvas: &mut Canvas,
     font: FontRef<'static>,
     size: f32,
-    glyph: u16,
+    ch: char,
     pen_x: f32,
     baseline: f32,
     color: &Color,
-) {
+) -> f32 {
+    let advance = glyph_extents(font, size, ch).advance;
+
     match canvas.orthogonal_text_transform() {
         // Crisp path: snap to the pixel grid, carry the sub-pixel x phase
         // into the rasterizer, and blit without any filtering.
@@ -846,7 +757,7 @@ fn draw_glyph(
                 xbin = 0;
                 ix += 1;
             }
-            with_glyph_mask_id(font, size, glyph, xbin, |m| {
+            with_glyph_mask(font, size, ch, xbin, |m| {
                 canvas.blit_mask_orthogonal(
                     ix + m.left,
                     gy - m.top,
@@ -861,7 +772,7 @@ fn draw_glyph(
         // General transforms (non-right-angle rotation or scaling) retain
         // the filtered fallback. Axis titles use the crisp path above.
         None => {
-            with_glyph_mask_id(font, size, glyph, 0, |m| {
+            with_glyph_mask(font, size, ch, 0, |m| {
                 canvas.draw_mask(
                     pen_x + m.left as f32,
                     baseline - m.top as f32,
@@ -873,10 +784,14 @@ fn draw_glyph(
             });
         }
     }
+    advance
 }
 
 // Rendering coefficients.
 
+const SUB_SUPER_SIZE_RATIO: f32 = 0.65;
+const SUPERSCRIPT_Y_RATIO: f32 = -0.5; // shift up from baseline
+const SUBSCRIPT_Y_RATIO: f32 = 0.25; // shift down from baseline
 const UNDERLINE_THICKNESS_RATIO: f32 = 0.06;
 const UNDERLINE_Y_OFFSET_RATIO: f32 = 0.1; // below baseline
 // Rule segments (legend line marks): bar center sits where dash glyphs put
@@ -887,6 +802,10 @@ const RULE_THICKNESS_RATIO: f32 = 0.09;
 // rule's center down to this many em above the baseline, so it stays inside
 // the glyph ascent and never changes the line's measured extents.
 const RULE_BAND_BOTTOM_RATIO: f32 = 0.05;
+/// Horizontal kerning gap inserted before a super/sub segment, as a fraction
+/// of the base font_size. Prevents visual collision from italic overhang or
+/// size mismatch with the preceding glyph.
+const SUB_SUPER_KERN_RATIO: f32 = 0.08;
 
 // Line splitting — a `'\n'` segment ends the current line. Both drawing and
 // measurement share this so multi-line text (legend labels, titles) lays out
@@ -938,12 +857,7 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
 
     let cell_metrics: Vec<Vec<TextMetrics>> = line_cells
         .iter()
-        .map(|cells| {
-            cells
-                .iter()
-                .map(|c| place_cell(&mut MeasureSink, c, rt, (0.0, 0.0), policy))
-                .collect()
-        })
+        .map(|cells| cells.iter().map(|c| measure_line(c, rt, policy)).collect())
         .collect();
 
     let n_cols = line_cells.iter().map(|c| c.len()).max().unwrap_or(1);
@@ -982,224 +896,50 @@ fn layout_doc(rt: &RichText, policy: FontPolicy) -> DocLayout<'_> {
     }
 }
 
-/// Width of the whole block: its widest line. Measurement reports it, and
-/// drawing aligns every line inside it, so the two cannot disagree.
-fn block_width(line_metrics: &[TextMetrics]) -> f32 {
-    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
-}
-
-/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
-/// descender-less lines collapse together, so clamp to a nominal line height
-/// derived from the font size. Shared by draw + measure.
-fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
-    (prev.descent + this.ascent).max(rt.font_size * 1.15)
-}
-
-/// Where the glyphs and rules of a laid-out cell go. The canvas sink paints
-/// them; the measuring sink drops them, so measurement and drawing run the
-/// same placement ([`place_cell`]) and cannot disagree. A glyph is named by
-/// its face and glyph id, so size variants, stretchy pieces and script
-/// alternates, which no character maps to, place like any other glyph.
-pub(crate) trait GlyphSink {
-    /// Whether the sink paints. The measuring sink does not, and placement
-    /// skips work that only produces pixels (dash patterns, the second pass
-    /// of a math node).
-    fn paints(&self) -> bool;
-    /// Glyph `glyph` of `font` at `size`, its pen at `pen` (left, baseline).
-    fn glyph(
-        &mut self,
-        font: FontRef<'static>,
-        glyph: u16,
-        size: f32,
-        pen: (f32, f32),
-        color: &Color,
-    );
-    /// A filled rectangle: rules, dashes, bands, underlines, fraction bars.
-    fn rect(&mut self, rect: RectF, color: &Color);
-}
-
-/// The sink of [`measure_rich_text`]: places nothing.
-struct MeasureSink;
-
-impl GlyphSink for MeasureSink {
-    fn paints(&self) -> bool {
-        false
-    }
-    fn glyph(&mut self, _: FontRef<'static>, _: u16, _: f32, _: (f32, f32), _: &Color) {}
-    fn rect(&mut self, _: RectF, _: &Color) {}
-}
-
-/// The sink of [`draw_rich_text`]: paints onto the canvas.
-struct CanvasSink<'a>(&'a mut Canvas);
-
-impl GlyphSink for CanvasSink<'_> {
-    fn paints(&self) -> bool {
-        true
-    }
-    fn glyph(
-        &mut self,
-        font: FontRef<'static>,
-        glyph: u16,
-        size: f32,
-        pen: (f32, f32),
-        color: &Color,
-    ) {
-        draw_glyph(self.0, font, size, glyph, pen.0, pen.1, color);
-    }
-    fn rect(&mut self, r: RectF, color: &Color) {
-        self.0.draw_rect(
-            r.x,
-            r.y,
-            r.width,
-            r.height,
-            &crate::raster::Paint::fill(color),
-        );
-    }
-}
-
-/// Place one cell (a line, or a tab-column cell of it) with its first pen
-/// at `origin` (left, baseline) into `sink`, and return its envelope: the
-/// one placement measurement and drawing share. Empty cells fall back to a
-/// font-size-derived height so blank lines still advance the baseline.
-///
-/// The envelope is the ink extent of every glyph, rule and underline
-/// relative to the baseline, and the width the sum of the advances; the pen
-/// advances the same way, gap before a script, then the glyph.
-fn place_cell(
-    sink: &mut dyn GlyphSink,
-    segments: &[RichSegment],
-    rt: &RichText,
-    origin: (f32, f32),
-    policy: FontPolicy,
-) -> TextMetrics {
-    let (mut pen_x, baseline) = origin;
+/// Envelope of one line. Empty lines fall back to a font-size-derived height
+/// so blank lines still advance the baseline.
+fn measure_line(segments: &[RichSegment], rt: &RichText, policy: FontPolicy) -> TextMetrics {
     let mut total_w = 0.0f32;
     let mut max_ascent = 0.0f32;
     let mut max_descent = 0.0f32;
-    // A cell whose math tree is malformed draws flat, as a consumer that
-    // ignores math nodes would, identically in measure and draw.
-    let math = segments
-        .iter()
-        .any(|s| s.math_node.is_some() || s.math_parent.is_some())
-        && crate::text::math::validate_math_segments(segments).is_ok();
 
-    let mut i = 0;
-    while i < segments.len() {
-        let seg = &segments[i];
-        i += 1;
-        let mut position = ScriptPosition::of(seg);
-        if math {
-            if let Some(node) = seg.math_node {
-                if matches!(node.kind, crate::text::MathKind::Math(_)) {
-                    // A formula: one atom of the cell, laid out from the
-                    // math face.
-                    let end = crate::text::math::subtree_end(segments, i - 1);
-                    let f = math_layout::place_formula(
-                        sink,
-                        rt,
-                        segments,
-                        (i - 1, end),
-                        (pen_x, baseline),
-                        policy,
-                    );
-                    max_ascent = max_ascent.max(f.ascent);
-                    max_descent = max_descent.max(f.descent);
-                    total_w += f.width;
-                    pen_x += f.width;
-                    i = end;
-                }
-                // A text-mode `Scripts` node places nothing itself.
-                continue;
-            }
-            // A text-mode script places its slots as the `superscript` and
-            // `subscript` flags do, so the node and the flags give the same
-            // pixels.
-            if let Some(parent) = seg.math_parent {
-                position = match parent.slot {
-                    1 => ScriptPosition::Superscript,
-                    2 => ScriptPosition::Subscript,
-                    _ => ScriptPosition::Base,
-                };
-            }
-        }
+    for seg in segments {
         let base = segment_base_size(seg, rt);
-        let script = script_placement(position, base);
-        let size = script.size;
-        let y_offset = script.shift;
-        let color = seg.color.unwrap_or(rt.color);
-        let y = baseline + y_offset;
+        let size = segment_font_size(seg, base);
+        let y_offset = segment_y_offset(seg, base);
 
-        // `advance` is the envelope's share of the width; `pen_advance` what
-        // the pen moves after the script gap (identical sums, kept in the
-        // order each was always added in).
-        let (advance, pen_advance, seg_top, mut seg_bottom) = if seg.rule {
+        let (advance, seg_top, mut seg_bottom) = if seg.rule {
             // Drawn rule: a bar centered on the symbol axis. Width is the
             // fixed field; vertical extent is the bar thickness only.
             let field = seg.field_em.unwrap_or(1.0) * base;
             let t = (base * RULE_THICKNESS_RATIO).max(1.0);
             let center = y_offset - base * RULE_Y_RATIO;
-            if sink.paints() {
-                place_rule(sink, seg, (pen_x, y), field, t, base, &color);
-            }
-            (field, field, center - t * 0.5, center + t * 0.5)
+            (field, center - t * 0.5, center + t * 0.5)
         } else {
-            let ch = seg.char_set.glyph_char(seg.text);
-            // A math character draws from the math face (whatever the
-            // policy), falling back to the text chain when the face lacks it.
-            let (font, glyph) = (seg.char_set == crate::text::CharSet::Math)
-                .then(|| math_layout::math_text_glyph(rt, seg, ch))
-                .flatten()
-                .unwrap_or_else(|| {
-                    let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
-                    (font, font.charmap().map(ch))
-                });
-            let g = glyph_extents_id(font, size, glyph);
-            let pen_advance = match seg.field_em {
-                Some(f) => {
-                    // Center the glyph ink inside the fixed field.
-                    let field = f * base;
-                    let inset = (field - g.advance) * 0.5;
-                    sink.glyph(font, glyph, size, (pen_x + inset, y), &color);
-                    field
-                }
-                None => {
-                    pen_x += script.kern_before;
-                    sink.glyph(font, glyph, size, (pen_x, y), &color);
-                    g.advance
-                }
+            let ch = if seg.greek {
+                greek_char(seg.text)
+            } else {
+                seg.text
             };
+            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
+            let g = glyph_extents(font, size, ch);
             // A fixed field replaces both the kern and the glyph advance.
             let adv = match seg.field_em {
                 Some(f) => f * base,
-                None => script.advance(g.advance),
+                None => segment_kern_before(seg, base) + g.advance,
             };
-            (
-                adv,
-                pen_advance,
-                y_offset + g.ink_top,
-                y_offset + g.ink_bottom,
-            )
+            (adv, y_offset + g.ink_top, y_offset + g.ink_bottom)
         };
 
         if seg.underline {
             let underline_top = y_offset + size * UNDERLINE_Y_OFFSET_RATIO;
             let underline_thickness = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
             seg_bottom = seg_bottom.max(underline_top + underline_thickness);
-            sink.rect(
-                RectF {
-                    x: pen_x,
-                    y: y + size * UNDERLINE_Y_OFFSET_RATIO,
-                    width: pen_advance,
-                    height: underline_thickness,
-                },
-                &color,
-            );
         }
 
         max_ascent = max_ascent.max(-seg_top);
         max_descent = max_descent.max(seg_bottom);
         total_w += advance;
-        pen_x += pen_advance;
     }
 
     if segments.is_empty() || (max_ascent == 0.0 && max_descent == 0.0) {
@@ -1214,55 +954,103 @@ fn place_cell(
     }
 }
 
-/// A rule segment filling its fixed `field` with its pen at `pen`
-/// (left, baseline): the band under it, then the solid or dashed bar of
-/// thickness `t`, centered on the symbol axis — the exact-length line stroke
-/// of legend marks.
-fn place_rule(
-    sink: &mut dyn GlyphSink,
-    seg: &RichSegment,
-    pen: (f32, f32),
-    field: f32,
-    t: f32,
-    base: f32,
-    color: &Color,
+/// Width of the whole block: its widest line. Measurement reports it, and
+/// drawing aligns every line inside it, so the two cannot disagree.
+fn block_width(line_metrics: &[TextMetrics]) -> f32 {
+    line_metrics.iter().map(|m| m.width).fold(0.0, f32::max)
+}
+
+/// Baseline-to-baseline advance between two lines. Ink envelopes alone make
+/// descender-less lines collapse together, so clamp to a nominal line height
+/// derived from the font size. Shared by draw + measure.
+fn line_advance(prev: &TextMetrics, this: &TextMetrics, rt: &RichText) -> f32 {
+    (prev.descent + this.ascent).max(rt.font_size * 1.15)
+}
+
+fn draw_line_segments(
+    canvas: &mut Canvas,
+    segments: &[RichSegment],
+    rt: &RichText,
+    origin: (f32, f32),
+    policy: FontPolicy,
 ) {
-    let (pen_x, y) = pen;
-    let ry = y - base * RULE_Y_RATIO - t * 0.5;
-    // The band goes under the rule first, so a dashed rule's gaps show the
-    // band and a solid rule covers its top edge.
-    if let Some(band) = &seg.rule_band {
-        let top = y - base * RULE_Y_RATIO;
-        let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
-        sink.rect(
-            RectF {
-                x: pen_x,
-                y: top,
-                width: field,
-                height: (bottom - top).max(1.0),
-            },
-            band,
-        );
-    }
-    let bar = RectF {
-        x: pen_x,
-        y: ry,
-        width: field,
-        height: t,
-    };
-    match &seg.rule_dash {
-        Some(pattern) => place_dashed_rule(sink, bar, color, pattern, base),
-        None => sink.rect(bar, color),
+    let (mut pen_x, baseline) = origin;
+    for seg in segments {
+        let base = segment_base_size(seg, rt);
+        let size = segment_font_size(seg, base);
+        let color = seg.color.unwrap_or(rt.color);
+        let y = baseline + segment_y_offset(seg, base);
+
+        let advance = if seg.rule {
+            // Drawn rule filling its fixed field, centered on the symbol
+            // axis — the exact-length line stroke of legend marks.
+            let field = seg.field_em.unwrap_or(1.0) * base;
+            let t = (base * RULE_THICKNESS_RATIO).max(1.0);
+            let ry = y - base * RULE_Y_RATIO - t * 0.5;
+            // The band goes under the rule first, so a dashed rule's gaps
+            // show the band and a solid rule covers its top edge.
+            if let Some(band) = &seg.rule_band {
+                let top = y - base * RULE_Y_RATIO;
+                let bottom = y - base * RULE_BAND_BOTTOM_RATIO;
+                canvas.draw_rect(
+                    pen_x,
+                    top,
+                    field,
+                    (bottom - top).max(1.0),
+                    &crate::raster::Paint::fill(band),
+                );
+            }
+            if let Some(pattern) = &seg.rule_dash {
+                draw_dashed_rule(
+                    canvas,
+                    RectF {
+                        x: pen_x,
+                        y: ry,
+                        width: field,
+                        height: t,
+                    },
+                    &color,
+                    pattern,
+                    base,
+                );
+            } else {
+                canvas.draw_rect(pen_x, ry, field, t, &crate::raster::Paint::fill(&color));
+            }
+            field
+        } else {
+            let ch = if seg.greek {
+                greek_char(seg.text)
+            } else {
+                seg.text
+            };
+            let font = glyph_font(policy, &rt.font, seg.bold, seg.italic, ch);
+            match seg.field_em {
+                Some(f) => {
+                    // Center the glyph ink inside the fixed field.
+                    let field = f * base;
+                    let g = glyph_extents(font, size, ch);
+                    let inset = (field - g.advance) * 0.5;
+                    draw_char(canvas, font, size, ch, pen_x + inset, y, &color);
+                    field
+                }
+                None => {
+                    pen_x += segment_kern_before(seg, base);
+                    draw_char(canvas, font, size, ch, pen_x, y, &color)
+                }
+            }
+        };
+
+        if seg.underline {
+            let uy = y + size * UNDERLINE_Y_OFFSET_RATIO;
+            let uh = (size * UNDERLINE_THICKNESS_RATIO).max(1.0);
+            canvas.draw_rect(pen_x, uy, advance, uh, &crate::raster::Paint::fill(&color));
+        }
+
+        pen_x += advance;
     }
 }
 
-fn place_dashed_rule(
-    sink: &mut dyn GlyphSink,
-    rect: RectF,
-    color: &Color,
-    dash_em: &[f32],
-    base: f32,
-) {
+fn draw_dashed_rule(canvas: &mut Canvas, rect: RectF, color: &Color, dash_em: &[f32], base: f32) {
     let pattern: Vec<f32> = dash_em
         .iter()
         .filter_map(|v| {
@@ -1271,7 +1059,13 @@ fn place_dashed_rule(
         })
         .collect();
     if pattern.is_empty() {
-        sink.rect(rect, color);
+        canvas.draw_rect(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            &crate::raster::Paint::fill(color),
+        );
         return;
     }
 
@@ -1281,14 +1075,12 @@ fn place_dashed_rule(
     while offset < rect.width {
         let len = pattern[pattern_i % pattern.len()].min(rect.width - offset);
         if ink {
-            sink.rect(
-                RectF {
-                    x: rect.x + offset,
-                    y: rect.y,
-                    width: len,
-                    height: rect.height,
-                },
-                color,
+            canvas.draw_rect(
+                rect.x + offset,
+                rect.y,
+                len,
+                rect.height,
+                &crate::raster::Paint::fill(color),
             );
         }
         offset += len;
@@ -1391,19 +1183,6 @@ mod dashed_rule_tests {
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
 pub fn draw_rich_text(canvas: &mut Canvas, rt: &RichText, origin: (f32, f32), policy: FontPolicy) {
-    place_rich_text(&mut CanvasSink(canvas), rt, origin, policy);
-}
-
-/// The placement of [`draw_rich_text`]: every glyph and rule of `rt` at
-/// `origin` (left edge of the block, baseline of the first line) handed to
-/// `sink`. The canvas paints through it and the vector export writes from
-/// it, so both place the same glyphs at the same pens.
-pub(crate) fn place_rich_text(
-    sink: &mut dyn GlyphSink,
-    rt: &RichText,
-    origin: (f32, f32),
-    policy: FontPolicy,
-) {
     let doc = layout_doc(rt, policy);
     let (x, mut baseline) = origin;
     let block_width = block_width(&doc.line_metrics);
@@ -1414,8 +1193,8 @@ pub(crate) fn place_rich_text(
         }
         let line_x = x + rt.align.line_offset(block_width, doc.line_metrics[i].width);
         for (k, cell) in cells.iter().enumerate() {
-            place_cell(
-                sink,
+            draw_line_segments(
+                canvas,
                 cell,
                 rt,
                 (line_x + doc.col_starts[k], baseline),
@@ -1456,11 +1235,6 @@ impl CpuTextMeasure {
             policy: FontPolicy::for_style(style),
         }
     }
-
-    /// Measure with an explicit font policy.
-    pub(crate) fn with_policy(policy: FontPolicy) -> Self {
-        Self { policy }
-    }
 }
 
 impl crate::text::MeasureText for CpuTextMeasure {
@@ -1469,14 +1243,14 @@ impl crate::text::MeasureText for CpuTextMeasure {
     }
 
     /// The tick labels, axis lines and ticks the axis raster draws, from the
-    /// same emit it draws them with.
-    fn emit(
+    /// same walks and placement it draws them with.
+    fn drawn_parts(
         &self,
         cfg: &crate::config::Config,
         element: &crate::layout::Element,
-        sink: &mut dyn crate::sink::Sink,
+        each: &mut dyn FnMut(crate::layout::DrawnPart),
     ) -> bool {
-        crate::axis_render::emit_part_of(cfg, element, self.policy, sink)
+        crate::axis_render::drawn_parts(cfg, element, self.policy, each)
     }
 }
 
@@ -1514,97 +1288,37 @@ pub fn measure_rich_text(rt: &RichText, policy: FontPolicy) -> TextMetrics {
 
 /// Effective base size of a segment: the per-segment `font_size` override
 /// when present, the document-level `RichText.font_size` otherwise. The
-/// script layout ([`script_placement`]) applies on top.
+/// sub/superscript ratio (and the derived y-offset / kerning) apply on top.
 fn segment_base_size(seg: &RichSegment, rt: &RichText) -> f32 {
     seg.font_size.unwrap_or(rt.font_size)
 }
 
-// Script layout.
-
-/// Script size as a fraction of the base font size.
-const SCRIPT_SIZE_RATIO: f32 = 0.65;
-/// Superscript baseline shift as a fraction of the base font size (y down,
-/// so negative raises).
-const SUPERSCRIPT_SHIFT_RATIO: f32 = -0.5;
-/// Subscript baseline shift as a fraction of the base font size (drops).
-const SUBSCRIPT_SHIFT_RATIO: f32 = 0.25;
-/// Horizontal gap before a script glyph, as a fraction of the base font
-/// size. Prevents visual collision from italic overhang or size mismatch
-/// with the preceding glyph.
-const SCRIPT_KERN_RATIO: f32 = 0.08;
-
-/// Where a glyph sits against the baseline of the text around it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ScriptPosition {
-    /// On the baseline, at the base size.
-    Base,
-    /// Raised and reduced: an exponent, the superscript slot of a script.
-    Superscript,
-    /// Dropped and reduced: an index, the subscript slot of a script.
-    Subscript,
-}
-
-impl ScriptPosition {
-    /// The position a segment's `superscript` / `subscript` flags select.
-    /// `superscript` wins when both are set, as it always has.
-    pub(crate) fn of(seg: &RichSegment) -> Self {
-        if seg.superscript {
-            ScriptPosition::Superscript
-        } else if seg.subscript {
-            ScriptPosition::Subscript
-        } else {
-            ScriptPosition::Base
-        }
+fn segment_font_size(seg: &RichSegment, base: f32) -> f32 {
+    if seg.superscript || seg.subscript {
+        base * SUB_SUPER_SIZE_RATIO
+    } else {
+        base
     }
 }
 
-/// How a glyph at a [`ScriptPosition`] is placed: computed by
-/// [`script_placement`] from the base font size.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) struct ScriptPlacement {
-    /// Font size the glyph is drawn and measured at.
-    pub(crate) size: f32,
-    /// Shift of the glyph's baseline from the line's baseline, y down:
-    /// negative raises.
-    pub(crate) shift: f32,
-    /// Gap the pen advances before the glyph.
-    pub(crate) kern_before: f32,
-}
-
-impl ScriptPlacement {
-    /// The pen advance of a glyph whose own advance at `size` is
-    /// `glyph_advance`: the gap before it, then the glyph.
-    pub(crate) fn advance(self, glyph_advance: f32) -> f32 {
-        self.kern_before + glyph_advance
+fn segment_y_offset(seg: &RichSegment, base: f32) -> f32 {
+    if seg.superscript {
+        base * SUPERSCRIPT_Y_RATIO
+    } else if seg.subscript {
+        base * SUBSCRIPT_Y_RATIO
+    } else {
+        0.0
     }
 }
 
-/// The script layout: size ratio, raise or drop, and the gap before the
-/// glyph, for a glyph at `position` next to text of font size `base`.
-///
-/// This is the one place scripts are laid out. Rich-text segments with the
-/// `superscript` / `subscript` flags (titles, legends, annotations and the
-/// `LabelFormat::Power` tick-label exponents, which are such segments) are
-/// measured and drawn through it, and the math `Scripts` node of #45 calls
-/// it for its superscript and subscript slots, so the flags and the node
-/// place scripts with the same pixels.
-pub(crate) fn script_placement(position: ScriptPosition, base: f32) -> ScriptPlacement {
-    match position {
-        ScriptPosition::Base => ScriptPlacement {
-            size: base,
-            shift: 0.0,
-            kern_before: 0.0,
-        },
-        ScriptPosition::Superscript => ScriptPlacement {
-            size: base * SCRIPT_SIZE_RATIO,
-            shift: base * SUPERSCRIPT_SHIFT_RATIO,
-            kern_before: base * SCRIPT_KERN_RATIO,
-        },
-        ScriptPosition::Subscript => ScriptPlacement {
-            size: base * SCRIPT_SIZE_RATIO,
-            shift: base * SUBSCRIPT_SHIFT_RATIO,
-            kern_before: base * SCRIPT_KERN_RATIO,
-        },
+/// Kerning gap added to pen_x just before drawing `seg`. Super/sub segments
+/// differ in size and y-offset from the preceding glyph and need a small gap
+/// to avoid visual overhang collisions.
+fn segment_kern_before(seg: &RichSegment, base: f32) -> f32 {
+    if seg.superscript || seg.subscript {
+        base * SUB_SUPER_KERN_RATIO
+    } else {
+        0.0
     }
 }
 
@@ -1625,39 +1339,10 @@ pub fn draw_plain_text(
     italic: bool,
     policy: FontPolicy,
 ) {
-    place_plain_text(
-        &mut CanvasSink(canvas),
-        text,
-        origin,
-        color,
-        family,
-        size,
-        bold,
-        italic,
-        policy,
-    );
-}
-
-/// The placement of [`draw_plain_text`]: each character's glyph, from the
-/// face the policy resolves for it, at its pen, handed to `sink`.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn place_plain_text(
-    sink: &mut dyn GlyphSink,
-    text: &str,
-    origin: (f32, f32),
-    color: Color,
-    family: &str,
-    size: f32,
-    bold: bool,
-    italic: bool,
-    policy: FontPolicy,
-) {
     let (mut pen_x, baseline) = origin;
     for ch in text.chars() {
         let font = glyph_font(policy, family, bold, italic, ch);
-        let glyph = font.charmap().map(ch);
-        sink.glyph(font, glyph, size, (pen_x, baseline), &color);
-        pen_x += glyph_extents_id(font, size, glyph).advance;
+        pen_x += draw_char(canvas, font, size, ch, pen_x, baseline, &color);
     }
 }
 
@@ -1690,7 +1375,7 @@ pub fn measure_plain_text(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text::{CharSet, TextAlign, rich_segments_from_text};
+    use crate::text::{TextAlign, rich_segments_from_text};
 
     fn measure_rich_text_std(rt: &RichText) -> TextMetrics {
         measure_rich_text(rt, FontPolicy::Standard)
@@ -1769,9 +1454,7 @@ mod tests {
             for size in [12.0_f32, 24.0, 32.0, 33.0, 40.0, 51.0, 64.0, 102.0] {
                 let font = glyph_font(FontPolicy::Standard, "", false, false, ch);
                 let mut seen = None;
-                with_glyph_mask_id(font, size, font.charmap().map(ch), 0, |m| {
-                    seen = Some((m.width, m.height))
-                });
+                with_glyph_mask(font, size, ch, 0, |m| seen = Some((m.width, m.height)));
                 let (w, h) = seen.expect("basic Latin glyph must rasterize");
                 let rel_h = h as f32 / size;
                 let rel_w = w as f32 / size;
@@ -2341,13 +2024,7 @@ mod tests {
                 }
                 for (k, cell) in cells.iter().enumerate() {
                     let cell_origin = (x + doc.col_starts[k], baseline);
-                    place_cell(
-                        &mut CanvasSink(canvas),
-                        cell,
-                        rt,
-                        cell_origin,
-                        FontPolicy::Standard,
-                    );
+                    draw_line_segments(canvas, cell, rt, cell_origin, FontPolicy::Standard);
                 }
             }
         }
@@ -2569,132 +2246,5 @@ mod tests {
         draw_rich_text(&mut canvas, &sup, (5.0, 30.0), FontPolicy::Standard);
         let rgba = canvas.into_rgba();
         assert!(rgba.chunks_exact(4).any(|p| p[3] > 0));
-    }
-
-    // `Greek` draws the Adobe Symbol letter of its Latin character, exactly as
-    // a segment holding that letter; `Math` draws the character as given from
-    // the bundled math face, its italic through the Mathematical Italic
-    // alphabet.
-    #[test]
-    fn char_set_picks_the_drawn_character() {
-        let with = |text: char, char_set: CharSet| RichText {
-            segments: vec![RichSegment {
-                char_set,
-                ..RichSegment::plain(text)
-            }],
-            ..RichText::plain("", Color::BLACK, 20.0, "")
-        };
-        let draw = |rt: &RichText| draw_to_rgba(rt, (40, 40), (5.0, 30.0));
-
-        let greek = with('a', CharSet::Greek);
-        let alpha = with('α', CharSet::Text);
-        assert_eq!(draw(&greek), draw(&alpha));
-        assert_eq!(measure_rich_text_std(&greek), measure_rich_text_std(&alpha));
-        assert_ne!(draw(&greek), draw(&with('a', CharSet::Text)));
-
-        let face = math_layout::math_text_glyph;
-        for c in ['a', '∑', '≤', '∂'] {
-            let math = with(c, CharSet::Math);
-            let (font, glyph) = face(&math, &math.segments[0], c).expect("in the math face");
-            assert_eq!(font.key, math_font::bundled_math_font().key);
-            assert_eq!(glyph, font.charmap().map(c), "math {c} draws as given");
-            assert_ne!(draw(&math), draw(&with(c, CharSet::Text)));
-        }
-        let italic = RichSegment {
-            char_set: CharSet::Math,
-            italic: true,
-            ..RichSegment::plain('x')
-        };
-        let rt = with('x', CharSet::Math);
-        let (font, glyph) = face(&rt, &italic, 'x').unwrap();
-        assert_eq!(glyph, font.charmap().map('\u{1D465}'));
-    }
-
-    // The script layout the math `Scripts` node (#45) will reuse: these ratios
-    // are the pixels every superscript and subscript has today, so a change
-    // here is a pixel change for every chart with scripts.
-    #[test]
-    fn script_placement_pins_the_size_ratio_shifts_and_gap() {
-        assert_eq!(SCRIPT_SIZE_RATIO, 0.65);
-        assert_eq!(SUPERSCRIPT_SHIFT_RATIO, -0.5);
-        assert_eq!(SUBSCRIPT_SHIFT_RATIO, 0.25);
-        assert_eq!(SCRIPT_KERN_RATIO, 0.08);
-
-        for base in [8.0f32, 12.0, 13.5, 20.0, 48.0] {
-            assert_eq!(
-                script_placement(ScriptPosition::Base, base),
-                ScriptPlacement {
-                    size: base,
-                    shift: 0.0,
-                    kern_before: 0.0,
-                }
-            );
-            assert_eq!(
-                script_placement(ScriptPosition::Superscript, base),
-                ScriptPlacement {
-                    size: base * 0.65,
-                    shift: base * -0.5,
-                    kern_before: base * 0.08,
-                }
-            );
-            assert_eq!(
-                script_placement(ScriptPosition::Subscript, base),
-                ScriptPlacement {
-                    size: base * 0.65,
-                    shift: base * 0.25,
-                    kern_before: base * 0.08,
-                }
-            );
-        }
-        let sup = script_placement(ScriptPosition::Superscript, 20.0);
-        assert_eq!(sup.shift, -10.0);
-        assert_eq!(sup.advance(7.0), sup.kern_before + 7.0);
-        assert_eq!(script_placement(ScriptPosition::Subscript, 20.0).shift, 5.0);
-        assert_eq!(
-            script_placement(ScriptPosition::Base, 20.0).advance(7.0),
-            7.0
-        );
-
-        let flags = |superscript: bool, subscript: bool| {
-            ScriptPosition::of(&RichSegment {
-                superscript,
-                subscript,
-                ..RichSegment::plain('2')
-            })
-        };
-        assert_eq!(flags(false, false), ScriptPosition::Base);
-        assert_eq!(flags(true, false), ScriptPosition::Superscript);
-        assert_eq!(flags(false, true), ScriptPosition::Subscript);
-        assert_eq!(flags(true, true), ScriptPosition::Superscript);
-    }
-
-    // A rich-text line is laid out through `script_placement`: its measured
-    // width is the base glyph advance plus the placement's advance of the
-    // script glyph at the script size, and its ascent reaches the raised ink.
-    #[test]
-    fn rich_text_scripts_measure_through_the_script_placement() {
-        let base = 20.0;
-        let font = |ch| glyph_font(FontPolicy::Standard, "", false, false, ch);
-        for (text, position) in [
-            ("x²", ScriptPosition::Superscript),
-            ("x₂", ScriptPosition::Subscript),
-        ] {
-            let rt = RichText::plain(text, Color::BLACK, base, "");
-            let m = measure_rich_text_std(&rt);
-            let place = script_placement(position, base);
-            let x = glyph_extents(font('x'), base, 'x');
-            let two = glyph_extents(font('2'), place.size, '2');
-            assert_eq!(m.width, x.advance + place.advance(two.advance), "{text}");
-            assert_eq!(
-                m.ascent,
-                (-x.ink_top).max(-(place.shift + two.ink_top)),
-                "{text}"
-            );
-            assert_eq!(
-                m.descent,
-                x.ink_bottom.max(place.shift + two.ink_bottom),
-                "{text}"
-            );
-        }
     }
 }

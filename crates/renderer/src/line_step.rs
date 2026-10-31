@@ -3,10 +3,10 @@
 //! take, the per-instance strip vertex count, and the data-space pieces the
 //! CPU picker walks.
 //!
-//! The GPU twin is `step_piece` in `data_render/common/line_step.wgsl`, the
-//! one fragment the line, arc-scan and pick line modules splice, with
-//! `strip_slot` in `data_render/line_columnar.wgsl`. Every module splits a
-//! segment `a → b` into the same pieces: the axis-aligned step
+//! The GPU twins are `step_piece` / `strip_slot` in
+//! `data_render/line_columnar.wgsl` (shared byte-for-byte with
+//! `line_arc.wgsl`) and `pick_step_piece` in `gpu_pick/line.wgsl`. All of them
+//! split a segment `a → b` into the same pieces: the axis-aligned step
 //! pieces, with the step-mid riser at the **data-space** midpoint of the two
 //! x values, or a polar chart's equal subdivisions in data space (an arc
 //! once projected), so the drawn line, its dash phase, its arc length and
@@ -25,9 +25,7 @@ pub(crate) const AREA_FILL_TO_SERIES: u32 = 1 << 4;
 /// and up the pieces (0 for chords and rectangular charts). The pieces ride
 /// the transform (`polar_extent.z`), never the style.
 pub(crate) const LINE_ARC_SHIFT: u32 = 4;
-/// The most pieces one segment is drawn as: the polar arc limit. Read by
-/// the CPU twin of the line shader (test support).
-#[cfg(feature = "cpu-twin")]
+/// The most pieces one segment is drawn as: the polar arc limit.
 pub(crate) const MAX_LINE_PIECES: usize = crate::polar::MAX_POLAR_ARC_PIECES as usize;
 
 /// The shader's step mode code: 0 linear, 1 step-pre, 2 step-post, 3 step-mid.
@@ -92,9 +90,7 @@ pub(crate) fn strip_vertex_count(per_piece: u32, mode: u32) -> u32 {
     pieces * per_piece + 2 * (pieces - 1)
 }
 
-/// One axis-aligned piece of a stepped segment, in data units (the CPU
-/// twin of the line shader, test support).
-#[cfg(feature = "cpu-twin")]
+/// One axis-aligned piece of a stepped segment, in data units.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct StepPiece {
     pub a: [f32; 2],
@@ -106,8 +102,7 @@ pub(crate) struct StepPiece {
 /// Step-pre: riser at `a.x`, run at `b.y`. Step-post: run at `a.y`, riser at
 /// `b.x`. Step-mid: run, riser at the data-space midpoint of the x values,
 /// run. A polar arc: equal subdivisions of `a → b` in data space. Twin of the
-/// shaders' `step_piece` (test support).
-#[cfg(feature = "cpu-twin")]
+/// shaders' `step_piece`.
 pub(crate) fn line_pieces(
     a: [f32; 2],
     b: [f32; 2],
@@ -161,7 +156,7 @@ pub(crate) fn line_pieces(
 }
 
 /// Test helper: the pieces of a rectangular chart's step mode.
-#[cfg(all(test, feature = "cpu-twin"))]
+#[cfg(test)]
 pub(crate) fn step_pieces(
     a: [f32; 2],
     b: [f32; 2],
@@ -172,7 +167,7 @@ pub(crate) fn step_pieces(
     (out, count)
 }
 
-#[cfg(all(test, feature = "cpu-twin"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -229,13 +224,7 @@ mod tests {
             LineInterpolation::StepMid,
         ] {
             let (pieces, count) = step_pieces(a, b, mode);
-            // Axis-aligned pieces one segment is drawn as.
-            let expected = match mode {
-                LineInterpolation::Linear => 1,
-                LineInterpolation::StepPre | LineInterpolation::StepPost => 2,
-                LineInterpolation::StepMid => 3,
-            };
-            assert_eq!(count, expected, "{mode:?}");
+            assert_eq!(count as u32, mode.piece_count());
             assert_eq!(pieces[0].a, a);
             assert_eq!(pieces[count - 1].b, b);
             for pair in pieces[..count].windows(2) {

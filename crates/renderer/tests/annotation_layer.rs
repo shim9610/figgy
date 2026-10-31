@@ -1,16 +1,13 @@
-//! The annotation layer on the radial chart: one shared pass over its
-//! frame, its own cache beside the frame and label raster caches, export
-//! parity with fresh renderers, and the common hit-map contract.
+//! The annotation layer on bounded charts: one shared pass around each
+//! family's frame, its own cache beside the frame and label raster caches,
+//! export parity with fresh renderers, and the common hit-map contract.
 #![cfg(not(target_arch = "wasm32"))]
-#[path = "support/radial_decorations.rs"]
-mod radial_decorations;
 #[path = "support/gpu.rs"]
 mod test_gpu;
 use ::renderer::{
     layout::{NudgeResult, RectF},
     *,
 };
-use radial_decorations::Decorations;
 use std::sync::{Arc, Mutex, OnceLock};
 static LOCK: Mutex<()> = Mutex::new(());
 fn gpu() -> RendererDevice {
@@ -46,6 +43,21 @@ fn boxed_text(anchor: Anchor) -> Annotation {
         }),
     })
 }
+fn pixel(image: &RasterImage, x: f32, y: f32) -> [u8; 4] {
+    let i = ((y as u32 * image.width + x as u32) * 4) as usize;
+    [
+        image.rgba[i],
+        image.rgba[i + 1],
+        image.rgba[i + 2],
+        image.rgba[i + 3],
+    ]
+}
+fn near(actual: [u8; 4], expected: [u8; 4], tolerance: u8) -> bool {
+    actual
+        .iter()
+        .zip(expected)
+        .all(|(a, e)| a.abs_diff(e) <= tolerance)
+}
 fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
     let x0 = (r.x * scale).floor().max(0.) as u32;
     let y0 = (r.y * scale).floor().max(0.) as u32;
@@ -57,31 +69,22 @@ fn ink(image: &RasterImage, r: RectF, scale: f32) -> usize {
         .count()
 }
 
-/// A point on the first part the raster places for an item: a stroke's
+/// A point on the first shape the raster paints for an item: a stroke's
 /// midpoint, a head's centroid, a box's centre. The centre of the item's
 /// bounds can be empty, for example beside a label.
 fn on_item(map: &AnnotationMap, layer: &AnnotationLayer, id: HitId) -> [f32; 2] {
-    use ::renderer::sink::{DrawnPart, Parts};
-    let mut first = None;
-    map.element(id).unwrap().emit(
-        layer,
-        &mut Parts(&mut |part| {
-            first.get_or_insert(part);
-        }),
-    );
-    match first.expect("the item places a part") {
-        DrawnPart::Segment { a, b, .. } => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
-        DrawnPart::Triangle(t) => [
+    use ::renderer::annotation::AnnotationShape;
+    let shape = map.element(id).unwrap().shapes(layer)[0]
+        .or(map.element(id).unwrap().shapes(layer)[1])
+        .expect("the item paints a shape");
+    match shape {
+        AnnotationShape::Stroke { a, b, .. } => [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5],
+        AnnotationShape::Triangle(t) => [
             (t[0][0] + t[1][0] + t[2][0]) / 3.0,
             (t[0][1] + t[1][1] + t[2][1]) / 3.0,
         ],
-        DrawnPart::Rect(r) | DrawnPart::Text(r) => [r.x + r.width * 0.5, r.y + r.height * 0.5],
-        DrawnPart::Polygon { points, .. } => {
-            let n = points.len() as f32;
-            [
-                points.iter().map(|p| p[0]).sum::<f32>() / n,
-                points.iter().map(|p| p[1]).sum::<f32>() / n,
-            ]
+        AnnotationShape::Rect(r) | AnnotationShape::Label(r) => {
+            [r.x + r.width * 0.5, r.y + r.height * 0.5]
         }
     }
 }
@@ -102,32 +105,6 @@ macro_rules! family_contract {
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
             let mut c: $chart = $build;
             let edit: fn(&mut $chart) = $edit;
-            // 0) An empty layer: hiding it reuses the frame and its label
-            //    raster and changes no pixel, the cached export equals a
-            //    fresh one, and a title edit still rebuilds the frame.
-            {
-                let mut empty = c.clone();
-                empty.annotations.items.clear();
-                let f = r.prepare(&empty, SIZE, 1.).unwrap();
-                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
-                empty.annotations.visible = false;
-                let g = r.prepare(&empty, SIZE, 1.).unwrap();
-                assert!(Arc::ptr_eq(&f, &g), "empty layer: hiding rebuilt the frame");
-                assert!(
-                    f.shares_annotations_with(&g),
-                    "empty layer: hiding redrew the label raster"
-                );
-                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
-                assert!(cached == before, "empty layer: hiding changed pixels");
-                assert!(
-                    cached == fresh(&empty, 1.),
-                    "empty layer: cached export differs from fresh"
-                );
-                empty.title = "Edited".into();
-                assert!(!Arc::ptr_eq(&f, &r.prepare(&empty, SIZE, 1.).unwrap()));
-                assert!(r.export_rgba(&empty, SIZE, 1.).unwrap().rgba == fresh(&empty, 1.));
-                r.end_frame();
-            }
             for scale in [1., 2.] {
                 // The annotation frame rides the frame's anchor space; both
                 // come from the same cache state as a fresh renderer.
@@ -200,7 +177,7 @@ macro_rules! family_contract {
                 assert!(Arc::ptr_eq(&f, &r.prepare(&hidden, SIZE, scale).unwrap()));
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 assert!(h.shares_rasters_with(&b), "a visible toggle re-rasterized");
-                assert!(!h.draws_overlay());
+                assert!(!h.draws_underlay() && !h.draws_overlay());
                 let hidden_pixels = r.export_rgba(&hidden, SIZE, scale).unwrap();
                 let mut bare = edited.clone();
                 bare.annotations.items.clear();
@@ -274,8 +251,118 @@ macro_rules! family_contract {
     };
 }
 
+fn annotated_categorical() -> CategoricalChart {
+    CategoricalChart {
+        title: "Annotated bars".into(),
+        categories: vec![
+            Category::new("a", "Control"),
+            Category::new("b", "Treatment"),
+            Category::new("c", "Placebo"),
+        ],
+        series: vec![BarSeries::new(
+            "s",
+            "Trial",
+            vec![Some(30.), Some(60.), Some(45.)],
+            Color::from_rgb8(60, 130, 210),
+        )],
+        annotations: AnnotationLayer {
+            visible: true,
+            items: vec![
+                span(AnnotationAxis::X, 0.5, 1.5),
+                Annotation::new(AnnotationKind::ReferenceLine {
+                    axis: AnnotationAxis::Y,
+                    value: 50.,
+                    style: Default::default(),
+                    label: Some(text("target")),
+                }),
+                boxed_text(Anchor::Ratio { x: 0.6, y: 0.1 }),
+                Annotation::new(AnnotationKind::Arrow {
+                    from: Anchor::Ratio { x: 0.5, y: 0.5 },
+                    to: Anchor::Data { x: 2., y: 45. },
+                    style: Default::default(),
+                    text: Some(text("placebo")),
+                }),
+            ],
+        },
+        ..Default::default()
+    }
+}
+
+fn annotated_boxplot() -> BoxPlotChart {
+    BoxPlotChart {
+        title: "Annotated boxes".into(),
+        value_title: "Value".into(),
+        category_title: "Group".into(),
+        categories: vec![
+            Category::new("a", "Control"),
+            Category::new("b", "Treatment"),
+        ],
+        series: vec![BoxPlotSeries::new(
+            "s",
+            "Distribution",
+            vec![
+                Some(BoxSummary::new(10., 25., 38., 52., 70.)),
+                Some(BoxSummary::new(18., 32., 47., 61., 80.)),
+            ],
+            Color::from_rgb8(144, 69, 154),
+        )],
+        direction: BoxPlotDirection::Horizontal,
+        annotations: AnnotationLayer {
+            visible: true,
+            items: vec![
+                span(AnnotationAxis::X, 30., 50.),
+                Annotation::new(AnnotationKind::ReferenceLine {
+                    axis: AnnotationAxis::X,
+                    value: 60.,
+                    style: Default::default(),
+                    label: Some(text("limit")),
+                }),
+                boxed_text(Anchor::Data { x: 20., y: 1. }),
+                Annotation::new(AnnotationKind::Arrow {
+                    from: Anchor::Data { x: 70., y: 0.4 },
+                    to: Anchor::Data { x: 80., y: 1. },
+                    style: Default::default(),
+                    text: None,
+                }),
+            ],
+        },
+        ..Default::default()
+    }
+}
+
+fn annotated_radar() -> RadarChart {
+    RadarChart {
+        title: "Annotated radar".into(),
+        categories: vec![
+            Category::new("a", "Speed"),
+            Category::new("b", "Safety"),
+            Category::new("c", "Size"),
+            Category::new("d", "Docs"),
+        ],
+        series: vec![RadarSeries::new(
+            "s",
+            "Release",
+            vec![6., 8., 4., 7.],
+            Color::from_rgb8(100, 145, 185),
+        )],
+        annotations: AnnotationLayer {
+            visible: true,
+            items: vec![
+                boxed_text(Anchor::Ratio { x: 0.05, y: 0.05 }),
+                Annotation::new(AnnotationKind::Arrow {
+                    from: Anchor::Ratio { x: 0.1, y: 0.9 },
+                    to: Anchor::Ratio { x: 0.4, y: 0.6 },
+                    style: Default::default(),
+                    text: Some(text("centre")),
+                }),
+            ],
+        },
+        ..Default::default()
+    }
+}
+
 fn annotated_radial() -> RadialChart {
-    let mut chart = RadialChart {
+    RadialChart {
         title: "Annotated donut".into(),
         kind: RadialKind::Donut { inner_radius: 0.5 },
         slices: vec![
@@ -295,10 +382,32 @@ fn annotated_radial() -> RadialChart {
             ],
         },
         ..Default::default()
-    };
-    chart.format_labels();
-    chart
+    }
 }
+
+family_contract!(
+    categorical_annotation_layer_contract,
+    CategoricalRenderer,
+    CategoricalChart,
+    annotated_categorical(),
+    |c| c.annotations.items[0] = span(AnnotationAxis::X, 1.5, 2.5)
+);
+
+family_contract!(
+    boxplot_annotation_layer_contract,
+    BoxPlotRenderer,
+    BoxPlotChart,
+    annotated_boxplot(),
+    |c| c.annotations.items[0] = span(AnnotationAxis::X, 40., 55.)
+);
+
+family_contract!(
+    radar_annotation_layer_contract,
+    RadarRenderer,
+    RadarChart,
+    annotated_radar(),
+    |c| c.annotations.items[0] = boxed_text(Anchor::Ratio { x: 0.7, y: 0.8 })
+);
 
 family_contract!(
     radial_annotation_layer_contract,
@@ -343,41 +452,13 @@ macro_rules! family_routing {
             let select_data: fn(&mut $chart) = $select_data;
             let data_selected: fn(&$chart) -> bool = $data_selected;
             let mut r = $renderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-            // An empty layer: switching to it reuses the frame and its label
-            // raster and changes no pixel, and the cached export equals a
-            // fresh one.
-            {
-                let mut empty: $chart = $build;
-                empty.annotations.items.clear();
-                let f = r.prepare(&empty, SIZE, 1.).unwrap();
-                let before = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
-                empty.active_layer = LayerRef::Annotations;
-                let g = r.prepare(&empty, SIZE, 1.).unwrap();
-                assert!(
-                    Arc::ptr_eq(&f, &g),
-                    "empty layer: the switch rebuilt the frame"
-                );
-                assert!(
-                    f.shares_annotations_with(&g),
-                    "empty layer: the switch redrew the label raster"
-                );
-                let cached = r.export_rgba(&empty, SIZE, 1.).unwrap().rgba;
-                assert!(cached == before, "empty layer: the switch changed pixels");
-                assert!(
-                    cached == fresh(&empty, 1.),
-                    "empty layer: cached export differs from fresh"
-                );
-                r.end_frame();
-            }
             let mut routes = Vec::new();
             for scale in [1., 2.] {
                 let mut c: $chart = $build;
                 assert_eq!(c.active_layer(), LayerRef::Base);
                 let f = r.prepare(&c, SIZE, scale).unwrap();
                 let a = r.prepare_annotations(&c, SIZE, scale).unwrap();
-                // The decorations answer for the chart the frame was prepared
-                // from, while `c` is edited below.
-                let shown = c.clone();
+                let decorations = f.decorations();
                 let annotations = a.annotations();
                 let centre = |b: RectF| [b.x + b.width * 0.5, b.y + b.height * 0.5];
                 let items: Vec<(usize, [f32; 2])> = annotations
@@ -385,13 +466,17 @@ macro_rules! family_routing {
                     .map(|(id, e)| (e.index, on_item(annotations, &c.annotations, id)))
                     .collect();
                 assert_eq!(items.len(), c.annotations.items.len());
-                let title_id = f.id_of(&shown, &DecorationId::ChartTitle);
-                let title = centre(f.bounds(&shown, title_id).unwrap());
+                let (title_id, title) = decorations
+                    .entries()
+                    .find(|(_, e)| e.id == DecorationId::ChartTitle)
+                    .map(|(id, _)| (id, centre(decorations.bounds(id).unwrap())))
+                    .expect("title is registered");
                 assert!(
                     annotations.hit_test(title).is_none(),
                     "an item covers the title"
                 );
-                let route = |layer: LayerRef, p: [f32; 2]| f.route(&a, layer, &shown, p);
+                let route =
+                    |layer: LayerRef, p: [f32; 2]| a.hit_test_active_layer(layer, decorations, p);
 
                 // `Base` and an out-of-range overlay: items are not routed.
                 for layer in [LayerRef::Base, LayerRef::Overlay(3)] {
@@ -400,7 +485,10 @@ macro_rules! family_routing {
                             !matches!(route(layer, *p), Some(LayerHit::Annotation { .. })),
                             "scale {scale} {layer:?}: item {index} answered"
                         );
-                        assert_eq!(route(layer, *p), f.hit(&shown, *p).map(LayerHit::Element));
+                        assert_eq!(
+                            route(layer, *p),
+                            decorations.hit_test(*p).map(LayerHit::Element)
+                        );
                     }
                     assert_eq!(route(layer, title), Some(LayerHit::Element(title_id)));
                 }
@@ -464,7 +552,7 @@ macro_rules! family_routing {
                 let h = r.prepare_annotations(&hidden, SIZE, scale).unwrap();
                 for (_, p) in &items {
                     assert!(!matches!(
-                        f.route(&h, LayerRef::Annotations, &shown, *p),
+                        h.hit_test_active_layer(LayerRef::Annotations, decorations, *p),
                         Some(LayerHit::Annotation { .. })
                     ));
                 }
@@ -473,11 +561,11 @@ macro_rules! family_routing {
                 // handle drags through the map and keeps the anchor kinds.
                 let (index, id) = annotations
                     .entries()
-                    .find(|(id, _)| !annotations.selection_box(*id).unwrap().handles().is_empty())
+                    .find(|(id, _)| !annotations.selection_box(*id).unwrap().handles.is_empty())
                     .map(|(id, e)| (e.index, id))
                     .expect("an item with handles");
                 c.decorations.selected = Some(DecorationId::Annotation(index));
-                let handle_square = annotations.selection_box(id).unwrap().handles()[0];
+                let handle_square = annotations.selection_box(id).unwrap().handles[0];
                 let handle = annotations
                     .hit_resize_handle(id, centre(handle_square))
                     .expect("live handle");
@@ -517,6 +605,33 @@ macro_rules! family_routing {
 }
 
 family_routing!(
+    categorical_active_layer_routing,
+    CategoricalRenderer,
+    CategoricalChart,
+    annotated_categorical(),
+    |c| c.selected = Some(CategoryBarTarget::new("a", "s")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
+    boxplot_active_layer_routing,
+    BoxPlotRenderer,
+    BoxPlotChart,
+    annotated_boxplot(),
+    |c| c.selected = Some(BoxPlotTarget::new("a", "s")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
+    radar_active_layer_routing,
+    RadarRenderer,
+    RadarChart,
+    annotated_radar(),
+    |c| c.selected = Some(RadarTarget::vertex("s", "a")),
+    |c| c.selected.is_some()
+);
+
+family_routing!(
     radial_active_layer_routing,
     RadialRenderer,
     RadialChart,
@@ -524,6 +639,67 @@ family_routing!(
     |c| c.interaction.selected = Some(RadialTarget::main(0)),
     |c| c.interaction.selected.is_some()
 );
+
+// A span is composited below the bars: the bar keeps its colour inside the
+// span, the gap beside it shows the span's tint over the chart background,
+// and the opaque frame of a chart without a span draws exactly as before.
+#[test]
+fn categorical_spans_sit_below_the_bars() {
+    let _guard = LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let bar = Color::from_rgb8(60, 130, 210);
+    let mut c = CategoricalChart {
+        categories: vec![Category::new("a", "A"), Category::new("b", "B")],
+        series: vec![BarSeries::new("s", "S", vec![Some(80.), Some(80.)], bar)],
+        style: CategoryBarStyle {
+            material: CategoryBarMaterial::Flat,
+            ..Default::default()
+        },
+        legend: false,
+        ..Default::default()
+    };
+    let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
+    assert_eq!(
+        r.prepare(&c, SIZE, 1.).unwrap().background(),
+        FrameBackground::Opaque
+    );
+    c.annotations.items.push(span(AnnotationAxis::X, -0.5, 0.5));
+    let f = r.prepare(&c, SIZE, 1.).unwrap();
+    let a = r.prepare_annotations(&c, SIZE, 1.).unwrap();
+    assert!(a.draws_underlay());
+    let with = r.export_rgba(&c, SIZE, 1.).unwrap();
+    use ::renderer::annotation::AnnotationSpace;
+    let space = f.annotation_space();
+    let bar_x = space.value_to_px(AnnotationAxis::X, 0.).unwrap();
+    let bar_y = space.value_to_px(AnnotationAxis::Y, 40.).unwrap();
+    let gap_x = space.value_to_px(AnnotationAxis::X, 0.5).unwrap() - 2.;
+    let gap_y = space.value_to_px(AnnotationAxis::Y, 90.).unwrap();
+    let bar_rgb = [60, 130, 210, 255];
+    assert!(near(pixel(&plain, bar_x, bar_y), bar_rgb, 4));
+    assert!(
+        near(pixel(&with, bar_x, bar_y), bar_rgb, 4),
+        "span tinted the bar: {:?}",
+        pixel(&with, bar_x, bar_y)
+    );
+    assert_eq!(pixel(&plain, gap_x, gap_y), [255, 255, 255, 255]);
+    assert!(
+        near(pixel(&with, gap_x, gap_y), [255, 128, 128, 255], 3),
+        "{:?}",
+        pixel(&with, gap_x, gap_y)
+    );
+    // Opaque hosts that never asked for `HostClear` keep their frame; the
+    // export used a `HostClear` frame beside it and did not evict it.
+    assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
+    assert_eq!(f.background(), FrameBackground::Opaque);
+    r.set_background(FrameBackground::HostClear);
+    let host = r.prepare(&c, SIZE, 1.).unwrap();
+    assert_eq!(host.background(), FrameBackground::HostClear);
+    assert!(f.shares_annotations_with(&host));
+    assert!(r.export_rgba(&c, SIZE, 1.).unwrap().rgba == with.rgba);
+    r.end_frame();
+}
 
 // Radial charts have no value axes: data anchors are warnings, ratio
 // anchors draw, and the chart frame is untouched either way.
@@ -540,7 +716,6 @@ fn radial_data_anchors_are_warnings() {
         ],
         ..Default::default()
     };
-    c.format_labels();
     let plain = r.export_rgba(&c, SIZE, 1.).unwrap();
     let f = r.prepare(&c, SIZE, 1.).unwrap();
     c.annotations.items = vec![
@@ -573,7 +748,7 @@ fn radial_data_anchors_are_warnings() {
         ]
     );
     assert_eq!(a.annotations().entries().count(), 1);
-    assert!(a.draws_overlay());
+    assert!(!a.draws_underlay() && a.draws_overlay());
     assert!(Arc::ptr_eq(&f, &r.prepare(&c, SIZE, 1.).unwrap()));
     let with = r.export_rgba(&c, SIZE, 1.).unwrap();
     assert!(with.rgba != plain.rgba);
@@ -602,32 +777,28 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     let _guard = LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    // The radial chart has no value axes, so every item is ratio-anchored.
-    let mut r = RadialRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
-    let thick = ArrowStyle {
-        line: AnnotationLineStyle {
-            width: 12.,
-            ..Default::default()
-        },
+    let mut r = CategoricalRenderer::new(gpu(), wgpu::TextureFormat::Rgba8Unorm).unwrap();
+    let thick = AnnotationLineStyle {
+        width: 12.,
         ..Default::default()
     };
     let items = [
         (
-            "thick arrow",
-            Annotation::new(AnnotationKind::Arrow {
-                from: Anchor::Ratio { x: 0.1, y: 0.3 },
-                to: Anchor::Ratio { x: 0.9, y: 0.3 },
+            "thick line",
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::Y,
+                value: 15.,
                 style: thick,
-                text: Some(text("target")),
+                label: Some(text("target")),
             }),
         ),
         (
-            "thin arrow",
-            Annotation::new(AnnotationKind::Arrow {
-                from: Anchor::Ratio { x: 0.5, y: 0.1 },
-                to: Anchor::Ratio { x: 0.5, y: 0.9 },
+            "thin line",
+            Annotation::new(AnnotationKind::ReferenceLine {
+                axis: AnnotationAxis::X,
+                value: 1.,
                 style: Default::default(),
-                text: Some(text("mid")),
+                label: Some(text("mid")),
             }),
         ),
         (
@@ -644,15 +815,17 @@ fn annotation_hit_regions_follow_the_drawn_items() {
     // plus the label padding (2 px), plus a pixel of rounding.
     const SLACK: f32 = 6.0;
     for (name, item) in items {
-        let mut c = RadialChart {
-            slices: vec![
-                RadialSlice::new("High", 35., Color::from_rgb8(100, 145, 185)),
-                RadialSlice::new("Low", 65., Color::from_rgb8(175, 95, 140)),
-            ],
-            labels: RadialLabels::None,
+        let mut c = CategoricalChart {
+            categories: vec![Category::new("a", "A"), Category::new("b", "B")],
+            series: vec![BarSeries::new(
+                "s",
+                "S",
+                vec![Some(20.), Some(30.)],
+                Color::from_rgb8(60, 130, 210),
+            )],
+            legend: false,
             ..Default::default()
         };
-        c.format_labels();
         c.annotations.items = vec![item];
         for scale in [1., 2.] {
             let with = r.export_rgba(&c, SIZE, scale).unwrap();
@@ -673,7 +846,7 @@ fn annotation_hit_regions_follow_the_drawn_items() {
                     .max()
                     .unwrap()
             };
-            let selection = map.selection_box(id).unwrap().rect().expanded(1.0);
+            let selection = map.selection_box(id).unwrap().rect.expanded(1.0);
             let mut strong = 0;
             for y in 0..h {
                 for x in 0..w {

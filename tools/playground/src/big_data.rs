@@ -1,26 +1,177 @@
-//! The resident large-data bench: up to 100 million generated points, with
-//! upload and frame timings and a pan benchmark.
+//! Resident large-data bench: up to 100 million generated points drawn as a
+//! line, as markers or as both, with upload and frame timings.
 //!
-//! The scene itself (the generator, the columns, the series and the fitted
-//! chart) is the catalogue's `big_data` module, shared with the renderer's
-//! decoration oracle; this file is the bench around it.
+//! The data is resident: both columns live in the GPU column pool and every
+//! point is drawn on every frame. The generator writes each value straight
+//! into the pool's mapped staging range through `HiLoColumnSource`, so no
+//! dataset-sized CPU buffer exists at any point.
 
 use std::time::{Duration, Instant};
 
 use renderer::config::Config;
-use renderer::data_config::SeriesConfig;
-use renderer::{Chart, Renderer};
+use renderer::data::split_f64_to_f32_pair;
+use renderer::data_config::{DataRenderType, ScatterShape, SeriesConfig};
+use renderer::{
+    Chart, Color, ColumnPairWriter, ColumnUploadStats, FiggyError, HiLoColumnSource, Renderer,
+};
 
-use crate::scenes;
-pub use crate::scenes::big_data::*;
+use crate::scenes::{self, CartesianScene};
 
 pub const MIN_POINTS: usize = 100_000;
 pub const MAX_POINTS: usize = 100_000_000;
 pub const START_POINTS: usize = 5_000_000;
+const X_ID: &str = "big_x";
+const Y_ID: &str = "big_y";
+/// The X column spans `0..=X_SPAN`; hi/lo pairs keep 100 million samples
+/// distinct where a single f32 could not.
+const X_SPAN: f64 = 1000.0;
 /// Frames of one pan benchmark; the view sweeps one full sine period.
 pub const BENCH_FRAMES: usize = 120;
 /// Pan amplitude of the benchmark, as a fraction of the visible X width.
 const BENCH_PAN: f64 = 0.25;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Line,
+    Scatter,
+    Both,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Line, Mode::Scatter, Mode::Both];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Mode::Line => "Line",
+            Mode::Scatter => "Scatter",
+            Mode::Both => "Line + scatter",
+        }
+    }
+}
+
+/// One generated column, evaluated per index while it is written.
+struct Generated {
+    len: usize,
+    y: bool,
+    min: f64,
+    max: f64,
+}
+
+impl Generated {
+    fn x(len: usize) -> Self {
+        Self {
+            len,
+            y: false,
+            min: 0.0,
+            max: X_SPAN,
+        }
+    }
+
+    /// The Y bounds are the exact extremes of the generated values: one pass
+    /// that evaluates the signal and keeps two scalars.
+    fn y(len: usize) -> Self {
+        let (min, max) = (0..len).fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), i| {
+            let v = y_at(len, i);
+            (lo.min(v), hi.max(v))
+        });
+        Self {
+            len,
+            y: true,
+            min,
+            max,
+        }
+    }
+
+    fn value(&self, i: usize) -> f64 {
+        if self.y {
+            y_at(self.len, i)
+        } else {
+            x_at(self.len, i)
+        }
+    }
+}
+
+fn x_at(len: usize, i: usize) -> f64 {
+    X_SPAN * i as f64 / (len.max(2) - 1) as f64
+}
+
+/// Two waves and per-sample noise: a line with structure at every zoom level
+/// and a scatter band with visible density.
+fn y_at(len: usize, i: usize) -> f64 {
+    let x = x_at(len, i);
+    30.0 * (x / 40.0).sin() + 8.0 * (0.9 * x).sin() + 4.0 * scenes::noise(7, i)
+}
+
+impl HiLoColumnSource for Generated {
+    fn len(&self) -> usize {
+        self.len
+    }
+    fn min(&self) -> f64 {
+        self.min
+    }
+    fn max(&self) -> f64 {
+        self.max
+    }
+
+    fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
+        for (i, pair) in dst.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+            let (hi, lo) = split_f64_to_f32_pair(self.value(i));
+            pair[..4].copy_from_slice(&hi.to_le_bytes());
+            pair[4..].copy_from_slice(&lo.to_le_bytes());
+        }
+    }
+
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        let mut min_positive = f64::INFINITY;
+        for i in 0..self.len {
+            let (hi, lo) = split_f64_to_f32_pair(self.value(i));
+            dst.write_pair(i, hi, lo);
+            let v = f64::from(hi) + f64::from(lo);
+            if v > 0.0 && v.is_finite() {
+                min_positive = min_positive.min(v);
+            }
+        }
+        ColumnUploadStats {
+            min_positive: min_positive.is_finite().then_some(min_positive),
+        }
+    }
+}
+
+/// Upload `points` samples of both columns, replacing any earlier ones, and
+/// wait until the GPU holds them. Removing a column also removes the series
+/// that read it, so callers set the series again afterwards.
+fn upload(r: &mut Renderer, points: usize) -> Result<(), FiggyError> {
+    r.remove_column(X_ID)?;
+    r.remove_column(Y_ID)?;
+    r.add_hilo_column(X_ID, &Generated::x(points))?;
+    r.add_hilo_column(Y_ID, &Generated::y(points))?;
+    // A failed wait only makes the upload time read short.
+    if let Err(e) = r.device().poll(wgpu::PollType::Wait {
+        submission_index: None,
+        timeout: None,
+    }) {
+        eprintln!("[big data] poll: {e}");
+    }
+    Ok(())
+}
+
+pub fn series(mode: Mode) -> Vec<SeriesConfig> {
+    let line = scenes::line_style(Color::from_rgb8(31, 119, 180), 1.0);
+    let scatter = scenes::scatter_style(Color::from_rgb8(214, 39, 40), ScatterShape::Circle, 2.0);
+    let render_type = match mode {
+        Mode::Line => DataRenderType::Line { line },
+        Mode::Scatter => DataRenderType::Scatter { scatter },
+        Mode::Both => DataRenderType::ScatterLine { scatter, line },
+    };
+    vec![scenes::series("samples", X_ID, Y_ID, render_type)]
+}
+
+fn title(points: usize) -> String {
+    format!("Resident data, {} points", group_digits(points))
+}
 
 /// Frames per second for a frame time in milliseconds, with enough digits
 /// to stay readable below one frame per second.
@@ -30,6 +181,51 @@ pub fn fps(ms: f64) -> String {
         format!("{fps:.0} fps")
     } else {
         format!("{fps:.2} fps")
+    }
+}
+
+/// `5000000` as `5,000,000`.
+pub fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The chart for `points` samples, fitted to the generated columns.
+fn chart_config(
+    r: &Renderer,
+    points: usize,
+    series: &[SeriesConfig],
+) -> Result<Config, FiggyError> {
+    let mut chart = Chart::new(scenes::base_config(&title(points), "x", "value"));
+    chart.auto_fit_x(r.pool(), X_ID, 0.0)?;
+    chart.auto_fit_y(r.pool(), Y_ID, 0.05)?;
+    Ok(scenes::with_legend(chart.config().clone(), series))
+}
+
+/// The scene at its start size; the bench state keeps the size afterwards.
+pub fn build(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    upload(r, START_POINTS)?;
+    let series = series(Mode::Line);
+    Ok(CartesianScene {
+        config: chart_config(r, START_POINTS, &series)?,
+        series,
+    })
+}
+
+/// Release the columns when the scene goes away, so other scenes get the
+/// pool space back.
+pub fn release(r: &mut Renderer) {
+    for id in [X_ID, Y_ID] {
+        if let Err(e) = r.remove_column(id) {
+            eprintln!("[big data] remove {id}: {e}");
+        }
     }
 }
 

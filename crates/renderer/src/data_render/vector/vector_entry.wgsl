@@ -68,4 +68,3 @@ fn fs_main(in: VectorVsOut) -> @location(0) vec4<f32> {
     let coverage = arrow_coverage(in.px, placed, vector_params.width_px, vector_params.aa_px);
     return in.color * coverage;
 }
-

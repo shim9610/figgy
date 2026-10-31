@@ -1,319 +1,225 @@
 # Radar charts
 
-A radar (spider) chart is a polar chart. Its categories are the angle axis:
-`bottom_x.categories` (`AxisOptions::categories`) on a `Config` with
-`polar: Some(..)`, so category `i` has a spoke at `i / n` of the turn. Its
-polygons are `DataRenderType::Radar` series, one per compared series, and the
-Cartesian `Renderer` draws them through the polar line, area and scatter
-paths: a closed outline, a fill to the centre and a marker at every vertex.
-The values are the host's and enter through `ColumnSource`, one column per
-series; streamed sources are rejected. `RadarChart` is the document format of
-the releases up to 0.12; `Config::from_radar` reads it as such a chart
-([Opening a legacy document](#opening-a-legacy-document)). It is kept as a
-deprecated document reader for this release and is removed in the next
-milestone.
+`RadarRenderer` draws radar (spider) charts: a few series compared over a
+fixed set of categories, one spoke per category, each series a closed polygon
+over one shared value axis. Like `RadialRenderer`, `CategoricalRenderer` and
+`BoxPlotRenderer`, it draws a small chart model with its own renderer: the
+whole chart is one `RadarChart` value, with no `ColumnSource`, and
+`RadarRenderer::prepare` draws it into an immutable frame. It does not use the
+Cartesian `Renderer`, its column pool, auto-fit or streamed sources.
 
-## Series and uploads
-
-A `Radar` series reads two columns, each with one value per category:
-
-| Field | Holds |
-|---|---|
-| `x_column` | the category index column, `0, 1, …, n - 1` |
-| `y_column` | the value of each category on the radius axis (`left_y`); NaN for a missing value |
+## Input and first render
 
 ```rust,no_run
-use renderer::config::Category;
-use renderer::polar::{GridShape, PolarOptions};
-use renderer::{
-    Chart, Color, Column, DataRenderType, LayerRef, RadarSeriesStyle, Renderer, SeriesConfig,
-};
-/// A host column with its range (NaN is a missing value).
-fn column(data: Vec<f64>) -> Column<f64> {
-    let finite = data.iter().copied().filter(|v| v.is_finite());
-    let min = finite.clone().fold(f64::INFINITY, f64::min);
-    let max = finite.fold(f64::NEG_INFINITY, f64::max);
-    Column { data, min, max }
-}
-# fn draw(r: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
-let mut config = renderer::default::default_config();
-// Five spokes, the first one up and the others clockwise, joined by
-// polygon rings.
-config.bottom_x.categories = Some(
-    ["Speed", "Safety", "Size", "Docs", "Tests"]
+use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
+use renderer::{Category, Color, RendererDevice, encode_png};
+
+fn draw(device: RendererDevice, format: wgpu::TextureFormat) -> Result<(), Box<dyn std::error::Error>> {
+    let mut chart = RadarChart::default();
+    chart.title = "Build quality".into();
+    chart.categories = ["Speed", "Safety", "Size", "Docs", "Tests"]
         .iter()
         .map(|c| Category::new(c.to_lowercase(), *c))
-        .collect(),
-);
-config.polar = Some(PolarOptions {
-    zero_angle_degrees: 90.0,
-    clockwise: true,
-    grid_shape: Some(GridShape::Polygon),
-    ..PolarOptions::default()
-});
-r.add_column("categories", &column(vec![0.0, 1.0, 2.0, 3.0, 4.0]))?;
-r.add_column("release1", &column(vec![6.0, 8.0, 4.0, 5.0, 7.0]))?;
-let series = vec![SeriesConfig {
-    series_id: "release1".into(),
-    source_id: None,
-    label: None,
-    x_column: "categories".into(),
-    y_column: "release1".into(),
-    z_column: None,
-    render_type: DataRenderType::Radar {
-        color: Color::from_rgb8(60, 110, 200),
-        style: RadarSeriesStyle::default(),
-        labels: Default::default(),
-    },
-}];
-// The radius axis fits the values' statistics; the angle axis keeps its
-// categories.
-let mut chart = Chart::new(config);
-chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-let png = r.export_panel_png_bytes(&chart, &series, 2.0)?;
-# let _ = png;
-# Ok(())
-# }
+        .collect();
+    chart.series = vec![
+        RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
+        RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
+    ];
+    let mut renderer = RadarRenderer::new(device, format)?;
+
+    // On screen: draw the frame in the host's render pass, on a single-sample
+    // attachment of `frame.size()` (720 x 520 at scale 1.0) in `format`.
+    let frame = renderer.prepare(&chart, (720, 520), 1.0)?;
+    // frame.draw(&mut pass);
+    let _ = frame;
+
+    // Headless: render, read back straight-alpha RGBA8 and encode a PNG.
+    let image = renderer.export_rgba(&chart, (720, 520), 1.0)?;
+    std::fs::write("radar.png", encode_png(&image)?)?;
+
+    // After every command buffer that drew a frame is submitted or discarded.
+    renderer.end_frame();
+    Ok(())
+}
 ```
 
-A radar series is held to these rules (`Config::validate_radar` and
-`data_config::validate_radar_series`, checked when the series are set):
+`RadarRenderer::new` accepts an RGBA8 or BGRA8 target format, linear or sRGB.
+`prepare(&chart, size, scale)` takes a logical size of at least 240 x 240 and a
+scale from 0.5 to 4; the frame is `size` times `scale` physical pixels and must
+fit the device's texture limit. A format, size or scale outside these limits,
+or a chart that fails `RadarChart::validate`, returns `RadarError::Invalid`.
 
-- It is drawn on a polar chart, the parent's or a subplot's own, whose angle
-  axis is categorical (any number of categories, each with its value
-  label), with chord segments
-  (`PolarInterpolation::Chord`): a polygon's edges are straight.
-- Any number of radar series share one chart (#107).
-- Its colour has channels in `0..=1`, its style passes
-  `RadarSeriesStyle::validate`, and `labels.text` is empty or one one-line
-  string of at most 160 characters per category.
-- Both columns hold exactly one value per category. The lengths are data, so
-  the renderer checks them against the pool when it prepares the polygon.
-- It draws in the precise style only: `draw_style_supports` answers `false`
-  for a stylized draw style, which draws no radar series.
-
-## The polar chart
-
-The angle axis of a radar chart is categorical: category `i` sits at `i / n`
-of the full turn from `PolarOptions::zero_angle_degrees`, growing in the
-`clockwise` direction, or at `i / n` of the `sector` from its start
-(`PolarOptions::angle_map`). Its spokes are the angle axis' major grid at the
-categories (`grid.show_major_x`), its labels are `categories[i].label` placed
-outside the ring along each spoke, thinned by the stride rule of the other
-axes when they crowd, and it has no minor ticks. The rings are the radius
-axis' major ticks (`grid.show_major_y`), and the outer ring is the angle axis
-line. `PolarOptions::grid_shape` draws them as circles (`None` or
-`Circle`, the polar look) or as polygons joined at the category angles
-(`Polygon`, the radar look; it needs a categorical angle axis). The radius
-axis stays numeric: the ray at `radial_label_angle_degrees` carries its
-labels.
-
-The value range is the radius axis' (`left_y.min` to `left_y.max`), shared by
-every spoke; per-spoke scaling is the host's job. A value below the range
-start has no place on the plot and breaks the polygon there, as it breaks a
-polar line; a value past the end is clipped at the outer ring.
-
-## Look
-
-`RadarSeriesStyle` sets the look of one series. Every field is optional and
-an unset field takes its default:
-
-| Field | Default | Meaning |
-|---|---|---|
-| `line_width_px` | 2 | outline width in logical pixels, `0..=12`; zero draws no outline |
-| `fill` | the colour at `fill_opacity` | the fill colour; a transparent colour draws the outline only |
-| `fill_opacity` | 0.25 | the alpha factor of the series colour when `fill` is unset |
-| `marker` | `Circle` | `Circle`, `Square` or `None` at every vertex |
-| `marker_size_px` | 7 | the circle's diameter or the square's side, `1..=24` |
-
-The outline is the series colour, a solid line through the vertices in
-category order with one more segment from the last vertex back to the first.
-The fill reaches from the polygon to the centre, or to the inner ring with an
-`inner_radius_fraction`. In a sector the closing trapezoid is not filled (it
-would cover the others): the fill is the region between the open outline and
-the inner ring there, while the outline still closes. A NaN vertex breaks the
-outline and the fill on both of its sides. Every series' fill is drawn before
-any series' outline and markers, in series order.
+- `categories[i]` owns spoke `i`; `series.values[i]` is the value on it, so
+  every series has exactly one value per category. A chart has 3 to 64
+  categories and 1 to 16 series. The spokes start at
+  `style.start_angle_degrees` (-90, straight up) and run clockwise while
+  `style.clockwise` is `true` (the default).
+- The value axis is shared by every spoke. `value_range: None` fits the
+  supplied values on a nice range that starts at zero (or below the smallest
+  negative value) and ends on a ring; `Some([min, max])` fixes it. Values below
+  the start sit at the centre, values above the end on the outer ring.
+  `ring_spacing` chooses the ring interval; `None` picks a nice spacing for
+  about five rings. Per-spoke scaling is the host's job: write normalized
+  values and label the spokes accordingly.
+- A non-finite value breaks the outline at that spoke, drops the series' fill
+  and draws no marker there.
+- `style.grid_shape` draws the rings as polygons through the spokes
+  (`Polygon`, the spider web) or as circles. `grid: false` hides rings and
+  spokes.
+- Each series draws a fill (`RadarSeriesStyle::fill`, or the series colour at
+  `style.fill_opacity`), an outline of `line_width_px` and a marker at every
+  vertex (`Circle`, `Square` or `None`). Fills draw first for every series,
+  then outlines, then markers, so a later series' fill never covers an earlier
+  outline.
+- `labels` is `RadarLabels::None` by default, with no data labels. `Values`
+  writes the value at every vertex and `Emphasized` only at the vertices of the
+  hovered or selected series, formatted with `label_decimals` and
+  `value_suffix`.
 
 ## Picking and selection
 
-The vertices, the outline (its closing segment included) and the fill pick
-through the shared polar picks of lines, fills and markers: `pick_data`
-answers `PickedData::Point { point_index, .. }` with the category index of the
-vertex under the pointer, the nearer endpoint of the edge or the fill under
-it. A marker wins a tie over the outline, and the outline over the fill. A
-selected vertex (`Config.picked_data` with a `PickedDataRef::Point`) takes the
-chart's picked ring, as a polar line or marker does. In the browser,
-`FiggyChart.step_selection(dx, dy)` steps a selected vertex along the
-categories with `dx` and across the radar series with `dy`, and
-`selection_details` reports the category of a selected vertex with its value.
+`RadarFrame::hit_test(position)` takes chart-local logical pixels and returns a
+`RadarPick { target, part }`: a `Marker` hit names the vertex
+(`RadarTarget { series_id, category_id: Some(..) }`), an `Outline` or `Fill`
+hit names the series (`category_id: None`). Markers are tested first, then
+outlines, then interiors, each in reverse draw order. Store the target in
+`hovered` / `selected`: the series brightens by `style.emphasis_brightness`
+and a picked vertex grows its marker. `RadarChart::value(&target)` returns the
+value at a vertex target (`None` for a series target).
 
-## Value labels
-
-`labels: RadarSeriesLabels` holds the placement (`RadarLabels::None`,
-`Values` or `Emphasized`), the decimals, the suffix and `text`, one drawn
-string per category. The renderer never formats a value: `text` is written
-at edit time by `data_config::format_radar_labels` or by a document reader.
-The renderer draws each string outside its vertex along the spoke, `9` px
-from it, as the former radar chart placed it, in the radius axis' tick label
-face: always with `Values`, and with `Emphasized` only while the series has a
-selected vertex or label. An empty string draws nothing, and labels never
-displace each other. A label that would cross the data area's edge outward
-goes inward along its spoke instead. A label is a typed pick target
-(`PickedData::ValueLabel`), its selection box is its frame, and a drag writes
-`labels.offsets` (logical pixels, one per category); see Value labels in the
-[interaction guide](INTERACTION.md).
+In the browser, `FiggyBoundedChart` loads the same model as a `"radar"`
+document. Its `step_selection(backwards)` walks the series polygons in order,
+or, while a vertex is selected, that series' finite vertices in category order
+(see the [bounded chart host](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
 ## Decorations and annotations
 
-The title, the legend, the category labels (the angle axis' tick labels,
-`Element::AxisLabel(Side::Bottom)`, moved along their spokes), the ring
-labels and the ray (`Element::AxisLabel(Side::Left)` and
-`Element::Axis(Side::Left)`, which turns around the centre) and the data area
-are the polar chart's decorations, with its hit regions, drags and resize
-handles; the
-[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)
-has the rules. The annotation layer draws ratio anchors relative to the data
-area; a data anchor has no place on polar axes and is skipped with a render
-warning.
+The title, the value labels along the first spoke
+(`DecorationId::AxisLabel(Side::Left)`, moved as one group), the category
+labels at the spoke ends (`DecorationId::SpokeLabel { category_id }`), the
+legend and the data labels are measured decorations. `frame.decorations()`
+follows the `HitMap` / `Draggable` contract of the pie, bar and box charts:
+`hit_test(position)` finds an element, `drag_by(&mut chart.decorations, hit,
+dx, dy)` moves it, `chart.decorations.reset(&id)` restores its automatic
+place, and the next `prepare` draws the result. The data area
+(`DecorationId::DataArea`) moves and resizes the whole plot through
+`hit_resize_handle` and `resize_by`; the outer ring is the largest circle that
+leaves room for the category labels inside it. Coordinates, selection and the
+rules per element are in the
+[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
 
-## Opening a legacy document
+`renderer.prepare_annotations(&chart, size, scale)` returns the annotation
+layer (`BoundedAnnotationFrame`) for the frame `prepare` returns with the same
+arguments. Draw `draw_underlay`, then `frame.draw`, then `draw_overlay` into
+the same attachment; `annotations()` is the layer's hit map. When
+`draws_underlay()` is `true`, call
+`renderer.set_background(FrameBackground::HostClear)` before `prepare` and
+clear the pass with `chart.background`, or the frame paints its background
+over the underlay. Text boxes and arrows use ratio anchors over the square
+around the outer ring. A data anchor, a reference line and a span have no
+value axis to land on; `render_warnings()` reports them as
+`RenderWarning::AnnotationSkipped` with `AnnotationSkip::NoValueAxis`. The full contract is in the
+[annotation layer guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer).
 
-```rust,no_run
-# #![allow(deprecated)]
-use renderer::radar::RadarChart;
-use renderer::{Chart, LayerRef, Renderer, config::Config};
-# fn open(r: &mut Renderer, document: &RadarChart) -> Result<(), Box<dyn std::error::Error>> {
-document.validate()?;
-let (config, series, uploads) = Config::from_radar(document);
-for upload in &uploads {
-    // The values upload straight from the document, through a borrowed
-    // adapter.
-    r.add_column(upload.column.clone(), &upload.values)?;
-}
-let mut chart = Chart::new(config);
-if document.value_range.is_none() {
-    chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.0)?;
-}
-# let _ = chart;
-# Ok(())
-# }
-```
+## Caching and export
 
-`Config::from_radar(&RadarChart)` returns the polar `Config`, one `Radar`
-series per document series in document order and the uploads: the category
-indices (`radar.positions`) first, then one value column per series
-(`radar.values.<series id>`). The field map:
+`prepare` reuses its frame while every field the pixels depend on is unchanged
+(`active_layer` and the annotation layer are not among them), so model edits
+need no manual cache invalidation. It reuses the label raster across hover,
+selection, background and series-style edits; with `labels: Emphasized`, a
+hover or selection change redraws the labels.
 
-- `categories` are the angle axis' categories; `style.start_angle_degrees`
-  (screen degrees with y down) is `zero_angle_degrees` (with y up, so
-  negated) and the ring labels' ray; `style.clockwise` is `clockwise`;
-  `style.grid_shape` is the polar `grid_shape`.
-- `value_range` is the radius axis range with `ring_spacing` as its spacing
-  (nice spacing without one). Without a `value_range` the range is the
-  host's to fit, as the former chart fitted the values; the browser wrapper
-  and the gallery fit it from zero when no value is negative.
-- `grid` shows the rings (in `style.ring_color`, the outer ring too) and the
-  spokes (in `style.spoke_color`).
-- Each series takes its colour and its style with every unset field read
-  from the chart style (`RadarSeriesStyle::resolved_from`); the chart's
-  `labels`, `label_decimals` and `value_suffix` go to every series, with the
-  text `format_radar_labels` writes from the values.
-- `font_family`, `font_size` and `text_color` are the category and ring
-  labels and the legend; `legend` is the legend's visibility with one entry
-  per series; the resolved title is `chart_title`.
-- A selected vertex is the typed selection; the offsets of the title, the
-  legend and the ring labels are the matching offsets; `active_layer` and
-  `annotations` carry over.
-- Not carried: `hovered` (transient), a selected whole series (a selection
-  names a vertex), `style.emphasis_brightness` (the former renderer
-  brightened the hovered or selected series; a picked vertex takes the
-  picked ring instead), `background` (the host's clear colour), an explicit
-  `decorations.data_area`, the spoke label offsets and the decoration
-  selection. The data label offsets become the series' `labels.offsets`.
+After submitting or discarding every command buffer that drew a frame, old
+snapshots included, call `renderer.end_frame()` so the GPU memory of replaced
+frames is released when the queue completes; native hosts also poll the
+device. The renderer has its own 256 MiB budget, separate from the Cartesian
+renderer's (`set_memory_budget`, `gpu_memory_usage`). Memory still awaiting
+`end_frame` counts against it, and `prepare` returns `RadarError::Budget`
+instead of exceeding it. `clear_cache` drops the renderer's references to its
+cached frames; frames the host holds stay valid.
 
-`FiggyChart.set_radar_document(json)` opens a document in the browser;
-`FiggyBoundedChart`'s `"radar"` family is an error naming it for one release.
+`export_rgba_async` (and its blocking native form `export_rgba`) renders the
+chart with its annotation layer and current hover and selection through
+`prepare`, so the same size and scale limits apply, and reads back
+straight-alpha RGBA8; `renderer::encode_png` encodes it.
 
 ## Examples and tests
 
 ```bash
 cargo run --locked -p figgy-renderer --example radar_gallery -- target/radar-gallery
-cargo test --locked -p figgy-renderer --features serde --test radar_series_render -- --test-threads=1
+cargo run --locked -p figgy-renderer --features egui_demo --example radar_editor
+cargo test --locked -p figgy-renderer --test radar_render
 ```
 
 ## 한국어 사용법
 
-레이더(거미줄) 차트는 극좌표 차트다. 범주가 각도 축이 되어, `polar: Some(..)`인 `Config`의
-`bottom_x.categories`(`AxisOptions::categories`)에 범주를 넣으면 범주 `i`의 스포크가 한 바퀴의
-`i / n` 위치에 놓인다. 비교할 시리즈마다 `DataRenderType::Radar` 시리즈를 하나씩 두며, 직교 차트
-`Renderer`가 극좌표 선·영역·산점도 경로로 닫힌 외곽선, 중심까지의 채움, 꼭짓점 마커를 그린다.
-값은 호스트가 시리즈마다 열 하나로 `ColumnSource`를 거쳐 올린다. 스트리밍 소스는 거부한다.
-0.12까지의 문서 형식인 `RadarChart`는 `Config::from_radar`로 이 차트로 읽는다.
-`RadarChart`는 이번 릴리스에서 문서 리더로만 남아 사용 중단(deprecated)되며, 다음 마일스톤에서 제거된다.
+레이더(거미줄) 차트는 시리즈 몇 개를 정해진 범주별로 비교한다. `categories[i]`가 스포크 `i`를
+맡고 각 시리즈의 `values[i]`가 그 스포크의 값이므로, 시리즈마다 범주 수만큼 값이 있어야 한다.
+범주는 3~64개, 시리즈는 1~16개다. 스포크는 `style.start_angle_degrees`(-90, 위쪽)에서 시작하며
+`style.clockwise`가 `true`(기본값)이면 시계 방향으로 돈다.
 
-`Radar` 시리즈의 `x_column`은 범주 번호 열(`0, 1, …, n - 1`), `y_column`은 범주별 반지름 축
-(`left_y`) 값이며 빠진 값은 NaN으로 둔다. 두 열 모두 범주 수만큼 값이 있어야 하고, 렌더러가
-준비 단계에서 풀의 길이로 확인한다. 레이더 시리즈는 각도 축이 범주형(범주 수 상한 없음)이고 보간이
-`PolarInterpolation::Chord`인 극좌표 차트(부모 차트나 서브플롯 자신의 차트)에서만 그리며, 한
-차트에 둘 수 있는 시리즈 수에는 상한이 없다(#107). 정밀(precise) 스타일에서만 그리고, 스타일 모드에서는
-`draw_style_supports`가 `false`를 돌려준다.
+`RadarRenderer::new`는 RGBA8·BGRA8 포맷(선형 또는 sRGB)만 받는다. `prepare(&chart, size, scale)`의
+논리 크기는 240×240 이상, 배율은 0.5~4다. 프레임의 실제 크기는 `size`에 `scale`을 곱한 값이며
+장치의 텍스처 한도 안에 들어야 한다. 포맷·크기·배율이 이 범위를 벗어나거나 차트가
+`RadarChart::validate`를 통과하지 못하면 `RadarError::Invalid`를 돌려준다. 화면에서는 `frame.size()`
+크기에 같은 포맷, sample count 1인 타깃의 render pass에서 `frame.draw(&mut pass)`를 호출한다.
 
-범주 `i`는 `PolarOptions::zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴의 `i / n`, 또는
-`sector`가 있으면 섹터 시작에서 섹터의 `i / n`에 놓인다(`PolarOptions::angle_map`). 스포크는
-범주 위치의 각도 축 주 격자(`grid.show_major_x`), 라벨은 스포크 끝 바깥의
-`categories[i].label`이며 보조 눈금은 없다. 고리는 반지름 축 주 눈금(`grid.show_major_y`),
-바깥 고리는 각도 축 선이다. `PolarOptions::grid_shape`가 `None`이나 `Circle`이면 고리를 원으로,
-`Polygon`이면 범주 각도에서 꺾이는 다각형으로 그린다(`Polygon`은 범주형 각도 축이 있어야 한다).
-반지름 축은 숫자 축으로 남아 `radial_label_angle_degrees` 방향의 선에 라벨을 단다. 값 범위는
-반지름 축 범위이며 모든 스포크가 공유한다. 스포크별 정규화는 호스트가 맡는다. 범위 시작보다
-작은 값은 다각형을 그 자리에서 끊고, 끝보다 큰 값은 바깥 고리에서 잘린다.
+값 축은 모든 스포크가 공유한다. `value_range: None`이면 보기 좋은 고리 간격을 골라, 0에서 시작해
+데이터 최댓값 이상인 첫 고리에서 끝나는 범위를 쓴다. 음수 값이 있으면 가장 작은 값 이하의 고리에서
+시작한다. `Some([min, max])`는 범위를 고정하고, `ring_spacing`은 고리 간격을 정한다. 범위 아래 값은
+중심에, 위 값은 바깥 고리에 놓인다. 스포크별 정규화는 호스트가 미리 계산해 값으로 넣고 스포크
+라벨도 그에 맞춘다. 유한하지 않은 값은 그 스포크에서 외곽선을 끊고 채움과 마커를 생략한다.
 
-`RadarSeriesStyle`의 필드는 모두 선택이며 비우면 기본값을 쓴다. 외곽선 굵기
-`line_width_px`(2, 0이면 외곽선 없음), 채움 색 `fill`(없으면 시리즈 색에 `fill_opacity`를 곱한
-알파, 투명색이면 외곽선만), `fill_opacity`(0.25), 마커 `marker`(`Circle`, `Square`, `None`),
-마커 지름·변 길이 `marker_size_px`(7)가 있다. 외곽선은 범주 순서로 꼭짓점을
-잇고 마지막 꼭짓점에서 첫 꼭짓점으로 한 구간을 더 그린다. 채움은 다각형에서 중심까지,
-`inner_radius_fraction`이 있으면 안쪽 고리까지 칠한다. 섹터에서는 닫는 구간의 사다리꼴을
-칠하지 않으므로, 외곽선은 닫히지만 채움은 열린 외곽선과 안쪽 고리 사이 영역이다. NaN 꼭짓점은
-양쪽의 외곽선과 채움을 끊는다.
+`style.grid_shape`는 고리를 스포크를 지나는 다각형(`Polygon`) 또는 원(`Circle`)으로
+그린다. `grid: false`는 고리와 스포크를 숨긴다. 시리즈마다 채움(`RadarSeriesStyle::fill`
+또는 시리즈 색을 `style.fill_opacity`로), `line_width_px`의 외곽선, 꼭짓점 마커(`Circle`,
+`Square`, `None`)를 그린다. 모든 시리즈의 채움을 먼저, 그다음 외곽선, 마지막에 마커를
+그리므로 나중 시리즈의 채움이 앞 시리즈의 외곽선을 가리지 않는다. `labels`가 기본값 `None`이면
+데이터 라벨을 그리지 않고, `Values`이면 모든 꼭짓점에, `Emphasized`이면 호버·선택한 시리즈의
+꼭짓점에만 값을 적는다. 라벨은 `label_decimals`와 `value_suffix`를 따른다.
 
-꼭짓점, 외곽선(닫는 구간 포함), 채움은 극좌표 선·채움·마커의 공통 픽으로 고른다. `pick_data`는
-포인터 아래 꼭짓점, 또는 아래 변이나 채움에서 가까운 끝점의 범주 번호를
-`PickedData::Point { point_index, .. }`로 돌려준다. 겹치면 마커가 외곽선을, 외곽선이 채움을
-이긴다. `Config.picked_data`의 `PickedDataRef::Point`로 선택한 꼭짓점에는 극좌표 선이나 마커처럼
-차트의 선택 고리가 그려진다. 브라우저의 `FiggyChart.step_selection(dx, dy)`는 `dx`로 범주를
-따라, `dy`로 레이더 시리즈를 건너 꼭짓점을 옮기고, `selection_details`는 선택한 꼭짓점의 범주와
-값을 알려 준다.
+`RadarFrame::hit_test`는 차트 논리 픽셀을 받아 `RadarPick { target, part }`를 돌려준다.
+마커를 맞히면 꼭짓점(`RadarTarget { series_id, category_id: Some(..) }`), 외곽선이나 채움을
+맞히면 시리즈(`category_id: None`)다. 마커, 외곽선, 내부 순서로 각각 그린 순서의 역순으로
+판정한다. 대상을 `hovered` / `selected`에 넣으면 해당 시리즈가 `style.emphasis_brightness`만큼
+밝아지고 선택한 꼭짓점의 마커가 커진다. `RadarChart::value(&target)`는 꼭짓점 대상의 값을
+돌려준다(시리즈 대상이면 `None`). 브라우저에서는 `FiggyBoundedChart`가 같은 모델을 `"radar"`
+문서로 받는다. `step_selection(backwards)`는 시리즈 다각형을 차례로 고르고, 꼭짓점을 선택한
+동안에는 그 시리즈의 유한한 꼭짓점을 범주 순서로 고른다
+([bounded chart host](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host) 참고).
 
-`labels: RadarSeriesLabels`는 위치(`RadarLabels::None`, `Values`, `Emphasized`), 소수 자릿수,
-접미사, 범주마다 하나인 문자열 `text`를 담는다. 렌더러는 값을 포맷하지 않으며, `text`는 편집할
-때 `data_config::format_radar_labels`나 문서 판독기가 적는다. 렌더러는 각 문자열을 꼭짓점에서
-바큇살 바깥쪽으로 9px 떨어진 곳에 반지름 축 눈금 라벨 글꼴로 그린다. `Values`는 항상,
-`Emphasized`는 시리즈에 선택한 꼭짓점이나 라벨이 있을 때만 그린다. 빈 문자열은 그리지 않고
-라벨끼리 밀어내지 않는다. 바깥쪽 라벨이 데이터 영역 가장자리를 넘으면 바큇살 안쪽에 그린다. 라벨은 `PickedData::ValueLabel`로 고를 수 있고, 선택 상자는 라벨의
-테두리이며, 끌면 `labels.offsets`(범주마다 하나, 논리 픽셀)에 기록한다.
+`prepare`는 픽셀에 영향을 주는 모든 필드가 같을 때 프레임을 재사용한다. `active_layer`와 주석 층은
+이 비교에 들어가지 않는다. 호버·선택·배경·시리즈 스타일만 바꾸면 라벨 래스터도 재사용하지만,
+`labels: Emphasized`이면 호버나 선택이 바뀔 때 라벨을 다시 그린다. 이전 프레임을 포함해 프레임을
+그린 command buffer를 모두 제출하거나 버린 뒤 `renderer.end_frame()`을 호출해야 큐 작업이 끝날 때
+교체된 프레임의 GPU 메모리가 해제된다. 네이티브 호스트는 장치도 poll한다. 렌더러는 직교 차트
+렌더러와 별개인 256 MiB 예산을 쓰며(`set_memory_budget`, `gpu_memory_usage`), `end_frame`을 기다리는
+메모리도 예산에 포함된다. 예산을 넘게 되면 `prepare`는 `RadarError::Budget`을 돌려준다.
+`clear_cache`는 렌더러가 캐시한 프레임 참조만 놓으며, 호스트가 가진 프레임은 계속 쓸 수 있다.
 
-제목, 범례, 범주 라벨(각도 축 눈금 라벨, 스포크를 따라 이동), 고리 라벨과 반지름 선(중심을
-돌며 회전), 그리기 영역은 극좌표 차트의 장식 요소이며 선택·이동·크기 조절 규칙은
-[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를
-따른다. 주석 층은 데이터 영역 기준 비율 앵커를 그리고, 데이터 앵커는 극좌표 축에 자리가 없어
-렌더 경고와 함께 건너뛴다.
+`export_rgba_async`(네이티브 동기 버전은 `export_rgba`)는 `prepare`를 거쳐 주석 층과 현재 호버·선택까지
+그리므로 크기·배율 제한도 `prepare`와 같다. 결과는 straight-alpha RGBA8로 읽어 오며
+`renderer::encode_png`로 PNG를 만든다.
 
-### 이전 문서 열기
+### 제목·라벨·범례 선택과 이동
 
-`Config::from_radar(&RadarChart)`는 극좌표 `Config`, 문서 시리즈마다 하나인 `Radar` 시리즈,
-업로드 목록을 돌려준다. 업로드는 범주 번호 열(`radar.positions`)이 먼저이고 그다음 시리즈마다
-값 열(`radar.values.<시리즈 id>`)이 하나씩이며, 문서의 값을 빌려 그대로 올리므로 복사하지
-않는다. `style.start_angle_degrees`(y가 아래로 커지는 화면 각도)는 부호를 바꿔
-`zero_angle_degrees`와 고리 라벨 선의 각도가 되고, `clockwise`와 `grid_shape`는 극좌표 옵션으로
-옮긴다. `value_range`는 반지름 축 범위, `ring_spacing`은 눈금 간격이 된다. `value_range`가
-없으면 범위는 호스트가 맞추며, 브라우저 래퍼와 갤러리는 음수 값이 없으면 0부터 맞춘다. `grid`는
-고리(`style.ring_color`, 바깥 고리 포함)와 스포크(`style.spoke_color`)를 보인다. 시리즈 스타일의
-빈 필드는 차트 스타일로 채우고(`RadarSeriesStyle::resolved_from`), 차트의 라벨 설정과 값에서
-적은 라벨 문자열을 모든 시리즈에 넣는다. 글꼴과 글자색은 범주·고리 라벨과 범례로, 선택한
-꼭짓점은 선택 상태로, 제목·범례·고리 라벨의 이동량은 해당 오프셋으로 옮긴다. 호버, 시리즈 전체
-선택, 차트 스타일의 `emphasis_brightness`(이전 렌더러가 강조한 시리즈를 밝히던 값으로, 이제 고른
-꼭짓점은 선택 고리로 강조한다), 배경, 명시한 그리기 영역, 스포크 라벨 이동량은 옮기지 않는다. 데이터 라벨 이동량은 시리즈의 `labels.offsets`가 된다. 브라우저에서는
-`FiggyChart.set_radar_document(json)`로 문서를 열며, `FiggyBoundedChart`의 `"radar"` 계열은 이 메서드를
-안내하는 오류를 낸다.
+데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
+제목, 첫 스포크를 따라 놓인 값 라벨 묶음(`AxisLabel(Side::Left)`), 스포크 끝의 범주 라벨
+(`DecorationId::SpokeLabel { category_id }`), 범례, 데이터 라벨이 대상이다. 공통
+`Selectable`·`Draggable` 계약을 따르므로 `drag_by(&mut chart.decorations, hit, dx, dy)`로 옮기거나
+`chart.decorations.reset(&id)`로 자동 위치로 되돌린 뒤 다시 `prepare`를 호출한다. 그리기 영역을
+조정하면 플롯 전체가 옮겨지고 크기가 바뀌며, 바깥 고리는 범주 라벨이 들어갈 자리를 남긴 가장
+큰 원이다. 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은
+[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
+
+### 주석 층
+
+`chart.annotations`는 `renderer.prepare_annotations(&chart, size, scale)`가 돌려주는
+`BoundedAnnotationFrame`이 프레임 주위에 그린다. 텍스트 상자·화살표의 앵커는 바깥 고리를 둘러싼
+정사각형의 비율이다. 값 축이 따로 없으므로 데이터 앵커와 기준선·구간은
+건너뛰고 `render_warnings()`에 `RenderWarning::AnnotationSkipped { reason: NoValueAxis }`로 보고한다.
+`draw_underlay` → `frame.draw` → `draw_overlay` 순서로 같은 타깃에 그리고 히트 맵은
+`annotations()`로 얻는다. `draws_underlay()`가 `true`이면 `prepare` 전에
+`renderer.set_background(FrameBackground::HostClear)`로 바꾸고 `chart.background`로 패스를 지워야
+언더레이가 보인다. 자세한 계약은
+[공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

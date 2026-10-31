@@ -14,16 +14,14 @@
 use crate::config::Config;
 use crate::drag::DragConfig;
 use crate::layout::{Element, NudgeReject, NudgeResult, RectF, Side};
-use crate::select::{
-    ColorBarElement, DataAreaElement, SELECTION_PADDING, Selectable, SelectionGeometry,
-};
+use crate::select::{ColorBarElement, DataAreaElement, SELECTION_PADDING, Selectable};
 use crate::text::MeasureText;
 
 /// Edge length of a square resize handle, px.
 pub const HANDLE_SIZE: f32 = 8.0;
 
 /// One of the eight resize handles, compass-named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResizeHandle {
     NW,
     N,
@@ -79,21 +77,15 @@ pub trait Resizable<C: DragConfig = Config>: Selectable<C> {
     /// discarded (an edge-midpoint handle resizes along one dimension).
     fn resize_targets(&self, handle: ResizeHandle) -> (Option<C::Element>, Option<C::Element>);
 
-    /// Default handle geometry: call `each` with the eight squares on the
-    /// selection box (element bounds + [`SELECTION_PADDING`]), or with none
-    /// while the element has no bounds. An element with handles of its own
-    /// (an annotation's endpoints) overrides this.
+    /// Default handle geometry: eight squares on the selection box (element
+    /// bounds + [`SELECTION_PADDING`]).
     fn resize_handles(
         &self,
         cfg: &C,
         measure: &dyn MeasureText,
-        each: &mut dyn FnMut(ResizeHandle, RectF),
-    ) {
-        if let Some(bounds) = self.bounds(cfg, measure) {
-            for (handle, square) in handle_rects(&bounds.expanded(SELECTION_PADDING)) {
-                each(handle, square);
-            }
-        }
+    ) -> Option<[(ResizeHandle, RectF); 8]> {
+        let rect = self.bounds(cfg, measure)?.expanded(SELECTION_PADDING);
+        Some(handle_rects(&rect))
     }
 
     /// Default handle hit test.
@@ -104,26 +96,16 @@ pub trait Resizable<C: DragConfig = Config>: Selectable<C> {
         x: f32,
         y: f32,
     ) -> Option<ResizeHandle> {
-        let mut hit = None;
-        self.resize_handles(cfg, measure, &mut |handle, square| {
-            if hit.is_none() && square.contains(x, y) {
-                hit = Some(handle);
-            }
-        });
-        hit
+        self.resize_handles(cfg, measure)?
+            .iter()
+            .find(|(_, r)| r.contains(x, y))
+            .map(|(h, _)| *h)
     }
 
     /// Default resize pipeline: each motion component routes through
     /// [`Config::nudge`] on its target element, so resize obeys exactly the
     /// same feasibility rules as dragging those elements directly.
-    fn resize_by(
-        &self,
-        cfg: &mut C,
-        measure: &dyn MeasureText,
-        handle: ResizeHandle,
-        dx: f32,
-        dy: f32,
-    ) -> NudgeResult {
+    fn resize_by(&self, cfg: &mut C, handle: ResizeHandle, dx: f32, dy: f32) -> NudgeResult {
         let (h_target, v_target) = self.resize_targets(handle);
         let mut moved = false;
         let mut attempted = false;
@@ -131,13 +113,13 @@ pub trait Resizable<C: DragConfig = Config>: Selectable<C> {
             && let Some(e) = h_target
         {
             attempted = true;
-            moved |= cfg.nudge(e, measure, dx, 0.0) == NudgeResult::Moved;
+            moved |= cfg.nudge(e, dx, 0.0) == NudgeResult::Moved;
         }
         if dy != 0.0
             && let Some(e) = v_target
         {
             attempted = true;
-            moved |= cfg.nudge(e, measure, 0.0, dy) == NudgeResult::Moved;
+            moved |= cfg.nudge(e, 0.0, dy) == NudgeResult::Moved;
         }
         if moved || !attempted {
             NudgeResult::Moved
@@ -215,15 +197,6 @@ mod tests {
         cfg
     }
 
-    /// The data area's handles in the order `resize_handles` reports them.
-    fn handles_of(cfg: &Config) -> Vec<(ResizeHandle, RectF)> {
-        let mut handles = Vec::new();
-        DataAreaElement.resize_handles(cfg, &FixedMeasure, &mut |handle, square| {
-            handles.push((handle, square))
-        });
-        handles
-    }
-
     #[test]
     fn handles_sit_on_selection_box_corners_and_midpoints() {
         let cfg = cfg_800x600();
@@ -231,7 +204,7 @@ mod tests {
             .bounds(&cfg, &FixedMeasure)
             .unwrap()
             .expanded(SELECTION_PADDING);
-        let handles = handles_of(&cfg);
+        let handles = DataAreaElement.resize_handles(&cfg, &FixedMeasure).unwrap();
         assert_eq!(handles.len(), 8);
 
         let (_, nw) = handles[0];
@@ -245,7 +218,7 @@ mod tests {
     #[test]
     fn hit_resize_handle_finds_corner() {
         let cfg = cfg_800x600();
-        let handles = handles_of(&cfg);
+        let handles = DataAreaElement.resize_handles(&cfg, &FixedMeasure).unwrap();
         let (kind, rect) = handles[4]; // SE
         let hit = DataAreaElement
             .hit_resize_handle(
@@ -269,7 +242,7 @@ mod tests {
     fn east_handle_resizes_via_right_axis() {
         let mut cfg = cfg_800x600();
         let da_before = cfg.data_area().unwrap();
-        let r = DataAreaElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::E, -10.0, 99.0);
+        let r = DataAreaElement.resize_by(&mut cfg, ResizeHandle::E, -10.0, 99.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
         assert_eq!(da_after.width, da_before.width - 10);
@@ -282,7 +255,7 @@ mod tests {
     fn nw_corner_resizes_left_and_top() {
         let mut cfg = cfg_800x600();
         let da_before = cfg.data_area().unwrap();
-        let r = DataAreaElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::NW, 6.0, 4.0);
+        let r = DataAreaElement.resize_by(&mut cfg, ResizeHandle::NW, 6.0, 4.0);
         assert_eq!(r, NudgeResult::Moved);
         let da_after = cfg.data_area().unwrap();
         assert_eq!(da_after.x, da_before.x + 6);
@@ -296,7 +269,7 @@ mod tests {
     fn resize_rejected_when_margin_would_go_negative() {
         let mut cfg = cfg_800x600();
         let before = cfg.clone();
-        let r = DataAreaElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::E, 1e6, 0.0);
+        let r = DataAreaElement.resize_by(&mut cfg, ResizeHandle::E, 1e6, 0.0);
         assert_eq!(r, NudgeResult::Rejected(NudgeReject::OutOfBounds));
         assert_eq!(cfg, before);
     }
@@ -354,7 +327,7 @@ mod tests {
             // The thickness handle changes thickness and leaves length alone.
             let mut cfg = base.clone();
             assert_eq!(
-                ColorBarElement.resize_by(&mut cfg, &FixedMeasure, thickness_handle, -4.0, -4.0),
+                ColorBarElement.resize_by(&mut cfg, thickness_handle, -4.0, -4.0),
                 NudgeResult::Moved,
                 "{side:?} {thickness_handle:?}"
             );
@@ -364,7 +337,7 @@ mod tests {
             // And the length handle the other way.
             let mut cfg = base.clone();
             assert_eq!(
-                ColorBarElement.resize_by(&mut cfg, &FixedMeasure, length_handle, -4.0, -4.0),
+                ColorBarElement.resize_by(&mut cfg, length_handle, -4.0, -4.0),
                 NudgeResult::Moved,
                 "{side:?} {length_handle:?}"
             );
@@ -384,7 +357,7 @@ mod tests {
         // Vertical bar, west handle: dragging left (away from the strip) widens.
         let mut cfg = cfg_with_colorbar(Side::Right);
         let before = colorbar_bounds(&cfg);
-        ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::W, -6.0, 0.0);
+        ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, -6.0, 0.0);
         let after = colorbar_bounds(&cfg);
         assert!(
             after.width > before.width,
@@ -394,7 +367,7 @@ mod tests {
         );
 
         let mut cfg = cfg_with_colorbar(Side::Right);
-        ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::W, 6.0, 0.0);
+        ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, 6.0, 0.0);
         assert!(
             colorbar_bounds(&cfg).width < before.width,
             "west drag right narrows"
@@ -418,13 +391,7 @@ mod tests {
             let before = colorbar_bounds(&cfg);
             let (inner_before, outer_before) = colorbar_short_edges(before, &side);
             assert_eq!(
-                ColorBarElement.resize_by(
-                    &mut cfg,
-                    &FixedMeasure,
-                    outer_handle,
-                    outer_dx,
-                    outer_dy
-                ),
+                ColorBarElement.resize_by(&mut cfg, outer_handle, outer_dx, outer_dy),
                 NudgeResult::Moved,
                 "{side:?} outer handle"
             );
@@ -447,13 +414,7 @@ mod tests {
             let before = colorbar_bounds(&cfg);
             let (inner_before, outer_before) = colorbar_short_edges(before, &side);
             assert_eq!(
-                ColorBarElement.resize_by(
-                    &mut cfg,
-                    &FixedMeasure,
-                    inner_handle,
-                    -outer_dx,
-                    -outer_dy
-                ),
+                ColorBarElement.resize_by(&mut cfg, inner_handle, -outer_dx, -outer_dy),
                 NudgeResult::Moved,
                 "{side:?} inner handle"
             );
@@ -486,7 +447,7 @@ mod tests {
             let before = bar_of(&cfg).length_frac;
 
             let drag = -10.0f32; // north handle, upward = grow
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::N, 0.0, drag);
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::N, 0.0, drag);
             let grew = (bar_of(&cfg).length_frac - before) * da.height as f32;
             assert!(
                 (grew - factor * -drag).abs() < 1e-3,
@@ -505,7 +466,7 @@ mod tests {
         cfg.colorbar.as_mut().expect("colourbar").length_frac = 1.0;
         let before = cfg.clone();
         assert_eq!(
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::N, 0.0, -5.0),
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::N, 0.0, -5.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
@@ -515,7 +476,7 @@ mod tests {
         cfg.colorbar.as_mut().expect("colourbar").thickness_px = 2.0;
         let before = cfg.clone();
         assert_eq!(
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::W, 50.0, 0.0),
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::W, 50.0, 0.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
@@ -525,7 +486,7 @@ mod tests {
         let mut cfg = cfg_with_colorbar(Side::Right);
         let before = cfg.clone();
         assert_eq!(
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::E, 1e6, 0.0),
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::E, 1e6, 0.0),
             NudgeResult::Rejected(NudgeReject::OutOfBounds)
         );
         assert_eq!(cfg, before);
@@ -533,7 +494,7 @@ mod tests {
         // And the result always satisfies `validate`.
         let mut cfg = cfg_with_colorbar(Side::Right);
         for _ in 0..40 {
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::NW, -3.0, -3.0);
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NW, -3.0, -3.0);
             assert!(cfg.validate().is_ok(), "resize left an invalid config");
         }
     }
@@ -544,7 +505,7 @@ mod tests {
         let mut cfg = cfg_with_colorbar(Side::Right);
         let (t0, l0) = (bar_of(&cfg).thickness_px, bar_of(&cfg).length_frac);
         assert_eq!(
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::NW, -5.0, -5.0),
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NW, -5.0, -5.0),
             NudgeResult::Moved
         );
         assert!(bar_of(&cfg).thickness_px > t0);
@@ -558,7 +519,7 @@ mod tests {
         let mut cfg = cfg_with_colorbar(Side::Right);
         let before = colorbar_bounds(&cfg);
         assert_eq!(
-            ColorBarElement.resize_by(&mut cfg, &FixedMeasure, ResizeHandle::NE, 5.0, -7.0),
+            ColorBarElement.resize_by(&mut cfg, ResizeHandle::NE, 5.0, -7.0),
             NudgeResult::Moved
         );
         let after = colorbar_bounds(&cfg);

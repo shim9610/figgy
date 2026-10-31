@@ -9,7 +9,7 @@ use renderer::select::SELECTION_PADDING;
 use renderer::text::RichText;
 use renderer::{
     Color, ColorBarAxisElement, ColorBarLabelElement, ColorBarTitleElement, Config, CpuTextMeasure,
-    HitMap, LayerRef, SelectionGeometry,
+    HitMap, LayerRef, Selectable,
 };
 
 fn measure(cfg: &Config) -> CpuTextMeasure {
@@ -72,8 +72,8 @@ fn colorbar_axis_labels_and_title_are_independent_hit_targets() {
         let axis_selection = map
             .selection_box(axis_hit, &cfg, &measure(&cfg))
             .expect("axis selection box");
-        assert_eq!(axis_selection.rect(), axis.expanded(SELECTION_PADDING));
-        assert!(axis_selection.handles().is_empty());
+        assert_eq!(axis_selection.rect, axis.expanded(SELECTION_PADDING));
+        assert!(axis_selection.handles.is_empty());
 
         let labels = ColorBarLabelElement
             .bounds(&cfg, &measure(&cfg))
@@ -92,8 +92,8 @@ fn colorbar_axis_labels_and_title_are_independent_hit_targets() {
         let label_selection = map
             .selection_box(label_hit, &cfg, &measure(&cfg))
             .expect("label selection box");
-        assert_eq!(label_selection.rect(), labels.expanded(SELECTION_PADDING));
-        assert!(label_selection.handles().is_empty());
+        assert_eq!(label_selection.rect, labels.expanded(SELECTION_PADDING));
+        assert!(label_selection.handles.is_empty());
 
         let title = ColorBarTitleElement
             .bounds(&cfg, &measure(&cfg))
@@ -110,8 +110,8 @@ fn colorbar_axis_labels_and_title_are_independent_hit_targets() {
         let title_selection = map
             .selection_box(title_hit, &cfg, &measure(&cfg))
             .expect("title selection box");
-        assert_eq!(title_selection.rect(), title.expanded(SELECTION_PADDING));
-        assert!(title_selection.handles().is_empty());
+        assert_eq!(title_selection.rect, title.expanded(SELECTION_PADDING));
+        assert!(title_selection.handles.is_empty());
     }
 }
 
@@ -184,24 +184,17 @@ fn overlay_elements_hit_and_drag_the_overlay_axis_only() {
     );
 
     let before = cfg.clone();
-    let m = measure(&cfg);
     let axis = map.get(hit).unwrap().as_draggable().unwrap();
-    assert_eq!(axis.drag_by(&mut cfg, &m, -12.0, 40.0), NudgeResult::Moved);
+    assert_eq!(axis.drag_by(&mut cfg, -12.0, 40.0), NudgeResult::Moved);
     assert_eq!(cfg.overlays[0].y_axis.line_offset, -12.0);
     assert_eq!(cfg.right_y, before.right_y);
     assert_eq!(cfg.data_area().unwrap().0, da);
     let labels_drag = map.get(labels).unwrap().as_draggable().unwrap();
-    assert_eq!(
-        labels_drag.drag_by(&mut cfg, &m, 3.0, -4.0),
-        NudgeResult::Moved
-    );
+    assert_eq!(labels_drag.drag_by(&mut cfg, 3.0, -4.0), NudgeResult::Moved);
     assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_x, 3.0);
     assert_eq!(cfg.overlays[0].y_axis.label_style.label_offset_y, -4.0);
     let title_drag = map.get(title).unwrap().as_draggable().unwrap();
-    assert_eq!(
-        title_drag.drag_by(&mut cfg, &m, 0.0, 10.0),
-        NudgeResult::Moved
-    );
+    assert_eq!(title_drag.drag_by(&mut cfg, 0.0, 10.0), NudgeResult::Moved);
     assert_ne!(
         cfg.overlays[0].y_axis.title_option,
         before.overlays[0].y_axis.title_option
@@ -215,7 +208,7 @@ fn overlay_elements_hit_and_drag_the_overlay_axis_only() {
     // A move that would leave the chart area is refused atomically.
     let snapshot = cfg.clone();
     assert_eq!(
-        axis.drag_by(&mut cfg, &m, 10_000.0, 0.0),
+        axis.drag_by(&mut cfg, 10_000.0, 0.0),
         NudgeResult::Rejected(NudgeReject::OutOfBounds)
     );
     assert_eq!(cfg, snapshot);

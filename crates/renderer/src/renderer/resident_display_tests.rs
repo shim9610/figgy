@@ -7,7 +7,8 @@ use super::super::*;
 use super::{declaration, read_draw_target};
 use crate::annotation::{Anchor, Annotation, AnnotationKind};
 use crate::config::{PickedPointRef, PickedPointsConfig, SketchOptions};
-use crate::layout::ChartArea;
+use crate::layout::{ChartArea, RectF};
+use crate::select::{SelectionBox, SelectionOutline};
 use crate::text::RichText;
 use crate::{LayerRef, OverlayLayer};
 
@@ -210,11 +211,9 @@ fn painted_like_direct(r: &Renderer, mut frame: PreparedFrame, samples: u32) -> 
     cached
 }
 
-/// Refresh every panel of `id` with the element `selected` names selected
-/// (`None` clears the selection).
-fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selected: Option<&str>) {
+fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
     let config = r.chart_config(id).unwrap().clone();
-    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selected)
+    r.refresh_axis_with_selection(view, &Chart::new(config), PANEL, selection)
         .unwrap();
 }
 
@@ -222,7 +221,7 @@ fn edit(r: &mut Renderer, id: ChartId, view: &mut ChartView, apply: impl FnOnce(
     let mut config = r.chart_config(id).unwrap().clone();
     apply(&mut config);
     r.set_chart_config(id, config).unwrap();
-    refresh(r, id, view, None);
+    refresh(r, id, view, &[]);
 }
 
 fn font_lock() -> std::sync::MutexGuard<'static, ()> {
@@ -351,12 +350,19 @@ fn chrome_annotation_selection_and_pick_edits_never_draw_the_bodies_again() {
     }
 
     // An element's selection box lives in the decoration layer.
-    let config = r.chart_config(id).unwrap().clone();
-    assert!(
-        r.selection_box(&Chart::new(config), "data_area").is_some(),
-        "the data area has a selection box"
-    );
-    refresh(&mut r, id, &mut view, Some("data_area"));
+    let selection = SelectionBox {
+        rect: RectF {
+            x: 60.0,
+            y: 60.0,
+            width: 80.0,
+            height: 40.0,
+        },
+        color: Color::new(0.0, 0.4, 1.0, 1.0),
+        stroke_width: 2.0,
+        handles: Vec::new(),
+        outline: SelectionOutline::Rect,
+    };
+    refresh(&mut r, id, &mut view, &[selection]);
     let frame = prepare(&mut r, id, &view);
     assert_eq!(
         r.resident_display_serial(&view),
@@ -425,7 +431,7 @@ fn data_edits_draw_the_bodies_exactly_once() {
                 let mut list = r.chart_series(id).unwrap().to_vec();
                 apply(&mut list[0]);
                 r.set_chart_series(id, list).unwrap();
-                refresh(&mut r, id, &mut view, None);
+                refresh(&mut r, id, &mut view, &[]);
             }
             Edit::Column => {
                 r.upsert_column("a", &wave(0.9, 1.0)).unwrap();
@@ -528,7 +534,7 @@ fn each_layer_keeps_its_own_bodies() {
                     line.line_width += 2.0;
                 }
                 r.set_chart_series(id, list).unwrap();
-                refresh(&mut r, id, &mut view, None);
+                refresh(&mut r, id, &mut view, &[]);
             }
         }
         let frame = prepare(&mut r, id, &view);
@@ -644,8 +650,7 @@ struct Scene {
     columns: Vec<(&'static str, Vec<f32>)>,
     config: Config,
     series: Vec<SeriesConfig>,
-    /// The element id selected on the document's active layer.
-    selection: Option<&'static str>,
+    selection: Vec<SelectionBox>,
 }
 
 impl Scene {
@@ -664,7 +669,7 @@ impl Scene {
             ],
             config,
             series: vec![series("s0", "a"), series("s1", "b")],
-            selection: None,
+            selection: Vec::new(),
         }
     }
 
@@ -693,7 +698,7 @@ fn fresh_pixels(scene: &Scene, format: wgpu::TextureFormat, samples: u32) -> Vec
         &mut view,
         &Chart::new(scene.config.clone()),
         PANEL,
-        scene.selection,
+        &scene.selection,
     )
     .unwrap();
     let frame = prepare(&mut r, id, &view);
@@ -769,18 +774,21 @@ fn random_scene_edit(rng: &mut Rng, scene: &mut Scene) -> (&'static str, [bool; 
             ("pick", [false, false])
         }
         7 => {
-            // An element every active layer registers, resolved on the
-            // active layer the scene has at the refresh.
-            const SELECTABLE: [&str; 5] = [
-                "data_area",
-                "legend",
-                "chart_title",
-                "axis_bottom",
-                "tick_labels_bottom",
-            ];
-            scene.selection = match scene.selection {
-                None => Some(SELECTABLE[rng.below(SELECTABLE.len() as u64) as usize]),
-                Some(_) => None,
+            scene.selection = if scene.selection.is_empty() {
+                vec![SelectionBox {
+                    rect: RectF {
+                        x: rng.step(40.0, 200.0) as f32,
+                        y: rng.step(40.0, 150.0) as f32,
+                        width: 60.0,
+                        height: 30.0,
+                    },
+                    color: Color::new(0.0, 0.4, 1.0, 1.0),
+                    stroke_width: 2.0,
+                    handles: Vec::new(),
+                    outline: SelectionOutline::Rect,
+                }]
+            } else {
+                Vec::new()
             };
             ("selection box", [false, false])
         }
@@ -890,7 +898,7 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
                 &mut view,
                 &Chart::new(scene.config.clone()),
                 PANEL,
-                scene.selection,
+                &scene.selection,
             )
             .unwrap();
             let frame = prepare(&mut r, id, &view);
@@ -915,7 +923,3 @@ fn random_edit_sequences_match_a_render_from_nothing_bit_for_bit() {
         }
     }
 }
-
-#[cfg(feature = "serde")]
-#[path = "resident_display_mutation_tests.rs"]
-mod mutation;

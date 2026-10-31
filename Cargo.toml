@@ -4,14 +4,3 @@ members = ["crates/*"]
 
 # crates/model    — chart option SSoT, data containers, preset policies (dependency-free).
 # crates/renderer — wgpu + skia hybrid renderer; depends on model and re-exports it.
-
-# Tests run on software or virtual GPU adapters in CI, where the CPU side
-# (tiny-skia rasters, readbacks, pixel comparisons) dominates the time. The
-# dependencies build optimized and the workspace crates lightly optimized;
-# debug assertions and overflow checks stay on. `ci/verify.py` writes the
-# same profile into the extracted package workspace.
-[profile.test]
-opt-level = 1
-
-[profile.test.package."*"]
-opt-level = 3

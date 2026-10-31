@@ -1,7 +1,6 @@
 //! Selection preparation shared by resident columns and bounded selected rows.
 
 use super::*;
-use crate::data_config::ViolinSide;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SelectionRefFilter {
@@ -54,21 +53,10 @@ pub(super) struct SelectionColumns<'a> {
     pub x: ColumnHandle,
     pub y: ColumnHandle,
     pub bar: Option<(ColumnHandle, ColumnHandle)>,
-    /// A category bar, box plot or range bar series' data and style map, as
-    /// its draw binds them; its picked bar's or box's highlight reads the
-    /// same.
-    pub category: Option<data_render::CategoryBarData>,
-    /// A box plot series' violin data and segment count, and its raw
-    /// points' data, as their draws bind them.
-    pub violin: Option<(data_render::CategoryBarData, u32)>,
-    pub box_points: Option<data_render::CategoryBarData>,
     pub rows: SelectionRows,
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
     /// rows.global_start. Its style-index vertex column still uses local rows.
     pub mapped_point_bg: Option<&'a wgpu::BindGroup>,
-    /// A 3D series' height column and camera group (#132): its ring draws
-    /// through the 3D ring entries in the live slot.
-    pub view3d: Option<(ColumnHandle, data_render::surface_mesh::View3dBinding)>,
 }
 
 pub(super) struct SelectionLayers<'a> {
@@ -83,41 +71,28 @@ impl<'a> SelectionLayers<'a> {
             area: None,
             field: None,
             bar: None,
-            violin: None,
-            category_bars: None,
-            box_points: None,
             contour: None,
             vector: None,
             errorbar: None,
             line: None,
-            parallel: None,
             line_extra: None,
             scatter: None,
-            line_3d: None,
-            scatter_3d: None,
             selected_bars: self.selected_bars,
             selected_fields: self.selected_fields,
             picked: self.picked,
-            value_labels: None,
-            surface: None,
-            selected_surface: None,
-            floor: None,
-            region: None,
         }
     }
 }
 
 #[derive(Debug)]
-pub(super) struct PointSelectionVisual {
-    pub(super) point_index: usize,
-    pub(super) color: Color,
-    pub(super) width_px: f32,
-    pub(super) radius_extra_px: f32,
+struct PointSelectionVisual {
+    point_index: usize,
+    color: Color,
+    width_px: f32,
+    radius_extra_px: f32,
 }
 
-/// The point selections of `cfg` (the legacy ring refs and the typed point
-/// refs) with the colour and width each is drawn in.
-pub(super) fn point_selection_visuals(
+fn point_selection_visuals(
     chart_config: &Config,
     cfg: &SeriesConfig,
     refs: SelectionRefFilter,
@@ -210,16 +185,14 @@ impl PrepareContext<'_> {
                     continue;
                 };
 
-                let scatter_owned = extract_scatter(rt);
-                let scatter_cfg = scatter_owned.as_deref();
+                let scatter_cfg = extract_scatter(rt);
                 let has_line_anchor = extract_line(rt).is_some();
                 // A zero-size marker still draws its dot and picks, so it
                 // takes the ring too; a size-mapped point the map hides
                 // (negative radius) is dropped by the mapped ring entry.
                 let has_scatter_anchor = scatter_cfg.is_some();
-                let has_vector_anchor = vector_points.is_some_and(|style| {
-                    crate::data_render::vector::vector_anchor_radius_px(style) > 0.0
-                });
+                let has_vector_anchor = vector_points
+                    .is_some_and(|style| crate::pick::vector_anchor_radius_px(style) > 0.0);
                 if !has_line_anchor && !has_scatter_anchor && !has_vector_anchor {
                     continue;
                 }
@@ -282,16 +255,19 @@ impl PrepareContext<'_> {
                 ring_style.primitive_flags =
                     crate::gpu_pick::GpuPickDrawStyle::of(&chart_config.draw_style).marker_mode();
                 if let Some(scatter) = scatter_cfg {
-                    // The draw's own base radius in both branches: the mapped
-                    // ring resolves overrides per point as `vs_mapped` does,
-                    // and an unmapped ring rings a draw that reads no
-                    // overrides (a stylized style, or none exist).
-                    ring_style.point_radius_px = series.style.scatter_radius_px;
+                    ring_style.point_radius_px = if uses_mapped_pick {
+                        series.style.scatter_radius_px
+                    } else {
+                        scatter_config_radius_px(
+                            scatter,
+                            visual.point_index,
+                            use_scatter_style_mapping,
+                        ) * series.style.display_scale
+                    };
                     ring_style.shape_id = data_render::shape_id(&scatter.point_shape);
                 } else {
                     ring_style.point_radius_px = vector_points.map_or(0.0, |style| {
-                        crate::data_render::vector::vector_anchor_radius_px(style)
-                            * series.style.display_scale
+                        crate::pick::vector_anchor_radius_px(style) * series.style.display_scale
                     });
                     ring_style.shape_id = data_render::shape_id(&ScatterShape::CircleFilled);
                     ring_style.primitive_flags = 0;
@@ -299,52 +275,18 @@ impl PrepareContext<'_> {
                 let ring_buf = data_render::create_style_uniform_buffer(&self.device, &ring_style);
                 let style_bg =
                     data_render::create_style_bind_group(&self.device, &self.style_bgl, &ring_buf);
-                // A ternary point's ring: the ternary entries with its third
-                // component.
-                let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
-                let ternary = |kind: TernaryPipeline| {
-                    pipelines.ternary[kind as usize]
-                        .as_ref()
-                        .expect("prepare ensured the ternary pick ring pipeline")
-                };
-                // A 3D point's ring: the 3D ring entries with its height and
-                // camera (#132).
-                let view3d_ring = |kind: View3dPipeline| {
-                    pipelines.view3d[kind as usize]
-                        .as_ref()
-                        .expect("prepare ensured the 3D pick ring pipeline")
-                };
-                let (third, view3d, pipeline) = match &columns.view3d {
-                    Some((z, binding)) => (
-                        Some(*z),
-                        Some(binding.clone()),
-                        if uses_mapped_pick {
-                            view3d_ring(View3dPipeline::RingMapped)
-                        } else {
-                            view3d_ring(View3dPipeline::Ring)
-                        },
-                    ),
-                    None => (
-                        ternary_c,
-                        None,
-                        match (uses_mapped_pick, ternary_c.is_some()) {
-                            (true, true) => ternary(TernaryPipeline::RingMapped),
-                            (false, true) => ternary(TernaryPipeline::Ring),
-                            (true, false) => pipelines
-                                .pick_ring_mapped
-                                .as_ref()
-                                .expect("prepare ensured mapped pick ring pipeline"),
-                            (false, false) => pipelines
-                                .pick_ring
-                                .as_ref()
-                                .expect("prepare ensured pick ring pipeline"),
-                        },
-                    ),
-                };
                 picked.push(ColumnPickRingLayer {
-                    pipeline,
-                    third,
-                    view3d,
+                    pipeline: if uses_mapped_pick {
+                        pipelines
+                            .pick_ring_mapped
+                            .as_ref()
+                            .expect("prepare ensured mapped pick ring pipeline")
+                    } else {
+                        pipelines
+                            .pick_ring
+                            .as_ref()
+                            .expect("prepare ensured pick ring pipeline")
+                    },
                     transform_bg: &view.transform_bg,
                     style_bg,
                     style_map_bg: precise_pick_style_map
@@ -381,273 +323,59 @@ impl PrepareContext<'_> {
                         else {
                             continue;
                         };
-                        // The bin's global index keys its overrides, so a
-                        // rebased (streamed) instance zero still resolves them.
-                        let Ok(global_bin) = u32::try_from(*bin_index) else {
-                            continue;
-                        };
-                        // The draw's own unresolved bar `Style` with the
-                        // selection in lanes a bar never reads as fill or
-                        // border (`bar_columnar.wgsl`): the outline resolves
-                        // the bin's gap and width on the GPU exactly when the
-                        // draw binds the style map.
+                        let mut selection = data_render::DataSelectionGpu::from_color(
+                            selection_cfg.highlight_color,
+                        );
+                        selection.metrics[0] = selection_cfg.outline_width_px;
+                        selection.indices = [
+                            data_render::DATA_SELECTION_KIND_HISTOGRAM_BIN,
+                            instance,
+                            0,
+                            0,
+                        ];
+                        let (selection_bg, selection_charge) =
+                            data_render::create_data_selection_bind_group(
+                                &self.gpu_ledger,
+                                &self.device,
+                                &self.data_selection_bgl,
+                                &selection,
+                            );
+                        // The selection outline must follow the selected
+                        // bin's overridden gap/width exactly. Resolve only
+                        // style metadata on the CPU; edge/value geometry
+                        // remains in the shared GPU columns.
                         let bar_cfg =
                             extract_bar(rt).expect("histogram selection has a bar config");
-                        let mut outline_style =
-                            PrimitiveStyle::from_bar(bar_cfg, series.style.display_scale);
-                        outline_style.color_premul =
-                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
-                        outline_style.line_width_px = selection_cfg.outline_width_px;
-                        outline_style.dash_len = global_bin;
-                        let outline_buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &outline_style);
-                        let style_bg = data_render::create_style_bind_group(
+                        let resolved_style = resolved_bar_primitive_style(
+                            bar_cfg,
+                            *bin_index,
+                            series.style.display_scale,
+                        );
+                        let resolved_style_buffer =
+                            data_render::create_style_uniform_buffer(&self.device, &resolved_style);
+                        let resolved_style_bg = data_render::create_style_bind_group(
                             &self.device,
                             &self.style_bgl,
-                            &outline_buffer,
+                            &resolved_style_buffer,
                         );
-                        let style_map = series.style.bar_map.as_ref();
                         selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: match style_map {
-                                Some(_) => pipelines
-                                    .bar_selection_mapped
-                                    .as_ref()
-                                    .expect("prepare ensured mapped histogram selection pipeline"),
-                                None => pipelines
-                                    .bar_selection
-                                    .as_ref()
-                                    .expect("prepare ensured histogram selection pipeline"),
-                            },
+                            pipeline: pipelines
+                                .bar_selection
+                                .as_ref()
+                                .expect("prepare ensured histogram selection pipeline"),
                             transform_bg: &view.transform_bg,
-                            style_bg,
-                            style_map_bg: style_map.map(|map| &map.bind_group),
+                            style_bg: resolved_style_bg,
+                            selection_bg,
+                            selection_charge,
                             pool_buffer: column_buffer,
                             edges,
                             values,
                             instance,
-                            instances: 1,
-                            category: None,
                         });
                     }
-                    // A box is a bin whose index is its row: the highlight
-                    // builds the same body from the same group 3 and style
-                    // map as the draw.
-                    PickedDataRef::HistogramBin {
-                        bin_index, half, ..
-                    } if primitives.box_plot => {
-                        let Some(category) = columns.category.clone() else {
-                            continue;
-                        };
-                        let Ok(row) = u32::try_from(*bin_index) else {
-                            continue;
-                        };
-                        let boxes = rt
-                            .box_plot()
-                            .expect("a box plot selection has a box plot config");
-                        let mut highlight = PrimitiveStyle::from_box_plot(
-                            boxes.color,
-                            boxes.style,
-                            series.style.display_scale,
-                        );
-                        highlight.color_premul =
-                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
-                        highlight.line_width_px = selection_cfg.outline_width_px;
-                        highlight.dash_len = row;
-                        let buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &highlight);
-                        let style_bg = data_render::create_style_bind_group(
-                            &self.device,
-                            &self.style_bgl,
-                            &buffer,
-                        );
-                        // The violin's outline first, under the box's ring:
-                        // every segment, the vertex stage keeping the row's
-                        // (and the selected half's: a selected half rings
-                        // that half alone, not the box).
-                        if let Some((violin, segments)) = columns.violin.clone() {
-                            highlight.primitive_flags = match half {
-                                None | Some(ViolinSide::Both) => 0,
-                                Some(ViolinSide::Low) => data_render::VIOLIN_SIDE_LOW,
-                                Some(ViolinSide::High) => data_render::VIOLIN_SIDE_HIGH,
-                            };
-                            let buffer =
-                                data_render::create_style_uniform_buffer(&self.device, &highlight);
-                            selected_bars.push(ColumnBarSelectionLayer {
-                                pipeline: pipelines
-                                    .bar_violin_selection
-                                    .as_ref()
-                                    .expect("prepare ensured violin selection pipeline"),
-                                transform_bg: &view.transform_bg,
-                                style_bg: data_render::create_style_bind_group(
-                                    &self.device,
-                                    &self.style_bgl,
-                                    &buffer,
-                                ),
-                                style_map_bg: None,
-                                pool_buffer: column_buffer,
-                                edges: columns.x,
-                                values: columns.y,
-                                instance: 0,
-                                instances: segments,
-                                category: Some(violin),
-                            });
-                        }
-                        if half.is_some_and(|half| half != ViolinSide::Both) {
-                            continue;
-                        }
-                        selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_box_plot_selection
-                                .as_ref()
-                                .expect("prepare ensured box plot selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            style_bg,
-                            style_map_bg: None,
-                            pool_buffer: column_buffer,
-                            edges: columns.x,
-                            values: columns.y,
-                            instance: row,
-                            instances: 1,
-                            category: Some(category),
-                        });
-                    }
-                    // A range bar is a bin whose index is its row: the
-                    // highlight builds the same body from the same group 3
-                    // and style map as the draw.
-                    // A box plot's raw point: its ring, built from the same
-                    // group 3 and slot as its draw places it with.
-                    PickedDataRef::Point { point_index, .. } if primitives.box_points => {
-                        let Some(points) = columns.box_points.clone() else {
-                            continue;
-                        };
-                        let Ok(index) = u32::try_from(*point_index) else {
-                            continue;
-                        };
-                        let boxes = rt
-                            .box_plot()
-                            .expect("a box point selection has a box plot config");
-                        let mut highlight = PrimitiveStyle::from_box_plot(
-                            boxes.color,
-                            boxes.style,
-                            series.style.display_scale,
-                        );
-                        highlight.color_premul =
-                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
-                        highlight.line_width_px = selection_cfg.outline_width_px;
-                        let buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &highlight);
-                        selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_box_point_selection
-                                .as_ref()
-                                .expect("prepare ensured box point selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            style_bg: data_render::create_style_bind_group(
-                                &self.device,
-                                &self.style_bgl,
-                                &buffer,
-                            ),
-                            style_map_bg: None,
-                            pool_buffer: column_buffer,
-                            edges: columns.x,
-                            values: columns.y,
-                            instance: index,
-                            instances: 1,
-                            category: Some(points),
-                        });
-                    }
-                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.range_bars => {
-                        let Some(category) = columns.category.clone() else {
-                            continue;
-                        };
-                        let Ok(row) = u32::try_from(*bin_index) else {
-                            continue;
-                        };
-                        let ranges = rt
-                            .range_bars()
-                            .expect("a range bar selection has a range bar config");
-                        let mut highlight = PrimitiveStyle::from_category_bars(
-                            ranges.color,
-                            ranges.style,
-                            series.style.display_scale,
-                        );
-                        highlight.color_premul =
-                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
-                        highlight.line_width_px = selection_cfg.outline_width_px;
-                        highlight.dash_len = row;
-                        let buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &highlight);
-                        let style_bg = data_render::create_style_bind_group(
-                            &self.device,
-                            &self.style_bgl,
-                            &buffer,
-                        );
-                        selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_range_selection
-                                .as_ref()
-                                .expect("prepare ensured range bar selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            style_bg,
-                            style_map_bg: None,
-                            pool_buffer: column_buffer,
-                            edges: columns.x,
-                            values: columns.y,
-                            instance: row,
-                            instances: 1,
-                            category: Some(category),
-                        });
-                    }
-                    // A category bar is a bin whose index is its row: the
-                    // highlight builds the same bar from the same group 3
-                    // and override table as the draw.
-                    PickedDataRef::HistogramBin { bin_index, .. } if primitives.category_bars => {
-                        let Some(category) = columns.category.clone() else {
-                            continue;
-                        };
-                        let Ok(row) = u32::try_from(*bin_index) else {
-                            continue;
-                        };
-                        let bars = rt
-                            .category_bars()
-                            .expect("a category bar selection has a category bar config");
-                        let mut highlight = PrimitiveStyle::from_category_bars(
-                            bars.color,
-                            bars.style,
-                            series.style.display_scale,
-                        );
-                        highlight.color_premul =
-                            PrimitiveStyle::from_color(selection_cfg.highlight_color).color_premul;
-                        highlight.line_width_px = selection_cfg.outline_width_px;
-                        highlight.dash_len = row;
-                        let buffer =
-                            data_render::create_style_uniform_buffer(&self.device, &highlight);
-                        let style_bg = data_render::create_style_bind_group(
-                            &self.device,
-                            &self.style_bgl,
-                            &buffer,
-                        );
-                        selected_bars.push(ColumnBarSelectionLayer {
-                            pipeline: pipelines
-                                .bar_category_selection
-                                .as_ref()
-                                .expect("prepare ensured category bar selection pipeline"),
-                            transform_bg: &view.transform_bg,
-                            style_bg,
-                            style_map_bg: None,
-                            pool_buffer: column_buffer,
-                            edges: columns.x,
-                            values: columns.y,
-                            instance: row,
-                            instances: 1,
-                            category: Some(category),
-                        });
-                    }
-                    // A 3D chart's picked cell is its surface patch
-                    // (`surface_layers`), not the flat cell outline.
                     PickedDataRef::MatrixCell {
                         x_index, y_index, ..
-                    } if primitives.field && chart_config.view_3d.is_none() => {
+                    } if primitives.field => {
                         let (Some(x_index), Some(y_index)) =
                             (u32::try_from(*x_index).ok(), u32::try_from(*y_index).ok())
                         else {
@@ -820,7 +548,6 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
-            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -879,7 +606,6 @@ mod tests {
                     source_id: None,
                     series_id: "selected".into(),
                     bin_index: 2,
-                    half: None,
                 },
                 point(2),
                 point(10),
@@ -1126,7 +852,6 @@ mod tests {
                         source_id: Some("source".into()),
                         series_id: "selected".into(),
                         bin_index: 2,
-                        half: None,
                     }
                 }],
                 highlight_color: Color::new(0.0, 1.0, 0.0, 1.0),
@@ -1191,16 +916,12 @@ mod tests {
                                         (edges, values)
                                     }
                                 }),
-                                category: None,
-                                violin: None,
-                                box_points: None,
                                 rows: SelectionRows {
                                     global_start: if local { 2 } else { 0 },
                                     refs: SelectionRefFilter::Typed(0),
                                     packed_instance: None,
                                 },
                                 mapped_point_bg: map.as_ref(),
-                                view3d: None,
                             },
                             None,
                             true,

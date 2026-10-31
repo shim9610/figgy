@@ -1,16 +1,14 @@
-# figgy's browser product: the wasm-bindgen wrapper and the `<figgy-chart>`
-# custom element. The package is named `figgy` (the project name) because
-# that's what the generated JS/wasm files are called: `figgy.js`,
-# `figgy_bg.wasm`, `figgy.d.ts`.
+# The example application's wasm-bindgen wrapper. The package
+# is named `figgy` (the project name) because that's what the generated
+# JS/wasm files are called: `figgy.js`, `figgy_bg.wasm`, `figgy.d.ts`.
 [package]
 name = "figgy"
 version = "0.15.1"
 edition = "2024"
-description = "figgy for the browser: the wasm-bindgen wrapper and <figgy-chart> element for the figgy Rust renderer."
+description = "Browser integration example using wasm-bindgen and the figgy Rust renderer."
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/shim9610/figgy"
-# Built from this repository; the publication target is open (#57). The
-# `figgy` crate on crates.io is an unrelated project.
+# WASM consumer/example; not part of the Rust registry release.
 publish = false
 
 [lib]
@@ -44,11 +42,6 @@ web-sys = { version = "0.3", features = [
     "Window",
 ] }
 console_error_panic_hook = "0.1"
-
-[dev-dependencies]
-# The cache-key mutation test compiles the renderer's serde walker
-# (`series_extent_mutation_tests.rs`).
-serde = { version = "1", features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"

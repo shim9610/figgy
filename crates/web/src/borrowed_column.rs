@@ -293,11 +293,10 @@ impl ColumnSource for BorrowedF64Column<'_> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        // The (hi, lo) split, as the hi/lo path writes it (#107).
         for (index, &value) in self.data.iter().enumerate() {
-            let (hi, lo) = split_f64_to_f32_pair(value);
-            dst.write_pair(index, hi, lo);
-            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
+            let value = value as f32;
+            dst.write_pair(index, value, 0.0);
+            record_min_positive(&mut stats, value as f64);
         }
         stats
     }
@@ -404,14 +403,6 @@ impl JsStreamColumn {
             Self::F64(values) => renderer::StreamColumnSource::HiLo(values),
         }
     }
-    /// The typed array as a batch upload source: a `Float64Array` keeps its
-    /// `(hi, lo)` split, as [`BorrowedSplitF64Column`] does for slices.
-    pub(crate) fn column_source(&self) -> &dyn ColumnSource {
-        match self {
-            Self::F32(values) => values,
-            Self::F64(values) => values,
-        }
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -503,34 +494,6 @@ fn js_f64_extreme(values: &JsF64StreamSource, min: bool) -> f64 {
         };
     }
     result
-}
-
-/// The batch path accepts only `&dyn ColumnSource`, so the typed array writes
-/// its split pairs through this trait too (record fields are batch uploads).
-#[cfg(target_arch = "wasm32")]
-impl ColumnSource for JsF64StreamSource {
-    fn len(&self) -> usize {
-        HiLoColumnSource::len(self)
-    }
-
-    fn min(&self) -> f64 {
-        HiLoColumnSource::min(self)
-    }
-
-    fn max(&self) -> f64 {
-        HiLoColumnSource::max(self)
-    }
-
-    fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.0.length() as usize * size_of::<f32>());
-        for (index, bytes) in dst.chunks_exact_mut(size_of::<f32>()).enumerate() {
-            bytes.copy_from_slice(&(self.0.get_index(index as u32) as f32).to_le_bytes());
-        }
-    }
-
-    fn write_f32_pair_le_into_with_stats(&self, dst: ColumnPairWriter<'_>) -> ColumnUploadStats {
-        HiLoColumnSource::write_f32_pair_le_into_with_stats(self, dst)
-    }
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1211,12 +1174,12 @@ mod tests {
             eprintln!("no GPU adapter; skipping borrowed fused upload assertions");
             return;
         };
-        // The fused `ColumnSource` upload writes the split too (#107);
-        // only the legacy zero-lo helper above keeps `(value, 0)`.
         let (scalar_pairs, scalar_min_positive) = scalar_pair_upload(&device, &queue, &source);
-        assert_eq!(scalar_pairs, expected_pairs);
-        let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);
-        assert_eq!(scalar_min_positive, Some(hi as f64 + lo as f64));
+        assert_eq!(scalar_pairs, expected_scalar_pairs);
+        assert_eq!(
+            scalar_min_positive,
+            Some((1_700_000_000_000.125_f64 as f32) as f64)
+        );
         let (hilo_pairs, hilo_min_positive) = hilo_pair_upload(&device, &queue, &source);
         assert_eq!(hilo_pairs, expected_pairs);
         let (hi, lo) = split_f64_to_f32_pair(1_700_000_000_000.125);

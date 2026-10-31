@@ -4,6 +4,7 @@
 //! is always a fresh renderer given the final state.
 use super::*;
 use crate::layout::{ChartArea, Rect};
+use crate::select::SelectionBox;
 use crate::text::RichText;
 use crate::{CellRef, HitMap, LayerRef, OverlayLayer, Subplot, SubplotAxis, WarningAxis};
 
@@ -141,32 +142,11 @@ fn fresh_frame_with(config: &Config, series: Vec<SeriesConfig>) -> Vec<u8> {
     frame_with_view(&mut r, id, &view)
 }
 
-/// Refresh every panel of `id`, selecting the element `selected` names on
-/// the layer it names (`None` clears the selection). The selection is
-/// resolved on that layer's hit map, so the layer is set on the chart handed
-/// to the refresh; the raster ignores the active layer. Returns the box the
-/// renderer drew.
-fn refresh(
-    r: &mut Renderer,
-    id: ChartId,
-    view: &mut ChartView,
-    selected: Option<(LayerRef, &str)>,
-) -> Option<crate::layout::RectF> {
-    let mut config = r.chart_config(id).unwrap().clone();
+fn refresh(r: &mut Renderer, id: ChartId, view: &mut ChartView, selection: &[SelectionBox]) {
+    let config = r.chart_config(id).unwrap().clone();
     let panel = config.chart_area.0;
-    let element = selected.map(|(layer, element)| {
-        config.active_layer = layer;
-        element
-    });
-    let chart = Chart::new(config);
-    let drawn = element.map(|element| {
-        r.selection_box(&chart, element)
-            .unwrap_or_else(|| panic!("{element} has no selection box"))
-            .rect()
-    });
-    r.refresh_axis_with_selection(view, &chart, panel, element)
+    r.refresh_axis_with_selection(view, &Chart::new(config), panel, selection)
         .unwrap();
-    drawn
 }
 
 /// The `(x, y)` pixels at which `a` and `b` (320 wide) differ.
@@ -177,6 +157,21 @@ fn differing(a: &[u8], b: &[u8]) -> Vec<(usize, usize)> {
         .filter(|(_, (p, q))| p != q)
         .map(|(i, _)| (i % 320, i / 320))
         .collect()
+}
+
+fn selection_box_at(x: f32, y: f32) -> SelectionBox {
+    SelectionBox {
+        rect: crate::layout::RectF {
+            x,
+            y,
+            width: 40.0,
+            height: 20.0,
+        },
+        color: crate::select::SELECTION_COLOR,
+        stroke_width: crate::select::SELECTION_STROKE_WIDTH,
+        handles: Vec::new(),
+        outline: crate::select::SelectionOutline::Rect,
+    }
 }
 
 // Each subplot draws as a chart of its own, in its own area, with its own
@@ -272,7 +267,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             after.needs_raster_since(Some(&before)),
             format!("{name}: an edit must refresh the raster"),
         );
-        refresh(&mut r, id, &mut view, None);
+        refresh(&mut r, id, &mut view, &[]);
         check(
             view.layer_raster_generations() == expected,
             format!(
@@ -299,18 +294,7 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
         "the member edit did not move the link group".into(),
     );
 
-    // Subplot 1's data area sits in the lower right panel.
-    let drawn = refresh(
-        &mut r,
-        id,
-        &mut view,
-        Some((LayerRef::Subplot(1), "subplot_1:data_area")),
-    )
-    .expect("a selection was drawn");
-    check(
-        drawn.x >= 160.0 && drawn.y >= 120.0,
-        format!("subplot 1's data area box {drawn:?} is not in its panel"),
-    );
+    refresh(&mut r, id, &mut view, &[selection_box_at(220.0, 160.0)]);
     check(
         view.layer_raster_generations() == vec![3, 4, 3, 4],
         format!("subplot 1 selection: {:?}", view.layer_raster_generations()),
@@ -322,18 +306,12 @@ fn a_subplot_edit_refreshes_only_its_panels_and_matches_a_fresh_render() {
             .all(|&(x, y)| x >= 160 && y >= 120),
         "the selection box was drawn outside subplot 1".into(),
     );
-    // The parent's data area sits in the upper panel.
-    let drawn = refresh(&mut r, id, &mut view, Some((LayerRef::Base, "data_area")))
-        .expect("a selection was drawn");
-    check(
-        drawn.y + drawn.height <= 120.0,
-        format!("the parent's data area box {drawn:?} is not in its panel"),
-    );
+    refresh(&mut r, id, &mut view, &[selection_box_at(60.0, 40.0)]);
     check(
         view.layer_raster_generations() == vec![4, 4, 3, 5],
         format!("parent selection: {:?}", view.layer_raster_generations()),
     );
-    refresh(&mut r, id, &mut view, None);
+    refresh(&mut r, id, &mut view, &[]);
     check(
         frame_with_view(&mut r, id, &view) == previous,
         "clearing the selection did not restore the frame".into(),
@@ -362,7 +340,7 @@ fn a_linked_view_state_edit_moves_the_group_in_one_call() {
     state.subplots[0].left_y.max = 80.0;
     r.set_chart_view_state(id, state.clone()).unwrap();
     let edited = r.chart_config(id).unwrap().clone();
-    refresh(&mut r, id, &mut view, None);
+    refresh(&mut r, id, &mut view, &[]);
     let after = frame_with_view(&mut r, id, &view);
     let fresh = fresh_frame(&edited);
 
@@ -785,94 +763,4 @@ fn picks_are_highlighted_in_the_panel_of_their_series() {
         }
         assert!(inside > 20, "{series_id}: {inside} highlighted pixels");
     }
-}
-
-// A subplot's line offsets are its own (#50): its members draw in its own
-// area, shifted on its own axes, exactly where a host-shifted copy of the
-// data draws, while the parent's group stays in the parent's area; the view
-// holds a panel view per member, and a pick in the subplot finds the member
-// where it is drawn.
-#[test]
-fn subplot_members_draw_shifted_in_their_own_area() {
-    let fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
-        .lock()
-        .unwrap();
-    let mut r = renderer();
-    r.add_column("b20", &column(vec![30.0, 50.0, 40.0, 70.0, 60.0]))
-        .unwrap();
-    r.add_column("a3", &column(vec![0.5, 0.9, 0.6, 1.1, 0.7]))
-        .unwrap();
-    let group = |ids: &[&str], step_y: f64| crate::data_config::LineOffsets {
-        series: ids.iter().map(|id| (*id).into()).collect(),
-        step_y,
-        step_x: 0.0,
-    };
-    let host = |shifted: bool| {
-        let mut list = series();
-        list.push(declaration("s3", "x", if shifted { "a3" } else { "a" }));
-        list.push(declaration("t1", "x", if shifted { "b20" } else { "b" }));
-        list
-    };
-    let mut plain = document();
-    plain.subplots[0].series.push("t1".into());
-    let mut offset = plain.clone();
-    offset.line_offsets = Some(group(&["s0", "s3"], 0.3));
-    offset.subplots[0].config.line_offsets = Some(group(&["s1", "t1"], 20.0));
-    let drawn = r
-        .export_document_rgba(&Chart::new(offset.clone()), &host(false), 1.0)
-        .unwrap();
-    let expected = r
-        .export_document_rgba(&Chart::new(plain.clone()), &host(true), 1.0)
-        .unwrap();
-    drop(fonts);
-    let (largest, count) = drawn
-        .rgba
-        .chunks_exact(4)
-        .zip(expected.rgba.chunks_exact(4))
-        .map(|(p, q)| p.iter().zip(q).map(|(a, b)| a.abs_diff(*b)).max().unwrap())
-        .fold((0u8, 0usize), |(largest, count), d| {
-            (largest.max(d), count + usize::from(d > 0))
-        });
-    // The shift is added in the shader for the group and on the host for
-    // the copy, so the two lines sit within an f32 rounding of each other
-    // and their anti-aliased edges differ by a few code values: up to 2 on
-    // lavapipe, 3 on WARP and Metal (#63), on a handful of pixels.
-    assert!(
-        largest <= 4 && count <= 16,
-        "{count} pixels differ by up to {largest}"
-    );
-    assert_ne!(
-        drawn.rgba,
-        r.export_document_rgba(&Chart::new(plain), &host(false), 1.0)
-            .unwrap()
-            .rgba
-    );
-    let view = r
-        .create_chart_view(&Chart::new(offset.clone()), UPPER)
-        .unwrap();
-    // Base, its two members, then subplot 0 with its overlay and two
-    // members, then subplot 1.
-    assert_eq!(view.overlay_count(), 7);
-    let mut active = offset;
-    active.set_active_layer(LayerRef::Subplot(0));
-    r.enable_gpu_picking().unwrap();
-    let id = r.register_chart(active.clone(), host(false)).unwrap();
-    let panel = active.subplot_config(0).unwrap();
-    let da = panel.data_area().unwrap().0;
-    // Point 0 of `t1` (x 0.1 on the -0.5..1 axis, y 10) is drawn at 30 on
-    // the subplot's 0..60 axis.
-    let at = [
-        da.x as f32 + (0.1 + 0.5) / 1.5 * da.width as f32,
-        (da.y + da.height) as f32 - 30.0 / 60.0 * da.height as f32,
-    ];
-    let request = GpuPickRequest {
-        canvas_position_px: at,
-        display_panel_px: active.document_area(),
-        display_scale: 1.0,
-        max_distance_px: 3.0,
-    };
-    let hit = pollster::block_on(r.pick_chart(id, request).unwrap().resolve())
-        .unwrap()
-        .expect("the shifted subplot member picks");
-    assert_eq!((hit.series_id.as_str(), hit.point_index), ("t1", 0));
 }

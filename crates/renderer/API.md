@@ -19,8 +19,8 @@ local checkout, replace `version` with a `path` to `crates/renderer` or
 The renderer re-exports model types. Enable its `serde` feature to serialize
 those types; consumers do not need to name `figgy-model` merely to enable serde.
 `egui_demo` enables optional GUI example dependencies. Default features do not
-require a windowing or GUI framework. The `figgy` WASM wrapper, figgy's browser
-product, is a separate consumer and has `publish = false` for the Rust registry.
+require a windowing or GUI framework. The `figgy` WASM wrapper is a separate
+consumer and has `publish = false` for the Rust registry.
 
 Rust 1.99 is the declared support floor (`rust-version`), not a claim that
 earlier toolchains cannot compile the code. CI tests with the toolchain pinned
@@ -46,14 +46,20 @@ Tested revisions and results are in the
 | Renderer | Input | Frame preparation |
 | --- | --- | --- |
 | `Renderer` | `Config`, ordered `SeriesConfig`, registered numeric columns | `prepare` or `prepare_registered` |
-| `RadialRenderer` | `RadialChart`, slice values in the model | `prepare` |
+| `RadialRenderer` | `RadialChart`, bounded slice values | `prepare` |
+| `CategoricalRenderer` | `CategoricalChart`, bounded category/series values | `prepare` |
+| `BoxPlotRenderer` | `BoxPlotChart`, supplied summary statistics | `prepare` |
+| `RadarRenderer` | `RadarChart`, bounded per-category values per series | `prepare` |
 
-The radial chart is the DataLess chart: it carries every value in the chart
-model, up to fixed limits such as 64 slices. Its API is separate from `ColumnSource` and
-streaming, and it does not calculate raw-sample statistics. Limits, missing
-values, style inheritance and picking identities are documented in its module.
-Radial targets use group/index positions, so a host that reorders slices must
-update interaction targets too.
+Bounded charts (radial, categorical, boxplot and radar) carry every value in
+the chart model, up to fixed per-module limits such as 64 radial slices, or 64
+categories and 16 series for bars. Their APIs are separate from `ColumnSource`
+and streaming, and they do not calculate raw-sample statistics. Chart-specific
+limits, missing values, style inheritance and picking identities are documented
+in their modules. Categorical/boxplot targets use category/series IDs, radar
+targets a series ID with an optional category ID for a vertex; radial targets
+use group/index positions, so a host that reorders slices must update
+interaction targets too.
 
 A polar plot is not a renderer of its own: `Config.polar = Some(PolarOptions)`
 makes `Renderer` draw the same columns and `SeriesConfig` in (angle, radius),
@@ -71,15 +77,6 @@ Histograms, fields, contours, error bars, vectors, overlay layers, a
 logarithmic or inverted angle axis, an arc interpolation on a step line and
 streamed sources are rejected with explicit errors. See the
 [polar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/POLAR.md).
-
-A radar chart is a polar chart with a categorical angle axis
-(`bottom_x.categories`) and `DataRenderType::Radar` series: closed outlines
-through the category spokes, with an optional fill and vertex markers, picked
-by vertex as `PickedData::Point`. A legacy `RadarChart` document opens through
-`Config::from_radar`, which returns the `Config`, the series and the columns to
-upload (category positions and one value column per series) borrowed from the
-document. Radar series reject streamed sources. See the
-[radar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md).
 
 `ColumnSource` uploads each value as one `f32`, stored as an `(f32, 0)` pair;
 `HiLoColumnSource` uploads `(hi, lo)` `f32` pairs that preserve sub-f32 deltas
@@ -121,11 +118,10 @@ field setters:
 | Operation | Config changes |
 | --- | --- |
 | `config_mut()` / `with_axis_range_change(...)` / `with_decoration_change(...)` | Only the fields the caller writes. `config_mut` and `with_axis_range_change` also set the chart's `data_dirty()` and `raster_dirty()` flags; `with_decoration_change` sets only `raster_dirty()`. |
-| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. The spacing is `tick::axis_major_spacing`: 0.2, 0.5 or 1 × 10^k of the span on a linear axis (5 to 10 major intervals), and on a logarithmic axis 1 decade per major tick up to 6 decades, 2 up to 12, then `ceil(decades / 6)`. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. Every range helper keeps `log_ticks`: an `Adaptive` logarithmic axis plans its majors from the new range and does not draw the written decade step. |
-| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. These and `set_x_range` / `set_y_range` leave a categorical axis (`categories` set) unchanged. |
+| `set_x_range(...)` / `set_y_range(...)` | Set both axes in the pair and choose major spacing, minor count, label format and precision from the bottom/left axis's scale. On a linear axis an existing timestamp format is kept and any other format, including a polar `Degrees` or `Radians` format, becomes `Decimal`. On a polar chart `set_x_range` only chooses the angle ticks, spokes and labels drawn. |
+| `auto_fit_x*` / `auto_fit_y*` / `auto_fit_colorbar*` | Derive a range from data or supplied extents with padding, then apply the associated tick and label adjustments. |
 | `with_title(...)` | Replace the title text and grow its band when the measured text is taller than the current band. The band never shrinks. |
 | `with_x_title(...)` / `with_y_title(...)` | Replace the bottom/left axis title text; these helpers do not fit margins. |
-| `layout::auto_layout(&config, &measure)` | Returns a copy of the config, the input untouched, whose `out_margin`s, axis title `offset_y`s, label formats, chart title band, legend corner and colourbar band are chosen so labels, titles, legend and colourbar do not overlap as `measure` (for example `CpuTextMeasure::for_style(&config.draw_style)`) lays them out. A band grows, never shrinks, to the labels, `LABEL_GAP`, the title and `LABEL_GAP`; a title that does not clear its labels gets the offset that puts it beside them; a document that already clears is returned unchanged, and a long `Decimal` or `Plain` axis becomes `Power`. Ranges, ticks, series and annotations are never written. Apply the result with `set_chart_config`; call it again after an auto-fit or a zoom. The browser wrapper's `autoLayout(configJson)` is the same call. |
 
 Fit padding is an explicit caller argument: `0.05` adds 5% on each side of a
 linear range, while `0.0` adds no padding. The renderer does not impose a global
@@ -159,118 +155,28 @@ guarantee the same number of visible labels: those depend on the new range and
 available space. Raster safety limits can still substitute unusable tick settings
 without rewriting the config; read `ChartView::render_warnings()` after refresh.
 Numeric tick labels may use a coarser display stride to avoid overlaps, without
-changing tick/grid positions or the config. A logarithmic axis with
-`log_ticks: LogTickPolicy::Adaptive` ([#42](https://github.com/shim9610/figgy/issues/42))
-labels inside a decade: its majors are whole decades, 1, 2 and 5 × 10^k or
-1 to 9 × 10^k, whichever the range needs for at least four majors
-(`tick::log_ladder`, a function of the range alone, so linked charts and
-every output scale place the same ticks), and crowded labels are first
-demoted 1..9 → 1, 2, 5 → decades while at least two remain, then strided. Number format and requested precision
+changing tick/grid positions or the config. Number format and requested precision
 are controlled by `label_style.format` and `label_style.significant_digits`,
 including colorbar labels; unusually long labels still need explicit margin space.
 Calendar-based timestamp ticks follow their own layout policy. The renderer
 still validates a directly edited config when it registers, refreshes, prepares
 or exports the chart. After any edit, refresh the derived view as described below.
 
-A Cartesian axis becomes categorical when its `categories` is set: with `n`
-categories it maps the data range `[-0.5, n - 0.5]`, category `i` sits at
-x (or y) `i`, every category has a major tick (and a grid line when that
-axis' major grid is on), and the tick label is `categories[i].label` in the
-axis' `label_style`, thinned like numeric labels when neighbours crowd. Upload
-the data of a categorical axis as category indices `0..n`. `min`, `max`,
-`major_spacing`, `minor_count` and `label_style.format` are ignored there,
-and `set_x_range` / `set_y_range`, the `auto_fit_*` helpers and view states
-leave the axis unchanged. A categorical axis must be linear; `inverted` walks
-its categories from the far end (the first category at the top of a `left_y`),
-with at least one category and no upper count, whose ids are unique (every
-category draws its value labels); polar axes and the colourbar
-axis cannot be categorical yet, and streamed series are rejected on a chart
-with a categorical axis.
-
-Categorical bars are `DataRenderType::CategoryBars` series over the
-categorical axis of their direction (`bottom_x` for vertical bars, `left_y`
-for horizontal ones), laid out by `Config.bar_groups` (grouped, stacked or
-percent, the group width and the gap). Each reads a positions column
-`0..n` and a values column of one value per category; NaN is a missing
-bar. `AxisOptions::cross_at` puts the category axis line at a value of the
-value axis. `auto_fit_layer_union` fits the value axis to what the bars
-draw; a stacked group's extent is measured by the pool when its value
-columns are uploaded together with `add_columns`. A bar is picked as
-`PickedData::HistogramBin` with the category row, and selected through
-`PickedDataRef::HistogramBin`. `Config::from_categorical` opens a legacy
-`CategoricalChart` document as such a chart; see the
-[bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md).
-
-Box plots are `DataRenderType::BoxPlot` series over the same categorical
-axes and grouped `Config.bar_groups`. Each reads a positions column `0..n`, a
-record of box statistics (`Renderer::upsert_record` with the
-`BOX_PLOT_RECORD` schema: median, quartiles, whiskers and the optional mean,
-count and median CI, one row per category) and, optionally, a ragged column of
-outliers (`Renderer::upsert_ragged`, one group per category). The renderer
-does not compute statistics or check their order; the drawing clamps.
-`auto_fit_layer_union` fits the value axis to the records' and outliers'
-statistics. Every part of a box (body, whiskers, caps, median, mean,
-outliers) picks the box as `PickedData::HistogramBin` with the category row.
-A box plot series can also draw violins from the host's density curves
-(`BoxPlot.violin`: one curve mirrored, or a curve per side) and its raw
-points jittered across the slot (`BoxPlot.points`, a raincloud with a
-one-sided violin); a violin answers its category as its box does, a raw
-point `PickedData::Point`. The renderer draws the density it is given and
-estimates nothing.
-`Config::from_boxplot` opens a legacy `BoxPlotChart` document as such a
-chart; see the
-[box plot guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/BOXPLOT.md).
-
-Range bars are `DataRenderType::RangeBars` series: a bar per row from a
-start to an end value at a position, with optional whiskers, direction,
-total or state colours, progress and connectors, over a categorical or a
-numeric (time) position axis. Every value is a host column; the renderer
-computes no total, change or duration. Every part of a bar picks it as
-`PickedData::HistogramBin` with the row; see the
-[range bar guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/RANGEBARS.md).
-
-Category bar, box plot, range bar and radar series draw value labels: the strings of
-`labels.text` (SSOT configuration written at edit time by `format_labels`,
-`format_box_plot_labels` or `format_radar_labels`; the renderer never
-formats a value), baked into a label atlas with the contour labels' text
-stack at the render scale and placed from the pool on every draw at the bar
-end, past the top of the box or outside the vertex, moved by
-`labels.offsets`. A label is picked by `pick_chart_data` as
-`PickedData::ValueLabel` (series and category), selected through
-`PickedDataRef::ValueLabel` (its frame is outlined) and dragged with
-`SeriesConfig::drag_value_label`; its id for hosts is
-`data_config::value_label_id(series_id, index)`. See Value labels in the
-[interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md).
-
-```rust
-use renderer::config::Category;
-use renderer::default::default_config;
-
-let mut cfg = default_config();
-cfg.bottom_x.categories = Some(vec![
-    Category::new("north", "North"),
-    Category::new("south", "South"),
-]);
-assert_eq!(cfg.bottom_x.data_range(), (-0.5, 1.5));
-assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
-```
-
 ## Native edit, pick and export workflow
 
 1. Create one `RendererDevice` from the host's matching wgpu device/queue handles.
-   Use `Renderer::try_new` for Cartesian charts or `RadialRenderer::new` for the radial chart.
+   Use `Renderer::try_new` for Cartesian charts or the bounded renderer's `new`.
    Window helpers are optional; a headless application does not need a window.
 2. For Cartesian charts, upload columns, build `Chart`/`SeriesConfig`, create a
    `ChartView` and a `ChartStyle` for each series, then use `prepare` +
    `paint_prepared`, or the panel export helpers. Renderer-managed chart
    IDs instead use `register_chart`, `set_chart_config`/`set_chart_series` and
    `prepare_registered`; editing an unrelated local `Config` does not edit that ID.
-   For the radial chart, edit the `RadialChart` passed to `prepare`. Normal edits do not require `clear_cache`.
-3. Hit-test the frame currently displayed. The radial chart picks its slices
-   on the GPU (`frame.pick(p)` returns a ticket, `resolve()` reads the slice
-   back). Its title, slice labels and plot area use `frame.decorations()`, a
-   `HitMap<RadialChart>` queried with the chart it was prepared from
-   (`frame.decoration_at(&chart, p)`). All take chart-local logical pixels. Cartesian decorations use
+   For bounded charts, edit the `RadialChart`, `CategoricalChart`, `BoxPlotChart`
+   or `RadarChart` passed to `prepare`. Normal edits do not require `clear_cache`.
+3. Hit-test the frame currently displayed. Bounded data uses `frame.hit_test`;
+   bounded titles/axes/labels/legends/plot areas use `frame.decorations()`. Both
+   take chart-local logical pixels. Cartesian decorations use
    `HitMap::for_active_layer(&config)`, or `ChartView::hit_test_active_layer` to
    include annotations, in the pixels of the config the view was refreshed with.
    Cartesian data picks address a registered chart ID: `Renderer::pick_chart` /
@@ -280,13 +186,13 @@ assert_eq!(cfg.bottom_x.validate_categories(), Ok(()));
 4. Store the target in the model and edit its values/styles or decoration layout.
    For Cartesian charts, refresh the view's changed axes/decorations and rebuild
    affected caller-owned styles as described below, then prepare, draw and submit.
-   The radial renderer updates its derived resources in `prepare`.
+   Bounded renderers update their derived resources in `prepare`.
    A stored frame is not a live view of the model.
    For a resize that may fail layout validation, prepare a trial model before
    replacing the displayed model. The host requests frames and advances animations.
 5. Export the same model state to RGBA/PNG. Selection and hover emphasis are model
-   state; clearing them or exporting another copy changes the output. For the
-   radial chart, hide only decoration handles by clearing `decorations.selected` in an
+   state; clearing them or exporting another copy changes the output. For bounded
+   charts, hide only decoration handles by clearing `decorations.selected` in an
    export clone while preserving data selection, offsets and `data_area`.
    Cartesian exports never draw decoration selection boxes. The caller stores
    PNG bytes.
@@ -304,7 +210,7 @@ either object automatically in the caller-owned `prepare` path.
 
 | Change | Required work before the next `prepare` |
 | --- | --- |
-| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection(view, chart, panel_rect, Some(element_id))` when displaying a selection: the renderer draws the box from the element's own placement, and `selection_box(chart, element_id)` returns the same box for host UI. |
+| Axis range, ticks, grid, title, legend, decoration layout or panel size | Call `refresh_axis` with the current chart and panel rectangle. Use `refresh_axis_with_selection` when displaying selection boxes. |
 | Series appearance, mapped styles or series identity | Recreate the affected `ChartStyle` with `create_style_for_series`, or its scaled variant at the display scale. Refresh decorations too if labels or legend appearance changed. |
 | Column values | Finish the upload/upsert before preparing. Refresh axes/decorations if the edit also changes their config. |
 | Annotation items or annotation selection only | Call `refresh_annotations(view, chart, panel_rect, selected)`; it leaves the axis and decoration textures alone. A `refresh_axis*` call redoes the annotation layer too. Toggling `annotations.visible` only skips the composite and needs no raster refresh. |
@@ -366,7 +272,7 @@ Panel export helpers build their own scaled view and styles from the supplied
 configs. A correct PNG does not establish that a separately displayed view has
 been refreshed. Apply the same model edits to both paths. A `Config` with
 `overlays` is exported as a whole by the `export_document_*` helpers (every
-layer composited in order, every layer's decoration above every layer's data). A document with `subplots` (more charts, each with
+layer composited in order). A document with `subplots` (more charts, each with
 its own axes) exports the union of every chart area (`Config::document_area`),
 and a display fits that union with `display_config_for_surface`. The
 `export_panel_*` helpers render only the parent chart's own base layer in its
@@ -375,12 +281,12 @@ subplots. See the
 [overlay layer contract](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#overlay-layers) and
 [subplots](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#subplots).
 
-### Radial chart example
+### Bounded chart example
 
-This radial example accepts the host GPU pair, selects from a displayed frame,
+This bounded example accepts the host GPU pair, selects from a displayed frame,
 changes a slice color and exports the resulting model. It is compiled as a doctest;
-the `radial_editor`
-example (`--features egui_demo`) demonstrates render-pass submission and pointer
+the `radial_editor`, `categorical_editor`, `boxplot_editor` and `radar_editor`
+examples (`--features egui_demo`) demonstrate render-pass submission and pointer
 events.
 
 ```rust,no_run
@@ -398,11 +304,8 @@ async fn edit_and_export(
         ],
         ..Default::default()
     };
-    // The drawn label strings are written at edit time.
-    chart.format_labels();
     let displayed = renderer.prepare(&chart, (800, 600), 1.0)?;
-    // The radial chart picks on the GPU: request, then resolve.
-    chart.interaction.selected = displayed.pick(pointer)?.resolve().await?;
+    chart.interaction.selected = displayed.hit_test(pointer);
     chart.slices[0].color = Color::from_rgb8(50, 180, 150);
     // Export prepares the edited model at the requested resolution (1600 x 1200).
     let image = renderer.export_rgba_async(&chart, (800, 600), 2.0).await?;
@@ -414,9 +317,8 @@ async fn edit_and_export(
 
 ## Errors
 
-Cartesian operations return `FiggyError`; the radial renderer uses
-`RadialError`. `RadarChart::validate` reports a legacy radar document's
-validation error as a `&'static str`. Handle validation/layout/budget errors before
+Cartesian operations return `FiggyError`; bounded renderers use `RadialError`,
+`CategoricalError`, `BoxPlotError` and `RadarError`. Handle validation/layout/budget errors before
 replacing the last valid display.
 
 ## Construction and prewarming
@@ -440,8 +342,8 @@ still involve driver compilation work during construction.
 
 Full prewarm does not prepare future chart data, views, series styles, label
 atlases or result buffers, and is not a guarantee of allocation-free or
-compilation-free first drawing. The separate radial
-renderer and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
+compilation-free first drawing. Separate radial/categorical/boxplot/radar
+renderers and nonresident matrix/tile streaming pipelines are outside this prewarm scope.
 
 ## Ownership and frame validity
 
@@ -452,7 +354,8 @@ also retain the instance, adapter and surface needed for their own lifetime.
 
 Cartesian `PreparedFrame` validity depends on captured renderer resources and
 revisions. If painting returns `StalePreparedFrame`, rebuild the inputs and
-prepare again. A radial chart frame (`Arc<RadialFrame>`) owns an immutable GPU snapshot:
+prepare again. A bounded chart frame (`Arc<RadialFrame>`, `Arc<CategoricalFrame>`,
+`Arc<BoxPlotFrame>` or `Arc<RadarFrame>`) owns an immutable GPU snapshot:
 keeping it alive keeps its resources alive even after the current model changes.
 Do not retain every historical frame in a live-edit loop.
 
@@ -484,27 +387,19 @@ guarantee driver allocation success; handle allocation failure and device loss.
 
 ## Render targets, coordinates and output
 
-Radial chart frames require a target with the prepared physical size, the renderer's
+Bounded chart frames require a target with the prepared physical size, the renderer's
 format and sample count 1. `draw` sets viewport/scissor to that target. For a host
 UI subregion or a multisampled host pass, draw to a matching offscreen texture and
 composite it. Supported formats are RGBA8/BGRA8, linear or sRGB.
 
-Radial chart `prepare` takes logical size and scale; picking takes logical
-coordinates. The radial chart draws the label strings of its slices'
-`text` and formats nothing: write them with `RadialChart::format_labels`
-after editing values or formats (`normalize_labels` fills a loaded document
-that has none). Frame sizes and data geometry rectangles are physical pixels;
+Bounded chart `prepare` takes logical size and scale; picking takes logical
+coordinates. Frame sizes and data geometry rectangles are physical pixels;
 `frame.decorations()` exposes its hit bounds and selection boxes in logical pixels.
 Prepare at the actual output scale to rasterize labels at that resolution.
 Each module documents its accepted size/scale bounds; the Cartesian export scale
-contract differs from the radial chart contract.
+contract differs from the bounded chart contract.
 
-RGBA export returns pixels; PNG encoding returns bytes. The SVG export
-(`export_document_svg_async`, `RadialRenderer::export_svg_async`) returns a
-`String` and the PDF export (`export_document_pdf_async`,
-`RadialRenderer::export_pdf_async`) bytes: decorations as vector content, the
-data layer as images of the PNG export's pixels (see the
-[usage guide](USAGE.md#svg-and-pdf-export)). The caller decides where
+RGBA export returns pixels; PNG encoding returns bytes. The caller decides where
 to send or store them. Native blocking helpers and async variants are both
 available. No project file persistence or application event loop is required.
 
@@ -586,13 +481,13 @@ endpoint it uses distance to that endpoint. This avoids reconstructing a rounded
 closest point that can falsely reject an exact centerline hit at zero tolerance;
 it does not add a pick radius or turn finite segments into infinite lines.
 
-## Radial chart decoration interaction
+## Bounded chart decoration interaction
 
-Radial frames expose `decorations()`, a hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts: a `HitMap<RadialChart>`, whose title, plot area and slice labels (an outside label with its leader line) place their parts from the chart through the one emit the label raster draws with. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
+Radial, categorical, boxplot and radar frames expose `decorations()`, a renderer-measured hit map using the shared `HitMap` / `Selectable` / `Draggable` / `Resizable` contracts. See [interaction workflow](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md) for selection, logical-pixel dragging, SSOT persistence and host integration.
 
 ## Pointer position in drags
 
-Every drag takes a `&dyn MeasureText` (the renderer's `CpuTextMeasure::for_style(&config.draw_style)`): a move is contained on the element's drawn parts, so it is rejected when none of them would keep its centre inside the chart area, or when the measure cannot place the element. Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, measure, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, measure, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
+Hosts that know the pointer position pass it through `Draggable::drag_from(cfg, at, dx, dy)`; the default forwards to `drag_by`, and only a polar chart's axes and tick labels read the position (the ray turns around the centre, the angle labels move along the spoke under the pointer). `Config::nudge_from(element, Some(at), dx, dy)` is the model-level entry; `nudge` is `nudge_from` without a position.
 
 ## Annotation layer
 
@@ -601,12 +496,12 @@ spans, text boxes, arrows). Cartesian views rasterize it into two more
 `ChartView` textures: `refresh_axis*` redoes them with the axis raster and
 `Renderer::refresh_annotations(view, chart, panel_rect, selected)` redoes them
 alone when `ChartRenderStamp::needs_annotation_raster_since` or the annotation
-selection changed; `ChartView::annotation_map()` is the layer's hit map. The
-radial renderer returns the layer as `prepare_annotations(chart, size, scale)` →
-`Arc<BoundedAnnotationFrame>`, drawn after the frame with `draw_overlay` (the
-radial chart has no value axes, so it draws no span below the slices). Items
-the raster could not place are `RenderWarning::AnnotationSkipped` on
-`ChartView::render_warnings()` (Cartesian) or
-`BoundedAnnotationFrame::render_warnings()` (radial). See the
+selection changed; `ChartView::annotation_map()` is the layer's hit map. Bounded
+renderers return the layer as `prepare_annotations(chart, size, scale)` →
+`Arc<BoundedAnnotationFrame>`, drawn as `draw_underlay`, the frame, `draw_overlay`
+(an underlay needs `set_background(FrameBackground::HostClear)` and a clear with
+the chart background; `export_rgba` handles that itself). Items the raster could
+not place are `RenderWarning::AnnotationSkipped` on `ChartView::render_warnings()`
+(Cartesian) or `BoundedAnnotationFrame::render_warnings()` (bounded). See the
 [annotation section of the interaction guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)
 and the [configuration reference](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#layerref--annotationlayer).

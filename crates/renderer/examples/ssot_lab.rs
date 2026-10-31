@@ -468,7 +468,6 @@ impl LabApp {
                 source_id: None,
                 x_column: X_ID.into(),
                 y_column: Y_IDS[i].into(),
-                z_column: None,
                 render_type,
             };
             let style = renderer.create_style_for_series(&series).unwrap();

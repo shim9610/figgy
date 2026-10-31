@@ -5,7 +5,7 @@ use renderer::axis_render::try_raster_chart_to_rgba;
 use renderer::config::TickVisibility;
 use renderer::layout::{ChartArea, Rect, RectF};
 use renderer::text_render::{FontPolicy, measure_rich_text};
-use renderer::{Chart, ChartTitleElement, Config, CpuTextMeasure, SelectionGeometry, TextAlign};
+use renderer::{Chart, ChartTitleElement, Config, CpuTextMeasure, Selectable, TextAlign};
 
 const WIDTH: u32 = 640;
 const HEIGHT: u32 = 480;
