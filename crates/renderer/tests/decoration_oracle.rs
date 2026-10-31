@@ -3353,9 +3353,28 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
                 || "drawn at 2x only".into(),
             );
         }
-        // The 2x export box-filtered back to 1x.
+        // The 2x export box-filtered back to 1x. A text element's box is
+        // held to the Cartesian text share (glyph edges differ at most of
+        // their pixels); the rest of the canvas, the sectors and leaders,
+        // to the radial share.
         let (w, h) = (base1.width as usize, base1.height as usize);
+        let texts: Vec<(&RadialEntry, RectF)> = one
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e.key,
+                    DecorationId::ChartTitle | DecorationId::RadialLabel(_)
+                )
+            })
+            .filter_map(|e| e.text.or(e.bounds).map(|b| (e, b)))
+            .collect();
+        let in_box = |b: &RectF, x: usize, y: usize| {
+            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+            px >= b.x && px <= b.x + b.width && py >= b.y && py <= b.y + b.height
+        };
         let mut differ = 0usize;
+        let mut outside = 0usize;
+        let mut text_differ = vec![(0usize, 0usize); texts.len()];
         for y in 0..h {
             for x in 0..w {
                 let mut worst = 0;
@@ -3368,18 +3387,41 @@ fn sweep_radial(report: &mut Report, scene: &'static str, mut r: Radial, chart: 
                     let one = u32::from(base1.rgba[(y * w + x) * 4 + k]);
                     worst = worst.max((sum / 4).abs_diff(one));
                 }
-                if worst as i32 > SCALE_DIFF {
-                    differ += 1;
+                let changed = worst as i32 > SCALE_DIFF;
+                let mut in_text = false;
+                for (k, (_, b)) in texts.iter().enumerate() {
+                    if in_box(b, x, y) {
+                        in_text = true;
+                        text_differ[k].1 += 1;
+                        if changed {
+                            text_differ[k].0 += 1;
+                        }
+                    }
+                }
+                if !in_text {
+                    outside += 1;
+                    if changed {
+                        differ += 1;
+                    }
                 }
             }
         }
-        let share = differ as f64 / (w * h) as f64;
+        let share = differ as f64 / outside.max(1) as f64;
         report.check(&at, "<export>", Inv::I5, share < RADIAL_SCALE_SHARE, || {
             format!(
-                "{differ} pixels ({:.2} %) of the 2x export box-filtered differ by more than {SCALE_DIFF} from 1x",
+                "{differ} pixels ({:.2} %) of the 2x export box-filtered differ by more than {SCALE_DIFF} from 1x outside the text boxes",
                 share * 100.0
             )
         });
+        for ((e, _), (changed, total)) in texts.iter().zip(&text_differ) {
+            let share = *changed as f64 / (*total).max(1) as f64;
+            report.check(&at, &e.name, Inv::I5, share < TEXT_SCALE_SHARE, || {
+                format!(
+                    "{changed} of the {total} pixels of its box differ by more than {SCALE_DIFF} from 1x ({:.0} %)",
+                    share * 100.0
+                )
+            });
+        }
     }
 }
 
