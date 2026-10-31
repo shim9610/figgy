@@ -8,6 +8,7 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/style.wgsl",
     "data_render/common/projection.wgsl",
     "data_render/common/sample_validity.wgsl",
+    "data_render/common/project_3d.wgsl",
     "data_render/common/ramp.wgsl",
     "data_render/common/sketch_noise.wgsl",
     "data_render/common/arc_pair.wgsl",
@@ -199,6 +200,7 @@ pub(crate) fn create_line_columnar_pipeline_with_entries(
         blend,
         topology,
         label,
+        None,
     )
 }
 
@@ -234,6 +236,7 @@ pub(crate) fn create_line_mapped_pipeline_with_sample_count(
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
         "figgy line mapped pipeline",
+        None,
     )
 }
 
@@ -267,6 +270,42 @@ pub(crate) fn create_line_ternary_pipeline_with_sample_count(
         wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
         wgpu::PrimitiveTopology::TriangleStrip,
         "figgy line ternary pipeline",
+        None,
+    )
+}
+
+/// The stroke of a 3D chart's line series (`vs_3d` / `fs_main`, #132): the
+/// six line slots plus the height at slots 6/7, over the line's groups and
+/// the camera group as group 3, drawn into the panel composite with the
+/// depth test; or its 1×1 ID pick (`vs_3d_pick` / `fs_3d_pick`) into the
+/// integer pick target.
+pub(crate) fn create_line_view3d_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    camera_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    pass: super::View3dPass,
+) -> wgpu::RenderPipeline {
+    let (vs, fs, label) = match pass {
+        super::View3dPass::Pick => ("vs_3d_pick", "fs_3d_pick", "figgy line 3D pick pipeline"),
+        _ => ("vs_3d", "fs_main", "figgy line 3D pipeline"),
+    };
+    line_slot_pipeline(
+        device,
+        shader,
+        &[Some(transform_bgl), Some(style_bgl), None, Some(camera_bgl)],
+        LINE_MAPPED_SLOTS,
+        target_format,
+        sample_count,
+        vs,
+        fs,
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        label,
+        Some(pass),
     )
 }
 
@@ -309,7 +348,19 @@ fn line_slot_pipeline(
     blend: wgpu::BlendState,
     topology: wgpu::PrimitiveTopology,
     label: &str,
+    three_d: Option<super::View3dPass>,
 ) -> wgpu::RenderPipeline {
+    let (depth_stencil, color_target) = match three_d {
+        Some(pass) => (pass.depth_stencil(), pass.color_target(target_format)),
+        None => (
+            None,
+            wgpu::ColorTargetState {
+                format: target_format,
+                blend: Some(blend),
+                write_mask: wgpu::ColorWrites::ALL,
+            },
+        ),
+    };
     let layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -355,17 +406,16 @@ fn line_slot_pipeline(
                 polygon_mode: wgpu::PolygonMode::Fill,
                 conservative: false,
             },
-            depth_stencil: None,
-            multisample: multisample_state(sample_count),
+            depth_stencil,
+            multisample: three_d.map_or_else(
+                || multisample_state(sample_count),
+                |pass| pass.multisample(sample_count),
+            ),
             fragment: Some(wgpu::FragmentState {
                 module: shader,
                 entry_point: Some(fs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: target_format,
-                    blend: Some(blend),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
+                targets: &[Some(color_target)],
             }),
             multiview_mask: None,
             cache: None,
@@ -405,10 +455,15 @@ pub struct ColumnLineLayer<'a> {
     /// slots 6/7 and the [`LineValueMap`] groups as 2 and 3. `None` for every
     /// other line.
     pub value_map: Option<LineValueMap<'a>>,
-    /// A ternary series' third component: `pipeline` is the ternary line
-    /// pipeline (`vs_ternary`), the column bound as slots 6/7 like the X /
-    /// Y columns. `None` for every other line.
-    pub ternary_c: Option<ColumnHandle>,
+    /// A ternary series' third component, or a 3D series' height (#132):
+    /// `pipeline` is the ternary (`vs_ternary`) or 3D (`vs_3d`) line
+    /// pipeline, the column bound as slots 6/7 like the X / Y columns.
+    /// `None` for every other line.
+    pub third: Option<ColumnHandle>,
+    /// A 3D series' camera group, bound as group 3 (#132): `pipeline` is the
+    /// 3D line pipeline, drawn into the panel composite with the depth test
+    /// by `issue_series_surfaces`. `None` for every other line.
+    pub view3d: Option<super::surface_mesh::View3dBinding>,
 }
 
 /// The colour value of a colour-mapped stroke (`vs_main_mapped`): the value
@@ -447,13 +502,13 @@ pub struct ColumnAreaLayer<'a> {
 
 /// Issue one line-slot draw (the shared 6-slot binding scheme). Used for the
 /// main line layer and the constellation star pass.
-pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
+pub(crate) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLayer<'_>) {
     // A colour column is index-aligned with the coordinates and bounds the
     // segments too.
     let count = l
         .value_map
         .map_or(usize::MAX, |map| map.column.len_values)
-        .min(l.ternary_c.map_or(usize::MAX, |c| c.len_values))
+        .min(l.third.map_or(usize::MAX, |c| c.len_values))
         .min(l.x.len_values)
         .min(l.y.len_values) as u32;
     if count < 2 {
@@ -473,11 +528,14 @@ pub(super) fn draw_line_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnLineLay
         pass.set_vertex_buffer(6, l.pool_buffer.slice(value));
         pass.set_vertex_buffer(7, l.pool_buffer.slice(value_next));
     }
-    if let Some(c) = l.ternary_c {
+    if let Some(c) = l.third {
         let c = c.byte_range();
         let c_next = (c.start + crate::data::COLUMN_VALUE_BYTES as u64)..c.end;
         pass.set_vertex_buffer(6, l.pool_buffer.slice(c));
         pass.set_vertex_buffer(7, l.pool_buffer.slice(c_next));
+    }
+    if let Some(view3d) = &l.view3d {
+        pass.set_bind_group(3, &view3d.bind_group, &[]);
     }
     let x_full = l.x.byte_range();
     let y_full = l.y.byte_range();

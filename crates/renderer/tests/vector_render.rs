@@ -130,6 +130,7 @@ fn points(id: &str, style: VectorStyle) -> SeriesConfig {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Points {
                 u: "u".into(),
@@ -165,6 +166,7 @@ fn grid(
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::Vector {
             components: VectorComponents::Grid {
                 u: matrix(u, orientation, grid_layout),
@@ -920,6 +922,7 @@ fn grid_arrows_draw_over_a_heatmap_and_contour_on_the_same_grid() {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: matrix(
                 &["z0", "z1", "z2"],
@@ -1546,6 +1549,7 @@ fn streamlines(arrows: Option<StreamlineArrows>, color: Option<&str>) -> SeriesC
         label: None,
         x_column: "sx".into(),
         y_column: "sy".into(),
+        z_column: None,
         render_type: streamline_style(arrows, color),
     }
 }

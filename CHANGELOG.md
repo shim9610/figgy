@@ -142,6 +142,15 @@ additive.
   literal adds `view_3d: None`; a `Heatmap { .. }` or `HeatmapContour { .. }`
   literal adds `surface: None`, and a pattern that names every field adds
   `surface` or `..`.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  `SeriesConfig` gains `z_column: Option<ColumnId>`, the height column a
+  `Scatter`, `Line` or `ScatterLine` series draws with on a 3D chart
+  (`right_y`); `Config::validate_view3d_series` accepts those kinds with it
+  (linear, no area fill) and rejects them without it, and
+  `Chart::auto_fit_view_3d_z` unions the z columns. `z_column` is omitted
+  when `None` and kept and unused on a flat chart. Migration: a
+  `SeriesConfig { .. }` literal adds `z_column: None`, and a pattern that
+  names every field adds `z_column` or `..`.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)).
   `DataRenderType::Ternary` gains `region: Option<TernaryRegionStyle>`
@@ -1049,6 +1058,28 @@ additive.
   `right_y` to the height columns' statistics. Annotations place ratio
   anchors only, streamed sources are rejected, and the compile capture
   records `depthStencil`. A grid past `1 << 22` quads draws whole.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  A scatter, line or scatter-line series with a `z_column` draws on a 3D
+  chart through new entries of the scatter, line and arc modules (`vs_3d`,
+  `vs_3d_mapped`, `vs_3d_pick`, `vs_3d_mapped_pick`, `vs_pick_ring_3d`,
+  `vs_pick_ring_3d_mapped`, the line's `vs_3d` / `vs_3d_pick`, the arc
+  scan's `seg_init_3d`; `common/project_3d.wgsl` gains `view3d_point_t`,
+  `view3d_point_valid` and `view3d_pick_id`): markers are camera-facing
+  quads of their pixel size at the depth of the front of a ball of their
+  radius, strokes keep their pixel width between the projected ends at the
+  front of a tube of their half width with the dashes measured along the
+  projected chord (`project_box_front`), both depth tested against the
+  surfaces and each other with alpha to coverage on a multisampled composite.
+  They are drawn into the panel composite after
+  the surfaces (`SeriesLayers::line_3d` / `scatter_3d`), picked by the 1×1
+  ID pick (kind 1: `PickedData::Point`, the marker or the segment's nearer
+  end, never a mark behind a surface) and ringed in the live slot. Eight
+  pipelines (`TargetPipelines::view3d`) and one compute pipeline, and one
+  bind group layout for the mapped markers (the point value map and the
+  camera in one group, `surface_mesh::create_view3d_value_map_bind_group_layout`;
+  `ValueMapScratch` keeps its buffers for it). The `Surface` catalogue
+  scene gains a trajectory. A trajectory past `1 << 20` rows draws whole
+  and picks.
   Guide: `SURFACE.md`.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)). A ternary panel with
@@ -1752,6 +1783,10 @@ additive.
   `zoom_view(factor)` zooms a 3D chart's camera, a data-area drag orbits
   it, `auto_fit_all` fits the z axis, and `selection_details()` adds a
   surface's `color_value` when it has a colour grid.
+- **3D scatter and line series** ([#132](https://github.com/shim9610/figgy/issues/132)).
+  `set_series` reads and writes a series' `"z_column"` (SCHEMA.md, omitted
+  when absent) and `selection_details()` adds a point's `z` when its
+  series has one. No new binding.
 - **Ternary region fills** ([#49](https://github.com/shim9610/figgy/issues/49),
   [#55](https://github.com/shim9610/figgy/issues/55)). `set_series` reads and
   writes a ternary series' `"region"` (SCHEMA.md, omitted when absent); a

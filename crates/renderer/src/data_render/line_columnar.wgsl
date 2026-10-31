@@ -195,6 +195,79 @@ fn vs_ternary(in: VsIn, arc: VsArc, c: VsTernaryC, @builtin(vertex_index) vid: u
     return line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a_ndc, b_ndc);
 }
 
+// A 3D chart's line (`Config.view_3d`, #132): the height of each end at
+// slots 6 and 7, the ends projected through `project_box` and the stroke
+// built between them in the target's pixel frame, so its width is constant
+// on screen; each corner takes its end's depth at the front of a tube of
+// the half width (`project_box_front`), so the stroke is depth tested
+// against the surfaces and the markers. A 3D line is linear (step
+// modes are rejected), so a segment is the single chord a → b; an end
+// outside the box drops the segment (`view3d_point_valid`).
+struct VsZ {
+    @location(6) z_a: vec2<f32>,
+    @location(7) z_b: vec2<f32>,
+};
+
+fn line_3d_vertex(in: VsIn, arc: VsArc, z: VsZ, vid: u32) -> VsOut {
+    if (!view3d_point_valid(transform, in.x_a, in.y_a, z.z_a)
+        || !view3d_point_valid(transform, in.x_b, in.y_b, z.z_b)) {
+        var masked: VsOut;
+        masked.pos = vec4<f32>(2.0, 2.0, 0.0, 1.0);
+        return masked;
+    }
+    let slot = strip_slot(vid, 4u);
+    let piece = step_piece(in.x_a, in.y_a, in.x_b, in.y_b, LINE_STEP_LINEAR, slot.piece);
+    let half_w = max(style.line_width_px, 1.0) * 0.5;
+    let t_a = view3d_point_t(in.x_a, in.y_a, z.z_a);
+    let t_b = view3d_point_t(in.x_b, in.y_b, z.z_b);
+    let a = clip_at_depth(project_box(t_a), project_box_front(t_a, half_w));
+    let b = clip_at_depth(project_box(t_b), project_box_front(t_b, half_w));
+    var out = line_stroke_vertex(in, arc, LINE_STEP_LINEAR, slot, piece, a.xy / a.w, b.xy / b.w);
+    out.pos.z = select(a.z / a.w, b.z / b.w, slot.local >= 2u);
+    return out;
+}
+
+@vertex
+fn vs_3d(in: VsIn, arc: VsArc, z: VsZ, @builtin(vertex_index) vid: u32) -> VsOut {
+    return line_3d_vertex(in, arc, z, vid);
+}
+
+struct VsLinePickOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) dist_px: f32,
+    @location(1) along_px: f32,
+    @location(2) side_px: f32,
+    @location(3) segment_len_px: f32,
+    @location(4) @interpolate(flat) index: u32,
+};
+
+@vertex
+fn vs_3d_pick(in: VsIn, arc: VsArc, z: VsZ, @builtin(vertex_index) vid: u32, @builtin(instance_index) inst: u32) -> VsLinePickOut {
+    let v = line_3d_vertex(in, arc, z, vid);
+    var out: VsLinePickOut;
+    out.pos = v.pos;
+    out.dist_px = v.dist_px;
+    out.along_px = v.along_px;
+    out.side_px = v.side_px;
+    out.segment_len_px = v.segment_len_px;
+    out.index = inst;
+    return out;
+}
+
+/// The ID pick of a 3D line: the series' pick id, kind 1 (a point) and the
+/// index of the segment's nearer end, where the stroke (its dashes, not
+/// its gaps) is at least half covered.
+@fragment
+fn fs_3d_pick(in: VsLinePickOut) -> @location(0) vec4<u32> {
+    let v = VsOut(in.pos, in.dist_px, in.along_px, in.side_px, in.segment_len_px,
+        vec2<f32>(0.0), vec4<f32>(0.0), vec4<f32>(0.0));
+    if (stroke_alpha(v) * dash_alpha(v) < 0.5) {
+        discard;
+    }
+    let nearer = select(in.index, in.index + 1u, in.along_px > in.segment_len_px * 0.5);
+    return vec4<u32>(view3d_pick_id(), 1u, nearer, 0u);
+}
+
 // The stroke quad of piece `piece` of the segment, its ends projected by
 // the entry to `a_ndc_in` and `b_ndc_in`.
 fn line_stroke_vertex(in: VsIn, arc: VsArc, mode: u32, slot: StripSlot, piece: StepPiece, a_ndc_in: vec2<f32>, b_ndc_in: vec2<f32>) -> VsOut {

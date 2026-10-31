@@ -414,6 +414,7 @@ impl TargetPipelines {
             pick_ring: None,
             pick_ring_mapped: None,
             ternary: Default::default(),
+            view3d: Default::default(),
             surface_shader: source.surface_shader.clone(),
             surface: Default::default(),
             ternary_region_shader: source.ternary_region_shader.clone(),
@@ -471,6 +472,11 @@ impl TargetPipelines {
             self.pick_ring_mapped = other.pick_ring_mapped;
         }
         for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        for (slot, other) in self.view3d.iter_mut().zip(other.view3d) {
             if slot.is_none() {
                 *slot = other;
             }

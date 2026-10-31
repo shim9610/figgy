@@ -40,6 +40,15 @@ pub struct SeriesConfig {
     pub x_column: ColumnId,
     /// Y column id.
     pub y_column: ColumnId,
+    /// Z column id: the height of a `Scatter`, `Line` or `ScatterLine`
+    /// series on a 3D chart (`Config.view_3d`), read on `right_y`. Kept
+    /// and unused on a flat chart; `None` (omitted from JSON) is every
+    /// other series.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub z_column: Option<ColumnId>,
     pub render_type: DataRenderType,
 }
 
@@ -4708,8 +4717,18 @@ mod serde_tests {
         assert_eq!(scatter.point_color_map, None);
         assert_eq!(scatter.point_size_map, None);
 
-        let json = serde_json::to_value(cfg).expect("serialize");
+        let json = serde_json::to_value(cfg.clone()).expect("serialize");
         assert!(json.get("source_id").is_none());
+        // The height column (#132) is omitted while unset and round-trips.
+        assert!(json.get("z_column").is_none());
+        let mut tall = cfg;
+        tall.z_column = Some("z".into());
+        let json_tall = serde_json::to_value(&tall).expect("serialize");
+        assert_eq!(json_tall["z_column"], "z");
+        assert_eq!(
+            serde_json::from_value::<SeriesConfig>(json_tall).expect("parse"),
+            tall
+        );
         let scatter = &json["render_type"]["Scatter"]["scatter"];
         assert!(scatter.get("point_style_table").is_none());
         assert!(scatter.get("point_style_index_column").is_none());
@@ -4939,6 +4958,7 @@ mod serde_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Vector {
                 components: VectorComponents::Points {
                     u: "u".into(),
@@ -5458,6 +5478,7 @@ mod category_bar_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("{id}.values"),
+            z_column: None,
             render_type: DataRenderType::CategoryBars {
                 color: Color::from_rgb8(40, 120, 200),
                 style: CategoryBarStyle::default(),
@@ -6016,6 +6037,7 @@ mod box_plot_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("{id}.record"),
+            z_column: None,
             render_type: DataRenderType::BoxPlot {
                 color: Color::from_rgb8(40, 120, 200),
                 style: BoxPlotStyle::default(),
@@ -6579,6 +6601,7 @@ mod radar_tests {
             label: None,
             x_column: "positions".into(),
             y_column: format!("values.{id}"),
+            z_column: None,
             render_type: DataRenderType::Radar {
                 color: Color::from_rgb8(40, 120, 200),
                 style: RadarSeriesStyle::default(),
@@ -6897,6 +6920,7 @@ mod step_selection_tests {
             label: None,
             x_column: x.into(),
             y_column: y.into(),
+            z_column: None,
             render_type,
         }
     }
@@ -7399,6 +7423,7 @@ mod streamline_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Streamlines {
                 line: DataLineStyleConfig {
                     line_width: 1.5,
@@ -7533,6 +7558,7 @@ mod range_bar_tests {
             label: None,
             x_column: "pos".into(),
             y_column: format!("{id}.end"),
+            z_column: None,
             render_type: DataRenderType::RangeBars {
                 color: Color::from_rgb8(40, 120, 200),
                 style: CategoryBarStyle::default(),

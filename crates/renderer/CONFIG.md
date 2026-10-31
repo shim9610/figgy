@@ -288,11 +288,12 @@ Validation (`Config::validate_view_3d`, reported as `InvalidConfig { field:
 linear or logarithmic and not categorical; neither polar nor ternary; no
 `overlays`, no `line_offsets` members and the `Precise` draw style.
 `Config::validate_view3d_series` (reported as `InvalidSeriesConfig` at
-registration): a 3D chart draws only heatmaps, contours and heatmap
-contours; a surface's fill is continuous, a floor contour has no labels and
-a colour grid matches its height grid. Streamed sources are rejected. Fits
-also fit `right_y` to the heights. Annotations are placed by ratio only.
-Subplots carry their own `view_3d`.
+registration): a 3D chart draws heatmaps, contours, heatmap contours and
+the scatter, line and scatter-line series that name a `z_column` (linear,
+without an area fill); a surface's fill is continuous, a floor contour has
+no labels and a colour grid matches its height grid. Streamed sources are
+rejected. Fits also fit `right_y` to the heights and the z columns.
+Annotations are placed by ratio only. Subplots carry their own `view_3d`.
 
 ### `TernaryOptions` (`Config::ternary`)
 

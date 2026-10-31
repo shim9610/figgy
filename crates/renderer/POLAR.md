@@ -61,6 +61,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "deg".into(),
         y_column: "gain".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,

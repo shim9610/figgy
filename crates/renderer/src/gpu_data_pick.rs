@@ -1659,6 +1659,10 @@ pub(crate) struct SurfacePickIdentity {
     pub(crate) columns_are_y: bool,
 }
 
+/// The kind word a 3D point pick writes (`fs_3d_pick`, #132): the ID's
+/// third word is the point's index.
+pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
+
 /// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
 pub(crate) struct SurfacePickTicket {
     /// Polled for the readback on native; the browser's device polls itself.
@@ -1705,6 +1709,17 @@ impl SurfacePickTicket {
                 level_index: b as usize,
                 x_index: c as usize,
                 y_index: r as usize,
+                distance_px: 0.0,
+            }));
+        }
+        // A 3D scatter or line series' point (#132): the marker or the
+        // segment end under the cursor, at distance zero as the surface's
+        // sample is.
+        if b == SURFACE_PICK_KIND_POINT {
+            return Ok(Some(PickedData::Point {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                point_index: c as usize,
                 distance_px: 0.0,
             }));
         }

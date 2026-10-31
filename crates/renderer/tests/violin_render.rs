@@ -185,6 +185,7 @@ fn violin_series(id: &str, body: ViolinBody, box_width: f32) -> SeriesConfig {
         label: None,
         x_column: "pos".into(),
         y_column: "box.record".into(),
+        z_column: None,
         render_type: DataRenderType::BoxPlot {
             color: CYAN,
             style: flat_style(),

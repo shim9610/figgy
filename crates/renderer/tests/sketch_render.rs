@@ -122,6 +122,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: style,
@@ -142,6 +143,7 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: color,
@@ -166,6 +168,7 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: DataScatterStyleConfig {
                 point_color: Color {

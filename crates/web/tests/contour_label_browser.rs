@@ -175,6 +175,7 @@ fn automatic_series(levels: Vec<f64>) -> SeriesConfig {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: MatrixRef {
                 columns: vec!["p0".into(), "p1".into(), "p2".into()],

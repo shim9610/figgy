@@ -4135,6 +4135,7 @@ impl Renderer {
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
                 &self.point_value_map_bgl,
+                [&self.surface_bgl, &self.view3d_value_map_bgl],
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,

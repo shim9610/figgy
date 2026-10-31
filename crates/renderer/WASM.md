@@ -1174,7 +1174,8 @@ uses a flat `kind` tag. Points and matrix cells are
 also supported; a colour- or size-mapped point adds `color_value` / `size_value`,
 and a vector selection adds `u` / `v` (plus `color_value` with a colour map).
 A point of a ternary series adds `c`, its third component as uploaded.
-A sample of a 3D surface coloured by a second grid adds `color_value`.
+A sample of a 3D surface coloured by a second grid adds `color_value`, and
+a point of a series with a `z_column` (a 3D chart's) adds `z`.
 `zoom_view(factor)` zooms a 3D chart's camera (`Config.view_3d`): the eye
 distance is divided by `factor` and clamped; it returns whether the view
 changed, and a flat chart never does. A data-area drag orbits the camera.

@@ -110,7 +110,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text and arrows | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |
 | Polar plots | (angle, radius) columns and `Config.polar` | [Polar](crates/renderer/POLAR.md) |
 | Ternary plots | Three component columns per `Ternary` series and `Config.ternary`; region fills of the polygons a series outlines | [Ternary](crates/renderer/TERNARY.md) |
-| 3D surfaces | A heatmap's grid drawn as a surface in a box with `Config.view_3d` | [Surface](crates/renderer/SURFACE.md) |
+| 3D surfaces | A heatmap's grid drawn as a surface in a box with `Config.view_3d`, with points and trajectories from a `z_column` | [Surface](crates/renderer/SURFACE.md) |
 | Categorical bars | A categorical axis, category positions and one value column per bar series (`CategoryBars`); legacy `CategoricalChart` documents open through `Config::from_categorical`; on a polar chart the bars are a rose | [Bars](crates/renderer/CATEGORICAL.md) · [Roses](crates/renderer/POLAR.md#roses-polar-bars) |
 | Box plots, violins, rainclouds | A categorical axis, category positions, one record of supplied box statistics and one ragged outlier column per box series (`BoxPlot`), with the host's density curves as ragged columns for violins and two point columns for raw points; legacy `BoxPlotChart` documents open through `Config::from_boxplot` | [Boxes](crates/renderer/BOXPLOT.md) |
 | Waterfalls, candlesticks, Gantt charts | A position column and start and end columns per range bar series (`RangeBars`), with optional low/high, total-flag or state and progress columns | [Range bars](crates/renderer/RANGEBARS.md) |
@@ -216,6 +216,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,

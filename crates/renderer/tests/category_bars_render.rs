@@ -114,6 +114,7 @@ fn bars(id: &str, color: Color, direction: CategoryBarDirection) -> SeriesConfig
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::CategoryBars {
             color,
             style: flat_style(),

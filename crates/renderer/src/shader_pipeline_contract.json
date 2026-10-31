@@ -420,6 +420,87 @@
           },
           "visibility": 4
         }
+      ],
+      null,
+      [
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        }
+      ],
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 3,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        }
       ]
     ],
     [
@@ -1672,6 +1753,97 @@
             "type": "storage"
           },
           "visibility": 4
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 6,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 5
+        },
+        {
+          "binding": 7,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 5
+        }
+      ],
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
         }
       ]
     ],
@@ -2008,6 +2180,51 @@
             "type": "uniform"
           },
           "visibility": 5
+        }
+      ]
+    ],
+    [
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 7
+        }
+      ],
+      null,
+      [
+        {
+          "binding": 4,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
+        },
+        {
+          "binding": 5,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 3
         }
       ]
     ],
@@ -3226,7 +3443,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3235,10 +3452,10 @@
           "entryPoint": "add_offsets"
         },
         "label": "figgy arc scan pipeline",
-        "layout": 6
+        "layout": 7
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3247,10 +3464,10 @@
           "entryPoint": "anchor_project"
         },
         "label": "figgy contour anchor project pipeline",
-        "layout": 7
+        "layout": 8
       },
       "kind": "compute",
-      "source": "6c78986f566bb4e2"
+      "source": "125cd0bd1940233f"
     },
     {
       "descriptor": {
@@ -3259,10 +3476,10 @@
           "entryPoint": "anchor_seed"
         },
         "label": "figgy contour anchor seed pipeline",
-        "layout": 7
+        "layout": 8
       },
       "kind": "compute",
-      "source": "6c78986f566bb4e2"
+      "source": "125cd0bd1940233f"
     },
     {
       "descriptor": {
@@ -3271,10 +3488,10 @@
           "entryPoint": "anchor_select"
         },
         "label": "figgy contour anchor select pipeline",
-        "layout": 7
+        "layout": 8
       },
       "kind": "compute",
-      "source": "6c78986f566bb4e2"
+      "source": "125cd0bd1940233f"
     },
     {
       "descriptor": {
@@ -3283,10 +3500,10 @@
           "entryPoint": "anchor_step"
         },
         "label": "figgy contour anchor correction pipeline",
-        "layout": 7
+        "layout": 8
       },
       "kind": "compute",
-      "source": "6c78986f566bb4e2"
+      "source": "125cd0bd1940233f"
     },
     {
       "descriptor": {
@@ -3295,10 +3512,10 @@
           "entryPoint": "apply_carry"
         },
         "label": "figgy arc scan pipeline",
-        "layout": 6
+        "layout": 7
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3310,7 +3527,7 @@
         "layout": 5
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3322,7 +3539,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3334,7 +3551,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3346,7 +3563,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3358,7 +3575,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3370,19 +3587,7 @@
         "layout": "auto"
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
-    },
-    {
-      "descriptor": {
-        "compute": {
-          "constants": {},
-          "entryPoint": "mask"
-        },
-        "label": "stream replay mask",
-        "layout": 41
-      },
-      "kind": "compute",
-      "source": "f95a2e6c23dd3d9e"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3394,6 +3599,18 @@
         "layout": 44
       },
       "kind": "compute",
+      "source": "f95a2e6c23dd3d9e"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "mask"
+        },
+        "label": "stream replay mask",
+        "layout": 47
+      },
+      "kind": "compute",
       "source": "71ff5525f44eb84d"
     },
     {
@@ -3403,10 +3620,10 @@
           "entryPoint": "merge_stream_bar_envelope"
         },
         "label": "merge_stream_bar_envelope",
-        "layout": 19
+        "layout": 20
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3415,7 +3632,7 @@
           "entryPoint": "pick"
         },
         "label": "radial pick",
-        "layout": 37
+        "layout": 40
       },
       "kind": "compute",
       "source": "8c69f3b97241c6a1"
@@ -3427,10 +3644,10 @@
           "entryPoint": "pick_box_plot"
         },
         "label": "figgy box plot data pick pipeline",
-        "layout": 31
+        "layout": 34
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3439,10 +3656,10 @@
           "entryPoint": "pick_category_bar"
         },
         "label": "figgy category bar data pick pipeline",
-        "layout": 31
+        "layout": 34
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3451,10 +3668,10 @@
           "entryPoint": "pick_field_data"
         },
         "label": "figgy field data pick pipeline",
-        "layout": 29
+        "layout": 32
       },
       "kind": "compute",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3487,10 +3704,10 @@
           "entryPoint": "pick_histogram_bin"
         },
         "label": "figgy histogram data pick pipeline",
-        "layout": 32
+        "layout": 35
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3499,10 +3716,10 @@
           "entryPoint": "pick_range_bar"
         },
         "label": "figgy range bar data pick pipeline",
-        "layout": 31
+        "layout": 34
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3511,7 +3728,7 @@
           "entryPoint": "pick_reduce_candidates"
         },
         "label": "figgy GPU pick candidate reduction pipeline",
-        "layout": 47
+        "layout": 50
       },
       "kind": "compute",
       "source": "33d4d7490fc953fc"
@@ -3523,10 +3740,10 @@
           "entryPoint": "pick_value_labels"
         },
         "label": "figgy value label data pick pipeline",
-        "layout": 28
+        "layout": 31
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3535,7 +3752,7 @@
           "entryPoint": "pick_vector_cell"
         },
         "label": "figgy vector grid data pick pipeline",
-        "layout": 30
+        "layout": 33
       },
       "kind": "compute",
       "source": "9dee5246b3cc4037"
@@ -3547,10 +3764,10 @@
           "entryPoint": "pick_violin"
         },
         "label": "figgy violin data pick pipeline",
-        "layout": 31
+        "layout": 34
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3559,10 +3776,10 @@
           "entryPoint": "reduce_bar_envelope"
         },
         "label": "histogram pixel maxima",
-        "layout": 21
+        "layout": 22
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3583,10 +3800,10 @@
           "entryPoint": "reduce_stream_bar_envelope"
         },
         "label": "reduce_stream_bar_envelope",
-        "layout": 20
+        "layout": 21
       },
       "kind": "compute",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -3607,10 +3824,10 @@
           "entryPoint": "scan_block"
         },
         "label": "figgy arc scan pipeline",
-        "layout": 6
+        "layout": 7
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3619,10 +3836,22 @@
           "entryPoint": "seg_init"
         },
         "label": "figgy arc scan pipeline",
+        "layout": 7
+      },
+      "kind": "compute",
+      "source": "82c17522474dd9be"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "seg_init_3d"
+        },
+        "label": "figgy arc scan pipeline",
         "layout": 6
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3634,7 +3863,7 @@
         "layout": 4
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3643,10 +3872,10 @@
           "entryPoint": "update_carry"
         },
         "label": "figgy arc scan pipeline",
-        "layout": 6
+        "layout": 7
       },
       "kind": "compute",
-      "source": "9510400ecff38721"
+      "source": "82c17522474dd9be"
     },
     {
       "descriptor": {
@@ -3680,7 +3909,7 @@
           ]
         },
         "label": "figgy ternary region stencil pipeline",
-        "layout": 8,
+        "layout": 9,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -3733,7 +3962,7 @@
           ]
         },
         "label": "figgy ternary region stencil pipeline",
-        "layout": 8,
+        "layout": 9,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -3798,7 +4027,7 @@
           ]
         },
         "label": "figgy ternary region cover pipeline",
-        "layout": 8,
+        "layout": 9,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -3863,7 +4092,7 @@
           ]
         },
         "label": "figgy ternary region cover pipeline",
-        "layout": 8,
+        "layout": 9,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -3914,7 +4143,7 @@
           ]
         },
         "label": "figgy floor contour pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -3933,7 +4162,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -3965,7 +4194,7 @@
           ]
         },
         "label": "figgy floor contour pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -3984,7 +4213,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -4004,7 +4233,7 @@
           ]
         },
         "label": "figgy floor contour pick pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4023,7 +4252,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -4055,7 +4284,7 @@
           ]
         },
         "label": "figgy surface pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4074,7 +4303,7 @@
         }
       },
       "kind": "render",
-      "source": "35dbc8c95249cde5"
+      "source": "25b1ef7f0a509403"
     },
     {
       "descriptor": {
@@ -4106,7 +4335,7 @@
           ]
         },
         "label": "figgy surface pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4125,7 +4354,7 @@
         }
       },
       "kind": "render",
-      "source": "35dbc8c95249cde5"
+      "source": "25b1ef7f0a509403"
     },
     {
       "descriptor": {
@@ -4145,7 +4374,7 @@
           ]
         },
         "label": "figgy surface pick pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4164,7 +4393,1066 @@
         }
       },
       "kind": "render",
-      "source": "35dbc8c95249cde5"
+      "source": "25b1ef7f0a509403"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_3d_mapped_pick",
+          "targets": [
+            {
+              "format": "rgba32uint",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D mapped pick pipeline",
+        "layout": 23,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d_mapped_pick"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_3d_pick",
+          "targets": [
+            {
+              "format": "rgba32uint",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy line 3D pick pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 7
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d_pick"
+        }
+      },
+      "kind": "render",
+      "source": "1d777cbcd82c46fb"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_3d_pick",
+          "targets": [
+            {
+              "format": "rgba32uint",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D pick pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d_pick"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy line 3D pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 7
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d"
+        }
+      },
+      "kind": "render",
+      "source": "1d777cbcd82c46fb"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy line 3D pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": true,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "uint32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 7
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d"
+        }
+      },
+      "kind": "render",
+      "source": "1d777cbcd82c46fb"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_main",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": true,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_mapped",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D mapped pipeline",
+        "layout": 23,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d_mapped"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "depthStencil": {
+          "depthCompare": "less-equal",
+          "depthWriteEnabled": true,
+          "format": "depth24plus-stencil8"
+        },
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_mapped",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy scatter 3D mapped pipeline",
+        "layout": 23,
+        "multisample": {
+          "alphaToCoverageEnabled": true,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_3d_mapped"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -4191,7 +5479,7 @@
           ]
         },
         "label": "radial surfaces",
-        "layout": 36,
+        "layout": 39,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4237,7 +5525,7 @@
           ]
         },
         "label": "figgy line area pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4323,7 +5611,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -4350,7 +5638,7 @@
           ]
         },
         "label": "figgy line area pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4436,7 +5724,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -4463,7 +5751,7 @@
           ]
         },
         "label": "histogram envelope fill",
-        "layout": 18,
+        "layout": 19,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4482,7 +5770,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4509,7 +5797,7 @@
           ]
         },
         "label": "histogram envelope fill",
-        "layout": 18,
+        "layout": 19,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4528,7 +5816,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4555,7 +5843,7 @@
           ]
         },
         "label": "stream histogram persistent envelope",
-        "layout": 23,
+        "layout": 25,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4574,7 +5862,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4601,7 +5889,7 @@
           ]
         },
         "label": "stream histogram persistent envelope",
-        "layout": 23,
+        "layout": 25,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4620,7 +5908,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4647,7 +5935,7 @@
           ]
         },
         "label": "figgy box plot columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4666,7 +5954,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4693,7 +5981,7 @@
           ]
         },
         "label": "figgy box plot columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4712,7 +6000,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4739,7 +6027,7 @@
           ]
         },
         "label": "figgy selected box plot columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4758,7 +6046,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4785,7 +6073,7 @@
           ]
         },
         "label": "figgy selected box plot columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4804,7 +6092,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4831,7 +6119,7 @@
           ]
         },
         "label": "figgy selected box point columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4850,7 +6138,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4877,7 +6165,7 @@
           ]
         },
         "label": "figgy selected box point columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4896,7 +6184,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4923,7 +6211,7 @@
           ]
         },
         "label": "figgy box points columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -4942,7 +6230,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -4969,7 +6257,7 @@
           ]
         },
         "label": "figgy box points columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -4988,7 +6276,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -5015,7 +6303,7 @@
           ]
         },
         "label": "figgy selected category bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5034,7 +6322,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -5061,7 +6349,7 @@
           ]
         },
         "label": "figgy selected category bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5080,7 +6368,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -5107,7 +6395,7 @@
           ]
         },
         "label": "figgy category bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5126,7 +6414,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -5153,7 +6441,7 @@
           ]
         },
         "label": "figgy category bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5172,7 +6460,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -5199,7 +6487,7 @@
           ]
         },
         "label": "figgy point constellation line pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5285,7 +6573,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -5312,7 +6600,7 @@
           ]
         },
         "label": "figgy point constellation line pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5398,7 +6686,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -5425,7 +6713,7 @@
           ]
         },
         "label": "figgy point constellation stars pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5478,7 +6766,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -5505,7 +6793,7 @@
           ]
         },
         "label": "figgy point constellation stars pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5558,7 +6846,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -5585,7 +6873,7 @@
           ]
         },
         "label": "figgy field contour pipeline",
-        "layout": 12,
+        "layout": 13,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5604,7 +6892,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5631,7 +6919,7 @@
           ]
         },
         "label": "figgy field contour pipeline",
-        "layout": 12,
+        "layout": 13,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5650,7 +6938,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5677,7 +6965,7 @@
           ]
         },
         "label": "figgy labelled field contour pipeline",
-        "layout": 10,
+        "layout": 11,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5696,7 +6984,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5723,7 +7011,7 @@
           ]
         },
         "label": "figgy labelled field contour pipeline",
-        "layout": 10,
+        "layout": 11,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5742,7 +7030,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5769,7 +7057,7 @@
           ]
         },
         "label": "figgy selected field data pipeline",
-        "layout": 35,
+        "layout": 38,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5788,7 +7076,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5815,7 +7103,7 @@
           ]
         },
         "label": "figgy selected field data pipeline",
-        "layout": 35,
+        "layout": 38,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5834,7 +7122,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5861,7 +7149,7 @@
           ]
         },
         "label": "figgy selected labelled field data pipeline",
-        "layout": 34,
+        "layout": 37,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -5880,7 +7168,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5907,7 +7195,7 @@
           ]
         },
         "label": "figgy selected labelled field data pipeline",
-        "layout": 34,
+        "layout": 37,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -5926,7 +7214,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -5953,7 +7241,7 @@
           ]
         },
         "label": "figgy milkyway jets pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6066,7 +7354,7 @@
           ]
         },
         "label": "figgy milkyway jets pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -6179,7 +7467,7 @@
           ]
         },
         "label": "figgy bar columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6232,7 +7520,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -6259,7 +7547,7 @@
           ]
         },
         "label": "figgy bar columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6312,7 +7600,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -6339,7 +7627,7 @@
           ]
         },
         "label": "figgy bar columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -6392,7 +7680,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -6419,7 +7707,7 @@
           ]
         },
         "label": "figgy contour label pipeline",
-        "layout": 9,
+        "layout": 10,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6497,7 +7785,7 @@
           ]
         },
         "label": "figgy contour label pipeline",
-        "layout": 9,
+        "layout": 10,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -6575,7 +7863,7 @@
           ]
         },
         "label": "figgy errorbar columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6688,7 +7976,7 @@
           ]
         },
         "label": "figgy errorbar columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -6801,7 +8089,7 @@
           ]
         },
         "label": "figgy errorbar styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -6914,7 +8202,7 @@
           ]
         },
         "label": "figgy errorbar styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7027,7 +8315,7 @@
           ]
         },
         "label": "figgy field columnar pipeline",
-        "layout": 12,
+        "layout": 13,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7046,7 +8334,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -7073,7 +8361,7 @@
           ]
         },
         "label": "figgy field columnar pipeline",
-        "layout": 12,
+        "layout": 13,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7092,7 +8380,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -7119,7 +8407,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 38,
+        "layout": 41,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7165,7 +8453,7 @@
           ]
         },
         "label": "figgy fullscreen textured pipeline",
-        "layout": 38,
+        "layout": 41,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7211,7 +8499,7 @@
           ]
         },
         "label": "figgy line columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7297,7 +8585,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7324,7 +8612,7 @@
           ]
         },
         "label": "figgy line columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7410,7 +8698,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7437,7 +8725,7 @@
           ]
         },
         "label": "figgy line styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7523,7 +8811,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7550,7 +8838,7 @@
           ]
         },
         "label": "figgy line styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7636,7 +8924,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7663,7 +8951,7 @@
           ]
         },
         "label": "figgy line ternary pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7771,7 +9059,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7798,7 +9086,7 @@
           ]
         },
         "label": "figgy line ternary pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -7906,7 +9194,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -7933,7 +9221,7 @@
           ]
         },
         "label": "figgy mapped bar columnar pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -7986,7 +9274,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8013,7 +9301,7 @@
           ]
         },
         "label": "figgy mapped bar columnar pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8066,7 +9354,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8093,7 +9381,7 @@
           ]
         },
         "label": "figgy mapped bar columnar pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8146,7 +9434,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8173,7 +9461,7 @@
           ]
         },
         "label": "figgy scatter columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8226,7 +9514,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -8253,7 +9541,7 @@
           ]
         },
         "label": "figgy scatter columnar pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8306,7 +9594,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -8333,7 +9621,7 @@
           ]
         },
         "label": "figgy scatter ternary pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8397,7 +9685,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -8424,7 +9712,7 @@
           ]
         },
         "label": "figgy scatter ternary pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8488,7 +9776,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -8515,7 +9803,7 @@
           ]
         },
         "label": "figgy selected histogram bin pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8568,7 +9856,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8595,7 +9883,7 @@
           ]
         },
         "label": "figgy selected histogram bin pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8648,7 +9936,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8675,7 +9963,7 @@
           ]
         },
         "label": "figgy selected mapped histogram bin pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8728,7 +10016,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8755,7 +10043,7 @@
           ]
         },
         "label": "figgy selected mapped histogram bin pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8808,7 +10096,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -8835,7 +10123,7 @@
           ]
         },
         "label": "figgy vector grid pipeline",
-        "layout": 14,
+        "layout": 15,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8881,7 +10169,7 @@
           ]
         },
         "label": "figgy vector grid pipeline",
-        "layout": 14,
+        "layout": 15,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -8927,7 +10215,7 @@
           ]
         },
         "label": "figgy vector path pipeline",
-        "layout": 13,
+        "layout": 14,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -8973,7 +10261,7 @@
           ]
         },
         "label": "figgy vector path pipeline",
-        "layout": 13,
+        "layout": 14,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9019,7 +10307,7 @@
           ]
         },
         "label": "figgy vector points pipeline",
-        "layout": 14,
+        "layout": 15,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9065,7 +10353,7 @@
           ]
         },
         "label": "figgy vector points pipeline",
-        "layout": 14,
+        "layout": 15,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9111,7 +10399,7 @@
           ]
         },
         "label": "stream histogram mapped full bins",
-        "layout": 24,
+        "layout": 26,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9164,7 +10452,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -9191,7 +10479,7 @@
           ]
         },
         "label": "stream histogram mapped full bins",
-        "layout": 24,
+        "layout": 26,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9244,7 +10532,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -9271,7 +10559,7 @@
           ]
         },
         "label": "figgy line mapped pipeline",
-        "layout": 15,
+        "layout": 16,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9379,7 +10667,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -9406,7 +10694,7 @@
           ]
         },
         "label": "figgy line mapped pipeline",
-        "layout": 15,
+        "layout": 16,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9514,7 +10802,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -9541,7 +10829,7 @@
           ]
         },
         "label": "figgy errorbar mapped pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9665,7 +10953,7 @@
           ]
         },
         "label": "figgy errorbar mapped pipeline",
-        "layout": 26,
+        "layout": 28,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9789,7 +11077,7 @@
           ]
         },
         "label": "figgy scatter mapped pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -9875,7 +11163,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -9902,7 +11190,7 @@
           ]
         },
         "label": "figgy scatter mapped pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -9988,7 +11276,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10015,7 +11303,7 @@
           ]
         },
         "label": "figgy scatter ternary mapped pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -10112,7 +11400,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10139,7 +11427,7 @@
           ]
         },
         "label": "figgy scatter ternary mapped pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -10236,7 +11524,437 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_pick_ring",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy picked point 3D mapped ring pipeline",
+        "layout": 23,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_pick_ring_3d_mapped"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_pick_ring",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy picked point 3D mapped ring pipeline",
+        "layout": 23,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 4
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 5
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 6
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_pick_ring_3d_mapped"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_pick_ring",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy picked point 3D ring pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 1,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_pick_ring_3d"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
+    },
+    {
+      "descriptor": {
+        "fragment": {
+          "constants": {},
+          "entryPoint": "fs_pick_ring",
+          "targets": [
+            {
+              "blend": {
+                "alpha": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                },
+                "color": {
+                  "dstFactor": "one-minus-src-alpha",
+                  "operation": "add",
+                  "srcFactor": "one"
+                }
+              },
+              "format": "rgba8unorm",
+              "writeMask": 15
+            }
+          ]
+        },
+        "label": "figgy picked point 3D ring pipeline",
+        "layout": 29,
+        "multisample": {
+          "alphaToCoverageEnabled": false,
+          "count": 4,
+          "mask": 4294967295
+        },
+        "primitive": {
+          "cullMode": "none",
+          "frontFace": "ccw",
+          "topology": "triangle-strip",
+          "unclippedDepth": false
+        },
+        "vertex": {
+          "buffers": [
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 0
+                }
+              ],
+              "stepMode": "vertex"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 1
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 2
+                }
+              ],
+              "stepMode": "instance"
+            },
+            {
+              "arrayStride": 8,
+              "attributes": [
+                {
+                  "format": "float32x2",
+                  "offset": 0,
+                  "shaderLocation": 3
+                }
+              ],
+              "stepMode": "instance"
+            }
+          ],
+          "constants": {},
+          "entryPoint": "vs_pick_ring_3d"
+        }
+      },
+      "kind": "render",
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10263,7 +11981,7 @@
           ]
         },
         "label": "figgy picked point mapped ring pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -10349,7 +12067,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10376,7 +12094,7 @@
           ]
         },
         "label": "figgy picked point mapped ring pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -10462,7 +12180,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10489,7 +12207,7 @@
           ]
         },
         "label": "figgy picked point ring pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -10542,7 +12260,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10569,7 +12287,7 @@
           ]
         },
         "label": "figgy picked point ring pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -10622,7 +12340,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10649,7 +12367,7 @@
           ]
         },
         "label": "figgy picked point ternary mapped ring pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -10746,7 +12464,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10773,7 +12491,7 @@
           ]
         },
         "label": "figgy picked point ternary mapped ring pipeline",
-        "layout": 22,
+        "layout": 24,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -10870,7 +12588,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10897,7 +12615,7 @@
           ]
         },
         "label": "figgy picked point ternary ring pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -10961,7 +12679,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -10988,7 +12706,7 @@
           ]
         },
         "label": "figgy picked point ternary ring pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11052,7 +12770,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -11079,7 +12797,7 @@
           ]
         },
         "label": "figgy milkyway planets pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11132,7 +12850,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -11159,7 +12877,7 @@
           ]
         },
         "label": "figgy milkyway planets pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11212,7 +12930,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -11239,7 +12957,7 @@
           ]
         },
         "label": "figgy selected range bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11258,7 +12976,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -11285,7 +13003,7 @@
           ]
         },
         "label": "figgy selected range bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11304,7 +13022,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -11331,7 +13049,7 @@
           ]
         },
         "label": "figgy range bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11350,7 +13068,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -11377,7 +13095,7 @@
           ]
         },
         "label": "figgy range bar columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11396,7 +13114,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -11423,7 +13141,7 @@
           ]
         },
         "label": "figgy milkyway ribbon pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11509,7 +13227,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -11536,7 +13254,7 @@
           ]
         },
         "label": "figgy milkyway ribbon pipeline",
-        "layout": 17,
+        "layout": 18,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11622,7 +13340,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -11649,7 +13367,7 @@
           ]
         },
         "label": "figgy surface selection pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11668,7 +13386,7 @@
         }
       },
       "kind": "render",
-      "source": "35dbc8c95249cde5"
+      "source": "25b1ef7f0a509403"
     },
     {
       "descriptor": {
@@ -11695,7 +13413,7 @@
           ]
         },
         "label": "figgy surface selection pipeline",
-        "layout": 11,
+        "layout": 12,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11714,7 +13432,7 @@
         }
       },
       "kind": "render",
-      "source": "35dbc8c95249cde5"
+      "source": "25b1ef7f0a509403"
     },
     {
       "descriptor": {
@@ -11741,7 +13459,7 @@
           ]
         },
         "label": "figgy scatter styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11794,7 +13512,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -11821,7 +13539,7 @@
           ]
         },
         "label": "figgy scatter styled pipeline",
-        "layout": 27,
+        "layout": 30,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11874,7 +13592,7 @@
         }
       },
       "kind": "render",
-      "source": "378f4e584bd59e47"
+      "source": "7b3df8923df4d33b"
     },
     {
       "descriptor": {
@@ -11901,7 +13619,7 @@
           ]
         },
         "label": "figgy milkyway stars pipeline",
-        "layout": 16,
+        "layout": 17,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -11920,7 +13638,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -11947,7 +13665,7 @@
           ]
         },
         "label": "figgy milkyway stars pipeline",
-        "layout": 16,
+        "layout": 17,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -11966,7 +13684,7 @@
         }
       },
       "kind": "render",
-      "source": "a37b3aa57a9372cd"
+      "source": "1d777cbcd82c46fb"
     },
     {
       "descriptor": {
@@ -12012,7 +13730,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -12058,7 +13776,7 @@
         }
       },
       "kind": "render",
-      "source": "65c3a23d72d7e770"
+      "source": "4a4e66741f1d9006"
     },
     {
       "descriptor": {
@@ -12085,7 +13803,7 @@
           ]
         },
         "label": "figgy value label pipeline",
-        "layout": 33,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12104,7 +13822,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12131,7 +13849,7 @@
           ]
         },
         "label": "figgy value label pipeline",
-        "layout": 33,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12150,7 +13868,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12177,7 +13895,7 @@
           ]
         },
         "label": "figgy value label selection pipeline",
-        "layout": 33,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12196,7 +13914,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12223,7 +13941,7 @@
           ]
         },
         "label": "figgy value label selection pipeline",
-        "layout": 33,
+        "layout": 36,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12242,7 +13960,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12269,7 +13987,7 @@
           ]
         },
         "label": "figgy violin columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12288,7 +14006,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12315,7 +14033,7 @@
           ]
         },
         "label": "figgy violin columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12334,7 +14052,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12361,7 +14079,7 @@
           ]
         },
         "label": "figgy selected violin columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12380,7 +14098,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12407,7 +14125,7 @@
           ]
         },
         "label": "figgy selected violin columnar pipeline",
-        "layout": 25,
+        "layout": 27,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12426,7 +14144,7 @@
         }
       },
       "kind": "render",
-      "source": "3445e44ffbf442eb"
+      "source": "8aab6100f6362257"
     },
     {
       "descriptor": {
@@ -12441,7 +14159,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 39,
+        "layout": 42,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12475,7 +14193,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 42,
+        "layout": 45,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12509,7 +14227,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 45,
+        "layout": 48,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12543,7 +14261,7 @@
           ]
         },
         "label": "stream replay restore",
-        "layout": 46,
+        "layout": 49,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12589,7 +14307,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 40,
+        "layout": 43,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12635,7 +14353,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 43,
+        "layout": 46,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,
@@ -12669,7 +14387,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 40,
+        "layout": 43,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 1,
@@ -12703,7 +14421,7 @@
           ]
         },
         "label": "stream prefix sample transfer",
-        "layout": 43,
+        "layout": 46,
         "multisample": {
           "alphaToCoverageEnabled": false,
           "count": 4,

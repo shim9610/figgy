@@ -66,6 +66,9 @@ pub(super) struct SelectionColumns<'a> {
     /// A precise streamed ring uses ScatterStyleMap::stream_bind_group with
     /// rows.global_start. Its style-index vertex column still uses local rows.
     pub mapped_point_bg: Option<&'a wgpu::BindGroup>,
+    /// A 3D series' height column and camera group (#132): its ring draws
+    /// through the 3D ring entries in the live slot.
+    pub view3d: Option<(ColumnHandle, data_render::surface_mesh::View3dBinding)>,
 }
 
 pub(super) struct SelectionLayers<'a> {
@@ -89,6 +92,8 @@ impl<'a> SelectionLayers<'a> {
             line: None,
             line_extra: None,
             scatter: None,
+            line_3d: None,
+            scatter_3d: None,
             selected_bars: self.selected_bars,
             selected_fields: self.selected_fields,
             picked: self.picked,
@@ -299,20 +304,44 @@ impl PrepareContext<'_> {
                         .as_ref()
                         .expect("prepare ensured the ternary pick ring pipeline")
                 };
+                // A 3D point's ring: the 3D ring entries with its height and
+                // camera (#132).
+                let view3d_ring = |kind: View3dPipeline| {
+                    pipelines.view3d[kind as usize]
+                        .as_ref()
+                        .expect("prepare ensured the 3D pick ring pipeline")
+                };
+                let (third, view3d, pipeline) = match &columns.view3d {
+                    Some((z, binding)) => (
+                        Some(*z),
+                        Some(binding.clone()),
+                        if uses_mapped_pick {
+                            view3d_ring(View3dPipeline::RingMapped)
+                        } else {
+                            view3d_ring(View3dPipeline::Ring)
+                        },
+                    ),
+                    None => (
+                        ternary_c,
+                        None,
+                        match (uses_mapped_pick, ternary_c.is_some()) {
+                            (true, true) => ternary(TernaryPipeline::RingMapped),
+                            (false, true) => ternary(TernaryPipeline::Ring),
+                            (true, false) => pipelines
+                                .pick_ring_mapped
+                                .as_ref()
+                                .expect("prepare ensured mapped pick ring pipeline"),
+                            (false, false) => pipelines
+                                .pick_ring
+                                .as_ref()
+                                .expect("prepare ensured pick ring pipeline"),
+                        },
+                    ),
+                };
                 picked.push(ColumnPickRingLayer {
-                    pipeline: match (uses_mapped_pick, ternary_c.is_some()) {
-                        (true, true) => ternary(TernaryPipeline::RingMapped),
-                        (false, true) => ternary(TernaryPipeline::Ring),
-                        (true, false) => pipelines
-                            .pick_ring_mapped
-                            .as_ref()
-                            .expect("prepare ensured mapped pick ring pipeline"),
-                        (false, false) => pipelines
-                            .pick_ring
-                            .as_ref()
-                            .expect("prepare ensured pick ring pipeline"),
-                    },
-                    ternary_c,
+                    pipeline,
+                    third,
+                    view3d,
                     transform_bg: &view.transform_bg,
                     style_bg,
                     style_map_bg: precise_pick_style_map
@@ -788,6 +817,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Scatter {
                 scatter: DataScatterStyleConfig {
                     point_color: Color::BLACK,
@@ -1167,6 +1197,7 @@ mod tests {
                                     packed_instance: None,
                                 },
                                 mapped_point_bg: map.as_ref(),
+                                view3d: None,
                             },
                             None,
                             true,

@@ -66,6 +66,7 @@ fn series(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: renderer::Color::new(0.1, 0.2, 0.8, 1.0),

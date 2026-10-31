@@ -75,6 +75,7 @@ fn main() {
         label: None,
         x_column: "x".into(),
         y_column: "stars".into(),
+        z_column: None,
         render_type: DataRenderType::ScatterLine {
             scatter: DataScatterStyleConfig {
                 point_color: accent,
@@ -164,6 +165,7 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "ya".into(),
+            z_column: None,
             render_type: DataRenderType::ScatterLine {
                 scatter: DataScatterStyleConfig {
                     point_color: accent,
@@ -191,6 +193,7 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "yb".into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style: LineStylePreset::Dash,
@@ -208,6 +211,7 @@ fn main() {
             label: None,
             x_column: "t".into(),
             y_column: "yc".into(),
+            z_column: None,
             render_type: DataRenderType::ScatterErrorbarY {
                 scatter: DataScatterStyleConfig {
                     point_color: green,

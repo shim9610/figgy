@@ -255,14 +255,24 @@ impl FiggyChart {
                     }
                     _ => None,
                 };
-                // A ternary point reports its third component, read last.
+                // A ternary point reports its third component, and a point
+                // with a height column (a 3D chart's) its z, read last.
                 let ternary_c = series.render_type.ternary_c_column().is_some();
                 if let Some(c) = series.render_type.ternary_c_column() {
                     samples.push((c.to_owned(), *point_index));
                 }
+                let height = series.z_column.clone();
+                if let Some(z) = &height {
+                    samples.push((z.clone(), *point_index));
+                }
                 let values = self.read_selection_samples(&samples).await?;
+                let mut last = values.len();
+                if height.is_some() {
+                    last -= 1;
+                    result["z"] = serde_json::json!(values[last]);
+                }
                 if ternary_c {
-                    result["c"] = serde_json::json!(values[values.len() - 1]);
+                    result["c"] = serde_json::json!(values[last - 1]);
                 }
                 result["index"] = serde_json::json!(point_index);
                 result["x"] = serde_json::json!(values[0]);

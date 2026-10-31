@@ -176,8 +176,11 @@ rejected.
 pick with a 1×1 ID pick that renders what the cursor's pixel shows with the
 depth test: a surface answers `PickedData::MatrixCell` for the grid sample
 nearest the fragment inside its quad, never one hidden behind the surface,
-and a floor contour answers its level. The picked sample's patch is
-outlined and brightened over anything in front of it. `step_selection`
+and a floor contour answers its level; a scatter or line series with a
+`z_column` answers `PickedData::Point` for the marker or the segment end
+under the cursor, never a mark behind a surface. The picked sample's patch is
+outlined and brightened over anything in front of it, and a picked point is
+ringed at its projected place. `step_selection`
 walks the samples and `selection_details()` reports the sample's values. A
 data-area drag orbits the camera (`Config::orbit_view`) and
 `Config::zoom_view` zooms it; the data area's edges still resize it. A box
