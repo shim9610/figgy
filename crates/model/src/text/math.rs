@@ -1534,4 +1534,52 @@ mod tests {
         assert_eq!(math_alphanumeric('ı', false, true), '\u{1D6A4}');
         assert_eq!(math_alphanumeric('+', true, true), '+');
     }
+
+    // MATH_CURSOR_DEPTH (#152): the cursor's depth never passes
+    // `MAX_MATH_DEPTH`, which `open()` and the frame write rely on. Step a
+    // cursor through an empty list, a nest of exactly `MAX_MATH_DEPTH`
+    // nodes, a pop back to the root, a line break that closes every node, a
+    // second full nest and one node past it (`TooDeep`), checking the depth
+    // after every step, failed or not.
+    #[test]
+    fn the_cursor_depth_never_passes_the_limit() {
+        let chain = |segments: &mut Vec<RichSegment>, base: u32, count: u32| {
+            segments.push(node(Z, base, MathKind::Math(MathStyle::Text), None));
+            for k in 1..count {
+                let id = base + k;
+                segments.push(node(Z, id, MathKind::Sqrt, Some((id - 1, 0))));
+            }
+        };
+        let mut segments = Vec::new();
+        chain(&mut segments, 0, MAX_MATH_DEPTH as u32);
+        segments.push(leaf('x', MAX_MATH_DEPTH as u32 - 1, 0));
+        segments.push(leaf('y', 0, 0));
+        segments.push(RichSegment::plain('\n'));
+        chain(&mut segments, 0, MAX_MATH_DEPTH as u32 + 1);
+        let mut cursor = MathCursor::new();
+        assert!(cursor.open().is_empty(), "an empty list opens nothing");
+        let mut deepest = 0;
+        let mut failures = Vec::new();
+        for (at, seg) in segments.iter().enumerate() {
+            match cursor.step(at, seg) {
+                Ok(step) => {
+                    assert_eq!(step.depth, cursor.open().len(), "segment {at}");
+                }
+                Err(e) => failures.push((at, e.kind)),
+            }
+            assert!(cursor.open().len() <= MAX_MATH_DEPTH, "segment {at}");
+            deepest = deepest.max(cursor.open().len());
+            match at {
+                a if a == MAX_MATH_DEPTH + 1 => assert_eq!(cursor.open().len(), 1, "popped"),
+                a if a == MAX_MATH_DEPTH + 2 => assert!(cursor.open().is_empty(), "break"),
+                _ => {}
+            }
+        }
+        assert_eq!(deepest, MAX_MATH_DEPTH);
+        assert_eq!(
+            failures,
+            [(segments.len() - 1, MathErrorKind::TooDeep)],
+            "only the node past the limit fails"
+        );
+    }
 }

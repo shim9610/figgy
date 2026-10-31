@@ -1759,6 +1759,63 @@ mod tests {
         r"$x^{y^{z}} a_{n+1} f'(x) g''(x) e^{i\pi} {}_2F_1 x^2_i$",
     ];
 
+    // TEX_OUT_APPEND_ONLY (#152): the parser records positions in its
+    // output as `out.len()` (a node's first segment, a script slot's start,
+    // the suffix a `\sqrt[..]`, `\overset`, `\x..arrow[..]` or `\left`
+    // rotates) and only appends to or rotates a suffix of `out`, so every
+    // recorded position stays in range. This corpus drives every path that
+    // records or rewrites a position, empty and single inputs and nesting to
+    // the depth limit and one past it; each converts or names its error
+    // without panicking, and every conversion validates.
+    #[test]
+    fn every_recorded_output_position_path_converts_or_names_its_error() {
+        let nest = |n: usize| format!("${}x{}$", r"\sqrt[3]{".repeat(n), "}".repeat(n));
+        let deep = nest(MAX_MATH_DEPTH - 1);
+        let past = nest(MAX_MATH_DEPTH);
+        let converts = [
+            "",
+            "x",
+            "$x$",
+            "$x^a_b$",
+            "$x_b^a$",
+            "${x}^{a}_{b}$",
+            "${x}_{b}^{a}$",
+            r"$\sum_a^b$",
+            r"$\sum^b_a x$",
+            r"$\operatorname*{f}_a^b$",
+            r"$\overbrace{x}^a$",
+            r"$\underbrace{x}_a$",
+            r"$\sqrt[3]{x}$",
+            r"$\sqrt[3]{x}^2_i$",
+            r"$\overset{a}{b}$",
+            r"$\underset{a}{b}$",
+            r"$\stackrel{a}{b}$",
+            r"$\xrightarrow[b]{a}$",
+            r"$\xleftarrow{a}$",
+            r"$\left(\frac{a}{b}\right)$",
+            r"$\left(\frac{a}{b}\middle|c\right)^2$",
+            r"$\displaystyle x$",
+            "a $x^2$ b\n$\\sqrt[3]{y}_k$ c",
+            &deep,
+        ];
+        for tex in converts {
+            let segments = rich_segments_from_tex(tex).unwrap_or_else(|e| panic!("{tex:?}: {e}"));
+            assert_eq!(
+                crate::text::math::validate_math_segments(&segments),
+                Ok(()),
+                "{tex:?}"
+            );
+        }
+        assert_eq!(kind_of(&past), TexErrorKind::TooDeep);
+        for (tex, kind) in [
+            (r"$x^a^b$", TexErrorKind::DoubleScript),
+            (r"$\sqrt[3{x}$", TexErrorKind::UnbalancedBrace),
+            (r"$\left(x$", TexErrorKind::UnpairedLeftRight),
+        ] {
+            assert_eq!(kind_of(tex), kind, "{tex:?}");
+        }
+    }
+
     // `from_tex` output always validates, the self-check of the parser.
     #[test]
     fn every_conversion_validates() {
