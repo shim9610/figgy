@@ -1406,6 +1406,90 @@ mod tests {
             .unwrap();
     }
 
+    /// SOURCE_LAYOUT_ONE_PER_COLUMN (#152): `validate_source_layout` gives
+    /// one uploaded column per requested range, in order and packed back to
+    /// back, for 1 column and `max_columns` columns, and refuses none or
+    /// more; a chunk whose last column alone has a statistics plan measures
+    /// that column only.
+    #[test]
+    fn a_source_layout_has_one_entry_per_column() {
+        let budget = budget();
+        assert!(matches!(
+            validate_source_layout(&[], budget, 2048, 0, 0, 0),
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
+        for count in [1, budget.max_columns] {
+            let columns: Vec<ColumnRange> = (0..count as u64)
+                .map(|column| range(column, 3 + column, SourceEncoding::ScalarF32))
+                .collect();
+            let (layout, work_bytes) =
+                validate_source_layout(&columns, budget, 2048, 0, 0, 0).unwrap();
+            assert_eq!(layout.len(), columns.len());
+            let mut offset = 0;
+            for (uploaded, requested) in layout.iter().zip(&columns) {
+                assert_eq!(uploaded.range, *requested);
+                assert_eq!(uploaded.offset_bytes, offset);
+                assert_eq!(uploaded.statistics, None);
+                offset += uploaded.pair_bytes;
+            }
+            assert_eq!(offset, work_bytes);
+        }
+        let over: Vec<ColumnRange> = (0..budget.max_columns as u64 + 1)
+            .map(|column| range(column, 1, SourceEncoding::ScalarF32))
+            .collect();
+        assert!(matches!(
+            validate_source_layout(&over, budget, 2048, 0, 0, 0),
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
+
+        let (device, queue) = crate::data_render::shared_device()
+            .expect("stream statistics test requires a GPU adapter");
+        let ledger = Arc::new(GpuLedger::new());
+        let values = [[1.0f32, 2.0], [3.0, 4.0], [-5.0, 6.0]];
+        let inputs: Vec<ColumnInput<'_>> = values
+            .iter()
+            .enumerate()
+            .map(|(column, values)| ColumnInput {
+                range: range(column as u64, 2, SourceEncoding::ScalarF32),
+                bytes: bytemuck::cast_slice(values),
+            })
+            .collect();
+        let mut encoder = device.create_command_encoder(&Default::default());
+        let chunk = record_chunk_collecting_statistics(
+            &device,
+            &mut encoder,
+            &ledger,
+            budget,
+            &inputs,
+            &[
+                ChunkStatisticsPlan::default(),
+                ChunkStatisticsPlan::default(),
+                ChunkStatisticsPlan {
+                    ranges: vec![100..102],
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(chunk.columns.len(), inputs.len());
+        assert_eq!(chunk.columns[0].statistics, None);
+        assert_eq!(chunk.columns[1].statistics, None);
+        assert_eq!(
+            chunk.columns[2].statistics,
+            Some(Some(StreamBounds {
+                min: -5.0,
+                max: 6.0,
+                min_positive: Some(6.0),
+            }))
+        );
+        let submitted = queue.submit([encoder.finish()]);
+        device
+            .poll(wgpu::PollType::Wait {
+                submission_index: Some(submitted),
+                timeout: Some(std::time::Duration::from_secs(30)),
+            })
+            .unwrap();
+    }
+
     #[test]
     fn layout_validates_empty_short_overflow_and_device_cap_before_allocating() {
         assert!(matches!(

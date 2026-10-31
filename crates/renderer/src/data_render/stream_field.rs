@@ -1010,22 +1010,23 @@ fn allocate_init(
     ))
 }
 
-fn bind(
+/// One bind group of `N` `(binding, buffer)` entries. The arity is the
+/// call site's array length, so every entry is mapped and none is indexed
+/// (#152).
+fn bind<const N: usize>(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    buffers: &[(u32, &wgpu::Buffer)],
+    buffers: &[(u32, &wgpu::Buffer); N],
 ) -> wgpu::BindGroup {
-    let entries: [wgpu::BindGroupEntry<'_>; 4] = std::array::from_fn(|index| {
-        let &(binding, buffer) = buffers.get(index).unwrap_or(&buffers[0]);
-        wgpu::BindGroupEntry {
+    let entries: [wgpu::BindGroupEntry<'_>; N] =
+        buffers.map(|(binding, buffer)| wgpu::BindGroupEntry {
             binding,
             resource: buffer.as_entire_binding(),
-        }
-    });
+        });
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("stream field bindings"),
         layout,
-        entries: &entries[..buffers.len()],
+        entries: &entries,
     })
 }
 

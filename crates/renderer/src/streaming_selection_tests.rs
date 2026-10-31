@@ -737,3 +737,109 @@ fn display_comparison_measures_alpha_composition_and_rejects_visible_changes() {
     assert!(display_error(&[255, 0, 0, 64], &[0, 0, 0, 64]).1 > 3 * 255);
     assert!(display_error(&[0, 0, 0, 255], &[4, 0, 0, 255]).1 > 3 * 255);
 }
+
+/// SELECTION_PLAN_COUNT_LE_3 (#152): `columns_for` names one to three
+/// distinct columns (`x`, `y` and the Precise style index), so its `[_; 3]`
+/// ids, rows and offsets cover `..count`: x equal to y, a histogram bar
+/// (its edge column read twice as far), a Precise scatter with its own style
+/// column, a style column equal to x, a Sketch scatter (no style column),
+/// and a field cell on equal and on different axes.
+#[test]
+fn a_selection_column_plan_names_one_to_three_distinct_columns() {
+    let (_, _, _, _, chart, series, _) = fixture();
+    let precise = chart.config().clone();
+    assert!(matches!(precise.draw_style, DrawStyle::Precise));
+    let mut sketch = precise.clone();
+    sketch.draw_style = DrawStyle::Sketch(Default::default());
+    let entry = |bar: bool, field: Option<field::Cell>| SelectionEntry {
+        series: 0,
+        index: 4,
+        filter: SelectionRefFilter::All,
+        bar,
+        field,
+    };
+    let check = |plan: SelectionColumnPlan<'_>, expected: &[(&str, u64)]| {
+        assert!((1..=3).contains(&plan.count), "count {}", plan.count);
+        let named: Vec<(&str, u64)> = plan.ids[..plan.count]
+            .iter()
+            .copied()
+            .zip(plan.rows[..plan.count].iter().copied())
+            .collect();
+        assert_eq!(named, expected);
+        let mut ids = plan.ids[..plan.count].to_vec();
+        ids.sort_unstable();
+        ids.dedup();
+        assert_eq!(ids.len(), plan.count, "repeated ids");
+    };
+    let point = &series[0];
+    let bar = &series[1];
+    check(
+        columns_for(&precise, point, entry(false, None)),
+        &[("x", 1), ("y", 1), ("index", 1)],
+    );
+    check(
+        columns_for(&sketch, point, entry(false, None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut style_is_x = point.clone();
+    if let DataRenderType::Scatter { scatter } = &mut style_is_x.render_type {
+        scatter.point_style_index_column = Some("x".into());
+    }
+    check(
+        columns_for(&precise, &style_is_x, entry(false, None)),
+        &[("x", 1), ("y", 1)],
+    );
+    let mut same = style_is_x.clone();
+    same.y_column = "x".into();
+    check(
+        columns_for(&precise, &same, entry(false, None)),
+        &[("x", 1)],
+    );
+    check(
+        columns_for(&precise, bar, entry(true, None)),
+        &[("x", 2), ("y", 1)],
+    );
+    let mut same_bar = bar.clone();
+    same_bar.y_column = "x".into();
+    check(
+        columns_for(&precise, &same_bar, entry(true, None)),
+        &[("x", 2)],
+    );
+
+    let heatmap = |x: &str, y: &str| SeriesConfig {
+        source_id: None,
+        series_id: "field".into(),
+        label: None,
+        x_column: x.into(),
+        y_column: y.into(),
+        z_column: None,
+        render_type: DataRenderType::Heatmap {
+            matrix: crate::data_config::MatrixRef {
+                columns: vec!["z0".into(), "z1".into(), "z2".into(), "z3".into()],
+                orientation: crate::data_config::MatrixOrientation::ColumnsAreX,
+                grid_layout: crate::data_config::GridLayout::Edges,
+            },
+            fill: crate::data_config::FieldFillConfig {
+                mode: crate::data_config::FillMode::Continuous,
+                shading: crate::data_config::Shading::Flat,
+                opacity: 1.0,
+            },
+            surface: None,
+        },
+    };
+    let len = |_: &str| Some(5u64);
+    for (x, y, count) in [("fx", "fy", 2), ("fx", "fx", 1)] {
+        let series = heatmap(x, y);
+        let cell = field::Cell::resolve(&series, [1, 1], len).expect("an inner cell");
+        let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+        assert_eq!(plan.count, count, "{x} {y}");
+        assert!(plan.count <= 3);
+        let ids = &plan.ids[..plan.count];
+        assert!(ids.iter().all(|id| *id == x || *id == y));
+    }
+    // Different cells on one axis column are two ranges of the same id.
+    let series = heatmap("fx", "fx");
+    let cell = field::Cell::resolve(&series, [0, 2], len).expect("a cell");
+    let plan = columns_for(&precise, &series, entry(false, Some(cell)));
+    assert_eq!(plan.count, 2);
+}
