@@ -554,7 +554,12 @@ fn side_labels(
         if mid.sin() > 0.0 {
             anchor.1 += s.arc[3] * s.arc[2].sin() * s.geometry[2];
         }
-        labels[n] = (anchor, index);
+        // A validated chart has at most `MAX_RADIAL_SLICES` slices per
+        // circle; the write stays total for any other chart.
+        let Some(slot) = labels.get_mut(n) else {
+            break;
+        };
+        *slot = (anchor, index);
         n += 1;
     }
     labels[..n].sort_unstable_by(|a, b| a.0.1.total_cmp(&b.0.1).then(a.1.cmp(&b.1)));
@@ -689,6 +694,11 @@ pub(super) fn emit_decoration(
     id: &DecorationId,
     sink: &mut dyn Sink,
 ) -> bool {
+    // The frame's methods take the host's chart, which may differ from the
+    // prepared one: a chart that does not validate cannot be laid out.
+    if chart.validate().is_err() {
+        return false;
+    }
     let Ok(f) = frame(chart, size, scale) else {
         return false;
     };

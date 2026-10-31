@@ -1409,6 +1409,8 @@ pub fn written_vector_parts(
     scale: f32,
     out: &mut dyn FnMut(crate::WrittenPart),
 ) -> Result<(), RadialError> {
+    // `layout::layout` reads a validated chart, as every other caller's.
+    chart.validate().map_err(RadialError::Invalid)?;
     let canvas = crate::layout::Rect {
         x: 0,
         y: 0,

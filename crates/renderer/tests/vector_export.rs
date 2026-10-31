@@ -675,3 +675,25 @@ fn the_radial_chart_reads_back_as_its_emitted_parts() {
         }
     }
 }
+
+/// The radial vector parts are recorded from a validated chart only, as the
+/// exports they mirror (#152): a split naming a slice past the chart's
+/// slices is refused with `RadialError::Invalid` and records nothing.
+#[test]
+fn the_radial_vector_parts_refuse_a_chart_that_does_not_validate() {
+    for slice_index in [scenes::radial::radial_chart().slices.len(), usize::MAX] {
+        let mut chart = scenes::radial::radial_chart();
+        chart.split = Some(RadialSplit {
+            slice_index,
+            children: vec![RadialSlice::new("A", 1.0, Color::BLACK)],
+            kind: RadialKind::Pie,
+        });
+        let mut written = 0usize;
+        let result = written_vector_parts(&chart, (800, 520), 1.0, &mut |_| written += 1);
+        assert!(
+            matches!(result, Err(renderer::radial::RadialError::Invalid(_))),
+            "split.slice_index {slice_index}: {result:?}"
+        );
+        assert_eq!(written, 0, "split.slice_index {slice_index}");
+    }
+}
