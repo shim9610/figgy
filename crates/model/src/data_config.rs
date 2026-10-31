@@ -7970,6 +7970,7 @@ mod hexagonal_tests {
         SeriesConfig {
             series_id: "hex".into(),
             source_id: None,
+            z_column: None,
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),

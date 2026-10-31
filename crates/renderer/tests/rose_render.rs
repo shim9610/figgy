@@ -110,6 +110,7 @@ fn bars(id: &str, color: Color) -> SeriesConfig {
     SeriesConfig {
         series_id: id.into(),
         source_id: None,
+        z_column: None,
         label: None,
         x_column: "pos".into(),
         y_column: id.into(),

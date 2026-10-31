@@ -183,6 +183,7 @@ fn hexbin(ids: &[String], orientation: MatrixOrientation) -> SeriesConfig {
     SeriesConfig {
         series_id: "hex".into(),
         source_id: None,
+        z_column: None,
         label: None,
         x_column: "hx".into(),
         y_column: "hy".into(),

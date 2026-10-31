@@ -6519,6 +6519,7 @@ fn streamed_series_reject_hexagonal_grids() {
     let series = SeriesConfig {
         series_id: "stream".into(),
         source_id: None,
+        z_column: None,
         label: None,
         x_column: "x".into(),
         y_column: "y".into(),
