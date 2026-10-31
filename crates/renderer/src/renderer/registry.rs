@@ -513,16 +513,17 @@ impl LoadDemoChartPlan {
         chart_states: &mut HashMap<ChartId, ChartRenderState>,
         visual_revision: &mut RenderRevision,
     ) {
-        let target = chart_states
-            .get_mut(&self.target_id)
-            .expect("load-demo target chart remains registered");
-        target.config = self.config;
-        target.series = self.series;
+        // The plan's ids were read from this map, which the guard has held
+        // exclusively since: every chart is still registered, and a chart
+        // that were not would have nothing to publish to.
+        if let Some(target) = chart_states.get_mut(&self.target_id) {
+            target.config = self.config;
+            target.series = self.series;
+        }
         for update in self.revisions {
-            chart_states
-                .get_mut(&update.id)
-                .expect("load-demo affected chart remains registered")
-                .revisions = update.revisions;
+            if let Some(state) = chart_states.get_mut(&update.id) {
+                state.revisions = update.revisions;
+            }
         }
         *visual_revision = self.visual;
     }
@@ -557,9 +558,11 @@ impl ColumnInvalidationPlan {
         visual_revision: &mut RenderRevision,
     ) {
         for update in self.charts {
-            let state = chart_states
-                .get_mut(&update.id)
-                .expect("column invalidation chart remains registered");
+            // The plan's ids were read from this map, which the guard has
+            // held exclusively since; see `LoadDemoChartPlan::publish`.
+            let Some(state) = chart_states.get_mut(&update.id) else {
+                continue;
+            };
             // A column edit changes what is drawn, not any declaration.
             let ChartRevisions {
                 desired,
@@ -582,16 +585,27 @@ impl ColumnInvalidationPlan {
 
 pub(super) struct ChartSeriesRemoval {
     pub(super) id: ChartId,
-    pub(super) remove_referencing_series: bool,
-    pub(super) next_config: Option<Config>,
+    /// Set when the chart's series that reference the column are removed.
+    pub(super) referencing: Option<SeriesRemovalRevisions>,
+    /// Set when the chart's config is replaced with the removal.
+    pub(super) replacement: Option<ChartConfigReplacement>,
     pub(super) desired: RenderRevision,
-    pub(super) config_revision: Option<RenderRevision>,
-    pub(super) selection_revision: Option<RenderRevision>,
-    pub(super) annotation_revision: Option<RenderRevision>,
-    pub(super) series_revision: Option<RenderRevision>,
-    pub(super) data: Option<RenderRevision>,
-    pub(super) view: Option<RenderRevision>,
     pub(super) raster: RenderRevision,
+}
+
+/// The revisions a chart publishes when its referencing series are removed.
+pub(super) struct SeriesRemovalRevisions {
+    pub(super) series: RenderRevision,
+    pub(super) data: RenderRevision,
+}
+
+/// A chart config published with a column removal, and its revisions.
+pub(super) struct ChartConfigReplacement {
+    pub(super) config: Config,
+    pub(super) config_revision: RenderRevision,
+    pub(super) selection: RenderRevision,
+    pub(super) annotation: RenderRevision,
+    pub(super) view: Option<RenderRevision>,
 }
 
 pub(super) struct ColumnRemovalPlan {
@@ -607,9 +621,11 @@ impl ColumnRemovalPlan {
         removed_column: &str,
     ) {
         for update in self.charts {
-            let state = chart_states
-                .get_mut(&update.id)
-                .expect("column removal chart remains registered");
+            // The plan's ids were read from this map, which the guard has
+            // held exclusively since; see `LoadDemoChartPlan::publish`.
+            let Some(state) = chart_states.get_mut(&update.id) else {
+                continue;
+            };
             let ChartRevisions {
                 desired,
                 config: config_revision,
@@ -620,27 +636,19 @@ impl ColumnRemovalPlan {
                 raster,
                 annotation,
             } = &mut state.revisions;
-            if update.remove_referencing_series {
+            if let Some(referencing) = update.referencing {
                 state
                     .series
                     .retain(|series| !series_references_column(series, removed_column));
-                *series_revision = update
-                    .series_revision
-                    .expect("series-removal revision was prepared");
-                *data = update.data.expect("data revision was prepared");
+                *series_revision = referencing.series;
+                *data = referencing.data;
             }
-            if let Some(config) = update.next_config {
-                state.config = config;
-                *config_revision = update
-                    .config_revision
-                    .expect("config replacement revision was prepared");
-                *selection = update
-                    .selection_revision
-                    .expect("selection revision was prepared");
-                *annotation = update
-                    .annotation_revision
-                    .expect("annotation revision was prepared");
-                if let Some(next_view) = update.view {
+            if let Some(replacement) = update.replacement {
+                state.config = replacement.config;
+                *config_revision = replacement.config_revision;
+                *selection = replacement.selection;
+                *annotation = replacement.annotation;
+                if let Some(next_view) = replacement.view {
                     *view = next_view;
                 }
             }
@@ -685,7 +693,7 @@ pub(super) fn series_after_column_removal(
 #[must_use = "dropping a RendererColumnUpsert rolls the provisional pool state back"]
 pub struct RendererColumnUpsert<'a> {
     pub(super) streaming_sources: &'a HashMap<ColumnId, RegisteredStreamColumn>,
-    pub(super) inner: Option<data_render::column_pool::ColumnUpsert<'a>>,
+    pub(super) inner: data_render::column_pool::ColumnUpsert<'a>,
     pub(super) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
     pub(super) visual_revision: &'a mut RenderRevision,
     pub(super) pending_defrag: &'a mut bool,
@@ -701,39 +709,38 @@ pub struct RendererColumnUpsert<'a> {
 /// Prepared renderer side of the bundled demo transaction.
 #[must_use = "dropping a RendererLoadDemo leaves renderer authority unchanged"]
 pub struct RendererLoadDemo<'a> {
-    pub(super) inner: Option<data_render::column_pool::ColumnBatchUpsert<'a>>,
+    pub(super) inner: data_render::column_pool::ColumnBatchUpsert<'a>,
     pub(super) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
     pub(super) visual_revision: &'a mut RenderRevision,
     pub(super) pending_defrag: &'a mut bool,
-    pub(super) chart_plan: Option<LoadDemoChartPlan>,
+    pub(super) chart_plan: LoadDemoChartPlan,
     pub(super) picker: Option<PreparedActivePickerMutation<'a>>,
 }
 
 impl RendererLoadDemo<'_> {
     /// Publish the four demo columns, chart state, picker, and maintenance bit.
-    pub fn commit(mut self) -> [ColumnHandle; 4] {
-        let handles = self
-            .inner
-            .take()
-            .expect("renderer load-demo candidate remains live")
-            .commit();
-        self.chart_plan
-            .take()
-            .expect("renderer load-demo chart plan remains live")
-            .publish(self.chart_states, self.visual_revision);
-        if let Some(picker) = self.picker.take() {
+    pub fn commit(self) -> [ColumnHandle; 4] {
+        let Self {
+            inner,
+            chart_states,
+            visual_revision,
+            pending_defrag,
+            chart_plan,
+            picker,
+        } = self;
+        let handles = inner.commit();
+        chart_plan.publish(chart_states, visual_revision);
+        if let Some(picker) = picker {
             picker.commit();
         }
-        *self.pending_defrag = false;
+        *pending_defrag = false;
         handles
     }
 }
 
 impl RendererColumnUpsert<'_> {
     pub(super) fn inner(&self) -> &data_render::column_pool::ColumnUpsert<'_> {
-        self.inner
-            .as_ref()
-            .expect("renderer column upsert remains live")
+        &self.inner
     }
 
     pub fn pool(&self) -> &ColumnPool {
@@ -869,16 +876,12 @@ impl RendererColumnUpsert<'_> {
         )
     }
 
-    pub fn commit(mut self) -> ColumnHandle {
-        let handle = self
-            .inner
-            .take()
-            .expect("renderer column upsert remains live")
-            .commit();
-        if let Some(invalidation) = self.invalidation.take() {
+    pub fn commit(self) -> ColumnHandle {
+        let handle = self.inner.commit();
+        if let Some(invalidation) = self.invalidation {
             invalidation.publish(self.chart_states, self.visual_revision);
         }
-        if let Some(picker) = self.picker.take() {
+        if let Some(picker) = self.picker {
             picker.commit();
         }
         if let Some(pending) = self.pending_defrag_after_commit {
@@ -963,7 +966,7 @@ pub(super) fn finish_renderer_column_upsert<'a>(
 
     Ok(RendererColumnUpsert {
         streaming_sources,
-        inner: Some(inner),
+        inner,
         chart_states,
         visual_revision,
         pending_defrag,
@@ -979,30 +982,24 @@ pub(super) fn finish_renderer_column_upsert<'a>(
 
 #[must_use = "dropping a PreparedColumnRemoval rolls the composite removal back"]
 pub(super) struct PreparedColumnRemoval<'a> {
-    pub(super) inner: Option<data_render::column_pool::ColumnRemoval<'a>>,
+    pub(super) inner: data_render::column_pool::ColumnRemoval<'a>,
     pub(super) chart_states: &'a mut HashMap<ChartId, ChartRenderState>,
     pub(super) visual_revision: &'a mut RenderRevision,
     pub(super) pending_defrag: &'a mut bool,
-    pub(super) removal: Option<ColumnRemovalPlan>,
+    pub(super) removal: ColumnRemovalPlan,
     pub(super) picker: Option<PreparedActivePickerMutation<'a>>,
     pub(super) removed_column: ColumnId,
 }
 
 impl PreparedColumnRemoval<'_> {
-    pub(super) fn commit(mut self) -> bool {
-        self.inner
-            .take()
-            .expect("renderer column removal remains live")
-            .commit();
-        self.removal
-            .take()
-            .expect("renderer column removal plan remains live")
-            .publish(
-                self.chart_states,
-                self.visual_revision,
-                &self.removed_column,
-            );
-        if let Some(picker) = self.picker.take() {
+    pub(super) fn commit(self) -> bool {
+        self.inner.commit();
+        self.removal.publish(
+            self.chart_states,
+            self.visual_revision,
+            &self.removed_column,
+        );
+        if let Some(picker) = self.picker {
             picker.commit();
         }
         *self.pending_defrag = true;
@@ -1295,7 +1292,9 @@ pub(super) fn prepare_load_demo_chart_plan(
             revisions: next,
         });
     }
-    debug_assert!(revisions.iter().any(|update| update.id == target_id));
+    if !revisions.iter().any(|update| update.id == target_id) {
+        return Err(FiggyError::UnknownChart { id: target_id });
+    }
     let visual = visual_revision.successor("renderer visual revision")?;
     Ok(LoadDemoChartPlan {
         target_id,
@@ -2376,7 +2375,10 @@ impl Renderer {
             renderer_identity: self.renderer_identity,
             sequence: id_value,
         };
-        let previous = self.chart_states.insert(
+        if self.chart_states.contains_key(&id) {
+            return Err(FiggyError::internal("a new chart id is never registered"));
+        }
+        self.chart_states.insert(
             id,
             ChartRenderState {
                 config,
@@ -2387,7 +2389,6 @@ impl Renderer {
                 revisions: ChartRevisions::initial(chart_revision),
             },
         );
-        debug_assert!(previous.is_none());
         self.chart_order.push(id);
         self.next_chart_id = id_value;
         self.visual_revision = visual_revision;
@@ -2488,10 +2489,9 @@ impl Renderer {
             annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
         };
 
-        let chart_state = self
-            .chart_states
-            .get_mut(&id)
-            .expect("validated chart remains registered during config preparation");
+        let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(
+            "validated chart remains registered during config preparation",
+        ))?;
         let picker = self.picker.prepare_active_chart_mutation(
             &self.pool,
             id,
@@ -2628,10 +2628,9 @@ impl Renderer {
             annotation,
         };
 
-        let chart_state = self
-            .chart_states
-            .get_mut(&id)
-            .expect("validated chart remains registered during series preparation");
+        let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(
+            "validated chart remains registered during series preparation",
+        ))?;
         let picker = self.picker.prepare_active_chart_mutation(
             &self.pool,
             id,
@@ -2733,10 +2732,9 @@ impl Renderer {
             annotation: annotation_config_revision(annotation_before, &state.config, &config)?,
         };
 
-        let chart_state = self
-            .chart_states
-            .get_mut(&id)
-            .expect("validated chart remains registered during state preparation");
+        let chart_state = self.chart_states.get_mut(&id).ok_or(FiggyError::internal(
+            "validated chart remains registered during state preparation",
+        ))?;
         let picker = self
             .picker
             .prepare_active_chart_mutation(&self.pool, id, &config, &series)?;
@@ -3024,58 +3022,55 @@ impl Renderer {
                 .revisions
                 .desired
                 .successor("chart desired revision")?;
-            let series_revision = remove_referencing_series
-                .then(|| state.revisions.series.successor("chart series revision"))
-                .transpose()?;
-            let data = remove_referencing_series
-                .then(|| state.revisions.data.successor("chart data revision"))
-                .transpose()?;
-            let config_revision = replace_config
-                .then(|| state.revisions.config.successor("chart config revision"))
-                .transpose()?;
-            let selection_revision = config_override
-                .as_ref()
-                .filter(|(override_chart, _)| override_chart == chart_id)
-                .map(|(_, config)| {
-                    selection_config_revision(state.revisions.selection, &state.config, config)
+            let referencing = if remove_referencing_series {
+                Some(SeriesRemovalRevisions {
+                    series: state.revisions.series.successor("chart series revision")?,
+                    data: state.revisions.data.successor("chart data revision")?,
                 })
-                .transpose()?;
-            let annotation_revision = config_override
-                .as_ref()
-                .filter(|(override_chart, _)| override_chart == chart_id)
-                .map(|(_, config)| {
-                    annotation_config_revision(state.revisions.annotation, &state.config, config)
-                })
-                .transpose()?;
-            let view = config_override
-                .as_ref()
-                .filter(|(override_chart, _)| override_chart == chart_id)
-                .and_then(|(_, config)| {
-                    (!stream_config_equal(&state.config, config, &state.series))
-                        .then(|| state.revisions.view.successor("chart view revision"))
+            } else {
+                None
+            };
+            let replacement = config_override
+                .take_if(|(override_chart, _)| override_chart == chart_id)
+                .map(|(_, config)| -> Result<ChartConfigReplacement> {
+                    let view = if stream_config_equal(&state.config, &config, &state.series) {
+                        None
+                    } else {
+                        Some(state.revisions.view.successor("chart view revision")?)
+                    };
+                    Ok(ChartConfigReplacement {
+                        config_revision: state
+                            .revisions
+                            .config
+                            .successor("chart config revision")?,
+                        selection: selection_config_revision(
+                            state.revisions.selection,
+                            &state.config,
+                            &config,
+                        )?,
+                        annotation: annotation_config_revision(
+                            state.revisions.annotation,
+                            &state.config,
+                            &config,
+                        )?,
+                        view,
+                        config,
+                    })
                 })
                 .transpose()?;
             let raster = state.revisions.raster.successor("chart raster revision")?;
             charts.push(ChartSeriesRemoval {
                 id: *chart_id,
-                remove_referencing_series,
-                next_config: replace_config.then(|| {
-                    config_override
-                        .take()
-                        .expect("matching chart config override remains available")
-                        .1
-                }),
+                referencing,
+                replacement,
                 desired,
-                config_revision,
-                selection_revision,
-                annotation_revision,
-                series_revision,
-                data,
-                view,
                 raster,
             });
         }
-        debug_assert!(config_override.is_none());
+        // An override for a chart that is not registered names no chart.
+        if let Some((chart_id, _)) = config_override {
+            return Err(FiggyError::UnknownChart { id: chart_id });
+        }
         let visual = if charts.is_empty() {
             None
         } else {
@@ -3166,11 +3161,11 @@ impl Renderer {
             None
         };
         let removed = PreparedColumnRemoval {
-            inner: Some(inner),
+            inner,
             chart_states: &mut self.chart_states,
             visual_revision: &mut self.visual_revision,
             pending_defrag: &mut self.pending_defrag,
-            removal: Some(removal),
+            removal,
             picker,
             removed_column,
         }
@@ -3207,6 +3202,7 @@ impl Renderer {
     where
         F: FnOnce(&ColumnPool) -> Result<(Config, Vec<SeriesConfig>)>,
     {
+        self.health.check()?;
         for id in DEMO_COLUMN_IDS {
             self.reject_streamed_id(id)?;
         }
@@ -3271,11 +3267,11 @@ impl Renderer {
         };
 
         Ok(RendererLoadDemo {
-            inner: Some(inner),
+            inner,
             chart_states,
             visual_revision,
             pending_defrag,
-            chart_plan: Some(chart_plan),
+            chart_plan,
             picker,
         })
     }
@@ -3286,6 +3282,7 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<ColumnHandle> {
+        self.health.check()?;
         let id = id.into();
         if self.pool.slot(&id).is_some() {
             return Err(data_render::AllocError::DuplicateId(id).into());
@@ -3298,6 +3295,7 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<ColumnHandle> {
+        self.health.check()?;
         let id = id.into();
         if self.pool.slot(&id).is_some() {
             return Err(data_render::AllocError::DuplicateId(id).into());
@@ -3330,6 +3328,7 @@ impl Renderer {
     /// [`Self::defragment`], and an active picker reports `StaleColumn` until it
     /// is prepared again.
     pub fn add_columns(&mut self, columns: &[(&str, &dyn ColumnSource)]) -> Result<()> {
+        self.health.check()?;
         for (id, _) in columns {
             self.reject_streamed_id(id)?;
         }
@@ -3379,6 +3378,7 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn ColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
+        self.health.check()?;
         let id = id.into();
         self.reject_streamed_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
@@ -3416,6 +3416,7 @@ impl Renderer {
         id: impl Into<ColumnId>,
         source: &dyn HiLoColumnSource,
     ) -> Result<RendererColumnUpsert<'_>> {
+        self.health.check()?;
         let id = id.into();
         self.reject_streamed_id(&id)?;
         let invalidation = self.prepare_column_invalidation(&id)?;
@@ -3480,6 +3481,7 @@ impl Renderer {
         id: impl Into<RecordId>,
         source: &RecordSource<'_>,
     ) -> Result<RecordId> {
+        self.health.check()?;
         let id = id.into();
         self.reject_streamed_composite(&id, "a record")?;
         let old = self
@@ -3534,6 +3536,7 @@ impl Renderer {
         id: impl Into<RaggedId>,
         source: &RaggedSource<'_>,
     ) -> Result<RaggedId> {
+        self.health.check()?;
         let id = id.into();
         self.reject_streamed_composite(&id, "a ragged column")?;
         let old = self
@@ -3577,6 +3580,7 @@ impl Renderer {
     /// Delete the record `id` and free its member columns. `false` when no
     /// such record is resident.
     pub fn remove_record(&mut self, id: &str) -> Result<bool> {
+        self.health.check()?;
         let Some(record) = self.pool.record(id) else {
             return Ok(false);
         };
@@ -3608,6 +3612,7 @@ impl Renderer {
     /// Delete the ragged column `id` and free its two member columns.
     /// `false` when no such ragged column is resident.
     pub fn remove_ragged(&mut self, id: &str) -> Result<bool> {
+        self.health.check()?;
         let Some(ragged) = self.pool.ragged(id) else {
             return Ok(false);
         };
@@ -3662,6 +3667,7 @@ impl Renderer {
     /// policy belongs to the host. The web wrapper removes rows for its
     /// auto-managed legend and preserves freely edited legend text.
     pub fn remove_column(&mut self, id: &str) -> Result<bool> {
+        self.health.check()?;
         self.remove_column_impl(id, None)
     }
 
@@ -3677,12 +3683,14 @@ impl Renderer {
         chart_id: ChartId,
         next_config: Config,
     ) -> Result<bool> {
+        self.health.check()?;
         self.remove_column_impl(id, Some((chart_id, next_config)))
     }
 
     /// Compact every live column to the start of the pool. `true` iff
     /// anything actually moved.
     pub fn defragment(&mut self) -> Result<bool> {
+        self.health.check()?;
         let defragment = self.pool.begin_defragment(pool_alloc_ctx(
             self.device.as_ref(),
             self.queue.as_ref(),
@@ -3788,6 +3796,7 @@ impl Renderer {
     /// whether compaction changed the pool; stream retirement may also occur
     /// when it is false.
     pub fn process_pending_maintenance(&mut self) -> Result<bool> {
+        self.health.check()?;
         self.service_stream_requests();
         if !self.pending_defrag {
             return Ok(false);

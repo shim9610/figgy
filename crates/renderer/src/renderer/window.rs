@@ -829,6 +829,7 @@ impl<'w> WindowedRenderer<'w> {
     /// responsible for updating each chart's `chart_area` — figgy doesn't
     /// know your panel layout policy.
     pub fn resize(&mut self, w: u32, h: u32) -> Result<()> {
+        self.inner.health.check()?;
         data_render::reconfigure_surface(
             &self.surface,
             &self._adapter,
@@ -893,6 +894,7 @@ impl<'w> WindowedRenderer<'w> {
         clear: crate::color::Color,
         prepared: &PreparedFrame,
     ) -> Result<()> {
+        self.inner.health.check()?;
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(t)
             | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
@@ -957,7 +959,8 @@ impl<'w> WindowedRenderer<'w> {
         self.inner.queue().submit(std::iter::once(encoder.finish()));
         self.inner.end_gpu_frame();
         self.inner.queue().present(frame);
-        Ok(())
+        // An error this frame's work sent to the uncaptured-error handler.
+        self.inner.health.check()
     }
 
     /// Submit one frame and wait until that GPU work has finished executing.
@@ -997,7 +1000,20 @@ impl<'w> WindowedRenderer<'w> {
 
 impl Drop for WindowedRenderer<'_> {
     fn drop(&mut self) {
-        self.inner.wait_idle();
+        // Drop has no caller to return an error to. A lost device has no work
+        // left to finish, and polling it would only fail, so the wait is
+        // skipped then.
+        if self.inner.health.is_lost() {
+            return;
+        }
+        if self.inner.health.check().is_err() {
+            // A GPU error no call has reported yet: there is no caller left
+            // to report it to, and it must not stop the wait below.
+        }
+        if self.inner.wait_idle().is_err() {
+            // The device failed during the wait (`gpu_poll` never panics):
+            // nothing is left to wait for, and no caller to tell.
+        }
     }
 }
 
@@ -1063,17 +1079,13 @@ impl Renderer {
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<WindowedRenderer<'w>> {
         let instance = observe_value(observer, "window", "instance", data_render::create_instance);
+        // wgpu reports surface failures as `CreateSurfaceError`; there is no
+        // device yet whose error scopes could capture anything else.
         let surface = observe_result(observer, "window", "surface", || {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                data_render::create_surface_for_window(&instance, target)
-            }))
-            .map_err(|_| FiggyError::SurfaceCreationFailed {
-                reason:
-                    "wgpu surface creation panicked; check platform window/canvas/thread constraints"
-                        .into(),
-            })?
-            .map_err(|e| FiggyError::SurfaceCreationFailed {
-                reason: format!("{e}"),
+            data_render::create_surface_for_window(&instance, target).map_err(|e| {
+                FiggyError::SurfaceCreationFailed {
+                    reason: format!("{e}"),
+                }
             })
         })?;
 
@@ -1090,8 +1102,10 @@ impl Renderer {
                 reason: format!("{e}"),
             })?;
         finished(observer, "window", "device");
-        let device = Arc::new(device);
-        let queue = Arc::new(queue);
+        // The bundle registers the device's lost callback and error handler
+        // before figgy uses the device, once for this device.
+        let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
+        let device = Arc::clone(gpu.device());
         let surface_config = observe_result(observer, "window", "configure", || {
             data_render::try_configure_surface(
                 &surface,
@@ -1129,7 +1143,7 @@ impl Renderer {
             })?;
 
         let inner = Renderer::try_new_with_sample_count_observed_async(
-            RendererDevice::new(Arc::clone(&device), Arc::clone(&queue)),
+            gpu,
             surface_config.format,
             pool_capacity_bytes,
             target_sample_count,

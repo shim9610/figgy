@@ -14223,3 +14223,77 @@ fn series_labels_with_math_validate_at_registration() {
     assert_eq!(series_id, "scatter");
     assert!(reason.starts_with("label: segment 2"), "{reason}");
 }
+
+// A chart view whose panel rect is sized differently from the config's chart
+// area cannot hold the raster laid out from that area: the mismatch is an
+// error before anything is rasterised, never a panic in the upload (#152).
+#[test]
+fn chart_view_size_mismatch_is_an_error() {
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width: 240,
+        height: 180,
+    };
+    let mut chart = Chart::new(panel_config(area.width, area.height));
+    chart.config_mut().chart_area = crate::layout::ChartArea(area);
+    let wider = Rect {
+        width: area.width + 16,
+        ..area
+    };
+    let result = renderer.create_chart_view(&chart, wider);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { width, height })
+            if width == wider.width && height == wider.height),
+        "a mismatched panel rect was accepted: {:?}",
+        result.err()
+    );
+
+    let mut view = renderer.create_chart_view(&chart, area).unwrap();
+    let result = renderer.refresh_axis(&mut view, &chart, wider);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { .. })),
+        "a mismatched refresh was accepted: {result:?}"
+    );
+    let result = renderer.refresh_annotations(&mut view, &chart, wider, None);
+    assert!(
+        matches!(result, Err(FiggyError::InvalidChartArea { .. })),
+        "a mismatched annotation refresh was accepted: {result:?}"
+    );
+    // The matching size still refreshes.
+    renderer.refresh_axis(&mut view, &chart, area).unwrap();
+}
+
+// A lost device is reported by every wait instead of wgpu's fatal poll
+// panic (#152).
+#[test]
+fn waits_on_a_destroyed_device_return_device_lost() {
+    let (device, queue) = crate::test_gpu::device();
+    let device = Arc::new(device);
+    let renderer = Renderer::try_new(
+        RendererDevice::new(Arc::clone(&device), Arc::new(queue)),
+        wgpu::TextureFormat::Rgba8Unorm,
+        1024 * 1024,
+    )
+    .expect("required GPU test: renderer initialization failed");
+    renderer.wait_idle().unwrap();
+    device.destroy();
+    let result = renderer.wait_idle();
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "a wait on a destroyed device returned {result:?}"
+    );
+    let result = renderer.service_gpu_completions();
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "polling a destroyed device returned {result:?}"
+    );
+    let result = pollster::block_on(renderer.wait_submitted_work());
+    assert!(
+        matches!(result, Err(FiggyError::DeviceLost { .. })),
+        "waiting for work on a destroyed device returned {result:?}"
+    );
+}

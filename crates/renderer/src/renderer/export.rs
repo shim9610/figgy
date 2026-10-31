@@ -33,24 +33,79 @@ pub struct RasterImage {
 }
 
 /// Encode `img` as PNG bytes in memory. Saving to disk is the caller's job.
+///
+/// The bytes grow fallibly: an output the host cannot allocate is
+/// [`FiggyError::StateAllocationFailed`], not an abort.
 pub fn encode_png(img: &RasterImage) -> Result<Vec<u8>> {
-    let mut buf: Vec<u8> = Vec::new();
+    let mut buf = FallibleBytes(Vec::new());
     {
         let mut enc = png::Encoder::new(&mut buf, img.width, img.height);
         enc.set_color(png::ColorType::Rgba);
         enc.set_depth(png::BitDepth::Eight);
-        let mut writer = enc
-            .write_header()
-            .map_err(|e| FiggyError::RasterWrapFailed {
-                reason: format!("png header: {e}"),
-            })?;
+        let mut writer = enc.write_header().map_err(|e| png_error("png header", e))?;
         writer
             .write_image_data(&img.rgba)
-            .map_err(|e| FiggyError::RasterWrapFailed {
-                reason: format!("png write: {e}"),
-            })?;
+            .map_err(|e| png_error("png write", e))?;
     }
-    Ok(buf)
+    Ok(buf.0)
+}
+
+/// PNG output bytes whose growth is fallible: a failed reservation is an
+/// out-of-memory I/O error, which the encoder returns.
+struct FallibleBytes(Vec<u8>);
+
+impl std::io::Write for FallibleBytes {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .try_reserve(data.len())
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::OutOfMemory, error))?;
+        self.0.extend_from_slice(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn png_error(stage: &str, error: png::EncodingError) -> FiggyError {
+    match error {
+        png::EncodingError::IoError(io) if io.kind() == std::io::ErrorKind::OutOfMemory => {
+            FiggyError::StateAllocationFailed {
+                resource: "png export bytes",
+                reason: io.to_string(),
+            }
+        }
+        other => FiggyError::RasterWrapFailed {
+            reason: format!("{stage}: {other}"),
+        },
+    }
+}
+
+/// Run an export inside native out-of-memory, validation and internal error
+/// scopes, popped once it is done. An error the export returned itself is
+/// reported first; otherwise any captured GPU error fails the export, since
+/// an image rendered through a failed resource is not one to save.
+#[cfg(not(target_arch = "wasm32"))]
+async fn native_export_scoped<T>(
+    device: &wgpu::Device,
+    work: impl std::future::Future<Output = Result<T>>,
+) -> Result<T> {
+    // wgpu 30's scope guards pop themselves on drop, so a cancelled export
+    // cannot leave a scope on the device's stack for the next caller.
+    let out_of_memory = device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
+    let validation = device.push_error_scope(wgpu::ErrorFilter::Validation);
+    let internal = device.push_error_scope(wgpu::ErrorFilter::Internal);
+    let rendered = work.await;
+    // Popped in reverse push order, every one, before any is inspected.
+    let internal = internal.pop().await;
+    let validation = validation.pop().await;
+    let out_of_memory = out_of_memory.pop().await;
+    let rendered = rendered?;
+    match out_of_memory.or(validation).or(internal) {
+        Some(error) => Err(gpu_error("figgy export", error)),
+        None => Ok(rendered),
+    }
 }
 
 /// What an export renders: one panel or the whole layered document.
@@ -110,7 +165,10 @@ impl<'a> PanelDrawStorage<'a> {
     /// The per-panel draw items of `source` (the items `expand` was given),
     /// in source order: a single-layer item as it is, a layered item as its
     /// expanded panels.
-    pub(super) fn items<'s>(&'s self, source: &'s [ChartDrawItem<'a>]) -> Vec<ChartDrawItem<'s>> {
+    pub(super) fn items<'s>(
+        &'s self,
+        source: &'s [ChartDrawItem<'a>],
+    ) -> Result<Vec<ChartDrawItem<'s>>> {
         let mut out = Vec::with_capacity(source.len() + self.configs.len());
         let mut counts = self.counts.iter();
         let mut next = 0;
@@ -123,7 +181,9 @@ impl<'a> PanelDrawStorage<'a> {
                 });
                 continue;
             }
-            let count = *counts.next().expect("one count per layered item");
+            let count = *counts
+                .next()
+                .ok_or(FiggyError::internal("one count per layered item"))?;
             for index in next..next + count {
                 out.push(ChartDrawItem {
                     view: self.views[index],
@@ -133,21 +193,24 @@ impl<'a> PanelDrawStorage<'a> {
             }
             next += count;
         }
-        out
+        Ok(out)
     }
 }
 
 impl PanelDrawStorage<'_> {
     /// Panels per source item, in source order (1 for a single-layer item).
-    pub(super) fn group_sizes(&self, source: &[ChartDrawItem<'_>]) -> Vec<usize> {
+    pub(super) fn group_sizes(&self, source: &[ChartDrawItem<'_>]) -> Result<Vec<usize>> {
         let mut counts = self.counts.iter();
         source
             .iter()
             .map(|item| {
                 if !is_layered(item.chart_config) {
-                    1
+                    Ok(1)
                 } else {
-                    *counts.next().expect("one count per layered item")
+                    counts
+                        .next()
+                        .copied()
+                        .ok_or(FiggyError::internal("one count per layered item"))
                 }
             })
             .collect()
@@ -417,6 +480,7 @@ impl Renderer {
         scale: f32,
         clear: crate::color::Color,
     ) -> Result<F::Output> {
+        self.health.check()?;
         for item in series {
             self.require_resident_series(item)?;
         }
@@ -427,21 +491,19 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         let result = {
-            let scope_guard = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-            let rendered = self
-                .export_vector_inner::<F>(chart, series, scale, clear)
-                .await;
-            let out_of_memory = scope_guard.pop().await;
-            match (rendered, out_of_memory) {
-                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export target",
-                    reason: format!("device reported out of memory during export: {error}"),
-                }),
-                (result, _) => result,
-            }
+            let device = Arc::clone(&self.device);
+            native_export_scoped(
+                &device,
+                self.export_vector_inner::<F>(chart, series, scale, clear),
+            )
+            .await
         };
         self.end_gpu_frame();
-        result
+        let image = result?;
+        // A GPU error that reached the uncaptured-error handler during the
+        // export (a browser scope resolves asynchronously) fails it too.
+        self.health.check()?;
+        Ok(image)
     }
 
     async fn export_vector_inner<F: crate::vector_export::VectorFile>(
@@ -460,17 +522,17 @@ impl Renderer {
     /// Wrapped in device error scopes. Export is where figgy asks for its
     /// largest transient resources — a target texture at `scale²`, an MSAA
     /// attachment at `scale² × samples`, and a readback buffer — and it is
-    /// `async`, so every scope pop can actually be awaited here. Native uses
-    /// wgpu's OOM guard; wasm uses short underlying `GPUDevice` OOM and internal
+    /// `async`, so every scope pop can actually be awaited here. Native wraps
+    /// the whole export in out-of-memory, validation and internal scopes;
+    /// wasm uses short underlying `GPUDevice` OOM and internal
     /// scopes so internal/OOM classification and host scope boundaries remain
     /// explicit at the raw browser API boundary.
     /// Each browser scope pair is popped synchronously before the next await,
     /// so cancellation and a host sharing the device cannot cross its stack.
-    /// The synchronous upload paths keep their `catch_unwind` wrapper instead:
-    /// a future cannot be driven from them, and wasm cannot block a single
-    /// thread to poll one.
+    /// The synchronous resource creations inside run through `gpu_checked`
+    /// as well, so an out-of-memory target fails where it is created.
     ///
-    /// A device that reports OOM fails the export even when the encode
+    /// A device that reports an error fails the export even when the encode
     /// succeeded — a partially-resident target renders garbage, and returning
     /// an image the caller would save is worse than an error.
     ///
@@ -498,6 +560,7 @@ impl Renderer {
         clear: crate::color::Color,
         scope: ExportScope,
     ) -> Result<RasterImage> {
+        self.health.check()?;
         for item in series {
             self.require_resident_series(item)?;
         }
@@ -508,26 +571,21 @@ impl Renderer {
 
         #[cfg(not(target_arch = "wasm32"))]
         let result = {
-            // wgpu 30's scope guard pops itself on drop, so an early return
-            // inside the body cannot leave a scope on the device's stack for the
-            // next caller to inherit.
-            let scope_guard = self.device.push_error_scope(wgpu::ErrorFilter::OutOfMemory);
-            let rendered = self
-                .export_rgba_with_clear_inner(chart, series, scale, clear, scope)
-                .await;
-            let out_of_memory = scope_guard.pop().await;
-            match (rendered, out_of_memory) {
-                (Ok(_), Some(error)) => Err(FiggyError::GpuResourceAllocationFailed {
-                    resource: "figgy export target",
-                    reason: format!("device reported out of memory during export: {error}"),
-                }),
-                (result, _) => result,
-            }
+            let device = Arc::clone(&self.device);
+            native_export_scoped(
+                &device,
+                self.export_rgba_with_clear_inner(chart, series, scale, clear, scope),
+            )
+            .await
         };
         // Every export submission and readback has completed and all transient
         // owners inside the inner future have been dropped.
         self.end_gpu_frame();
-        result
+        let image = result?;
+        // A GPU error that reached the uncaptured-error handler during the
+        // export (a browser scope resolves asynchronously) fails it too.
+        self.health.check()?;
+        Ok(image)
     }
 
     pub(super) async fn export_rgba_with_clear_inner(
@@ -643,8 +701,8 @@ impl Renderer {
         // One expansion path with `prepare`: the layered document becomes one
         // item per panel. A panel export keeps the base panel only.
         let storage = PanelDrawStorage::expand(&document)?;
-        let mut items = storage.items(&document);
-        let mut group_sizes = storage.group_sizes(&document);
+        let mut items = storage.items(&document)?;
+        let mut group_sizes = storage.group_sizes(&document)?;
         if scope == ExportScope::Panel {
             items.truncate(1);
             group_sizes = vec![1];
@@ -1040,7 +1098,13 @@ impl Renderer {
                 requested: u64::from(w).saturating_mul(u64::from(h)).saturating_mul(4),
                 limit: usize::MAX as u64,
             })?;
-        let mut rgba = vec![0u8; rgba_len];
+        let mut rgba = Vec::new();
+        rgba.try_reserve_exact(rgba_len)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "figgy export rgba output",
+                reason: error.to_string(),
+            })?;
+        rgba.resize(rgba_len, 0);
         let mut y0 = 0;
         while y0 < h {
             #[cfg(target_arch = "wasm32")]
@@ -1079,7 +1143,9 @@ impl Renderer {
             let slice = readback.slice(..chunk_size);
             let (tx, rx) = futures_channel::oneshot::channel();
             slice.map_async(wgpu::MapMode::Read, move |r| {
-                let _ = tx.send(r);
+                if tx.send(r).is_err() {
+                    // The receiver was dropped: the waiting export was cancelled.
+                }
             });
 
             #[cfg(target_arch = "wasm32")]
@@ -1089,10 +1155,14 @@ impl Renderer {
             // resolves immediately. On wasm the browser polls the device and
             // the await yields to the JS event loop instead.
             #[cfg(not(target_arch = "wasm32"))]
-            let _ = self.device.poll(wgpu::PollType::Wait {
-                submission_index: None,
-                timeout: None,
-            });
+            gpu_poll(
+                &self.health,
+                &self.device,
+                wgpu::PollType::Wait {
+                    submission_index: None,
+                    timeout: None,
+                },
+            )?;
             rx.await
                 .map_err(|e| FiggyError::GpuResourceAllocationFailed {
                     resource: "figgy export readback mapping",

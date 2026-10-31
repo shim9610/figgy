@@ -228,7 +228,9 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
                         .unwrap();
                 }
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
@@ -238,7 +240,7 @@ fn pump_count(f: &mut Fixture, operation: Option<StreamingOperation>) -> usize {
 
 fn finish_display(f: &mut Fixture) {
     pump(f, None);
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     drop(
         f.renderer
             .prepare_registered(&[RegisteredChartDrawItem {
@@ -312,7 +314,7 @@ fn heatmap_runtime_cancel_stale_and_budget_are_transactional() {
         .lock()
         .unwrap();
     let mut f = setup(false, false, false, 1, 2);
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     let before = f.renderer.gpu_memory_usage().total_bytes();
     let _ = f.renderer.set_memory_budget(Some(before + 1));
     assert!(f.renderer.auto_stream_chart_request_ranges(f.id).is_err());
@@ -353,7 +355,7 @@ fn heatmap_runtime_cancel_stale_and_budget_are_transactional() {
             .is_err()
     );
     f.renderer.end_gpu_frame();
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     f.renderer.service_stream_requests();
     assert_eq!(f.renderer.streaming_usage().reserved_gpu_bytes, 0);
 }
@@ -503,7 +505,9 @@ fn pump_pick(f: &mut Fixture, operation: StreamingOperation) -> usize {
                     .unwrap();
                 reads += 1;
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => return reads,
         }
@@ -858,7 +862,7 @@ fn progressive_replay_heatmap_fit_publishes_tiles_before_completion() {
                 })
                 .collect();
             let step = f.renderer.auto_stream_chart_step(f.id, &bindings).unwrap();
-            f.renderer.wait_idle();
+            f.renderer.wait_idle().unwrap();
             if matches!(step, crate::AutoStreamingProgress::Complete { .. }) {
                 f.chart = Chart::new(f.renderer.chart_config(f.id).unwrap().clone());
                 f.view = f

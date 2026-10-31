@@ -344,9 +344,9 @@ impl Renderer {
                 self.picker.pipeline_state,
                 PickerPipelineState::Ready { .. }
             ),
-            style => p
-                .styled
-                .contains_key(&style.style_key().expect("style variant")),
+            PreparationFeature::Sketch => p.styled.contains_key(&StyleKey::Sketch),
+            PreparationFeature::Milkyway => p.styled.contains_key(&StyleKey::Milkyway),
+            PreparationFeature::Constellation => p.styled.contains_key(&StyleKey::Constellation),
         }
     }
     pub fn begin_preparation(&self, feature: PreparationFeature) -> Option<PipelinePreparation> {

@@ -1595,11 +1595,7 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         self.wait_submitted_work().await?;
         #[cfg(not(target_arch = "wasm32"))]
-        gpu_poll(
-            &self.health,
-            &self.device,
-            wgpu::PollType::wait_indefinitely(),
-        )?;
+        self.wait_idle()?;
         self.service_stream_requests();
         Ok(())
     }
@@ -1687,11 +1683,7 @@ impl Renderer {
             // A lost device returns here instead of awaiting a mapping that
             // never resolves; a completed wait has run the callback.
             #[cfg(not(target_arch = "wasm32"))]
-            gpu_poll(
-                &self.health,
-                &self.device,
-                wgpu::PollType::wait_indefinitely(),
-            )?;
+            self.wait_idle()?;
             rx.await
                 .map_err(|error| FiggyError::GpuResourceAllocationFailed {
                     resource: "stream export mapping",

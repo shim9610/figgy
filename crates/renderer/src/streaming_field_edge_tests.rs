@@ -68,7 +68,9 @@ fn heatmap_runtime_offscreen_draw_is_empty_but_fit_and_pick_remain_exact() {
                     fit_reads += ranges.len();
                     supply(&mut f, None, &ranges);
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    f.renderer.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted {
                     total_primitives, ..
                 } => {
@@ -234,7 +236,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
             source: crate::StreamColumnSource::HiLo(&source),
         }];
         f.renderer.end_gpu_frame();
-        f.renderer.wait_idle();
+        f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
         let before = f.renderer.gpu_memory_usage().total_bytes();
         let headroom = if picking {
@@ -258,7 +260,7 @@ fn heatmap_runtime_fit_and_pick_writer_failure_retire_before_tight_budget_retry(
             failed,
             Err(FiggyError::InvalidStreamSource { .. })
         ));
-        f.renderer.wait_idle();
+        f.renderer.wait_idle().unwrap();
         f.renderer.service_stream_requests();
         assert_eq!(
             f.renderer.gpu_memory_usage().total_bytes(),

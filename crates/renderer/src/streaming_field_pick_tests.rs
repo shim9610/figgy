@@ -85,7 +85,9 @@ fn heatmap_runtime_typed_pick_submission_failure_retries_without_advancing() {
                     .unwrap();
                 rejected += 1;
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => f.renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                f.renderer.wait_idle().unwrap()
+            }
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
@@ -122,7 +124,7 @@ fn heatmap_runtime_typed_pick_submission_failure_retries_without_advancing() {
             )
             .is_err()
     );
-    f.renderer.wait_idle();
+    f.renderer.wait_idle().unwrap();
     f.renderer.service_stream_requests();
     assert_eq!(f.renderer.streaming_usage().reserved_gpu_bytes, 0);
 }

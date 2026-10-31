@@ -140,10 +140,10 @@ fn setup(
         match renderer.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. } => break,
             crate::AutoStreamingProgress::Complete { .. } => break,
-            _ => renderer.wait_idle(),
+            _ => renderer.wait_idle().unwrap(),
         }
     }
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     drop(
         renderer
             .prepare_registered(&[RegisteredChartDrawItem {
@@ -193,7 +193,7 @@ fn pump(
                     .submit_stream_operation_ranges(operation, &bindings)
                     .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => renderer.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => renderer.wait_idle().unwrap(),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
@@ -418,7 +418,7 @@ fn streamed_pick_matches_resident_and_preserves_display() {
 fn stream_export_budget_rejection_is_preallocation_and_replay_survives_screen_retarget() {
     let (mut renderer, id, _, chart, series, x, y) = setup(false);
     renderer.end_gpu_frame();
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     renderer.service_stream_requests();
     let before = renderer.gpu_memory_usage().total_bytes();
     let screen = renderer.active_stream_job(id);

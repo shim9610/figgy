@@ -145,7 +145,7 @@ impl App {
 
     fn shutdown_gpu(&mut self) {
         if let Some(renderer) = self.renderer.as_ref() {
-            renderer.wait_idle();
+            renderer.wait_idle().unwrap();
         }
         self.panels.clear();
         self.renderer.take();

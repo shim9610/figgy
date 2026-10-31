@@ -227,10 +227,10 @@ fn bounded_source_cache_obeys_budget_and_releases_on_cancel() {
             assert!(usage.total_bytes() <= 128 * 1024 * 1024);
             r.cancel_streaming_chart(id).unwrap();
             r.end_gpu_frame();
-            r.wait_idle();
+            r.wait_idle().unwrap();
             r.service_stream_requests();
             r.end_gpu_frame();
-            r.wait_idle();
+            r.wait_idle().unwrap();
             assert_eq!(
                 r.gpu_memory_usage()
                     .live_bytes_of(GpuResourceKind::ViewResident),

@@ -82,7 +82,9 @@ pub(in crate::renderer) fn preflight_contour_label_spacing(
     }
     let labels = extract_contour(rt)
         .and_then(|contour| contour.labels.as_ref())
-        .expect("automatic contour labels have a label config");
+        .ok_or(FiggyError::internal(
+            "automatic contour labels have a label config",
+        ))?;
     let spacing_px = labels.spacing_px * scale;
     if !spacing_px.is_finite() || spacing_px <= 0.0 {
         return Err(FiggyError::InvalidSeriesConfig {
@@ -217,9 +219,15 @@ impl PrepareContext<'_> {
     ) -> Result<(Vec<PreparedContourItem>, Vec<Arc<GridSources>>)> {
         let mut prepared = Vec::with_capacity(items.len());
         let mut receipts = Vec::new();
-        debug_assert_eq!(items.len(), contour_spacings.len());
+        if items.len() != contour_spacings.len() {
+            return Err(FiggyError::internal(
+                "one contour spacing list per draw item",
+            ));
+        }
         for (item, item_spacings) in items.iter().zip(contour_spacings) {
-            debug_assert_eq!(item.series.len(), item_spacings.len());
+            if item.series.len() != item_spacings.len() {
+                return Err(FiggyError::internal("one contour spacing per series"));
+            }
             let transform = data_render::scatter_transform_from_config(item.chart_config);
             let ca = item.chart_config.chart_area.0;
             let da = item
@@ -274,12 +282,12 @@ impl PrepareContext<'_> {
                     &transform,
                     (ca, da),
                     *effective_spacing_px,
-                );
+                )?;
                 let entry = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
                     .and_then(ScratchEntry::contour)
-                    .expect("contour scratch was just ensured");
+                    .ok_or(FiggyError::internal("contour scratch was just ensured"))?;
                 per_series.push(PreparedContourSeries {
                     scratch: Some(PreparedContourScratch {
                         style_bg: entry.style_bg.clone(),
@@ -311,14 +319,29 @@ impl PrepareContext<'_> {
         transform: &data_render::ScatterTransform,
         (ca, da): (Rect, Rect),
         effective_spacing_px: Option<f32>,
-    ) -> Option<crate::gpu_contour::ContourLabelSnapshot> {
-        let entry = self.contour_cache.get_mut(series_id)?.contour_mut()?;
-        let label = entry.label.as_mut()?;
+    ) -> Result<Option<crate::gpu_contour::ContourLabelSnapshot>> {
+        // No contour state or no labels: nothing to snapshot (the documented
+        // `None`).
+        let Some(entry) = self
+            .contour_cache
+            .get_mut(series_id)
+            .and_then(ScratchEntry::contour_mut)
+        else {
+            return Ok(None);
+        };
+        let Some(label) = entry.label.as_mut() else {
+            return Ok(None);
+        };
         if !label.is_automatic() {
-            return label.explicit_snapshot();
+            return Ok(label.explicit_snapshot());
         }
-        let effective_spacing_px =
-            effective_spacing_px.expect("automatic contour spacing was preflighted");
+        let effective_spacing_px = effective_spacing_px.ok_or(FiggyError::internal(
+            "automatic contour spacing was preflighted",
+        ))?;
+        let pipelines = self
+            .contour_label_pipelines
+            .as_ref()
+            .ok_or(FiggyError::internal("contour label pipelines ensured"))?;
         let params = &entry.signature.params;
         let plan = crate::gpu_contour::ContourLabelState::anchor_plan(
             da.width as f32,
@@ -332,37 +355,33 @@ impl PrepareContext<'_> {
                     label: Some("figgy contour label encoder"),
                 })
         });
-        Some(
-            label.dispatch_automatic(
-                &self.device,
-                &self.queue,
-                &self.gpu_ledger,
-                encoder,
-                self.contour_label_pipelines
-                    .as_ref()
-                    .expect("contour label pipelines ensured"),
-                transform,
-                crate::gpu_contour::AnchorParamsGpu {
-                    lattice_x: plan.lattice_x,
-                    lattice_y: plan.lattice_y,
-                    level_count: plan.levels,
-                    kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
-                    area_x: ca.x as f32,
-                    area_y: ca.y as f32,
-                    area_w: ca.width as f32,
-                    area_h: ca.height as f32,
-                    clip_x: da.x as f32,
-                    clip_y: da.y as f32,
-                    clip_w: da.width as f32,
-                    clip_h: da.height as f32,
-                    spacing_px: effective_spacing_px,
-                    label_h_px: label.cell_h_px(),
-                    label_vertices: crate::gpu_contour::LABEL_VERTICES,
-                    _pad0: 0,
-                },
-                &entry.field_bg,
-            ),
-        )
+        Ok(Some(label.dispatch_automatic(
+            &self.device,
+            &self.queue,
+            &self.gpu_ledger,
+            encoder,
+            pipelines,
+            transform,
+            crate::gpu_contour::AnchorParamsGpu {
+                lattice_x: plan.lattice_x,
+                lattice_y: plan.lattice_y,
+                level_count: plan.levels,
+                kept_capacity: crate::gpu_contour::MAX_CONTOUR_LABELS_TOTAL,
+                area_x: ca.x as f32,
+                area_y: ca.y as f32,
+                area_w: ca.width as f32,
+                area_h: ca.height as f32,
+                clip_x: da.x as f32,
+                clip_y: da.y as f32,
+                clip_w: da.width as f32,
+                clip_h: da.height as f32,
+                spacing_px: effective_spacing_px,
+                label_h_px: label.cell_h_px(),
+                label_vertices: crate::gpu_contour::LABEL_VERTICES,
+                _pad0: 0,
+            },
+            &entry.field_bg,
+        )))
     }
 
     /// The label snapshot a contour pick of `cfg` sees: the one the draw at
@@ -396,7 +415,7 @@ impl PrepareContext<'_> {
             &transform,
             (ca, da),
             spacing,
-        );
+        )?;
         if let Some(encoder) = encoder {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
@@ -421,8 +440,11 @@ impl PrepareContext<'_> {
         scale: f32,
     ) -> Result<Arc<GridSources>> {
         let rt = &cfg.render_type;
-        let matrix = extract_matrix(rt).expect("a contour series has a matrix");
-        let contour = extract_contour(rt).expect("a contour series has a contour config");
+        let matrix =
+            extract_matrix(rt).ok_or(FiggyError::internal("a contour series has a matrix"))?;
+        let contour = extract_contour(rt).ok_or(FiggyError::internal(
+            "a contour series has a contour config",
+        ))?;
         validate_contour_level_count(cfg.series_id.as_str(), rt)?;
         let resolved = self.resolve_grid(cfg, matrix)?;
         let levels = contour_levels(rt)?;
@@ -464,8 +486,8 @@ impl PrepareContext<'_> {
         )?;
 
         let params = data_render::FieldParamsGpu {
-            x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
-            y_base: u32::try_from(resolved.y.offset / 4).unwrap_or(0),
+            x_base: lane_u32(resolved.x.offset / 4, "contour x column lane")?,
+            y_base: lane_u32(resolved.y.offset / 4, "contour y column lane")?,
             x_len: u32::try_from(resolved.x.len_values).unwrap_or(u32::MAX),
             y_len: u32::try_from(resolved.y.len_values).unwrap_or(u32::MAX),
             cols: u32::try_from(resolved.extent.cols).unwrap_or(u32::MAX),
@@ -653,7 +675,7 @@ impl PrepareContext<'_> {
         let pipelines = self
             .contour_label_pipelines
             .as_ref()
-            .expect("contour label pipelines ensured");
+            .ok_or(FiggyError::internal("contour label pipelines ensured"))?;
         let state = crate::gpu_contour::ContourLabelState::build(
             &self.device,
             &self.queue,

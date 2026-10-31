@@ -260,7 +260,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 assert_eq!(display(&r, &surface, &transfer, background, true), expected);
                 drop(surface);
                 r.end_gpu_frame();
-                r.wait_idle();
+                r.wait_idle().unwrap();
                 // On the shared test device a retirement callback can run on
                 // another test's poll thread: wait for it, as d6313ad does.
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);

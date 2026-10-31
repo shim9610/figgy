@@ -383,6 +383,11 @@ pub enum GpuErrorbarError {
     ReadbackMapFailed(String),
     DevicePollFailed(String),
     CorruptResult,
+    /// An internal invariant did not hold: a figgy bug, reported instead of
+    /// panicking (#152).
+    Internal {
+        invariant: &'static str,
+    },
 }
 
 impl std::fmt::Display for GpuErrorbarError {
@@ -453,6 +458,9 @@ impl std::fmt::Display for GpuErrorbarError {
                 write!(f, "extent submission poll failed: {reason}")
             }
             Self::CorruptResult => write!(f, "GPU returned an invalid extent record"),
+            Self::Internal { invariant } => {
+                write!(f, "internal invariant failed (figgy bug): {invariant}")
+            }
         }
     }
 }

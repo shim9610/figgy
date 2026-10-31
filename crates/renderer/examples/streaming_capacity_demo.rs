@@ -554,7 +554,7 @@ impl DemoState {
 
     fn shutdown(&mut self) {
         let _ = self.renderer.cancel_streaming_chart(self.chart_id);
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
         self.prepared = None;
     }
 }

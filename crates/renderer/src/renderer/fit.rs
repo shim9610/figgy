@@ -432,13 +432,17 @@ pub(super) fn begin_series_fit_extent_from_pool(
     };
     match mode {
         GpuSeriesFitMode::Paired(crate::gpu_errorbar::GpuSeriesExtentMode::VectorTips) => {
+            const TIPS: crate::gpu_errorbar::GpuErrorbarError =
+                crate::gpu_errorbar::GpuErrorbarError::Internal {
+                    invariant: "the tips mode comes from a Data-scaled point vector",
+                };
             let Some((crate::data_config::VectorComponents::Points { u, v }, style)) =
                 extract_vector(&series.render_type)
             else {
-                unreachable!("the tips mode comes from a Data-scaled point vector");
+                return Err(TIPS);
             };
             let crate::data_config::VectorScale::Data { factor } = style.scale else {
-                unreachable!("the tips mode comes from a Data-scaled point vector");
+                return Err(TIPS);
             };
             engine
                 .begin_vector_tips(
@@ -487,8 +491,11 @@ pub(super) fn begin_series_fit_extent_from_pool(
             .map(Some)
         }
         GpuSeriesFitMode::Field(mode) => {
-            let matrix = fit_matrix(&series.render_type)
-                .expect("field fit mode comes from a matrix render type");
+            let matrix = fit_matrix(&series.render_type).ok_or(
+                crate::gpu_errorbar::GpuErrorbarError::Internal {
+                    invariant: "field fit mode comes from a matrix render type",
+                },
+            )?;
             let x = current_extent_handle(pool, "field x", &series.x_column)?;
             let y = current_extent_handle(pool, "field y", &series.y_column)?;
             let extent = matrix_extent(matrix, x.len_values, y.len_values, |id| {

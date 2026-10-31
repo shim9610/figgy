@@ -280,7 +280,8 @@ impl PrepareContext<'_> {
         cfg: &SeriesConfig,
     ) -> Result<Arc<GridSources>> {
         let rt = &cfg.render_type;
-        let matrix = extract_matrix(rt).expect("a field series has a matrix");
+        let matrix =
+            extract_matrix(rt).ok_or(FiggyError::internal("a field series has a matrix"))?;
         // An image (#139) has no fill config: its shading and opacity are
         // its own fields, its mode continuous.
         let image = rt.rgb_image();
@@ -300,7 +301,7 @@ impl PrepareContext<'_> {
                 };
                 &image_fill
             }
-            (None, _) => unreachable!("a field series has a fill config"),
+            (None, _) => return Err(FiggyError::internal("a field series has a fill config")),
         };
         validate_contour_level_count(cfg.series_id.as_str(), rt)?;
         // A field reads its z range and colours from the colourbar; an image
@@ -428,15 +429,19 @@ impl PrepareContext<'_> {
                     Color::new(0.0, 0.0, 0.0, 0.0),
                 )
             }
-            (None, _) => unreachable!("a field without a colourbar is an image"),
+            (None, _) => {
+                return Err(FiggyError::internal(
+                    "a field without a colourbar is an image",
+                ));
+            }
         };
 
         let levels = contour_levels(rt)?;
         let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
 
         let params = data_render::FieldParamsGpu {
-            x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
-            y_base: u32::try_from(resolved.y.offset / 4).unwrap_or(0),
+            x_base: lane_u32(resolved.x.offset / 4, "field x column lane")?,
+            y_base: lane_u32(resolved.y.offset / 4, "field y column lane")?,
             x_len: u32::try_from(resolved.x.len_values).unwrap_or(u32::MAX),
             y_len: u32::try_from(resolved.y.len_values).unwrap_or(u32::MAX),
             cols: u32::try_from(resolved.extent.cols).unwrap_or(u32::MAX),

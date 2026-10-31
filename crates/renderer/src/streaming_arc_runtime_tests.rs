@@ -227,7 +227,7 @@ fn parity_with_samples(
             0
         );
         streamed.end_gpu_frame();
-        streamed.wait_idle();
+        streamed.wait_idle().unwrap();
         streamed.service_stream_requests();
         assert_eq!(
             streamed
@@ -252,11 +252,11 @@ fn parity_with_samples(
         match streamed.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
-            crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle(),
+            crate::AutoStreamingProgress::Backpressure { .. } => streamed.wait_idle().unwrap(),
             _ => {}
         }
     }
-    streamed.wait_idle();
+    streamed.wait_idle().unwrap();
     drop(
         streamed
             .prepare_registered(&[RegisteredChartDrawItem {
@@ -300,7 +300,9 @@ fn parity_with_samples(
                         .submit_stream_operation_ranges(operation, &supplied)
                         .unwrap();
                 }
-                crate::AutoStreamingRangeRequest::Backpressure { .. } => streamed.wait_idle(),
+                crate::AutoStreamingRangeRequest::Backpressure { .. } => {
+                    streamed.wait_idle().unwrap()
+                }
                 crate::AutoStreamingRangeRequest::AllSubmitted { .. }
                 | crate::AutoStreamingRangeRequest::Complete { .. } => break,
             }
@@ -438,7 +440,7 @@ fn stream_arc_scratch_is_bounded_and_budget_rejection_is_preallocation() {
             > 0
     );
     renderer.end_gpu_frame();
-    renderer.wait_idle();
+    renderer.wait_idle().unwrap();
     renderer.service_gpu_completions().unwrap();
     assert_eq!(
         renderer
