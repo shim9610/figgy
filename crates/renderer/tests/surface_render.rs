@@ -1035,6 +1035,19 @@ fn the_id_pick_answers_markers_and_segment_ends() {
             ("trail".to_string(), 26),
             "{scale}x"
         );
+        // The mirror point nearer 25: its start answers. The pick's 1x1
+        // target clips the stroke around the cursor, so the nearer end is
+        // decided on the whole chord, not the clipped piece.
+        let near_a = [
+            a[0] + 0.4 * (b[0] - a[0]),
+            a[1] + 0.4 * (b[1] - a[1]),
+            a[2] + 0.4 * (b[2] - a[2]),
+        ];
+        assert_eq!(
+            point(pick(&mut r, near_a, [0.0, 0.0])),
+            ("trail".to_string(), 25),
+            "{scale}x"
+        );
         // Beside the stroke: never a point.
         let beside = pick(&mut r, helix_point(n, 25), [0.0, -14.0 * f64::from(scale)]);
         assert!(
@@ -1296,4 +1309,76 @@ fn a_3d_point_series_needs_its_height_and_fits_the_z_axis() {
         z.min,
         z.max
     );
+}
+
+// ───── Metal diagnostic (#63), not for merging ─────
+
+#[test]
+fn a_diag_3d_line_pick_along_segments() {
+    let mut r = renderer();
+    let n = 40;
+    upload_helix(&mut r, n);
+    upload_grid(&mut r, 21, 17, |x, y| 0.5 * ridge(x, y));
+    let config = chart_3d();
+    let series = vec![
+        surface_series(21, Shading::Interpolated, None),
+        point_series(
+            "trail",
+            "tx",
+            "ty",
+            "tz",
+            DataRenderType::Line {
+                line: red_line(3.0, LineStylePreset::Solid),
+            },
+        ),
+    ];
+    r.enable_gpu_picking().unwrap();
+    let id = r.register_chart(config.clone(), series.clone()).unwrap();
+    for scale in [1.0f32, 2.0] {
+        let displayed = config.scaled(scale);
+        for k in [5usize, 12, 25, 33] {
+            let (a, b) = (helix_point(n, k), helix_point(n, k + 1));
+            let pa = displayed.project_3d(a).unwrap();
+            let pb = displayed.project_3d(b).unwrap();
+            let mut row = format!(
+                "DIAG {scale}x seg {k}: a {:.1},{:.1} b {:.1},{:.1} len {:.1}:",
+                pa[0],
+                pa[1],
+                pb[0],
+                pb[1],
+                ((pb[0] - pa[0]).powi(2) + (pb[1] - pa[1]).powi(2)).sqrt()
+            );
+            for f in [0.1, 0.3, 0.45, 0.55, 0.7, 0.9] {
+                let at = [
+                    a[0] + f * (b[0] - a[0]),
+                    a[1] + f * (b[1] - a[1]),
+                    a[2] + f * (b[2] - a[2]),
+                ];
+                let p = displayed.project_3d(at).unwrap();
+                let request = renderer::GpuPickRequest {
+                    canvas_position_px: [p[0] as f32, p[1] as f32],
+                    display_panel_px: Rect {
+                        x: 0,
+                        y: 0,
+                        width: (WIDTH as f32 * scale) as u32,
+                        height: (HEIGHT as f32 * scale) as u32,
+                    },
+                    display_scale: scale,
+                    max_distance_px: 0.0,
+                };
+                let picked =
+                    pollster::block_on(r.pick_chart_data(id, request).unwrap().resolve()).unwrap();
+                let label = match picked {
+                    Some(renderer::PickedData::Point {
+                        series_id,
+                        point_index,
+                        ..
+                    }) => format!("{series_id}#{point_index}"),
+                    other => format!("{other:?}"),
+                };
+                row.push_str(&format!(" {f}->{label}"));
+            }
+            eprintln!("{row}");
+        }
+    }
 }
