@@ -897,12 +897,14 @@ const ASSEMBLED_ALTERNATIVES: &[(&[&str], &[&str])] = &[
         &["preview_texel"],
     ),
     // Not a paste: each workgroup entry zeroes its own `var<workgroup>` array
-    // before computing, so the four bodies differ by design (the contract is
+    // before computing, so the six bodies differ by design (the contract is
     // in `workgroup_init.rs`, the per-shader zeroing in each module).
     (
         &[
             "data_render/bar_columnar.wgsl",
             "data_render/line_arc.wgsl",
+            "data_render/parallel_columnar.wgsl",
+            "data_render/ternary_region.wgsl",
             "gpu_errorbar.wgsl",
             "gpu_pick/core.wgsl",
         ],

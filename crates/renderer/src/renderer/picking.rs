@@ -1732,6 +1732,13 @@ impl Renderer {
                 resource: "renderer pick arc prefixes",
             }
         })?;
+        // A region series' ring starts, the scan its draw reads (#49).
+        let mut rings: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
+        rings.try_reserve_exact(slots.len()).map_err(|_| {
+            crate::gpu_pick::GpuPickError::AllocationFailed {
+                resource: "renderer pick ring starts",
+            }
+        })?;
         for series_id in slots.series_ids() {
             let position = layer_series
                 .iter()
@@ -1768,6 +1775,12 @@ impl Renderer {
                 })
                 .map(|arc| arc.prefix.0);
             arcs.push(arc);
+            let ring = series.and_then(|series| {
+                self.preparation_parts()
+                    .1
+                    .region_ring_starts(display_config, series)
+            });
+            rings.push(ring);
         }
         let chart_rect = display_config.chart_area.0;
         let data_area_px = display_config.data_area().ok().map(|area| {
@@ -1808,6 +1821,7 @@ impl Renderer {
             query,
             request.display_scale,
             &arcs,
+            &rings,
             inputs.member_count(),
             &|member| inputs.member_transform(member),
             &picker.exact,

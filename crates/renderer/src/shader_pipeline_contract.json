@@ -77,6 +77,15 @@
             "type": "read-only-storage"
           },
           "visibility": 4
+        },
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
         }
       ]
     ],
@@ -658,6 +667,15 @@
             "type": "uniform"
           },
           "visibility": 3
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 1
         }
       ]
     ],
@@ -3530,6 +3548,48 @@
           "visibility": 4
         }
       ]
+    ],
+    [
+      null,
+      null,
+      [
+        {
+          "binding": 0,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "read-only-storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 1,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 2,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "storage"
+          },
+          "visibility": 4
+        },
+        {
+          "binding": 3,
+          "buffer": {
+            "hasDynamicOffset": false,
+            "minBindingSize": 0,
+            "type": "uniform"
+          },
+          "visibility": 4
+        }
+      ]
     ]
   ],
   "pipelines": [
@@ -3545,7 +3605,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "2dd9dc2dd452e5f0"
+      "source": "12b5da3f93823054"
     },
     {
       "descriptor": {
@@ -3559,7 +3619,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "64ad67c313bc89f1"
+      "source": "15f657f220a51456"
     },
     {
       "descriptor": {
@@ -3573,7 +3633,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "e34889c9fa6dbc8e"
+      "source": "438ef7e41440c24b"
     },
     {
       "descriptor": {
@@ -3587,7 +3647,7 @@
         "layout": 0
       },
       "kind": "compute",
-      "source": "e49f8f4f404dd282"
+      "source": "e982a81c5896919c"
     },
     {
       "descriptor": {
@@ -3863,7 +3923,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "33d4d7490fc953fc"
+      "source": "a9c5d46376d8338a"
     },
     {
       "descriptor": {
@@ -3875,7 +3935,7 @@
         "layout": 1
       },
       "kind": "compute",
-      "source": "33d4d7490fc953fc"
+      "source": "a9c5d46376d8338a"
     },
     {
       "descriptor": {
@@ -3899,7 +3959,7 @@
         "layout": 37
       },
       "kind": "compute",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -3923,7 +3983,7 @@
         "layout": 52
       },
       "kind": "compute",
-      "source": "33d4d7490fc953fc"
+      "source": "a9c5d46376d8338a"
     },
     {
       "descriptor": {
@@ -4008,6 +4068,42 @@
       },
       "kind": "compute",
       "source": "d6ec456092e63c53"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "ring_apply"
+        },
+        "label": "figgy ternary ring scan pipeline",
+        "layout": 53
+      },
+      "kind": "compute",
+      "source": "c9c6ee255f8f1a07"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "ring_init"
+        },
+        "label": "figgy ternary ring scan pipeline",
+        "layout": 53
+      },
+      "kind": "compute",
+      "source": "c9c6ee255f8f1a07"
+    },
+    {
+      "descriptor": {
+        "compute": {
+          "constants": {},
+          "entryPoint": "ring_scan_block"
+        },
+        "label": "figgy ternary ring scan pipeline",
+        "layout": 53
+      },
+      "kind": "compute",
+      "source": "c9c6ee255f8f1a07"
     },
     {
       "descriptor": {
@@ -4120,7 +4216,7 @@
         }
       },
       "kind": "render",
-      "source": "247d55eebe9e96d6"
+      "source": "c9c6ee255f8f1a07"
     },
     {
       "descriptor": {
@@ -4173,7 +4269,7 @@
         }
       },
       "kind": "render",
-      "source": "247d55eebe9e96d6"
+      "source": "c9c6ee255f8f1a07"
     },
     {
       "descriptor": {
@@ -4238,7 +4334,7 @@
         }
       },
       "kind": "render",
-      "source": "247d55eebe9e96d6"
+      "source": "c9c6ee255f8f1a07"
     },
     {
       "descriptor": {
@@ -4303,7 +4399,7 @@
         }
       },
       "kind": "render",
-      "source": "247d55eebe9e96d6"
+      "source": "c9c6ee255f8f1a07"
     },
     {
       "descriptor": {
@@ -4830,7 +4926,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -5054,7 +5150,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -5194,7 +5290,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -5803,7 +5899,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -5916,7 +6012,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -6765,7 +6861,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -6878,7 +6974,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -8777,7 +8873,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -8890,7 +8986,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -9003,7 +9099,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -9116,7 +9212,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -9251,7 +9347,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -9386,7 +9482,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -10859,7 +10955,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -10994,7 +11090,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -11762,7 +11858,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -11808,7 +11904,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -11854,7 +11950,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -11900,7 +11996,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -13603,7 +13699,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -13716,7 +13812,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -14014,7 +14110,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {
@@ -14060,7 +14156,7 @@
         }
       },
       "kind": "render",
-      "source": "0b5549b11a8199ee"
+      "source": "c362ed7bc290860f"
     },
     {
       "descriptor": {

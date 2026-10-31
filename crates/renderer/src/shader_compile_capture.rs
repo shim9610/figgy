@@ -180,7 +180,9 @@ impl Capture {
                                 | "pick_range_bar"
                                 | "pick_violin"
                                 | "pick_value_labels"
+                                | "pick_parallel"
                                 | "scan_block"
+                                | "ring_scan_block"
                         )
                     )),
             "Benchmark must retain workgroup initialization"

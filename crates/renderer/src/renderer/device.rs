@@ -513,6 +513,10 @@ pub(super) struct TargetPipelines {
     /// chart with a region fill is drawn.
     pub(super) ternary_region_shader: Option<wgpu::ShaderModule>,
     pub(super) ternary_region: [Option<wgpu::RenderPipeline>; 2],
+    /// The ring-start scan the region draw and pick read (#49), from the
+    /// same module.
+    pub(super) ternary_region_scan:
+        Option<std::sync::Arc<data_render::ternary_region::RingScanPipelines>>,
     pub(super) errorbar: Option<wgpu::RenderPipeline>,
     pub(super) errorbar_mapped: Option<wgpu::RenderPipeline>,
     pub(super) bar: Option<wgpu::RenderPipeline>,
@@ -676,6 +680,40 @@ impl TargetPipelines {
                 pass,
             );
         }
+        self.ensure_ternary_region_scan(device);
+    }
+
+    /// The region module's shader, compiled once.
+    fn ternary_region_module(&mut self, device: &wgpu::Device) -> &wgpu::ShaderModule {
+        self.ternary_region_shader.get_or_insert_with(|| {
+            crate::gpu_compile::shader_module(
+                device,
+                wgpu::ShaderModuleDescriptor {
+                    label: Some("figgy ternary region shader"),
+                    source: wgpu::ShaderSource::Wgsl(
+                        data_render::ternary_region::TERNARY_REGION_SHADER
+                            .source
+                            .into(),
+                    ),
+                },
+            )
+        })
+    }
+
+    /// Compile the ring-start scan when it is missing, and return it.
+    pub(super) fn ensure_ternary_region_scan(
+        &mut self,
+        device: &wgpu::Device,
+    ) -> std::sync::Arc<data_render::ternary_region::RingScanPipelines> {
+        if let Some(scan) = &self.ternary_region_scan {
+            return std::sync::Arc::clone(scan);
+        }
+        let scan = std::sync::Arc::new(data_render::ternary_region::create_ring_scan_pipelines(
+            device,
+            self.ternary_region_module(device),
+        ));
+        self.ternary_region_scan = Some(std::sync::Arc::clone(&scan));
+        scan
     }
 
     /// Compile the ternary region module and the one pipeline `pass` when
@@ -691,29 +729,18 @@ impl TargetPipelines {
         if self.ternary_region[pass as usize].is_some() {
             return;
         }
-        let shader = self.ternary_region_shader.get_or_insert_with(|| {
-            crate::gpu_compile::shader_module(
-                device,
-                wgpu::ShaderModuleDescriptor {
-                    label: Some("figgy ternary region shader"),
-                    source: wgpu::ShaderSource::Wgsl(
-                        data_render::ternary_region::TERNARY_REGION_SHADER
-                            .source
-                            .into(),
-                    ),
-                },
-            )
-        });
-        self.ternary_region[pass as usize] =
-            Some(data_render::ternary_region::create_ternary_region_pipeline(
-                device,
-                shader,
-                transform_bgl,
-                region_bgl,
-                surface_format,
-                self.sample_count,
-                pass,
-            ));
+        let sample_count = self.sample_count;
+        let shader = self.ternary_region_module(device);
+        let pipeline = Some(data_render::ternary_region::create_ternary_region_pipeline(
+            device,
+            shader,
+            transform_bgl,
+            region_bgl,
+            surface_format,
+            sample_count,
+            pass,
+        ));
+        self.ternary_region[pass as usize] = pipeline;
     }
 
     /// Compile the one 3D point pipeline `kind` when it is missing (#132);
@@ -2143,6 +2170,7 @@ pub(super) fn create_target_pipelines_observed(
         surface: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
+        ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -2239,6 +2267,7 @@ pub(super) async fn create_target_pipelines_observed_async(
         surface: Default::default(),
         ternary_region_shader: None,
         ternary_region: Default::default(),
+        ternary_region_scan: None,
         errorbar: None,
         errorbar_mapped: None,
         bar: None,
@@ -3571,6 +3600,8 @@ impl Renderer {
                 pass,
             );
         }
+        // The ring-start scan the region draw and pick read (#49).
+        self.pipelines.ensure_ternary_region_scan(&self.device);
         finished(observer, "renderer.prewarm", "ternary region");
         crate::init::yield_init_frame().await;
 

@@ -25,7 +25,7 @@ jobs:
   packages:
     # Standard public runners only; draft PRs wait until ready for review.
     if: github.event.repository.private == false && (github.event_name == 'workflow_dispatch' || github.event.pull_request.draft == false)
-    name: ${{ matrix.os }} / ${{ matrix.backend }}
+    name: ${{ matrix.os }} / ${{ matrix.backend }}${{ matrix.shard != 'main' && format(' / {0}', matrix.shard) || '' }}
     runs-on: ${{ matrix.os }}
     # The packaged suite on the software adapters (WARP, lavapipe) outgrew
     # 90 minutes; the limit matches the repository job.
@@ -33,6 +33,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+        # The package tests in three jobs per backend that run at once
+        # (`ci/verify.py` SHARDS): `main` the library, the other
+        # integration tests, the doctests and the static checks; `picks`
+        # and `decorations` the two slowest groups of binaries.
+        shard: [main, picks, decorations]
         include:
           - os: ubuntu-24.04
             backend: vulkan
@@ -42,6 +48,8 @@ jobs:
             backend: metal
     env:
       WGPU_BACKEND: ${{ matrix.backend }}
+      # A fixed extraction path, so the package build can be cached.
+      FIGGY_PACKAGE_DIR: ${{ github.workspace }}/../figgy-packages
     steps:
       - uses: actions/checkout@v4
         with:
@@ -83,17 +91,28 @@ jobs:
       - name: Install pinned Windows DXC and WARP
         if: steps.scope.outputs.checks == 'true' && runner.os == 'Windows'
         run: python ci/setup_windows.py
-      - name: Formatting, native and WASM checks, strict API documentation
+      # Dependencies' build outputs, keyed by the lockfile and toolchain.
+      # Workspace crates are pruned before saving; the main shard saves.
+      - name: Restore the cargo build cache
         if: steps.scope.outputs.checks == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: packages-${{ matrix.backend }}
+          save-if: ${{ matrix.shard == 'main' }}
+          workspaces: |
+            . -> target
+            ../figgy-packages -> target
+      - name: Formatting, native and WASM checks, strict API documentation
+        if: steps.scope.outputs.checks == 'true' && matrix.shard == 'main'
         run: python ci/verify.py static
       - name: Package, extract, run rendering and pixel regressions
         if: steps.scope.outputs.checks == 'true'
-        run: python ci/verify.py packages
+        run: python ci/verify.py packages --shard ${{ matrix.shard }}
       - name: Upload verification logs and rendered images
         if: always() && steps.scope.outputs.checks == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: verification-${{ matrix.os }}-${{ matrix.backend }}
+          name: verification-${{ matrix.os }}-${{ matrix.backend }}-${{ matrix.shard }}
           path: target/ci-results/
           retention-days: 7
           if-no-files-found: warn
@@ -121,6 +140,14 @@ jobs:
       - name: Install Rust
         if: steps.scope.outputs.checks == 'true'
         run: rustup toolchain install 1.99.0 --profile minimal
+      - name: Restore the cargo build cache
+        if: steps.scope.outputs.checks == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: repository
+          workspaces: |
+            . -> target
+            tools/playground -> target
       - name: Install Linux build and Vulkan prerequisites
         if: steps.scope.outputs.checks == 'true'
         run: |

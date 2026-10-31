@@ -1848,7 +1848,16 @@ impl GpuPickEngine {
         }
         // No line offset members: the member transform is never asked for.
         let transform = query.transform;
-        self.pick_with_arcs(pool, query, display_scale, &[], 0, &|_| transform, &exact)
+        self.pick_with_arcs(
+            pool,
+            query,
+            display_scale,
+            &[],
+            &[],
+            0,
+            &|_| transform,
+            &exact,
+        )
     }
 
     /// The exact module and variant each registered series needs under
@@ -1889,6 +1898,7 @@ impl GpuPickEngine {
         query: GpuPickQuery,
         display_scale: f32,
         arcs: &[Option<Arc<wgpu::Buffer>>],
+        rings: &[Option<Arc<wgpu::Buffer>>],
         members: usize,
         member_transform: &dyn Fn(usize) -> ScatterTransform,
         exact: &PickExactPipelines,
@@ -2051,9 +2061,15 @@ impl GpuPickEngine {
                 pass.set_bind_group(0, &series.query_data_bg, &[]);
                 pass.set_bind_group(1, &series.query_work_bg, &[]);
                 // The pass keeps the bind group alive until it is submitted.
-                let arc = series_arc(arcs, series_order, series.point_count)
-                    .map(|buffer| self.bundle.arc_bind_group(buffer));
-                pass.set_bind_group(2, arc.as_ref().unwrap_or(&self.bundle.arc_placeholder), &[]);
+                let arc = series_arc(arcs, series_order, series.point_count);
+                let ring = series_ring(rings, series_order, series.point_count);
+                let group = (arc.is_some() || ring.is_some())
+                    .then(|| self.bundle.arc_bind_group(arc, ring));
+                pass.set_bind_group(
+                    2,
+                    group.as_ref().unwrap_or(&self.bundle.arc_placeholder),
+                    &[],
+                );
                 pass.dispatch_workgroups(series.dispatch_x, series.dispatch_y, 1);
             }
         }

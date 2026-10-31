@@ -147,8 +147,23 @@ target. These builds do not initialize a graphics adapter. docs.rs builds its
 pages from each published crate version after publication, not from master.
 Local rustdoc builds do not check what docs.rs hosts.
 
-Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
-artifacts, including on failure, and retained for seven days. The logs identify which
+Each backend's package tests run as three jobs at once (`--shard`, `SHARDS` in
+`verify.py`): `main` runs the library tests, every integration test no other shard
+owns, the doctests, the GPU numeric and missing-adapter checks and, before them,
+`verify.py static`; `picks` runs `pick_draw_agreement`; `decorations` runs
+`decoration_oracle` and `vector_export`. Every integration test binary runs in
+exactly one shard, and a shard binary missing from the packages fails the job, so a
+renamed suite cannot drop out. `--shard all` (the default) runs everything in one
+job. Test builds optimize dependencies at `opt-level = 3` and the workspace crates
+at `opt-level = 1` (`[profile.test]` in the root manifest, and the same profile in
+the extracted workspace); debug assertions and overflow checks stay on. The jobs
+extract the packages to a fixed `FIGGY_PACKAGE_DIR` beside the checkout and cache
+the dependencies' build outputs there and in `target/` with `Swatinem/rust-cache`,
+keyed by the lockfile and toolchain; the `main` shard saves the cache.
+
+Logs and generated diagnostic PNGs are uploaded as
+`verification-<runner>-<backend>-<shard>` artifacts, including on failure, and
+retained for seven days. The logs identify which
 checks actually completed. The configured matrix alone is not evidence of a pass;
 consult the Actions run of the PR that tested the commit and the
 [recorded backend results](STATUS.md).
@@ -292,7 +307,8 @@ available backends. A working adapter and device are required; no window is need
 Production adapter selection is not changed by this test configuration.
 
 Each extraction gets its own build directory so cached binaries cannot retain paths
-to a deleted extraction. The extracted workspace patches the renderer's `figgy-model`
+to a deleted extraction; with `FIGGY_PACKAGE_DIR` set, the path is fixed, the sources
+are replaced and its `target/` is kept, so a cached build stays valid. The extracted workspace patches the renderer's `figgy-model`
 dependency (`[patch.crates-io]`) to the extracted model package, so the tests never
 use the crates.io copy; external dependency versions remain locked. `cargo package`
 refuses uncommitted changes, so commit first or, to review local edits only, run
@@ -307,7 +323,8 @@ can use their installed driver instead; the setup script is specific to GitHub r
 CI는 공개 저장소에서 초안이 아닌 PR을 열거나 갱신하거나 다시 열 때, 그리고 초안 PR을
 검토 준비 상태로 바꿀 때만 실행한다. 브랜치, master, 태그 push로는 시작하지 않는다.
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
-실행한다.
+실행한다. CI는 백엔드마다 패키지 테스트를 세 작업(`main`, `picks`, `decorations`)으로
+나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
 
 패키지 작업은 배포되는 압축본만 검사한다. 별도의 `repository` 작업은 Ubuntu와
 Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. `figgy-web`을 포함한

@@ -3,6 +3,50 @@
 use super::*;
 
 impl PrepareContext<'_> {
+    /// A region series' ring starts for the pick (#49): the scan its draw
+    /// runs, over the same rows. `None` for any other series, or when its
+    /// columns are not resident.
+    pub(in crate::renderer) fn region_ring_starts(
+        &mut self,
+        config: &Config,
+        series: &SeriesConfig,
+    ) -> Option<Arc<wgpu::Buffer>> {
+        series.render_type.ternary_region()?;
+        config.ternary.as_ref()?;
+        let c = series.render_type.ternary_c_column()?;
+        let handles = [
+            self.pool.handle_for(&series.x_column)?,
+            self.pool.handle_for(&series.y_column)?,
+            self.pool.handle_for(c)?,
+        ];
+        let lane = |handle: &ColumnHandle| {
+            handle
+                .offset
+                .is_multiple_of(4)
+                .then(|| u32::try_from(handle.offset / 4).ok())
+                .flatten()
+        };
+        let count = handles.iter().map(|h| h.len_values).min()?;
+        let params = data_render::ternary_region::TernaryRegionParamsGpu {
+            color_premul: [0.0; 4],
+            x_base: lane(&handles[0])?,
+            y_base: lane(&handles[1])?,
+            c_base: lane(&handles[2])?,
+            count: u32::try_from(count).unwrap_or(u32::MAX),
+        };
+        let scan = self.pipelines.ensure_ternary_region_scan(self.device);
+        let (buffer, _charge) = data_render::ternary_region::scan_ring_starts(
+            self.device,
+            self.queue,
+            self.gpu_ledger,
+            &scan,
+            self.pool.buffer(),
+            &params,
+            self.caps.max_compute_workgroups_per_dimension,
+        )?;
+        Some(Arc::new(buffer))
+    }
+
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
     /// drawing. The `config.render_type` enum variant decides which of
     /// line/scatter/errorbar each series needs; column ids are resolved to
@@ -973,6 +1017,25 @@ impl PrepareContext<'_> {
                         c_base: lane(c_h)?,
                         count: u32::try_from(count).unwrap_or(u32::MAX),
                     };
+                    // Each ring's first row, scanned before the draw reads it
+                    // for the closing edges (#49).
+                    let scan = pipelines
+                        .ternary_region_scan
+                        .as_ref()
+                        .expect("prepare ensured the ternary region pipelines");
+                    let (ring_starts, ring_charge) = data_render::ternary_region::scan_ring_starts(
+                        &self.device,
+                        &self.queue,
+                        &self.gpu_ledger,
+                        scan,
+                        column_buffer,
+                        &params,
+                        self.caps.max_compute_workgroups_per_dimension,
+                    )
+                    .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                        series_id: cfg.series_id.clone(),
+                        reason: "the region's rows exceed the adapter's dispatch grid".into(),
+                    })?;
                     let (region_bg, charge) =
                         data_render::ternary_region::create_ternary_region_bind_group(
                             &self.gpu_ledger,
@@ -980,6 +1043,7 @@ impl PrepareContext<'_> {
                             &self.region_bgl,
                             column_buffer,
                             &params,
+                            &ring_starts,
                         );
                     let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
                         pipelines.ternary_region[pass as usize]
@@ -993,6 +1057,7 @@ impl PrepareContext<'_> {
                         region_bg,
                         count: params.count,
                         charge,
+                        ring_charge,
                     })
                 }
                 _ => None,

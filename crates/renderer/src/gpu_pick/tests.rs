@@ -3517,14 +3517,14 @@ fn pick_modules_splice_their_draw_modules_common_fragments() {
     }
 }
 
-/// `validate_device_limits` checks the exact layout: seven storage buffers
+/// `validate_device_limits` checks the exact layout: eight storage buffers
 /// in three groups. Every binding `pick_exact_candidates` reaches in any
 /// exact module (at the default variant, which carries every path) is an
 /// entry of that layout of the same kind, so the check covers the pass.
 #[test]
 fn device_limit_check_covers_the_exact_pass_bindings() {
     use wgpu::naga::valid::{Capabilities, ValidationFlags, Validator};
-    assert_eq!(exact_layout_storage_buffers(), 7);
+    assert_eq!(exact_layout_storage_buffers(), 8);
     assert_eq!(EXACT_LAYOUT.len(), 3);
     for shader in PickShader::EXACT {
         let source = shader.source();
