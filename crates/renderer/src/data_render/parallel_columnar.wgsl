@@ -220,7 +220,7 @@ var<workgroup> parallel_pick_shared: array<DataPickCandidate, PARALLEL_PICK_WORK
 // Keep this override paired with gpu_compile::workgroup_options.
 override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
 
-fn parallel_pick_zero(local_index: u32) {
+fn figgy_zero_workgroup(local_index: u32) {
     if FIGGY_EXPLICIT_WORKGROUP_ZERO {
         parallel_pick_shared[local_index] = DataPickCandidate();
         workgroupBarrier();
@@ -276,7 +276,7 @@ fn parallel_pick_candidate(inst: u32) -> DataPickCandidate {
 
 @compute @workgroup_size(PARALLEL_PICK_WORKGROUP_SIZE)
 fn pick_parallel(@builtin(local_invocation_index) local_index: u32) {
-    parallel_pick_zero(local_index);
+    figgy_zero_workgroup(local_index);
     var best = parallel_pick_invalid();
     let segments = max(parallel_params.axes, 2u) - 1u;
     let count = parallel_params.rows * segments;

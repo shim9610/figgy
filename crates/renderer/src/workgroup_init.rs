@@ -68,6 +68,22 @@ mod tests {
             poison: "vec2<u32>(23u, 24u)",
             bits: "v.x | v.y",
         },
+        // The parallel coordinates pick (#141), in the line module.
+        Case {
+            source: crate::data_render::LINE_SHADER.source,
+            array: "parallel_pick_shared",
+            width: 64,
+            poison: "DataPickCandidate(1u, 2u, 3u, 4u, 5u, 6u, 7.0, 8u)",
+            bits: "v.valid | v.paint_order | v.kind | v.index0 | v.index1 | v.index2 | bitcast<u32>(v.distance_px) | v.primitive_order",
+        },
+        // The ternary ring-start scan (#49).
+        Case {
+            source: crate::data_render::ternary_region::TERNARY_REGION_SHADER.source,
+            array: "ring_shared",
+            width: 256,
+            poison: "23u",
+            bits: "v",
+        },
     ];
 
     #[test]

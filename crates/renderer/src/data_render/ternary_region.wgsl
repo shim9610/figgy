@@ -166,7 +166,7 @@ var<workgroup> ring_shared: array<u32, 256>;
 // Keep this override paired with gpu_compile::workgroup_options.
 override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
 
-fn ring_zero_workgroup(local_index: u32) {
+fn figgy_zero_workgroup(local_index: u32) {
     if FIGGY_EXPLICIT_WORKGROUP_ZERO {
         ring_shared[local_index] = 0u;
         workgroupBarrier();
@@ -210,7 +210,7 @@ fn ring_scan_block(
     @builtin(num_workgroups) groups: vec3<u32>,
     @builtin(local_invocation_index) lid: u32,
 ) {
-    ring_zero_workgroup(lid);
+    figgy_zero_workgroup(lid);
     let block = ring_block(wid, groups);
     let i = block * RING_WG + lid;
     var v = 0u;
