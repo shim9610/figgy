@@ -100,14 +100,12 @@ impl ColumnSource for BorrowedF32Column<'_> {
     }
 
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), std::mem::size_of_val(self.data));
         for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
             bytes.copy_from_slice(&value.to_le_bytes());
         }
     }
 
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
             write_pair_bytes(pair, value, 0.0);
         }
@@ -157,9 +155,8 @@ impl HiLoColumnSource for BorrowedF32Column<'_> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, &hi) in self.data.iter().enumerate() {
+        for (index, &hi) in self.data.iter().enumerate().take(dst.len()) {
             dst.write_pair(index, hi, 0.0);
             record_min_positive(&mut stats, hi as f64);
         }
@@ -209,14 +206,12 @@ impl ColumnSource for BorrowedCastF32Column<'_> {
     }
 
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * size_of::<f32>());
         for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
             bytes.copy_from_slice(&(value as f32).to_le_bytes());
         }
     }
 
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
             write_pair_bytes(pair, value as f32, 0.0);
         }
@@ -226,9 +221,8 @@ impl ColumnSource for BorrowedCastF32Column<'_> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, &value) in self.data.iter().enumerate() {
+        for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
             let value = value as f32;
             dst.write_pair(index, value, 0.0);
             record_min_positive(&mut stats, value as f64);
@@ -274,14 +268,12 @@ impl ColumnSource for BorrowedF64Column<'_> {
     }
 
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * size_of::<f32>());
         for (bytes, &value) in dst.chunks_exact_mut(size_of::<f32>()).zip(self.data) {
             bytes.copy_from_slice(&(value as f32).to_le_bytes());
         }
     }
 
     fn write_f32_zero_lo_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
             write_pair_bytes(pair, value as f32, 0.0);
         }
@@ -291,10 +283,9 @@ impl ColumnSource for BorrowedF64Column<'_> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
         // The (hi, lo) split, as the hi/lo path writes it (#107).
-        for (index, &value) in self.data.iter().enumerate() {
+        for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
             let (hi, lo) = split_f64_to_f32_pair(value);
             dst.write_pair(index, hi, lo);
             record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
@@ -317,7 +308,6 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
     }
 
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.data.len() * COLUMN_VALUE_BYTES);
         for (pair, &value) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).zip(self.data) {
             let (hi, lo) = split_f64_to_f32_pair(value);
             write_pair_bytes(pair, hi, lo);
@@ -328,9 +318,8 @@ impl HiLoColumnSource for BorrowedF64Column<'_> {
         &self,
         mut dst: ColumnPairWriter<'_>,
     ) -> ColumnUploadStats {
-        debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
-        for (index, &value) in self.data.iter().enumerate() {
+        for (index, &value) in self.data.iter().enumerate().take(dst.len()) {
             let (hi, lo) = split_f64_to_f32_pair(value);
             dst.write_pair(index, hi, lo);
             record_min_positive(&mut stats, hi as f64 + lo as f64);
@@ -447,7 +436,6 @@ impl ColumnSource for JsF32StreamSource {
     }
 
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.0.length() as usize * size_of::<f32>());
         for (index, bytes) in dst.chunks_exact_mut(size_of::<f32>()).enumerate() {
             bytes.copy_from_slice(&self.0.get_index(index as u32).to_le_bytes());
         }
@@ -522,7 +510,6 @@ impl ColumnSource for JsF64StreamSource {
     }
 
     fn write_f32_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.0.length() as usize * size_of::<f32>());
         for (index, bytes) in dst.chunks_exact_mut(size_of::<f32>()).enumerate() {
             bytes.copy_from_slice(&(self.0.get_index(index as u32) as f32).to_le_bytes());
         }
@@ -548,7 +535,6 @@ impl HiLoColumnSource for JsF64StreamSource {
     }
 
     fn write_f32_pair_le_into(&self, dst: &mut [u8]) {
-        debug_assert_eq!(dst.len(), self.0.length() as usize * COLUMN_VALUE_BYTES);
         for (index, pair) in dst.chunks_exact_mut(COLUMN_VALUE_BYTES).enumerate() {
             let (hi, lo) = split_f64_to_f32_pair(self.0.get_index(index as u32));
             write_pair_bytes(pair, hi, lo);

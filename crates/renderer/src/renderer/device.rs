@@ -3858,20 +3858,34 @@ impl Renderer {
     /// This does not submit a frame. Hosts that have not drawn yet should call
     /// [`WindowedRenderer::first_frame_ready`] or draw first. On native the
     /// device is polled so the callback can resolve; on wasm the browser
-    /// delivers `onSubmittedWorkDone`.
-    pub async fn wait_submitted_work(&self) {
+    /// delivers `onSubmittedWorkDone`. A lost device, a failed poll or a
+    /// completion callback that never runs is returned as an error (#152).
+    pub async fn wait_submitted_work(&self) -> Result<()> {
+        self.health.check()?;
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.queue.on_submitted_work_done(move || {
-            let _ = sender.send(());
+            if sender.send(()).is_err() {
+                // Receiver dropped: the waiting call was cancelled.
+            }
         });
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = self.device.poll(wgpu::PollType::Wait {
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            });
+            },
+        )?;
+        if receiver.await.is_err() {
+            // wgpu drops the callback without running it when the device is
+            // lost; anything else is a broken completion contract.
+            self.health.check()?;
+            return Err(FiggyError::internal(
+                "the submitted-work callback was dropped without running",
+            ));
         }
-        let _ = receiver.await;
+        self.health.check()
     }
 
     pub fn sampler(&self) -> &wgpu::Sampler {

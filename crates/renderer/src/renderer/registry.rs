@@ -3726,10 +3726,10 @@ impl Renderer {
     /// still reference the old pool. A failed candidate leaves live columns
     /// and picker bindings on the previous primary.
     pub async fn release_unused_pool_memory(&mut self, minimum_capacity: u64) -> Result<()> {
-        self.wait_submitted_work().await;
+        self.wait_submitted_work().await?;
         self.pool.release_backup();
         self.end_gpu_frame();
-        self.wait_submitted_work().await;
+        self.wait_submitted_work().await?;
 
         let target = self.pool.used_bytes().max(minimum_capacity);
         if target < self.pool.capacity() {
@@ -3772,8 +3772,9 @@ impl Renderer {
                 Ok(())
             })();
             self.end_gpu_frame();
-            self.wait_submitted_work().await;
+            let waited = self.wait_submitted_work().await;
             result?;
+            waited?;
         }
         Ok(())
     }

@@ -250,7 +250,7 @@ impl FiggyChart {
         )
         .map_err(js_err)?;
         let ordered_requests =
-            active_series_extent_requests(self.chart_series(), &metadata.revisions)
+            active_series_extent_requests(self.chart_series()?, &metadata.revisions)
                 .map_err(js_err)?;
         let (future_series_extents, pending_series_extents) =
             select_series_extent_job_map(ordered_requests, &self.series_extents, false)
@@ -574,7 +574,7 @@ impl FiggyChart {
         if self.renderer.logical_column(id).is_none() {
             return Ok(false);
         }
-        let old_series = self.chart_series().to_vec();
+        let old_series = self.chart_series()?.to_vec();
         let mut keep = Vec::new();
         keep.try_reserve(old_series.len()).map_err(js_err)?;
         keep.extend(
@@ -608,7 +608,7 @@ impl FiggyChart {
                 .filter(|(_, keep)| **keep)
                 .map(|(label, _)| label.clone()),
         );
-        let mut next_config = self.chart_config().clone();
+        let mut next_config = self.chart_config()?.clone();
         if self.legend_auto_managed {
             for &index in removed.iter().rev() {
                 renderer::config::remove_legend_entry(&mut next_config.legend.content, index);
@@ -635,11 +635,18 @@ impl FiggyChart {
 
         self.columns.remove(id);
         self.column_revisions.remove(id);
-        debug_assert!(self.renderer.pool().slot(id).is_none());
+        // Style `i` draws series `i` (the frame zips them); a style past the
+        // last series draws nothing and is dropped with the removed ones.
         let mut keep_iter = keep.iter();
-        self.styles.retain(|_| *keep_iter.next().unwrap());
+        self.styles
+            .retain(|_| keep_iter.next().is_some_and(|keep| *keep));
         self.labels = next_labels;
-        self.retire_series_extent_cache();
+        self.retire_series_extent_cache()?;
+        if self.renderer.pool().slot(id).is_some() {
+            return Err(js_err(
+                "internal: the renderer reported a removed column that is still in the pool",
+            ));
+        }
         Ok(true)
     }
 
@@ -662,8 +669,8 @@ impl FiggyChart {
         )
         .map_err(js_err)?;
         let declarations = prepare_demo_declarations(
-            self.chart_config(),
-            self.chart_series(),
+            self.chart_config()?,
+            self.chart_series()?,
             &self.labels,
             self.cycle,
             self.color_seq,
@@ -679,7 +686,7 @@ impl FiggyChart {
                 }
             }
         }
-        let (scale, _) = self.display_scale_and_panel();
+        let (scale, _) = self.display_scale_and_panel()?;
         let mut styles = Vec::new();
         styles
             .try_reserve(declarations.series.len())

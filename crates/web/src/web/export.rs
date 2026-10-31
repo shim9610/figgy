@@ -23,8 +23,8 @@ impl FiggyChart {
     /// Scale-product overflow or an atlas beyond the adapter texture limit
     /// rejects the export before contour GPU state changes.
     pub async fn export_png(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-        let export_chart = Chart::new(self.chart_config().clone());
-        let series = self.chart_series().to_vec();
+        let export_chart = Chart::new(self.chart_config()?.clone());
+        let series = self.chart_series()?.to_vec();
         let bytes = self
             .renderer
             .export_document_png_bytes_with_clear_async(
@@ -47,8 +47,8 @@ impl FiggyChart {
     /// streamed source is rejected; the `<figgy-chart>` facade rejects it
     /// before calling.
     pub async fn export_svg(&mut self, scale: f32) -> Result<String, JsValue> {
-        let export_chart = Chart::new(self.chart_config().clone());
-        let series = self.chart_series().to_vec();
+        let export_chart = Chart::new(self.chart_config()?.clone());
+        let series = self.chart_series()?.to_vec();
         self.renderer
             .export_document_svg_with_clear_async(&export_chart, &series, scale, self.clear_color)
             .await
@@ -58,8 +58,8 @@ impl FiggyChart {
     /// [`Self::export_svg`] as one-page PDF bytes.
     /// JS: `const pdf = await chart.export_pdf(2.0);`
     pub async fn export_pdf(&mut self, scale: f32) -> Result<js_sys::Uint8Array, JsValue> {
-        let export_chart = Chart::new(self.chart_config().clone());
-        let series = self.chart_series().to_vec();
+        let export_chart = Chart::new(self.chart_config()?.clone());
+        let series = self.chart_series()?.to_vec();
         let bytes = self
             .renderer
             .export_document_pdf_with_clear_async(&export_chart, &series, scale, self.clear_color)

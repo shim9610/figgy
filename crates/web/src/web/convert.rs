@@ -43,10 +43,21 @@ pub(super) fn column_registration_error(error: renderer::FiggyError) -> JsValue 
     };
     let js_error = js_sys::Error::new(&error.to_string());
     let object: &JsValue = js_error.as_ref();
-    let set = |key: &str, value: JsValue| {
-        let _ = js_sys::Reflect::set(object, &JsValue::from_str(key), &value);
+    // A field that cannot be attached still reports the registration
+    // error, as a message that names the missing field.
+    let set = |key: &str, value: JsValue| match js_sys::Reflect::set(
+        object,
+        &JsValue::from_str(key),
+        &value,
+    ) {
+        Ok(true) => Ok(()),
+        Ok(false) | Err(_) => Err(js_err(format!(
+            "{error} (the `{key}` field could not be attached to the error object)"
+        ))),
     };
-    set("code", JsValue::from_str(code));
+    if let Err(plain) = set("code", JsValue::from_str(code)) {
+        return plain;
+    }
     for (key, value) in [
         ("requestedBytes", requested),
         ("limitBytes", limit),
@@ -59,7 +70,9 @@ pub(super) fn column_registration_error(error: renderer::FiggyError) -> JsValue 
             } else {
                 JsValue::from_str(&value.to_string())
             };
-            set(key, js_value);
+            if let Err(plain) = set(key, js_value) {
+                return plain;
+            }
         }
     }
     js_error.into()

@@ -1611,7 +1611,7 @@ impl Renderer {
         self.cancel_stream_operation(operation)?;
         self.end_gpu_frame();
         #[cfg(target_arch = "wasm32")]
-        self.wait_submitted_work().await;
+        self.wait_submitted_work().await?;
         #[cfg(not(target_arch = "wasm32"))]
         self.wait_idle();
         self.service_stream_requests();
