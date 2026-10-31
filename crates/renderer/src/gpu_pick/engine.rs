@@ -277,10 +277,18 @@ pub(super) fn create_buffer_checked(
     resource: &'static str,
 ) -> Result<wgpu::Buffer, GpuPickError> {
     // gpu-alloc: PickScratch
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        charged_buffer(tally, device, desc)
-    }))
-    .map_err(|_| GpuPickError::AllocationFailed { resource })
+    charged_buffer(tally, device, desc).map_err(|error| pick_gpu_error(resource, error))
+}
+
+/// A GPU failure met while creating a pick resource: out of memory is the
+/// picker's allocation failure, anything else a GPU error.
+pub(super) fn pick_gpu_error(resource: &'static str, error: crate::FiggyError) -> GpuPickError {
+    match error {
+        crate::FiggyError::GpuResourceAllocationFailed { .. } => {
+            GpuPickError::AllocationFailed { resource }
+        }
+        other => GpuPickError::from_figgy(other),
+    }
 }
 
 pub(super) fn create_bind_group_checked(
@@ -288,10 +296,8 @@ pub(super) fn create_bind_group_checked(
     desc: &wgpu::BindGroupDescriptor<'_>,
     resource: &'static str,
 ) -> Result<wgpu::BindGroup, GpuPickError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        device.create_bind_group(desc)
-    }))
-    .map_err(|_| GpuPickError::AllocationFailed { resource })
+    crate::renderer::gpu_checked(device, resource, || device.create_bind_group(desc))
+        .map_err(|error| pick_gpu_error(resource, error))
 }
 
 pub(super) fn lane_base(handle: ColumnHandle, series_id: &str) -> Result<u32, GpuPickError> {
@@ -367,8 +373,13 @@ impl GpuPickEngine {
         observe_result(observer, INIT_SCOPE, "limits", || {
             validate_device_limits(&device)
         })?;
-        let bundle =
-            create_pipeline_bundle_observed(device, queue, Arc::new(GpuLedger::new()), observer);
+        let bundle = create_pipeline_bundle_observed(
+            device,
+            queue,
+            Arc::new(GpuLedger::new()),
+            crate::renderer::DeviceHealth::default(),
+            observer,
+        )?;
         let reduce = observe_result(observer, INIT_SCOPE, "initial_reduce_resources", || {
             Self::create_reduce_resources(&bundle.device, &bundle.ledger, &bundle.reduce_bgl, 1)
         })?;
@@ -1575,10 +1586,7 @@ impl GpuPickEngine {
         final_slots: impl IntoIterator<Item = GpuPickRegistrySlot<'a>>,
     ) -> Result<PreparedPickRegistryTransition<'engine>, GpuPickError> {
         let next = self.prepare_next_registry(pool, final_slots)?;
-        Ok(PreparedPickRegistryTransition {
-            engine: self,
-            next: Some(next),
-        })
+        Ok(PreparedPickRegistryTransition { engine: self, next })
     }
 
     /// Replace one registry slot without recreating any other series resources.
@@ -1655,11 +1663,7 @@ impl GpuPickEngine {
             pool_layout_generation: self.registry.pool_layout_generation,
             generation,
         };
-        PreparedPickRegistryTransition {
-            engine: self,
-            next: Some(next),
-        }
-        .commit();
+        PreparedPickRegistryTransition { engine: self, next }.commit();
         Ok(())
     }
 
@@ -1680,11 +1684,7 @@ impl GpuPickEngine {
             pool_layout_generation: self.registry.pool_layout_generation,
             generation,
         };
-        PreparedPickRegistryTransition {
-            engine: self,
-            next: Some(next),
-        }
-        .commit();
+        PreparedPickRegistryTransition { engine: self, next }.commit();
     }
 
     /// Rebind registered columns after an in-place [`ColumnPool::defragment`].
@@ -2125,11 +2125,14 @@ impl GpuPickEngine {
         let slice = readback.slice(..);
         let (sender, receiver) = oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = sender.send(result);
+            if sender.send(result).is_err() {
+                // receiver dropped: the waiting call was cancelled
+            }
         });
         Ok(GpuPickTicket {
             state: GpuPickTicketState::Pending {
                 device: Arc::clone(&self.bundle.device),
+                health: self.bundle.health.clone(),
                 readback,
                 receiver,
                 identities: Arc::clone(&self.registry.identities),
@@ -2145,6 +2148,8 @@ pub(super) enum GpuPickTicketState {
     ReadyNone,
     Pending {
         device: Arc<wgpu::Device>,
+        /// The device's health record, checked by the readback poll.
+        health: crate::renderer::DeviceHealth,
         readback: wgpu::Buffer,
         receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
         identities: Arc<[PickIdentity]>,
@@ -2190,6 +2195,7 @@ impl GpuPickTicket {
     pub(crate) async fn resolve_indexed(self) -> Result<Option<GpuIndexedPick>, GpuPickError> {
         let GpuPickTicketState::Pending {
             device: _device,
+            health: _health,
             readback,
             receiver,
             identities,
@@ -2203,10 +2209,15 @@ impl GpuPickTicket {
         };
 
         #[cfg(not(target_arch = "wasm32"))]
-        let _ = _device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        crate::renderer::gpu_poll(
+            &_health,
+            &_device,
+            wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            },
+        )
+        .map_err(GpuPickError::from_figgy)?;
         receiver
             .await
             .map_err(|_| GpuPickError::MapChannelClosed)?
@@ -2214,7 +2225,7 @@ impl GpuPickTicket {
         let slice = readback.slice(..);
         let mapped = slice
             .get_mapped_range()
-            .expect("GPU pick readback is mapped after map_async");
+            .map_err(|error| GpuPickError::Gpu(error.to_string()))?;
         let size = CANDIDATE_BYTES as usize;
         let candidate_at = |index: usize| {
             *bytemuck::from_bytes::<PickCandidateGpu>(&mapped[index * size..][..size])

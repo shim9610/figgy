@@ -584,7 +584,7 @@ pub fn create_category_bar_data_bind_group(
             contents: bytemuck::bytes_of(params),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let lane_bytes = (lanes.max(1) as u64).checked_mul(LANE as u64).ok_or(
         crate::FiggyError::GpuResourceLimit {
             resource: "category lane table",
@@ -601,12 +601,14 @@ pub fn create_category_bar_data_bind_group(
             usage: wgpu::BufferUsages::STORAGE,
             mapped_at_creation: true,
         },
-    );
+    )?;
     let written = {
-        let mut view = lane_buf
-            .slice(..)
-            .get_mapped_range_mut()
-            .expect("the lane table is mapped at creation");
+        let mut view = lane_buf.slice(..).get_mapped_range_mut().map_err(|error| {
+            crate::FiggyError::GpuValidation {
+                resource: "category lane table",
+                reason: error.to_string(),
+            }
+        })?;
         let mut written = 0usize;
         let result = write(&mut |lane| {
             if written < lanes {

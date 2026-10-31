@@ -77,7 +77,7 @@ pub(crate) fn create_stream_point_transform_bind_group(
     layout: &wgpu::BindGroupLayout,
     transform: &ScatterTransform,
     global_base: u32,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     let mut chunk_transform = *transform;
     chunk_transform.style_params[2][2] = f32::from_bits(global_base);
     let tally = crate::gpu_memory::ChargeTally::new();
@@ -89,14 +89,14 @@ pub(crate) fn create_stream_point_transform_bind_group(
             contents: bytemuck::bytes_of(&chunk_transform),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let bind_group = create_scatter_transform_bind_group(device, layout, &buffer);
     let charge = crate::gpu_memory::shared_charge(
         tally,
         ledger,
         crate::gpu_memory::GpuResourceKind::Uniform,
     );
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }
 
 /// Allocate the transform uniform buffer with `COPY_DST` so subsequent

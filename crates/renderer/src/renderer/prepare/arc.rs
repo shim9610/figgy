@@ -149,6 +149,7 @@ impl PrepareContext<'_> {
                         extract_line(&cfg.render_type)
                             .map_or(LineInterpolation::Linear, |l| l.interpolation),
                     )
+                    .transpose()?
                 } else {
                     None
                 };
@@ -219,7 +220,7 @@ impl PrepareContext<'_> {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
-    ) -> Option<PreparedArc> {
+    ) -> Option<Result<PreparedArc>> {
         // The mode word: the step mode and, on a polar chart, the arc pieces
         // the transform carries.
         let step_mode = crate::line_step::mode_word_for(interpolation, t);
@@ -289,21 +290,21 @@ impl PrepareContext<'_> {
                 indirect: star.indirect.clone(),
                 vs_bg: star.vs_bg.clone(),
             });
-            return Some(PreparedArc {
+            return Some(Ok(PreparedArc {
                 prefix: (
                     Arc::clone(&hit.scratch.arc),
                     u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
                 ),
                 star,
                 charge: hit.scratch.charge(),
-            });
+            }));
         }
 
         #[cfg(test)]
         let chunk_override = self.arc_chunk_override;
         #[cfg(not(test))]
         let chunk_override = None;
-        let scratch = data_render::line_arc::ArcScratch::build(
+        let scratch = match data_render::line_arc::ArcScratch::build(
             &self.device,
             &self.gpu_ledger,
             self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
@@ -317,7 +318,11 @@ impl PrepareContext<'_> {
             step_mode,
             c.map_or(0, |(base, _)| base),
             third.and_then(|third| third.camera()),
-        )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
+        ) {
+            // None only on a zero-dispatch-limit adapter; try_new rejects those.
+            Ok(scratch) => scratch?,
+            Err(error) => return Some(Err(error)),
+        };
 
         let mut encoder = self
             .device
@@ -352,7 +357,7 @@ impl PrepareContext<'_> {
             results.remove(0);
         }
         results.push(ArcResultEntry { key, scratch });
-        Some(prepared)
+        Some(Ok(prepared))
     }
 }
 
@@ -385,7 +390,7 @@ impl Renderer {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
-    ) -> Option<PreparedArc> {
+    ) -> Option<Result<PreparedArc>> {
         self.preparation_parts().1.ensure_arc_prefix(
             series_id,
             x_id,

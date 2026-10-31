@@ -269,7 +269,7 @@ pub(crate) fn create_empty_label_gap_bind_group(
     device: &wgpu::Device,
     ledger: &Arc<GpuLedger>,
     layout: &wgpu::BindGroupLayout,
-) -> (wgpu::BindGroup, SharedCharge) {
+) -> Result<(wgpu::BindGroup, SharedCharge)> {
     let tally = ChargeTally::new();
     let zeros = |label: &'static str, size: usize, usage: wgpu::BufferUsages| {
         charged_buffer_init(
@@ -286,17 +286,17 @@ pub(crate) fn create_empty_label_gap_bind_group(
         "figgy empty contour label gap anchors",
         std::mem::size_of::<LabelAnchorGpu>(),
         wgpu::BufferUsages::STORAGE,
-    );
+    )?;
     let args = zeros(
         "figgy empty contour label gap count",
         16,
         wgpu::BufferUsages::STORAGE,
-    );
+    )?;
     let params = zeros(
         "figgy empty contour label gap params",
         32,
         wgpu::BufferUsages::UNIFORM,
-    );
+    )?;
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy empty contour label gap bg"),
         layout,
@@ -315,10 +315,10 @@ pub(crate) fn create_empty_label_gap_bind_group(
             },
         ],
     });
-    (
+    Ok((
         bind_group,
         crate::gpu_memory::shared_charge(tally, ledger, GpuResourceKind::ContourScratch),
-    )
+    ))
 }
 
 impl ContourLabelPipelines {
@@ -711,7 +711,7 @@ impl ContourLabelState {
                 }),
                 usage: wgpu::BufferUsages::STORAGE,
             },
-        );
+        )?;
         let params = LabelParamsGpu {
             atlas_w: atlas.width as f32,
             atlas_h: atlas.height as f32,
@@ -730,7 +730,7 @@ impl ContourLabelState {
                 contents: bytemuck::bytes_of(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
 
         let atlas_texture = crate::gpu_memory::TrackedTexture::new(
             ledger,
@@ -786,7 +786,7 @@ impl ContourLabelState {
                     &atlas.params_buf,
                     explicit_cell_w,
                     anchors,
-                ))
+                )?)
             }
             None => ContourLabelPlacementState::Automatic(Vec::new()),
         };
@@ -877,16 +877,18 @@ impl ContourLabelState {
         transform: &crate::data_render::ScatterTransform,
         params: AnchorParamsGpu,
         field_bg: &wgpu::BindGroup,
-    ) -> ContourLabelSnapshot {
+    ) -> Result<ContourLabelSnapshot> {
         let ContourLabelPlacementState::Automatic(slots) = &mut self.placement else {
-            unreachable!("explicit contour placement is never dispatched");
+            return Err(FiggyError::internal(
+                "explicit contour placement is never dispatched",
+            ));
         };
         let key = AutomaticPlacementKey::new(transform, params);
         if let Some(hit) = slots.iter().find(|entry| entry.key == key) {
-            return ContourLabelSnapshot {
+            return Ok(ContourLabelSnapshot {
                 atlas: GpuRef::clone(&self.atlas),
                 placement: GpuRef::clone(&hit.placement),
-            };
+            });
         }
 
         let placement = ContourLabelPlacementSlot::build_automatic(
@@ -895,8 +897,8 @@ impl ContourLabelState {
             pipelines,
             &self.atlas.cell_w_buf,
             &self.atlas.params_buf,
-        );
-        placement.dispatch(queue, encoder, pipelines, transform, params, field_bg);
+        )?;
+        placement.dispatch(queue, encoder, pipelines, transform, params, field_bg)?;
         if slots.len() >= AUTOMATIC_PLACEMENT_CACHE_LIMIT {
             slots.remove(0);
         }
@@ -904,10 +906,10 @@ impl ContourLabelState {
             key,
             placement: GpuRef::clone(&placement),
         });
-        ContourLabelSnapshot {
+        Ok(ContourLabelSnapshot {
             atlas: GpuRef::clone(&self.atlas),
             placement,
-        }
+        })
     }
 
     #[cfg(test)]
@@ -933,9 +935,9 @@ impl ContourLabelPlacementSlot {
         params_buf: &wgpu::Buffer,
         cell_w: &[f32],
         anchors: &[LabelAnchorGpu],
-    ) -> GpuRef<Self> {
+    ) -> Result<GpuRef<Self>> {
         let tally = ChargeTally::new();
-        let (anchors_buf, indirect) = Self::build_draw_buffers(&tally, device);
+        let (anchors_buf, indirect) = Self::build_draw_buffers(&tally, device)?;
         let n = anchors.len().min(MAX_CONTOUR_LABELS_TOTAL as usize);
         if n > 0 {
             let mut resolved = anchors[..n].to_vec();
@@ -956,7 +958,7 @@ impl ContourLabelPlacementSlot {
             &indirect,
             params_buf,
         );
-        GpuRef::new(Self {
+        Ok(GpuRef::new(Self {
             anchors: GpuRef::new(anchors_buf),
             indirect: GpuRef::new(indirect),
             label_gap_bg,
@@ -966,7 +968,7 @@ impl ContourLabelPlacementSlot {
                 ledger,
                 GpuResourceKind::ContourScratch,
             ),
-        })
+        }))
     }
 
     fn build_automatic(
@@ -975,7 +977,7 @@ impl ContourLabelPlacementSlot {
         pipelines: &ContourLabelPipelines,
         cell_w_buf: &wgpu::Buffer,
         params_buf: &wgpu::Buffer,
-    ) -> GpuRef<Self> {
+    ) -> Result<GpuRef<Self>> {
         let tally = ChargeTally::new();
         let record = std::mem::size_of::<LabelAnchorGpu>() as u64;
         // gpu-alloc: ContourScratch
@@ -988,8 +990,8 @@ impl ContourLabelPlacementSlot {
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             },
-        );
-        let (anchors, indirect) = Self::build_draw_buffers(&tally, device);
+        )?;
+        let (anchors, indirect) = Self::build_draw_buffers(&tally, device)?;
         // gpu-alloc: ContourScratch
         let anchor_params_buf = charged_buffer(
             &tally,
@@ -1000,7 +1002,7 @@ impl ContourLabelPlacementSlot {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         // gpu-alloc: ContourScratch
         let transform_buf = charged_buffer(
             &tally,
@@ -1011,7 +1013,7 @@ impl ContourLabelPlacementSlot {
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         let anchor_transform_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy contour anchor transform bg"),
             layout: &pipelines.anchor_transform_bgl,
@@ -1048,7 +1050,7 @@ impl ContourLabelPlacementSlot {
         });
         let label_gap_bg =
             Self::build_label_gap_bind_group(device, pipelines, &anchors, &indirect, params_buf);
-        GpuRef::new(Self {
+        Ok(GpuRef::new(Self {
             anchors: GpuRef::new(anchors),
             indirect: GpuRef::new(indirect),
             label_gap_bg,
@@ -1064,7 +1066,7 @@ impl ContourLabelPlacementSlot {
                 ledger,
                 GpuResourceKind::ContourScratch,
             ),
-        })
+        }))
     }
 
     fn build_label_gap_bind_group(
@@ -1097,7 +1099,7 @@ impl ContourLabelPlacementSlot {
     fn build_draw_buffers(
         tally: &ChargeTally,
         device: &wgpu::Device,
-    ) -> (wgpu::Buffer, wgpu::Buffer) {
+    ) -> Result<(wgpu::Buffer, wgpu::Buffer)> {
         let record = std::mem::size_of::<LabelAnchorGpu>() as u64;
         // gpu-alloc: ContourScratch
         let anchors = charged_buffer(
@@ -1111,7 +1113,7 @@ impl ContourLabelPlacementSlot {
                     | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         // gpu-alloc: ContourScratch
         let indirect = charged_buffer(
             tally,
@@ -1125,8 +1127,8 @@ impl ContourLabelPlacementSlot {
                     | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
-        );
-        (anchors, indirect)
+        )?;
+        Ok((anchors, indirect))
     }
 
     fn dispatch(
@@ -1137,11 +1139,12 @@ impl ContourLabelPlacementSlot {
         transform: &crate::data_render::ScatterTransform,
         params: AnchorParamsGpu,
         field_bg: &wgpu::BindGroup,
-    ) {
-        let automatic = self
-            .automatic
-            .as_ref()
-            .expect("automatic contour slot has compute resources");
+    ) -> Result<()> {
+        let Some(automatic) = self.automatic.as_ref() else {
+            return Err(FiggyError::internal(
+                "an automatic contour slot has compute resources",
+            ));
+        };
         // Keep the public CPU record's reserved lane unchanged. Only the GPU
         // copy retains the four-correction marker for the unchanged GPU ABI.
         let gpu_params = AnchorParamsGpu { _pad0: 4, ..params };
@@ -1159,7 +1162,7 @@ impl ContourLabelPlacementSlot {
             // Still clear the args, or a previous frame's count would draw labels
             // for anchors that are no longer there.
             queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&[0u32; 4]));
-            return;
+            return Ok(());
         }
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("figgy contour label anchors"),
@@ -1185,6 +1188,7 @@ impl ContourLabelPlacementSlot {
         pass.dispatch_workgroups(total.div_ceil(64).max(1), 1, 1);
         pass.set_pipeline(&pipelines.anchor_select);
         pass.dispatch_workgroups(1, 1, 1);
+        Ok(())
     }
 }
 

@@ -47,14 +47,16 @@ fn star_pitch(style: &DrawStyle) -> Option<f32> {
 
 fn arc(r: &mut Renderer, series_id: &str, config: &Config) -> Option<(Arc<wgpu::Buffer>, u64)> {
     let t = data_render::scatter_transform_from_config(config);
-    let prepared = r.ensure_arc_prefix(
-        series_id,
-        "arc_x",
-        "arc_y",
-        &t,
-        star_pitch(&config.draw_style),
-        LineInterpolation::Linear,
-    )?;
+    let prepared = r
+        .ensure_arc_prefix(
+            series_id,
+            "arc_x",
+            "arc_y",
+            &t,
+            star_pitch(&config.draw_style),
+            LineInterpolation::Linear,
+        )?
+        .unwrap();
     Some(prepared.prefix)
 }
 

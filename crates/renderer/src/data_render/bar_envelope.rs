@@ -283,7 +283,7 @@ impl Pipelines {
         transform: &wgpu::BindGroup,
         style: &wgpu::BindGroup,
         style_map: Option<&wgpu::BindGroup>,
-    ) -> Snapshot {
+    ) -> crate::Result<Snapshot> {
         let tally = ChargeTally::default();
         let pixels = pixels.max(1);
         let count = bar_instance_count(edges.len_values, values.len_values);
@@ -301,7 +301,7 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let winners = charged_buffer(
             &tally,
             device,
@@ -311,7 +311,7 @@ impl Pipelines {
                 usage: wgpu::BufferUsages::STORAGE,
                 mapped_at_creation: false,
             },
-        );
+        )?;
         let bg = |layout: &wgpu::BindGroupLayout, binding| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("histogram envelope data"),
@@ -334,9 +334,10 @@ impl Pipelines {
         };
         let compute_data = bg(&self.compute_layout, 3);
         let data = bg(&self.render_layout, 2);
-        let map = style_map
-            .cloned()
-            .unwrap_or_else(|| create_bar_style_map(device, &self.map_layout, &[]).bind_group);
+        let map = match style_map {
+            Some(map) => map.clone(),
+            None => create_bar_style_map(device, &self.map_layout, &[])?.bind_group,
+        };
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("histogram envelope preparation"),
         });
@@ -354,13 +355,13 @@ impl Pipelines {
             pass.dispatch_workgroups(groups.min(65535), groups.div_ceil(65535), 1);
         }
         queue.submit([encoder.finish()]);
-        Snapshot {
+        Ok(Snapshot {
             pipeline: self.render.clone(),
             data,
             map,
             pixels,
             _charge: Arc::new(tally.into_charge(ledger, GpuResourceKind::Uniform)),
-        }
+        })
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -432,7 +433,8 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&params),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let offset = [global_bin_start, 0, 0, 0];
         let offset_uniform = charged_buffer_init(
             &tally,
@@ -442,7 +444,8 @@ impl Pipelines {
                 contents: bytemuck::cast_slice(&offset),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let local = charged_buffer(
             &tally,
             device,
@@ -452,7 +455,8 @@ impl Pipelines {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let reduce_bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stream histogram local reduction data"),
             layout: &self.stream_reduce_layout,
@@ -615,7 +619,8 @@ impl Persistent {
                     },
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(stream_gpu_error)?;
         let data = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("stream histogram persistent render data"),
             layout: &pipelines.stream_render_layout,
@@ -624,9 +629,14 @@ impl Persistent {
                 resource: winners.as_entire_binding(),
             }],
         });
-        let map = style_map
-            .cloned()
-            .unwrap_or_else(|| create_bar_style_map(device, &pipelines.map_layout, &[]).bind_group);
+        let map = match style_map {
+            Some(map) => map.clone(),
+            None => {
+                create_bar_style_map(device, &pipelines.map_layout, &[])
+                    .map_err(stream_gpu_error)?
+                    .bind_group
+            }
+        };
         // The empty-map helper owns one padding style, one padding override and
         // one metadata uniform. This persistent owner charges their exact bytes.
         tally.add(map_bytes);
@@ -700,6 +710,13 @@ impl StreamChunk {
     pub(crate) fn charged_bytes(&self) -> u64 {
         self._charge.charged_bytes()
     }
+}
+
+/// A GPU failure in the streamed histogram path, in the scheduler's error
+/// type, which carries no payload: every such failure is an allocation the
+/// stream could not make.
+fn stream_gpu_error(_: crate::FiggyError) -> StreamError {
+    StreamError::AllocationFailed
 }
 
 fn check_stream_budget(
@@ -892,7 +909,9 @@ mod stream_tests {
         bar_style.dash[1] = [0.0; 4];
         let style_uniform = create_style_uniform_buffer(device, &bar_style);
         let style_bg = create_style_bind_group(device, &style_bgl, &style_uniform);
-        let map_bg = create_bar_style_map(device, &map_bgl, overrides).bind_group;
+        let map_bg = create_bar_style_map(device, &map_bgl, overrides)
+            .unwrap()
+            .bind_group;
         (pipelines, transform_bg, style_bg, map_bg)
     }
 

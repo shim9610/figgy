@@ -150,6 +150,7 @@ pub struct PipelinePreparation {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
     ledger: Arc<GpuLedger>,
+    health: DeviceHealth,
     format: wgpu::TextureFormat,
     pipelines: TargetPipelines,
     transform: wgpu::BindGroupLayout,
@@ -195,6 +196,7 @@ impl PipelinePreparation {
                     self.device.clone(),
                     self.queue.clone(),
                     self.ledger.clone(),
+                    self.health.clone(),
                     crate::gpu_data_pick::DataPickShaders {
                         bar: &self.pipelines.shaders.bar,
                         field: &self.pipelines.shaders.field,
@@ -275,10 +277,13 @@ impl PipelinePreparation {
                 crate::gpu_errorbar::GpuErrorbarExtentEngine::warm_device_async(&self.device)
                     .await
                     .map_err(failure)?;
-                extent = Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
-                    &self.device,
-                    self.ledger.clone(),
-                ));
+                extent = Some(
+                    crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                        &self.device,
+                        self.ledger.clone(),
+                    )
+                    .with_health(self.health.clone()),
+                );
             }
         }
         Ok(PreparedPipelines {
@@ -360,6 +365,7 @@ impl Renderer {
             device: self.device.clone(),
             queue: self.queue.clone(),
             ledger: self.gpu_ledger.clone(),
+            health: self.health.clone(),
             format: self.surface_format,
             pipelines: TargetPipelines::empty_for_preparation(&self.pipelines),
             transform: self.transform_bgl.clone(),

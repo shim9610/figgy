@@ -372,7 +372,7 @@ impl PrepareContext<'_> {
             ids,
             epochs: signature.epochs.clone(),
         });
-        let scratch = self.build_vector_scratch(signature, sources);
+        let scratch = self.build_vector_scratch(signature, sources)?;
 
         evict_if_full(
             &mut self.vector_cache,
@@ -401,7 +401,7 @@ impl PrepareContext<'_> {
         &self,
         signature: VectorSignature,
         sources: Arc<GridSources>,
-    ) -> VectorScratch {
+    ) -> Result<VectorScratch> {
         use data_render::vector as vector_render;
         let params = &signature.params;
         let [r, g, b, a] = signature.color;
@@ -431,41 +431,43 @@ impl PrepareContext<'_> {
                 stops: &signature.stops,
                 params,
             },
-        );
+        )?;
         // Grid form only: the `u` grid's lattice as a field, for the selected
         // cell outline; that pass reads only the lattice. The grid table
         // starts with the `u` grid's columns, which is all the field lattice
         // indexes; the same buffer serves both groups.
-        let field = (signature.input == vector_render::VectorInput::Grid).then(|| {
-            let mut field_flags = 0u32;
-            if params.flags & vector_render::VECTOR_FLAG_COLUMNS_ARE_Y != 0 {
-                field_flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
-            }
-            if params.flags & vector_render::VECTOR_FLAG_CENTERS != 0 {
-                field_flags |= data_render::FIELD_FLAG_CENTERS;
-            }
-            let field_params = data_render::FieldParamsGpu::cell_geometry(
-                params.x_base,
-                params.y_base,
-                params.x_len,
-                params.y_len,
-                params.cols,
-                params.rows,
-                field_flags,
-            );
-            data_render::create_field_cell_bind_group(
-                &self.device,
-                &self.gpu_ledger,
-                &self.field_bgl,
-                self.pool.buffer(),
-                &grid_buffer,
-                self.field_cell_tables,
-                &field_params,
-            )
-        });
+        let field = (signature.input == vector_render::VectorInput::Grid)
+            .then(|| {
+                let mut field_flags = 0u32;
+                if params.flags & vector_render::VECTOR_FLAG_COLUMNS_ARE_Y != 0 {
+                    field_flags |= data_render::FIELD_FLAG_COLUMNS_ARE_Y;
+                }
+                if params.flags & vector_render::VECTOR_FLAG_CENTERS != 0 {
+                    field_flags |= data_render::FIELD_FLAG_CENTERS;
+                }
+                let field_params = data_render::FieldParamsGpu::cell_geometry(
+                    params.x_base,
+                    params.y_base,
+                    params.x_len,
+                    params.y_len,
+                    params.cols,
+                    params.rows,
+                    field_flags,
+                );
+                data_render::create_field_cell_bind_group(
+                    &self.device,
+                    &self.gpu_ledger,
+                    &self.field_bgl,
+                    self.pool.buffer(),
+                    &grid_buffer,
+                    self.field_cell_tables,
+                    &field_params,
+                )
+            })
+            .transpose()?;
         let input = signature.input;
         let count = params.count;
-        VectorScratch {
+        Ok(VectorScratch {
             signature,
             input,
             style_bg,
@@ -474,7 +476,7 @@ impl PrepareContext<'_> {
             field,
             sources,
             count,
-        }
+        })
     }
 }
 

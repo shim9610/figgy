@@ -60,7 +60,7 @@ pub(crate) fn create_data_selection_bind_group(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     selection: &DataSelectionGpu,
-) -> (wgpu::BindGroup, crate::gpu_memory::SharedCharge) {
+) -> crate::Result<(wgpu::BindGroup, crate::gpu_memory::SharedCharge)> {
     let tally = crate::gpu_memory::ChargeTally::new();
     let buffer = crate::gpu_memory::charged_buffer_init(
         &tally,
@@ -70,7 +70,7 @@ pub(crate) fn create_data_selection_bind_group(
             contents: bytemuck::bytes_of(selection),
             usage: wgpu::BufferUsages::UNIFORM,
         },
-    );
+    )?;
     let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("figgy typed data selection bg"),
         layout,
@@ -84,5 +84,5 @@ pub(crate) fn create_data_selection_bind_group(
         ledger,
         crate::gpu_memory::GpuResourceKind::Uniform,
     );
-    (bind_group, charge)
+    Ok((bind_group, charge))
 }

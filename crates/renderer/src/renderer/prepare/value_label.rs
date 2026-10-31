@@ -261,7 +261,7 @@ impl PrepareContext<'_> {
         let params = data_render::radar_label_params(lane(&x)?, count, scale);
         let values = lane(&y)?;
         let style_map =
-            data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[]);
+            data_render::create_bar_style_map(self.device, self.per_point_style_map_bgl, &[])?;
         data_render::create_category_bar_data_bind_group(
             self.device,
             self.gpu_ledger,

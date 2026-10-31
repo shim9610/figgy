@@ -123,7 +123,7 @@ pub(super) fn packet(
             }],
             params: &params,
         },
-    );
+    )?;
     let selected = config.picked_data.as_ref().ok_or(StreamError::WrongState)?;
     let mut selection = data_render::DataSelectionGpu::from_color(selected.highlight_color);
     selection.metrics[0] = selected.outline_width_px;
@@ -138,7 +138,7 @@ pub(super) fn packet(
         context.device,
         context.data_selection_bgl,
         &selection,
-    );
+    )?;
     let layers = SelectionLayers {
         picked: Vec::new(),
         selected_bars: Vec::new(),

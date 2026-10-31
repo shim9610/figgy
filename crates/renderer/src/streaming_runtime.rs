@@ -4841,7 +4841,7 @@ impl Renderer {
                 &self.transform_bgl,
                 &data_render::scatter_transform_from_config(config),
                 draw_offset as u32,
-            );
+            )?;
             if let Some(layer) = &mut packet.scatter {
                 layer.transform_bg = bind_group.clone();
             }
@@ -4890,7 +4890,7 @@ impl Renderer {
                     &self.per_point_style_map_bgl,
                     global_base,
                     &tally,
-                ));
+                )?);
                 packet._stream_style_charge = Some(crate::gpu_memory::shared_charge(
                     tally,
                     &self.gpu_ledger,

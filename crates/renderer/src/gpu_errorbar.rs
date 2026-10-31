@@ -199,7 +199,8 @@ impl GpuSeriesFitMode {
             | DataRenderType::LineScatterErrorbarX { .. }
             | DataRenderType::LineScatterErrorbarY { .. }
             | DataRenderType::LineScatterErrorbarXY { .. } => {
-                unreachable!("paired render types returned above")
+                // The paired mode answered these above; it is their mode.
+                return GpuSeriesExtentMode::from_render_type(render_type).map(Self::Paired);
             }
         };
         let mode = match (&matrix.grid_layout, samples) {
@@ -383,6 +384,15 @@ pub enum GpuErrorbarError {
     ReadbackMapFailed(String),
     DevicePollFailed(String),
     CorruptResult,
+    /// The GPU reported an error, or the device was lost, while the extent
+    /// reduction created or ran its resources (#152).
+    Gpu(String),
+}
+
+impl GpuErrorbarError {
+    pub(crate) fn from_figgy(error: crate::FiggyError) -> Self {
+        Self::Gpu(error.to_string())
+    }
 }
 
 impl std::fmt::Display for GpuErrorbarError {
@@ -453,6 +463,7 @@ impl std::fmt::Display for GpuErrorbarError {
                 write!(f, "extent submission poll failed: {reason}")
             }
             Self::CorruptResult => write!(f, "GPU returned an invalid extent record"),
+            Self::Gpu(reason) => write!(f, "extent reduction GPU error: {reason}"),
         }
     }
 }
@@ -486,6 +497,10 @@ pub struct GpuErrorbarExtentEngine {
     /// passed per call so the whole `begin_*` chain keeps its signatures — the
     /// engine outlives every ticket it issues.
     ledger: Arc<GpuLedger>,
+    /// The device's health record; every extent readback polls through it.
+    /// An engine built without a renderer holds an unwatched record, and its
+    /// polls still report a lost device as an error.
+    health: crate::renderer::DeviceHealth,
 }
 
 impl GpuErrorbarExtentEngine {
@@ -608,6 +623,7 @@ impl GpuErrorbarExtentEngine {
             reduce_values,
             reduce_states,
             ledger,
+            health: crate::renderer::DeviceHealth::default(),
         }
     }
 
@@ -715,7 +731,15 @@ impl GpuErrorbarExtentEngine {
             reduce_values,
             reduce_states,
             ledger,
+            health: crate::renderer::DeviceHealth::default(),
         }
+    }
+
+    /// The engine with the renderer's device health record, so its polls
+    /// report a device loss the renderer saw.
+    pub(crate) fn with_health(mut self, health: crate::renderer::DeviceHealth) -> Self {
+        self.health = health;
+        self
     }
 
     /// Compile the extent compute pipelines through the browser's async API.
@@ -727,7 +751,7 @@ impl GpuErrorbarExtentEngine {
     pub async fn warm_device_async(device: &wgpu::Device) -> Result<(), GpuErrorbarError> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let _ = device;
+            let _native_needs_no_warmup = device;
             Ok(())
         }
         #[cfg(target_arch = "wasm32")]
@@ -933,7 +957,8 @@ impl GpuErrorbarExtentEngine {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(GpuErrorbarError::from_figgy)?;
         // gpu-alloc: ErrorbarScratch
         let scratch_b = charged_buffer(
             &scratch_tally,
@@ -944,7 +969,8 @@ impl GpuErrorbarExtentEngine {
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(GpuErrorbarError::from_figgy)?;
         // gpu-alloc: Readback
         let readback = charged_buffer(
             &readback_tally,
@@ -955,7 +981,8 @@ impl GpuErrorbarExtentEngine {
                 usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
                 mapped_at_creation: false,
             },
-        );
+        )
+        .map_err(GpuErrorbarError::from_figgy)?;
 
         params.lengths_1[3] = first_groups;
         // The params uniforms are owned by their bind groups; `params_buffer`
@@ -965,7 +992,7 @@ impl GpuErrorbarExtentEngine {
             device,
             "figgy series fit value params",
             params,
-        );
+        )?;
         let initial_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("figgy series fit value bindings"),
             layout: &self.values_layout,
@@ -1012,7 +1039,7 @@ impl GpuErrorbarExtentEngine {
                     lengths_0: [0; 4],
                     lengths_1: [0, 0, current_len, groups],
                 },
-            );
+            )?;
             let (input, output) = if current_is_a {
                 (&scratch_a, &scratch_b)
             } else {
@@ -1057,12 +1084,15 @@ impl GpuErrorbarExtentEngine {
             wgpu::MapMode::Read,
             0..SERIES_STATE_BYTES,
             move |result| {
-                let _ = sender.send(result);
+                if sender.send(result).is_err() {
+                    // receiver dropped: the waiting call was cancelled
+                }
             },
         );
         let submission = queue.submit(std::iter::once(encoder.finish()));
         Ok(GpuExtentTicketCore {
             device: device.clone(),
+            health: self.health.clone(),
             readback,
             receiver,
             submission,
@@ -1075,6 +1105,8 @@ impl GpuErrorbarExtentEngine {
 
 struct GpuExtentTicketCore {
     device: wgpu::Device,
+    /// The engine's device health record, checked by the readback poll.
+    health: crate::renderer::DeviceHealth,
     readback: wgpu::Buffer,
     receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
     submission: wgpu::SubmissionIndex,
@@ -1089,6 +1121,7 @@ impl GpuExtentTicketCore {
     async fn resolve(self) -> Result<SeriesStateGpu, GpuErrorbarError> {
         let Self {
             device,
+            health,
             readback,
             receiver,
             submission,
@@ -1098,14 +1131,21 @@ impl GpuExtentTicketCore {
         } = self;
 
         #[cfg(not(target_arch = "wasm32"))]
-        device
-            .poll(wgpu::PollType::Wait {
+        crate::renderer::gpu_poll(
+            &health,
+            &device,
+            wgpu::PollType::Wait {
                 submission_index: Some(submission.clone()),
                 timeout: None,
-            })
-            .map_err(|error| GpuErrorbarError::DevicePollFailed(format!("{error:?}")))?;
+            },
+        )
+        .map_err(|error| GpuErrorbarError::DevicePollFailed(error.to_string()))?;
         #[cfg(target_arch = "wasm32")]
-        let _ = (device, submission);
+        {
+            // The browser device resolves the readback on its own; nothing
+            // polls it here.
+            let (_device, _health, _submission) = (device, health, submission);
+        }
 
         receiver
             .await
@@ -1310,7 +1350,7 @@ fn params_buffer(
     device: &wgpu::Device,
     label: &'static str,
     params: ParamsGpu,
-) -> wgpu::Buffer {
+) -> Result<wgpu::Buffer, GpuErrorbarError> {
     // gpu-alloc: ErrorbarScratch
     charged_buffer_init(
         tally,
@@ -1321,6 +1361,7 @@ fn params_buffer(
             usage: wgpu::BufferUsages::UNIFORM,
         },
     )
+    .map_err(GpuErrorbarError::from_figgy)
 }
 
 fn decode_bound(bound: [f32; 2]) -> Result<f64, GpuErrorbarError> {

@@ -139,18 +139,18 @@ impl Renderer {
             "stream canonical arc leaf pairs",
             sizes[0],
             storage | copy | wgpu::BufferUsages::VERTEX,
-        );
+        )?;
         let arc = Arc::new(buffer(
             "stream canonical arc leaf output",
             sizes[1],
             storage | copy | wgpu::BufferUsages::VERTEX,
-        ));
-        let sums = buffer("stream canonical arc leaf sum", pair, storage);
-        let top = buffer("stream canonical arc sums0", top_bytes, storage);
-        let upper = buffer("stream canonical arc sums1", upper_bytes, storage);
-        let sink = buffer("stream canonical arc sum sink", pair, storage);
-        let carry = buffer("stream canonical arc carry", pair, storage);
-        let predecessor = buffer("stream canonical arc predecessor", pair, copy);
+        )?);
+        let sums = buffer("stream canonical arc leaf sum", pair, storage)?;
+        let top = buffer("stream canonical arc sums0", top_bytes, storage)?;
+        let upper = buffer("stream canonical arc sums1", upper_bytes, storage)?;
+        let sink = buffer("stream canonical arc sum sink", pair, storage)?;
+        let carry = buffer("stream canonical arc carry", pair, storage)?;
+        let predecessor = buffer("stream canonical arc predecessor", pair, copy)?;
         let transform = charged_buffer_init(
             &tally,
             &self.device,
@@ -159,7 +159,7 @@ impl Renderer {
                 contents: bytemuck::bytes_of(&data_render::scatter_transform_from_config(config)),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let transform = self
             .arc_pipelines
             .as_ref()
@@ -392,41 +392,45 @@ impl Renderer {
             let leaf_params = params(
                 "stream arc leaf params",
                 bytemuck::bytes_of(&leaf.arc_params(0, (Y_OFFSET / 4) as u32)),
-            );
+            )?;
             let replay_params = params(
                 "stream arc leaf identity",
                 bytemuck::bytes_of(&leaf.replay_params()),
-            );
-            let top_params = (!drawing && last_leaf).then(|| {
-                params(
-                    "stream arc top params",
-                    bytemuck::bytes_of(&ArcParams {
-                        len: canonical_chunk.block_count(),
-                        x_base: 0,
-                        y_base: 0,
-                        start: 0,
-                        mode: 0,
-                        c_base: 0,
-                        flags: 0,
-                        _pad: 0,
-                    }),
-                )
-            });
-            let upper_params = (!drawing && last_leaf).then(|| {
-                params(
-                    "stream arc upper params",
-                    bytemuck::bytes_of(&ArcParams {
-                        len: canonical_chunk.block_count().div_ceil(WG),
-                        x_base: 0,
-                        y_base: 0,
-                        start: 0,
-                        mode: 0,
-                        c_base: 0,
-                        flags: 0,
-                        _pad: 0,
-                    }),
-                )
-            });
+            )?;
+            let top_params = (!drawing && last_leaf)
+                .then(|| {
+                    params(
+                        "stream arc top params",
+                        bytemuck::bytes_of(&ArcParams {
+                            len: canonical_chunk.block_count(),
+                            x_base: 0,
+                            y_base: 0,
+                            start: 0,
+                            mode: 0,
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
+                        }),
+                    )
+                })
+                .transpose()?;
+            let upper_params = (!drawing && last_leaf)
+                .then(|| {
+                    params(
+                        "stream arc upper params",
+                        bytemuck::bytes_of(&ArcParams {
+                            len: canonical_chunk.block_count().div_ceil(WG),
+                            x_base: 0,
+                            y_base: 0,
+                            start: 0,
+                            mode: 0,
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
+                        }),
+                    )
+                })
+                .transpose()?;
             debug_assert_eq!(tally.bytes(), headroom);
             let charge = shared_charge(tally, &self.gpu_ledger, GpuResourceKind::ArcScan);
             let pipelines = self.arc_pipelines.as_ref().unwrap();

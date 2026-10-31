@@ -268,13 +268,15 @@ impl PrepareContext<'_> {
                     ));
                 }
 
-                let label = self.contour_label_snapshot(
-                    cfg.series_id.as_str(),
-                    &mut encoder,
-                    &transform,
-                    (ca, da),
-                    *effective_spacing_px,
-                );
+                let label = self
+                    .contour_label_snapshot(
+                        cfg.series_id.as_str(),
+                        &mut encoder,
+                        &transform,
+                        (ca, da),
+                        *effective_spacing_px,
+                    )
+                    .transpose()?;
                 let entry = self
                     .contour_cache
                     .get(cfg.series_id.as_str())
@@ -311,11 +313,11 @@ impl PrepareContext<'_> {
         transform: &data_render::ScatterTransform,
         (ca, da): (Rect, Rect),
         effective_spacing_px: Option<f32>,
-    ) -> Option<crate::gpu_contour::ContourLabelSnapshot> {
+    ) -> Option<Result<crate::gpu_contour::ContourLabelSnapshot>> {
         let entry = self.contour_cache.get_mut(series_id)?.contour_mut()?;
         let label = entry.label.as_mut()?;
         if !label.is_automatic() {
-            return label.explicit_snapshot();
+            return label.explicit_snapshot().map(Ok);
         }
         let effective_spacing_px =
             effective_spacing_px.expect("automatic contour spacing was preflighted");
@@ -390,13 +392,15 @@ impl PrepareContext<'_> {
         let ca = chart_config.chart_area.0;
         let da = chart_config.data_area().map(|area| area.0).unwrap_or(ca);
         let mut encoder = None;
-        let label = self.contour_label_snapshot(
-            cfg.series_id.as_str(),
-            &mut encoder,
-            &transform,
-            (ca, da),
-            spacing,
-        );
+        let label = self
+            .contour_label_snapshot(
+                cfg.series_id.as_str(),
+                &mut encoder,
+                &transform,
+                (ca, da),
+                spacing,
+            )
+            .transpose()?;
         if let Some(encoder) = encoder {
             self.queue.submit(std::iter::once(encoder.finish()));
         }
@@ -580,7 +584,7 @@ impl PrepareContext<'_> {
                 lookup_metadata: &lookup_tables.metadata,
                 params: &signature.params,
             },
-        );
+        )?;
 
         let label = match signature.label.as_ref() {
             Some(label_sig) => self.build_contour_label(cfg.series_id.as_str(), label_sig)?,

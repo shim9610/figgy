@@ -5,12 +5,12 @@ use super::*;
 impl PrepareContext<'_> {
     /// A region series' ring starts for the pick (#49): the scan its draw
     /// runs, over the same rows. `None` for any other series, or when its
-    /// columns are not resident.
+    /// columns are not resident; `Some(Err)` when the scan failed on the GPU.
     pub(in crate::renderer) fn region_ring_starts(
         &mut self,
         config: &Config,
         series: &SeriesConfig,
-    ) -> Option<Arc<wgpu::Buffer>> {
+    ) -> Option<Result<Arc<wgpu::Buffer>>> {
         series.render_type.ternary_region()?;
         config.ternary.as_ref()?;
         let c = series.render_type.ternary_c_column()?;
@@ -35,7 +35,7 @@ impl PrepareContext<'_> {
             count: u32::try_from(count).unwrap_or(u32::MAX),
         };
         let scan = self.pipelines.ensure_ternary_region_scan(self.device);
-        let (buffer, _charge) = data_render::ternary_region::scan_ring_starts(
+        let (buffer, _charge) = match data_render::ternary_region::scan_ring_starts(
             self.device,
             self.queue,
             self.gpu_ledger,
@@ -43,8 +43,11 @@ impl PrepareContext<'_> {
             self.pool.buffer(),
             &params,
             self.caps.max_compute_workgroups_per_dimension,
-        )?;
-        Some(Arc::new(buffer))
+        ) {
+            Ok(scan) => scan?,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(Arc::new(buffer)))
     }
 
     /// Convert one panel's `Series` list into `SeriesLayers` ready for
@@ -112,7 +115,7 @@ impl PrepareContext<'_> {
             &self.surface_bgl,
             &camera,
             &look,
-        );
+        )?;
         let surface = mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
@@ -157,7 +160,7 @@ impl PrepareContext<'_> {
                     &self.surface_bgl,
                     &camera,
                     &look,
-                );
+                )?;
                 let highlight = data_render::create_style_uniform_buffer(
                     &self.device,
                     &PrimitiveStyle::from_color(selection.highlight_color),
@@ -191,7 +194,7 @@ impl PrepareContext<'_> {
         pipelines: &'a TargetPipelines,
         scratch: &PreparedContourScratch,
         index: usize,
-    ) -> Option<data_render::surface_mesh::ColumnSurfaceLayer<'a>> {
+    ) -> Option<Result<data_render::surface_mesh::ColumnSurfaceLayer<'a>>> {
         use data_render::surface_mesh::{self as mesh, SurfacePass};
         if !scratch.drawable {
             return None;
@@ -207,14 +210,17 @@ impl PrepareContext<'_> {
             .unwrap_or(u32::MAX - 1)
             .saturating_add(1);
         let look = mesh::surface_params_gpu(None, 0, series.style.display_scale, None, pick_id);
-        let (surface_bg, surface_charge) = mesh::create_surface_bind_group(
+        let (surface_bg, surface_charge) = match mesh::create_surface_bind_group(
             &self.gpu_ledger,
             &self.device,
             &self.surface_bgl,
             &camera,
             &look,
-        );
-        Some(mesh::ColumnSurfaceLayer {
+        ) {
+            Ok(group) => group,
+            Err(error) => return Some(Err(error)),
+        };
+        Some(Ok(mesh::ColumnSurfaceLayer {
             pipeline,
             transform_bg: &view.transform_bg,
             style_bg: scratch.style_bg.clone(),
@@ -223,7 +229,7 @@ impl PrepareContext<'_> {
             quads: 1,
             charge: Arc::clone(&scratch.charge),
             surface_charge,
-        })
+        }))
     }
 
     pub(in crate::renderer) fn build_series_layers<'a>(
@@ -489,6 +495,7 @@ impl PrepareContext<'_> {
                     .and_then(|series| series.scratch.as_ref())
                     .expect("prepare captured this contour occurrence");
                 self.floor_layer(view, chart_config, series, pipelines, scratch, idx)
+                    .transpose()?
             } else {
                 None
             };
@@ -620,7 +627,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     bars,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -671,7 +678,7 @@ impl PrepareContext<'_> {
                     category_bar_categories(chart_config).unwrap_or(&[]),
                     boxes,
                     series.style.display_scale,
-                );
+                )?;
                 let data = data_render::create_category_bar_data_bind_group(
                     &self.device,
                     self.gpu_ledger,
@@ -786,31 +793,34 @@ impl PrepareContext<'_> {
                 };
                 let style_map = series.style.bar_map.as_ref();
                 Some(data_render::ColumnBarLayer {
-                    envelope: phase.is_none().then(|| {
-                        pipelines
-                            .bar_envelope
-                            .as_ref()
-                            .expect("prepare ensured histogram envelope pipeline")
-                            .prepare(
-                                &self.device,
-                                &self.queue,
-                                &self.gpu_ledger,
-                                column_buffer,
-                                edges,
-                                values,
-                                match bar_cfg.orientation {
-                                    crate::data_config::BarOrientation::Vertical => {
-                                        view.panel_rect.width
-                                    }
-                                    crate::data_config::BarOrientation::Horizontal => {
-                                        view.panel_rect.height
-                                    }
-                                },
-                                &view.transform_bg,
-                                &series.style.bar_bg,
-                                style_map.map(|map| &map.bind_group),
-                            )
-                    }),
+                    envelope: phase
+                        .is_none()
+                        .then(|| {
+                            pipelines
+                                .bar_envelope
+                                .as_ref()
+                                .expect("prepare ensured histogram envelope pipeline")
+                                .prepare(
+                                    &self.device,
+                                    &self.queue,
+                                    &self.gpu_ledger,
+                                    column_buffer,
+                                    edges,
+                                    values,
+                                    match bar_cfg.orientation {
+                                        crate::data_config::BarOrientation::Vertical => {
+                                            view.panel_rect.width
+                                        }
+                                        crate::data_config::BarOrientation::Horizontal => {
+                                            view.panel_rect.height
+                                        }
+                                    },
+                                    &view.transform_bg,
+                                    &series.style.bar_bg,
+                                    style_map.map(|map| &map.bind_group),
+                                )
+                        })
+                        .transpose()?,
                     pipeline: style_map.map_or_else(
                         || {
                             pipelines
@@ -875,7 +885,9 @@ impl PrepareContext<'_> {
                 let ternary_c = rt.ternary_c_column().map(&mut lookup).transpose()?;
                 // A 3D series' stroke: the 3D entry with its height and the
                 // panel's camera (#132).
-                let line_3d = z_3d.map(|z| (z, camera_binding(false)));
+                let line_3d = z_3d
+                    .map(|z| camera_binding(false).map(|binding| (z, binding)))
+                    .transpose()?;
                 Some(ColumnLineLayer {
                     pipeline: if line_3d.is_some() {
                         pipelines.view3d[View3dPipeline::Line as usize]
@@ -1031,7 +1043,7 @@ impl PrepareContext<'_> {
                         column_buffer,
                         &params,
                         self.caps.max_compute_workgroups_per_dimension,
-                    )
+                    )?
                     .ok_or_else(|| FiggyError::InvalidSeriesConfig {
                         series_id: cfg.series_id.clone(),
                         reason: "the region's rows exceed the adapter's dispatch grid".into(),
@@ -1044,7 +1056,7 @@ impl PrepareContext<'_> {
                             column_buffer,
                             &params,
                             &ring_starts,
-                        );
+                        )?;
                     let pipeline = |pass: data_render::ternary_region::TernaryRegionPass| {
                         pipelines.ternary_region[pass as usize]
                             .as_ref()
@@ -1141,7 +1153,11 @@ impl PrepareContext<'_> {
                         .as_ref()
                         .expect("prepare ensured the 3D scatter pipeline")
                 };
-                let scatter_3d = z_3d.map(|z| (z, camera_binding(precise_style_map.is_some())));
+                let scatter_3d = z_3d
+                    .map(|z| {
+                        camera_binding(precise_style_map.is_some()).map(|binding| (z, binding))
+                    })
+                    .transpose()?;
                 Some(ColumnScatterLayer {
                     pipeline: match (precise_style_map, ternary_c, scatter_3d.is_some()) {
                         (Some(_), _, true) => view3d(View3dPipeline::ScatterMapped),
@@ -1299,14 +1315,15 @@ impl PrepareContext<'_> {
                         box_points: box_points.as_ref().map(|layer| layer.data.clone()),
                         rows: selection_prepare::SelectionRows::RESIDENT,
                         mapped_point_bg: None,
-                        view3d: z_3d.filter(|_| primitives.scatter).map(|z| {
-                            (
-                                z,
+                        view3d: z_3d
+                            .filter(|_| primitives.scatter)
+                            .map(|z| {
                                 camera_binding(
                                     styled.is_none() && series.style.scatter_map.is_some(),
-                                ),
-                            )
-                        }),
+                                )
+                                .map(|binding| (z, binding))
+                            })
+                            .transpose()?,
                     },
                     products
                         .contours

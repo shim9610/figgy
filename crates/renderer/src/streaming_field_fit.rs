@@ -164,11 +164,13 @@ impl Renderer {
                     return Err(StreamError::TooLarge.into());
                 }
                 if self.errorbar_extent_engine.is_none() {
-                    self.errorbar_extent_engine =
-                        Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                    self.errorbar_extent_engine = Some(
+                        crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
                             &self.device,
                             Arc::clone(&self.gpu_ledger),
-                        ));
+                        )
+                        .with_health(self.health.clone()),
+                    );
                 }
                 let handle = |offset| data_render::ColumnHandle {
                     generation: 0,

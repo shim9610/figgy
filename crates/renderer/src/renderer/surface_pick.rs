@@ -204,6 +204,7 @@ impl Renderer {
                         None,
                         LineInterpolation::Linear,
                     )
+                    .transpose()?
                     .map(|arc| arc.prefix)
                 } else {
                     None
@@ -227,8 +228,8 @@ impl Renderer {
                     x,
                     y,
                     z: z_h,
-                    line: primitives.line.then(|| binding(false)),
-                    scatter: primitives.scatter.then(|| binding(mapped)),
+                    line: primitives.line.then(|| binding(false)).transpose()?,
+                    scatter: primitives.scatter.then(|| binding(mapped)).transpose()?,
                     arc,
                     style_index,
                     color_value,
@@ -245,7 +246,7 @@ impl Renderer {
                 contents: bytemuck::bytes_of(&data_render::scatter_transform_from_config(config)),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let transform_bg = data_render::create_scatter_transform_bind_group(
             &self.device,
             &self.transform_bgl,
@@ -263,7 +264,7 @@ impl Renderer {
                 contents: bytemuck::bytes_of(&point_transform),
                 usage: wgpu::BufferUsages::UNIFORM,
             },
-        );
+        )?;
         let point_transform_bg = data_render::create_scatter_transform_bind_group(
             &self.device,
             &self.transform_bgl,
@@ -366,7 +367,7 @@ impl Renderer {
                     &self.surface_bgl,
                     &floor_camera,
                     &look,
-                );
+                )?;
                 charges.push(charge);
                 identities.push(crate::gpu_data_pick::SurfacePickIdentity {
                     source_id: cfg.source_id.clone(),
@@ -416,7 +417,7 @@ impl Renderer {
                     &self.surface_bgl,
                     camera,
                     &look,
-                );
+                )?;
                 charges.push(charge);
                 identities.push(crate::gpu_data_pick::SurfacePickIdentity {
                     source_id: cfg.source_id.clone(),
@@ -547,6 +548,7 @@ impl Renderer {
         Ok(crate::GpuDataPickTicket::surface(
             crate::gpu_data_pick::SurfacePickTicket {
                 device: Arc::clone(&self.device),
+                health: self.health.clone(),
                 readback,
                 receiver,
                 identities,
