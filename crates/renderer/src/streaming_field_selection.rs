@@ -26,6 +26,9 @@ impl Cell {
         index: [usize; 2],
         mut len: impl FnMut(&str) -> Option<u64>,
     ) -> Option<Self> {
+        // `None` skips the pick: a picked cell the current lattice cannot
+        // resolve is not drawn, like an index past its end. The stream's own
+        // draw validated this extent and reports its errors.
         let (extent, x_len, y_len) = field_runtime::extent(series, &mut len).ok()?;
         let matrix = extract_matrix(&series.render_type)?;
         let fill = extract_field_fill(&series.render_type)?;

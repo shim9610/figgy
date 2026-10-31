@@ -149,6 +149,12 @@ impl StreamRequestError {
                 reason: format!("stream job is not current or ready: {error:?}"),
             },
             Self::Upload(ChunkUploadError::Gpu(error)) => error,
+            Self::Upload(ChunkUploadError::Input(error)) => {
+                FiggyError::GpuResourceAllocationFailed {
+                    resource: "stream chunk upload",
+                    reason: format!("Input({error:?})"),
+                }
+            }
             Self::Upload(error) => FiggyError::GpuResourceAllocationFailed {
                 resource: "stream chunk upload",
                 reason: format!("{error:?}"),
