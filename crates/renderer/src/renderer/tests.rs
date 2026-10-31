@@ -375,9 +375,15 @@ fn streamed_promotion_freezes_len_and_contains_source_failures() {
             u64::MAX,
         )
     }));
-    // A host source that panics unwinds through the promotion (figgy no
-    // longer catches panics, #152); the promotion leaves nothing behind.
-    assert!(result.is_err(), "the writer panic reaches the host");
+    assert!(matches!(
+        result.expect("writer panic must be contained"),
+        Err(FiggyError::Pool(
+            data_render::AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                ..
+            }
+        ))
+    ));
     assert!(renderer.pool.slot("panicking-writer").is_none());
     assert!(renderer.streaming_sources.contains_key("panicking-writer"));
     assert_eq!(renderer.stream_revision_lineage["panicking-writer"], 1);

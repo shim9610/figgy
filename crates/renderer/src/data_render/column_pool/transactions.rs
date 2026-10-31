@@ -113,16 +113,23 @@ pub(super) fn stage_streamed_columns(
             let start = offset as usize;
             let end = start + raw_bytes as usize;
             let out_of_range = std::cell::Cell::new(false);
-            let bounds = column
-                .source
-                .write_range(
+            // `write_range` is the host's code. A panic there is the host's,
+            // not figgy's, and is returned as this promotion's failure, as
+            // the streamed upload does (`streaming_upload.rs`).
+            let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                column.source.write_range(
                     0,
                     ColumnPairWriter::new(view.slice(start..end), &out_of_range),
                 )
-                .map_err(|error| AllocError::AllocationFailed {
-                    resource: "streamed promotion source",
-                    reason: error.reason().to_owned(),
-                })?;
+            }))
+            .map_err(|_| AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                reason: "source panicked while writing the requested range".into(),
+            })?
+            .map_err(|error| AllocError::AllocationFailed {
+                resource: "streamed promotion source",
+                reason: error.reason().to_owned(),
+            })?;
             if out_of_range.get() {
                 return Err(source_wrote_out_of_range());
             }
