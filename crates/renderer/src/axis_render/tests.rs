@@ -1124,7 +1124,7 @@ fn raster_produces_expected_size_and_nonzero() {
     let w = config.chart_area.0.width as usize;
     let h = config.chart_area.0.height as usize;
 
-    let rgba = raster_chart_to_rgba(&config);
+    let rgba = try_raster_chart_to_rgba(&config).unwrap();
     assert_eq!(rgba.len(), w * h * 4, "buffer size must be w*h*4");
 
     // Background is transparent, so any axis/label pixel must lift alpha above 0.

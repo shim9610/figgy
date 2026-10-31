@@ -96,9 +96,9 @@ pub fn try_raster_chart_layer_to_rgba_with_selection(
         });
     };
     match layer {
-        AxisLayerKind::Grid => draw_grid_layer(&mut canvas, &raster_cfg),
-        AxisLayerKind::Decoration => draw_decoration_layer(&mut canvas, &raster_cfg),
-        AxisLayerKind::All => draw_axes(&mut canvas, &raster_cfg),
+        AxisLayerKind::Grid => draw_grid_layer(&mut canvas, &raster_cfg)?,
+        AxisLayerKind::Decoration => draw_decoration_layer(&mut canvas, &raster_cfg)?,
+        AxisLayerKind::All => draw_axes(&mut canvas, &raster_cfg)?,
     }
     if matches!(layer, AxisLayerKind::Decoration | AxisLayerKind::All) {
         finish_decoration_layer(&mut canvas, config, &raster_cfg, selection);
@@ -130,7 +130,7 @@ pub(crate) fn raster_panel_layers(
         None
     };
     let mut above = Canvas::new(w, h).ok_or_else(allocation_failed)?;
-    draw_layers(below.as_mut(), Some(&mut above), &raster_cfg);
+    draw_layers(below.as_mut(), Some(&mut above), &raster_cfg)?;
     finish_decoration_layer(&mut above, config, &raster_cfg, selection);
     Ok((
         below.map(Canvas::into_rgba).unwrap_or_default(),
@@ -184,17 +184,15 @@ fn raster_frame_config(config: &Config) -> crate::Result<Config> {
     Ok(raster_cfg)
 }
 
-/// Panic-on-error wrapper around [`try_raster_chart_to_rgba`]. New code
-/// should prefer the fallible version; this exists for the binary demos.
-pub fn raster_chart_to_rgba(config: &Config) -> Vec<u8> {
-    try_raster_chart_to_rgba(config).expect("raster_chart_to_rgba failed")
-}
-
 /// Paint the chart's chrome into the canvases of its two slots, either of
 /// which may be absent: the one placement pass of every decoration, through
 /// [`emit_chart_chrome`]. The constellation style's deep-space backdrop is
 /// painted first into the slot below the data, in place of the grid.
-fn draw_layers(below: Option<&mut Canvas>, above: Option<&mut Canvas>, config: &Config) {
+fn draw_layers(
+    below: Option<&mut Canvas>,
+    above: Option<&mut Canvas>,
+    config: &Config,
+) -> crate::Result<()> {
     let mut below = below;
     if let crate::config::DrawStyle::Milkyway(c) = &config.draw_style
         && let Some(canvas) = below.as_deref_mut()
@@ -206,6 +204,7 @@ fn draw_layers(below: Option<&mut Canvas>, above: Option<&mut Canvas>, config: &
     let fp = FontPolicy::for_style(&config.draw_style);
     let mut sink = CanvasSink::new(if backdrop { None } else { below }, above, stroker, fp);
     emit_chart_chrome(config, fp, &mut sink);
+    sink.finish()
 }
 
 /// Grid layer — only the parts that should sit below the data layer.
@@ -213,23 +212,23 @@ fn draw_layers(below: Option<&mut Canvas>, above: Option<&mut Canvas>, config: &
 /// The constellation style repurposes this slot as its deep-space backdrop
 /// (the compositing order already puts it under the data): grid lines are
 /// not drawn in that mode — the style declares its own background instead.
-pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) {
-    draw_layers(Some(canvas), None, config);
+pub fn draw_grid_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
+    draw_layers(Some(canvas), None, config)
 }
 
 /// Decoration layer — axis lines, tick labels, axis titles, chart title,
 /// legend. Drawn above the data so data never overlaps axis chrome.
-pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) {
-    draw_layers(None, Some(canvas), config);
+pub fn draw_decoration_layer(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
+    draw_layers(None, Some(canvas), config)
 }
 
 /// Draw the full axis chrome (grid + decoration) into the regions specified
 /// by `config`. If `data_area()` fails, this is a no-op. One canvas cannot
 /// back both slots at once, so this entry runs the placement once per slot;
 /// `raster_panel_layers` is the single pass the renderer uses.
-pub fn draw_axes(canvas: &mut Canvas, config: &Config) {
-    draw_grid_layer(canvas, config);
-    draw_decoration_layer(canvas, config);
+pub fn draw_axes(canvas: &mut Canvas, config: &Config) -> crate::Result<()> {
+    draw_grid_layer(canvas, config)?;
+    draw_decoration_layer(canvas, config)
 }
 
 /// Place every decoration of `config` into `sink`: the grid below the data,
