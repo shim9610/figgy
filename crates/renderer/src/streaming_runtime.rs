@@ -434,6 +434,39 @@ fn live_runtime_mut(runtime: &mut Option<StreamRuntime>) -> Result<&mut StreamRu
         .ok_or(FiggyError::internal("a validated stream job has a runtime"))
 }
 
+/// The configuration, series and style a stream execution draws with: its
+/// automatic snapshot's, or the explicit chart's, whose prepared styles the
+/// stream request validated.
+fn stream_execution_series<'a>(
+    states: &'a HashMap<ChartId, ChartRenderState>,
+    snapshot: Option<&'a AutoStreamExecutionSnapshot>,
+    chart: ChartId,
+    series_index: usize,
+) -> Result<(&'a Config, &'a SeriesConfig, &'a ChartStyle)> {
+    const MISSING: FiggyError = FiggyError::internal("a stream cursor indexes a validated series");
+    match snapshot {
+        Some(snapshot) => Ok((
+            &snapshot.config,
+            snapshot.series.get(series_index).ok_or(MISSING)?,
+            snapshot.styles.styles.get(series_index).ok_or(MISSING)?,
+        )),
+        None => {
+            let state = states
+                .get(&chart)
+                .ok_or(FiggyError::UnknownChart { id: chart })?;
+            let styles = state
+                .prepared_styles
+                .as_ref()
+                .ok_or(FiggyError::internal("validated explicit stream styles"))?;
+            Ok((
+                &state.config,
+                state.series.get(series_index).ok_or(MISSING)?,
+                styles.styles.get(series_index).ok_or(MISSING)?,
+            ))
+        }
+    }
+}
+
 impl StreamRuntime {
     /// The cursor of a job an earlier check in the same call found live.
     fn live_draw(&self, job: StreamJob) -> Result<&StreamDrawCursor> {
@@ -808,6 +841,8 @@ pub(super) fn copy_stream_fit_axes(target: &mut Config, source: &Config) {
 
 // Map destination pixel centres back into the old fitted data image. Work in
 // f64 until the final pixel transform, including hi/lo and logarithmic axes.
+// `None` skips the preview rescale: a chart without a data area, like an empty
+// one, has no retained data image to move.
 fn preview_pixel_mapping(old: &Config, new: &Config) -> Option<[f32; 8]> {
     let a = old.data_area().ok()?.0;
     let b = new.data_area().ok()?.0;
@@ -1578,7 +1613,9 @@ impl Renderer {
             ) {
                 Ok(revision) => revision,
                 Err(error) => {
-                    let _ = self.cancel_chart_stream(job.chart);
+                    // A cancellation failure means the stream is still live,
+                    // which the caller must learn before the commit error.
+                    self.cancel_chart_stream(job.chart)?;
                     return Err(error.into());
                 }
             };
@@ -1600,9 +1637,16 @@ impl Renderer {
             *final_fit_published = true;
             *published_revision = Some(revision);
             *auto_fit_padding = None;
-            let state = &self.chart_states[&job.chart];
-            let snapshot = Arc::get_mut(snapshot.as_mut().expect("handoff retains snapshot"))
-                .expect("completion exclusively owns the handoff snapshot");
+            let state = self
+                .chart_states
+                .get(&job.chart)
+                .ok_or(FiggyError::UnknownChart { id: job.chart })?;
+            let Some(snapshot) = snapshot.as_mut().and_then(Arc::get_mut) else {
+                return Err(FiggyError::internal(
+                    "completion exclusively owns the handoff snapshot",
+                )
+                .into());
+            };
             snapshot.desired = revision;
             snapshot.data_revision = state.revisions.data;
             snapshot.series_revision = state.revisions.series;
@@ -1646,34 +1690,16 @@ impl Renderer {
         };
 
         let snapshot = {
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
+            let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
             let StreamExecutionMode::Auto { snapshot, .. } = &mut draw.mode else {
-                unreachable!()
+                return Err(StreamError::WrongState.into());
             };
             snapshot.take().ok_or(StreamError::WrongState)?
         };
         let mut snapshot = match Arc::try_unwrap(snapshot) {
             Ok(snapshot) => snapshot,
             Err(snapshot) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap();
-                let StreamExecutionMode::Auto { snapshot: slot, .. } = &mut draw.mode else {
-                    unreachable!()
-                };
-                *slot = Some(snapshot);
+                self.restore_auto_snapshot(job, snapshot)?;
                 return Err(FiggyError::StaleStateToken {
                     reason: "automatic stream snapshot was retained across completion".into(),
                 }
@@ -1684,10 +1710,12 @@ impl Renderer {
         let mut fit_epoch = self.next_stream_source_fit_epoch;
         for (id, cache) in statistic_copies {
             fit_epoch += 1;
-            let source = self
-                .streaming_sources
-                .get_mut(&id)
-                .expect("validated live source remains registered");
+            let Some(source) = self.streaming_sources.get_mut(&id) else {
+                self.restore_auto_snapshot(job, Arc::new(snapshot))?;
+                return Err(
+                    FiggyError::internal("a validated live source remains registered").into(),
+                );
+            };
             source.statistics_cache = cache;
             source.column.statistics =
                 crate::StreamStatistics::Known(source.statistics_cache.bounds);
@@ -1696,10 +1724,10 @@ impl Renderer {
         self.next_stream_source_fit_epoch = final_fit_epoch;
 
         if let Some((desired, config, view, raster, visual)) = config_revisions {
-            let state = self
-                .chart_states
-                .get_mut(&job.chart)
-                .ok_or(FiggyError::UnknownChart { id: job.chart })?;
+            let Some(state) = self.chart_states.get_mut(&job.chart) else {
+                self.restore_auto_snapshot(job, Arc::new(snapshot))?;
+                return Err(FiggyError::UnknownChart { id: job.chart }.into());
+            };
             copy_stream_fit_axes(&mut state.config, &snapshot_config);
             state.stream_auto_fit_padding = None;
             state.revisions.desired = desired;
@@ -1712,14 +1740,7 @@ impl Renderer {
             snapshot.requested_config = snapshot.config.clone();
         }
         let revision = snapshot.desired;
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         let StreamExecutionMode::Auto {
             snapshot: slot,
             auto_fit_padding,
@@ -1728,7 +1749,9 @@ impl Renderer {
             ..
         } = &mut draw.mode
         else {
-            unreachable!()
+            return Err(
+                FiggyError::internal("a completing automatic stream keeps its mode").into(),
+            );
         };
         *slot = Some(Arc::new(snapshot));
         *final_fit_published = true;
@@ -1816,10 +1839,7 @@ impl Renderer {
         let target = self
             .stream_runtime
             .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
+            .and_then(|runtime| runtime.draws.iter().find(|draw| draw.job == job))
             .ok_or(StreamError::Stale)?
             .target
             .clone();
@@ -1914,10 +1934,7 @@ impl Renderer {
         let draw = self
             .stream_runtime
             .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
+            .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
             .ok_or(StreamError::Stale)?;
         draw.view_cache = Some(cache);
         draw.view_candidate = None;
@@ -2130,7 +2147,7 @@ impl Renderer {
 
         if let Some(job) = self.active_stream_job(chart) {
             let (automatic, terminal, active_revision, pending_latest, inputs_match) = {
-                let runtime = self.stream_runtime.as_ref().unwrap();
+                let runtime = live_runtime(&self.stream_runtime)?;
                 let draw = runtime
                     .draws
                     .iter()
@@ -2146,9 +2163,9 @@ impl Renderer {
                         auto_fit_padding,
                         ..
                     } => {
-                        let snapshot = snapshot
-                            .as_ref()
-                            .expect("automatic execution retains its snapshot");
+                        let snapshot = snapshot.as_ref().ok_or(FiggyError::internal(
+                            "automatic execution retains its snapshot",
+                        ))?;
                         (
                             true,
                             draw.auto_terminal(runtime),
@@ -2320,7 +2337,9 @@ impl Renderer {
             .chart_states
             .get_mut(&chart)
             .and_then(|state| state.prepared_styles.take())
-            .expect("successful stream-surface preparation publishes chart styles");
+            .ok_or(FiggyError::internal(
+                "successful stream-surface preparation publishes chart styles",
+            ))?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
             requested_config: config.clone(),
             desired,
@@ -2348,14 +2367,11 @@ impl Renderer {
                     snapshot.display_scale,
                 )
             });
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == job)
-            .expect("new automatic stream cursor exists");
+            .ok_or(FiggyError::internal("new automatic stream cursor exists"))?;
         draw.source_cache_attempted = reusable_source.is_some();
         draw.source_cache = reusable_source;
         draw.source_cache_writable = false;
@@ -2384,8 +2400,24 @@ impl Renderer {
         };
         if let Some(cache) = reusable_view {
             // A failed packet preflight leaves the new job as an ordinary
-            // exact stream request. No partial cache draw is published.
-            let _ = self.draw_view_cache(job, cache);
+            // exact stream request. No partial cache draw is published. A lost
+            // device, a GPU error or a broken invariant is not a preflight
+            // rejection and is returned.
+            match self.draw_view_cache(job, cache) {
+                Ok(())
+                | Err(
+                    StreamRequestError::Scheduler(_)
+                    | StreamRequestError::Upload(_)
+                    | StreamRequestError::Surface(_)
+                    | StreamRequestError::Source { .. },
+                ) => {}
+                Err(StreamRequestError::State(
+                    error @ (FiggyError::DeviceLost { .. }
+                    | FiggyError::GpuValidation { .. }
+                    | FiggyError::Internal { .. }),
+                )) => return Err(error),
+                Err(StreamRequestError::State(_)) => {}
+            }
         }
         Ok(crate::AutoStreamingRequest::Started {
             revision: desired,
@@ -2573,7 +2605,9 @@ impl Renderer {
             .chart_states
             .get_mut(&chart)
             .and_then(|state| state.prepared_styles.take())
-            .expect("successful stream-surface preparation publishes chart styles");
+            .ok_or(FiggyError::internal(
+                "successful stream-surface preparation publishes chart styles",
+            ))?;
         let snapshot = Arc::new(AutoStreamExecutionSnapshot {
             requested_config: render_config.clone(),
             desired,
@@ -2601,14 +2635,11 @@ impl Renderer {
                     snapshot.display_scale,
                 )
             });
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == job)
-            .expect("new resident handoff cursor exists");
+            .ok_or(FiggyError::internal("new resident handoff cursor exists"))?;
         draw.view_candidate = view_candidate;
         draw.view_rejection = match self.auto_resident_working_set_limit {
             Some(0) => Some(view_residency::PackReject::Disabled),
@@ -2650,7 +2681,7 @@ impl Renderer {
         self.pump_stream_selection_sources(job, None, sources)
             .map_err(StreamRequestError::into_figgy)?;
         let (revision, pending_latest, terminal) = {
-            let runtime = self.stream_runtime.as_ref().unwrap();
+            let runtime = live_runtime(&self.stream_runtime)?;
             let draw = runtime
                 .draws
                 .iter()
@@ -2671,21 +2702,17 @@ impl Renderer {
             (
                 snapshot
                     .as_ref()
-                    .expect("automatic execution retains its snapshot")
+                    .ok_or(FiggyError::internal(
+                        "automatic execution retains its snapshot",
+                    ))?
                     .desired,
                 *pending_latest,
                 draw.auto_terminal(runtime),
             )
         };
         if terminal
-            && self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            && live_runtime(&self.stream_runtime)?
+                .live_draw(job)?
                 .selection
                 .terminal()
         {
@@ -2740,7 +2767,7 @@ impl Renderer {
                 reason: "automatic streaming chart has no active execution".into(),
             })?;
         let (revision, pending_latest, terminal) = {
-            let runtime = self.stream_runtime.as_ref().unwrap();
+            let runtime = live_runtime(&self.stream_runtime)?;
             let draw = runtime
                 .draws
                 .iter()
@@ -2761,7 +2788,9 @@ impl Renderer {
             (
                 snapshot
                     .as_ref()
-                    .expect("automatic execution retains its snapshot")
+                    .ok_or(FiggyError::internal(
+                        "automatic execution retains its snapshot",
+                    ))?
                     .desired,
                 *pending_latest,
                 draw.auto_terminal(runtime),
@@ -2846,7 +2875,7 @@ impl Renderer {
                 reason: "automatic streaming chart has no active execution".into(),
             })?;
         let (revision, ticket) = {
-            let runtime = self.stream_runtime.as_ref().unwrap();
+            let runtime = live_runtime(&self.stream_runtime)?;
             let draw = runtime
                 .draws
                 .iter()
@@ -2862,7 +2891,9 @@ impl Renderer {
             (
                 snapshot
                     .as_ref()
-                    .expect("automatic execution retains its snapshot")
+                    .ok_or(FiggyError::internal(
+                        "automatic execution retains its snapshot",
+                    ))?
                     .desired,
                 draw.pending.ok_or_else(|| FiggyError::StaleStateToken {
                     reason: "automatic stream has no pending range request".into(),
@@ -2913,14 +2944,11 @@ impl Renderer {
             return Ok(crate::RenderInterruptStatus::Resident);
         };
         self.retain_stream_status(chart)?;
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == job)
-            .expect("active stream job has a cursor");
+            .ok_or(FiggyError::internal("active stream job has a cursor"))?;
         let StreamExecutionMode::Auto {
             cancel_requested, ..
         } = &mut draw.mode
@@ -2998,14 +3026,8 @@ impl Renderer {
                 let (_, total_primitives) = self
                     .stream_progress_counts(job)
                     .map_err(StreamRequestError::into_figgy)?;
-                if !self
-                    .stream_runtime
-                    .as_ref()
-                    .unwrap()
-                    .draws
-                    .iter()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                if !live_runtime(&self.stream_runtime)?
+                    .live_draw(job)?
                     .selection
                     .terminal()
                 {
@@ -3199,7 +3221,7 @@ impl Renderer {
         let runtime = self
             .stream_runtime
             .as_mut()
-            .expect("status belongs to runtime");
+            .ok_or(FiggyError::internal("status belongs to runtime"))?;
         if let Some((_, retained)) = runtime
             .retired_status
             .iter_mut()
@@ -3308,10 +3330,7 @@ impl Renderer {
 
     fn stream_progress_counts(&self, job: StreamJob) -> StreamResult<(u64, u64)> {
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -3529,14 +3548,7 @@ impl Renderer {
             }
         }
         self.queue.submit([encoder.finish()]);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         draw.fit_preview = fit_preview;
         draw.surface = Some(surface);
         draw.display_bind_group = Some(display_bind_group);
@@ -3556,9 +3568,7 @@ impl Renderer {
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
         let target = wgpu::Texture::clone(
-            self.stream_runtime
-                .as_ref()
-                .unwrap()
+            live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
                 .find(|draw| draw.job == ticket.job)
@@ -3578,9 +3588,7 @@ impl Renderer {
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
         let target = wgpu::Texture::clone(
-            self.stream_runtime
-                .as_ref()
-                .unwrap()
+            live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
                 .find(|draw| draw.job == ticket.job)
@@ -3603,7 +3611,7 @@ impl Renderer {
         let stream_view = auto_snapshot
             .as_ref()
             .map_or(view, |snapshot| &snapshot.view);
-        let runtime = self.stream_runtime.as_ref().unwrap();
+        let runtime = live_runtime(&self.stream_runtime)?;
         let draw = runtime
             .draws
             .iter()
@@ -3640,13 +3648,8 @@ impl Renderer {
                 }
             )
         {
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .display_dirty = false;
             return Ok(false);
         }
@@ -3666,20 +3669,16 @@ impl Renderer {
             && current_display_view_revision == draw.displayed_view_revision
         {
             if auto_receipts_complete {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap();
+                let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
                 let StreamExecutionMode::Auto {
                     final_display_published,
                     ..
                 } = &mut draw.mode
                 else {
-                    unreachable!("receipt completion was checked for an automatic stream")
+                    return Err(FiggyError::internal(
+                        "receipt completion was checked for an automatic stream",
+                    )
+                    .into());
                 };
                 *final_display_published = true;
             }
@@ -3702,9 +3701,15 @@ impl Renderer {
             size,
         );
         let histogram = if draw.hist_overlay {
+            let (_, _, style) = stream_execution_series(
+                &self.chart_states,
+                auto_snapshot.as_deref(),
+                job.chart,
+                draw.hist_series.ok_or(StreamError::WrongState)?,
+            )?;
             Some((
                 draw.hist_envelope.as_ref().ok_or(StreamError::WrongState)?,
-                draw.hist_series.ok_or(StreamError::WrongState)?,
+                &style.bar_bg,
             ))
         } else {
             None
@@ -3764,7 +3769,7 @@ impl Renderer {
                 }
             },
             |pass| {
-                if let (Some(panel), Some(data), Some((envelope, series))) =
+                if let (Some(panel), Some(data), Some((envelope, bar_bg))) =
                     (panel, data, histogram)
                 {
                     pass.set_viewport(
@@ -3776,21 +3781,7 @@ impl Renderer {
                         1.0,
                     );
                     pass.set_scissor_rect(data.x, data.y, data.width, data.height);
-                    envelope.draw(
-                        pass,
-                        &stream_view.transform_bg,
-                        auto_snapshot.as_ref().map_or_else(
-                            || {
-                                &self.chart_states[&job.chart]
-                                    .prepared_styles
-                                    .as_ref()
-                                    .unwrap()
-                                    .styles[series]
-                                    .bar_bg
-                            },
-                            |snapshot| &snapshot.styles.styles[series].bar_bg,
-                        ),
-                    );
+                    envelope.draw(pass, &stream_view.transform_bg, bar_bg);
                 }
             },
             |pass| {
@@ -3829,14 +3820,7 @@ impl Renderer {
             },
         )?;
         self.queue.submit([encoder.finish()]);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         if matches!(
             &draw.mode,
             StreamExecutionMode::Auto {
@@ -3922,10 +3906,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -4144,15 +4125,13 @@ impl Renderer {
                     .iter()
                     .all(|style| style.display_scale.to_bits() == display_scale.to_bits())
         });
-        let scheduler = &self.stream_runtime.as_ref().unwrap().scheduler;
+        let scheduler = &live_runtime(&self.stream_runtime)?.scheduler;
         if scheduler.job_for_chart(chart.sequence).is_none()
             && scheduler.active_jobs() >= scheduler.limits().max_jobs
         {
             return Err(StreamError::TooManyJobs.into());
         }
-        self.stream_runtime
-            .as_mut()
-            .unwrap()
+        live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .try_reserve(1)
             .map_err(|_| StreamError::AllocationFailed)?;
@@ -4175,7 +4154,9 @@ impl Renderer {
         let styles = &style_update
             .as_ref()
             .or(state.prepared_styles.as_ref())
-            .unwrap()
+            .ok_or(FiggyError::internal(
+                "an explicit stream has prepared or updated styles",
+            ))?
             .styles;
         for (series_config, style) in state.series.iter().zip(styles) {
             let series = [Series {
@@ -4220,14 +4201,15 @@ impl Renderer {
         let transform = data_render::scatter_transform_from_config(config);
         let job = self.begin_chart_stream(chart)?;
         if let Some(styles) = style_update {
-            self.chart_states.get_mut(&chart).unwrap().prepared_styles = Some(styles);
+            self.chart_states
+                .get_mut(&chart)
+                .ok_or(FiggyError::UnknownChart { id: chart })?
+                .prepared_styles = Some(styles);
         }
         let expected_view_revision = view.advance_stream_revision()?;
         let displayed_view_revision = view.advance_content_revision()?;
         data_render::update_scatter_transform(&self.queue, &view.transform_buffer, &transform);
-        self.stream_runtime
-            .as_mut()
-            .unwrap()
+        live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .push(StreamDrawCursor {
                 job,
@@ -4283,7 +4265,7 @@ impl Renderer {
         self.service_stream_requests();
         self.validate_stream_job(job)?;
         let auto_snapshot = self.auto_stream_snapshot(job);
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let draw = runtime
             .draws
             .iter_mut()
@@ -4391,13 +4373,8 @@ impl Renderer {
             return match self.request_stream_columns(job, &ranges[..columns.count])? {
                 StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
                 StreamRequestStatus::Ready(ticket) => {
-                    self.stream_runtime
-                        .as_mut()
-                        .unwrap()
-                        .draws
-                        .iter_mut()
-                        .find(|draw| draw.job == job)
-                        .unwrap()
+                    live_runtime_mut(&mut self.stream_runtime)?
+                        .live_draw_mut(job)?
                         .pending = Some(ticket);
                     Ok(StreamDrawRequestStatus::Ready(ticket))
                 }
@@ -4453,10 +4430,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| {
@@ -4469,30 +4443,21 @@ impl Renderer {
         {
             return self.submit_stream_field_pick(ticket, supply, explicit_view, target);
         }
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == ticket.job && draw.field_fit.is_some())
         {
             return self.submit_stream_field_fit(ticket, supply, explicit_view, target);
         }
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == ticket.job && draw.field.is_some())
         {
             return self.submit_stream_field_supply(ticket, supply, explicit_view, target);
         }
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == ticket.job && draw.arc.is_some())
@@ -4500,10 +4465,7 @@ impl Renderer {
             return self.submit_stream_arc_supply(ticket, supply, explicit_view, target);
         }
         let mut auto_snapshot = self.auto_stream_snapshot(ticket.job);
-        let auxiliary = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let auxiliary = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -4513,10 +4475,7 @@ impl Renderer {
             None => explicit_view.ok_or(StreamError::WrongState)?,
         };
         let (series_index, phase_index, draw_offset, prior_histogram, prior_hist_series) = {
-            let draw = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
+            let draw = live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
                 .find(|draw| draw.job == ticket.job)
@@ -4573,10 +4532,7 @@ impl Renderer {
             columns[0].len.saturating_sub(phase.halo())
         };
         self.validate_stream_supply_kind(ticket, supply)?;
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == ticket.job && draw.auxiliary_pick.is_some())
@@ -4591,26 +4547,16 @@ impl Renderer {
                 primitives,
             );
         }
-        let fit_preview = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == ticket.job)
-            .unwrap()
+        let fit_preview = live_runtime(&self.stream_runtime)?
+            .live_draw(ticket.job)?
             .fit_preview;
         let histogram = if phase == StreamDrawPhase::Histogram {
-            let execution_styles = auto_snapshot.as_ref().map_or_else(
-                || {
-                    &self.chart_states[&ticket.job.chart]
-                        .prepared_styles
-                        .as_ref()
-                        .unwrap()
-                        .styles
-                },
-                |snapshot| &snapshot.styles.styles,
-            );
+            let (_, _, execution_style) = stream_execution_series(
+                &self.chart_states,
+                auto_snapshot.as_deref(),
+                ticket.job.chart,
+                series_index,
+            )?;
             let bar = extract_bar(&execution_series.render_type).ok_or(StreamError::WrongState)?;
             let pixels = match bar.orientation {
                 crate::data_config::BarOrientation::Vertical => view.panel_rect.width,
@@ -4640,10 +4586,7 @@ impl Renderer {
                     pixels,
                     self.memory_budget.unwrap_or(u64::MAX),
                     pool_bytes,
-                    execution_styles[series_index]
-                        .bar_map
-                        .as_ref()
-                        .map(|map| &map.bind_group),
+                    execution_style.bar_map.as_ref().map(|map| &map.bind_group),
                 )?),
             };
             let total = stream_phase_total(&execution_series, phase, |id| {
@@ -4675,18 +4618,16 @@ impl Renderer {
         let mapped_style_headroom = if styled_points {
             0
         } else {
-            let style = auto_snapshot.as_ref().map_or_else(
-                || {
-                    &self.chart_states[&ticket.job.chart]
-                        .prepared_styles
-                        .as_ref()
-                        .unwrap()
-                        .styles[series_index]
-                },
-                |snapshot| &snapshot.styles.styles[series_index],
-            );
+            let (_, _, style) = stream_execution_series(
+                &self.chart_states,
+                auto_snapshot.as_deref(),
+                ticket.job.chart,
+                series_index,
+            )?;
             match phase {
-                StreamDrawPhase::Field => unreachable!("field uses its bounded tile executor"),
+                StreamDrawPhase::Field => {
+                    return Err(FiggyError::internal("field uses its bounded tile executor").into());
+                }
                 StreamDrawPhase::Scatter if style.scatter_map.is_some() => 16,
                 StreamDrawPhase::Errorbar if style.errorbar_map.is_some() => 16,
                 _ => 0,
@@ -4708,10 +4649,7 @@ impl Renderer {
         if let Some((envelope, true, _, _, _)) = &histogram {
             envelope.record_clear(&mut encoder);
         }
-        let capture_enabled = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let capture_enabled = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -4723,10 +4661,7 @@ impl Renderer {
             ) {
                 Ok(capture) => Some(capture),
                 Err(reason) => {
-                    if let Some(candidate) = self
-                        .stream_runtime
-                        .as_mut()
-                        .unwrap()
+                    if let Some(candidate) = live_runtime_mut(&mut self.stream_runtime)?
                         .draws
                         .iter_mut()
                         .find(|draw| draw.job == ticket.job)
@@ -4763,10 +4698,7 @@ impl Renderer {
             }
         };
         let pending_pack = if let Some(capture) = pair_capture.as_ref() {
-            let candidate = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
+            let candidate = live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
                 .find(|draw| draw.job == ticket.job)
@@ -4821,39 +4753,30 @@ impl Renderer {
             .ok_or(StreamError::WrongState)?;
         let built = {
             let (states, preparation) = self.preparation_parts();
-            let (config, series_config, style) = auto_snapshot.as_ref().map_or_else(
-                || {
-                    let state = &states[&ticket.job.chart];
-                    (
-                        &state.config,
-                        &state.series[series_index],
-                        &state.prepared_styles.as_ref().unwrap().styles[series_index],
-                    )
-                },
-                |snapshot| {
-                    (
-                        &snapshot.config,
-                        &snapshot.series[series_index],
-                        &snapshot.styles.styles[series_index],
-                    )
-                },
-            );
-            let series = Series {
-                config: series_config,
-                style,
-            };
-            preparation.build_stream_series_with_pipelines(
-                view,
-                config,
-                &series,
-                &chunk,
-                &columns[..column_count],
-                phase,
-                auxiliary
-                    .as_ref()
-                    .and_then(|aux| aux.pipelines.as_ref())
-                    .unwrap_or(preparation.pipelines),
+            stream_execution_series(
+                states,
+                auto_snapshot.as_deref(),
+                ticket.job.chart,
+                series_index,
             )
+            .and_then(|(config, series_config, style)| {
+                let series = Series {
+                    config: series_config,
+                    style,
+                };
+                preparation.build_stream_series_with_pipelines(
+                    view,
+                    config,
+                    &series,
+                    &chunk,
+                    &columns[..column_count],
+                    phase,
+                    auxiliary
+                        .as_ref()
+                        .and_then(|aux| aux.pipelines.as_ref())
+                        .unwrap_or(preparation.pipelines),
+                )
+            })
         };
         let mut packet = match built {
             Ok(packet) => packet,
@@ -4889,16 +4812,12 @@ impl Renderer {
         if mapped_style_headroom != 0 {
             let mapped = (|| -> StreamResult<()> {
                 let global_base = u32::try_from(draw_offset).map_err(|_| StreamError::TooLarge)?;
-                let style = auto_snapshot.as_ref().map_or_else(
-                    || {
-                        &self.chart_states[&ticket.job.chart]
-                            .prepared_styles
-                            .as_ref()
-                            .expect("validated explicit stream styles")
-                            .styles[series_index]
-                    },
-                    |snapshot| &snapshot.styles.styles[series_index],
-                );
+                let (_, _, style) = stream_execution_series(
+                    &self.chart_states,
+                    auto_snapshot.as_deref(),
+                    ticket.job.chart,
+                    series_index,
+                )?;
                 let (map, layer_bg) = match phase {
                     StreamDrawPhase::Scatter => (
                         style.scatter_map.as_ref().ok_or(StreamError::WrongState)?,
@@ -4981,10 +4900,55 @@ impl Renderer {
         } else {
             None
         };
-        let execution_config = auto_snapshot.as_ref().map_or_else(
-            || &self.chart_states[&ticket.job.chart].config,
-            |snapshot| &snapshot.config,
-        );
+        let execution = stream_execution_series(
+            &self.chart_states,
+            auto_snapshot.as_deref(),
+            ticket.job.chart,
+            series_index,
+        )
+        .and_then(|execution| {
+            let mut layers = packet.layers();
+            match phase {
+                StreamDrawPhase::Field => {
+                    return Err(FiggyError::internal("field uses its bounded tile executor"));
+                }
+                StreamDrawPhase::Histogram => {
+                    layers.errorbar = None;
+                    layers.line = None;
+                    layers.scatter = None;
+                }
+                StreamDrawPhase::Errorbar => {
+                    layers.line = None;
+                    layers.scatter = None;
+                }
+                StreamDrawPhase::Line => {
+                    layers.errorbar = None;
+                    layers.scatter = None;
+                }
+                StreamDrawPhase::Scatter => {
+                    layers.errorbar = None;
+                    layers.line = None;
+                }
+            }
+            Ok((execution, layers))
+        });
+        let ((execution_config, _, execution_style), mut layers) = match execution {
+            Ok(execution) => execution,
+            Err(error) => {
+                drop((
+                    encoder,
+                    packet,
+                    chunk,
+                    histogram,
+                    histogram_chunk,
+                    prior_histogram,
+                ));
+                let discarded = self.discard_stream_recording(ticket);
+                self.end_gpu_frame();
+                discarded?;
+                return Err(error.into());
+            }
+        };
         let size = (target.width(), target.height());
         let panel = data_render::clamp_rect_to_target(view.panel_rect, size);
         let data = data_render::clamp_rect_to_target(
@@ -5023,27 +4987,6 @@ impl Renderer {
                 1.0,
             );
             pass.set_scissor_rect(data.x, data.y, data.width, data.height);
-            let mut layers = packet.layers();
-            match phase {
-                StreamDrawPhase::Field => unreachable!("field uses its bounded tile executor"),
-                StreamDrawPhase::Histogram => {
-                    layers.errorbar = None;
-                    layers.line = None;
-                    layers.scatter = None;
-                }
-                StreamDrawPhase::Errorbar => {
-                    layers.line = None;
-                    layers.scatter = None;
-                }
-                StreamDrawPhase::Line => {
-                    layers.errorbar = None;
-                    layers.scatter = None;
-                }
-                StreamDrawPhase::Scatter => {
-                    layers.errorbar = None;
-                    layers.line = None;
-                }
-            }
             let mapped_bar = if phase == StreamDrawPhase::Histogram
                 && layers
                     .bar
@@ -5070,18 +5013,7 @@ impl Renderer {
             if let Some((envelope, _, final_chunk, _, _)) = &histogram
                 && (*final_chunk || fit_preview)
             {
-                let bar_bg = auto_snapshot.as_ref().map_or_else(
-                    || {
-                        &self.chart_states[&ticket.job.chart]
-                            .prepared_styles
-                            .as_ref()
-                            .expect("validated explicit stream styles")
-                            .styles[series_index]
-                            .bar_bg
-                    },
-                    |snapshot| &snapshot.styles.styles[series_index].bar_bg,
-                );
-                envelope.draw(&mut pass, &view.transform_bg, bar_bg);
+                envelope.draw(&mut pass, &view.transform_bg, &execution_style.bar_bg);
             }
         }
         let result = self.queue_stream_recording(ticket, encoder.finish());
@@ -5089,14 +5021,11 @@ impl Renderer {
         match result {
             Ok(submission) => {
                 let current_gpu_bytes = self.gpu_memory_usage().total_bytes();
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
+                    .ok_or(FiggyError::internal("a submitted ticket's cursor is live"))?;
                 if let Some(result) = pending_pack
                     && let Some(candidate) = draw.view_candidate.as_mut()
                 {
@@ -5302,7 +5231,7 @@ impl Renderer {
             .retain(|request| runtime.scheduler.contains_ticket(request.ticket.ticket));
         self.chart_states
             .get_mut(&chart)
-            .expect("validated chart")
+            .ok_or(FiggyError::internal("validated chart"))?
             .stream_auto_fit_padding = None;
         Ok(())
     }
@@ -5443,7 +5372,7 @@ impl Renderer {
                 range: resolved,
             });
         }
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         runtime
             .requests
             .try_reserve(1)
@@ -5470,7 +5399,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
-        let runtime = self.stream_runtime.as_ref().unwrap();
+        let runtime = live_runtime(&self.stream_runtime)?;
         if !runtime.scheduler.is_requested(ticket.ticket) {
             return Err(StreamError::Stale.into());
         }
@@ -5550,12 +5479,12 @@ impl Renderer {
     fn validate_live_stream_request(&self, ticket: StreamTicket) -> StreamResult<()> {
         // The chart stamp protects remove/re-register ABA even if a host reuses
         // its source revision. Check live metadata too, before numeric conversion.
-        let runtime = self.stream_runtime.as_ref().unwrap();
+        let runtime = live_runtime(&self.stream_runtime)?;
         let request = runtime
             .requests
             .iter()
             .find(|r| r.ticket == ticket)
-            .unwrap();
+            .ok_or(StreamError::Stale)?;
         let auto_snapshot = runtime
             .draws
             .iter()
@@ -5586,10 +5515,7 @@ impl Renderer {
         &self,
         ticket: StreamTicket,
     ) -> StreamResult<PreparedStreamStatistics> {
-        let request = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let request = live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .find(|request| request.ticket == ticket)
@@ -5600,10 +5526,7 @@ impl Renderer {
             .map_err(|_| StreamError::AllocationFailed)?;
         plans.resize_with(request.columns.len(), ChunkStatisticsPlan::default);
         if request.selection
-            || self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
+            || live_runtime(&self.stream_runtime)?
                 .draws
                 .iter()
                 .any(|draw| draw.job == ticket.job && draw.auxiliary.is_some())
@@ -5636,10 +5559,7 @@ impl Renderer {
         for request_index in order {
             let column = &request.columns[request_index];
             let (source_statistics, source_cache) = if automatic {
-                let draw = self
-                    .stream_runtime
-                    .as_ref()
-                    .unwrap()
+                let draw = live_runtime(&self.stream_runtime)?
                     .draws
                     .iter()
                     .find(|draw| draw.job == ticket.job)
@@ -5769,44 +5689,45 @@ impl Renderer {
         ticket: StreamTicket,
         chunk: &RecordedChunk,
         prepared: PreparedStreamStatistics,
-    ) {
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+    ) -> Result<()> {
+        const NO_STATISTICS: FiggyError =
+            FiggyError::internal("requested upload statistics were collected");
+        if live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .any(|request| request.ticket == ticket && request.selection)
         {
-            return;
+            return Ok(());
         }
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == ticket.job && draw.auxiliary.is_some())
         {
-            return;
+            return Ok(());
         }
         if self.stream_job_is_auto(ticket.job) {
-            let runtime = self
-                .stream_runtime
-                .as_mut()
-                .expect("automatic stream has a runtime");
+            const NO_CACHE: FiggyError =
+                FiggyError::internal("automatic statistics were created for every source");
+            let runtime = live_runtime_mut(&mut self.stream_runtime)?;
             let request = runtime
                 .requests
                 .iter()
                 .find(|request| request.ticket == ticket)
-                .expect("accepted ticket retains request metadata");
+                .ok_or(FiggyError::internal(
+                    "an accepted ticket retains its request metadata",
+                ))?;
             let draw = runtime
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
-                .expect("automatic stream retains its draw cursor");
+                .ok_or(FiggyError::internal(
+                    "an automatic stream retains its draw cursor",
+                ))?;
             let StreamExecutionMode::Auto { statistics, .. } = &mut draw.mode else {
-                unreachable!("automatic job keeps automatic execution state")
+                return Err(FiggyError::internal(
+                    "an automatic job keeps automatic execution state",
+                ));
             };
             for ((column, uploaded), plan) in request
                 .columns
@@ -5819,30 +5740,27 @@ impl Renderer {
                 }
                 statistics
                     .get_mut(&column.column)
-                    .expect("automatic statistics were created for every source")
-                    .merge_bounds(
-                        uploaded
-                            .statistics
-                            .expect("requested upload statistics were collected"),
-                    );
+                    .ok_or(NO_CACHE)?
+                    .merge_bounds(uploaded.statistics.ok_or(NO_STATISTICS)?);
             }
             for planned in prepared.sources {
-                let column = &request.columns[planned.request_index];
-                statistics
-                    .get_mut(&column.column)
-                    .expect("automatic statistics were created for every source")
-                    .covered = planned.cache.covered;
+                let column = request
+                    .columns
+                    .get(planned.request_index)
+                    .ok_or(FiggyError::internal("a planned source indexes its request"))?;
+                statistics.get_mut(&column.column).ok_or(NO_CACHE)?.covered = planned.cache.covered;
             }
-            return;
+            return Ok(());
         }
-        let request = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        const NO_SOURCE: FiggyError =
+            FiggyError::internal("a validated source remains registered during upload");
+        let request = live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .find(|request| request.ticket == ticket)
-            .expect("accepted ticket retains request metadata");
+            .ok_or(FiggyError::internal(
+                "an accepted ticket retains its request metadata",
+            ))?;
         for ((column, uploaded), plan) in request
             .columns
             .iter()
@@ -5855,19 +5773,20 @@ impl Renderer {
             let source = self
                 .streaming_sources
                 .get_mut(&column.column)
-                .expect("validated source remains registered during upload");
-            source.statistics_cache.merge_bounds(
-                uploaded
-                    .statistics
-                    .expect("requested upload statistics were collected"),
-            );
+                .ok_or(NO_SOURCE)?;
+            source
+                .statistics_cache
+                .merge_bounds(uploaded.statistics.ok_or(NO_STATISTICS)?);
         }
         for planned in prepared.sources {
-            let column = &request.columns[planned.request_index];
+            let column = request
+                .columns
+                .get(planned.request_index)
+                .ok_or(FiggyError::internal("a planned source indexes its request"))?;
             let source = self
                 .streaming_sources
                 .get_mut(&column.column)
-                .expect("validated source remains registered during upload");
+                .ok_or(NO_SOURCE)?;
             source.statistics_cache.covered = planned.cache.covered;
             if source.statistics_cache.covers(0..source.len)
                 && !matches!(source.statistics, crate::StreamStatistics::Known(_))
@@ -5882,6 +5801,7 @@ impl Renderer {
                 source.column.statistics = crate::StreamStatistics::Pending;
             }
         }
+        Ok(())
     }
 
     /// Validates live authority and every borrowed payload before allocating or
@@ -5911,10 +5831,7 @@ impl Renderer {
     ) -> StreamResult<RecordedChunk> {
         self.validate_stream_supply(ticket, inputs)?;
         let prepared = self.prepare_stream_statistics(ticket)?;
-        let request = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let request = live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .find(|request| request.ticket == ticket)
@@ -5930,7 +5847,7 @@ impl Renderer {
             });
         }
         let budget = self.stream_upload_budget(headroom_bytes)?;
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let mut upload_error = None;
         let result =
             runtime
@@ -5958,7 +5875,7 @@ impl Renderer {
                 StreamRequestError::Upload,
             )
         })?;
-        self.commit_stream_statistics(ticket, &chunk, prepared);
+        self.commit_stream_statistics(ticket, &chunk, prepared)?;
         Ok(chunk)
     }
 
@@ -6041,7 +5958,9 @@ impl Renderer {
                 observe.take(),
                 reusable_staging.as_ref(),
             ),
-            StreamSupply::Cached(_) => unreachable!("handled above"),
+            StreamSupply::Cached(_) => {
+                Err(FiggyError::internal("cached supplies return before the staging writer").into())
+            }
         };
         let chunk = match result {
             Ok(chunk) => chunk,
@@ -6049,24 +5968,18 @@ impl Renderer {
                 // A failed writer leaves the encoder untouched. Validation
                 // may have failed before unmap, so unmap before remapping too.
                 if let Some(index) = staging_index {
-                    let draw = self
-                        .stream_runtime
-                        .as_mut()
-                        .unwrap()
+                    let draw = live_runtime_mut(&mut self.stream_runtime)?
                         .draws
                         .iter_mut()
                         .find(|draw| draw.job == ticket.job)
-                        .unwrap();
+                        .ok_or(FiggyError::internal("a recording ticket's cursor is live"))?;
                     draw.staging_slots[index].buffer.unmap();
                     draw.staging_slots[index].remap();
                 }
                 return Err(error);
             }
         };
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.job)
@@ -6092,7 +6005,7 @@ impl Renderer {
                 });
             }
         }
-        self.record_source_cache(ticket, &chunk, encoder, headroom_bytes);
+        self.record_source_cache(ticket, &chunk, encoder, headroom_bytes)?;
         Ok(chunk)
     }
 
@@ -6110,7 +6023,7 @@ impl Renderer {
         self.validate_stream_sources(ticket, inputs)?;
         let prepared = self.prepare_stream_statistics(ticket)?;
         let budget = self.stream_upload_budget(headroom_bytes)?;
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let mut upload_error = None;
         let result = runtime.scheduler.accept_expected(ticket.ticket, |ranges| {
             let source_at = |index: usize| crate::streaming_upload::StreamSourceSlice {
@@ -6160,7 +6073,7 @@ impl Renderer {
             Some(error) => StreamRequestError::Upload(error),
             None => StreamRequestError::Scheduler(error),
         })?;
-        self.commit_stream_statistics(ticket, &chunk, prepared);
+        self.commit_stream_statistics(ticket, &chunk, prepared)?;
         Ok(chunk)
     }
 
@@ -6211,7 +6124,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(ticket.job)?;
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         if runtime.completions.len() >= runtime.scheduler.limits().max_slots {
             return Err(StreamError::WrongState.into());
         }
@@ -6230,7 +6143,7 @@ impl Renderer {
         let receipt = runtime.scheduler.submit(ticket.ticket)?;
         runtime.completions.push(StreamCompletion { receipt, done });
         let submission = self.queue.submit([commands]);
-        self.publish_source_cache_capture(ticket);
+        runtime.publish_source_cache_capture(ticket);
         self.queue.on_submitted_work_done(move || {
             callback_done.store(true, Ordering::Release);
         });

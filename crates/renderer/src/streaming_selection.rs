@@ -272,10 +272,7 @@ fn columns_for<'a>(
 impl Renderer {
     fn selection_config(&self, job: StreamJob) -> StreamResult<(Config, RenderRevision)> {
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -325,27 +322,14 @@ impl Renderer {
         config: &Config,
         revision: RenderRevision,
     ) -> StreamResult<()> {
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         let view_revision = draw.expected_view_revision;
         let changed = draw.selection.revision != Some(revision)
             || draw.selection.view_revision != view_revision;
         if changed {
             self.discard_pending_selection(job)?;
-            let state = &mut self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection;
             state.candidate.clear();
             state.cursor = SelectionCursor::default();
@@ -357,14 +341,7 @@ impl Renderer {
             state.failed = false;
             state.last_issued = None;
         }
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         if draw.selection.admitted || draw.selection.failed {
             return Ok(());
         }
@@ -388,7 +365,7 @@ impl Renderer {
             },
             |s| &s.styles.styles,
         );
-        let limits = self.stream_runtime.as_ref().unwrap().scheduler.limits();
+        let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
         let mut cursor = SelectionCursor::default();
         let mut bytes = 0u64;
         let mut staging = 0u64;
@@ -444,14 +421,8 @@ impl Renderer {
         {
             return Err(StreamError::TooLarge.into());
         }
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state
             .candidate
@@ -468,10 +439,7 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.validate_stream_job(job)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -497,26 +465,14 @@ impl Renderer {
         }
         let (config, revision) = self.selection_config(job)?;
         if let Err(error) = self.prepare_selection_candidate(job, &config, revision) {
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection
                 .failed = true;
             return Err(error);
         }
         let ticket = loop {
-            let draw = self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap();
+            let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
             if draw.selection.complete {
                 return Ok(StreamingSelectionRequest::Complete { revision });
             }
@@ -537,14 +493,7 @@ impl Renderer {
                 )
             });
             let Some((entry, next_cursor)) = next else {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap();
+                let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
                 draw.selection.ready = std::mem::take(&mut draw.selection.candidate);
                 draw.selection.complete = true;
                 draw.display_dirty = true;
@@ -573,7 +522,7 @@ impl Renderer {
             else {
                 return Ok(StreamingSelectionRequest::Backpressure { revision });
             };
-            let runtime = self.stream_runtime.as_mut().unwrap();
+            let runtime = live_runtime_mut(&mut self.stream_runtime)?;
             runtime
                 .requests
                 .iter_mut()
@@ -631,14 +580,8 @@ impl Renderer {
         let Some((page, local)) = cache.point_page(entry.series, source_index) else {
             // No selected marker lies in the completed view. In particular,
             // do not ask the source for an offscreen row just to draw a ring.
-            let state = &mut self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .selection;
             state.cursor = next_cursor;
             return Ok(());
@@ -735,14 +678,8 @@ impl Renderer {
                 _map_charge: None,
             }
         };
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state.candidate.push(packet);
         state.cursor = next_cursor;
@@ -776,10 +713,7 @@ impl Renderer {
     pub fn abandon_stream_selection(&mut self, ticket: StreamingSelectionTicket) -> Result<()> {
         self.validate_stream_job(ticket.ticket.job)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.ticket.job)
@@ -794,10 +728,7 @@ impl Renderer {
         }
         self.discard_pending_selection(ticket.ticket.job)
             .map_err(StreamRequestError::into_figgy)?;
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.ticket.job)
@@ -818,14 +749,8 @@ impl Renderer {
             .ok_or_else(|| StreamRequestError::from(StreamError::Stale).into_figgy())?;
         self.discard_pending_selection(job)
             .map_err(StreamRequestError::into_figgy)?;
-        let state = &mut self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        let state = &mut live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .selection;
         state.entry = None;
         state.last_issued = None;
@@ -859,10 +784,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -1086,10 +1008,7 @@ impl Renderer {
         drop(chunk);
         match submitted {
             Ok(_) => {
-                let state = &mut self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let state = &mut live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)

@@ -34,17 +34,19 @@ impl AuxiliaryPick {
                 reason: error.to_string(),
             })
     }
-    pub(super) fn reduce_field(&mut self, encoder: &mut wgpu::CommandEncoder) {
+    pub(super) fn reduce_field(&mut self, encoder: &mut wgpu::CommandEncoder) -> Result<()> {
         self.data
             .as_mut()
-            .expect("typed field pick")
+            .ok_or(FiggyError::internal("typed field pick"))?
             .encode_field_candidate(encoder);
+        Ok(())
     }
-    pub(super) fn commit_field(&mut self) {
+    pub(super) fn commit_field(&mut self) -> Result<()> {
         self.data
             .as_mut()
-            .expect("typed field pick")
+            .ok_or(FiggyError::internal("typed field pick"))?
             .commit_field_candidate();
+        Ok(())
     }
 }
 
@@ -564,7 +566,7 @@ impl Renderer {
         } else {
             None
         };
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         runtime
             .draws
             .try_reserve(1)
@@ -663,14 +665,7 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         if max_chunk == 0 || max_chunk > draw.max_primitives_limit {
             return Err(FiggyError::InvalidConfig {
                 field: "stream operation chunk budget",
@@ -689,14 +684,7 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         if draw
             .auxiliary_pick
             .as_ref()
@@ -716,14 +704,8 @@ impl Renderer {
         } else {
             crate::gpu_pick::GpuStreamPick::READBACK_BYTES
         })?;
-        Ok(self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        Ok(live_runtime_mut(&mut self.stream_runtime)?
+            .live_draw_mut(job)?
             .auxiliary_pick
             .take()
             .unwrap())
@@ -776,10 +758,7 @@ impl Renderer {
             .auto_stream_snapshot(ticket.job)
             .ok_or(StreamError::Stale)?;
         let cfg = &snapshot.series[series_index];
-        let pick = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let pick = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -826,10 +805,7 @@ impl Renderer {
                     }
                 })
             };
-            let pick = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
+            let pick = live_runtime_mut(&mut self.stream_runtime)?
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
@@ -925,10 +901,7 @@ impl Renderer {
         drop((charge, chunk));
         match result {
             Ok(submission) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
@@ -1019,7 +992,7 @@ impl Renderer {
             width: size.0,
             height: size.1,
         });
-        let limits = self.stream_runtime.as_ref().unwrap().scheduler.limits();
+        let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
         for series in &completed.series {
             PrepareContext::validate_stream_series(&config, series)?;
             for phase in stream_draw_phases(&config.draw_style, series)? {
@@ -1115,9 +1088,7 @@ impl Renderer {
             .and_then(|bytes| bytes.checked_add(style_bytes))
             .ok_or(StreamError::Overflow)?;
         self.preflight_auxiliary_gpu_bytes(allocation_bytes)?;
-        self.stream_runtime
-            .as_mut()
-            .unwrap()
+        live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .try_reserve(1)
             .map_err(|_| StreamError::AllocationFailed)?;
@@ -1263,7 +1234,7 @@ impl Renderer {
                 pass.draw(0..3, 0..1);
             }
         }
-        let runtime = self.stream_runtime.as_mut().unwrap();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
         let id = runtime.scheduler.start_auxiliary(
             chart.sequence,
             SourceStamp(snapshot.data_revision.sequence),
@@ -1318,10 +1289,7 @@ impl Renderer {
     fn validate_stream_operation(&self, operation: StreamingOperation) -> StreamResult<StreamJob> {
         let job = operation.0;
         self.validate_stream_job(job)?;
-        if !self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if !live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .any(|draw| draw.job == job && draw.auxiliary.is_some())
@@ -1348,14 +1316,8 @@ impl Renderer {
             .stream_progress_counts(job)
             .map_err(StreamRequestError::into_figgy)?;
         if request == StreamDrawRequestStatus::AllSubmitted
-            && self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            && live_runtime(&self.stream_runtime)?
+                .live_draw(job)?
                 .auxiliary_pick
                 .is_none()
         {
@@ -1384,10 +1346,7 @@ impl Renderer {
                 }
             }
             StreamDrawRequestStatus::AllSubmitted => {
-                if self
-                    .stream_runtime
-                    .as_ref()
-                    .unwrap()
+                if live_runtime(&self.stream_runtime)?
                     .scheduler
                     .has_slots_for_job(job.id)
                 {
@@ -1436,10 +1395,7 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let ticket = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let ticket = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -1462,10 +1418,7 @@ impl Renderer {
             }
             (ordered, requested.len())
         };
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
             .requests
             .iter()
             .any(|request| request.ticket == ticket && request.selection)
@@ -1494,14 +1447,8 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        if self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap()
+        if live_runtime(&self.stream_runtime)?
+            .live_draw(job)?
             .auxiliary
             .as_ref()
             .unwrap()
@@ -1524,14 +1471,7 @@ impl Renderer {
         ) {
             return Err(StreamRequestError::from(StreamError::WrongState).into_figgy());
         }
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         let auxiliary = draw.auxiliary.as_ref().unwrap();
         let surface = draw.surface.as_ref().unwrap();
         let mut encoder = self.device.create_command_encoder(&Default::default());

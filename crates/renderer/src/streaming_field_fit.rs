@@ -62,10 +62,7 @@ fn extent_error(error: crate::gpu_errorbar::GpuErrorbarError) -> StreamRequestEr
 impl Renderer {
     fn new_stream_field_fit(&self, job: StreamJob) -> StreamResult<StreamFieldFit> {
         let snapshot = self.auto_stream_snapshot(job);
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -124,33 +121,18 @@ impl Renderer {
         &mut self,
         job: StreamJob,
     ) -> StreamResult<StreamDrawRequestStatus> {
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
             .ok_or(StreamError::WrongState)?;
         if draw.field_fit.is_none() {
             let fit = self.new_stream_field_fit(job)?;
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .field_fit = Some(fit);
         }
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         let fit = draw.field_fit.as_ref().unwrap();
         if fit.ordinal == fit.count * 2 {
             if fit.readback.is_none() {
@@ -193,26 +175,14 @@ impl Renderer {
                         },
                     )
                     .map_err(extent_error)?;
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .field_fit
                     .as_mut()
                     .unwrap()
                     .readback = Some(ticket);
             }
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
+            let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
             let resolved = draw
                 .field_fit
                 .as_mut()
@@ -264,13 +234,8 @@ impl Renderer {
         )? {
             StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
             StreamRequestStatus::Ready(ticket) => {
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .pending = Some(ticket);
                 Ok(StreamDrawRequestStatus::Ready(ticket))
             }
@@ -290,10 +255,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -327,10 +289,7 @@ impl Renderer {
             }
         };
         let handle = chunk.column_handle(range)?;
-        let fit = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let fit = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -345,10 +304,7 @@ impl Renderer {
         drop(chunk);
         match result {
             Ok(submission) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
+                let draw = live_runtime_mut(&mut self.stream_runtime)?
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)

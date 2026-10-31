@@ -992,7 +992,9 @@ impl Renderer {
             let binding = sources
                 .iter()
                 .find(|binding| binding.id == source.id)
-                .expect("exact closure source coverage was validated");
+                .ok_or(FiggyError::internal(
+                    "exact closure source coverage was validated",
+                ))?;
             if binding.revision != source.revision {
                 return Err(FiggyError::InvalidStreamSource {
                     id: source.id.clone(),
@@ -1047,7 +1049,9 @@ impl Renderer {
             let registered = self
                 .streaming_sources
                 .get(&source.id)
-                .expect("closure column was validated streamed");
+                .ok_or(FiggyError::internal(
+                    "closure column was validated streamed",
+                ))?;
             if source.revision < registered.revision {
                 return Err(FiggyError::InvalidStreamSource {
                     id: source.id.clone(),
@@ -1458,9 +1462,9 @@ impl Renderer {
         *next_stream_source_fit_epoch = final_fit_epoch;
         invalidation.publish(chart_states, visual_revision);
         let revision = if let Some((desired, config, view, raster, visual)) = auto_fit_revisions {
-            let state = chart_states
-                .get_mut(&chart)
-                .expect("resident handoff target chart remains registered");
+            let state = chart_states.get_mut(&chart).ok_or(FiggyError::internal(
+                "resident handoff target chart remains registered",
+            ))?;
             streaming_runtime::copy_stream_fit_axes(&mut state.config, rendered_config);
             state.stream_auto_fit_padding = None;
             state.revisions.desired = desired;
