@@ -58,6 +58,10 @@ fn record_min_positive(stats: &mut ColumnUploadStats, value: f64) {
     }
 }
 
+// `write_pair_bytes` writes `hi` to bytes 0..4 and `lo` to bytes 4..; every
+// caller hands it one `chunks_exact_mut(COLUMN_VALUE_BYTES)` chunk (#152).
+const _: () = assert!(COLUMN_VALUE_BYTES == 8);
+
 fn write_pair_bytes(dst: &mut [u8], hi: f32, lo: f32) {
     dst[..4].copy_from_slice(&hi.to_le_bytes());
     dst[4..].copy_from_slice(&lo.to_le_bytes());
@@ -1403,5 +1407,73 @@ mod tests {
         // above would pass with the low half thrown away.
         let cast = BorrowedF64Column::new(&values);
         assert_ne!(scalar_pair_bytes(&split), scalar_pair_bytes(&cast));
+    }
+
+    /// PAIR_CHUNK_8 (#152): every slice pair writer hands `write_pair_bytes`
+    /// one `COLUMN_VALUE_BYTES` chunk per value. 0, 1 and 1000 values go
+    /// through each `write_f32_*_into` of every borrowed column type and
+    /// come out as the expected `(hi, lo)` bytes.
+    #[test]
+    fn every_pair_writer_writes_one_eight_byte_pair_per_value() {
+        fn pairs(values: impl Iterator<Item = (f32, f32)>) -> Vec<u8> {
+            values
+                .flat_map(|(hi, lo)| [hi.to_le_bytes(), lo.to_le_bytes()].concat())
+                .collect()
+        }
+        fn written(len: usize, write: impl FnOnce(&mut [u8])) -> Vec<u8> {
+            let mut bytes = vec![0xA5u8; len * COLUMN_VALUE_BYTES];
+            write(&mut bytes);
+            bytes
+        }
+        for count in [0usize, 1, 1000] {
+            let f64s: Vec<f64> = (0..count)
+                .map(|i| (i as f64 + 0.1) * 1.000_000_1e3 - 7.0)
+                .collect();
+            let f32s: Vec<f32> = f64s.iter().map(|&v| v as f32).collect();
+            let split = || f64s.iter().map(|&v| split_f64_to_f32_pair(v));
+            let cast = || f64s.iter().map(|&v| (v as f32, 0.0));
+            let narrow = || f32s.iter().map(|&v| (v, 0.0));
+
+            let column = BorrowedF32Column::new(&f32s);
+            assert_eq!(
+                written(count, |d| ColumnSource::write_f32_zero_lo_pair_le_into(
+                    &column, d
+                )),
+                pairs(narrow())
+            );
+            assert_eq!(
+                written(count, |d| HiLoColumnSource::write_f32_pair_le_into(
+                    &column, d
+                )),
+                pairs(narrow())
+            );
+            let column = BorrowedCastF32Column::new(&f64s);
+            assert_eq!(
+                written(count, |d| ColumnSource::write_f32_zero_lo_pair_le_into(
+                    &column, d
+                )),
+                pairs(cast())
+            );
+            let column = BorrowedF64Column::new(&f64s);
+            assert_eq!(
+                written(count, |d| ColumnSource::write_f32_zero_lo_pair_le_into(
+                    &column, d
+                )),
+                pairs(cast())
+            );
+            assert_eq!(
+                written(count, |d| HiLoColumnSource::write_f32_pair_le_into(
+                    &column, d
+                )),
+                pairs(split())
+            );
+            let column = BorrowedSplitF64Column::new(&f64s);
+            assert_eq!(
+                written(count, |d| ColumnSource::write_f32_zero_lo_pair_le_into(
+                    &column, d
+                )),
+                pairs(split())
+            );
+        }
     }
 }

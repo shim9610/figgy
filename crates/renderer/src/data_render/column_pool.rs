@@ -159,6 +159,11 @@ pub const BOX_PLOT_RECORD: &RecordSchema = &[
     ("ci_low", false),
     ("ci_high", false),
 ];
+// The schema fills the fixed `[_; MAX_RECORD_FIELDS]` tables one entry per
+// field, and the web upload zips it with `UploadValues::box_fields`'
+// `[_; 9]` (#152).
+const _: () = assert!(BOX_PLOT_RECORD.len() <= MAX_RECORD_FIELDS);
+const _: () = assert!(BOX_PLOT_RECORD.len() == 9);
 
 /// A record: named scalar fields of the same length, one row per element.
 ///
