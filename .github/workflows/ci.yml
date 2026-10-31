@@ -95,7 +95,7 @@ jobs:
       # Workspace crates are pruned before saving; the main shard saves.
       - name: Restore the cargo build cache
         if: steps.scope.outputs.checks == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: packages-${{ matrix.backend }}
           save-if: ${{ matrix.shard == 'main' }}
@@ -142,7 +142,7 @@ jobs:
         run: rustup toolchain install 1.99.0 --profile minimal
       - name: Restore the cargo build cache
         if: steps.scope.outputs.checks == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           shared-key: repository
           workspaces: |
