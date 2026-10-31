@@ -542,11 +542,16 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
             let end = usize::try_from(column.offset_bytes + column.pair_bytes)
                 .map_err(|_| StreamError::Overflow)?;
             let supplied = source_at(index);
+            let out_of_range = std::cell::Cell::new(false);
             let bounds = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let mut on_pair = |row, hi, lo| observe(index, row, hi, lo);
                 supplied.source.write_range(
                     supplied.source_offset.map_or(column.range.offset, |_| 0),
-                    ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair),
+                    ColumnPairWriter::new_observed(
+                        mapped.slice(start..end),
+                        &out_of_range,
+                        &mut on_pair,
+                    ),
                 )
             }))
             .map_err(|_| ChunkUploadError::SourceWrite {
@@ -554,6 +559,12 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
                 error: crate::ColumnRangeWriteError::SourceFailed,
             })?
             .map_err(|error| ChunkUploadError::SourceWrite { index, error })?;
+            if out_of_range.get() {
+                return Err(ChunkUploadError::SourceWrite {
+                    index,
+                    error: crate::ColumnRangeWriteError::InvalidRange,
+                });
+            }
             crate::streaming_source::validate_statistics(
                 column.range.len,
                 crate::StreamStatistics::Known(bounds),
@@ -846,14 +857,28 @@ fn record_chunk_with_factory_observed(
         for (column_index, (input, column)) in columns.iter().zip(&layout).enumerate() {
             let start = column.offset_bytes as usize;
             let end = (column.offset_bytes + column.pair_bytes) as usize;
+            let out_of_range = std::cell::Cell::new(false);
             if let Some(observe) = observe.as_mut() {
                 let mut on_pair = |row, hi, lo| observe(column_index, row, hi, lo);
                 write(
                     input,
-                    ColumnPairWriter::new_observed(mapped.slice(start..end), &mut on_pair),
+                    ColumnPairWriter::new_observed(
+                        mapped.slice(start..end),
+                        &out_of_range,
+                        &mut on_pair,
+                    ),
                 )?;
             } else {
-                write(input, ColumnPairWriter::new(mapped.slice(start..end)))?;
+                write(
+                    input,
+                    ColumnPairWriter::new(mapped.slice(start..end), &out_of_range),
+                )?;
+            }
+            if out_of_range.get() {
+                return Err(ChunkUploadError::SourceWrite {
+                    index: column_index,
+                    error: crate::ColumnRangeWriteError::InvalidRange,
+                });
             }
         }
         Ok(())

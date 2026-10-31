@@ -305,16 +305,15 @@ impl<'a> RaggedRef<'a> {
         self.slot.stats
     }
 
-    pub fn values(&self) -> ColumnHandle {
-        self.pool
-            .handle_for(&self.slot.values)
-            .expect("a ragged column's values are resident")
+    /// The values column. `None` only if the member was removed from under
+    /// its ragged column, which the pool's own remove and upsert reject.
+    pub fn values(&self) -> Option<ColumnHandle> {
+        self.pool.handle_for(&self.slot.values)
     }
 
-    pub fn offsets(&self) -> ColumnHandle {
-        self.pool
-            .handle_for(&self.slot.offsets)
-            .expect("a ragged column's offsets are resident")
+    /// The offsets column; `None` as for [`Self::values`].
+    pub fn offsets(&self) -> Option<ColumnHandle> {
+        self.pool.handle_for(&self.slot.offsets)
     }
 }
 
@@ -375,6 +374,9 @@ pub enum AllocError {
         resource: &'static str,
         reason: String,
     },
+    /// The id names a member column of a resident record or ragged column.
+    /// A member is replaced or removed only through its owner (#152).
+    MemberColumn(ColumnId),
 }
 
 impl std::fmt::Display for AllocError {
@@ -419,6 +421,11 @@ impl std::fmt::Display for AllocError {
             AllocError::Gpu { resource, reason } => {
                 write!(f, "ColumnPool {resource}: GPU error: {reason}")
             }
+            AllocError::MemberColumn(id) => write!(
+                f,
+                "ColumnPool: {id:?} is a member column of a record or ragged column; \
+                 replace or remove it through its owner"
+            ),
         }
     }
 }
