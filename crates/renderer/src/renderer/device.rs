@@ -3600,6 +3600,8 @@ impl Renderer {
                 pass,
             );
         }
+        // The ring-start scan the region draw and pick read (#49).
+        self.pipelines.ensure_ternary_region_scan(&self.device);
         finished(observer, "renderer.prewarm", "ternary region");
         crate::init::yield_init_frame().await;
 

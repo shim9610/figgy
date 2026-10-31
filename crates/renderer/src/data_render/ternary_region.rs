@@ -11,7 +11,7 @@
 //! vertex slot is bound.
 //!
 //! A ring's closing edge reads its first vertex's row from the ring-start
-//! scan ([`scan_ring_starts`], #49): three compute entries of the same
+//! scan (`scan_ring_starts`, #49): three compute entries of the same
 //! module, in the arc scan's pattern, write each row's ring start once per
 //! draw or pick, so no invocation walks its ring. That `u32` per row is the
 //! only storage the fill adds.

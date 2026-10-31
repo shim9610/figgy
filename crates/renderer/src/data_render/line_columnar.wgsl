@@ -239,6 +239,8 @@ struct VsLinePickOut {
     @location(2) side_px: f32,
     @location(3) segment_len_px: f32,
     @location(4) @interpolate(flat) index: u32,
+    /// Where the corner lies along the whole chord a → b, as a fraction.
+    @location(5) chord_t: f32,
 };
 
 @vertex
@@ -251,6 +253,20 @@ fn vs_3d_pick(in: VsIn, arc: VsArc, z: VsZ, @builtin(vertex_index) vid: u32, @bu
     out.side_px = v.side_px;
     out.segment_len_px = v.segment_len_px;
     out.index = inst;
+    // The pick draws through a matrix that maps the cursor's pixel onto a
+    // 1x1 target, so the stroke is clipped to that pixel's surroundings
+    // and `along_px` / `segment_len_px` measure the clipped piece. The
+    // nearer end is decided on the whole chord instead: the corner's
+    // fraction along a → b, both ends placed as `line_3d_vertex` places
+    // them (an affine map of the screen, so the fraction is the screen's).
+    let half_w = max(style.line_width_px, 1.0) * 0.5;
+    let t_a = view3d_point_t(in.x_a, in.y_a, z.z_a);
+    let t_b = view3d_point_t(in.x_b, in.y_b, z.z_b);
+    let a4 = clip_at_depth(project_box(t_a), project_box_front(t_a, half_w));
+    let b4 = clip_at_depth(project_box(t_b), project_box_front(t_b, half_w));
+    let a = a4.xy / a4.w;
+    let ab = b4.xy / b4.w - a;
+    out.chord_t = dot(v.pos.xy / v.pos.w - a, ab) / max(dot(ab, ab), 1e-30);
     return out;
 }
 
@@ -264,7 +280,7 @@ fn fs_3d_pick(in: VsLinePickOut) -> @location(0) vec4<u32> {
     if (stroke_alpha(v) * dash_alpha(v) < 0.5) {
         discard;
     }
-    let nearer = select(in.index, in.index + 1u, in.along_px > in.segment_len_px * 0.5);
+    let nearer = select(in.index, in.index + 1u, in.chord_t > 0.5);
     return vec4<u32>(view3d_pick_id(), 1u, nearer, 0u);
 }
 

@@ -1672,7 +1672,10 @@ with), and `vs_pick_ring_3d` / `vs_pick_ring_3d_mapped` (the ring through
 `project_box_live`); `line_columnar.wgsl` `vs_3d` (the heights at slots 6
 and 7, the flat stroke built between the projected ends, each corner at its
 end's depth) and `vs_3d_pick` / `fs_3d_pick` (`(id, 1, nearer end, 0)`
-where the stroke's dashes are at least half covered); `line_arc.wgsl`
+where the stroke's dashes are at least half covered; the nearer end is
+decided by `chord_t`, the fragment's fraction along the whole chord a → b,
+since the pick's 1×1 target clips the stroke around the cursor and the
+stroke's own `along_px` measures the clipped piece); `line_arc.wgsl`
 `seg_init_3d` (`ARC_FLAG_3D` in `ArcParams.flags`, the height at `c_base`,
 the chord length between the projected ends in the target's pixels, the
 camera as group 3 of its own layout so the flat `seg_init` keeps its two

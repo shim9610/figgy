@@ -1035,6 +1035,19 @@ fn the_id_pick_answers_markers_and_segment_ends() {
             ("trail".to_string(), 26),
             "{scale}x"
         );
+        // The mirror point nearer 25: its start answers. The pick's 1x1
+        // target clips the stroke around the cursor, so the nearer end is
+        // decided on the whole chord, not the clipped piece.
+        let near_a = [
+            a[0] + 0.4 * (b[0] - a[0]),
+            a[1] + 0.4 * (b[1] - a[1]),
+            a[2] + 0.4 * (b[2] - a[2]),
+        ];
+        assert_eq!(
+            point(pick(&mut r, near_a, [0.0, 0.0])),
+            ("trail".to_string(), 25),
+            "{scale}x"
+        );
         // Beside the stroke: never a point.
         let beside = pick(&mut r, helix_point(n, 25), [0.0, -14.0 * f64::from(scale)]);
         assert!(

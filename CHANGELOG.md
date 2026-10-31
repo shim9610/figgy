@@ -1210,7 +1210,9 @@ additive.
   They are drawn into the panel composite after
   the surfaces (`SeriesLayers::line_3d` / `scatter_3d`), picked by the 1×1
   ID pick (kind 1: `PickedData::Point`, the marker or the segment's nearer
-  end, never a mark behind a surface) and ringed in the live slot. Eight
+  end, decided on the whole chord since the pick's 1×1 target clips the
+  stroke around the cursor, never a mark behind a surface) and ringed in
+  the live slot. Eight
   pipelines (`TargetPipelines::view3d`) and one compute pipeline, and one
   bind group layout for the mapped markers (the point value map and the
   camera in one group, `surface_mesh::create_view3d_value_map_bind_group_layout`;
