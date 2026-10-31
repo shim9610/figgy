@@ -1219,3 +1219,137 @@ fn polar_rejects_line_offsets() {
     }));
     assert!(!rejected(&mut r, |_, _| {}));
 }
+
+/// LAYER_PICK_MEMBERS_TRAIL_SERIES (#152): `active_layer_pick_inputs`
+/// returns at least as many series as member panels, and its last
+/// `member_count()` series are the members the layer scales, one per member
+/// panel in stacking order, so every `member_transform(k)` a pick asks for
+/// names a panel. Base and overlay groups of 0, 1 and 128 members, a member
+/// with no declaration, a squeezed chart whose members fall back to the base
+/// panel, every active layer; then the public pick of the last member,
+/// after the members are removed and after the overlay is removed.
+#[test]
+fn layer_pick_members_trail_the_layer_series() {
+    let config_for = |members: usize, ghost: bool| {
+        let mut config = base_config();
+        let mut layer = overlay(0.0, 60.0, "o", 40.0);
+        layer.series.extend((0..members).map(|k| format!("n{k}")));
+        config.overlays.push(layer);
+        let mut ids: Vec<String> = (0..members).map(|k| format!("b{k}")).collect();
+        ids.extend((0..members).map(|k| format!("n{k}")));
+        if ghost {
+            ids.push("ghost".into());
+        }
+        if !ids.is_empty() {
+            config.line_offsets = Some(crate::data_config::LineOffsets {
+                series: ids,
+                step_y: 0.0005,
+                step_x: 0.0,
+            });
+        }
+        config
+    };
+    let series_for = |members: usize| {
+        let mut series = vec![declaration("s0", "x", "c"), declaration("o", "x", "b")];
+        series.extend((0..members).map(|k| declaration(&format!("b{k}"), "x", "a")));
+        series.extend((0..members).map(|k| declaration(&format!("n{k}"), "x", "b")));
+        series
+    };
+    // The members `config`'s `layer` scales, in stacking order, that have a
+    // declaration in `series`.
+    let expected_members = |config: &Config, series: &[SeriesConfig], layer: LayerRef| {
+        let layers = config.panel_layers();
+        let panels = expand_for_render(config).unwrap().len();
+        (0..panels)
+            .filter(|&at| layers[at] == layer)
+            .filter_map(|at| config.panel_member(at))
+            .filter(|id| series.iter().any(|s| s.series_id == *id))
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    };
+    for members in [0, 1, 128] {
+        for ghost in [false, true] {
+            for squeezed in [false, true] {
+                let mut config = config_for(members, ghost);
+                if squeezed {
+                    config.chart_area = ChartArea(Rect {
+                        x: 0,
+                        y: 0,
+                        width: 40,
+                        height: 30,
+                    });
+                }
+                let series = series_for(members);
+                for layer in [
+                    LayerRef::Base,
+                    LayerRef::Overlay(0),
+                    LayerRef::Annotations,
+                    LayerRef::Overlay(5),
+                ] {
+                    config.set_active_layer(layer);
+                    let inputs = active_layer_pick_inputs(&config, &series).unwrap();
+                    let m = inputs.member_count();
+                    assert!(inputs.series.len() >= m);
+                    let effective = match config.active_layer() {
+                        LayerRef::Annotations => LayerRef::Base,
+                        layer => layer,
+                    };
+                    let expected = if squeezed {
+                        Vec::new()
+                    } else {
+                        expected_members(&config, &series, effective)
+                    };
+                    assert_eq!(m, expected.len(), "{members} {ghost} {layer:?}");
+                    let trailing: Vec<&str> = inputs.series[inputs.series.len() - m..]
+                        .iter()
+                        .map(|s| s.series_id.as_str())
+                        .collect();
+                    assert_eq!(trailing, expected);
+                    for k in 0..m {
+                        let _ = inputs.member_transform(k);
+                    }
+                    if !squeezed && members > 0 {
+                        assert_eq!(m, members);
+                    }
+                }
+            }
+        }
+    }
+
+    // The public pick, with the base layer active: the members draw `a`
+    // stacked a hair apart, so the last one is on top.
+    let mut r = renderer();
+    r.enable_gpu_picking().unwrap();
+    // A member that names no declaration is refused at registration.
+    let ghost = r.register_chart(config_for(1, true), series_for(1));
+    assert!(
+        matches!(ghost, Err(FiggyError::InvalidConfig { .. })),
+        "{ghost:?}"
+    );
+    let mut config = config_for(128, false);
+    config.set_active_layer(LayerRef::Base);
+    let series = series_for(128);
+    let id = r.register_chart(config.clone(), series).unwrap();
+    let at = offset_px(&config, 0.5, 0.3 + 127.0 * 0.0005, 1.0);
+    let hit = offset_pick(&mut r, id, at, 3.0).expect("the top member picks");
+    assert_eq!(hit.series_id, "b127");
+    let mut plain = config.clone();
+    plain.line_offsets = None;
+    r.set_chart_config(id, plain.clone()).unwrap();
+    let hit = offset_pick(&mut r, id, offset_px(&plain, 0.5, 0.3, 1.0), 3.0)
+        .expect("an unshifted member line picks");
+    assert!(hit.series_id.starts_with('b'), "{}", hit.series_id);
+    let mut flat = config.clone();
+    flat.overlays.clear();
+    r.set_chart_config(id, flat.clone()).unwrap();
+    let hit = offset_pick(
+        &mut r,
+        id,
+        offset_px(&flat, 0.5, 0.3 + 127.0 * 0.0005, 1.0),
+        3.0,
+    );
+    assert!(
+        hit.is_some(),
+        "the members of a chart without overlays pick"
+    );
+}

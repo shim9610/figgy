@@ -14686,3 +14686,175 @@ fn export_frames_hold_one_item_per_panel() {
         assert_eq!(panel.rgba.len(), (panel.width * panel.height * 4) as usize);
     }
 }
+
+/// A Precise scatter with error bars whose marker style table has
+/// `marker_rows` rows and `min(marker_rows, 64)` overrides, and whose error
+/// bar table has `bar_rows` rows and `min(bar_rows, 64)` overrides; each
+/// override list ends with one index past `u32` (skipped by the pick).
+fn styled_errorbar_series(marker_rows: usize, bar_rows: usize) -> SeriesConfig {
+    let mut scatter = test_scatter_style();
+    scatter.point_style_index_column = Some("ms".into());
+    scatter.point_style_table = Some(
+        (0..marker_rows)
+            .map(|k| DataScatterPointStyleConfig {
+                point_size: Some(1.0 + (k % 7) as f32),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    scatter.point_style_overrides = Some(
+        (0..marker_rows.min(64))
+            .map(|index| DataScatterPointStyleOverride {
+                index,
+                style: Default::default(),
+            })
+            .chain([DataScatterPointStyleOverride {
+                index: u32::MAX as usize + 1,
+                style: Default::default(),
+            }])
+            .collect(),
+    );
+    let mut err_style = test_errorbar_style();
+    err_style.error_bar_style_index_column = Some("es".into());
+    err_style.error_bar_style_table = Some(
+        (0..bar_rows)
+            .map(|k| DataErrorBarPointStyleConfig {
+                error_bar_color: Some(Color::new(
+                    0.0,
+                    1.0,
+                    0.0,
+                    if k % 2 == 0 { 1.0 } else { 0.0 },
+                )),
+                ..Default::default()
+            })
+            .collect(),
+    );
+    err_style.error_bar_style_overrides = Some(
+        (0..bar_rows.min(64))
+            .map(|index| DataErrorBarPointStyleOverride {
+                index,
+                style: Default::default(),
+            })
+            .chain([DataErrorBarPointStyleOverride {
+                index: u32::MAX as usize + 1,
+                style: Default::default(),
+            }])
+            .collect(),
+    );
+    SeriesConfig {
+        series_id: format!("styled-{marker_rows}-{bar_rows}"),
+        source_id: None,
+        label: None,
+        x_column: "x".into(),
+        y_column: "y".into(),
+        z_column: None,
+        render_type: DataRenderType::ScatterErrorbarY {
+            scatter,
+            err_y: ErrorRef::Symmetric {
+                column: "ee".into(),
+            },
+            err_style,
+        },
+    }
+}
+
+/// PICK_STYLE_META_WITHIN_ROWS (#152): every pick scatter's style meta
+/// counts at most the rows of its slot and override vectors, the counts
+/// are the markers' rows taken before the error bar rows are appended, and
+/// the descriptor splits the vectors into the markers' rows and the error
+/// bars' rows in that order. Marker tables of 0, 1 and 10 000 rows, error
+/// bar tables of 0, 1 and 5 000 rows, overrides with an index past `u32`;
+/// then a styled error bar is picked through the public pick.
+#[test]
+fn pick_style_meta_counts_stay_within_the_style_rows() {
+    let config = basic_errorbar_chart().config().clone();
+    assert!(config.draw_style.is_precise());
+    for marker_rows in [0usize, 1, 10_000] {
+        for bar_rows in [0usize, 1, 5_000] {
+            let series = styled_errorbar_series(marker_rows, bar_rows);
+            let marker_overrides = marker_rows.min(64);
+            let bar_overrides = bar_rows.min(64);
+            let mut plain = series.clone();
+            plain.series_id.push_str("-plain");
+            if let DataRenderType::ScatterErrorbarY { scatter, .. } = &plain.render_type {
+                plain.render_type = DataRenderType::Scatter {
+                    scatter: scatter.clone(),
+                };
+            }
+            let list = [series.clone(), plain];
+            for plan in [
+                PickChartPlan::new(&config, &list).unwrap(),
+                PickChartPlan::for_active_layer(&config, &list).unwrap(),
+            ] {
+                assert_eq!(plan.descriptors.len(), 2);
+                for (k, owned) in plan.descriptors.iter().enumerate() {
+                    let bars = if k == 0 { bar_rows } else { 0 };
+                    let bar_ov = if k == 0 { bar_overrides } else { 0 };
+                    let scatter = owned.resource.scatter.as_ref().expect("a marker slot");
+                    let meta = scatter.style_meta.expect("an indexed style map");
+                    assert!(meta.style_count as usize <= scatter.style_slots.len());
+                    assert!(meta.override_count as usize <= scatter.style_overrides.len());
+                    assert_eq!(meta.style_count as usize, marker_rows);
+                    assert_eq!(meta.override_count as usize, marker_overrides);
+                    assert_eq!(scatter.style_slots.len(), marker_rows + bars);
+                    assert_eq!(scatter.style_overrides.len(), marker_overrides + bar_ov);
+                    let descriptor = owned.descriptor();
+                    let map = descriptor
+                        .scatter
+                        .as_ref()
+                        .and_then(|s| s.style_map.as_ref())
+                        .expect("the marker map");
+                    assert_eq!(map.style_slots.len(), marker_rows);
+                    assert_eq!(map.style_overrides.len(), marker_overrides);
+                    match descriptor
+                        .errorbar
+                        .as_ref()
+                        .and_then(|e| e.style_map.as_ref())
+                    {
+                        Some(map) => {
+                            assert_eq!(k, 0);
+                            assert_eq!(map.style_slots.len(), bar_rows);
+                            assert_eq!(map.style_overrides.len(), bar_overrides);
+                            // The error bars' rows are the second part.
+                            assert_eq!(
+                                bytemuck::cast_slice::<_, u8>(map.style_slots),
+                                bytemuck::cast_slice::<_, u8>(&scatter.style_slots[marker_rows..])
+                            );
+                        }
+                        None => assert_eq!(k, 1),
+                    }
+                }
+            }
+        }
+    }
+
+    // The public pick reads the error bar rows past the marker rows: point
+    // 0's bar paints (row 0), point 1's does not (row 1, alpha 0).
+    let Some(mut renderer) = state_test_renderer() else {
+        return;
+    };
+    renderer.add_column("x", &col_f64(vec![1.0, 3.0])).unwrap();
+    renderer.add_column("y", &col_f64(vec![2.5, 2.5])).unwrap();
+    renderer.add_column("ee", &col_f64(vec![2.0, 2.0])).unwrap();
+    renderer.add_column("ms", &col_f64(vec![0.0, 0.0])).unwrap();
+    renderer.add_column("es", &col_f64(vec![0.0, 1.0])).unwrap();
+    let series = styled_errorbar_series(3, 2);
+    let chart = renderer
+        .register_chart(config.clone(), vec![series.clone()])
+        .unwrap();
+    renderer.enable_gpu_picking().unwrap();
+    let pick = |renderer: &mut Renderer, x: f64| {
+        let mut request = typed_pick_request(&config, typed_pick_position(&config, x, 4.0));
+        request.max_distance_px = 2.0;
+        pollster::block_on(renderer.pick_chart(chart, request).unwrap().resolve()).unwrap()
+    };
+    let hit = pick(&mut renderer, 1.0).expect("the painted bar picks");
+    assert_eq!(
+        (hit.series_id.as_str(), hit.point_index),
+        (series.series_id.as_str(), 0)
+    );
+    assert!(
+        pick(&mut renderer, 3.0).is_none(),
+        "a bar whose row does not paint picked"
+    );
+}
