@@ -574,7 +574,11 @@ impl Renderer {
                 resource: "stream auxiliary cursor",
                 reason: error.to_string(),
             })?;
-        let screen_draw = runtime.draws.iter().find(|draw| draw.job == job).unwrap();
+        let screen_draw = runtime
+            .draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
         let target = screen_draw.target.clone();
         let target_charge = screen_draw
             .surface
@@ -708,7 +712,9 @@ impl Renderer {
             .live_draw_mut(job)?
             .auxiliary_pick
             .take()
-            .unwrap())
+            .ok_or(FiggyError::internal(
+                "an auxiliary pick cursor keeps its pick",
+            ))?)
     }
 
     pub async fn finish_stream_pick_point(
@@ -730,7 +736,11 @@ impl Renderer {
         operation: StreamingOperation,
     ) -> Result<Option<crate::PickedData>> {
         let pick = self.take_finished_stream_pick(operation, true)?;
-        let mut data = pick.data.unwrap();
+        let Some(mut data) = pick.data else {
+            return Err(FiggyError::internal(
+                "a finished typed pick keeps its data picker",
+            ));
+        };
         let mut encoder = self.device.create_command_encoder(&Default::default());
         data.encode_point_result(&mut encoder, &pick.point);
         self.queue.submit([encoder.finish()]);
@@ -762,10 +772,12 @@ impl Renderer {
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .auxiliary_pick
             .as_ref()
-            .unwrap();
+            .ok_or(FiggyError::internal(
+                "an auxiliary pick cursor keeps its pick",
+            ))?;
         let plan = Arc::clone(&pick.plan);
         let descriptor = plan
             .descriptors
@@ -809,10 +821,12 @@ impl Renderer {
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
-                .unwrap()
+                .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                 .auxiliary_pick
                 .as_mut()
-                .unwrap();
+                .ok_or(FiggyError::internal(
+                    "an auxiliary pick cursor keeps its pick",
+                ))?;
             if let Some(descriptor) = descriptor {
                 let style_index = descriptor
                     .scatter
@@ -905,7 +919,7 @@ impl Renderer {
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
                 draw.offset += primitives;
                 draw.pending = None;
                 self.end_gpu_frame();
@@ -1201,6 +1215,13 @@ impl Renderer {
             _target_charge: None,
             _completed: completed,
         });
+        let axis = &auxiliary
+            .pipelines
+            .as_ref()
+            .ok_or(FiggyError::internal(
+                "an export target is built with its pipelines",
+            ))?
+            .axis;
         let target = wgpu::Texture::clone(surface.prefix());
         let target_view = target.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
@@ -1223,7 +1244,7 @@ impl Renderer {
                 })],
                 ..Default::default()
             });
-            pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
+            pass.set_pipeline(axis);
             pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
             pass.draw(0..3, 0..1);
             if let (Some(underlay), _) = snapshot
@@ -1308,7 +1329,12 @@ impl Renderer {
         let job = self
             .validate_stream_operation(operation)
             .map_err(StreamRequestError::into_figgy)?;
-        let revision = self.auto_stream_snapshot(job).unwrap().desired;
+        let revision = self
+            .auto_stream_snapshot(job)
+            .ok_or(FiggyError::internal(
+                "a validated stream operation keeps its snapshot",
+            ))?
+            .desired;
         let mut request = self
             .request_chart_stream_draw(job)
             .map_err(StreamRequestError::into_figgy)?;
@@ -1451,7 +1477,9 @@ impl Renderer {
             .live_draw(job)?
             .auxiliary
             .as_ref()
-            .unwrap()
+            .ok_or(FiggyError::internal(
+                "a validated stream operation has an auxiliary target",
+            ))?
             .transfer
             .is_none()
         {
@@ -1472,11 +1500,25 @@ impl Renderer {
             return Err(StreamRequestError::from(StreamError::WrongState).into_figgy());
         }
         let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
-        let auxiliary = draw.auxiliary.as_ref().unwrap();
-        let surface = draw.surface.as_ref().unwrap();
+        let auxiliary = draw.auxiliary.as_ref().ok_or(FiggyError::internal(
+            "a validated stream operation has an auxiliary target",
+        ))?;
+        let surface = draw.surface.as_ref().ok_or(FiggyError::internal(
+            "a stream export operation has a surface",
+        ))?;
+        let transfer = auxiliary.transfer.as_ref().ok_or(FiggyError::internal(
+            "a stream export target keeps its transfer (checked above)",
+        ))?;
+        let axis = &auxiliary
+            .pipelines
+            .as_ref()
+            .ok_or(FiggyError::internal(
+                "a stream export target keeps its pipelines",
+            ))?
+            .axis;
         let mut encoder = self.device.create_command_encoder(&Default::default());
         surface
-            .record_display(auxiliary.transfer.as_ref().unwrap(), &mut encoder, |pass| {
+            .record_display(transfer, &mut encoder, |pass| {
                 let view = &auxiliary.snapshot.view;
                 let size = (surface.prefix().width(), surface.prefix().height());
                 if let (Some(panel), Some(data)) = (
@@ -1504,7 +1546,7 @@ impl Renderer {
                     }
                     pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
                 }
-                pass.set_pipeline(&auxiliary.pipelines.as_ref().unwrap().axis);
+                pass.set_pipeline(axis);
                 pass.set_bind_group(0, &auxiliary.snapshot.view.decoration_bind_group, &[]);
                 pass.draw(0..3, 0..1);
                 if let (_, Some(overlay)) = auxiliary
@@ -1553,7 +1595,11 @@ impl Renderer {
         #[cfg(target_arch = "wasm32")]
         self.wait_submitted_work().await;
         #[cfg(not(target_arch = "wasm32"))]
-        self.wait_idle();
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::wait_indefinitely(),
+        )?;
         self.service_stream_requests();
         Ok(())
     }
@@ -1634,10 +1680,18 @@ impl Renderer {
             let slice = readback.slice(..padded * u64::from(count));
             let (tx, rx) = futures_channel::oneshot::channel();
             slice.map_async(wgpu::MapMode::Read, move |result| {
-                let _ = tx.send(result);
+                if tx.send(result).is_err() {
+                    // receiver dropped: the waiting call was cancelled
+                }
             });
+            // A lost device returns here instead of awaiting a mapping that
+            // never resolves; a completed wait has run the callback.
             #[cfg(not(target_arch = "wasm32"))]
-            self.wait_idle();
+            gpu_poll(
+                &self.health,
+                &self.device,
+                wgpu::PollType::wait_indefinitely(),
+            )?;
             rx.await
                 .map_err(|error| FiggyError::GpuResourceAllocationFailed {
                     resource: "stream export mapping",

@@ -355,16 +355,19 @@ impl Renderer {
                 |s| s.sources.get(id),
             )
         };
-        let styles = snapshot.map_or_else(
-            || {
-                &self.chart_states[&job.chart]
+        let styles = match snapshot {
+            Some(s) => &s.styles.styles,
+            None => {
+                &self
+                    .chart_states
+                    .get(&job.chart)
+                    .ok_or(FiggyError::UnknownChart { id: job.chart })?
                     .prepared_styles
                     .as_ref()
-                    .unwrap()
+                    .ok_or(FiggyError::internal("validated explicit stream styles"))?
                     .styles
-            },
-            |s| &s.styles.styles,
-        );
+            }
+        };
         let limits = live_runtime(&self.stream_runtime)?.scheduler.limits();
         let mut cursor = SelectionCursor::default();
         let mut bytes = 0u64;
@@ -527,13 +530,13 @@ impl Renderer {
                 .requests
                 .iter_mut()
                 .find(|request| request.ticket == ticket)
-                .unwrap()
+                .ok_or(FiggyError::internal("a ready ticket has its request"))?
                 .selection = true;
             let state = &mut runtime
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == job)
-                .unwrap()
+                .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                 .selection;
             state.pending = Some(ticket);
             state.entry = Some(entry);
@@ -717,7 +720,7 @@ impl Renderer {
             .draws
             .iter()
             .find(|draw| draw.job == ticket.ticket.job)
-            .unwrap();
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
         if draw.selection.revision != Some(ticket.revision)
             || draw.selection.last_issued != Some(ticket.ticket)
         {
@@ -732,7 +735,7 @@ impl Renderer {
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .selection;
         state.candidate.clear();
         state.entry = None;
@@ -804,21 +807,12 @@ impl Renderer {
             .iter()
             .map(|c| c.range)
             .collect();
-        let series_config = snapshot.as_ref().map_or_else(
-            || &self.chart_states[&ticket.job.chart].series[entry.series],
-            |s| &s.series[entry.series],
-        );
-        let styles = snapshot.as_ref().map_or_else(
-            || {
-                &self.chart_states[&ticket.job.chart]
-                    .prepared_styles
-                    .as_ref()
-                    .unwrap()
-                    .styles
-            },
-            |s| &s.styles.styles,
-        );
-        let style = &styles[entry.series];
+        let (_, series_config, style) = stream_execution_series(
+            &self.chart_states,
+            snapshot.as_deref(),
+            ticket.job.chart,
+            entry.series,
+        )?;
         let mapped = entry.field.is_none()
             && !entry.bar
             && matches!(config.draw_style, DrawStyle::Precise)
@@ -875,21 +869,12 @@ impl Renderer {
         };
         let packet = (|| -> StreamResult<StreamSelectionPacket> {
             let (states, preparation) = self.preparation_parts();
-            let series_config = snapshot.as_ref().map_or_else(
-                || &states[&ticket.job.chart].series[entry.series],
-                |s| &s.series[entry.series],
-            );
-            let styles = snapshot.as_ref().map_or_else(
-                || {
-                    &states[&ticket.job.chart]
-                        .prepared_styles
-                        .as_ref()
-                        .unwrap()
-                        .styles
-                },
-                |s| &s.styles.styles,
-            );
-            let style = &styles[entry.series];
+            let (_, series_config, style) = stream_execution_series(
+                states,
+                snapshot.as_deref(),
+                ticket.job.chart,
+                entry.series,
+            )?;
             if let Some(cell) = entry.field {
                 return field::packet(
                     &preparation,
@@ -924,15 +909,15 @@ impl Renderer {
                 }
             });
             let tally = crate::gpu_memory::ChargeTally::new();
-            let map = if mapped {
-                Some(style.scatter_map.as_ref().unwrap().stream_bind_group(
+            // `mapped` requires the scatter map.
+            let map = match style.scatter_map.as_ref().filter(|_| mapped) {
+                Some(scatter_map) => Some(scatter_map.stream_bind_group(
                     preparation.device,
                     preparation.per_point_style_map_bgl,
                     u32::try_from(entry.index).map_err(|_| StreamError::TooLarge)?,
                     &tally,
-                ))
-            } else {
-                None
+                )),
+                None => None,
             };
             let map_charge = mapped.then(|| {
                 crate::gpu_memory::shared_charge(
@@ -1012,7 +997,7 @@ impl Renderer {
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap()
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
                     .selection;
                 state.candidate.push(packet);
                 state.cursor = state.next_cursor;

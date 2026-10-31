@@ -133,7 +133,10 @@ impl Renderer {
                 .field_fit = Some(fit);
         }
         let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
-        let fit = draw.field_fit.as_ref().unwrap();
+        let fit = draw
+            .field_fit
+            .as_ref()
+            .ok_or(FiggyError::internal("a field fit was created above"))?;
         if fit.ordinal == fit.count * 2 {
             if fit.readback.is_none() {
                 if self
@@ -145,23 +148,19 @@ impl Renderer {
                 {
                     return Err(StreamError::TooLarge.into());
                 }
-                if self.errorbar_extent_engine.is_none() {
-                    self.errorbar_extent_engine =
-                        Some(crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
-                            &self.device,
-                            Arc::clone(&self.gpu_ledger),
-                        ));
-                }
+                let engine = self.errorbar_extent_engine.get_or_insert_with(|| {
+                    crate::gpu_errorbar::GpuErrorbarExtentEngine::new_tracked(
+                        &self.device,
+                        Arc::clone(&self.gpu_ledger),
+                    )
+                });
                 let handle = |offset| data_render::ColumnHandle {
                     generation: 0,
                     offset,
                     byte_size: u64::from(fit.count) * 8,
                     len_values: fit.count as usize,
                 };
-                let ticket = self
-                    .errorbar_extent_engine
-                    .as_ref()
-                    .unwrap()
+                let ticket = engine
                     .begin_field(
                         &self.device,
                         &self.queue,
@@ -179,22 +178,22 @@ impl Renderer {
                     .live_draw_mut(job)?
                     .field_fit
                     .as_mut()
-                    .unwrap()
+                    .ok_or(FiggyError::internal("a field fit was created above"))?
                     .readback = Some(ticket);
             }
             let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
-            let resolved = draw
+            let fit = draw
                 .field_fit
                 .as_mut()
-                .unwrap()
+                .ok_or(FiggyError::internal("a field fit was created above"))?;
+            let readback = fit
                 .readback
                 .as_mut()
-                .unwrap()
-                .try_resolve();
-            let resolved = match resolved {
+                .ok_or(FiggyError::internal("a field fit readback was begun above"))?;
+            let resolved = match readback.try_resolve() {
                 Ok(resolved) => resolved,
                 Err(error) => {
-                    draw.field_fit.as_mut().unwrap().readback = None;
+                    fit.readback = None;
                     return Err(extent_error(error));
                 }
             };
@@ -293,10 +292,10 @@ impl Renderer {
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
-            .unwrap()
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?
             .field_fit
             .as_ref()
-            .unwrap();
+            .ok_or(FiggyError::internal("a field fit ticket keeps its fit"))?;
         let axis = fit.ordinal / fit.count;
         let dest = u64::from(axis) * 32 + u64::from(fit.ordinal % fit.count) * 8;
         encoder.copy_buffer_to_buffer(&chunk.work, handle.offset, &fit.buffer, dest, 8);
@@ -308,8 +307,11 @@ impl Renderer {
                     .draws
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
-                    .unwrap();
-                draw.field_fit.as_mut().unwrap().ordinal += 1;
+                    .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+                draw.field_fit
+                    .as_mut()
+                    .ok_or(FiggyError::internal("a field fit ticket keeps its fit"))?
+                    .ordinal += 1;
                 draw.pending = None;
                 self.end_gpu_frame();
                 Ok(submission)

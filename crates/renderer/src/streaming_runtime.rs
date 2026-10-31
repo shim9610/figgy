@@ -1653,7 +1653,7 @@ impl Renderer {
             snapshot.view_revision = state.revisions.view;
             snapshot.handoff = None;
             snapshot.requested_config = snapshot.config.clone();
-            self.try_publish_view_cache(job);
+            self.try_publish_view_cache(job)?;
             return Ok(revision);
         }
         let statistic_count =
@@ -1757,28 +1757,28 @@ impl Renderer {
         *final_fit_published = true;
         *published_revision = Some(revision);
         *auto_fit_padding = None;
-        self.try_publish_view_cache(job);
+        self.try_publish_view_cache(job)?;
         Ok(revision)
     }
 
-    fn try_publish_view_cache(&mut self, job: StreamJob) {
+    fn try_publish_view_cache(&mut self, job: StreamJob) -> Result<()> {
         let Some(draw) = self
             .stream_runtime
             .as_mut()
             .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
         else {
-            return;
+            return Ok(());
         };
         let Some(candidate) = draw.view_candidate.take() else {
-            return;
+            return Ok(());
         };
         if let Some(reason) = candidate.rejected {
             draw.view_rejection = Some(reason);
-            return;
+            return Ok(());
         }
         let Some(budget) = self.memory_budget else {
             draw.view_rejection = Some(view_residency::PackReject::MemoryBudgetUnset);
-            return;
+            return Ok(());
         };
         let current = self.gpu_memory_usage().total_bytes();
         match view_residency::GpuViewCache::upload(
@@ -1799,7 +1799,13 @@ impl Renderer {
                     draw.view_rejection = None;
                 }
             }
-            Err(reason) => {
+            Err(failure) => {
+                let (reason, error) = match failure {
+                    view_residency::PackUploadError::Reject(reason) => (reason, None),
+                    view_residency::PackUploadError::Gpu(error) => {
+                        (view_residency::PackReject::AllocationFailed, Some(error))
+                    }
+                };
                 if let Some(draw) = self
                     .stream_runtime
                     .as_mut()
@@ -1807,9 +1813,14 @@ impl Renderer {
                 {
                     draw.view_rejection = Some(reason);
                 }
+                if let Some(error) = error {
+                    self.end_gpu_frame();
+                    return Err(error);
+                }
             }
         }
         self.end_gpu_frame();
+        Ok(())
     }
 
     pub(super) fn active_stream_job(&self, chart: ChartId) -> Option<StreamJob> {
@@ -5026,6 +5037,7 @@ impl Renderer {
                     .iter_mut()
                     .find(|draw| draw.job == ticket.job)
                     .ok_or(FiggyError::internal("a submitted ticket's cursor is live"))?;
+                let mut packed = Ok(());
                 if let Some(result) = pending_pack
                     && let Some(candidate) = draw.view_candidate.as_mut()
                 {
@@ -5036,7 +5048,8 @@ impl Renderer {
                         Ok(_) => {}
                         Err(reason) => candidate.reject(reason),
                     }
-                    candidate.flush_completed(
+                    // Returned after the cursor records this submission.
+                    packed = candidate.flush_completed(
                         &self.device,
                         &self.queue,
                         &self.gpu_ledger,
@@ -5062,6 +5075,7 @@ impl Renderer {
                 // This is a Renderer-owned submission. External host recordings
                 // must already be submitted, as for draw/export owned paths.
                 self.end_gpu_frame();
+                packed?;
                 Ok(submission)
             }
             Err(error) => {
