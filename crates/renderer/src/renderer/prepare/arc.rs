@@ -148,7 +148,7 @@ impl PrepareContext<'_> {
                         },
                         extract_line(&cfg.render_type)
                             .map_or(LineInterpolation::Linear, |l| l.interpolation),
-                    )
+                    )?
                 } else {
                     None
                 };
@@ -164,31 +164,28 @@ impl PrepareContext<'_> {
 
     /// The `(x_base, y_base, n)` source layout for an arc scan over these
     /// columns right now — `None` when a column is missing or shorter than
-    /// two points.
+    /// two points; an error when the scan cannot address the columns.
     pub(in crate::renderer) fn arc_source_layout(
         &self,
         x_id: &str,
         y_id: &str,
-    ) -> Option<(u32, u32, u32)> {
-        let (x_offset, x_len) = {
-            let s = self.pool.slot(x_id)?;
-            (s.offset, s.len_values)
+    ) -> Result<Option<(u32, u32, u32)>> {
+        let (Some(x), Some(y)) = (self.pool.slot(x_id), self.pool.slot(y_id)) else {
+            return Ok(None);
         };
-        let (y_offset, y_len) = {
-            let s = self.pool.slot(y_id)?;
-            (s.offset, s.len_values)
-        };
+        let (x_offset, x_len) = (x.offset, x.len_values);
+        let (y_offset, y_len) = (y.offset, y.len_values);
         let n = x_len.min(y_len);
         if n < 2 {
-            return None;
+            return Ok(None);
         }
-        let n = u32::try_from(n).ok()?;
+        let n = lane_u32(n as u64, "line arc scan rows")?;
         // Pool offsets are 256-aligned bytes → exact f32 element indices.
         // Arc WGSL views the pool as f32 lanes; each logical value occupies
         // two lanes `(hi, lo)`, so `point_px(i)` applies the `i * 2` stride.
-        let x_base = u32::try_from(x_offset / 4).ok()?;
-        let y_base = u32::try_from(y_offset / 4).ok()?;
-        Some((x_base, y_base, n))
+        let x_base = lane_u32(x_offset / 4, "line arc x column lane")?;
+        let y_base = lane_u32(y_offset / 4, "line arc y column lane")?;
+        Ok(Some((x_base, y_base, n)))
     }
 
     /// Ensure the GPU arc-length prefix for one dashed line series and return
@@ -219,35 +216,42 @@ impl PrepareContext<'_> {
         t: &data_render::ScatterTransform,
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
-    ) -> Option<PreparedArc> {
+    ) -> Result<Option<PreparedArc>> {
         // The mode word: the step mode and, on a polar chart, the arc pieces
         // the transform carries.
         let step_mode = crate::line_step::mode_word_for(interpolation, t);
-        if self.arc_pipelines.is_none() {
-            *self.arc_pipelines = Some(data_render::line_arc::create_arc_scan_pipelines(
-                &self.device,
-            ));
-        }
-        let (x_base, y_base, mut n) = self.arc_source_layout(x_id, y_id)?;
+        // A column that is not resident, or a line too short to scan, has no
+        // arc prefix.
+        let Some((x_base, y_base, mut n)) = self.arc_source_layout(x_id, y_id)? else {
+            return Ok(None);
+        };
         // A ternary line's third component or a 3D line's height bounds the
         // polyline too.
         let c = match third.map(|third| third.column()) {
             Some(id) => {
-                let slot = self.pool.slot(id)?;
-                n = n.min(u32::try_from(slot.len_values).ok()?);
+                let (Some(slot), Some(epoch)) =
+                    (self.pool.slot(id), self.pool.allocation_epoch(id))
+                else {
+                    return Ok(None);
+                };
+                n = n.min(lane_u32(slot.len_values as u64, "line arc third rows")?);
                 if n < 2 {
-                    return None;
+                    return Ok(None);
                 }
                 Some((
-                    u32::try_from(slot.offset / 4).ok()?,
-                    self.pool.allocation_epoch(id)?,
+                    lane_u32(slot.offset / 4, "line arc third column lane")?,
+                    epoch,
                 ))
             }
             None => None,
         };
         let layout_generation = self.pool.layout_generation();
-        let x_allocation_epoch = self.pool.allocation_epoch(x_id)?;
-        let y_allocation_epoch = self.pool.allocation_epoch(y_id)?;
+        let (Some(x_allocation_epoch), Some(y_allocation_epoch)) = (
+            self.pool.allocation_epoch(x_id),
+            self.pool.allocation_epoch(y_id),
+        ) else {
+            return Ok(None);
+        };
         let transform_bits: [u32; std::mem::size_of::<data_render::ScatterTransform>() / 4] =
             bytemuck::cast(*t);
         let mut geometry_transform_bits = [0u32; 16];
@@ -289,24 +293,27 @@ impl PrepareContext<'_> {
                 indirect: star.indirect.clone(),
                 vs_bg: star.vs_bg.clone(),
             });
-            return Some(PreparedArc {
+            return Ok(Some(PreparedArc {
                 prefix: (
                     Arc::clone(&hit.scratch.arc),
                     u64::from(n) * data_render::line_arc::ARC_PAIR_BYTES,
                 ),
                 star,
                 charge: hit.scratch.charge(),
-            });
+            }));
         }
 
         #[cfg(test)]
         let chunk_override = self.arc_chunk_override;
         #[cfg(not(test))]
         let chunk_override = None;
+        let arc_pipelines: &data_render::line_arc::ArcScanPipelines = self
+            .arc_pipelines
+            .get_or_insert_with(|| data_render::line_arc::create_arc_scan_pipelines(&self.device));
         let scratch = data_render::line_arc::ArcScratch::build(
             &self.device,
             &self.gpu_ledger,
-            self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
+            arc_pipelines,
             self.pool.buffer(),
             n,
             x_base,
@@ -317,20 +324,17 @@ impl PrepareContext<'_> {
             step_mode,
             c.map_or(0, |(base, _)| base),
             third.and_then(|third| third.camera()),
-        )?; // None only on a zero-dispatch-limit adapter; try_new rejects those.
+        )
+        .ok_or(FiggyError::internal(
+            "the arc scan has a dispatch grid (try_new rejects zero-limit adapters)",
+        ))?;
 
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("figgy line arc encoder"),
             });
-        scratch.dispatch(
-            &self.queue,
-            &mut encoder,
-            self.arc_pipelines.as_ref().expect("arc pipelines ensured"),
-            t,
-            star_pitch,
-        );
+        scratch.dispatch(&self.queue, &mut encoder, arc_pipelines, t, star_pitch);
         self.queue.submit(std::iter::once(encoder.finish()));
 
         // Snapshot after submission. The cache never mutates this scratch;
@@ -352,7 +356,7 @@ impl PrepareContext<'_> {
             results.remove(0);
         }
         results.push(ArcResultEntry { key, scratch });
-        Some(prepared)
+        Ok(Some(prepared))
     }
 }
 
@@ -386,14 +390,9 @@ impl Renderer {
         star_pitch: Option<f32>,
         interpolation: LineInterpolation,
     ) -> Option<PreparedArc> {
-        self.preparation_parts().1.ensure_arc_prefix(
-            series_id,
-            x_id,
-            y_id,
-            None,
-            t,
-            star_pitch,
-            interpolation,
-        )
+        self.preparation_parts()
+            .1
+            .ensure_arc_prefix(series_id, x_id, y_id, None, t, star_pitch, interpolation)
+            .expect("test arc prefix scan")
     }
 }

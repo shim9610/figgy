@@ -1435,7 +1435,9 @@ pub(super) fn box_extras_data<'c>(
     if points {
         let (params, lanes) =
             box_points_params(config, group, series, display_scale, pool, lookup)?;
-        let style = boxes.points.expect("checked by box_points_params");
+        let style = boxes
+            .points
+            .ok_or(FiggyError::internal("checked by box_points_params"))?;
         let style_map = crate::renderer::style::box_points_style_map(
             device,
             style_map_bgl,
@@ -1446,7 +1448,9 @@ pub(super) fn box_extras_data<'c>(
     } else {
         let (params, lanes, segments) =
             violin_params(config, group, series, display_scale, pool, lookup)?;
-        let violin = boxes.violin.expect("checked by violin_params");
+        let violin = boxes
+            .violin
+            .ok_or(FiggyError::internal("checked by violin_params"))?;
         let style_map = crate::renderer::style::violin_style_map(
             device,
             style_map_bgl,

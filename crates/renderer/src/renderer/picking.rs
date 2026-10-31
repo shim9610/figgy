@@ -780,8 +780,11 @@ impl PickChartPlan {
                     size_map: None,
                 })
             } else if primitives.scatter {
-                let scatter = extract_scatter(&series.render_type)
-                    .expect("effective scatter primitive has scatter configuration");
+                let scatter = extract_scatter(&series.render_type).ok_or(
+                    crate::gpu_pick::GpuPickError::Internal(
+                        "effective scatter primitive has scatter configuration",
+                    ),
+                )?;
                 let scatter = scatter.as_ref();
                 let base_radius_px = scatter.point_size;
                 let base_shape_id = data_render::shape_id(&scatter.point_shape);
@@ -873,10 +876,15 @@ impl PickChartPlan {
                 None
             };
 
-            let line = primitives.line.then(|| {
-                extract_line(&series.render_type)
-                    .expect("effective line primitive has line configuration")
-            });
+            let line = if primitives.line {
+                Some(extract_line(&series.render_type).ok_or(
+                    crate::gpu_pick::GpuPickError::Internal(
+                        "effective line primitive has line configuration",
+                    ),
+                )?)
+            } else {
+                None
+            };
             let line = line.as_deref();
             let line_width_px = line.map(|line| line.line_width);
             let line_interpolation =
@@ -1607,6 +1615,13 @@ impl Renderer {
         Ok(None)
     }
 
+    /// A lost device or an unreported GPU error, as a pick error.
+    fn pick_health(&self) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.health
+            .check()
+            .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))
+    }
+
     /// Enable exact GPU picking for this renderer.
     ///
     /// This is idempotent. The immutable compute pipeline bundle is created
@@ -1621,6 +1636,7 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.pick_health()?;
         self.picker.enable_observed(
             Arc::clone(&self.device),
             Arc::clone(&self.queue),
@@ -1652,6 +1668,7 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.pick_health()?;
         self.picker
             .enable_observed_async(
                 Arc::clone(&self.device),
@@ -1679,6 +1696,7 @@ impl Renderer {
         &mut self,
         id: ChartId,
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
+        self.pick_health()?;
         let state = self
             .chart_states
             .get(&id)
@@ -1699,6 +1717,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> std::result::Result<crate::gpu_pick::GpuPickTicket, crate::gpu_pick::GpuPickError> {
+        self.pick_health()?;
         self.prepare_gpu_picking_for_chart(id)?;
         let state = self
             .chart_states
@@ -1723,7 +1742,9 @@ impl Renderer {
             .picker
             .active
             .as_ref()
-            .expect("successful chart preparation publishes an active picker registry")
+            .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                "successful chart preparation publishes an active picker registry",
+            ))?
             .engine
             .series_identities();
         let mut arcs: Vec<Option<Arc<wgpu::Buffer>>> = Vec::new();
@@ -1750,7 +1771,7 @@ impl Renderer {
             let series = position.map(|position| &layer_series[position]);
             let arc = series
                 .filter(|series| line_pick_walks_arc(&display_config.draw_style, series))
-                .and_then(|series| {
+                .map(|series| {
                     let interpolation = extract_line(&series.render_type)
                         .map_or(LineInterpolation::Linear, |line| line.interpolation);
                     // A streamline's arrowheads scan with their slot pitch,
@@ -1773,13 +1794,23 @@ impl Renderer {
                         interpolation,
                     )
                 })
+                .transpose()
+                // The scan the draw runs fails the pick with its message.
+                .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?
+                .flatten()
                 .map(|arc| arc.prefix.0);
             arcs.push(arc);
-            let ring = series.and_then(|series| {
-                self.preparation_parts()
+            let ring = match series {
+                // The scan the draw runs: its failure (a lane past the
+                // 32-bit range, rows past the dispatch grid) fails the pick
+                // with the draw's message.
+                Some(series) => self
+                    .preparation_parts()
                     .1
                     .region_ring_starts(display_config, series)
-            });
+                    .map_err(|error| crate::gpu_pick::GpuPickError::Gpu(error.to_string()))?,
+                None => None,
+            };
             rings.push(ring);
         }
         let chart_rect = display_config.chart_area.0;
@@ -1809,8 +1840,14 @@ impl Renderer {
         let active = picker
             .active
             .as_ref()
-            .expect("successful chart preparation publishes an active picker registry");
-        debug_assert_eq!(active.chart_id, id);
+            .ok_or(crate::gpu_pick::GpuPickError::Internal(
+                "successful chart preparation publishes an active picker registry",
+            ))?;
+        if active.chart_id != id {
+            return Err(crate::gpu_pick::GpuPickError::Internal(
+                "the active picker registry is the prepared chart's",
+            ));
+        }
         // The exact pipelines these series need, compiled on the first pick
         // that needs each.
         for key in active.engine.exact_variants(&query) {
@@ -1839,6 +1876,7 @@ impl Renderer {
         id: ChartId,
         request: GpuPickRequest,
     ) -> Result<crate::GpuDataPickTicket> {
+        self.health.check()?;
         // A 3D chart's point pick binds the series' registered styles (#132),
         // built here when the chart has not been drawn yet.
         if self
@@ -1930,8 +1968,9 @@ impl Renderer {
 
             let primitives = effective_series_primitives(&config.draw_style, &cfg.render_type);
             if primitives.bar {
-                let bar = extract_bar(&cfg.render_type)
-                    .expect("effective histogram primitive has a bar config");
+                let bar = extract_bar(&cfg.render_type).ok_or(FiggyError::internal(
+                    "effective histogram primitive has a bar config",
+                ))?;
                 let (edges_id, values_id, horizontal) = match bar.orientation {
                     crate::data_config::BarOrientation::Vertical => {
                         (&cfg.x_column, &cfg.y_column, false)
@@ -1986,10 +2025,9 @@ impl Renderer {
             if primitives.box_plot {
                 // The boxes the box plot entries draw at the pick's display
                 // transform, from the same params and style map as the draw.
-                let boxes = cfg
-                    .render_type
-                    .box_plot()
-                    .expect("the box plot primitive has a box plot config");
+                let boxes = cfg.render_type.box_plot().ok_or(FiggyError::internal(
+                    "the box plot primitive has a box plot config",
+                ))?;
                 let (params, lanes, _) = box_plot_params(
                     &display_config,
                     series.iter().filter(|s| {
@@ -2104,10 +2142,9 @@ impl Renderer {
             if primitives.category_bars {
                 // The bars the category bar module draws at the pick's
                 // display transform, resolved like the draw's.
-                let bars = cfg
-                    .render_type
-                    .category_bars()
-                    .expect("the category bar primitive has a category bar config");
+                let bars = cfg.render_type.category_bars().ok_or(FiggyError::internal(
+                    "the category bar primitive has a category bar config",
+                ))?;
                 let group = series.iter().filter(|s| {
                     effective_series_primitives(&config.draw_style, &s.render_type).category_bars
                 });
@@ -2194,7 +2231,7 @@ impl Renderer {
                 let scratch = self
                     .vector_cache
                     .get(cfg.series_id.as_str())
-                    .expect("vector scratch was just ensured");
+                    .ok_or(FiggyError::internal("vector scratch was just ensured"))?;
                 if scratch.input == data_render::vector::VectorInput::Grid && scratch.count != 0 {
                     data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
                         source_id: cfg.source_id.clone(),
@@ -2219,7 +2256,7 @@ impl Renderer {
                 let scratch = self
                     .field_cache
                     .get(cfg.series_id.as_str())
-                    .expect("field scratch was just ensured");
+                    .ok_or(FiggyError::internal("field scratch was just ensured"))?;
                 // The fill's `nan_color`, premultiplied as its style uniform
                 // holds it (`PrimitiveStyle::from_color`).
                 let [r, g, b, a] = scratch.signature.nan_color.map(f32::from_bits);
@@ -2235,7 +2272,7 @@ impl Renderer {
                     .contour_cache
                     .get(cfg.series_id.as_str())
                     .and_then(ScratchEntry::contour)
-                    .expect("contour scratch was just ensured");
+                    .ok_or(FiggyError::internal("contour scratch was just ensured"))?;
                 (
                     scratch.field_bg.clone(),
                     Arc::clone(&scratch.charge),

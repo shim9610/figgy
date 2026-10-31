@@ -570,7 +570,7 @@ pub fn box_plot_value_extent(
         let boxes = item
             .render_type
             .box_plot()
-            .expect("filtered to box plot series");
+            .ok_or(FiggyError::internal("filtered to box plot series"))?;
         // The outliers and the violin curves: ragged columns of values.
         for id in boxes.ragged_columns() {
             let ragged = pool

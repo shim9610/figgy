@@ -203,7 +203,7 @@ impl Renderer {
                         &t,
                         None,
                         LineInterpolation::Linear,
-                    )
+                    )?
                     .map(|arc| arc.prefix)
                 } else {
                     None
@@ -339,12 +339,16 @@ impl Renderer {
             });
             let pipeline = self.pipelines.surface[SurfacePass::Pick as usize]
                 .as_ref()
-                .expect("the surface pick pipeline was just ensured");
+                .ok_or(FiggyError::internal(
+                    "the surface pick pipeline was just ensured",
+                ))?;
             // The floor contours first, as the draw paints them: a surface
             // over a floor contour answers for its pixels.
             let floor_pipeline = self.pipelines.surface[SurfacePass::FloorContourPick as usize]
                 .as_ref()
-                .expect("the floor pick pipeline was just ensured");
+                .ok_or(FiggyError::internal(
+                    "the floor pick pipeline was just ensured",
+                ))?;
             for cfg in floors() {
                 let Some(camera) = camera.as_ref() else {
                     continue;
@@ -436,11 +440,17 @@ impl Renderer {
             // The 3D scatter and line series after the surfaces, as the
             // draw paints them (#132): every stroke, then every marker,
             // depth tested, each writing kind 1 and the point's index.
-            debug_assert_eq!(identities.len(), first_point_id);
+            if identities.len() != first_point_id {
+                return Err(FiggyError::internal(
+                    "the 3D point ids follow every surface identity",
+                ));
+            }
             let view3d = |kind: View3dPipeline| {
                 self.pipelines.view3d[kind as usize]
                     .as_ref()
-                    .expect("the 3D pick pipelines were just ensured")
+                    .ok_or(FiggyError::internal(
+                        "the 3D pick pipelines were just ensured",
+                    ))
             };
             for (cfg, _, _, _) in points() {
                 identities.push(crate::gpu_data_pick::SurfacePickIdentity {
@@ -458,7 +468,7 @@ impl Renderer {
                 data_render::draw_line_layer(
                     &mut pass,
                     &data_render::ColumnLineLayer {
-                        pipeline: view3d(View3dPipeline::LinePick),
+                        pipeline: view3d(View3dPipeline::LinePick)?,
                         transform_bg: &point_transform_bg,
                         style_bg: &style.line_bg,
                         pool_buffer,
@@ -492,7 +502,7 @@ impl Renderer {
                             View3dPipeline::ScatterMappedPick
                         } else {
                             View3dPipeline::ScatterPick
-                        }),
+                        })?,
                         transform_bg: &point_transform_bg,
                         style_bg: &style.scatter_bg,
                         style_map_bg: style.scatter_map.as_ref().map(|(bg, _)| bg),
@@ -537,7 +547,9 @@ impl Renderer {
         readback
             .slice(..16)
             .map_async(wgpu::MapMode::Read, move |result| {
-                let _ = sender.send(result);
+                if sender.send(result).is_err() {
+                    // The receiver was dropped: the waiting pick was cancelled.
+                }
             });
         charges.push(crate::gpu_memory::shared_charge(
             tally,

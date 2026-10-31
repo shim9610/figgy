@@ -985,6 +985,7 @@ impl Renderer {
     /// or identity, recreate it before [`Self::prepare`]. That method does not
     /// update caller-owned styles. The registered-chart path manages its own cache.
     pub fn create_style_for_series(&mut self, cfg: &SeriesConfig) -> Result<ChartStyle> {
+        self.health.check()?;
         self.create_style_for_series_scaled(cfg, 1.0)
     }
 
@@ -996,6 +997,7 @@ impl Renderer {
         cfg: &SeriesConfig,
         scale: f32,
     ) -> Result<ChartStyle> {
+        self.health.check()?;
         self.create_style_for_series_scaled_inner(cfg, scale)
     }
 
