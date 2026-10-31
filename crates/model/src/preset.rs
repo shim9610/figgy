@@ -308,7 +308,7 @@ impl ColorCycle {
             | DataRenderType::HeatmapContour { contour, .. } => {
                 contour.line.line_color = c;
             }
-            DataRenderType::Heatmap { .. } => {}
+            DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {}
             // The arrow colour joins the cycle; a colour map, when set, still
             // draws from the colourbar.
             DataRenderType::Vector { style, .. } => {

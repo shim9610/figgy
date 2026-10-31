@@ -483,6 +483,7 @@ impl PrepareContext<'_> {
             // units (design B.5), so the lines need no z range at all.
             z_min: [0.0, 0.0],
             z_max: [0.0, 0.0],
+            image: [0; 4],
         };
 
         // What the labels are baked from. `spacing_px` is not in here: it is a

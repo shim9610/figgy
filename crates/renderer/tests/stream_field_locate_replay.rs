@@ -594,6 +594,7 @@ fn bounded_gpu_axis_replay_matches_resident_global_locate() {
             level_color_count: 0,
             z_min: [0.0; 2],
             z_max: [1.0, 0.0],
+            image: [0; 4],
         };
         let upper = if fixture.log_axis {
             16.0f32.log10()

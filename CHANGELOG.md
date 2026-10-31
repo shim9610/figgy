@@ -57,6 +57,18 @@ additive.
   Migration: code that relied on "category bars are not drawn on polar
   axes" now gets a drawn rose or the horizontal reason. Nothing on the
   wire changes.
+- **Colour images (imshow)**
+  ([#139](https://github.com/shim9610/figgy/issues/139), #58).
+  `DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`:
+  three `MatrixRef`s on one lattice drawn as a colour image, each channel
+  mapped linearly from `range` (`[0, 1]` by default) to 0..1 and clamped,
+  no colourbar. `DataRenderType::rgb_image()` answers the three grids;
+  `Config::validate_rgb_image_series` holds the channels to one lattice
+  (the same column count, orientation and grid layout), a finite ordered
+  `range`, an `opacity` in `0..=1` and a flat chart, and
+  `validate_view3d_series` rejects it too. `range`, `shading` and `opacity`
+  are defaulted on the wire. Additive (`"RgbImage"`); an exhaustive
+  `DataRenderType` match adds the arm.
 - **Hexagonal grids (hexbins)**
   ([#134](https://github.com/shim9610/figgy/issues/134), #58).
   `GridLayout::Hexagonal`: a `Heatmap`'s grid as `n` columns by `m` rows
@@ -834,6 +846,21 @@ additive.
   in the categories' order, `bar_gap` pixels apart along the ring. The
   `Rose` catalogue scene is a wind rose of sixteen directions and three
   stacked speed bands.
+- **Colour images (imshow)**
+  ([#139](https://github.com/shim9610/figgy/issues/139), #58). An
+  `RgbImage` series draws through the field module with `FIELD_FLAG_RGB`:
+  the three channel grids share one `GridColumn` table (the green and blue
+  tables `FieldParamsGpu.image[0]` entries after the red one, read through
+  `grid_value_in`), and `fs_main` paints `field_image_color` (each channel
+  sampled flat or bilinearly, mapped from the `range` pair and clamped,
+  premultiplied by `opacity`) instead of the ramp; a cell with a
+  non-finite channel is unpainted and not picked (`field_image_paints`).
+  No colourbar is read; the cell pick, the selection outline and
+  `step_selection` are the heatmap's. `FieldParamsGpu` grows from 64 to
+  80 bytes (`image: [u32; 4]`). Registration validates the three grids'
+  columns and the model's rules; a polar chart and a streamed source are
+  rejected (`STREAMED_IMAGE_REASON`). The `Image` catalogue scene is a 256
+  by 192 test card the host composes as bytes, with markers over it.
 - **Hexagonal grids (hexbins)**
   ([#134](https://github.com/shim9610/figgy/issues/134), #58). A heatmap
   on a `Hexagonal` grid draws its cells as the Voronoi cells of their
@@ -1800,6 +1827,11 @@ additive.
   answers a polygon's vertex handle (`"v3"`) and `drag_annotation` takes a
   vertex name beside the compass names, on `FiggyChart` and
   `FiggyBoundedChart` alike.
+- **Colour images** ([#139](https://github.com/shim9610/figgy/issues/139)).
+  `"RgbImage"` reads and writes in `set_series` JSON (SCHEMA.md); the
+  three channel grids are referenced columns, and a picked cell's
+  `selection_details()` reports `red`, `green` and `blue` beside the cell's
+  position.
 - **Hexagonal grids** ([#134](https://github.com/shim9610/figgy/issues/134)).
   `"grid_layout": "Hexagonal"` reads and writes in `set_series` JSON
   (SCHEMA.md); a picked cell's `selection_details()` reports the raised

@@ -163,6 +163,7 @@ pub(super) fn fixture_data(case: Fixture) -> SourceFixture {
         level_color_count: 0,
         z_min: [1_000_000_000.0, 0.0],
         z_max: [1_000_000_000.0, 1.0],
+        image: [0; 4],
     };
     SourceFixture {
         transform,

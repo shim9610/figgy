@@ -92,6 +92,7 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         // true and draw a polyline through the grid's coordinate columns.
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
@@ -126,6 +127,7 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         // Arrows are not markers: they have their own pipeline, pick radius
@@ -183,6 +185,7 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
@@ -212,7 +215,10 @@ pub(super) fn extract_field_fill(
         DataRenderType::Heatmap { fill, .. } | DataRenderType::HeatmapContour { fill, .. } => {
             Some(fill)
         }
-        DataRenderType::Contour { .. }
+        // An image paints cells but has no fill config: `has_field` names
+        // it beside this match.
+        DataRenderType::RgbImage { .. }
+        | DataRenderType::Contour { .. }
         | DataRenderType::Line { .. }
         | DataRenderType::Scatter { .. }
         | DataRenderType::ScatterLine { .. }
@@ -234,7 +240,7 @@ pub(super) fn extract_field_fill(
 }
 
 pub(super) fn has_field(rt: &DataRenderType) -> bool {
-    extract_field_fill(rt).is_some()
+    extract_field_fill(rt).is_some() || rt.rgb_image().is_some()
 }
 
 /// Whether this render type draws implicit contour lines. A `Heatmap` with no contour
@@ -250,6 +256,7 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         DataRenderType::Contour { contour, .. }
         | DataRenderType::HeatmapContour { contour, .. } => Some(contour),
         DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Line { .. }
         | DataRenderType::Scatter { .. }
         | DataRenderType::ScatterLine { .. }
@@ -293,6 +300,7 @@ pub(super) fn extract_vector(
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }
@@ -432,6 +440,7 @@ pub(super) fn series_draw_info_from_pool(
         // grid the declaration and the data agreed on, which is the only way a
         // host can tell a 10x10 grid drawn as 10x9 from one drawn whole.
         DataRenderType::Heatmap { matrix, .. }
+        | DataRenderType::RgbImage { red: matrix, .. }
         | DataRenderType::Contour { matrix, .. }
         | DataRenderType::HeatmapContour { matrix, .. } => {
             let extent = matrix_extent(matrix, x as usize, y as usize, |id| len(id) as usize);
@@ -545,6 +554,8 @@ pub(super) fn series_draw_info_from_pool(
 pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config::MatrixRef> {
     match rt {
         DataRenderType::Heatmap { matrix, .. }
+        // An image's lattice is its red grid's; the others match it.
+        | DataRenderType::RgbImage { red: matrix, .. }
         | DataRenderType::Contour { matrix, .. }
         | DataRenderType::HeatmapContour { matrix, .. } => Some(matrix),
         DataRenderType::Line { .. }
@@ -573,9 +584,10 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
 ///
 /// A field's z range and colormap live nowhere else, so without the colourbar
 /// there is no value to paint — not a missing decoration, a missing input.
-/// Derived from `extract_matrix` rather than matched again.
+/// Derived from `extract_matrix` rather than matched again; an image's
+/// colours are its data, so it reads no colourbar.
 pub(super) fn requires_colorbar(rt: &DataRenderType) -> bool {
-    extract_matrix(rt).is_some()
+    extract_matrix(rt).is_some() && rt.rgb_image().is_none()
 }
 
 pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBarStyleConfig> {
@@ -591,6 +603,7 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::ScatterLine { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
@@ -616,6 +629,7 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::LineScatterErrorbarX { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }
@@ -641,6 +655,7 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::LineScatterErrorbarY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }

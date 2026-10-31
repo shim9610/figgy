@@ -432,7 +432,7 @@ The code is the fragment [`data_render/common/sample_validity.wgsl`](common/samp
 
 `level_colors`(binding 5)는 앵커 셰이더에서 읽지 않지만 바인드 그룹 배치를 맞추기 위해 공통 블록에 둔다. WGSL은 사용하지 않는 전역 선언을 허용한다.
 
-대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(64바이트), `create_field_data_bind_group_layout`이다.
+대응하는 CPU 정의는 `field.rs::GridColumnGpu`(8바이트), `field.rs::FieldParamsGpu`(80바이트), `create_field_data_bind_group_layout`이다.
 
 The fit reduction (`gpu_errorbar.wgsl`) splices the pair arithmetic fragment rather than the whole grid block, so the GPU fit bounds and the drawn field use the same rounding.
 
@@ -453,6 +453,22 @@ stays a rival and never answers, so a border cell is a whole hexagon. The
 selection outline is `width_px` inside the nearest of the six bisectors
 (`hex_edge_distance_px`, the bisector's data-metric normal scaled into
 pixels). Nothing per cell is stored; the lookup is O(1) per fragment.
+
+**Colour images** (`FIELD_RGB`, `DataRenderType::RgbImage`, #139). The
+three channel grids share one `GridColumn` table: the green table follows
+the red one `FieldParams.image.x` entries later and the blue table
+`2 · image.x` (the channel stride is the red grid's column count;
+`grid_value_in(c, r, offset)` reads a table entry at an offset). With the
+flag set, `fs_main` paints `field_image_color` instead of the ramp: each
+channel is `field_fill_sample` at the located cell (flat, or the bilinear
+blend under `FIELD_INTERPOLATED`) mapped linearly from `z_min..z_max`
+(the `range` pair; never logarithmic) to 0..1 and clamped
+(`field_image_channel`), premultiplied by `opacity`; a channel that is
+unplaceable or non-finite leaves the cell unpainted, and the pick gate
+(`field_image_paints`) answers nothing there. The stop table is one
+padding entry (`stop_count` 0) and `nan_color` is transparent. The
+`Shading` lattice, the cell pick and `selected_cell_coverage` are the
+heatmap's.
 
 <a id="51-field-only-contour-lookup-metadata--group-2-binding-6"></a>
 

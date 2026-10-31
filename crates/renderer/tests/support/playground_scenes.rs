@@ -66,10 +66,11 @@ pub enum SceneKind {
     Surface,
     Hexbin,
     Rose,
+    Image,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 29] = [
+    pub const ALL: [SceneKind; 30] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -99,6 +100,7 @@ impl SceneKind {
         SceneKind::Surface,
         SceneKind::Hexbin,
         SceneKind::Rose,
+        SceneKind::Image,
     ];
 
     pub fn label(self) -> &'static str {
@@ -132,6 +134,7 @@ impl SceneKind {
             SceneKind::Surface => "3D surface",
             SceneKind::Hexbin => "Hexbin (hexagonal grid)",
             SceneKind::Rose => "Rose (polar bars)",
+            SceneKind::Image => "Image (RGB test card)",
         }
     }
 
@@ -252,6 +255,12 @@ impl SceneKind {
                 "A wind rose: the hours of wind from sixteen directions, three \
                  speed bands stacked outward from the centre. Pick a wedge and \
                  step around the compass with the arrows."
+            }
+            SceneKind::Image => {
+                "A 256 by 192 test card the host composes as bytes (colour bars, \
+                 a hue sweep, a grey ramp), registered as three channel grids on \
+                 one lattice, with markers over it. Pick a cell and step with the \
+                 arrows."
             }
         }
     }
@@ -449,6 +458,7 @@ pub fn build(
         SceneKind::Surface => surface(r),
         SceneKind::Hexbin => hexbin(r),
         SceneKind::Rose => rose(r),
+        SceneKind::Image => image(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
     }
@@ -3318,6 +3328,137 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             surface: None,
         },
     )];
+    Ok(CartesianScene {
+        config: chart.config().clone(),
+        series,
+    })
+}
+
+/// A colour image (#139): a 256 by 192 test card the host composes as bytes
+/// on the CPU (eight colour bars, a hue sweep and a grey ramp; the renderer
+/// maps the bytes through `range` and derives no value), registered as
+/// three channel grids on one `Edges` lattice, with a scatter series of
+/// markers over it.
+fn image(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    const W: usize = 256;
+    const H: usize = 192;
+    let ids: [Vec<String>; 3] =
+        ["r", "g", "b"].map(|ch| (0..W).map(|c| format!("img_{ch}{c}")).collect());
+    if r.handle_for("img_x").is_err() {
+        // The card, as bytes: the upper two thirds eight 75 % colour bars
+        // (white, yellow, cyan, green, magenta, red, blue, black), then a
+        // hue sweep across the width, then a grey ramp.
+        let card = |c: usize, row: usize| -> [f64; 3] {
+            if row >= 2 * H / 3 {
+                let bar = c * 8 / W;
+                let on = |bit: usize| {
+                    if (7 - bar) >> bit & 1 == 1 {
+                        191.0
+                    } else {
+                        0.0
+                    }
+                };
+                [on(2), on(1), on(0)]
+            } else if row >= H / 3 {
+                let h = c as f64 / W as f64 * 6.0;
+                let x = 255.0 * (1.0 - (h % 2.0 - 1.0).abs());
+                match h as usize {
+                    0 => [255.0, x, 0.0],
+                    1 => [x, 255.0, 0.0],
+                    2 => [0.0, 255.0, x],
+                    3 => [0.0, x, 255.0],
+                    4 => [x, 0.0, 255.0],
+                    _ => [255.0, 0.0, x],
+                }
+            } else {
+                let v = (c as f64 / (W - 1) as f64 * 255.0).round();
+                [v, v, v]
+            }
+        };
+        let channel = |k: usize| -> Vec<Column<f64>> {
+            (0..W)
+                .map(|c| Column {
+                    data: (0..H).map(|row| card(c, row)[k]).collect(),
+                    min: 0.0,
+                    max: 255.0,
+                })
+                .collect()
+        };
+        let grids = [channel(0), channel(1), channel(2)];
+        let x = Column {
+            data: (0..=W).map(|v| v as f64).collect(),
+            min: 0.0,
+            max: W as f64,
+        };
+        let y = Column {
+            data: (0..=H).map(|v| v as f64).collect(),
+            min: 0.0,
+            max: H as f64,
+        };
+        // Markers at the centre of each colour bar and along the hue sweep.
+        let mx = Column {
+            data: (0..8).map(|i| (i as f64 + 0.5) * W as f64 / 8.0).collect(),
+            min: W as f64 / 16.0,
+            max: W as f64 * 15.0 / 16.0,
+        };
+        let my = Column {
+            data: (0..8)
+                .map(|i| H as f64 * (5.0 + (i % 2) as f64) / 6.0 - H as f64 / 12.0)
+                .collect(),
+            min: H as f64 * 4.0 / 6.0 + H as f64 / 12.0 - H as f64 / 6.0,
+            max: H as f64 * 5.0 / 6.0 + H as f64 / 12.0,
+        };
+        let mut batch: Vec<(&str, &dyn ColumnSource)> = vec![
+            ("img_x", &x),
+            ("img_y", &y),
+            ("img_mx", &mx),
+            ("img_my", &my),
+        ];
+        for (ids, grid) in ids.iter().zip(&grids) {
+            for (id, column) in ids.iter().zip(grid) {
+                batch.push((id.as_str(), column as &dyn ColumnSource));
+            }
+        }
+        r.add_columns(&batch)?;
+    }
+    let mut config = base_config("Image: a test card as bytes", "x (px)", "y (px)");
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    let mut chart = Chart::new(config);
+    chart.set_x_range(0.0, W as f64);
+    chart.set_y_range(0.0, H as f64);
+    let lattice = |columns: &[String]| MatrixRef {
+        columns: columns.to_vec(),
+        orientation: MatrixOrientation::ColumnsAreX,
+        grid_layout: GridLayout::Edges,
+    };
+    let series = vec![
+        series(
+            "image",
+            "img_x",
+            "img_y",
+            DataRenderType::RgbImage {
+                red: lattice(&ids[0]),
+                green: lattice(&ids[1]),
+                blue: lattice(&ids[2]),
+                range: [0.0, 255.0],
+                shading: Shading::Flat,
+                opacity: 1.0,
+            },
+        ),
+        series(
+            "marks",
+            "img_mx",
+            "img_my",
+            DataRenderType::Scatter {
+                scatter: scatter_style(
+                    Color::from_rgb8(20, 20, 20),
+                    ScatterShape::DiamondFilled,
+                    6.0,
+                ),
+            },
+        ),
+    ];
     Ok(CartesianScene {
         config: chart.config().clone(),
         series,

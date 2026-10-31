@@ -105,6 +105,7 @@ palettes, axes, materials and labels restyle charts built with the same APIs.
 | Histograms | Bin edges and counts | [Histograms](crates/renderer/HISTOGRAM.md) |
 | Heatmaps and contours | X and Y coordinate columns and one z column per grid row or column (`MatrixRef`) | [heatmap_contours.rs](crates/renderer/examples/heatmap_contours.rs) |
 | Hexbins | Host-binned counts on a `Hexagonal` grid of flat-topped hexagons (`MatrixRef.grid_layout`) | [Hexagonal grids](crates/renderer/CONFIG.md#hexagonal-grids-hexbins) |
+| Colour images (imshow) | Three channel grids on one lattice, mapped from a `range` (`RgbImage`) | [Colour images](crates/renderer/CONFIG.md#colour-images-imshow) |
 | Vector fields (quiver) | Anchors and (u, v) columns, or two matrices on a grid | [Vector fields](crates/renderer/CONFIG.md#vector-fields) · [vector_field.rs](crates/renderer/examples/vector_field.rs) |
 | Colour and size maps (bubbles) | A value column per point, mapped by `PointColorMap` through the colorbar (`Config.colorbar`) or by `PointSizeMap` through its size domain | [Point colour and size maps](crates/renderer/CONFIG.md#point-colour-and-size-maps) · [value_maps.rs](crates/renderer/examples/value_maps.rs) |
 | Overlay axes, subplots, annotations | Extra right-hand Y axes, a grid of panels, reference lines, spans, text, arrows and shapes (rectangles, ellipses, polygons) | [Overlays](crates/renderer/INTERACTION.md#overlay-layers) · [Subplots](crates/renderer/INTERACTION.md#subplots) · [Annotations](crates/renderer/INTERACTION.md#annotation-layer) |

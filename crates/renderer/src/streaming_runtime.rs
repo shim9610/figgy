@@ -52,10 +52,15 @@ pub(crate) const STREAMED_HEXAGONAL_REASON: &str =
 pub(crate) const STREAMED_TERNARY_REASON: &str =
     "ternary series require GPU-resident columns; streamed sources are not supported";
 
+/// Why a streamed image series is rejected (CLAUDE.md rule 8, #139).
+pub(crate) const STREAMED_IMAGE_REASON: &str =
+    "image series require GPU-resident columns; streamed sources are not supported";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Heatmap { .. } => true,
-        DataRenderType::Scatter { .. }
+        DataRenderType::RgbImage { .. }
+        | DataRenderType::Scatter { .. }
         | DataRenderType::Line { .. }
         | DataRenderType::ScatterLine { .. }
         | DataRenderType::ScatterErrorbarX { .. }
@@ -627,6 +632,14 @@ fn stream_draw_phases(
         } else {
             &[]
         }),
+        // Streaming is not extended to images; `validate_stream_series`
+        // rejects them before a cursor exists, so this is a backstop.
+        DataRenderType::RgbImage { .. } if primitives.field => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: STREAMED_IMAGE_REASON.into(),
+        }
+        .into()),
+        DataRenderType::RgbImage { .. } => Ok(&[]),
         // Streaming is not extended to vectors; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
         DataRenderType::Vector { .. } if primitives.vector => {

@@ -106,6 +106,7 @@ impl PreparationFeature {
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
+                | DataRenderType::RgbImage { .. }
                 | DataRenderType::Contour { .. }
                 | DataRenderType::HeatmapContour { .. }
                 | DataRenderType::Vector { .. }

@@ -148,6 +148,7 @@ mod tests {
             ("FIELD_BANDS", dr::FIELD_FLAG_BANDS),
             ("FIELD_LOG_Z", dr::FIELD_FLAG_LOG_Z),
             ("FIELD_HEXAGONAL", dr::FIELD_FLAG_HEXAGONAL),
+            ("FIELD_RGB", dr::FIELD_FLAG_RGB),
             ("VECTOR_FLAG_GRID", vector::VECTOR_FLAG_GRID),
             (
                 "VECTOR_FLAG_COLUMNS_ARE_Y",
@@ -527,6 +528,7 @@ mod tests {
                     level_color_count,
                     z_min,
                     z_max,
+                    image,
                 }
             ),
             mirror!(

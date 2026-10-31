@@ -939,6 +939,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Surface => "Surface",
         SceneKind::Hexbin => "Hexbin",
         SceneKind::Rose => "Rose",
+        SceneKind::Image => "Image",
     }
 }
 

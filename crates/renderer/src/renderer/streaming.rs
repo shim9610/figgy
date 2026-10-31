@@ -176,6 +176,8 @@ pub(super) fn stream_config_equal(left: &Config, right: &Config, series: &[Serie
             // rejected.
             | DataRenderType::Streamlines { .. }
             | DataRenderType::Ternary { .. }
+            // Never streamed either; its colours are its data.
+            | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. } => false,
         })
             || match (&left.colorbar, &right.colorbar) {

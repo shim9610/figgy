@@ -382,7 +382,10 @@ impl FiggyChart {
                         union(&map.column)?;
                     }
                 }
-                DataRenderType::Line { .. }
+                // An image's colours are its data: the colourbar maps none
+                // of its channels.
+                DataRenderType::RgbImage { .. }
+                | DataRenderType::Line { .. }
                 | DataRenderType::Histogram { .. }
                 | DataRenderType::CategoryBars { .. }
                 | DataRenderType::BoxPlot { .. }

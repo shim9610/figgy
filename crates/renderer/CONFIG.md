@@ -674,19 +674,19 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | Type | Fields | Role |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | Full series declaration. `source_id` is optional host provenance for picking; `x_column / y_column` are renderer-registered ids, resident in the pool or backed by a replayable nonresident source. In the web editing flow, `legend.content` is the live label authority; ordinary series edits update recognized legend symbols only and preserve user text. `SeriesConfig.label` becomes authoritative only for an explicit `reset_legend_from_series_labels()` rebuild |
-| `DataRenderType` | enum, 16 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
+| `DataRenderType` | enum, 17 variants | One independent draw path per variant; each variant carries exactly the sub-styles it uses |
 | `ErrorRef` | `Symmetric { column }` or `Asymmetric { lower, upper }` | Errorbar column reference. Symmetric = ±σ, Asymmetric = lower/upper split |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | Line appearance. `fill` adds an area under the line (`ToBaseline(y)`) or between this line and another series (`ToSeries(series_id)`); `fill_color` defaults to `line_color` at a quarter of its alpha; `interpolation` is `Linear` (default), `StepPre`, `StepPost` or `StepMid`. See [Area fill and step lines](#area-fill-and-step-lines) |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | Point appearance. The optional style map applies only to precise scatter; each table/override slot can replace color, shape, size, or any subset. `point_color_map` colours each point by a value column through `Config.colorbar`; `point_size_map` sizes each point by a value column over an explicit domain. See [Point colour and size maps](#point-colour-and-size-maps) |
 | `DataErrorBarStyleConfig` | `error_bar_color, _width, _cap_size, cap_width, error_bar_style_table?, error_bar_style_index_column?, error_bar_style_overrides?` | Errorbar appearance. The optional style map applies only to precise errorbars; each table/override slot can replace color, stem width, cap half-size, cap width, or any subset |
 | `DataBarStyleConfig` | `fill_color, border_color, border_width, baseline, gap_px, width_ratio, orientation, bar_style_overrides?` | Histogram appearance. `width_ratio` controls the centred fraction of each bin; sparse overrides replace fill, outline, gap, or width for selected bin indices |
 | `ScatterShape` | enum, 26 variants | Circle / Square / Triangle directions / Diamond / Cross / Plus / Pentagon / Hexagon / Octagon / Star + filled variants |
-| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries), `Centers` (n cell centres) or `Hexagonal` (n centres of flat-topped hexagons, a hexbin). See [Matrix fields and contours](#matrix-fields-and-contours) and [Hexagonal grids](#hexagonal-grids-hexbins) |
+| `MatrixRef` | `columns, orientation, grid_layout` | The grid of a `Heatmap` / `Contour` / `HeatmapContour` series, a channel of an `RgbImage` or a grid vector: registered column ids in grid order. `orientation` is `ColumnsAreX` (each column is one x position holding its y values) or `ColumnsAreY`; `grid_layout` is `Edges` (the coordinate columns hold n + 1 cell boundaries), `Centers` (n cell centres) or `Hexagonal` (n centres of flat-topped hexagons, a hexbin). See [Matrix fields and contours](#matrix-fields-and-contours) and [Hexagonal grids](#hexagonal-grids-hexbins) |
 | `FieldFillConfig` | `mode, shading, opacity` | Heatmap fill. `mode` is `Continuous` or `Bands` (one colour per interval between the contour levels); `shading` is `Flat` (one colour per cell) or `Interpolated` (bilinear across the cell corners); `opacity` multiplies the colormap alpha |
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | Contour lines. `levels` is an explicit list in data units (at most 1024); `contour.set_nice_levels(&colorbar.axis, n)` writes about `n` round levels strictly inside the colourbar range (`ContourConfig::nice_levels` returns them without writing), and `contour.set_colormap_colors(&colorbar)` fills `per_level_color` from the ramp |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | Inline level labels. `spacing_px` must be finite and positive; empty `anchors` means automatic placement |
 
-**The 16 `DataRenderType` variants**:
+**The 17 `DataRenderType` variants**:
 
 | Variant | Sub-styles used | Meaning |
 |---|---|---|
@@ -699,6 +699,7 @@ Series are declared via `data_config::SeriesConfig`. `Renderer::prepare` (which 
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | The above + connecting line |
 | `Histogram { bar }` | bar | Bars from host-binned `(edges, counts)`. `bar.orientation` alone decides which column is which: `Vertical` = `x_column` edges / `y_column` counts, `Horizontal` the reverse. The `edges = counts + 1` length relation is never used to guess |
 | `Heatmap { matrix, fill, surface? }` | fill | Filled field only; a surface on a 3D chart (`surface` its look, see [`View3d`](#view3d-configview_3d)) |
+| `RgbImage { red, green, blue, range, shading, opacity }` | fill | A colour image: three matrices on one lattice, each channel mapped linearly from `range` to 0..1; no colourbar. See [Colour images](#colour-images-imshow) |
 | `Contour { matrix, contour }` | contour | Contour lines only; on a 3D chart's floor |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | Filled field with lines over it; on a 3D chart, the surface with the lines on the floor |
 | `Vector { components, style }` | vector | An arrow per sample: `components` is a (u, v) column pair aligned with the x / y anchors (`Points`) or two matrices over the coordinate columns (`Grid`); `style` is the arrow's colour, sizes, pivot, scale and optional colour map. See [Vector fields](#vector-fields) |
@@ -936,6 +937,36 @@ y axes are linear, the chart is flat (no `view_3d`), and the columns are
 resident (streamed sources are rejected). Hover, click, `step_selection`
 and the picked outline are the heatmap's; `selection_details()` reports the
 raised centre of an odd column.
+
+<a id="colour-images-imshow"></a>
+
+#### Colour images (imshow)
+
+`DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`
+([#139](https://github.com/shim9610/figgy/issues/139)) draws three matrices
+as one colour image: `red`, `green` and `blue` are `MatrixRef`s on one
+lattice (the series' coordinate columns; the three share their column count,
+orientation and grid layout: `Edges`, `Centers` or, shaded `Flat`, a
+`Hexagonal` lattice under the [hexbin rules](#hexagonal-grids-hexbins)), and a cell's colour is
+its three channel values mapped linearly from `range` to 0..1 and clamped
+(`[0, 1]` by default, `[0, 255]` for bytes), at `opacity`. The host supplies
+the channels as it supplies any grid; the renderer maps them and derives
+nothing (rule 1), so a histogram equalization, a gamma or a false colour is
+the host's. No colourbar is read or required: the colours are the data.
+`Flat` paints each cell its colour, `Interpolated` blends each channel
+bilinearly between the sample points; a cell with a non-finite value in any
+channel is unpainted and not picked. Hover, click, `step_selection` and the
+picked outline are the heatmap's cell interactions; a picked cell's
+`selection_details()` reports `red`, `green` and `blue`. The drawn extent
+is the smallest of the three channels', reported through
+`series_draw_info` as a heatmap's.
+
+The rules (`Config::validate_rgb_image_series`, at registration): the three
+channels have the same number of columns, orientation and grid layout,
+`range` is finite with a smaller low end,
+`opacity` is `0..=1`, the chart is flat (no `view_3d`) and rectangular (a
+polar chart rejects every field series), and the columns are resident
+(streamed sources are rejected).
 
 <!-- contour-contract: scope=config-en max-levels=1024 -->
 `ContourConfig.levels` is always an explicit list in data units (there is no
@@ -1444,7 +1475,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | 타입 | 필드 | 역할 |
 |---|---|---|
 | `SeriesConfig` | `series_id, source_id?, label, x_column: ColumnId, y_column: ColumnId, render_type` | 시리즈 설정. `source_id`는 생략할 수 있으며, 피킹·선택 결과에서 호스트가 데이터 출처를 구분하는 데 쓴다. 컬럼 ID는 상주 풀 또는 재공급 가능한 비상주 소스를 가리킨다. 웹 편집 중 표시할 라벨은 `legend.content`를 기준으로 하며 일반 시리즈 편집은 기호만 갱신한다. `SeriesConfig.label`은 `reset_legend_from_series_labels()`로 범례를 다시 만들 때 사용한다. |
-| `DataRenderType` | 16종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
+| `DataRenderType` | 17종 열거형 | 종류마다 별도의 렌더링 경로와 필요한 설정을 가진다. |
 | `ErrorRef` | `Symmetric { column }` 또는 `Asymmetric { lower, upper }` | 오차 막대 컬럼 참조. Symmetric은 ±σ, Asymmetric은 아래·위 값을 별도 지정 |
 | `DataLineStyleConfig` | `line_style, line_color, line_width, fill?, fill_color?, interpolation` | 선 모양. `fill`은 선 아래(`ToBaseline(y)`) 또는 다른 시리즈까지(`ToSeries(series_id)`) 면을 채우고, `fill_color`는 생략 시 `line_color`의 알파를 1/4로 줄인 색이며, `interpolation`은 `Linear`(기본)·`StepPre`·`StepPost`·`StepMid`다. [면 채움과 계단선](#면-채움과-계단선) 참고 |
 | `DataScatterStyleConfig` | `point_color, point_shape, point_size, point_style_table?, point_style_index_column?, point_style_overrides?, point_color_map?, point_size_map?` | 점 모양. 정밀 모드에서 선택적인 스타일 표·개별 설정으로 색·모양·크기의 전체 또는 일부를 바꿀 수 있다. `point_color_map`은 값 컬럼을 `Config.colorbar`로 색에, `point_size_map`은 값 컬럼을 명시한 범위로 크기에 대응시킨다. [점 색과 크기 매핑](#점-색과-크기-매핑) 참고 |
@@ -1456,7 +1487,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `ContourConfig` | `levels, line, per_level_color?, labels?` | 등고선. `levels`는 데이터 단위의 명시적 목록(최대 1024개)이다. `contour.set_nice_levels(&colorbar.axis, n)`은 색상 막대 범위 안쪽(양 끝 제외)에 약 `n`개의 깔끔한 레벨을 쓰고(`ContourConfig::nice_levels`는 쓰지 않고 돌려주기만 한다), `contour.set_colormap_colors(&colorbar)`는 색상표에서 `per_level_color`를 채운다 |
 | `ContourLabelConfig` | `visible, font_size, color, format, significant_digits, spacing_px, anchors, bg_color?, bg_padding_px` | 선 위의 레벨 라벨. `spacing_px`는 유한한 양수여야 하며, `anchors`가 비어 있으면 자동으로 배치한다 |
 
-**`DataRenderType`의 16가지 종류**
+**`DataRenderType`의 17가지 종류**
 
 | 종류 | 사용하는 스타일 | 의미 |
 |---|---|---|
@@ -1469,6 +1500,7 @@ Y 축 위에서 밀린다. 서브플롯은 자기 `config` 안에 따로 `line_o
 | `LineScatterErrorbarX / Y / XY` | line + scatter + errorbar | 위 3 + 연결선 |
 | `Histogram { bar }` | bar | 호스트가 집계한 경계·빈도 `(edges, counts)`로 막대를 그린다. `bar.orientation`이 `Vertical`이면 X컬럼이 경계, Y컬럼이 빈도이며 `Horizontal`은 반대다. `edges = counts + 1`이라는 길이 관계로 역할을 추측하지 않는다. |
 | `Heatmap { matrix, fill, surface? }` | fill | 면만. 3D 차트에서는 곡면 |
+| `RgbImage { red, green, blue, range, shading, opacity }` | fill | 컬러 이미지. 같은 격자 위의 행렬 세 개를 R·G·B 채널로 읽어 `range`를 0..1로 선형 매핑한다. 색상 막대를 쓰지 않는다 |
 | `Contour { matrix, contour }` | contour | 선만. 3D 차트에서는 바닥에 |
 | `HeatmapContour { matrix, fill, contour, surface? }` | fill + contour | 면 + 그 위의 선. 3D 차트에서는 곡면과 바닥의 선 |
 | `Vector { components, style }` | vector | 표본마다 화살표 하나. `components`는 X·Y 앵커와 정렬된 (u, v) 컬럼 쌍(`Points`) 또는 좌표 컬럼 위의 행렬 두 개(`Grid`)이고, `style`은 색·크기·피벗·스케일·선택적 색상 매핑이다. [벡터장](#벡터장) 참고 |

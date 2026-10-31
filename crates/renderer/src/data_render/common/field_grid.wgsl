@@ -18,6 +18,7 @@ const FIELD_INTERPOLATED: u32 = 4u;
 const FIELD_BANDS: u32 = 8u;
 const FIELD_LOG_Z: u32 = 16u;
 const FIELD_HEXAGONAL: u32 = 32u;
+const FIELD_RGB: u32 = 64u;
 
 /// Everything the field needs that is not already in `Transform` / `Style`.
 ///
@@ -26,7 +27,7 @@ const FIELD_HEXAGONAL: u32 = 32u;
 /// there keeps the precision that doing it here would lose. Both are `(hi, lo)`
 /// f32 pairs, the pool's own representation.
 ///
-/// CPU twin: `data_render/field.rs::FieldParamsGpu` (`#[repr(C)]`, 64 B).
+/// CPU twin: `data_render/field.rs::FieldParamsGpu` (`#[repr(C)]`, 80 B).
 struct FieldParams {
     x_base: u32,
     y_base: u32,
@@ -45,6 +46,9 @@ struct FieldParams {
     level_color_count: u32,
     z_min: vec2<f32>,
     z_max: vec2<f32>,
+    /// `(channel stride, 0, 0, 0)`: an image's (`FIELD_RGB`) green and blue
+    /// tables follow the red one `image.x` and `2 · image.x` entries later.
+    image: vec4<u32>,
 };
 
 @group(2) @binding(0) var<storage, read> field_pool: array<f32>;
@@ -347,13 +351,20 @@ struct GridValue {
 /// The grid's z at constituent column `c`, value `r`, as a pool pair plus
 /// explicit bounds validity. The pair remains zero when the address is invalid.
 fn grid_value(c: u32, r: u32) -> GridValue {
+    return grid_value_in(c, r, 0u);
+}
+
+/// `grid_value` read from the table `offset` entries on: an image's green
+/// or blue channel (#139). The cell bounds are the lattice's, the table
+/// entry the channel's.
+fn grid_value_in(c: u32, r: u32, offset: u32) -> GridValue {
     var out: GridValue;
     out.pair = vec2<f32>(0.0, 0.0);
     out.valid = false;
     if (c >= field.cols) {
         return out;
     }
-    let column = grid[c];
+    let column = grid[c + offset];
     if (r >= column.len) {
         return out;
     }

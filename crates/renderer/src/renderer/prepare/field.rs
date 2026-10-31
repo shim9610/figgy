@@ -281,17 +281,68 @@ impl PrepareContext<'_> {
     ) -> Result<Arc<GridSources>> {
         let rt = &cfg.render_type;
         let matrix = extract_matrix(rt).expect("a field series has a matrix");
-        let fill = extract_field_fill(rt).expect("a field series has a fill config");
+        // An image (#139) has no fill config: its shading and opacity are
+        // its own fields, its mode continuous.
+        let image = rt.rgb_image();
+        let image_fill;
+        let fill = match (extract_field_fill(rt), rt) {
+            (Some(fill), _) => fill,
+            (
+                None,
+                DataRenderType::RgbImage {
+                    shading, opacity, ..
+                },
+            ) => {
+                image_fill = crate::data_config::FieldFillConfig {
+                    mode: crate::data_config::FillMode::Continuous,
+                    shading: shading.clone(),
+                    opacity: *opacity,
+                };
+                &image_fill
+            }
+            (None, _) => unreachable!("a field series has a fill config"),
+        };
         validate_contour_level_count(cfg.series_id.as_str(), rt)?;
-        let bar =
-            chart_config
-                .colorbar
-                .as_ref()
-                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+        // A field reads its z range and colours from the colourbar; an image
+        // reads none (its colours are its data).
+        let bar = match image {
+            Some(_) => None,
+            None => Some(chart_config.colorbar.as_ref().ok_or_else(|| {
+                FiggyError::InvalidSeriesConfig {
                     series_id: cfg.series_id.clone(),
                     reason: "a field series needs Config.colorbar".into(),
-                })?;
+                }
+            })?),
+        };
         let mut resolved = self.resolve_grid(cfg, matrix)?;
+        // An image's green and blue tables follow the red one in the same
+        // table, `stride` entries apart; the drawn extent is the smallest
+        // of the three.
+        let mut image_stride = 0u32;
+        if let Some([red, green, blue]) = image {
+            if !red.columns.is_empty() {
+                resolved.grid.truncate(red.columns.len());
+            }
+            image_stride = u32::try_from(red.columns.len()).unwrap_or(u32::MAX);
+            for channel in [green, blue] {
+                let other = self.resolve_grid(cfg, channel)?;
+                resolved.extent.cols = resolved.extent.cols.min(other.extent.cols);
+                resolved.extent.rows = resolved.extent.rows.min(other.extent.rows);
+                resolved.extent.truncated |= other.extent.truncated;
+                resolved
+                    .grid
+                    .try_reserve(channel.columns.len())
+                    .and_then(|()| resolved.epochs.try_reserve(channel.columns.len()))
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "image channel grid table",
+                        reason: error.to_string(),
+                    })?;
+                resolved
+                    .grid
+                    .extend(other.grid.iter().take(channel.columns.len()).copied());
+                resolved.epochs.extend_from_slice(&other.epochs);
+            }
+        }
         // A surface coloured by a second grid on a 3D chart: its columns
         // follow the height columns in the same table (`color_base` is the
         // height column count), so the surface reads both through one group.
@@ -336,14 +387,52 @@ impl PrepareContext<'_> {
         if matches!(fill.mode, crate::data_config::FillMode::Bands) {
             flags |= data_render::FIELD_FLAG_BANDS;
         }
-        let colorbar = colorbar_gpu(bar);
-        if colorbar.log_z {
-            flags |= data_render::FIELD_FLAG_LOG_Z;
-        }
+        // The z range: the colourbar's, or an image's channel range (the
+        // pairs of its two ends; never logarithmic). An image's stop table
+        // is the one padding entry a storage binding needs.
+        let (z_min, z_max, stops, stop_count, nan) = match (bar, rt) {
+            (Some(bar), _) => {
+                let colorbar = colorbar_gpu(bar);
+                if colorbar.log_z {
+                    flags |= data_render::FIELD_FLAG_LOG_Z;
+                }
+                let ColorbarStops { stops, stop_count } =
+                    colorbar_stops("field colourmap stops", bar)?;
+                (
+                    colorbar.z_min,
+                    colorbar.z_max,
+                    stops,
+                    stop_count,
+                    bar.nan_color,
+                )
+            }
+            (None, DataRenderType::RgbImage { range, .. }) => {
+                flags |= data_render::FIELD_FLAG_RGB;
+                let pair = |v: f64| {
+                    let (hi, lo) = crate::data::split_f64_to_f32_pair(v);
+                    [hi, lo]
+                };
+                let mut stops = Vec::new();
+                stops
+                    .try_reserve_exact(1)
+                    .map_err(|error| FiggyError::StateAllocationFailed {
+                        resource: "image stop padding",
+                        reason: error.to_string(),
+                    })?;
+                stops.push([0.0; 4]);
+                (
+                    pair(range[0]),
+                    pair(range[1]),
+                    stops,
+                    0,
+                    Color::new(0.0, 0.0, 0.0, 0.0),
+                )
+            }
+            (None, _) => unreachable!("a field without a colourbar is an image"),
+        };
 
         let levels = contour_levels(rt)?;
         let level_count = u32::try_from(declared_level_count(rt)).unwrap_or(u32::MAX);
-        let ColorbarStops { stops, stop_count } = colorbar_stops("field colourmap stops", bar)?;
 
         let params = data_render::FieldParamsGpu {
             x_base: u32::try_from(resolved.x.offset / 4).unwrap_or(0),
@@ -359,10 +448,10 @@ impl PrepareContext<'_> {
             // Contour-only; a fill draws no strokes and reads no level colours.
             line_width_px: 0.0,
             level_color_count: 0,
-            z_min: colorbar.z_min,
-            z_max: colorbar.z_max,
+            z_min,
+            z_max,
+            image: [image_stride, 0, 0, 0],
         };
-        let nan = bar.nan_color;
         let signature = FieldSignature {
             pool_layout_generation: self.pool.layout_generation(),
             params,
@@ -386,20 +475,31 @@ impl PrepareContext<'_> {
             return Ok(Arc::clone(&scratch.sources));
         }
 
-        let sources = match color_matrix {
-            Some(color) => {
-                let mut both = matrix.clone();
-                both.columns
-                    .try_reserve(color.columns.len())
-                    .map_err(|error| FiggyError::StateAllocationFailed {
-                        resource: "surface colour grid receipt",
-                        reason: error.to_string(),
-                    })?;
-                both.columns.extend(color.columns.iter().cloned());
-                Self::grid_receipt(&both, &signature.epochs)?
-            }
-            None => Self::grid_receipt(matrix, &signature.epochs)?,
+        // The receipt names every column the table reads: a surface's
+        // colour grid or an image's two other channels after the matrix.
+        let extra: [Option<&crate::data_config::MatrixRef>; 2] = match (color_matrix, image) {
+            (Some(color), _) => [Some(color), None],
+            (None, Some([_, green, blue])) => [Some(green), Some(blue)],
+            (None, None) => [None, None],
         };
+        let mut all;
+        let receipt_matrix = if extra.iter().all(Option::is_none) {
+            matrix
+        } else {
+            all = matrix.clone();
+            let added: usize = extra.iter().flatten().map(|m| m.columns.len()).sum();
+            all.columns
+                .try_reserve(added)
+                .map_err(|error| FiggyError::StateAllocationFailed {
+                    resource: "field grid receipt",
+                    reason: error.to_string(),
+                })?;
+            for m in extra.iter().flatten() {
+                all.columns.extend(m.columns.iter().cloned());
+            }
+            &all
+        };
+        let sources = Self::grid_receipt(receipt_matrix, &signature.epochs)?;
         let scratch = self.build_field_scratch(signature, sources)?;
 
         // Bounded like `arc_cache`: a host cycling through thousands of series

@@ -561,6 +561,7 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::ScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         // A category bar is picked per (category, series) bar by the typed
@@ -594,6 +595,7 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         DataRenderType::Line { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::CategoryBars { .. }

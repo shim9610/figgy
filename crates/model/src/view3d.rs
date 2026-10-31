@@ -610,6 +610,9 @@ impl Config {
                     }
                     continue;
                 }
+                DataRenderType::RgbImage { .. } if self.view_3d.is_some() => {
+                    return Err("an image draws flat: not on a 3D chart");
+                }
                 DataRenderType::Heatmap {
                     matrix,
                     fill,

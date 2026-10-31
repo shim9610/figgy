@@ -181,6 +181,19 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
                 ids.push(column);
             }
         }
+        // An image's three channel grids, alike.
+        DataRenderType::RgbImage {
+            red, green, blue, ..
+        } => {
+            for column in red
+                .columns
+                .iter()
+                .chain(&green.columns)
+                .chain(&blue.columns)
+            {
+                ids.push(column);
+            }
+        }
         // The components and the colour value are referenced columns in
         // both forms, like a matrix' constituents.
         DataRenderType::Vector { .. } => match vector_columns(&cfg.render_type) {

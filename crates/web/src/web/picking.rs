@@ -26,6 +26,7 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         // A streamline has no markers; its colour column colours the line.
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. } => None,
@@ -519,10 +520,14 @@ impl FiggyChart {
                 use renderer::data_config::{GridLayout, MatrixOrientation};
                 // A field's matrix, or a grid vector's `u` grid with its `v`
                 // grid and colour grid beside it.
+                let image = series.render_type.rgb_image();
                 let (matrix, vector) = match &series.render_type {
                     DataRenderType::Heatmap { matrix, .. }
                     | DataRenderType::Contour { matrix, .. }
                     | DataRenderType::HeatmapContour { matrix, .. } => (matrix, None),
+                    // An image's lattice is its red grid's; the green and
+                    // blue values are read beside it (#139).
+                    DataRenderType::RgbImage { red, .. } => (red, None),
                     rt => match vector_columns(rt) {
                         Some(VectorColumns::Grid { u, v, color }) => (u, Some((v, color))),
                         _ => return Err(js_err("selected series is not a grid")),
@@ -561,6 +566,10 @@ impl FiggyChart {
                         samples.push((grid_column(color)?, sample_index));
                     }
                 }
+                if let Some([_, green, blue]) = image {
+                    samples.push((grid_column(green)?, sample_index));
+                    samples.push((grid_column(blue)?, sample_index));
+                }
                 // A surface coloured by a second grid also reports the value
                 // its colour came from.
                 let surface_color = series
@@ -588,6 +597,11 @@ impl FiggyChart {
                 });
                 let mut next = if edges || hexagonal { 5 } else { 3 };
                 match vector {
+                    None if image.is_some() => {
+                        result["red"] = serde_json::json!(values[2]);
+                        result["green"] = serde_json::json!(values[next]);
+                        result["blue"] = serde_json::json!(values[next + 1]);
+                    }
                     None => {
                         result["value"] = serde_json::json!(values[2]);
                         if surface_color.is_some() {

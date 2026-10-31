@@ -1521,6 +1521,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::Ternary { .. } => "ternary",
         DataRenderType::Radar { .. } => "radar",
         DataRenderType::Heatmap { .. } => "heatmap",
+        DataRenderType::RgbImage { .. } => "image",
         DataRenderType::Contour { .. } => "contour",
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
         DataRenderType::Vector { .. } => "vector",
@@ -1962,6 +1963,27 @@ fn series_controls(
                 &[Shading::Interpolated, Shading::Flat],
             );
         }
+        // An image's channels are its data; its look is the opacity and the
+        // shading, and the range the bytes map through.
+        DataRenderType::RgbImage {
+            range,
+            shading,
+            opacity,
+            ..
+        } => {
+            slider(ui, "opacity", opacity, 0.0..=1.0);
+            choice(
+                ui,
+                "shading",
+                shading,
+                &[Shading::Interpolated, Shading::Flat],
+            );
+            ui.horizontal(|ui| {
+                ui.label("range");
+                ui.add(egui::DragValue::new(&mut range[0]).speed(0.5));
+                ui.add(egui::DragValue::new(&mut range[1]).speed(0.5));
+            });
+        }
         DataRenderType::Contour { contour, .. } => contour_controls(ui, contour, config),
         DataRenderType::HeatmapContour { fill, contour, .. } => {
             slider(ui, "opacity", &mut fill.opacity, 0.0..=1.0);
@@ -2161,6 +2183,7 @@ fn layer_columns<'a>(
             !matches!(
                 s.render_type,
                 DataRenderType::Heatmap { .. }
+                    | DataRenderType::RgbImage { .. }
                     | DataRenderType::Contour { .. }
                     | DataRenderType::HeatmapContour { .. }
             )

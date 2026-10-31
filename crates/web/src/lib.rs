@@ -325,6 +325,7 @@ fn err_refs(
         // Bars, fields, vectors, radar polygons and streamlines carry no
         // error columns.
         DataRenderType::Histogram { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::CategoryBars { .. }
         | DataRenderType::BoxPlot { .. }
         | DataRenderType::RangeBars { .. }
@@ -403,6 +404,22 @@ fn series_extent_request_from(
     }
 
     let (matrix, field_orientation) = match &cfg.render_type {
+        // An image's identity holds its three grids; its lattice is the
+        // red grid's, which the others match.
+        renderer::DataRenderType::RgbImage {
+            red, green, blue, ..
+        } => (
+            red.columns
+                .iter()
+                .chain(&green.columns)
+                .chain(&blue.columns)
+                .map(|id| revisioned_column_from(revisions, id))
+                .collect::<Option<Vec<_>>>()?,
+            Some(match &red.orientation {
+                renderer::data_config::MatrixOrientation::ColumnsAreX => 0,
+                renderer::data_config::MatrixOrientation::ColumnsAreY => 1,
+            }),
+        ),
         renderer::DataRenderType::Heatmap { matrix, .. }
         | renderer::DataRenderType::Contour { matrix, .. }
         | renderer::DataRenderType::HeatmapContour { matrix, .. } => (
@@ -874,8 +891,10 @@ fn prepare_demo_declarations(
                 DataRenderType::Contour { contour, .. }
                 | DataRenderType::HeatmapContour { contour, .. } => contour.line.line_color,
                 // A heatmap's colour is the colourbar's colormap, not a swatch
-                // this demo could reuse.
-                DataRenderType::Heatmap { .. } => cycle.color(index),
+                // this demo could reuse; an image's colours are its data.
+                DataRenderType::Heatmap { .. } | DataRenderType::RgbImage { .. } => {
+                    cycle.color(index)
+                }
                 DataRenderType::Vector { style, .. } => style.color,
                 DataRenderType::Streamlines { line, .. } => line.line_color,
                 DataRenderType::Ternary { scatter, line, .. } => scatter

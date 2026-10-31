@@ -366,6 +366,8 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
             line_symbol(contour.line.line_color, contour.line.line_style, None)
         }
         DataRenderType::Heatmap { .. } => colormap.map_or_else(blank_symbol, colormap_symbol),
+        // An image's colours are its data: no mark stands for them.
+        DataRenderType::RgbImage { .. } => blank_symbol(),
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),

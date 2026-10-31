@@ -152,6 +152,10 @@ impl GpuSeriesFitMode {
                 surface: _,
             } => (matrix, matches!(fill.shading, Shading::Interpolated)),
             DataRenderType::Contour { matrix, .. } => (matrix, true),
+            // An image fits as a heatmap of its red grid's layout.
+            DataRenderType::RgbImage { red, shading, .. } => {
+                (red, matches!(shading, Shading::Interpolated))
+            }
             DataRenderType::HeatmapContour { matrix, fill, .. } => {
                 // The fit covers the union of fill and isolines. A flat fill
                 // reaches cell edges; an interpolated fill and the contour both
@@ -266,6 +270,7 @@ impl GpuSeriesExtentMode {
             // A ternary chart's axes are the triangle, not a data extent.
             | DataRenderType::Ternary { .. }
             | DataRenderType::Heatmap { .. }
+            | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,
         }

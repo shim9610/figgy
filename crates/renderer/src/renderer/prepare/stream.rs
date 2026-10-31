@@ -13,6 +13,15 @@ impl PrepareContext<'_> {
             series_id: series.series_id.clone(),
             reason: "stream pass does not yet support contours or arc-driven stars".into(),
         };
+        // Streaming is not extended to images (#139): the three channel
+        // grids are read from the resident pool through one table. Named
+        // before the generic field gate so the reason is the image's.
+        if series.render_type.rgb_image().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_IMAGE_REASON.into(),
+            });
+        }
         let primitives = effective_series_primitives(&config.draw_style, &series.render_type);
         if primitives.contour
             || (primitives.field && !streaming_runtime::is_stream_heatmap(&series.render_type))

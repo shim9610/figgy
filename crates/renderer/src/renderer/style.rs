@@ -956,6 +956,7 @@ pub(super) fn constellation_supports(rt: &DataRenderType) -> bool {
         | DataRenderType::LineScatterErrorbarXY { .. }
         | DataRenderType::Histogram { .. }
         | DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Vector { .. }

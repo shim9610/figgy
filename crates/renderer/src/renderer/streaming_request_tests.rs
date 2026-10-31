@@ -2521,6 +2521,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::ScatterLine { .. }
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::Heatmap { .. }
+                    | DataRenderType::RgbImage { .. }
                     | DataRenderType::Contour { .. }
                     | DataRenderType::HeatmapContour { .. }
                     | DataRenderType::CategoryBars { .. }

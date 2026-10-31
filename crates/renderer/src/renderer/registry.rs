@@ -1409,6 +1409,19 @@ pub(super) fn visit_series_columns(series: &SeriesConfig, visit: &mut impl FnMut
                 visit(column);
             }
         }
+        // An image's three channel grids are referenced columns alike.
+        DataRenderType::RgbImage {
+            red, green, blue, ..
+        } => {
+            for column in red
+                .columns
+                .iter()
+                .chain(&green.columns)
+                .chain(&blue.columns)
+            {
+                visit(column);
+            }
+        }
         // The components and the colour-map value are referenced columns in
         // both forms, for the same reasons as a matrix' constituents.
         DataRenderType::Vector { components, style } => {
@@ -1659,6 +1672,18 @@ pub(super) fn validate_renderer_series(
                 validate_registered_column(pool, column)?;
             }
         }
+        // An image's other two channels alike (#139), after its own rules.
+        if let Some([_, green, blue]) = item.render_type.rgb_image() {
+            if let Err(reason) = config.validate_rgb_image_series(std::slice::from_ref(item)) {
+                return Err(FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: reason.to_string(),
+                });
+            }
+            for column in green.columns.iter().chain(&blue.columns) {
+                validate_registered_column(pool, column)?;
+            }
+        }
         if let Some((components, style)) = extract_vector(&item.render_type) {
             validate_vector_series(pool, config, item, components, style)?;
         }
@@ -1755,6 +1780,7 @@ pub(super) fn validate_polar_series(config: &Config, item: &SeriesConfig) -> Res
             return Err(invalid("histogram series are not drawn on polar axes"));
         }
         DataRenderType::Heatmap { .. }
+        | DataRenderType::RgbImage { .. }
         | DataRenderType::HeatmapContour { .. }
         | DataRenderType::Contour { .. } => {
             return Err(invalid(

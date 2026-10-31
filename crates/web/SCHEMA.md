@@ -139,7 +139,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` `"RgbImage"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -801,6 +801,7 @@ JavaScript 타임스탬프에는 `"unit": "Milliseconds"`를 사용한다. 한�
 - `border_width: 0`이면 외곽선을 숨긴다. 양수이면 지정한 두께와 `border_color`를 사용한다.
 - `bar.bar_style_overrides`는 `index`로 구간을 골라 `fill_color`, `border_color`, `border_width`, `gap_px`, `width_ratio` 중 필요한 값만 바꾼다. 같은 인덱스가 여러 번 나오면 선언 순서대로 적용한다. 기준선과 방향은 시리즈 전체에 적용한다. 그리기·데이터 피킹·선택 테두리는 같은 최종 막대 경계를 사용한다.
 - `MatrixRef.columns`는 격자를 구성하는 컬럼 ID 목록이며, 각 컬럼은 미리 등록해야 한다. 등록되지 않은 컬럼이 있으면 시리즈를 거부한다. 행렬 시리즈의 `x_column` / `y_column`은 격자 좌표 컬럼이다. `orientation: "ColumnsAreX"`이면 각 컬럼이 X 좌표 하나에 해당하고 그 위치의 Y 방향 값을 담으며, `"ColumnsAreY"`이면 각 컬럼이 Y 좌표 하나에 해당하고 X 방향 값을 담는다.
+- `RgbImage`([#139](https://github.com/shim9610/figgy/issues/139))는 `red`·`green`·`blue` 세 `MatrixRef`를 같은 격자(시리즈의 좌표 컬럼, 같은 컬럼 수·`orientation`·`grid_layout`) 위의 채널로 읽어 셀마다 `range`(기본 `[0, 1]`, 바이트는 `[0, 255]`)를 0..1로 선형 매핑하고 잘라낸 색을 그린다. 색상 막대를 읽지 않으며 `shading`(기본 `"Flat"`, `"Interpolated"`는 채널별 쌍선형 보간)과 `opacity`(기본 `1`)를 가진다. 어느 채널이든 유한하지 않은 값이 있는 셀은 그리지 않고 피킹도 하지 않는다. 피킹한 셀의 `selection_details()`는 `red`·`green`·`blue`를 보고한다. 3D·극좌표 차트와 스트리밍 소스는 거부한다.
 - `MatrixRef.grid_layout`은 좌표가 셀 경계(`"Edges"`, n+1개)인지 중심(`"Centers"`, n개)인지, 또는 평평한 윗변을 가진 육각형 격자의 중심(`"Hexagonal"`, n개, 홀수 열은 행 간격의 절반만큼 위로)인지 지정한다. 길이로 추측하지 않는다. `"Hexagonal"`은 좌표 컬럼이 등간격인 `Heatmap`(`Flat` 음영, 선형 축, 평면 차트)에서만 쓸 수 있으며([#134](https://github.com/shim9610/figgy/issues/134)), 선택 결과의 `y`는 홀수 열에서 올라간 중심을 보고한다.
 - 선언과 데이터 크기가 다르면 오류 없이 공통으로 사용할 수 있는 범위까지만 그린다. 실제로 그린 개수와 잘림 여부는 `series_draw_info(series_id)`가 반환하는 `drawn_count`, `cols`, `rows`, `truncated`로 확인한다. `cols` / `rows`는 행렬 시리즈와 격자 벡터에서만 값이 있고 다른 종류에서는 `null`이다.
 <!-- contour-contract: scope=schema max-levels=1024 -->

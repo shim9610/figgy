@@ -172,6 +172,7 @@ impl Renderer {
             level_color_count: 0,
             z_min: bound(bar.axis.min),
             z_max: bound(bar.axis.max),
+            image: [0; 4],
         };
         let size = (draw.target.width(), draw.target.height());
         let data_rect = config.data_area().map_err(|_| StreamError::InvalidRange)?.0;
