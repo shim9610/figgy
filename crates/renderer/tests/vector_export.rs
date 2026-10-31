@@ -607,6 +607,7 @@ fn radial_cases() -> Vec<(&'static str, RadialChart)> {
         ("radial", plain),
         ("split", split),
         ("annotated, title selected", annotated),
+        ("sunburst", scenes::radial::sunburst_chart()),
     ]
 }
 

@@ -940,6 +940,7 @@ fn scene_name(kind: SceneKind) -> &'static str {
         SceneKind::Hexbin => "Hexbin",
         SceneKind::Rose => "Rose",
         SceneKind::Image => "Image",
+        SceneKind::Sunburst => "Sunburst",
     }
 }
 
@@ -3176,7 +3177,7 @@ impl Radial {
 fn radial_scene(report: &mut Report, gpu: &RendererDevice, kind: SceneKind) {
     let scene = scene_name(kind);
     match RadialRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm) {
-        Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::radial_chart()),
+        Ok(r) => sweep_radial(report, scene, Radial(r), scenes::radial::document(kind)),
         Err(e) => {
             let at = At {
                 scene,

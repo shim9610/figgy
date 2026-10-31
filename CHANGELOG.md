@@ -57,6 +57,19 @@ additive.
   Migration: code that relied on "category bars are not drawn on polar
   axes" now gets a drawn rose or the horizontal reason. Nothing on the
   wire changes.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
+  `RadialSlice.children: Vec<RadialSlice>` (omitted when empty): a chart
+  whose slices have children is a sunburst, its tree's rings drawn outward
+  from the centre, each node over its share of its parent's span.
+  `RadialTarget { group, index }` is then the ring and the node's position
+  on it in document order; `slice()`, `slice_mut()`, `step_selection`
+  (ring by ring outward), `format_labels` (a node's percentage is its share
+  of its parent) and `labels_have_text` walk the tree, and `group_count()`,
+  `group_len()`, `node_count()` and `node_span()` are new. The rules
+  (`validate`): a flat chart, no `split`, children summing to at most the
+  parent, at most `MAX_SUNBURST_DEPTH` (8) rings of at most
+  `MAX_RADIAL_SLICES` (64) nodes, the limits approved on #140. Additive on
+  the wire; a `RadialSlice` literal adds `children`.
 - **Colour images (imshow)**
   ([#139](https://github.com/shim9610/figgy/issues/139), #58).
   `DataRenderType::RgbImage { red, green, blue, range, shading, opacity }`:
@@ -846,6 +859,16 @@ additive.
   in the categories' order, `bar_gap` pixels apart along the ring. The
   `Rose` catalogue scene is a wind rose of sixteen directions and three
   stacked speed bands.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
+  The radial layout lays a sunburst's rings as equal bands between the hole
+  and the rim (`ring_band`), a node's sector the existing `Sector` with its
+  ring's outer radius and inner fraction, so the shader, the pick, the
+  highlight and the hover are unchanged; the sector buffer holds the rings
+  in order, the material seed is `(ring · 97 + index) · 13.17`. Outside
+  labels are the outermost ring's, an inner ring's `Outside` draws inside
+  its band (`placement`); every node's label is a decoration. The
+  `Sunburst` catalogue document is a three-ring budget, swept by the oracle
+  and the vector export.
 - **Colour images (imshow)**
   ([#139](https://github.com/shim9610/figgy/issues/139), #58). An
   `RgbImage` series draws through the field module with `FIELD_FLAG_RGB`:
@@ -1827,6 +1850,9 @@ additive.
   answers a polygon's vertex handle (`"v3"`) and `drag_annotation` takes a
   vertex name beside the compass names, on `FiggyChart` and
   `FiggyBoundedChart` alike.
+- **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140)).
+  A radial document's slices carry `children` (SCHEMA.md); `pick`, hover
+  and `step_selection` answer the `{ group, index }` of a ring's node.
 - **Colour images** ([#139](https://github.com/shim9610/figgy/issues/139)).
   `"RgbImage"` reads and writes in `set_series` JSON (SCHEMA.md); the
   three channel grids are referenced columns, and a picked cell's

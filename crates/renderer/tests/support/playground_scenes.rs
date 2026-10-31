@@ -67,10 +67,11 @@ pub enum SceneKind {
     Hexbin,
     Rose,
     Image,
+    Sunburst,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 30] = [
+    pub const ALL: [SceneKind; 31] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -101,6 +102,7 @@ impl SceneKind {
         SceneKind::Hexbin,
         SceneKind::Rose,
         SceneKind::Image,
+        SceneKind::Sunburst,
     ];
 
     pub fn label(self) -> &'static str {
@@ -135,6 +137,7 @@ impl SceneKind {
             SceneKind::Hexbin => "Hexbin (hexagonal grid)",
             SceneKind::Rose => "Rose (polar bars)",
             SceneKind::Image => "Image (RGB test card)",
+            SceneKind::Sunburst => "Sunburst (nested rings)",
         }
     }
 
@@ -262,12 +265,19 @@ impl SceneKind {
                  one lattice, with markers over it. Pick a cell and step with the \
                  arrows."
             }
+            SceneKind::Sunburst => {
+                "A budget as three nested rings: departments, their teams and the \
+                 teams' projects, each ring over its parent's span. Click a node; \
+                 step ring by ring with the arrows; drag the outer labels."
+            }
         }
     }
 
-    /// Whether the scene is the radial chart, which its own renderer draws.
+    /// Whether the scene is a radial chart (a pie, a donut or a sunburst),
+    /// which its own renderer draws from a `RadialChart` document
+    /// (`radial::document`).
     pub fn is_radial(self) -> bool {
-        matches!(self, SceneKind::Radial)
+        matches!(self, SceneKind::Radial | SceneKind::Sunburst)
     }
 }
 
@@ -460,7 +470,9 @@ pub fn build(
         SceneKind::Rose => rose(r),
         SceneKind::Image => image(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
-        SceneKind::Radial => unreachable!("the radial scene is built by `radial::radial_chart`"),
+        SceneKind::Radial | SceneKind::Sunburst => {
+            unreachable!("a radial scene is built by `radial::document`")
+        }
     }
 }
 
@@ -2248,11 +2260,94 @@ fn radar(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
 // The radial scene
 // ---------------------------------------------------------------------------
 
-/// The starting model of the radial scene; the playground's `radial.rs`
-/// hosts it.
+/// The starting models of the radial scenes; the playground's `radial.rs`
+/// hosts them.
 pub mod radial {
     use renderer::Color;
     use renderer::radial::*;
+
+    /// The document of radial scene `kind`.
+    pub fn document(kind: super::SceneKind) -> RadialChart {
+        match kind {
+            super::SceneKind::Sunburst => sunburst_chart(),
+            _ => radial_chart(),
+        }
+    }
+
+    /// A sunburst (#140): a year's budget as three rings, departments at the
+    /// centre, their teams, and the teams' projects, each node over its
+    /// share of its parent's span; two parents keep a remainder. Outside
+    /// labels on the projects, inside labels within.
+    pub fn sunburst_chart() -> RadialChart {
+        let node =
+            |label: &str, value: f64, rgb: (u8, u8, u8), children: Vec<RadialSlice>| RadialSlice {
+                children,
+                ..RadialSlice::new(label, value, Color::from_rgb8(rgb.0, rgb.1, rgb.2))
+            };
+        let mut chart = RadialChart {
+            title: "Budget by department, team and project".into(),
+            kind: RadialKind::Donut { inner_radius: 0.18 },
+            labels: RadialLabels::Outside,
+            label_format: RadialLabelFormat::NamePercent,
+            slices: vec![
+                node(
+                    "Engineering",
+                    48.0,
+                    (51, 132, 245),
+                    vec![
+                        node(
+                            "Platform",
+                            22.0,
+                            (96, 165, 250),
+                            vec![
+                                node("Runtime", 12.0, (147, 197, 253), vec![]),
+                                node("Storage", 7.0, (191, 219, 254), vec![]),
+                            ],
+                        ),
+                        node(
+                            "Apps",
+                            18.0,
+                            (56, 189, 248),
+                            vec![
+                                node("Mobile", 10.0, (125, 211, 252), vec![]),
+                                node("Web", 8.0, (186, 230, 253), vec![]),
+                            ],
+                        ),
+                        node("Tooling", 8.0, (14, 165, 233), vec![]),
+                    ],
+                ),
+                node(
+                    "Sales",
+                    30.0,
+                    (255, 151, 62),
+                    vec![
+                        node(
+                            "Field",
+                            18.0,
+                            (251, 191, 36),
+                            vec![
+                                node("EMEA", 10.0, (253, 224, 71), vec![]),
+                                node("APAC", 6.0, (254, 240, 138), vec![]),
+                            ],
+                        ),
+                        node("Inside", 9.0, (245, 158, 11), vec![]),
+                    ],
+                ),
+                node(
+                    "Operations",
+                    22.0,
+                    (165, 216, 72),
+                    vec![
+                        node("Facilities", 12.0, (190, 242, 100), vec![]),
+                        node("People", 10.0, (217, 249, 157), vec![]),
+                    ],
+                ),
+            ],
+            ..Default::default()
+        };
+        chart.format_labels();
+        chart
+    }
 
     pub fn radial_chart() -> RadialChart {
         let mut chart = RadialChart {
