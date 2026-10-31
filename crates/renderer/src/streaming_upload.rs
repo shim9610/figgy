@@ -34,10 +34,13 @@ pub(crate) struct StreamSourceSlice<'a> {
     pub source_offset: Option<u64>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum ChunkUploadError {
     Input(StreamError),
+    /// A host allocation for the chunk's metadata failed.
     AllocationFailed,
+    /// The GPU rejected a chunk buffer, or the device was lost.
+    Gpu(crate::FiggyError),
     MappingFailed,
     #[cfg(test)]
     WriterFailed,
@@ -764,11 +767,11 @@ fn create_buffer_checked(
     device: &wgpu::Device,
     desc: &wgpu::BufferDescriptor<'_>,
 ) -> Result<wgpu::Buffer, ChunkUploadError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    crate::renderer::gpu_checked(device, "stream chunk upload", || {
         // gpu-alloc: StreamingUpload
         device.create_buffer(desc)
-    }))
-    .map_err(|_| ChunkUploadError::AllocationFailed)
+    })
+    .map_err(ChunkUploadError::Gpu)
 }
 
 #[cfg(test)]
@@ -1380,30 +1383,30 @@ mod tests {
 
     #[test]
     fn layout_validates_empty_short_overflow_and_device_cap_before_allocating() {
-        assert_eq!(
+        assert!(matches!(
             validate_layout(&[], budget(), 2048, 0, 0),
-            Err(StreamError::InvalidRange.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::InvalidRange))
+        ));
         let bytes = [0u8; 8];
         let mut input = ColumnInput {
             range: range(0, 2, SourceEncoding::ScalarF32),
             bytes: &bytes,
         };
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 8, 0, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
         input.range.len = 3;
         input.range.source_len = 200;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 2048, 0, 0),
-            Err(StreamError::InvalidPayload.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::InvalidPayload))
+        ));
         input.range.offset = u64::MAX;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), budget(), 2048, 0, 0),
-            Err(StreamError::Overflow.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::Overflow))
+        ));
         assert_eq!(checked_pair_bytes(u64::MAX), Err(StreamError::Overflow));
     }
 
@@ -1419,20 +1422,20 @@ mod tests {
         caps.renderer_budget_bytes = 216;
         assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0).is_ok());
         caps.renderer_budget_bytes -= 1;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, 100, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
         caps.renderer_budget_bytes = u64::MAX;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, u64::MAX, 0),
-            Err(StreamError::Overflow.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::Overflow))
+        ));
         caps.max_upload_bytes = 15;
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, 0, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
     }
 
     #[test]
@@ -1446,10 +1449,10 @@ mod tests {
         caps.renderer_budget_bytes = 16;
         assert_eq!(work_allocation_bytes(8, 32, caps, 2048, 0), 8);
         assert!(validate_layout(std::slice::from_ref(&input), caps, 2048, 8, 8).is_ok());
-        assert_eq!(
+        assert!(matches!(
             validate_layout(std::slice::from_ref(&input), caps, 2048, 8, 0),
-            Err(StreamError::TooLarge.into())
-        );
+            Err(ChunkUploadError::Input(StreamError::TooLarge))
+        ));
     }
 
     #[test]

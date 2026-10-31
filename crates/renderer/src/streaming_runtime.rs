@@ -99,6 +99,14 @@ pub(crate) enum StreamRequestError {
         error: crate::ColumnRangeWriteError,
     },
 }
+impl From<data_render::stream_field::FieldError> for StreamRequestError {
+    fn from(error: data_render::stream_field::FieldError) -> Self {
+        match error {
+            data_render::stream_field::FieldError::Stream(error) => Self::Scheduler(error),
+            data_render::stream_field::FieldError::Gpu(error) => Self::State(error),
+        }
+    }
+}
 impl From<StreamSurfaceError> for StreamRequestError {
     fn from(error: StreamSurfaceError) -> Self {
         Self::Surface(error)
@@ -140,6 +148,7 @@ impl StreamRequestError {
             Self::Scheduler(error) => FiggyError::StaleStateToken {
                 reason: format!("stream job is not current or ready: {error:?}"),
             },
+            Self::Upload(ChunkUploadError::Gpu(error)) => error,
             Self::Upload(error) => FiggyError::GpuResourceAllocationFailed {
                 resource: "stream chunk upload",
                 reason: format!("{error:?}"),
