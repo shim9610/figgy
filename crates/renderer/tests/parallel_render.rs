@@ -889,6 +889,56 @@ fn registration_names_what_a_parallel_chart_cannot_read() {
     r.remove_chart(id).unwrap();
 }
 
+/// A parallel chart with fewer than two axes is refused when it is set
+/// (registration, `set_chart_config`, `set_chart_state`), not first when it
+/// is drawn, and the series checked against it never indexes a missing
+/// column (#152): each call returns an error and the stored chart is
+/// unchanged.
+#[test]
+fn a_chart_with_fewer_than_two_axes_is_refused_when_it_is_set() {
+    let mut r = renderer();
+    let config = bare_config();
+    let columns = upload(&mut r, "rows", &ROWS);
+    let id = r
+        .register_chart(config.clone(), vec![series("rows", &columns, RED, None)])
+        .unwrap();
+    for count in [0usize, 1] {
+        let mut short = bare_config();
+        short.parallel.as_mut().unwrap().axes.truncate(count);
+        let mut item = series("rows", &columns, RED, None);
+        if let DataRenderType::Parallel { columns, .. } = &mut item.render_type {
+            columns.truncate(count);
+        }
+        let refused = |result: renderer::Result<()>, what: &str| match result {
+            Err(FiggyError::InvalidConfig { field, reason }) => {
+                assert_eq!(field, "parallel", "{what}, {count} axes");
+                assert_eq!(reason, "a parallel chart has at least two axes");
+            }
+            other => panic!("{what} with {count} axes: {other:?}"),
+        };
+        refused(
+            r.set_chart_state(id, short.clone(), vec![item.clone()]),
+            "set_chart_state",
+        );
+        refused(r.set_chart_config(id, short.clone()), "set_chart_config");
+        refused(
+            r.register_chart(short.clone(), vec![item.clone()])
+                .map(|_| ()),
+            "register_chart",
+        );
+        // The stored chart keeps its four axes, so the series checked
+        // against it is refused by its column count.
+        match r.set_chart_series(id, vec![item]) {
+            Err(FiggyError::InvalidSeriesConfig { reason, .. }) => {
+                assert_eq!(reason, "a parallel series names one column per axis");
+            }
+            other => panic!("set_chart_series with {count} columns: {other:?}"),
+        }
+        assert_eq!(r.chart_config(id).unwrap().parallel, config.parallel);
+    }
+    r.remove_chart(id).unwrap();
+}
+
 /// A million rows over eight axes draw and pick: no count limit (rule 10);
 /// the times are printed, not asserted.
 #[test]

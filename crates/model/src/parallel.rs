@@ -151,11 +151,19 @@ pub struct ParallelOptions {
 }
 
 impl ParallelOptions {
-    /// Validate against the axes the coordinate system reads.
-    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+    /// The axis count every reader of a parallel chart relies on: at least
+    /// two. Checked when a chart is set (the renderer's registration), where
+    /// the other rules of [`Self::validate`] wait for the draw.
+    pub fn validate_axis_count(&self) -> Result<(), &'static str> {
         if self.axes.len() < 2 {
             return Err("a parallel chart has at least two axes");
         }
+        Ok(())
+    }
+
+    /// Validate against the axes the coordinate system reads.
+    pub fn validate(&self, config: &Config) -> Result<(), &'static str> {
+        self.validate_axis_count()?;
         for axis in &self.axes {
             axis.validate()?;
         }
@@ -238,10 +246,13 @@ impl Config {
                     if columns.len() != parallel.axes.len() {
                         return Err("a parallel series names one column per axis");
                     }
+                    let [first, second, ..] = columns.as_slice() else {
+                        return Err("a parallel series names one column per axis, at least two");
+                    };
                     if columns.iter().any(String::is_empty) {
                         return Err("a parallel series' axis columns are named");
                     }
-                    if columns[0] != item.x_column || columns[1] != item.y_column {
+                    if *first != item.x_column || *second != item.y_column {
                         return Err(
                             "a parallel series' x_column and y_column are its first two axis \
                              columns",
@@ -460,6 +471,41 @@ mod tests {
             config.validate_parallel_series(&[scatter]),
             Err("a parallel chart draws only parallel series")
         );
+    }
+
+    /// A parallel chart with fewer than two axes is malformed, and a series
+    /// checked against it directly (without `validate_parallel` first) is
+    /// refused with an error rather than indexing its first two columns
+    /// (#152).
+    #[test]
+    fn a_series_on_fewer_than_two_axes_is_refused_without_panicking() {
+        for count in [0usize, 1] {
+            let mut config = chart();
+            config.parallel.as_mut().unwrap().axes.truncate(count);
+            assert_eq!(
+                config.validate_parallel(),
+                Err("a parallel chart has at least two axes")
+            );
+            let columns: Vec<String> = ["a"].iter().take(count).map(|c| c.to_string()).collect();
+            let item = SeriesConfig {
+                series_id: "rows".into(),
+                source_id: None,
+                label: None,
+                x_column: "a".into(),
+                y_column: "b".into(),
+                z_column: None,
+                render_type: DataRenderType::Parallel {
+                    columns,
+                    line: line(),
+                    color_column: None,
+                },
+            };
+            assert_eq!(
+                config.validate_parallel_series(&[item]),
+                Err("a parallel series names one column per axis, at least two"),
+                "{count} axes"
+            );
+        }
     }
 
     #[cfg(feature = "serde")]

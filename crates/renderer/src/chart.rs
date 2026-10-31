@@ -255,6 +255,18 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
             field: "subplots",
             reason,
         })?;
+    // The parallel axis count is checked when the chart is set, so a series
+    // checked against it (`validate_parallel_series`) sees at least two
+    // axes; the other parallel rules are checked where the chart is drawn,
+    // as the polar and ternary systems' are.
+    if let Some(parallel) = &config.parallel {
+        parallel
+            .validate_axis_count()
+            .map_err(|reason| FiggyError::InvalidConfig {
+                field: "parallel",
+                reason,
+            })?;
+    }
     config.validate().map_err(|_| FiggyError::InvalidConfig {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
