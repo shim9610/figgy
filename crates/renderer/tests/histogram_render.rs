@@ -48,6 +48,25 @@ fn col_f64(data: Vec<f64>) -> Column<f64> {
     Column { data, min, max }
 }
 
+/// Save a rendered panel as a PNG beside the layout and colourbar images, in
+/// `target/arch-after/` or `$FIGGY_LAYOUT_PROBE_DIR` (`ci/verify.py` points it
+/// at the CI image directory). The pixel assertions are the gate; the image is
+/// what a person looks at when one fails.
+fn save_probe(name: &str, img: &RasterImage) {
+    let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let configured = std::env::var_os("FIGGY_LAYOUT_PROBE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("target/arch-after"));
+    let dir = if configured.is_absolute() {
+        configured
+    } else {
+        workspace.join(configured)
+    };
+    std::fs::create_dir_all(&dir).expect("create image directory");
+    let png = encode_png(img).expect("encode png");
+    std::fs::write(dir.join(format!("histogram-{name}.png")), png).expect("write png");
+}
+
 /// The process-wide device, created once.
 ///
 /// A `wgpu` device costs adapter enumeration, driver init and shader-cache setup;
@@ -225,6 +244,7 @@ fn every_bin_draws_and_its_height_follows_its_count() {
     };
     let (chart, series) = vertical_fixture(&mut renderer);
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("vertical", &img);
 
     let mut tops = Vec::new();
     for (bin, count) in COUNTS.iter().enumerate() {
@@ -876,6 +896,7 @@ fn horizontal_bars_run_along_x() {
         0.0,
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("horizontal", &img);
 
     // Each bin is a horizontal band; its bar reaches right to its own count.
     for (bin, count) in COUNTS.iter().enumerate() {
@@ -1041,6 +1062,7 @@ fn a_short_count_column_draws_fewer_bars_and_says_so() {
     assert!(info.truncated, "4 bins declared, 2 counts supplied");
 
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("truncated", &img);
     for bin in 0..2 {
         let x0 = data_x_to_px(&chart, EDGES[bin]).ceil() as u32 + 3;
         let x1 = data_x_to_px(&chart, EDGES[bin + 1]).floor() as u32 - 3;
@@ -1087,6 +1109,7 @@ fn a_logarithmic_count_axis_still_draws_every_bar() {
         0.0,
     )];
     let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
+    save_probe("log-y", &img);
 
     let da = chart.config().data_area().expect("data area");
     let mut tops = Vec::new();
@@ -1109,116 +1132,4 @@ fn a_logarithmic_count_axis_still_draws_every_bar() {
     assert!(tops[3] < tops[1], "1000 must reach above 100");
     assert!(tops[1] < tops[2], "100 must reach above 10");
     assert!(tops[2] < tops[0], "10 must reach above 1");
-}
-
-/// Visual probe — the same shapes the assertions above check, written out as
-/// PNGs so the bars can be looked at. Output goes to `target/arch-after/` (or
-/// `$FIGGY_LAYOUT_PROBE_DIR`), beside the layout and colourbar probes.
-#[test]
-fn histogram_probe_renders_every_orientation_and_scale() {
-    let Some(mut renderer) = try_renderer() else {
-        return;
-    };
-    let dir = {
-        let workspace = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let configured = std::env::var_os("FIGGY_LAYOUT_PROBE_DIR")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from("target/arch-after"));
-        if configured.is_absolute() {
-            configured
-        } else {
-            workspace.join(configured)
-        }
-    };
-    std::fs::create_dir_all(&dir).expect("create probe directory");
-
-    renderer
-        .add_column("edges", &col_f64(EDGES.to_vec()))
-        .unwrap();
-    renderer
-        .add_column("counts", &col_f64(COUNTS.to_vec()))
-        .unwrap();
-    renderer
-        .add_column("counts_log", &col_f64(vec![1.0, 100.0, 10.0, 1000.0]))
-        .unwrap();
-    renderer
-        .add_column("counts2", &col_f64(vec![1.0, 4.0]))
-        .unwrap();
-
-    // Readable steel blue rather than the assertion fixture's saturated red.
-    let styled = |x: &str, y: &str, orientation: BarOrientation| SeriesConfig {
-        series_id: "hist".into(),
-        source_id: None,
-        label: None,
-        x_column: x.into(),
-        y_column: y.into(),
-        z_column: None,
-        render_type: DataRenderType::Histogram {
-            bar: DataBarStyleConfig {
-                fill_color: Color::from_rgb8(70, 130, 180),
-                border_color: Color::from_rgb8(20, 40, 60),
-                border_width: 1.5,
-                baseline: 0.0,
-                gap_px: 2.0,
-                width_ratio: 1.0,
-                orientation,
-                bar_style_overrides: None,
-            },
-        },
-    };
-
-    let mut cases: Vec<(&str, Chart, Vec<SeriesConfig>)> = Vec::new();
-
-    let mut vertical = bare_chart();
-    vertical.config_mut().grid.show_major_y = true;
-    vertical.set_x_range(0.0, 4.0);
-    vertical.set_y_range(0.0, 5.0);
-    cases.push((
-        "vertical",
-        vertical,
-        vec![styled("edges", "counts", BarOrientation::Vertical)],
-    ));
-
-    let mut horizontal = bare_chart();
-    horizontal.config_mut().grid.show_major_x = true;
-    horizontal.set_x_range(0.0, 5.0);
-    horizontal.set_y_range(0.0, 4.0);
-    cases.push((
-        "horizontal",
-        horizontal,
-        vec![styled("counts", "edges", BarOrientation::Horizontal)],
-    ));
-
-    let mut log_y = bare_chart();
-    log_y.config_mut().grid.show_major_y = true;
-    log_y.set_x_range(0.0, 4.0);
-    log_y.config_mut().left_y.scale = AxisScale::Logarithmic;
-    log_y.config_mut().left_y.min = 0.1;
-    log_y.config_mut().left_y.max = 10_000.0;
-    log_y.config_mut().left_y.major_spacing = 1.0;
-    cases.push((
-        "log-y",
-        log_y,
-        vec![styled("edges", "counts_log", BarOrientation::Vertical)],
-    ));
-
-    let mut truncated = bare_chart();
-    truncated.config_mut().grid.show_major_y = true;
-    truncated.set_x_range(0.0, 4.0);
-    truncated.set_y_range(0.0, 5.0);
-    cases.push((
-        "truncated",
-        truncated,
-        vec![styled("edges", "counts2", BarOrientation::Vertical)],
-    ));
-
-    for (name, chart, series) in cases {
-        let img = renderer.export_panel_rgba(&chart, &series, 1.0).unwrap();
-        assert!(
-            img.rgba.chunks_exact(4).any(|p| p[3] != 0),
-            "{name}: nothing was drawn"
-        );
-        let png = encode_png(&img).expect("probe png");
-        std::fs::write(dir.join(format!("histogram-{name}.png")), png).expect("write probe png");
-    }
 }

@@ -1615,13 +1615,19 @@ pub use crate::legend::{
     set_legend_entry_label, symbol_segments, update_legend_symbols_preserving_text,
 };
 
-// `draw_style` is additive schema: configs serialized before the field
-// existed must still parse (→ `Precise` mode), and `Precise` must not
-// serialize — the same discipline as `RichSegment`'s per-segment overrides
-// (text.rs). The enum is internally tagged (`"mode"`), so a style's
-// parameters sit INLINE next to the tag.
+// The wire form of `Config`: every field added after a release is additive
+// schema, absent at its default so a document written before it parses and
+// re-serializes byte-identically, and round-trips when set. `draw_style` is
+// the pattern: `Precise` must not serialize, the enum is internally tagged
+// (`"mode"`) so a style's parameters sit INLINE next to the tag — the same
+// discipline as `RichSegment`'s per-segment overrides (text.rs).
+//
+// One test runs every check in turn (#47 §3): the renderer's
+// `released_documents.rs` holds the fixture documents, so this module keeps
+// the model's own coverage without a copy of them per field. Each check is a
+// plain function so a failure names it.
 #[cfg(all(test, feature = "serde"))]
-mod draw_style_serde_tests {
+mod serde_tests {
     use super::{
         Config, DataSelectionsConfig, DrawStyle, PickedDataRef, PickedPointRef, PickedPointsConfig,
         SketchOptions,
@@ -1637,7 +1643,6 @@ mod draw_style_serde_tests {
     // `line_offsets` is additive: absent at its default, so an older document
     // parses and re-serializes byte-identically; `step_x` is omitted at zero;
     // set, it round-trips, on the chart and on a subplot's chart.
-    #[test]
     fn line_offsets_round_trip_and_old_documents_unchanged() {
         use crate::data_config::LineOffsets;
         let json = default_config_json();
@@ -1682,7 +1687,6 @@ mod draw_style_serde_tests {
     // document written before them is byte-identical), parse to the defaults
     // when missing, and round-trip when set. `active_layer` and `annotations`
     // also exist on the radial chart and the legacy documents.
-    #[test]
     #[allow(deprecated)]
     fn layer_fields_default_and_are_omitted_from_json() {
         use crate::{AnnotationLayer, LayerRef};
@@ -1742,7 +1746,6 @@ mod draw_style_serde_tests {
     /// The default document is the shape of documents written before
     /// `draw_style`, `picked_points` and `picked_data` existed: `Precise` is
     /// not serialized, and each missing key parses to its default.
-    #[test]
     fn a_document_without_the_additive_keys_parses_to_their_defaults() {
         let json = default_config_json();
         assert!(
@@ -1756,7 +1759,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.picked_data, None);
     }
 
-    #[test]
     fn sketch_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1771,7 +1773,6 @@ mod draw_style_serde_tests {
         assert_eq!(s.seed, 0);
     }
 
-    #[test]
     fn partial_sketch_fields_fill_remaining_defaults() {
         let mut json = default_config_json();
         json.as_object_mut().unwrap().insert(
@@ -1788,7 +1789,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn sketch_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = DrawStyle::Sketch(SketchOptions {
@@ -1808,7 +1808,6 @@ mod draw_style_serde_tests {
         assert_eq!(back.draw_style, cfg.draw_style);
     }
 
-    #[test]
     fn explicit_precise_mode_deserializes_to_precise() {
         let mut json = default_config_json();
         json.as_object_mut().unwrap().insert(
@@ -1819,7 +1818,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
     }
 
-    #[test]
     fn picked_points_empty_object_yields_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1829,7 +1827,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.picked_points, Some(PickedPointsConfig::default()));
     }
 
-    #[test]
     fn picked_point_refs_skip_absent_source_id() {
         let mut cfg = default_config();
         cfg.picked_points = Some(PickedPointsConfig {
@@ -1865,7 +1862,6 @@ mod draw_style_serde_tests {
         assert_eq!(picked.radius_extra_px, 6.0);
     }
 
-    #[test]
     fn picked_data_empty_object_yields_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1875,7 +1871,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
     }
 
-    #[test]
     fn typed_picked_data_round_trips_with_minimal_provenance() {
         let mut cfg = default_config();
         cfg.picked_data = Some(DataSelectionsConfig {
@@ -1929,7 +1924,6 @@ mod draw_style_serde_tests {
         assert_eq!(picked.contour_width_extra_px, 4.0);
     }
 
-    #[test]
     fn constellation_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json["draw_style"] = serde_json::json!({ "mode": "constellation" });
@@ -1940,7 +1934,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn milkyway_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json["draw_style"] = serde_json::json!({ "mode": "milkyway" });
@@ -1954,7 +1947,6 @@ mod draw_style_serde_tests {
     /// PARAM_SPECS defaults are literals (const context) — pin them to the
     /// `Default` impls so the two sources cannot drift, and pin every spec
     /// key to a real serde field by writing it through `draw_style` JSON.
-    #[test]
     fn param_specs_match_defaults_and_serde_fields() {
         use super::{ConstellationOptions, MilkywayOptions, SketchOptions};
 
@@ -2026,7 +2018,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn constellation_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = super::DrawStyle::Constellation(super::ConstellationOptions {
@@ -2041,7 +2032,6 @@ mod draw_style_serde_tests {
         assert_eq!(back.draw_style, cfg.draw_style);
     }
 
-    #[test]
     fn milkyway_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = super::DrawStyle::Milkyway(super::MilkywayOptions {
@@ -2064,6 +2054,29 @@ mod draw_style_serde_tests {
         assert_eq!(json["draw_style"]["star_density"], 22.0);
         let back: Config = serde_json::from_value(json).expect("parse back");
         assert_eq!(back.draw_style, cfg.draw_style);
+    }
+
+    /// The one serde test of this file: the additive keys of `Config` and its
+    /// draw styles, selections and categorical axes, in turn.
+    #[test]
+    fn serde_round_trips_the_additive_keys_and_parses_old_documents() {
+        line_offsets_round_trip_and_old_documents_unchanged();
+        layer_fields_default_and_are_omitted_from_json();
+        a_document_without_the_additive_keys_parses_to_their_defaults();
+        sketch_tag_alone_yields_all_defaults();
+        partial_sketch_fields_fill_remaining_defaults();
+        sketch_round_trips_with_inline_fields();
+        explicit_precise_mode_deserializes_to_precise();
+        picked_points_empty_object_yields_defaults();
+        picked_point_refs_skip_absent_source_id();
+        picked_data_empty_object_yields_defaults();
+        typed_picked_data_round_trips_with_minimal_provenance();
+        constellation_tag_alone_yields_all_defaults();
+        milkyway_tag_alone_yields_all_defaults();
+        param_specs_match_defaults_and_serde_fields();
+        constellation_round_trips_with_inline_fields();
+        milkyway_round_trips_with_inline_fields();
+        super::category_axis_tests::categories_are_additive_on_the_wire();
     }
 }
 
@@ -2218,9 +2231,9 @@ mod category_axis_tests {
         assert_eq!(scaled.bottom_x.categories, cfg.bottom_x.categories);
     }
 
+    /// Run by `serde_tests`' one test.
     #[cfg(feature = "serde")]
-    #[test]
-    fn categories_are_additive_on_the_wire() {
+    pub(super) fn categories_are_additive_on_the_wire() {
         let axis = default_axis_options_x();
         let json = serde_json::to_value(&axis).expect("serialize");
         assert!(json.get("categories").is_none(), "{json}");

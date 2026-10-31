@@ -1,12 +1,16 @@
-//! Visual probe for the CPU colourbar.
+//! Pixel tests of the CPU colourbar on whole charts: every side, a
+//! logarithmic and an adaptive bar, a short inverted one, and the colourbar
+//! as a selected, dragged and resized element.
 //!
 //! The unit tests in `axis_render` pin the ramp's ends, the tick↔colour
-//! agreement, and the band geometry numerically. This writes the same charts out
-//! as PNGs so the whole thing can be *looked* at — the colourbar is the first
-//! part of the field work that renders on its own, with no GPU data layer.
-//!
-//! Output goes to `target/arch-after/` (or `$FIGGY_LAYOUT_PROBE_DIR`), the same
-//! place the layout geometry probe writes.
+//! agreement, and the band geometry numerically. These tests check the
+//! assembled chart: the ramp is painted beside the data area on the side the
+//! configuration names, runs from the axis minimum to its maximum (or the
+//! other way when inverted), and the selection chrome changes pixels around
+//! the bar only. Each chart is also written out as a PNG so it can be looked
+//! at, to `target/arch-after/` (or `$FIGGY_LAYOUT_PROBE_DIR`, which
+//! `ci/verify.py` points at the CI image directory), the same place the
+//! layout geometry images go.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,14 +137,43 @@ fn output_dir() -> PathBuf {
     }
 }
 
+/// Pixels painted in a colour the ramp passes through at `t`, within `tol` per
+/// channel, that are fully opaque: the strip's interior. The raster is
+/// premultiplied, so a partly covered edge pixel or antialiased text never
+/// matches an opaque ramp colour.
+fn ramp_pixels(rgba: &[u8], map: &ColorMap, t: f32, tol: i32) -> Vec<(u32, u32)> {
+    let want = map.sample(t);
+    let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as i32;
+    let want = [to8(want.r), to8(want.g), to8(want.b)];
+    rgba.chunks_exact(4)
+        .enumerate()
+        .filter(|(_, p)| {
+            p[3] == 255
+                && (p[0] as i32 - want[0]).abs() <= tol
+                && (p[1] as i32 - want[1]).abs() <= tol
+                && (p[2] as i32 - want[2]).abs() <= tol
+        })
+        .map(|(i, _)| (i as u32 % WIDTH, i as u32 / WIDTH))
+        .collect()
+}
+
+fn mean(points: &[(u32, u32)], axis: impl Fn(&(u32, u32)) -> u32) -> f64 {
+    points.iter().map(|p| axis(p) as f64).sum::<f64>() / points.len() as f64
+}
+
+/// Every chart paints its ramp on the configured side of the data area, with
+/// the ramp's low end at the axis minimum's end of the strip, and the strip
+/// shows a wide spread of colours.
 #[test]
-fn colorbar_probe_renders_every_side_and_scale() {
+fn every_side_and_scale_paints_the_ramp_beside_the_data_area() {
     let dir = output_dir();
-    fs::create_dir_all(&dir).expect("create probe directory");
+    fs::create_dir_all(&dir).expect("create image directory");
 
     for (name, config) in probes() {
         let rgba = try_raster_chart_to_rgba(&config).expect("colourbar raster");
         assert_eq!(rgba.len(), (WIDTH * HEIGHT * 4) as usize);
+        let bar = config.colorbar.as_ref().expect("a colourbar");
+        let da = config.data_area().expect("data area");
 
         // The strip alone must account for a wide spread of distinct colours —
         // a flat or empty band would still pass a "something was drawn" check.
@@ -158,13 +191,65 @@ fn colorbar_probe_renders_every_side_and_scale() {
             "{name}: only {distinct} distinct inked colours — the ramp did not paint"
         );
 
+        // The ramp's middle colour is painted, and only on the bar's side of
+        // the data area: no other element is a solid mid-ramp colour.
+        let middle = ramp_pixels(&rgba, &bar.colormap, 0.5, 6);
+        assert!(
+            !middle.is_empty(),
+            "{name}: the ramp's middle colour is not painted"
+        );
+        for (x, y) in &middle {
+            let beside = match bar.side {
+                Side::Right => *x >= da.x + da.width,
+                Side::Left => *x < da.x,
+                Side::Top => *y < da.y,
+                Side::Bottom => *y >= da.y + da.height,
+            };
+            assert!(
+                beside,
+                "{name}: a mid-ramp pixel at ({x}, {y}) is not {:?} of the data area at \
+                 ({}, {}) {} x {}",
+                bar.side, da.x, da.y, da.width, da.height
+            );
+        }
+
+        // The low end of the ramp sits at the axis minimum: the bottom of a
+        // vertical strip and the left of a horizontal one, or the other end
+        // of an inverted axis.
+        let low = ramp_pixels(&rgba, &bar.colormap, 0.1, 6);
+        let high = ramp_pixels(&rgba, &bar.colormap, 0.9, 6);
+        assert!(
+            !low.is_empty() && !high.is_empty(),
+            "{name}: the ramp's ends are not painted ({} low, {} high pixels)",
+            low.len(),
+            high.len()
+        );
+        let vertical = matches!(bar.side, Side::Left | Side::Right);
+        let (low_at, high_at) = if vertical {
+            (mean(&low, |p| p.1), mean(&high, |p| p.1))
+        } else {
+            (mean(&low, |p| p.0), mean(&high, |p| p.0))
+        };
+        // Screen y grows downwards, so a vertical minimum at the bottom has
+        // the larger y.
+        let low_first = if vertical {
+            low_at > high_at
+        } else {
+            low_at < high_at
+        };
+        assert_eq!(
+            low_first, !bar.axis.inverted,
+            "{name}: ramp low end at {low_at:.0}, high end at {high_at:.0} (inverted: {})",
+            bar.axis.inverted
+        );
+
         let image = RasterImage {
             width: WIDTH,
             height: HEIGHT,
             rgba,
         };
-        let png = encode_png(&image).expect("probe png");
-        fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write probe png");
+        let png = encode_png(&image).expect("png");
+        fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write png");
     }
 }
 
@@ -196,17 +281,18 @@ fn colorbar_strip_raster_cost() {
 }
 
 /// The colourbar as an interactive element: selected (blue box + eight resize
-/// handles), and after a drag + a handle resize. Written out so the interaction
-/// chrome can be looked at, not just asserted.
+/// handles), and after a drag + a handle resize. The highlight changes pixels
+/// around the bar's box only; both charts are written out so the interaction
+/// chrome can be looked at too.
 #[test]
-fn colorbar_selection_and_resize_probe() {
+fn the_selected_colorbar_draws_its_box_and_handles_and_follows_a_drag_and_resize() {
     use renderer::layout::{Element, NudgeResult};
     use renderer::resize::{Resizable, ResizeHandle};
     use renderer::select::{ColorBarElement, SelectionGeometry};
     use renderer::{CpuTextMeasure, Draggable};
 
     let dir = output_dir();
-    fs::create_dir_all(&dir).expect("create probe directory");
+    fs::create_dir_all(&dir).expect("create image directory");
 
     let mut selected = base_config();
     let mut bar = renderer::default::default_colorbar_options();
@@ -252,13 +338,44 @@ fn colorbar_selection_and_resize_probe() {
             std::slice::from_ref(&box_),
         )
         .expect("selection raster");
+
+        // The highlight is the only difference from the plain chart, and it
+        // lies on the box and its handles: nothing else moves or recolours.
+        let plain = try_raster_chart_to_rgba(&config).expect("plain raster");
+        let mut reach = box_.rect();
+        for handle in box_.handles() {
+            let x1 = (reach.x + reach.width).max(handle.x + handle.width);
+            let y1 = (reach.y + reach.height).max(handle.y + handle.height);
+            reach.x = reach.x.min(handle.x);
+            reach.y = reach.y.min(handle.y);
+            reach.width = x1 - reach.x;
+            reach.height = y1 - reach.y;
+        }
+        let slack = box_.stroke_width() + 1.0;
+        let mut changed = 0u32;
+        for (i, (a, b)) in rgba.chunks_exact(4).zip(plain.chunks_exact(4)).enumerate() {
+            if a == b {
+                continue;
+            }
+            changed += 1;
+            let (x, y) = ((i as u32 % WIDTH) as f32, (i as u32 / WIDTH) as f32);
+            assert!(
+                x >= reach.x - slack
+                    && x <= reach.x + reach.width + slack
+                    && y >= reach.y - slack
+                    && y <= reach.y + reach.height + slack,
+                "{name}: the highlight changed pixel ({x}, {y}) outside the box {reach:?}"
+            );
+        }
+        assert!(changed > 0, "{name}: the selection drew nothing");
+
         let image = RasterImage {
             width: WIDTH,
             height: HEIGHT,
             rgba,
         };
-        let png = encode_png(&image).expect("probe png");
-        fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write probe png");
+        let png = encode_png(&image).expect("png");
+        fs::write(dir.join(format!("colorbar-{name}.png")), png).expect("write png");
     }
 }
 
