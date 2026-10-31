@@ -2439,6 +2439,8 @@ fn resolve_ready(popped: impl std::future::Future<Output = Option<wgpu::Error>>)
 
 /// One wgpu error as a figgy error: out of memory is an allocation failure,
 /// validation and internal errors are [`FiggyError::GpuValidation`].
+/// Native only: browser errors reach [`DeviceHealth`] as text.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn gpu_error(resource: &'static str, error: wgpu::Error) -> FiggyError {
     match error {
         wgpu::Error::OutOfMemory { .. } => FiggyError::GpuResourceAllocationFailed {
