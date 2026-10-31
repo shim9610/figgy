@@ -66,7 +66,7 @@ fn build_series<'a>(series: &'a [SeriesConfig], styles: &'a [ChartStyle]) -> Vec
 
 impl FiggyState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
     }
 }
 

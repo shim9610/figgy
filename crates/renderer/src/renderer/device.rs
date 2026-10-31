@@ -2025,22 +2025,25 @@ impl TargetPipelines {
                 "figgy field contour pipeline",
             )
         );
-        ensure!(
-            contour_labelled,
-            "label-gapped contour field",
-            data_render::create_labelled_contour_pipeline(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                style_bgl,
-                field_bgl,
-                label_pipelines
-                    .expect("field preparation owns labels")
-                    .label_gap_bgl(),
-                surface_format,
-                self.sample_count,
-            )
-        );
+        // The labelled contour pipelines need the label engine. Only the
+        // Fields feature and the full prewarm include them, and both pass it;
+        // a feature without it does not include these fields.
+        if let Some(label_pipelines) = label_pipelines {
+            ensure!(
+                contour_labelled,
+                "label-gapped contour field",
+                data_render::create_labelled_contour_pipeline(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    style_bgl,
+                    field_bgl,
+                    label_pipelines.label_gap_bgl(),
+                    surface_format,
+                    self.sample_count,
+                )
+            );
+        }
         ensure!(
             field_selection,
             "selected field data",
@@ -2054,29 +2057,32 @@ impl TargetPipelines {
                 self.sample_count,
             )
         );
-        ensure!(
-            field_selection_labelled,
-            "selected labelled field data",
-            data_render::create_field_selection_labelled_pipeline_with_sample_count(
-                device,
-                &self.shaders.field,
-                transform_bgl,
-                data_selection_bgl,
-                field_bgl,
-                label_pipelines
-                    .expect("field preparation owns labels")
-                    .label_gap_bgl(),
-                surface_format,
-                self.sample_count,
-            )
-        );
-        ensure!(
-            contour_label,
-            "contour labels",
-            label_pipelines
-                .expect("field preparation owns labels")
-                .render_pipeline(device, transform_bgl, surface_format, self.sample_count,)
-        );
+        if let Some(label_pipelines) = label_pipelines {
+            ensure!(
+                field_selection_labelled,
+                "selected labelled field data",
+                data_render::create_field_selection_labelled_pipeline_with_sample_count(
+                    device,
+                    &self.shaders.field,
+                    transform_bgl,
+                    data_selection_bgl,
+                    field_bgl,
+                    label_pipelines.label_gap_bgl(),
+                    surface_format,
+                    self.sample_count,
+                )
+            );
+            ensure!(
+                contour_label,
+                "contour labels",
+                label_pipelines.render_pipeline(
+                    device,
+                    transform_bgl,
+                    surface_format,
+                    self.sample_count
+                )
+            );
+        }
 
         for (key, stage) in [
             (StyleKey::Sketch, "hand-drawn style"),
@@ -2734,7 +2740,9 @@ impl BrowserErrorScopes {
     pub(super) fn request_pop(&mut self) -> std::result::Result<js_sys::Promise, String> {
         use wasm_bindgen::JsCast;
 
-        debug_assert!(self.active > 0);
+        if self.active == 0 {
+            return Err("no figgy error scope is left to pop".to_owned());
+        }
         let value = self
             .pop
             .call0(self.device.as_ref())
@@ -2769,7 +2777,12 @@ impl Drop for BrowserErrorScopes {
         // are discarded.
         while self.active > 0 {
             self.active -= 1;
-            let _ = self.pop.call0(self.device.as_ref());
+            if self.pop.call0(self.device.as_ref()).is_err() {
+                // Drop has no caller to report to, and a device that rejects
+                // one pop rejects the rest: its error stack is gone (the
+                // device was lost), so there is nothing left to pop.
+                break;
+            }
         }
     }
 }
@@ -3340,7 +3353,9 @@ impl Renderer {
             // browser buffer handles must stay on their owning JS thread.
             let (sender, receiver) = futures_channel::oneshot::channel();
             self.queue.on_submitted_work_done(move || {
-                let _ = sender.send(());
+                if sender.send(()).is_err() {
+                    // The receiver was dropped: the waiting task was cancelled.
+                }
             });
             wasm_bindgen_futures::spawn_local(async move {
                 if receiver.await.is_ok() {
@@ -3359,10 +3374,8 @@ impl Renderer {
     /// they need retired memory to become available without another submission.
     /// On WebGPU the browser delivers completion callbacks asynchronously.
     /// Polling errors are returned to the host rather than treated as completion.
-    pub fn service_gpu_completions(
-        &self,
-    ) -> std::result::Result<wgpu::PollStatus, wgpu::PollError> {
-        self.device.poll(wgpu::PollType::Poll)
+    pub fn service_gpu_completions(&self) -> Result<wgpu::PollStatus> {
+        gpu_poll(&self.health, &self.device, wgpu::PollType::Poll)
     }
 
     /// Handle onto the ledger, for resources this renderer creates but does
@@ -3381,6 +3394,7 @@ impl Renderer {
     /// not depend on the final color attachment format, so embedders can call
     /// this instead of tearing down the whole renderer state.
     pub fn ensure_target_format(&mut self, surface_format: wgpu::TextureFormat) -> Result<bool> {
+        self.health.check()?;
         self.ensure_target(surface_format, self.target_sample_count)
     }
 
@@ -3642,14 +3656,19 @@ impl Renderer {
     /// No-op on wasm: the browser drives the device, blocking waits don't
     /// exist there, and the shutdown races this guards against are native
     /// driver concerns.
-    pub fn wait_idle(&self) {
+    ///
+    /// Returns the poll's failure, such as [`FiggyError::DeviceLost`].
+    pub fn wait_idle(&self) -> Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = self.device.poll(wgpu::PollType::Wait {
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            });
-        }
+            },
+        )?;
+        Ok(())
     }
 
     pub fn texture_bind_group_layout(&self) -> &wgpu::BindGroupLayout {
@@ -3705,6 +3724,7 @@ impl Renderer {
         &mut self,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<()> {
+        self.health.check()?;
         if self.contour_label_pipelines.is_none() {
             #[cfg(target_arch = "wasm32")]
             crate::init::prewarm_compute_entries_js(
@@ -3859,19 +3879,29 @@ impl Renderer {
     /// [`WindowedRenderer::first_frame_ready`] or draw first. On native the
     /// device is polled so the callback can resolve; on wasm the browser
     /// delivers `onSubmittedWorkDone`.
-    pub async fn wait_submitted_work(&self) {
+    ///
+    /// Returns the poll's failure, such as [`FiggyError::DeviceLost`].
+    pub async fn wait_submitted_work(&self) -> Result<()> {
+        self.health.check()?;
         let (sender, receiver) = futures_channel::oneshot::channel();
         self.queue.on_submitted_work_done(move || {
-            let _ = sender.send(());
+            if sender.send(()).is_err() {
+                // The receiver was dropped: the waiting call was cancelled.
+            }
         });
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let _ = self.device.poll(wgpu::PollType::Wait {
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
                 submission_index: None,
                 timeout: None,
-            });
-        }
-        let _ = receiver.await;
+            },
+        )?;
+        receiver.await.map_err(|_| FiggyError::DeviceLost {
+            reason: "the queue dropped its submitted-work callback without running it".into(),
+        })?;
+        self.health.check()
     }
 
     pub fn sampler(&self) -> &wgpu::Sampler {

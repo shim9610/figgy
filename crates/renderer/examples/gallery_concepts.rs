@@ -368,6 +368,6 @@ fn main() -> Result {
     revenue(&mut r, &out)?;
     radial_concepts(&gpu, &out)?;
     terrain(&mut r, &out)?;
-    r.wait_idle();
+    r.wait_idle().unwrap();
     Ok(())
 }

@@ -6710,7 +6710,7 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                     if cancel {
                         r.cancel_streaming_chart(id).unwrap();
                         r.end_gpu_frame();
-                        r.wait_idle();
+                        r.wait_idle().unwrap();
                         r.service_stream_requests();
                         assert!(!r.progressive_replay_for_test(id));
                         assert_eq!(

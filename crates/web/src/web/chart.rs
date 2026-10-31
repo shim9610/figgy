@@ -1461,8 +1461,8 @@ impl FiggyChart {
     /// Wait until previously submitted GPU work has finished. Does not
     /// draw. Used to separate an earlier compute submit from the next
     /// render submit when measuring startup.
-    pub async fn wait_submitted_work(&self) {
-        self.renderer.wait_submitted_work().await;
+    pub async fn wait_submitted_work(&self) -> Result<(), JsValue> {
+        self.renderer.wait_submitted_work().await.map_err(js_err)
     }
 
     /// Compile the drawable-series fit-bound engine without drawing. On wasm

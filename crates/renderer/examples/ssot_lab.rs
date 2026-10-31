@@ -167,7 +167,7 @@ struct LabState {
 
 impl LabState {
     fn shutdown(&mut self) {
-        self.renderer.wait_idle();
+        self.renderer.wait_idle().unwrap();
     }
 
     fn regen_data(&mut self, n: usize, bump_variant: bool) {

@@ -178,7 +178,7 @@ fn sample_f32(values: usize, grow_from_small_pool: bool) -> Option<Sample> {
     });
     renderer.end_gpu_frame();
 
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
 
     let usage = renderer.gpu_memory_usage();
     let sample = Sample {
@@ -317,7 +317,7 @@ fn f64_input_costs_one_stored_byte_per_input_byte() {
         let rss_before = rss_bytes().unwrap_or(0) as i64;
         renderer.add_column("scale", &column).unwrap();
         renderer.end_gpu_frame();
-        pollster::block_on(renderer.wait_submitted_work());
+        pollster::block_on(renderer.wait_submitted_work()).unwrap();
         let usage = renderer.gpu_memory_usage();
         assert_eq!(renderer.pool().used_bytes(), stored);
         samples.push(Sample {
@@ -375,18 +375,18 @@ fn releasing_the_data_returns_the_pool_to_empty() {
         return;
     };
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
     let baseline = renderer.gpu_memory_usage();
     let dc = baseline.total_bytes();
 
     renderer.add_column("released", &column).unwrap();
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
     assert_eq!(renderer.pool().used_bytes(), stored);
 
     assert!(renderer.remove_column("released").unwrap());
     renderer.end_gpu_frame();
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
     let after = renderer.gpu_memory_usage();
     assert_eq!(
         renderer.pool().used_bytes(),

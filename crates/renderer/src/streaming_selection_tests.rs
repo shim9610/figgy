@@ -272,7 +272,7 @@ fn pump(r: &mut Renderer, id: ChartId, values: &[(&str, crate::Column<f32>)]) {
             StreamingSelectionRequest::Ready { ticket, ranges, .. } => {
                 supply(r, ticket, &ranges, values)
             }
-            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle(),
+            StreamingSelectionRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             StreamingSelectionRequest::Complete { .. } => break,
             StreamingSelectionRequest::Failed { .. } => panic!("unexpected failed selection"),
         }
@@ -316,7 +316,7 @@ fn finish_export(
                 r.submit_stream_operation_ranges(operation, &bindings)
                     .unwrap();
             }
-            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingRangeRequest::Backpressure { .. } => r.wait_idle().unwrap(),
             crate::AutoStreamingRangeRequest::AllSubmitted { .. }
             | crate::AutoStreamingRangeRequest::Complete { .. } => break,
         }
@@ -357,7 +357,7 @@ fn screen(r: &mut Renderer, id: ChartId, view: &ChartView) -> Vec<u8> {
     );
     r.queue.submit([encoder.finish()]);
     buffer.slice(..).map_async(wgpu::MapMode::Read, |_| {});
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let mapped = buffer.slice(..).get_mapped_range().unwrap();
     let mut pixels: Vec<_> = mapped
         .chunks_exact(padded as usize)
@@ -412,11 +412,11 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         match r.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
             | crate::AutoStreamingProgress::Complete { .. } => break,
-            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle(),
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
             _ => {}
         }
     }
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let old = screen(&mut r, id, &view);
     r.auto_stream_chart_step(id, &bindings).unwrap();
     let progress = r.stream_progress_counts(job).unwrap();
@@ -525,7 +525,7 @@ fn stream_selection_preserves_data_ticket_and_atomically_replaces_ordered_suffix
         .unwrap()
         .outline_width_px += 0.5;
     r.set_chart_config(id, chart.config().clone()).unwrap();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let bytes = r.gpu_memory_usage().total_bytes();
     r.memory_budget = Some(bytes);
     assert!(r.request_stream_selection_ranges(id).is_err());
@@ -562,7 +562,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
             crate::AutoStreamingProgress::Complete { .. } => break,
             crate::AutoStreamingProgress::Backpressure { .. }
             | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                r.wait_idle();
+                r.wait_idle().unwrap();
                 screen(&mut r, id, &view);
             }
             _ => {}
@@ -578,7 +578,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
         panic!()
     };
     supply(&mut r, ticket, &ranges, &values);
-    r.wait_idle();
+    r.wait_idle().unwrap();
     let StreamingSelectionRequest::Ready {
         ticket: suspended,
         ranges: requested,
@@ -638,7 +638,7 @@ fn stream_selection_suspension_releases_single_slot_for_export_and_resumes_candi
     r.cancel_chart_stream(id).unwrap();
     assert!(r.submit_stream_selection_ranges(ticket, &[]).is_err());
     r.end_gpu_frame();
-    r.wait_idle();
+    r.wait_idle().unwrap();
     r.service_stream_requests();
     assert_eq!(r.stream_request_usage(), (0, 0, 0));
 }
@@ -664,7 +664,7 @@ fn stream_selection_and_data_match_resident_at_exact_display_scale() {
                 crate::AutoStreamingProgress::Complete { .. } => break,
                 crate::AutoStreamingProgress::Backpressure { .. }
                 | crate::AutoStreamingProgress::AllSubmitted { .. } => {
-                    r.wait_idle();
+                    r.wait_idle().unwrap();
                     screen(&mut r, id, &view);
                 }
                 _ => {}

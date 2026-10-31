@@ -102,7 +102,7 @@ fn no_gpu(context: &str) {
 }
 
 fn settle_gpu(renderer: &Renderer) {
-    pollster::block_on(renderer.wait_submitted_work());
+    pollster::block_on(renderer.wait_submitted_work()).unwrap();
 }
 
 const COLUMN_VALUE_BYTES: u64 = 8;
