@@ -2001,6 +2001,17 @@ impl Renderer {
         checked
     }
 
+    /// The series index the cursor of `job` stands on.
+    #[cfg(test)]
+    pub(crate) fn stream_cursor_series_for_test(&self, job: StreamJob) -> Option<usize> {
+        self.stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .map(|draw| draw.series)
+    }
+
     /// How many staging slots the screen stream of `chart` holds.
     #[cfg(test)]
     pub(crate) fn staging_slot_count_for_test(&self, chart: ChartId) -> Option<usize> {

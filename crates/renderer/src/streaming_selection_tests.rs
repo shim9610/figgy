@@ -844,3 +844,63 @@ fn a_selection_column_plan_names_one_to_three_distinct_columns() {
     let plan = columns_for(&precise, &series, entry(false, Some(cell)));
     assert_eq!(plan.count, 2);
 }
+
+/// STREAM_JOB_CHART_LIVE (#152): a selection ticket issued for a chart
+/// that is then removed is refused, and the removed chart's selection
+/// request reports the unknown chart instead of reading its state.
+#[test]
+fn a_removed_chart_refuses_its_pending_selection_ticket() {
+    let (mut r, _, id, _, mut chart, _, values) = fixture();
+    let bindings: Vec<_> = values
+        .iter()
+        .map(|(id, values)| crate::StreamSourceBinding {
+            id,
+            revision: 1,
+            source: crate::StreamColumnSource::Scalar(values),
+        })
+        .collect();
+    loop {
+        match r.auto_stream_chart_step(id, &bindings).unwrap() {
+            crate::AutoStreamingProgress::AllSubmitted { .. }
+            | crate::AutoStreamingProgress::Complete { .. } => break,
+            crate::AutoStreamingProgress::Backpressure { .. } => r.wait_idle().unwrap(),
+            _ => {}
+        }
+    }
+    r.wait_idle().unwrap();
+    select(chart.config_mut(), &[3, 4]);
+    r.set_chart_config(id, chart.config().clone()).unwrap();
+    let StreamingSelectionRequest::Ready { ticket, ranges, .. } =
+        r.request_stream_selection_ranges(id).unwrap()
+    else {
+        panic!("a selection ticket")
+    };
+    r.remove_chart(id).unwrap();
+    let payload: Vec<_> = ranges
+        .iter()
+        .map(|range| {
+            let values = &values
+                .iter()
+                .find(|(id, _)| *id == range.id)
+                .unwrap()
+                .1
+                .data;
+            column(values[range.offset as usize..(range.offset + range.len) as usize].to_vec())
+        })
+        .collect();
+    let supplied: Vec<_> = ranges
+        .iter()
+        .zip(&payload)
+        .map(|(range, data)| crate::StreamRangeSourceBinding {
+            id: &range.id,
+            revision: range.revision,
+            source_len: range.source_len,
+            offset: range.offset,
+            source: crate::StreamColumnSource::Scalar(data),
+        })
+        .collect();
+    let submit = r.submit_stream_selection_ranges(ticket, &supplied);
+    assert!(submit.is_err(), "{submit:?}");
+    let request = r.request_stream_selection_ranges(id);
+    assert!(request.is_err(), "{request:?}");
+}

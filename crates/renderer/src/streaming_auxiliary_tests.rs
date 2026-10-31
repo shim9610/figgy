@@ -653,10 +653,17 @@ fn wide_stream(
     let view = renderer
         .create_chart_view(&chart, chart.config().chart_area.0)
         .unwrap();
+    request_wide_stream(&mut renderer, id, &view);
+    finish_wide_stream(&mut renderer, id, &view, &values);
+    (renderer, id, view, values)
+}
+
+/// Ask for an automatic stream of `id` at the `wide_stream` size.
+fn request_wide_stream(renderer: &mut Renderer, id: ChartId, view: &ChartView) {
     renderer
         .request_auto_streaming_chart(
             id,
-            &view,
+            view,
             crate::StreamingChartOptions {
                 size: (240, 180),
                 clear_color: Color::new(0.0, 0.0, 0.0, 0.0),
@@ -664,14 +671,30 @@ fn wide_stream(
             },
         )
         .unwrap();
-    let bindings: Vec<_> = values
+}
+
+/// The step bindings of every `wide_values` column.
+fn wide_bindings<'a>(
+    values: &'a [(&'static str, crate::Column<f32>)],
+) -> Vec<crate::StreamSourceBinding<'a>> {
+    values
         .iter()
         .map(|(id, values)| crate::StreamSourceBinding {
             id,
             revision: 3,
             source: crate::StreamColumnSource::Scalar(values),
         })
-        .collect();
+        .collect()
+}
+
+/// Step the automatic stream of `id` to completion and present it.
+fn finish_wide_stream(
+    renderer: &mut Renderer,
+    id: ChartId,
+    view: &ChartView,
+    values: &[(&'static str, crate::Column<f32>)],
+) {
+    let bindings = wide_bindings(values);
     loop {
         match renderer.auto_stream_chart_step(id, &bindings).unwrap() {
             crate::AutoStreamingProgress::AllSubmitted { .. }
@@ -682,17 +705,13 @@ fn wide_stream(
     renderer.wait_idle().unwrap();
     drop(
         renderer
-            .prepare_registered(&[RegisteredChartDrawItem {
-                chart_id: id,
-                view: &view,
-            }])
+            .prepare_registered(&[RegisteredChartDrawItem { chart_id: id, view }])
             .unwrap(),
     );
     assert!(matches!(
         renderer.auto_stream_chart_step(id, &bindings).unwrap(),
         crate::AutoStreamingProgress::Complete { .. }
     ));
-    (renderer, id, view, values)
 }
 
 /// Feed every range `operation` asks for from `values` until it is done.
@@ -1034,6 +1053,136 @@ fn a_resident_handoff_snapshot_covers_every_series_column() {
                 visit_series_columns(declaration, &mut |column| {
                     assert!(snapshot.sources.contains_key(column), "{column}");
                 });
+            }
+        }
+        let operation = renderer
+            .begin_stream_export(id, 1.0, Color::new(0.0, 0.0, 0.0, 0.0), 7)
+            .unwrap();
+        pump_wide(&mut renderer, operation, &values);
+        let image = pollster::block_on(renderer.finish_stream_export(operation)).unwrap();
+        assert!(image.rgba.chunks_exact(4).any(|p| p[3] != 0));
+    }
+}
+
+/// STREAM_DRAW_SERIES_IN_RANGE and STREAM_STYLES_MATCH_SERIES (#152) for
+/// automatic streams: the snapshot's series and styles are fixed for the
+/// job, so a series edit in the middle of a 300-series stream (to 1
+/// series, to 299, or a recolor of the same count) never moves the cursor
+/// past the list it walks; stepping on finishes a stream whose snapshot
+/// has one style per series and names the edited list, which then picks
+/// from its packed view, steps its selection and exports.
+#[test]
+fn an_auto_stream_walks_its_own_snapshot_through_series_edits() {
+    let many: Vec<SeriesConfig> = (0..300).map(|k| wide_line(&format!("l{k}"), "y")).collect();
+    let edits: [Vec<SeriesConfig>; 3] = [
+        vec![wide_line("only", "y")],
+        many[..299].to_vec(),
+        many.iter()
+            .cloned()
+            .map(|mut s| {
+                if let DataRenderType::Line { line } = &mut s.render_type {
+                    line.line_color = Color::new(0.8, 0.1, 0.1, 0.9);
+                }
+                s
+            })
+            .collect(),
+    ];
+    for edited in edits {
+        let (mut renderer, id, view, values) = wide_stream(many.clone());
+        request_wide_stream(&mut renderer, id, &view);
+        let mut config = renderer.chart_config(id).unwrap().clone();
+        config.bottom_x.max = 0.9;
+        renderer.set_chart_config(id, config).unwrap();
+        request_wide_stream(&mut renderer, id, &view);
+        let bindings = wide_bindings(&values);
+        for _ in 0..40 {
+            match renderer.auto_stream_chart_step(id, &bindings).unwrap() {
+                crate::AutoStreamingProgress::AllSubmitted { .. }
+                | crate::AutoStreamingProgress::Complete { .. } => break,
+                _ => renderer.wait_idle().unwrap(),
+            }
+        }
+        let job = renderer.active_stream_job(id).unwrap();
+        let before = renderer.auto_stream_snapshot(job).unwrap();
+        assert_eq!(before.series.len(), 300);
+        renderer.set_chart_series(id, edited.clone()).unwrap();
+        // The running job keeps walking the snapshot it started with, or is
+        // replaced; either way its cursor is within that snapshot's list.
+        for _ in 0..40 {
+            let step = renderer.auto_stream_chart_step(id, &bindings);
+            if let Some(job) = renderer.active_stream_job(id)
+                && let Some(snapshot) = renderer.auto_stream_snapshot(job)
+            {
+                assert_eq!(snapshot.styles.styles.len(), snapshot.series.len());
+                if let Some(cursor) = renderer.stream_cursor_series_for_test(job) {
+                    assert!(cursor <= snapshot.series.len());
+                }
+            }
+            match step {
+                Ok(crate::AutoStreamingProgress::AllSubmitted { .. })
+                | Ok(crate::AutoStreamingProgress::Complete { .. }) => break,
+                Ok(_) => renderer.wait_idle().unwrap(),
+                Err(error) => panic!("{error:?}"),
+            }
+        }
+        drop(before);
+        request_wide_stream(&mut renderer, id, &view);
+        finish_wide_stream(&mut renderer, id, &view, &values);
+        let job = renderer.active_stream_job(id).unwrap();
+        let snapshot = renderer.auto_stream_snapshot(job).unwrap();
+        assert_eq!(snapshot.series, edited);
+        assert_eq!(snapshot.styles.styles.len(), edited.len());
+        drop(snapshot);
+        let picked =
+            pollster::block_on(renderer.pick_chart_view_cache(id, [120.0, 90.0], 40.0)).unwrap();
+        if let Some(point) = &picked {
+            assert!(edited.iter().any(|s| s.series_id == point.series_id));
+        }
+        let mut selected = renderer.chart_config(id).unwrap().clone();
+        selected.picked_points = Some(crate::PickedPointsConfig {
+            refs: vec![crate::PickedPointRef {
+                source_id: None,
+                series_id: edited.last().unwrap().series_id.clone(),
+                point_index: 3,
+            }],
+            ..Default::default()
+        });
+        renderer.set_chart_config(id, selected).unwrap();
+        for _ in 0..100 {
+            match renderer.request_stream_selection_ranges(id).unwrap() {
+                crate::StreamingSelectionRequest::Ready { ticket, ranges, .. } => {
+                    let slices: Vec<_> = ranges
+                        .iter()
+                        .map(|range| {
+                            let (_, source) =
+                                values.iter().find(|(id, _)| *id == range.id).unwrap();
+                            column(
+                                source.data
+                                    [range.offset as usize..(range.offset + range.len) as usize]
+                                    .to_vec(),
+                            )
+                        })
+                        .collect();
+                    let bindings: Vec<_> = ranges
+                        .iter()
+                        .zip(&slices)
+                        .map(|(range, values)| crate::StreamRangeSourceBinding {
+                            id: &range.id,
+                            revision: range.revision,
+                            source_len: range.source_len,
+                            offset: range.offset,
+                            source: crate::StreamColumnSource::Scalar(values),
+                        })
+                        .collect();
+                    renderer
+                        .submit_stream_selection_ranges(ticket, &bindings)
+                        .unwrap();
+                }
+                crate::StreamingSelectionRequest::Backpressure { .. } => {
+                    renderer.wait_idle().unwrap()
+                }
+                crate::StreamingSelectionRequest::Complete { .. }
+                | crate::StreamingSelectionRequest::Failed { .. } => break,
             }
         }
         let operation = renderer
