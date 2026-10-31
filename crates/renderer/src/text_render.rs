@@ -2871,4 +2871,121 @@ mod tests {
             );
         }
     }
+
+    /// OUTLINE_VERBS_MATCH_POINTS (#152): `glyph_outline` reads one point
+    /// per `MoveTo` and `LineTo`, three per `CurveTo` and two per `QuadTo`
+    /// from the scaled outline. For every glyph id of every bundled face
+    /// (the four Liberation Sans styles, both Comic Neue weights, which are
+    /// emboldened, and the math face), `.notdef` and one id past the face
+    /// included, at a hinted and an unhinted size, those counts add up to
+    /// the outline's points, and `glyph_outline` hands out one segment per
+    /// verb.
+    #[test]
+    fn every_bundled_outline_has_the_points_its_verbs_read() {
+        use swash::zeno::Verb;
+        let faces = [
+            embedded_font(false, false),
+            embedded_font(true, false),
+            embedded_font(false, true),
+            embedded_font(true, true),
+            handwritten_font(false),
+            handwritten_font(true),
+            math_font::bundled_math_font(),
+        ];
+        for font in faces {
+            let count = font.metrics(&[]).glyph_count;
+            assert!(count > 1);
+            for size in [11.0, HINT_MAX_SIZE_PX + 9.0] {
+                let mut outlines = 0;
+                for glyph in 0..=count {
+                    let verbs = SCALE_CTX.with(|cx| {
+                        let mut cx = cx.borrow_mut();
+                        let mut scaler = cx
+                            .builder(font)
+                            .size(size)
+                            .hint(font_hinting(font, size))
+                            .build();
+                        let mut outline = scaler.scale_outline(glyph)?;
+                        let embolden = font_embolden(font, size);
+                        if embolden > 0.0 {
+                            outline.embolden(embolden, embolden);
+                        }
+                        let read: usize = outline
+                            .verbs()
+                            .iter()
+                            .map(|verb| match verb {
+                                Verb::MoveTo | Verb::LineTo => 1,
+                                Verb::CurveTo => 3,
+                                Verb::QuadTo => 2,
+                                Verb::Close => 0,
+                            })
+                            .sum();
+                        assert_eq!(read, outline.points().len(), "glyph {glyph} at {size}");
+                        Some(outline.verbs().len())
+                    });
+                    let mut segments = 0;
+                    glyph_outline(font, glyph, size, &mut |_| segments += 1);
+                    assert_eq!(segments, verbs.unwrap_or(0), "glyph {glyph} at {size}");
+                    outlines += usize::from(verbs.is_some());
+                }
+                assert!(outlines > 1, "a face with no outlines at {size}");
+            }
+        }
+    }
+
+    /// DOC_LAYOUT_SHAPE (#152): `layout_doc` gives every line one metric
+    /// and at least one cell, and as many column starts as the widest line
+    /// has cells, which `place_rich_text` and `measure_rich_text` index by.
+    /// Inputs: no segments, a single character, lone and repeated line
+    /// breaks, tabs with and without text, 1000 lines of varying tab counts
+    /// and a math cell.
+    #[test]
+    fn a_document_layout_has_a_metric_and_a_cell_per_line_and_a_start_per_column() {
+        let mut long = String::new();
+        for line in 0..1000 {
+            if line > 0 {
+                long.push('\n');
+            }
+            for cell in 0..line % 7 {
+                long.push_str(&format!("c{cell}\t"));
+            }
+            long.push_str("end");
+        }
+        let mut docs: Vec<RichText> = [
+            "",
+            "a",
+            "\n",
+            "\n\n",
+            "a\tb\nc",
+            "\t\t\n\t",
+            "\t",
+            long.as_str(),
+        ]
+        .iter()
+        .map(|text| RichText::plain(text, Color::BLACK, 12.0, ""))
+        .collect();
+        docs.push(
+            RichText::from_tex("x\t$\\frac{a}{b}$\n\t$y^2$", Color::BLACK, 12.0, "").unwrap(),
+        );
+        let mut empty = RichText::plain("x", Color::BLACK, 12.0, "");
+        empty.segments.clear();
+        docs.push(empty);
+        let mut canvas = Canvas::new(64, 64).unwrap();
+        for rt in &docs {
+            for policy in [FontPolicy::Standard, FontPolicy::Handwritten] {
+                let doc = layout_doc(rt, policy);
+                assert!(!doc.line_cells.is_empty());
+                assert_eq!(doc.line_metrics.len(), doc.line_cells.len());
+                assert!(doc.line_cells.iter().all(|cells| !cells.is_empty()));
+                let widest = doc.line_cells.iter().map(Vec::len).max().unwrap();
+                assert_eq!(doc.col_starts.len(), widest);
+                let lines = rt.segments.iter().filter(|s| s.text == '\n').count() + 1;
+                assert_eq!(doc.line_cells.len(), lines);
+                let m = measure_rich_text(rt, policy);
+                assert!(m.width.is_finite() && m.height().is_finite());
+                place_rich_text(&mut MeasureSink, rt, (0.0, 0.0), policy);
+                draw_rich_text(&mut canvas, rt, (2.0, 20.0), policy).unwrap();
+            }
+        }
+    }
 }
