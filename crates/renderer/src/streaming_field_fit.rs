@@ -15,6 +15,14 @@ pub(super) struct StreamFieldFit {
     readback: Option<GpuSeriesExtentTicket>,
 }
 
+impl StreamFieldFit {
+    /// The endpoint reads submitted so far and the endpoints per axis.
+    #[cfg(test)]
+    pub(super) fn progress_for_test(&self) -> (u32, u32) {
+        (self.ordinal, self.count)
+    }
+}
+
 pub(super) fn all_fit_inputs_ready(
     snapshot: &AutoStreamExecutionSnapshot,
     statistics: &HashMap<ColumnId, StreamStatisticsCache>,

@@ -6933,3 +6933,153 @@ fn stream_tickets_name_the_ranges_their_slots_reserved() {
     assert_eq!(seen, [1, 2, 3, 7]);
     r.cancel_chart_stream(chart).unwrap();
 }
+
+/// STAGING_SLOTS_NEVER_SHRINK (#152): a stream's staging slots are only
+/// appended, up to `max_slots`, so the index taken for a reused slot stays
+/// valid across the upload. Fifty one-point chunks supplied from column
+/// sources with 1 and 4 slots, one chunk's source failing its write: after
+/// every step the slot count has not shrunk and is within the limit, and
+/// with one slot the failed slot is the one the rest of the stream reuses.
+#[test]
+fn stream_staging_slots_only_grow_within_the_slot_limit() {
+    struct Source {
+        scale: f32,
+        fail_at: std::cell::Cell<Option<u64>>,
+    }
+    impl crate::ColumnSource for Source {
+        fn len(&self) -> usize {
+            50
+        }
+        fn min(&self) -> f64 {
+            0.0
+        }
+        fn max(&self) -> f64 {
+            f64::from(49.0 * self.scale)
+        }
+        fn write_f32_le_into(&self, _dst: &mut [u8]) {
+            panic!("streaming must not invoke the full-column encoder")
+        }
+        fn write_f32_pair_le_into_with_stats(
+            &self,
+            _dst: crate::ColumnPairWriter<'_>,
+        ) -> crate::ColumnUploadStats {
+            panic!("streaming must not invoke the full-column writer")
+        }
+        fn write_f32_pair_range_into_with_stats(
+            &self,
+            start: u64,
+            mut dst: crate::ColumnPairWriter<'_>,
+        ) -> std::result::Result<Option<crate::StreamBounds>, crate::ColumnRangeWriteError>
+        {
+            if self.fail_at.get() == Some(start) {
+                self.fail_at.set(None);
+                return Err(crate::ColumnRangeWriteError::SourceFailed);
+            }
+            for local in 0..dst.len() {
+                dst.write_pair(local, (start + local as u64) as f32 * self.scale, 0.0);
+            }
+            Ok(None)
+        }
+    }
+
+    for slots in [1usize, 4] {
+        let (device, queue) = crate::data_render::shared_device().expect("stream GPU required");
+        let mut r = Renderer::try_new(
+            RendererDevice::new(device, queue),
+            wgpu::TextureFormat::Rgba8Unorm,
+            4096,
+        )
+        .unwrap();
+        let mut columns = vec![source("x", 1), source("a", 1)];
+        for column in &mut columns {
+            column.len = 50;
+        }
+        r.register_streamed_columns(columns).unwrap();
+        let mut scatter = declaration("s", "x", "a");
+        scatter.render_type = DataRenderType::Scatter {
+            scatter: DataScatterStyleConfig {
+                point_color: Color::new(0.0, 0.0, 0.0, 1.0),
+                point_shape: ScatterShape::CircleFilled,
+                point_size: 4.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            },
+        };
+        let config = crate::default::default_config();
+        let chart_id = r.register_chart(config.clone(), vec![scatter]).unwrap();
+        r.configure_streaming_runtime(limits(slots)).unwrap();
+        let view = r
+            .create_chart_view(&Chart::new(config.clone()), config.chart_area.0)
+            .unwrap();
+        r.begin_streaming_chart(
+            chart_id,
+            &view,
+            crate::StreamingChartOptions {
+                size: (config.chart_area.0.width, config.chart_area.0.height),
+                clear_color: Color::WHITE,
+                max_primitives_per_chunk: 1,
+            },
+        )
+        .unwrap();
+        let x = Source {
+            scale: 0.02,
+            fail_at: std::cell::Cell::new(Some(7)),
+        };
+        let y = Source {
+            scale: 0.01,
+            fail_at: std::cell::Cell::new(None),
+        };
+        let bindings = [
+            crate::StreamSourceBinding {
+                id: "x",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&x),
+            },
+            crate::StreamSourceBinding {
+                id: "a",
+                revision: 1,
+                source: crate::StreamColumnSource::Scalar(&y),
+            },
+        ];
+        let mut count = 0;
+        let mut failures = 0;
+        let mut steps = 0;
+        loop {
+            steps += 1;
+            assert!(steps < 1000, "the stream did not finish");
+            let step = r.stream_chart_step(chart_id, &view, &bindings);
+            let now = r.staging_slot_count_for_test(chart_id).unwrap();
+            assert!(
+                now >= count,
+                "the staging slots shrank from {count} to {now}"
+            );
+            assert!(now <= slots, "{now} staging slots for {slots}");
+            count = now;
+            match step {
+                Err(FiggyError::InvalidStreamSource { id, .. }) => {
+                    assert_eq!(id, "x");
+                    failures += 1;
+                    // The failed slot is remapped; let its map callback
+                    // run before the same ticket is supplied again.
+                    r.wait_idle().unwrap();
+                }
+                Err(error) => panic!("slots {slots} step {steps} count {count}: {error:?}"),
+                Ok(crate::StreamingProgress::Submitted { .. }) => {}
+                Ok(crate::StreamingProgress::Backpressure { .. }) => wait_stream_slots(&mut r, 0),
+                Ok(crate::StreamingProgress::AllSubmitted { total_primitives }) => {
+                    assert_eq!(total_primitives, 50);
+                    break;
+                }
+            }
+        }
+        assert_eq!(failures, 1);
+        assert!(count >= 1, "the column sources were staged without a slot");
+        if slots == 1 {
+            assert_eq!(count, 1, "the failed slot was not reused");
+        }
+        r.cancel_streaming_chart(chart_id).unwrap();
+    }
+}

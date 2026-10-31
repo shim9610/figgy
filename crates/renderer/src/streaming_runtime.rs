@@ -2001,6 +2001,17 @@ impl Renderer {
         checked
     }
 
+    /// How many staging slots the screen stream of `chart` holds.
+    #[cfg(test)]
+    pub(crate) fn staging_slot_count_for_test(&self, chart: ChartId) -> Option<usize> {
+        self.stream_runtime
+            .as_ref()?
+            .draws
+            .iter()
+            .find(|draw| draw.job.chart == chart && draw.auxiliary.is_none())
+            .map(|draw| draw.staging_slots.len())
+    }
+
     #[cfg(test)]
     pub(crate) fn view_cache_test_status(&self, chart: ChartId) -> Option<(usize, u64)> {
         self.stream_runtime
@@ -6019,15 +6030,16 @@ impl Renderer {
         let chunk = match result {
             Ok(chunk) => chunk,
             Err(error) => {
-                // A failed writer leaves the encoder untouched. Validation
-                // may have failed before unmap, so unmap before remapping too.
+                // A failed writer leaves the encoder untouched, and the
+                // source upload leaves the slot unmapped whichever step
+                // failed: a second unmap was a GPU validation error after a
+                // source failed its write (#152).
                 if let Some(index) = staging_index {
                     let draw = live_runtime_mut(&mut self.stream_runtime)?
                         .draws
                         .iter_mut()
                         .find(|draw| draw.job == ticket.job)
                         .ok_or(FiggyError::internal("a recording ticket's cursor is live"))?;
-                    draw.staging_slots[index].buffer.unmap();
                     draw.staging_slots[index].remap();
                 }
                 return Err(error);
@@ -6074,6 +6086,42 @@ impl Renderer {
         mut observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
         reusable_staging: Option<&TrackedBuffer>,
     ) -> StreamResult<RecordedChunk> {
+        // On failure the reusable staging slot is left unmapped, whichever
+        // step failed, so the caller only remaps it (#152).
+        let mut staging_unmapped = false;
+        let result = self.accept_stream_sources_into(
+            ticket,
+            inputs,
+            encoder,
+            headroom_bytes,
+            reusable_work,
+            preferred_work_bytes,
+            observe.take(),
+            reusable_staging,
+            &mut staging_unmapped,
+        );
+        if result.is_err()
+            && !staging_unmapped
+            && let Some(staging) = reusable_staging
+        {
+            staging.unmap();
+        }
+        result
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn accept_stream_sources_into(
+        &mut self,
+        ticket: StreamTicket,
+        inputs: &[StreamSourceInput<'_>],
+        encoder: &mut wgpu::CommandEncoder,
+        headroom_bytes: u64,
+        reusable_work: Option<&TrackedBuffer>,
+        preferred_work_bytes: u64,
+        mut observe: Option<&mut dyn FnMut(usize, usize, f32, f32)>,
+        reusable_staging: Option<&TrackedBuffer>,
+        staging_unmapped: &mut bool,
+    ) -> StreamResult<RecordedChunk> {
         self.validate_stream_sources(ticket, inputs)?;
         let prepared = self.prepare_stream_statistics(ticket)?;
         let budget = self.stream_upload_budget(headroom_bytes)?;
@@ -6098,6 +6146,7 @@ impl Renderer {
                     preferred_work_bytes,
                     *observe,
                     reusable_staging,
+                    staging_unmapped,
                 )
             } else {
                 crate::streaming_upload::record_source_chunk_collecting_statistics_reusing_observed(
@@ -6112,6 +6161,7 @@ impl Renderer {
                     preferred_work_bytes,
                     &mut |_, _, _, _| {},
                     reusable_staging,
+                    staging_unmapped,
                 )
             }
             .map_err(|error| {

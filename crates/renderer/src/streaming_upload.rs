@@ -453,6 +453,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing<'a>(
         preferred_work_bytes,
         &mut |_, _, _, _| {},
         None,
+        &mut false,
     )
 }
 
@@ -468,6 +469,7 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
     preferred_work_bytes: u64,
     observe: &mut dyn FnMut(usize, usize, f32, f32),
     reusable_staging: Option<&TrackedBuffer>,
+    staging_unmapped: &mut bool,
 ) -> Result<RecordedChunk, ChunkUploadError> {
     if statistics_plans.len() != columns.len() {
         return Err(StreamError::InvalidPayload.into());
@@ -524,17 +526,17 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         )
         .map(|buffer| TrackedBuffer::new(ledger, GpuResourceKind::StreamingUpload, buffer))
     };
-    let staging =
-        if let Some(staging) = reusable_staging.filter(|staging| staging.size() >= work_bytes) {
-            staging.clone()
-        } else {
-            create(
-                "stream chunk staging",
-                work_bytes,
-                wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
-                true,
-            )?
-        };
+    let reused = reusable_staging.filter(|staging| staging.size() >= work_bytes);
+    let staging = if let Some(staging) = reused {
+        staging.clone()
+    } else {
+        create(
+            "stream chunk staging",
+            work_bytes,
+            wgpu::BufferUsages::COPY_SRC | wgpu::BufferUsages::MAP_WRITE,
+            true,
+        )?
+    };
     let written: Result<(), ChunkUploadError> = (|| {
         let mut mapped = staging
             .slice(..)
@@ -583,6 +585,9 @@ pub(crate) fn record_source_chunk_collecting_statistics_reusing_observed<'a>(
         Ok(())
     })();
     staging.unmap();
+    // The caller's reusable slot is unmapped now only if it was the one
+    // written; a fresh staging leaves it mapped (#152).
+    *staging_unmapped = reused.is_some();
     written?;
     let work = if let Some(work) = reusable_work.filter(|work| work.size() >= work_bytes) {
         work.clone()
