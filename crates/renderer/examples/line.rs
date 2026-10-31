@@ -87,7 +87,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .nth(1)
         .unwrap_or_else(|| "line.png".into());
     std::fs::write(&output, encode_png(&image)?)?;
-    renderer.wait_idle().unwrap();
+    renderer.wait_idle()?;
     println!(
         "{}: {}x{}",
         std::path::Path::new(&output).display(),
