@@ -651,14 +651,15 @@ impl Renderer {
                 reason: error.to_string(),
             }
         })?;
-        uploads.extend(sources.iter().zip(&lengths).map(|(source, &len)| {
-            data_render::column_pool::StreamedColumnUpload {
+        for (source, &len) in sources.iter().zip(&lengths) {
+            uploads.push(data_render::column_pool::StreamedColumnUpload {
                 id: source.id,
                 source: source.source,
-                len_values: usize::try_from(len)
-                    .expect("validated host length originated as usize"),
-            }
-        }));
+                len_values: usize::try_from(len).map_err(|_| {
+                    FiggyError::internal("a validated host length originated as usize")
+                })?,
+            });
+        }
 
         let Renderer {
             device,
@@ -692,16 +693,22 @@ impl Renderer {
             &changed_columns,
         )?;
 
+        // The validation above found every source registered as streamed.
+        // Check it before the commit, which then cannot fail.
+        if !sources
+            .iter()
+            .all(|source| streaming_sources.contains_key(source.id))
+        {
+            return Err(FiggyError::internal(
+                "validated stream sources remain registered",
+            ));
+        }
         // No operation below this point allocates or can fail. Pool visibility,
         // logical-source authority and dependent derived stamps therefore
         // advance as one renderer commit.
         promotion.commit();
         for source in sources {
-            let removed = streaming_sources.remove(source.id);
-            debug_assert!(
-                removed.is_some(),
-                "validated stream source remains registered"
-            );
+            streaming_sources.remove(source.id);
         }
         invalidation.publish(chart_states, visual_revision);
         if let Some(prepared_picker) = prepared_picker {
@@ -992,7 +999,9 @@ impl Renderer {
             let binding = sources
                 .iter()
                 .find(|binding| binding.id == source.id)
-                .expect("exact closure source coverage was validated");
+                .ok_or(FiggyError::internal(
+                    "exact closure source coverage was validated",
+                ))?;
             if binding.revision != source.revision {
                 return Err(FiggyError::InvalidStreamSource {
                     id: source.id.clone(),
@@ -1047,7 +1056,9 @@ impl Renderer {
             let registered = self
                 .streaming_sources
                 .get(&source.id)
-                .expect("closure column was validated streamed");
+                .ok_or(FiggyError::internal(
+                    "closure column was validated streamed",
+                ))?;
             if source.revision < registered.revision {
                 return Err(FiggyError::InvalidStreamSource {
                     id: source.id.clone(),
@@ -1064,11 +1075,11 @@ impl Renderer {
                         reason: "same-revision streamed metadata does not match registered content metadata",
                     });
                 }
-                debug_assert_eq!(
-                    self.stream_revision_lineage.get(&source.id),
-                    Some(&source.revision),
-                    "registered stream revision remains the logical lineage"
-                );
+                if self.stream_revision_lineage.get(&source.id) != Some(&source.revision) {
+                    return Err(FiggyError::internal(
+                        "registered stream revision remains the logical lineage",
+                    ));
+                }
                 continue;
             }
             if !changed.contains(source.id.as_str()) {
@@ -1218,15 +1229,20 @@ impl Renderer {
             None => None,
         };
 
+        // Each closure column is either resident or registered as streamed,
+        // never both: checked before the commit, which then cannot fail.
+        if entries
+            .iter()
+            .any(|(id, _, _, was_resident, _)| streaming_sources.contains_key(id) == *was_resident)
+        {
+            return Err(FiggyError::internal(
+                "normalization classification remains current until commit",
+            ));
+        }
         // All remaining operations are allocation-free and infallible.
         removal.commit();
-        for (id, lineage_id, revision, was_resident, source) in entries {
-            let replaced = streaming_sources.insert(id, source);
-            debug_assert_eq!(
-                replaced.is_some(),
-                !was_resident,
-                "normalization classification remains current until commit"
-            );
+        for (id, lineage_id, revision, _, source) in entries {
+            streaming_sources.insert(id, source);
             stream_revision_lineage.insert(lineage_id, revision);
         }
         *next_stream_source_fit_epoch = final_fit_epoch;
@@ -1404,7 +1420,11 @@ impl Renderer {
                 },
             ));
         }
-        debug_assert_eq!(fit_epoch, final_fit_epoch);
+        if fit_epoch != final_fit_epoch {
+            return Err(FiggyError::internal(
+                "the handoff assigns every planned fit epoch",
+            ));
+        }
 
         let mut resident_ids = Vec::new();
         resident_ids
@@ -1448,19 +1468,34 @@ impl Renderer {
             None => None,
         };
 
+        // Checked before the commit, which then cannot fail: each closure
+        // column is either resident or registered as streamed, and an auto
+        // fit's target chart is registered.
+        if entries
+            .iter()
+            .any(|(id, _, _, was_resident, _)| streaming_sources.contains_key(id) == *was_resident)
+        {
+            return Err(FiggyError::internal(
+                "handoff classification remains current until commit",
+            ));
+        }
+        if auto_fit_revisions.is_some() && !chart_states.contains_key(&chart) {
+            return Err(FiggyError::internal(
+                "resident handoff target chart remains registered",
+            ));
+        }
         // No operation below this point allocates or can fail.
         removal.commit();
-        for (id, lineage_id, revision, was_resident, source) in entries {
-            let replaced = streaming_sources.insert(id, source);
-            debug_assert_eq!(replaced.is_some(), !was_resident);
+        for (id, lineage_id, revision, _, source) in entries {
+            streaming_sources.insert(id, source);
             stream_revision_lineage.insert(lineage_id, revision);
         }
         *next_stream_source_fit_epoch = final_fit_epoch;
         invalidation.publish(chart_states, visual_revision);
         let revision = if let Some((desired, config, view, raster, visual)) = auto_fit_revisions {
-            let state = chart_states
-                .get_mut(&chart)
-                .expect("resident handoff target chart remains registered");
+            let state = chart_states.get_mut(&chart).ok_or(FiggyError::internal(
+                "resident handoff target chart remains registered",
+            ))?;
             streaming_runtime::copy_stream_fit_axes(&mut state.config, rendered_config);
             state.stream_auto_fit_padding = None;
             state.revisions.desired = desired;

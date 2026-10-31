@@ -7,6 +7,7 @@
 
 use super::StreamDrawPhase;
 use crate::Config;
+use crate::FiggyError;
 use crate::config::DrawStyle;
 use crate::config::{AxisOptions, AxisScale};
 use crate::data_config::ErrorRef;
@@ -172,9 +173,9 @@ impl GpuViewCache {
         ledger: &Arc<GpuLedger>,
         memory_budget: u64,
         current_gpu_bytes: u64,
-    ) -> Result<Self, PackReject> {
+    ) -> Result<Self, PackUploadError> {
         if candidate.rejected.is_some() {
-            return Err(PackReject::WorkingSetExceeded);
+            return Err(PackReject::WorkingSetExceeded.into());
         }
         let view = candidate.view;
         let mut chunks = candidate.gpu_chunks;
@@ -212,7 +213,7 @@ fn upload_phase(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     ledger: &Arc<GpuLedger>,
-) -> Result<GpuPhaseChunk, PackReject> {
+) -> Result<GpuPhaseChunk, PackUploadError> {
     let row_count = phase.chunk.rows.len();
     let source_runs = runs_from_rows(&phase.chunk.rows)?;
     let mut pair_bytes = 0u64;
@@ -226,7 +227,7 @@ fn upload_phase(
         || total > device.limits().max_buffer_size
         || total > u64::from(device.limits().max_storage_buffer_binding_size)
     {
-        return Err(PackReject::WorkingSetExceeded);
+        return Err(PackReject::WorkingSetExceeded.into());
     }
     let mut columns = Vec::new();
     let mut ranges = Vec::new();
@@ -236,7 +237,7 @@ fn upload_phase(
     ranges
         .try_reserve_exact(phase.chunk.columns.len())
         .map_err(|_| PackReject::AllocationFailed)?;
-    let buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let buffer = crate::renderer::gpu_checked(device, "figgy view-local packed rows", || {
         // gpu-alloc: ViewResident
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("figgy view-local packed rows"),
@@ -246,8 +247,15 @@ fn upload_phase(
                 | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         })
-    }))
-    .map_err(|_| PackReject::AllocationFailed)?;
+    })
+    .map_err(|error| match error {
+        // The packed view is optional: a buffer the device cannot allocate
+        // rejects it, and the stream keeps drawing from its sources.
+        FiggyError::GpuResourceAllocationFailed { .. } => {
+            PackUploadError::Reject(PackReject::AllocationFailed)
+        }
+        other => PackUploadError::Gpu(other),
+    })?;
     let work = TrackedBuffer::new(ledger, GpuResourceKind::ViewResident, buffer);
     let mut offset = 0u64;
     for (index, bytes) in phase.chunk.columns.iter().enumerate() {
@@ -386,8 +394,9 @@ impl ViewPackedCandidate {
             self.reject(PackReject::WorkingSetExceeded);
             return;
         }
-        if merge {
-            let last = &mut self.chunks.last_mut().unwrap().chunk;
+        // `merge` holds only when a last chunk exists.
+        if let Some(last) = self.chunks.last_mut().filter(|_| merge) {
+            let last = &mut last.chunk;
             let separator = usize::from(phase == StreamDrawPhase::Line);
             if last.rows.try_reserve(chunk.rows.len() + separator).is_err() {
                 self.reject(PackReject::AllocationFailed);
@@ -445,9 +454,9 @@ impl ViewPackedCandidate {
         ledger: &Arc<GpuLedger>,
         memory_budget: Option<u64>,
         current_gpu_bytes: u64,
-    ) {
+    ) -> Result<(), FiggyError> {
         if self.rejected.is_some() || self.chunks.is_empty() {
-            return;
+            return Ok(());
         }
         let ready = self.chunks.len() >= 2
             || self.chunks[0]
@@ -455,32 +464,37 @@ impl ViewPackedCandidate {
                 .byte_len()
                 .is_some_and(|bytes| bytes >= 8 * 1024 * 1024);
         if !ready {
-            return;
+            return Ok(());
         }
         let Some(budget) = memory_budget else {
             self.reject(PackReject::MemoryBudgetUnset);
-            return;
+            return Ok(());
         };
         let Some(bytes) = self.chunks[0].chunk.byte_len() else {
             self.reject(PackReject::WorkingSetExceeded);
-            return;
+            return Ok(());
         };
         if current_gpu_bytes
             .checked_add(bytes)
             .is_none_or(|total| total > budget)
         {
             self.reject(PackReject::WorkingSetExceeded);
-            return;
+            return Ok(());
         }
         if self.gpu_chunks.try_reserve(1).is_err() {
             self.reject(PackReject::AllocationFailed);
-            return;
+            return Ok(());
         }
         let phase = self.chunks.remove(0);
         match upload_phase(phase, device, queue, ledger) {
             Ok(chunk) => self.gpu_chunks.push(chunk),
-            Err(reason) => self.reject(reason),
+            Err(PackUploadError::Reject(reason)) => self.reject(reason),
+            Err(PackUploadError::Gpu(error)) => {
+                self.reject(PackReject::AllocationFailed);
+                return Err(error);
+            }
         }
+        Ok(())
     }
 
     pub(super) fn reject(&mut self, reason: PackReject) {
@@ -498,6 +512,20 @@ impl ViewPackedCandidate {
 pub(super) struct PackedViewChunk {
     pub(super) rows: Vec<u64>,
     pub(super) columns: Vec<Vec<u8>>,
+}
+
+/// Why a packed view upload stopped: a rejection the stream falls back from,
+/// or a GPU failure (a lost device, a validation error) the caller returns.
+#[derive(Debug)]
+pub(super) enum PackUploadError {
+    Reject(PackReject),
+    Gpu(FiggyError),
+}
+
+impl From<PackReject> for PackUploadError {
+    fn from(reason: PackReject) -> Self {
+        Self::Reject(reason)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1196,7 +1224,9 @@ mod tests {
         candidate.push(0, StreamDrawPhase::Line, one_row(0));
         candidate.push(0, StreamDrawPhase::Scatter, one_row(1));
         assert_eq!(candidate.packed_bytes, 32);
-        candidate.flush_completed(&device, &queue, &ledger, Some(32), 0);
+        candidate
+            .flush_completed(&device, &queue, &ledger, Some(32), 0)
+            .unwrap();
         assert_eq!(candidate.gpu_chunks.len(), 1);
         assert_eq!(
             candidate.chunks.len(),
@@ -1213,7 +1243,9 @@ mod tests {
         let mut budget_refused = ViewPackedCandidate::new(view, 32);
         budget_refused.push(0, StreamDrawPhase::Line, one_row(0));
         budget_refused.push(0, StreamDrawPhase::Scatter, one_row(1));
-        budget_refused.flush_completed(&device, &queue, &ledger, Some(15), 0);
+        budget_refused
+            .flush_completed(&device, &queue, &ledger, Some(15), 0)
+            .unwrap();
         assert_eq!(
             budget_refused.rejected,
             Some(PackReject::WorkingSetExceeded)

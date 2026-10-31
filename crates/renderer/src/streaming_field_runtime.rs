@@ -97,7 +97,7 @@ impl Renderer {
         picking: bool,
     ) -> StreamResult<StreamFieldState> {
         let snapshot = self.auto_stream_snapshot(job);
-        let runtime = self.stream_runtime.as_ref().unwrap();
+        let runtime = live_runtime(&self.stream_runtime)?;
         let draw = runtime
             .draws
             .iter()
@@ -275,10 +275,7 @@ impl Renderer {
         job: StreamJob,
     ) -> StreamResult<StreamDrawRequestStatus> {
         let snapshot = self.auto_stream_snapshot(job);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == job)
@@ -297,10 +294,7 @@ impl Renderer {
             return Ok(StreamDrawRequestStatus::Backpressure);
         }
         drop(snapshot);
-        let needs_state = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let needs_state = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == job)
@@ -309,69 +303,55 @@ impl Renderer {
             .is_none();
         if needs_state {
             let field = self.new_stream_field(job, false)?;
-            self.stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap()
+            live_runtime_mut(&mut self.stream_runtime)?
+                .live_draw_mut(job)?
                 .field = Some(field);
         }
         let budget = self.stream_field_budget(0)?;
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let field = draw.field.as_mut().unwrap();
-        if field.tile.is_none() {
-            let rect = [
-                field.next[0],
-                field.next[1],
-                field
-                    .shape
-                    .width
-                    .min(field.scissor[0] + field.scissor[2] - field.next[0]),
-                field
-                    .shape
-                    .height
-                    .min(field.scissor[1] + field.scissor[3] - field.next[1]),
-            ];
-            let mut tile = field::Tile::new(
-                &self.device,
-                Arc::clone(&field.resources),
-                field::Budget {
-                    headroom_bytes: u64::from(field.max_pairs) * 16,
-                    ..budget
-                },
-                field.shape,
-                field.viewport,
-                field.scissor,
-                rect,
-                field.max_pairs,
-            )?;
-            let mut encoder = self.device.create_command_encoder(&Default::default());
-            let step = tile.record_init(&mut encoder)?;
-            self.queue.submit([encoder.finish()]);
-            tile.commit(step)?;
-            field.tile = Some(tile);
-        }
-        let Action::Source(request) = field.tile.as_ref().unwrap().action()? else {
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
+        let field = draw.field.as_mut().ok_or(FiggyError::internal(
+            "a field cursor has its state (created above)",
+        ))?;
+        let tile = match field.tile.take() {
+            Some(tile) => tile,
+            None => {
+                let rect = [
+                    field.next[0],
+                    field.next[1],
+                    field
+                        .shape
+                        .width
+                        .min(field.scissor[0] + field.scissor[2] - field.next[0]),
+                    field
+                        .shape
+                        .height
+                        .min(field.scissor[1] + field.scissor[3] - field.next[1]),
+                ];
+                let mut tile = field::Tile::new(
+                    &self.device,
+                    Arc::clone(&field.resources),
+                    field::Budget {
+                        headroom_bytes: u64::from(field.max_pairs) * 16,
+                        ..budget
+                    },
+                    field.shape,
+                    field.viewport,
+                    field.scissor,
+                    rect,
+                    field.max_pairs,
+                )?;
+                let mut encoder = self.device.create_command_encoder(&Default::default());
+                let step = tile.record_init(&mut encoder)?;
+                self.queue.submit([encoder.finish()]);
+                tile.commit(step)?;
+                tile
+            }
+        };
+        let Action::Source(request) = field.tile.insert(tile).action()? else {
             return Err(StreamError::WrongState.into());
         };
         let snapshot = self.auto_stream_snapshot(job);
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime(&self.stream_runtime)?.live_draw(job)?;
         let series = snapshot
             .as_ref()
             .map_or(&self.chart_states[&job.chart].series[draw.series], |s| {
@@ -397,13 +377,8 @@ impl Renderer {
         )? {
             StreamRequestStatus::Backpressure => Ok(StreamDrawRequestStatus::Backpressure),
             StreamRequestStatus::Ready(ticket) => {
-                self.stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap()
+                live_runtime_mut(&mut self.stream_runtime)?
+                    .live_draw_mut(job)?
                     .pending = Some(ticket);
                 Ok(StreamDrawRequestStatus::Ready(ticket))
             }
@@ -423,10 +398,7 @@ impl Renderer {
             .map(|s| &s.view)
             .or(explicit_view)
             .ok_or(StreamError::WrongState)?;
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
+        let draw = live_runtime(&self.stream_runtime)?
             .draws
             .iter()
             .find(|draw| draw.job == ticket.job)
@@ -474,15 +446,16 @@ impl Renderer {
         let recorded = (|| -> StreamResult<(field::RecordedStep, bool)> {
             let handle = chunk.column_handle(range)?;
             let budget = self.stream_field_budget(0)?;
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
+            let draw = live_runtime_mut(&mut self.stream_runtime)?
                 .draws
                 .iter_mut()
                 .find(|draw| draw.job == ticket.job)
-                .unwrap();
-            let tile = draw.field.as_mut().unwrap().tile.as_mut().unwrap();
+                .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+            let tile = draw
+                .field
+                .as_mut()
+                .and_then(|field| field.tile.as_mut())
+                .ok_or(FiggyError::internal("a field ticket keeps its tile"))?;
             let mut step = tile.record_source(
                 &self.device,
                 &mut encoder,
@@ -510,18 +483,19 @@ impl Renderer {
         };
         let result = self.queue_stream_recording(ticket, encoder.finish());
         drop(chunk);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
+        let draw = live_runtime_mut(&mut self.stream_runtime)?
             .draws
             .iter_mut()
             .find(|draw| draw.job == ticket.job)
-            .unwrap();
-        let field = draw.field.as_mut().unwrap();
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+        let field = draw
+            .field
+            .as_mut()
+            .ok_or(FiggyError::internal("a field ticket keeps its field state"))?;
+        const NO_TILE: FiggyError = FiggyError::internal("a field ticket keeps its tile");
         match result {
             Ok(submission) => {
-                field.tile.as_mut().unwrap().commit(step)?;
+                field.tile.as_mut().ok_or(NO_TILE)?.commit(step)?;
                 draw.pending = None;
                 if final_tile {
                     field.tile = None;
@@ -539,7 +513,7 @@ impl Renderer {
                 Ok(submission)
             }
             Err(error) => {
-                field.tile.as_mut().unwrap().discard(step)?;
+                field.tile.as_mut().ok_or(NO_TILE)?.discard(step)?;
                 self.discard_stream_recording(ticket)?;
                 self.end_gpu_frame();
                 Err(error)

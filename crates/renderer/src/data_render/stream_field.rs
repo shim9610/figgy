@@ -11,21 +11,60 @@ use crate::streaming::StreamError;
 use std::sync::Arc;
 use wgpu::util::DeviceExt;
 
+/// A field operation's failure: a stream state or budget rejection, or a GPU
+/// error (out of memory, validation, a lost device) creating its buffers.
+#[derive(Debug)]
+pub(crate) enum FieldError {
+    Stream(StreamError),
+    Gpu(crate::FiggyError),
+}
+
+impl From<StreamError> for FieldError {
+    fn from(error: StreamError) -> Self {
+        Self::Stream(error)
+    }
+}
+
 pub(crate) const PIXEL_BYTES: u64 = 136;
 pub(crate) const STEP_BYTES: u64 = 32;
-#[repr(C)]
-#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+/// The tile uniform: origin and extent (`vec2<u32>` each), samples (`u32`),
+/// chart extent (`vec2<f32>`), padding, then the viewport (`vec4<f32>`).
+#[derive(Clone, Copy)]
 struct TileUniform {
     origin: [u32; 2],
     extent: [u32; 2],
     samples: u32,
     chart_extent: [f32; 2],
-    _pad: u32,
     viewport: [f32; 4],
 }
 
-const TILE_BYTES: u64 = std::mem::size_of::<TileUniform>() as u64;
-const _: () = assert!(TILE_BYTES == 48);
+impl TileUniform {
+    /// Little-endian bytes in the shader's layout. Written field by field, so
+    /// the layout needs no padding check (#152).
+    fn to_bytes(self) -> [u8; TILE_BYTES as usize] {
+        let words = [
+            self.origin[0].to_le_bytes(),
+            self.origin[1].to_le_bytes(),
+            self.extent[0].to_le_bytes(),
+            self.extent[1].to_le_bytes(),
+            self.samples.to_le_bytes(),
+            self.chart_extent[0].to_le_bytes(),
+            self.chart_extent[1].to_le_bytes(),
+            0u32.to_le_bytes(),
+            self.viewport[0].to_le_bytes(),
+            self.viewport[1].to_le_bytes(),
+            self.viewport[2].to_le_bytes(),
+            self.viewport[3].to_le_bytes(),
+        ];
+        let mut bytes = [0u8; TILE_BYTES as usize];
+        for (destination, word) in bytes.chunks_exact_mut(4).zip(words) {
+            destination.copy_from_slice(&word);
+        }
+        bytes
+    }
+}
+
+const TILE_BYTES: u64 = 48;
 pub(crate) const TILE_OVERHEAD_BYTES: u64 = TILE_BYTES + STEP_BYTES;
 
 #[derive(Clone, Copy)]
@@ -139,7 +178,7 @@ impl Resources {
         style: &PrimitiveStyle,
         params: &FieldParamsGpu,
         tables: &FieldLookupTables,
-    ) -> Result<Arc<Self>, StreamError> {
+    ) -> Result<Arc<Self>, FieldError> {
         let centers = params.flags & super::FIELD_FLAG_CENTERS != 0;
         let interpolated = params.flags & super::FIELD_FLAG_INTERPOLATED != 0;
         let cy = params.flags & super::FIELD_FLAG_COLUMNS_ARE_Y != 0;
@@ -163,7 +202,7 @@ impl Resources {
             || tables.stops.len() < required_stops
             || tables.metadata.len() < (params.level_count as usize).div_ceil(32).max(1)
         {
-            return Err(StreamError::InvalidRange);
+            return Err(StreamError::InvalidRange.into());
         }
         let payloads = [
             bytemuck::bytes_of(transform),
@@ -182,7 +221,7 @@ impl Resources {
                 u64::from(limits.max_storage_buffer_binding_size)
             };
             if len == 0 || len > limit || len > limits.max_buffer_size {
-                return Err(StreamError::TooLarge);
+                return Err(StreamError::TooLarge.into());
             }
             total = total.checked_add(len).ok_or(StreamError::Overflow)?;
         }
@@ -366,7 +405,7 @@ impl PickTile {
         budget: Budget,
         max_pairs: u32,
         query: crate::gpu_data_pick::GpuStreamFieldQuery,
-    ) -> Result<Self, StreamError> {
+    ) -> Result<Self, FieldError> {
         let tile = Tile::new(
             device,
             Arc::clone(&resources),
@@ -458,9 +497,9 @@ impl PickTile {
         work: &wgpu::Buffer,
         base: u32,
         charge: SharedCharge,
-    ) -> Result<(RecordedStep, bool), StreamError> {
+    ) -> Result<(RecordedStep, bool), FieldError> {
         if !matches!(request.role, SourceRole::Axis(_)) {
-            return Err(StreamError::WrongState);
+            return Err(StreamError::WrongState.into());
         }
         let mut step = self
             .tile
@@ -511,7 +550,7 @@ impl Tile {
         panel_scissor: [u32; 4],
         rect: [u32; 4],
         max_pairs: u32,
-    ) -> Result<Self, StreamError> {
+    ) -> Result<Self, FieldError> {
         if shape.samples != resources.pipelines.samples
             || max_pairs < 2
             || viewport.into_iter().any(|n| !n.is_finite())
@@ -522,7 +561,7 @@ impl Tile {
             || rect[2] > shape.width
             || rect[3] > shape.height
         {
-            return Err(StreamError::InvalidRange);
+            return Err(StreamError::InvalidRange.into());
         }
         for axis in 0..2 {
             let end = rect[axis]
@@ -532,7 +571,7 @@ impl Tile {
                 .checked_add(panel_scissor[axis + 2])
                 .ok_or(StreamError::Overflow)?;
             if rect[axis] < panel_scissor[axis] || end > panel_end {
-                return Err(StreamError::InvalidRange);
+                return Err(StreamError::InvalidRange.into());
             }
         }
         let shape = TileShape {
@@ -547,7 +586,7 @@ impl Tile {
             || rect[2].div_ceil(8) > limits.max_compute_workgroups_per_dimension
             || rect[3].div_ceil(8) > limits.max_compute_workgroups_per_dimension
         {
-            return Err(StreamError::TooLarge);
+            return Err(StreamError::TooLarge.into());
         }
         check_budget(
             &resources.ledger,
@@ -567,13 +606,12 @@ impl Tile {
             extent: [rect[2], rect[3]],
             samples: shape.samples,
             chart_extent: resources.chart_extent,
-            _pad: 0,
             viewport,
         };
         let meta = allocate_init(
             device,
             &resources.ledger,
-            bytemuck::bytes_of(&tile_params),
+            &tile_params.to_bytes(),
             wgpu::BufferUsages::UNIFORM,
         )?;
         let init = bind(
@@ -656,9 +694,9 @@ impl Tile {
         work: &wgpu::Buffer,
         pair_base: u32,
         source_charge: SharedCharge,
-    ) -> Result<RecordedStep, StreamError> {
+    ) -> Result<RecordedStep, FieldError> {
         if self.action()? != Action::Source(request) {
-            return Err(StreamError::Stale);
+            return Err(StreamError::Stale.into());
         }
         let end = u64::from(pair_base)
             .checked_add(u64::from(request.len))
@@ -669,7 +707,7 @@ impl Tile {
             || work.size() > u64::from(device.limits().max_storage_buffer_binding_size)
             || source_charge.charged_bytes() < work.size()
         {
-            return Err(StreamError::InvalidPayload);
+            return Err(StreamError::InvalidPayload.into());
         }
         check_budget(&self.gpu.resources.ledger, budget, STEP_BYTES)?;
         let params = &self.gpu.resources.params;
@@ -932,8 +970,8 @@ fn allocate(
     ledger: &Arc<GpuLedger>,
     size: u64,
     usage: wgpu::BufferUsages,
-) -> Result<TrackedBuffer, StreamError> {
-    let buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+) -> Result<TrackedBuffer, FieldError> {
+    let buffer = crate::renderer::gpu_checked(device, "stream field bounded state", || {
         // gpu-alloc: StreamingUpload
         device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("stream field bounded state"),
@@ -941,8 +979,8 @@ fn allocate(
             usage,
             mapped_at_creation: false,
         })
-    }))
-    .map_err(|_| StreamError::AllocationFailed)?;
+    })
+    .map_err(FieldError::Gpu)?;
     Ok(TrackedBuffer::new(
         ledger,
         GpuResourceKind::StreamingUpload,
@@ -955,16 +993,16 @@ fn allocate_init(
     ledger: &Arc<GpuLedger>,
     bytes: &[u8],
     usage: wgpu::BufferUsages,
-) -> Result<TrackedBuffer, StreamError> {
-    let buffer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+) -> Result<TrackedBuffer, FieldError> {
+    let buffer = crate::renderer::gpu_checked(device, "stream field immutable metadata", || {
         // gpu-alloc: StreamingUpload
         device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("stream field immutable metadata"),
             contents: bytes,
             usage,
         })
-    }))
-    .map_err(|_| StreamError::AllocationFailed)?;
+    })
+    .map_err(FieldError::Gpu)?;
     Ok(TrackedBuffer::new(
         ledger,
         GpuResourceKind::StreamingUpload,
@@ -991,7 +1029,9 @@ fn bind(
     })
 }
 
-const _: () = assert!(std::mem::size_of::<ContourLookupMetadataGpu>() == 8);
+// Compile-time size check without the assert macro (#152): the array
+// lengths must match.
+const _: [(); 8] = [(); std::mem::size_of::<ContourLookupMetadataGpu>()];
 
 #[cfg(test)]
 mod tests {
@@ -1337,7 +1377,7 @@ mod tests {
                 &data.params,
                 &tables
             ),
-            Err(StreamError::TooLarge)
+            Err(FieldError::Stream(StreamError::TooLarge))
         ));
         assert_eq!(ledger.total_bytes(), 0);
         let resources = Resources::new(
@@ -1410,7 +1450,7 @@ mod tests {
                 0,
                 work.shared_charge()
             ),
-            Err(StreamError::TooLarge)
+            Err(FieldError::Stream(StreamError::TooLarge))
         ));
         assert_eq!(ledger.total_bytes(), prior_bytes);
         assert_eq!(tile.action().unwrap(), Action::Source(request));
@@ -1427,7 +1467,7 @@ mod tests {
                 0,
                 work.shared_charge()
             ),
-            Err(StreamError::Stale)
+            Err(FieldError::Stream(StreamError::Stale))
         ));
         assert!(matches!(
             tile.record_source(
@@ -1439,7 +1479,7 @@ mod tests {
                 100,
                 work.shared_charge()
             ),
-            Err(StreamError::InvalidPayload)
+            Err(FieldError::Stream(StreamError::InvalidPayload))
         ));
         assert!(matches!(
             tile.record_final(&mut encoder, &view),
