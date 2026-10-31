@@ -31,6 +31,14 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **No panic paths** ([#152](https://github.com/shim9610/figgy/issues/152)).
+  The TeX parser bounds group nesting at 64 levels and answers deeper input
+  with `TexErrorKind::TooDeep` instead of overflowing the stack.
+  `ParallelOptions::validate_axis_count` refuses a parallel chart with fewer
+  than two axes; `ParallelOptions::validate` and the renderer's config
+  check call it, so such a chart is refused when it is set instead of
+  failing at draw time. Migration: code that set a
+  one-axis parallel chart now gets the reason. Nothing on the wire changes.
 - **Shape annotations**
   ([#138](https://github.com/shim9610/figgy/issues/138), #58).
   `AnnotationKind::Rect { from, to, style }`, `Ellipse { from, to, style }`
@@ -861,6 +869,41 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **No panic paths**
+  ([#152](https://github.com/shim9610/figgy/issues/152)). Product code has
+  no `unwrap`, `expect`, `panic!`, `unreachable!` or assert macro, and
+  every error is propagated; `python3 ci/verify.py static` runs a clippy
+  gate (`clippy.toml`) that fails on any of them. GPU work that can fail
+  runs inside error scopes on native (`gpu_checked`), and
+  `RendererDevice::new` registers a device-lost callback and an
+  uncaptured-error handler, so a lost device or a validation error surfaces
+  as `FiggyError::DeviceLost` or `FiggyError::GpuValidation` from the next
+  call instead of a wgpu panic. A panic inside a host `ColumnSource` is
+  contained and reported as an allocation error; an out-of-range write is
+  recorded and reported instead of panicking. Every index into an array
+  produced elsewhere is backed by a test or a build-time check at the
+  array's producer. A failed source write into a reused stream staging slot
+  no longer unmaps the slot twice, and a panel-scope export frame keeps one
+  panel configuration per item.
+  Memory: the glyph mask cache is held to 64 MiB and the glyph metrics cache
+  to 65 536 entries, evicting the least recently used, and a glyph is
+  rasterized at most 4096 px tall.
+  Breaking changes and their migration:
+  - `RendererDevice::wait_idle`, `wait_submitted_work` and
+    `service_gpu_completions` return `Result`; callers add `?`.
+  - `FiggyError` gains `Internal { invariant }`, `GpuValidation { resource,
+    reason }` and `DeviceLost { reason }`; `AllocError` gains
+    `Internal { invariant }`, `Gpu { resource, reason }` and
+    `MemberColumn`; `GpuPickError` gains `Internal` and `Gpu`;
+    `GpuErrorbarError` gains `Internal { invariant }` and `Gpu`. Exhaustive
+    matches add the arms.
+  - `RaggedRef::values` and `offsets` return `Option<ColumnHandle>`.
+  - `charged_buffer` and `charged_buffer_init` return `Result`.
+  - `draw_rich_text`, `draw_axes`, `draw_grid_layer` and
+    `draw_decoration_layer` return `Result`.
+  - `shader_assembly::module` returns `Option<&'static str>` for an unknown
+    name.
+  - `raster_chart_to_rgba` is removed; use the renderer's PNG export.
 - **Shape annotations**
   ([#138](https://github.com/shim9610/figgy/issues/138), #58). The
   annotation raster and the vector export draw the shape kinds through the
@@ -1918,6 +1961,13 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **No panic paths** ([#152](https://github.com/shim9610/figgy/issues/152)).
+  `hit_test` and `has_selection` throw a renderer error instead of
+  aborting the module, `wait_submitted_work` rejects on a lost device, and
+  an initialization progress error rejects the init promise. Document
+  setters prepare the new state before they commit it, so a refused edit
+  leaves the chart unchanged. Migration: callers that wrapped these in a
+  `try` see the error there; others see the thrown error.
 - **Shape annotations** ([#138](https://github.com/shim9610/figgy/issues/138)).
   `Rect`, `Ellipse` and `Polygon` items through the config JSON
   (SCHEMA.md); `annotations()` names them; `annotation_vertex(index, x, y)`
