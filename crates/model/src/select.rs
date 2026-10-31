@@ -210,10 +210,13 @@ fn part_extent(part: &DrawnPart) -> RectF {
 /// or rectangle is its box grown by [`SELECTION_PADDING`]; a stroke is the
 /// box [`segment_grab_half_width`] either side of its line and the padding
 /// beyond its ends; a triangle is its [`padded_triangle`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum PartOutline {
     Quad([[f32; 2]; 4]),
     Triangle([[f32; 2]; 3]),
+    /// A shape annotation's own polygon, possibly concave: grabbed
+    /// anywhere inside it (non-zero winding), its edge included.
+    Polygon(Vec<[f32; 2]>),
 }
 
 impl PartOutline {
@@ -222,12 +225,16 @@ impl PartOutline {
         match self {
             PartOutline::Quad(c) => c,
             PartOutline::Triangle(c) => c,
+            PartOutline::Polygon(c) => c,
         }
     }
 
     /// Whether `(x, y)` is inside the outline, its edge included.
     pub fn contains(&self, x: f32, y: f32) -> bool {
         let c = self.corners();
+        if let PartOutline::Polygon(_) = self {
+            return polygon_contains(c, x, y);
+        }
         let side =
             |a: [f32; 2], b: [f32; 2]| (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
         let (mut positive, mut negative) = (false, false);
@@ -240,10 +247,41 @@ impl PartOutline {
     }
 }
 
+/// Whether `(x, y)` is inside the closed polygon `c` by the non-zero
+/// winding rule, or on one of its edges.
+pub fn polygon_contains(c: &[[f32; 2]], x: f32, y: f32) -> bool {
+    let mut winding = 0i32;
+    for i in 0..c.len() {
+        let (a, b) = (c[i], c[(i + 1) % c.len()]);
+        let cross = (b[0] - a[0]) * (y - a[1]) - (b[1] - a[1]) * (x - a[0]);
+        // On the edge: within its extent and on its line.
+        let on_line = cross.abs() <= 1e-3 * (1.0 + (b[0] - a[0]).abs() + (b[1] - a[1]).abs());
+        if on_line
+            && x >= a[0].min(b[0]) - 1e-3
+            && x <= a[0].max(b[0]) + 1e-3
+            && y >= a[1].min(b[1]) - 1e-3
+            && y <= a[1].max(b[1]) + 1e-3
+        {
+            return true;
+        }
+        if a[1] <= y {
+            if b[1] > y && cross > 0.0 {
+                winding += 1;
+            }
+        } else if b[1] <= y && cross < 0.0 {
+            winding -= 1;
+        }
+    }
+    winding != 0
+}
+
 /// The [`PartOutline`] of `part`.
 pub fn part_outline(part: &DrawnPart) -> PartOutline {
-    match *part {
-        DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+    match part {
+        DrawnPart::Polygon { points, width } => {
+            PartOutline::Polygon(padded_polygon(points, width * 0.5 + SELECTION_PADDING))
+        }
+        &DrawnPart::Text(r) | &DrawnPart::Rect(r) => {
             let r = r.expanded(SELECTION_PADDING);
             PartOutline::Quad([
                 [r.x, r.y],
@@ -252,7 +290,7 @@ pub fn part_outline(part: &DrawnPart) -> PartOutline {
                 [r.x, r.y + r.height],
             ])
         }
-        DrawnPart::Segment { a, b, width } => {
+        &DrawnPart::Segment { a, b, width } => {
             let d = [b[0] - a[0], b[1] - a[1]];
             let len = d[0].hypot(d[1]);
             let (dir, n) = if len > 0.0 {
@@ -270,7 +308,7 @@ pub fn part_outline(part: &DrawnPart) -> PartOutline {
                 p(-along, half),
             ])
         }
-        DrawnPart::Triangle(t) => PartOutline::Triangle(padded_triangle(t)),
+        &DrawnPart::Triangle(t) => PartOutline::Triangle(padded_triangle(t)),
     }
 }
 
@@ -284,6 +322,52 @@ fn part_contains(part: &DrawnPart, x: f32, y: f32) -> bool {
 /// [`STROKE_GRAB_HALF_WIDTH`].
 pub fn segment_grab_half_width(width: f32) -> f32 {
     (width * 0.5 + SELECTION_PADDING).max(STROKE_GRAB_HALF_WIDTH)
+}
+
+/// The polygon `points` with every edge moved `pad` px outward (the miter
+/// of each vertex's two edge normals, as [`padded_triangle`]): the outline
+/// of a shape part, half its border width plus [`SELECTION_PADDING`], so
+/// the stroke and its antialiasing are inside the grab region. A degenerate
+/// polygon (no area, a zero-length edge, a reflex spike too sharp to miter)
+/// is returned as it is.
+pub fn padded_polygon(points: &[[f32; 2]], pad: f32) -> Vec<[f32; 2]> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    let mut area = 0.0;
+    for i in 0..n {
+        let (a, b) = (points[i], points[(i + 1) % n]);
+        area += a[0] * b[1] - b[0] * a[1];
+    }
+    if area.abs() < 1e-6 {
+        return points.to_vec();
+    }
+    // The outward normal of the edge `a`..`b`: for a polygon whose
+    // vertices turn clockwise on screen (positive shoelace with y down) the
+    // outside is to the edge's left in the y-down frame, else to its right.
+    let turn = if area > 0.0 { -1.0 } else { 1.0 };
+    let outward = |a: [f32; 2], b: [f32; 2]| -> Option<[f32; 2]> {
+        let len = (b[0] - a[0]).hypot(b[1] - a[1]);
+        if len <= 0.0 {
+            return None;
+        }
+        Some([-(b[1] - a[1]) / len * turn, (b[0] - a[0]) / len * turn])
+    };
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let (prev, v, next) = (points[(i + n - 1) % n], points[i], points[(i + 1) % n]);
+        let (Some(n1), Some(n2)) = (outward(prev, v), outward(v, next)) else {
+            return points.to_vec();
+        };
+        let denom = 1.0 + n1[0] * n2[0] + n1[1] * n2[1];
+        if denom <= 1e-6 {
+            return points.to_vec();
+        }
+        let k = pad / denom;
+        out.push([v[0] + k * (n1[0] + n2[0]), v[1] + k * (n1[1] + n2[1])]);
+    }
+    out
 }
 
 /// The triangle `t` with every edge moved [`SELECTION_PADDING`] px outward:

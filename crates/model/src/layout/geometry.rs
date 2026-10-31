@@ -757,6 +757,22 @@ impl Sink for Probe {
         self.add(DrawnPart::Triangle(points).extent());
     }
 
+    fn polygon(
+        &mut self,
+        _slot: Slot,
+        points: &[[f32; 2]],
+        _fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        self.add(
+            DrawnPart::Polygon {
+                points: points.to_vec(),
+                width: border.map_or(0.0, |b| b.width),
+            }
+            .extent(),
+        );
+    }
+
     fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {
         self.add(rect);
     }

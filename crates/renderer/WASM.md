@@ -1093,8 +1093,10 @@ Both classes expose the annotation layer with the same method set:
 selection `rect` and `handles`, `selected`), `hit_annotation(x, y)` (the
 topmost item index or `undefined`), `select_annotation(index | null)` and
 `selected_annotation()`, `annotation_handle(index, x, y)` (the live handle's
-compass name, e.g. `"W"`), `drag_annotation(index, dx, dy, handle | null)`
-(returns `false` for a rejected move), `add_annotation(json)` (returns the new
+compass name, e.g. `"W"`), `annotation_vertex(index, x, y)` (a polygon's vertex
+handle under the point, `"v3"`, or `undefined`),
+`drag_annotation(index, dx, dy, handle | null)` (returns `false` for a rejected
+move; `handle` is a compass name or a vertex name), `add_annotation(json)` (returns the new
 index), `set_annotation(index, json)`, `remove_annotation(index)`,
 `set_annotations_visible(bool)`, `pointer_to_anchor(x, y, "Data" | "Ratio")`
 (the `Anchor` at a point as a JSON string, or the JSON string `"null"` when

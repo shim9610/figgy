@@ -359,7 +359,7 @@ Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
 |---|---|---|
 | `id` | `String` | Free host label that survives reordering. Empty by default and omitted from JSON then |
 | `visible` | `bool` | A hidden item is neither drawn nor registered in the hit map; its geometry is kept. `true` by default and omitted then |
-| `kind` | `AnnotationKind` | One of the four variants below, externally tagged (serde's default): `"kind": {"Span": {...}}` |
+| `kind` | `AnnotationKind` | One of the seven variants below, externally tagged (serde's default): `"kind": {"Span": {...}}` |
 
 | `AnnotationKind` | Fields | Where and how it is drawn |
 |---|---|---|
@@ -367,6 +367,9 @@ Overlay elements are addressed as `DecorationId::Overlay { layer, inner }`
 | `Span` | `axis: AnnotationAxis`, `from: f64`, `to: f64`, `fill: Color` | Underlay, below the data, so a translucent fill never tints it. The band between `from` and `to`, clipped to the plot area; a band partly outside is clipped, one entirely outside is skipped |
 | `Text` | `anchor: Anchor`, `text: RichText`, `box_style: Option<BoxStyle>` | Overlay. The text block's top-left corner (the frame's corner when boxed) sits at the anchor, anywhere in the panel; a block that would leave the panel is skipped |
 | `Arrow` | `from: Anchor`, `to: Anchor`, `style: ArrowStyle`, `text: Option<RichText>` | Overlay. A shaft from `from` to `to` with a filled triangular head at `to`; the label is centred beside the shaft's midpoint, on its upper side |
+| `Rect` | `from: Anchor`, `to: Anchor`, `style: ShapeStyle` | The axis-aligned rectangle between the two anchors, clipped to the plot area; a rectangle with nothing left inside the plot is skipped. Overlay, or the underlay with `style.below` (#138) |
+| `Ellipse` | `from: Anchor`, `to: Anchor`, `style: ShapeStyle` | The ellipse inscribed in that rectangle, drawn as `ELLIPSE_SEGMENTS` (64) chords in the raster and the vector export alike, clipped to the plot area |
+| `Polygon` | `vertices: Vec<Anchor>` (at least three), `style: ShapeStyle` | The closed polygon through the anchors in order, concave or not, clipped to the plot area |
 
 `AnnotationAxis` is `X` (horizontal on screen) or `Y` (vertical) in every
 family. Cartesian charts map them to `bottom_x` / `left_y`, the axes the data
@@ -395,6 +398,7 @@ The styles are `serde(default)` with these defaults:
 | `AnnotationLineStyle` | `color` (dark grey), `width: f32` (1.5), `style: LineStylePreset` (`Solid`) |
 | `BoxStyle` | `fill` (white, alpha 0.9), `border_color` (dark grey), `border_width` (1.0), `padding` (4.0) between border and text |
 | `ArrowStyle` | `line: AnnotationLineStyle`, `head_length` (10.0), `head_width` (8.0) |
+| `ShapeStyle` | `fill: Option<Color>` (`None`: outline only), `border: AnnotationLineStyle` (a zero width or a transparent colour draws none; dash patterns run around the corners), `below: bool` (`false`: the overlay; `true`: the underlay below the data, as a span) |
 
 Every pixel dimension (strokes, text sizes, padding, arrow heads) scales with
 `Config::scaled` like the rest of the chart, so a 2× export draws the layer at

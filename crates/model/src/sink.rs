@@ -96,6 +96,16 @@ pub trait Sink {
     /// places a rectangle that paints nothing, such as the data area.
     fn rect(&mut self, slot: Slot, rect: RectF, fill: Option<Color>, border: Option<Border<'_>>);
     fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color);
+    /// A closed polygon through `points` (at least three, in drawing
+    /// order) with an optional fill and an optional border stroked along
+    /// its edges: a shape annotation.
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    );
     /// The colourbar strip: `rect` is its placement, the colour bands inside
     /// it are coverage the canvas sink paints from `bar`.
     fn ramp(&mut self, slot: Slot, rect: RectF, bar: &ColorBarOptions);
@@ -103,7 +113,7 @@ pub trait Sink {
 
 /// The stored form of one emitted part, in the chart frame: what the
 /// geometry sinks keep and what a per-part selection outlines.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum DrawnPart {
     /// A block of glyphs, rotation applied: one tick label, a title.
     Text(RectF),
@@ -119,16 +129,20 @@ pub enum DrawnPart {
     Rect(RectF),
     /// A filled triangle: an arrow head, tip first.
     Triangle([[f32; 2]; 3]),
+    /// A closed polygon, filled (`width` 0) or bordered by a stroke `width`
+    /// across: a shape annotation's clipped outline, in drawing order.
+    Polygon { points: Vec<[f32; 2]>, width: f32 },
 }
 
 impl DrawnPart {
     /// The axis-aligned extent of the part: a text block or rectangle as it
-    /// is, a segment with half its width either side, a triangle's bounding
-    /// box.
+    /// is, a segment with half its width either side, a triangle's or a
+    /// polygon's bounding box.
     pub fn extent(&self) -> RectF {
-        match *self {
-            DrawnPart::Text(r) | DrawnPart::Rect(r) => r,
-            DrawnPart::Segment { a, b, width } => {
+        match self {
+            DrawnPart::Text(r) | DrawnPart::Rect(r) => *r,
+            DrawnPart::Polygon { points, width } => points_extent(points).expanded(width * 0.5),
+            &DrawnPart::Segment { a, b, width } => {
                 let half = width * 0.5;
                 RectF {
                     x: a[0].min(b[0]) - half,
@@ -137,19 +151,32 @@ impl DrawnPart {
                     height: (a[1] - b[1]).abs() + half * 2.0,
                 }
             }
-            DrawnPart::Triangle(t) => {
-                let x0 = t[0][0].min(t[1][0]).min(t[2][0]);
-                let y0 = t[0][1].min(t[1][1]).min(t[2][1]);
-                let x1 = t[0][0].max(t[1][0]).max(t[2][0]);
-                let y1 = t[0][1].max(t[1][1]).max(t[2][1]);
-                RectF {
-                    x: x0,
-                    y: y0,
-                    width: x1 - x0,
-                    height: y1 - y0,
-                }
-            }
+            DrawnPart::Triangle(t) => points_extent(t),
         }
+    }
+}
+
+/// The bounding box of `points`; empty at the origin for no points.
+fn points_extent(points: &[[f32; 2]]) -> RectF {
+    let mut lo = [f32::INFINITY; 2];
+    let mut hi = [f32::NEG_INFINITY; 2];
+    for p in points {
+        lo = [lo[0].min(p[0]), lo[1].min(p[1])];
+        hi = [hi[0].max(p[0]), hi[1].max(p[1])];
+    }
+    if points.is_empty() {
+        return RectF {
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            height: 0.0,
+        };
+    }
+    RectF {
+        x: lo[0],
+        y: lo[1],
+        width: hi[0] - lo[0],
+        height: hi[1] - lo[1],
     }
 }
 
@@ -182,6 +209,19 @@ impl Sink for Parts<'_> {
 
     fn triangle(&mut self, _slot: Slot, points: [[f32; 2]; 3], _color: Color) {
         (self.0)(DrawnPart::Triangle(points));
+    }
+
+    fn polygon(
+        &mut self,
+        _slot: Slot,
+        points: &[[f32; 2]],
+        _fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        (self.0)(DrawnPart::Polygon {
+            points: points.to_vec(),
+            width: border.map_or(0.0, |b| b.width),
+        });
     }
 
     fn ramp(&mut self, _slot: Slot, rect: RectF, _bar: &ColorBarOptions) {

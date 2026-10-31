@@ -486,6 +486,14 @@ impl renderer::sink::Sink for LabelLog {
     ) {
     }
     fn triangle(&mut self, _: renderer::sink::Slot, _: [[f32; 2]; 3], _: renderer::Color) {}
+    fn polygon(
+        &mut self,
+        _: renderer::sink::Slot,
+        _: &[[f32; 2]],
+        _: Option<renderer::Color>,
+        _: Option<&renderer::sink::StrokeStyle<'_>>,
+    ) {
+    }
     fn ramp(&mut self, _: renderer::sink::Slot, _: RectF, _: &renderer::ColorBarOptions) {}
 }
 

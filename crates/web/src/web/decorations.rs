@@ -37,7 +37,15 @@ pub(crate) fn annotation_kind_name(kind: &renderer::AnnotationKind) -> &'static 
         renderer::AnnotationKind::Span { .. } => "Span",
         renderer::AnnotationKind::Text { .. } => "Text",
         renderer::AnnotationKind::Arrow { .. } => "Arrow",
+        renderer::AnnotationKind::Rect { .. } => "Rect",
+        renderer::AnnotationKind::Ellipse { .. } => "Ellipse",
+        renderer::AnnotationKind::Polygon { .. } => "Polygon",
     }
+}
+
+/// The vertex index a polygon handle name (`"v3"`) names.
+pub(crate) fn vertex_handle_index(name: &str) -> Option<usize> {
+    name.strip_prefix('v')?.parse().ok()
 }
 
 /// `RenderWarning::AnnotationSkipped` entries as `[{index, reason}]`.
@@ -599,11 +607,22 @@ impl FiggyChart {
             .map(|h| format!("{h:?}"))
     }
 
+    /// The vertex handle (`"v<i>"`) of a polygon annotation under a
+    /// point, or none: a polygon's handles are its vertices.
+    pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
+        let id = self.annotation_hit_id(index as usize).ok()?;
+        self.view
+            .annotation_map()
+            .hit_vertex(id, [x, y])
+            .map(|i| format!("v{i}"))
+    }
+
     /// Move an annotation, or one of its handles, by a pointer delta in
     /// physical canvas pixels. The delta is converted back into the
     /// item's anchors through the frame's anchor space and written to
     /// the config; a move that would leave the plot or panel is rejected
-    /// and returns `false`.
+    /// and returns `false`. A handle is a compass name (`"W"`, `"NE"`, ...)
+    /// or a polygon vertex (`"v3"`).
     pub fn drag_annotation(
         &mut self,
         index: u32,
@@ -613,6 +632,17 @@ impl FiggyChart {
     ) -> Result<bool, JsValue> {
         if !dx.is_finite() || !dy.is_finite() {
             return Err(js_err("drag must be finite"));
+        }
+        if let Some(vertex) = handle.as_deref().and_then(vertex_handle_index) {
+            let id = self.annotation_hit_id(index as usize)?;
+            let map = self.view.annotation_map();
+            let mut config = self.chart_config().clone();
+            let result = map.drag_vertex(&mut config.annotations, id, vertex, dx, dy);
+            if result != Some(NudgeResult::Moved) {
+                return Ok(false);
+            }
+            self.replace_chart_config(config)?;
+            return Ok(true);
         }
         use ModelResizeHandle::*;
         let handle = handle

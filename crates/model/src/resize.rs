@@ -23,7 +23,7 @@ use crate::text::MeasureText;
 pub const HANDLE_SIZE: f32 = 8.0;
 
 /// One of the eight resize handles, compass-named.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ResizeHandle {
     NW,
     N,

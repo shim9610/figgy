@@ -2216,8 +2216,8 @@ fn check_parts_near_ink(
     let mut far = Vec::new();
     for part in parts {
         let outline = part_outline(part);
-        match *part {
-            DrawnPart::Text(r) | DrawnPart::Rect(r) => {
+        match part {
+            &DrawnPart::Text(r) | &DrawnPart::Rect(r) => {
                 let o = r.expanded(SELECTION_PADDING);
                 let (x0, y0, x1, y1) = window(ink, o);
                 let inside =
@@ -2240,9 +2240,15 @@ fn check_parts_near_ink(
                     }
                 }
             }
-            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) => {
+            // A shape annotation's polygon is grabbed anywhere inside it:
+            // every point of it is near its fill or border ink (the scene's
+            // shapes are filled).
+            DrawnPart::Segment { .. } | DrawnPart::Triangle(_) | DrawnPart::Polygon { .. } => {
                 let reach = match *part {
                     DrawnPart::Segment { width, .. } => segment_grab_half_width(width) + STROKE_FIT,
+                    DrawnPart::Polygon { width, .. } => {
+                        width * 0.5 + SELECTION_PADDING + STROKE_FIT
+                    }
                     _ => SELECTION_PADDING + STROKE_FIT,
                 };
                 let c = outline.corners();

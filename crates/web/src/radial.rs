@@ -478,8 +478,17 @@ impl FiggyRadialChart {
             .hit_resize_handle(id, [x, y])
             .map(|h| format!("{h:?}"))
     }
-    /// Move an annotation, or one of its handles, by a pointer delta.
-    /// Returns `false` for a rejected move; the document is unchanged then.
+    /// The vertex handle (`"v<i>"`) of a polygon annotation under a point.
+    pub fn annotation_vertex(&self, index: u32, x: f32, y: f32) -> Option<String> {
+        let id = self.annotation_hit_id(index as usize).ok()?;
+        self.annotations
+            .annotations()
+            .hit_vertex(id, [x, y])
+            .map(|i| format!("v{i}"))
+    }
+    /// Move an annotation, or one of its handles (a compass name or a
+    /// polygon vertex `"v<i>"`), by a pointer delta. Returns `false` for a
+    /// rejected move; the document is unchanged then.
     pub fn drag_annotation(
         &mut self,
         index: u32,
@@ -494,15 +503,18 @@ impl FiggyRadialChart {
         let id = self.annotation_hit_id(index as usize)?;
         let map = self.annotations.annotations();
         let mut next = self.chart.clone();
-        let result = if let Some(name) = handle {
-            let h = [N, S, W, E, NW, NE, SW, SE]
-                .into_iter()
-                .find(|h| format!("{h:?}") == name)
-                .ok_or_else(|| js_err("unknown resize handle"))?;
-            map.resize_by(&mut next.annotations, id, h, dx, dy)
-        } else {
-            map.drag_by(&mut next.annotations, id, dx, dy)
-        };
+        let result =
+            if let Some(vertex) = handle.as_deref().and_then(crate::web::vertex_handle_index) {
+                map.drag_vertex(&mut next.annotations, id, vertex, dx, dy)
+            } else if let Some(name) = handle {
+                let h = [N, S, W, E, NW, NE, SW, SE]
+                    .into_iter()
+                    .find(|h| format!("{h:?}") == name)
+                    .ok_or_else(|| js_err("unknown resize handle"))?;
+                map.resize_by(&mut next.annotations, id, h, dx, dy)
+            } else {
+                map.drag_by(&mut next.annotations, id, dx, dy)
+            };
         if result != Some(renderer::layout::NudgeResult::Moved) {
             return Ok(false);
         }

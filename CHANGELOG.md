@@ -31,6 +31,22 @@ additive.
 
 ### Model (`figgy-model` 0.13.0)
 
+- **Shape annotations**
+  ([#138](https://github.com/shim9610/figgy/issues/138), #58).
+  `AnnotationKind::Rect { from, to, style }`, `Ellipse { from, to, style }`
+  and `Polygon { vertices, style }` with `ShapeStyle { fill, border, below }`:
+  the shape's screen polygon clipped to the plot area
+  (`AnnotationGeometry::Polygon`, `annotation::clip_polygon`), a rectangle's
+  eight box handles (`AnnotationHandle::Box`), a polygon's vertex handles
+  (`AnnotationHandle::Vertex`, `AnnotationElement::hit_vertex`), the hit
+  test anywhere inside the polygon (`PartOutline::Polygon`, non-zero
+  winding, `select::polygon_contains`). `Sink` gains `polygon(slot, points,
+  fill, border)` and `DrawnPart` / `PartOutline` a `Polygon(Vec<[f32; 2]>)`
+  variant; both lose `Copy` (they are `Clone`). Migration: every `Sink`
+  implementation adds `polygon`; code that copied a `DrawnPart` or a
+  `PartOutline` clones it; an exhaustive match on `AnnotationKind`,
+  `AnnotationGeometry`, `AnnotationHandle`, `DrawnPart` or `PartOutline`
+  adds the new arms. Additive on the wire.
 - **Roses: category bars on a polar chart**
   ([#133](https://github.com/shim9610/figgy/issues/133), #58).
   `Config::validate_category_bars` accepts `CategoryBars` series on a polar
@@ -795,6 +811,16 @@ additive.
 
 ### Renderer (`figgy-renderer` 0.19.0)
 
+- **Shape annotations**
+  ([#138](https://github.com/shim9610/figgy/issues/138), #58). The
+  annotation raster and the vector export draw the shape kinds through the
+  new `Sink::polygon` (`CanvasSink`: `Canvas::fill_polygon` and the
+  stroker's `stroke_polygon_outline`, one closed path so a dash runs around
+  the corners; `VectorSink`: a closed path with fill and stroke); the
+  selection box strokes a part's outline as its own point list; the
+  annotation map gains `hit_vertex` and `drag_vertex`. The `Annotations`
+  catalogue scene gains a rectangle below the data, an ellipse and a
+  concave polygon.
 - **Roses: category bars on a polar chart**
   ([#133](https://github.com/shim9610/figgy/issues/133), #58). A category
   bar series on a polar chart draws each bar as the wedge of its category's
@@ -1768,6 +1794,12 @@ additive.
 
 ### Browser product (`figgy` 0.16.0)
 
+- **Shape annotations** ([#138](https://github.com/shim9610/figgy/issues/138)).
+  `Rect`, `Ellipse` and `Polygon` items through the config JSON
+  (SCHEMA.md); `annotations()` names them; `annotation_vertex(index, x, y)`
+  answers a polygon's vertex handle (`"v3"`) and `drag_annotation` takes a
+  vertex name beside the compass names, on `FiggyChart` and
+  `FiggyBoundedChart` alike.
 - **Hexagonal grids** ([#134](https://github.com/shim9610/figgy/issues/134)).
   `"grid_layout": "Hexagonal"` reads and writes in `set_series` JSON
   (SCHEMA.md); a picked cell's `selection_details()` reports the raised

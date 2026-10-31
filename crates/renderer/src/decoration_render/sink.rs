@@ -193,6 +193,30 @@ impl Sink for CanvasSink<'_> {
         }
     }
 
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        // The placed points, one list per shape drawn.
+        let pts: Vec<(f32, f32)> = points.iter().map(|p| self.point(*p)).collect();
+        let border_paint = border
+            .filter(|b| b.color.a > 0.0 && b.width > 0.0)
+            .map(|b| (self.stroke_paint(&b.color, b.width, b.dash), b.tag));
+        let stroker = self.stroker;
+        let Some(canvas) = self.canvas(slot) else {
+            return;
+        };
+        if let Some(fill) = fill.filter(|c| c.a > 0.0) {
+            canvas.fill_polygon(&pts, &Paint::fill(&fill));
+        }
+        if let Some((paint, tag)) = border_paint {
+            stroker.stroke_polygon_outline(canvas, &pts, &paint, tag);
+        }
+    }
+
     fn ramp(&mut self, slot: Slot, rect: RectF, bar: &ColorBarOptions) {
         let r = self.place_rect(rect);
         if let Some(canvas) = self.canvas(slot) {
@@ -222,15 +246,17 @@ pub fn draw_selection_box(canvas: &mut Canvas, b: &SelectionBox, origin: [f32; 2
             canvas.draw_rect(x, y, w, h, &outline);
         }
         SelectionOutline::Parts(parts) => {
-            // Four corners and the closing point: the largest outline.
-            let mut pts = [(0.0, 0.0); 5];
+            // Each part's corners and the closing point, one list per
+            // part: a quad, a triangle or a shape's polygon.
             for part in parts {
                 let corners = part_outline(part);
                 let corners = corners.corners();
-                for (slot, c) in pts.iter_mut().zip(corners.iter().chain(corners.first())) {
-                    *slot = map(*c);
-                }
-                canvas.draw_polyline(&pts[..corners.len() + 1], &outline);
+                let pts: Vec<(f32, f32)> = corners
+                    .iter()
+                    .chain(corners.first())
+                    .map(|c| map(*c))
+                    .collect();
+                canvas.draw_polyline(&pts, &outline);
             }
         }
     }

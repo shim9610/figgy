@@ -790,10 +790,15 @@ common blue selection box; the handles it carries are the item's own: a span's
 two edges (`W`/`E` or `N`/`S`), a reference line's two value handles (`W`/`E`
 on an `X` line, `N`/`S` on a `Y` line; both move the value), an arrow's two
 endpoints (the endpoint further left is `W`, the other `E`;
-`N`/`S` for a vertical arrow); a text box has none. `resize_by` with that
-compass name moves the handle, `drag_by` moves the whole item. Moves that
-would leave the axis range (lines, span edges), the plot (a whole span) or the
-panel (text, arrow endpoints) are rejected atomically. Later items win where
+`N`/`S` for a vertical arrow); a rectangle's or ellipse's eight box handles
+(`W` / `E` move the side at the smaller / larger x, `N` / `S` the same in y, a
+corner both); a polygon's handles are its vertices (`hit_vertex`,
+`drag_vertex(layer, id, vertex, dx, dy)`, never a compass name); a text box has
+none. A shape is hit anywhere inside its polygon (a concave one in its arms
+and not in its notch), and its selection outline is that polygon. `resize_by`
+with that compass name moves the handle, `drag_by` moves the whole item. Moves
+that would leave the axis range (lines, span edges), the plot (a whole span or
+shape) or the panel (text, arrow endpoints) are rejected atomically. Later items win where
 items overlap. Hidden items and items the raster skipped are not registered;
 the skipped ones are `RenderWarning::AnnotationSkipped` on
 `ChartView::render_warnings()` / `BoundedAnnotationFrame::render_warnings()`.

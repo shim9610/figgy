@@ -18,7 +18,7 @@ pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
-    MeasuredText, PixelSpace,
+    MeasuredText, PixelSpace, ShapeStyle,
 };
 pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
 pub mod format;

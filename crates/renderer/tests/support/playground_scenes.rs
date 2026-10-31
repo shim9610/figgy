@@ -27,8 +27,8 @@ use renderer::polar::{PolarInterpolation, PolarOptions};
 use renderer::text::RichText;
 use renderer::{
     Anchor, Annotation, AnnotationAxis, AnnotationKind, AnnotationLineStyle, ArrowStyle, CellRef,
-    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, Subplot,
-    default,
+    Chart, Color, ColorMap, ColumnSource, FiggyError, LayerRef, OverlayLayer, Renderer, ShapeStyle,
+    Subplot, default,
 };
 
 /// Logical size of every Cartesian document; the window fits it uniformly.
@@ -1621,6 +1621,60 @@ fn annotations(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
             },
             style: ArrowStyle::default(),
             text: None,
+        }),
+        // A region of interest around the knee of the curve, below the
+        // data; an ellipse on the plateau; a concave polygon (an L) in
+        // the lower right, all filled so every point inside is ink.
+        Annotation::new(AnnotationKind::Rect {
+            from: Anchor::Data {
+                x: x0 + 0.3 * (x1 - x0),
+                y: y0 + 0.55 * (y1 - y0),
+            },
+            to: Anchor::Data {
+                x: x0 + 0.45 * (x1 - x0),
+                y: y0 + 0.8 * (y1 - y0),
+            },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.2, 0.5, 0.9, 0.18)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(40, 90, 180),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: true,
+            },
+        }),
+        Annotation::new(AnnotationKind::Ellipse {
+            from: Anchor::Ratio { x: 0.7, y: 0.08 },
+            to: Anchor::Ratio { x: 0.95, y: 0.3 },
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.9, 0.3, 0.2, 0.2)),
+                border: AnnotationLineStyle {
+                    color: red,
+                    width: 1.5,
+                    style: LineStylePreset::Dot,
+                },
+                below: false,
+            },
+        }),
+        Annotation::new(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.7, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.6 },
+                Anchor::Ratio { x: 0.95, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.7 },
+                Anchor::Ratio { x: 0.8, y: 0.92 },
+                Anchor::Ratio { x: 0.7, y: 0.92 },
+            ],
+            style: ShapeStyle {
+                fill: Some(Color::from_rgba(0.3, 0.7, 0.3, 0.25)),
+                border: AnnotationLineStyle {
+                    color: Color::from_rgb8(30, 120, 50),
+                    width: 1.5,
+                    style: LineStylePreset::Solid,
+                },
+                below: false,
+            },
         }),
     ];
     let mut config = chart.config().clone();

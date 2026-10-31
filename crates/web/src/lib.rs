@@ -2304,6 +2304,7 @@ mod web {
     use convert::{column_registration_error, js_err, js_safe_u64};
     mod decorations;
     pub use decorations::AxisPreset;
+    pub(crate) use decorations::vertex_handle_index;
     pub(crate) use decorations::{annotation_kind_name, annotation_warnings_json};
     mod export;
     mod picking;

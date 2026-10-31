@@ -8,7 +8,7 @@ use renderer::layout::{Rect, RectF};
 use renderer::{DrawnPart, WrittenPart};
 
 /// One part read back from a file.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum ReadPart {
     /// A straight stroke, a rectangle (fill or border) or a triangle, with
     /// the stroke width the file paints it with (`None` for a fill).
@@ -76,6 +76,14 @@ pub fn classify(sub: &Subpath, stroke: Option<f32>, in_text: bool) -> ReadPart {
             }
         }
         (3, true) => ReadPart::Part(DrawnPart::Triangle([p[0], p[1], p[2]]), stroke),
+        // A shape annotation's polygon: five or more corners closed.
+        (n, true) if n >= 5 => ReadPart::Part(
+            DrawnPart::Polygon {
+                points: p.clone(),
+                width: stroke.unwrap_or(0.0),
+            },
+            stroke,
+        ),
         other => panic!("unexpected subpath {other:?}: {:?}", sub.points),
     }
 }
@@ -431,6 +439,32 @@ pub fn assert_parts_match(
                         fail();
                     }
                 }
+                // A written polygon reads back as a rectangle (four
+                // corners), a triangle (three) or a polygon.
+                (DrawnPart::Rect(a), DrawnPart::Polygon { points: b, .. }) if b.len() == 4 => {
+                    let e = DrawnPart::Polygon {
+                        points: b.clone(),
+                        width: 0.0,
+                    }
+                    .extent();
+                    if !(near(a.x, e.x)
+                        && near(a.y, e.y)
+                        && near(a.width, e.width)
+                        && near(a.height, e.height))
+                    {
+                        fail();
+                    }
+                }
+                (DrawnPart::Triangle(a), DrawnPart::Polygon { points: b, .. }) if b.len() == 3 => {
+                    if a.iter().zip(b).any(|(p, q)| far(*p, *q) > tolerance) {
+                        fail();
+                    }
+                }
+                (DrawnPart::Polygon { points: a, .. }, DrawnPart::Polygon { points: b, .. }) => {
+                    if a.len() != b.len() || a.iter().zip(b).any(|(p, q)| far(*p, *q) > tolerance) {
+                        fail();
+                    }
+                }
                 _ => fail(),
             },
             (
@@ -445,8 +479,11 @@ pub fn assert_parts_match(
                     fail();
                 }
             }
-            (ReadPart::Curve { width, .. }, WrittenPart::Part(DrawnPart::Rect(_))) => {
-                // A sketched rectangle outline: one closed wobble.
+            (
+                ReadPart::Curve { width, .. },
+                WrittenPart::Part(DrawnPart::Rect(_) | DrawnPart::Polygon { .. }),
+            ) => {
+                // A sketched rectangle or shape outline: one closed wobble.
                 if *width < 1.4 - tolerance {
                     fail();
                 }
@@ -492,7 +529,7 @@ pub fn assert_parts_match(
 /// as a curve; the first mismatch report only).
 fn kind_of(e: &WrittenPart) -> std::mem::Discriminant<ReadPart> {
     std::mem::discriminant(&match e {
-        WrittenPart::Part(p) => ReadPart::Part(*p, None),
+        WrittenPart::Part(p) => ReadPart::Part(p.clone(), None),
         WrittenPart::Text { .. } => ReadPart::Text([0.0; 6]),
         WrittenPart::Glyph(p) => ReadPart::Glyph(*p),
         WrittenPart::TextRect(r) => ReadPart::TextRect(*r),

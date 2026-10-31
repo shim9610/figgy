@@ -189,7 +189,7 @@ pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
     AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
-    Subplot,
+    ShapeStyle, Subplot,
 };
 pub mod decoration;
 

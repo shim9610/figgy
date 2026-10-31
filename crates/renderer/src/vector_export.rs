@@ -151,6 +151,17 @@ impl Sink for SlotFilter<'_> {
             self.inner.triangle(slot, points, color);
         }
     }
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        if slot == self.slot {
+            self.inner.polygon(slot, points, fill, border);
+        }
+    }
     fn ramp(&mut self, slot: Slot, rect: RectF, bar: &ColorBarOptions) {
         if slot == self.slot {
             self.inner.ramp(slot, rect, bar);
@@ -174,6 +185,18 @@ impl Sink for PaintCount {
     }
     fn triangle(&mut self, _: Slot, _: [[f32; 2]; 3], color: Color) {
         self.0 += usize::from(color.a > 0.0);
+    }
+    fn polygon(
+        &mut self,
+        _: Slot,
+        _: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        self.0 += usize::from(
+            fill.is_some_and(|c| c.a > 0.0)
+                || border.is_some_and(|b| b.color.a > 0.0 && b.width > 0.0),
+        );
     }
     fn ramp(&mut self, _: Slot, _: RectF, _: &ColorBarOptions) {
         self.0 += 1;
@@ -475,6 +498,46 @@ impl Sink for VectorSink<'_> {
         }
         self.out.segment(PathSegment::Close);
         self.out.end_path();
+    }
+
+    fn polygon(
+        &mut self,
+        _slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        if points.len() < 3 {
+            return;
+        }
+        // The placed points, one list per shape written.
+        let pts: Vec<(f32, f32)> = points.iter().map(|p| self.point(*p)).collect();
+        if let Some(fill) = fill.filter(|c| c.a > 0.0) {
+            self.out.begin_path(PathPaint::Fill(fill));
+            for (i, p) in pts.iter().enumerate() {
+                self.out.segment(if i == 0 {
+                    PathSegment::Move(*p)
+                } else {
+                    PathSegment::Line(*p)
+                });
+            }
+            self.out.segment(PathSegment::Close);
+            self.out.end_path();
+        }
+        if let Some(b) = border.filter(|b| b.color.a > 0.0 && b.width > 0.0) {
+            let closed: Vec<(f32, f32)> = pts.iter().copied().chain(pts.first().copied()).collect();
+            self.stroke_path(
+                b.color,
+                b.width,
+                b.dash,
+                &pts,
+                true,
+                |amplitude, wavelength, seed| {
+                    crate::sketch::sketch_polyline(&closed, amplitude, wavelength, seed)
+                },
+                b.tag,
+            );
+        }
     }
 
     /// The strip painted by the raster's own ramp painter into a canvas of
@@ -980,7 +1043,7 @@ pub(crate) async fn document_file<F: VectorFile>(
 /// for the read-back tests of the SVG and PDF (`cpu-twin` only).
 #[cfg(feature = "cpu-twin")]
 #[doc(hidden)]
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WrittenPart {
     /// A stroke, a rectangle's fill or border, or a triangle, as
     /// [`crate::sink::Parts`] stores it (a stroke's width as emitted).
@@ -1061,6 +1124,10 @@ impl<'a> PartsTwin<'a> {
                     })
                 }
                 DrawnPart::Triangle(t) => DrawnPart::Triangle([map(t[0]), map(t[1]), map(t[2])]),
+                DrawnPart::Polygon { points, width } => DrawnPart::Polygon {
+                    points: points.iter().map(|p| map(*p)).collect(),
+                    width: width * scale,
+                },
             }));
         }));
     }
@@ -1132,6 +1199,20 @@ impl Sink for PartsTwin<'_> {
     fn triangle(&mut self, slot: Slot, points: [[f32; 2]; 3], color: Color) {
         if color.a > 0.0 {
             self.parts(|sink| sink.triangle(slot, points, color));
+        }
+    }
+
+    fn polygon(
+        &mut self,
+        slot: Slot,
+        points: &[[f32; 2]],
+        fill: Option<Color>,
+        border: Option<&StrokeStyle<'_>>,
+    ) {
+        if fill.is_some_and(|c| c.a > 0.0)
+            || border.is_some_and(|b| b.color.a > 0.0 && b.width > 0.0)
+        {
+            self.parts(|sink| sink.polygon(slot, points, fill, border));
         }
     }
 

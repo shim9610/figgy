@@ -156,6 +156,28 @@ impl Default for ArrowStyle {
     }
 }
 
+/// The chords an ellipse annotation is drawn with, in the raster and the
+/// vector export alike: a geometry constant, not a data count.
+pub const ELLIPSE_SEGMENTS: usize = 64;
+
+/// The fill and border of a shape annotation (a rectangle, an ellipse, a
+/// polygon), the border in logical pixels.
+#[derive(Clone, Debug, Default, PartialEq)]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(default)
+)]
+pub struct ShapeStyle {
+    /// The fill; `None` draws the outline only.
+    pub fill: Option<Color>,
+    /// The border stroke; a zero width or a transparent colour draws none.
+    pub border: AnnotationLineStyle,
+    /// Draw the shape below the data (the underlay, as a span is) instead
+    /// of above every decoration.
+    pub below: bool,
+}
+
 /// The geometry and content of one annotation.
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -194,6 +216,41 @@ pub enum AnnotationKind {
         style: ArrowStyle,
         text: Option<RichText>,
     },
+    /// The axis-aligned rectangle between two anchors, clipped to the plot
+    /// area. Drawn on the overlay, or below the data with `style.below`.
+    Rect {
+        from: Anchor,
+        to: Anchor,
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: ShapeStyle,
+    },
+    /// The ellipse inscribed in the rectangle between two anchors, drawn
+    /// as [`ELLIPSE_SEGMENTS`] chords and clipped to the plot area.
+    Ellipse {
+        from: Anchor,
+        to: Anchor,
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: ShapeStyle,
+    },
+    /// A closed polygon through at least three anchors, clipped to the
+    /// plot area.
+    Polygon {
+        vertices: Vec<Anchor>,
+        #[cfg_attr(feature = "serde", serde(default))]
+        style: ShapeStyle,
+    },
+}
+
+impl AnnotationKind {
+    /// The style of a shape kind, `None` for the other kinds.
+    pub fn shape_style(&self) -> Option<&ShapeStyle> {
+        match self {
+            Self::Rect { style, .. }
+            | Self::Ellipse { style, .. }
+            | Self::Polygon { style, .. } => Some(style),
+            _ => None,
+        }
+    }
 }
 
 /// One item of the annotation layer. Addressed as
@@ -237,16 +294,20 @@ impl Annotation {
         }
     }
 
-    /// Whether this item is drawn below the data (`Span`) or above every
-    /// decoration (everything else).
+    /// Whether this item is drawn below the data (`Span`, a shape with
+    /// `style.below`) or above every decoration (everything else).
     pub fn is_underlay(&self) -> bool {
         matches!(self.kind, AnnotationKind::Span { .. })
+            || self.kind.shape_style().is_some_and(|s| s.below)
     }
 
     fn texts(&self) -> impl Iterator<Item = &RichText> {
         let (a, b) = match &self.kind {
             AnnotationKind::ReferenceLine { label, .. } => (label.as_ref(), None),
-            AnnotationKind::Span { .. } => (None, None),
+            AnnotationKind::Span { .. }
+            | AnnotationKind::Rect { .. }
+            | AnnotationKind::Ellipse { .. }
+            | AnnotationKind::Polygon { .. } => (None, None),
             AnnotationKind::Text { text, .. } => (Some(text), None),
             AnnotationKind::Arrow { text, .. } => (text.as_ref(), None),
         };
@@ -281,6 +342,15 @@ impl Annotation {
                 }
                 Ok(())
             }
+            AnnotationKind::Rect { style, .. } | AnnotationKind::Ellipse { style, .. } => {
+                style.validate()
+            }
+            AnnotationKind::Polygon { vertices, style } => {
+                if vertices.len() < 3 {
+                    return Err("annotation polygon needs at least three vertices");
+                }
+                style.validate()
+            }
         }
     }
 
@@ -312,6 +382,19 @@ impl Annotation {
                     scale_rich_text(text, s);
                 }
             }
+            AnnotationKind::Rect { style, .. }
+            | AnnotationKind::Ellipse { style, .. }
+            | AnnotationKind::Polygon { style, .. } => style.border.width *= s,
+        }
+    }
+}
+
+impl ShapeStyle {
+    fn validate(&self) -> Result<(), &'static str> {
+        self.border.validate()?;
+        match self.fill {
+            Some(fill) => validate_color(fill),
+            None => Ok(()),
         }
     }
 }
@@ -625,6 +708,12 @@ pub enum AnnotationHandle {
     From,
     /// An arrow's `to` endpoint.
     To,
+    /// A rectangle's or an ellipse's box edge or corner, by its compass
+    /// handle: `W` / `E` the side at the smaller / larger screen x, `N` /
+    /// `S` the same in y, a corner both.
+    Box(ResizeHandle),
+    /// One vertex of a polygon, by its index.
+    Vertex(usize),
 }
 
 /// The renderer-measured text block of an annotation item, in logical
@@ -677,7 +766,7 @@ pub const LINE_LABEL_INSET_EM: f32 = 1.0 / 3.0;
 
 /// Screen-space geometry of one item under a layer state, shared by the
 /// hit bounds and the raster so they cannot disagree.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum AnnotationGeometry {
     /// A reference line from `a` to `b` (axis-aligned, clipped to the plot).
     Line { a: [f32; 2], b: [f32; 2] },
@@ -687,6 +776,10 @@ pub enum AnnotationGeometry {
     Text(RectF),
     /// An arrow's endpoints.
     Arrow { from: [f32; 2], to: [f32; 2] },
+    /// A shape's closed polygon, clipped to the plot: a rectangle's four
+    /// corners, an ellipse's chords, a polygon's vertices, in drawing
+    /// order (one list per rasterized shape).
+    Polygon(Vec<[f32; 2]>),
 }
 
 impl AnnotationElement {
@@ -793,7 +886,53 @@ impl AnnotationElement {
                 each(from_name, AnnotationHandle::From, from);
                 each(to_name, AnnotationHandle::To, to);
             }
+            AnnotationGeometry::Polygon(_) => {
+                match cfg.items.get(self.index).map(|item| &item.kind) {
+                    // A box shape takes the eight compass handles of its
+                    // selection box.
+                    Some(AnnotationKind::Rect { .. } | AnnotationKind::Ellipse { .. }) => {
+                        use ResizeHandle::*;
+                        for (name, centre) in [
+                            (NW, [x0, y0]),
+                            (N, [cx, y0]),
+                            (NE, [x1, y0]),
+                            (E, [x1, cy]),
+                            (SE, [x1, y1]),
+                            (S, [cx, y1]),
+                            (SW, [x0, y1]),
+                            (W, [x0, cy]),
+                        ] {
+                            each(name, AnnotationHandle::Box(name), centre);
+                        }
+                    }
+                    // A polygon's handles are its vertices; the compass
+                    // name is a placeholder the square ignores
+                    // (`hit_resize_handle` never answers one).
+                    Some(AnnotationKind::Polygon { vertices, .. }) => {
+                        for (i, v) in vertices.iter().enumerate() {
+                            if let Some(p) = self.space.anchor_to_px(v) {
+                                each(ResizeHandle::NW, AnnotationHandle::Vertex(i), p);
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
+    }
+
+    /// The polygon vertex whose handle square covers `(x, y)`, for a
+    /// polygon item.
+    pub fn hit_vertex(&self, cfg: &AnnotationLayer, x: f32, y: f32) -> Option<usize> {
+        let mut hit = None;
+        self.handles(cfg, |_, part, centre| {
+            if let AnnotationHandle::Vertex(i) = part
+                && handle_square(centre).contains(x, y)
+            {
+                hit = Some(i);
+            }
+        });
+        hit
     }
 
     /// Place every part the raster paints for this item into `sink`: the
@@ -949,7 +1088,126 @@ pub fn geometry(
             (panel.contains(from[0], from[1]) && panel.contains(to[0], to[1]))
                 .then_some(AnnotationGeometry::Arrow { from, to })
         }
+        AnnotationKind::Rect { from, to, .. } => {
+            let (a, b) = (space.anchor_to_px(from)?, space.anchor_to_px(to)?);
+            let (x0, x1) = (a[0].min(b[0]), a[0].max(b[0]));
+            let (y0, y1) = (a[1].min(b[1]), a[1].max(b[1]));
+            shape_geometry(vec![[x0, y0], [x1, y0], [x1, y1], [x0, y1]], plot)
+        }
+        AnnotationKind::Ellipse { from, to, .. } => {
+            let (a, b) = (space.anchor_to_px(from)?, space.anchor_to_px(to)?);
+            let centre = [(a[0] + b[0]) * 0.5, (a[1] + b[1]) * 0.5];
+            let radii = [(a[0] - b[0]).abs() * 0.5, (a[1] - b[1]).abs() * 0.5];
+            let points = (0..ELLIPSE_SEGMENTS)
+                .map(|k| {
+                    let angle = std::f32::consts::TAU * k as f32 / ELLIPSE_SEGMENTS as f32;
+                    [
+                        centre[0] + radii[0] * angle.cos(),
+                        centre[1] + radii[1] * angle.sin(),
+                    ]
+                })
+                .collect();
+            shape_geometry(points, plot)
+        }
+        AnnotationKind::Polygon { vertices, .. } => {
+            let points = vertices
+                .iter()
+                .map(|v| space.anchor_to_px(v))
+                .collect::<Option<Vec<_>>>()?;
+            shape_geometry(points, plot)
+        }
     }
+}
+
+/// A shape's screen polygon clipped to the plot area, or `None` when
+/// nothing with an area is left inside it.
+fn shape_geometry(points: Vec<[f32; 2]>, plot: RectF) -> Option<AnnotationGeometry> {
+    let clipped = clip_polygon(points, plot);
+    (clipped.len() >= 3 && polygon_area(&clipped).abs() > 1e-3)
+        .then_some(AnnotationGeometry::Polygon(clipped))
+}
+
+/// `points` clipped to `rect` (Sutherland–Hodgman against its four edges),
+/// consecutive duplicates dropped. A polygon entirely outside is empty.
+pub fn clip_polygon(points: Vec<[f32; 2]>, rect: RectF) -> Vec<[f32; 2]> {
+    let (x0, y0) = (rect.x, rect.y);
+    let (x1, y1) = (rect.x + rect.width, rect.y + rect.height);
+    // Each edge as (inside test, intersection with the edge line).
+    let edges: [ClipEdge; 4] = [
+        (|p, v| p[0] >= v, cross_x, x0),
+        (|p, v| p[0] <= v, cross_x, x1),
+        (|p, v| p[1] >= v, cross_y, y0),
+        (|p, v| p[1] <= v, cross_y, y1),
+    ];
+    let mut input = points;
+    for (inside, cross, value) in edges {
+        if input.is_empty() {
+            break;
+        }
+        let mut output = Vec::with_capacity(input.len() + 4);
+        let mut prev = input[input.len() - 1];
+        for &current in &input {
+            let (prev_in, current_in) = (inside(prev, value), inside(current, value));
+            if current_in {
+                if !prev_in {
+                    output.push(cross(prev, current, value));
+                }
+                output.push(current);
+            } else if prev_in {
+                output.push(cross(prev, current, value));
+            }
+            prev = current;
+        }
+        input = output;
+    }
+    input.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6 && (a[1] - b[1]).abs() < 1e-6);
+    if input.len() > 1
+        && (input[0][0] - input[input.len() - 1][0]).abs() < 1e-6
+        && (input[0][1] - input[input.len() - 1][1]).abs() < 1e-6
+    {
+        input.pop();
+    }
+    input
+}
+
+/// One clip edge: the inside test of a point against the edge's
+/// coordinate, the crossing of a segment with the edge's line, and the
+/// coordinate.
+type ClipEdge = (
+    fn([f32; 2], f32) -> bool,
+    fn([f32; 2], [f32; 2], f32) -> [f32; 2],
+    f32,
+);
+
+/// Where the segment `a`..`b` crosses the vertical line `x = v`.
+fn cross_x(a: [f32; 2], b: [f32; 2], v: f32) -> [f32; 2] {
+    let t = if (b[0] - a[0]).abs() > 0.0 {
+        (v - a[0]) / (b[0] - a[0])
+    } else {
+        0.0
+    };
+    [v, a[1] + (b[1] - a[1]) * t]
+}
+
+/// Where the segment `a`..`b` crosses the horizontal line `y = v`.
+fn cross_y(a: [f32; 2], b: [f32; 2], v: f32) -> [f32; 2] {
+    let t = if (b[1] - a[1]).abs() > 0.0 {
+        (v - a[1]) / (b[1] - a[1])
+    } else {
+        0.0
+    };
+    [a[0] + (b[0] - a[0]) * t, v]
+}
+
+/// The signed area of a closed polygon (the shoelace sum), positive when
+/// its vertices turn clockwise on screen (y down).
+pub fn polygon_area(points: &[[f32; 2]]) -> f32 {
+    let mut twice = 0.0;
+    for i in 0..points.len() {
+        let (a, b) = (points[i], points[(i + 1) % points.len()]);
+        twice += a[0] * b[1] - b[0] * a[1];
+    }
+    twice * 0.5
 }
 
 /// Whether `rect` lies inside the panel, with a 1 px tolerance for the
@@ -989,8 +1247,30 @@ pub fn emit_annotation(
     text: Option<&MeasuredText>,
     sink: &mut dyn Sink,
 ) {
-    match (kind, *geometry) {
+    if let (Some(style), AnnotationGeometry::Polygon(points)) = (kind.shape_style(), geometry) {
+        let slot = if style.below {
+            Slot::Below
+        } else {
+            Slot::Above
+        };
+        // The fill and the border are two parts, as a text box's are: one
+        // part per path the vector export writes.
+        if let Some(fill) = style.fill.filter(|c| c.a > 0.0) {
+            sink.polygon(slot, points, Some(fill), None);
+        }
+        if style.border.width > 0.0 && style.border.color.a > 0.0 {
+            sink.polygon(
+                slot,
+                points,
+                None,
+                Some(&stroke_style(&style.border, "annotation_shape")),
+            );
+        }
+        return;
+    }
+    match (kind, geometry) {
         (AnnotationKind::ReferenceLine { style, label, .. }, AnnotationGeometry::Line { a, b }) => {
+            let (a, b) = (*a, *b);
             if style.width > 0.0 && style.color.a > 0.0 {
                 sink.stroke(Slot::Above, a, b, &stroke_style(style, "annotation_line"));
             }
@@ -1000,7 +1280,7 @@ pub fn emit_annotation(
             }
         }
         (AnnotationKind::Span { fill, .. }, AnnotationGeometry::Span(rect)) => {
-            sink.rect(Slot::Below, rect, Some(*fill), None);
+            sink.rect(Slot::Below, *rect, Some(*fill), None);
         }
         (
             AnnotationKind::Text {
@@ -1010,6 +1290,7 @@ pub fn emit_annotation(
             },
             AnnotationGeometry::Text(rect),
         ) => {
+            let rect = *rect;
             if let Some(b) = box_style {
                 sink.rect(Slot::Above, rect, (b.fill.a > 0.0).then_some(b.fill), None);
                 if b.border_width > 0.0 && b.border_color.a > 0.0 {
@@ -1046,6 +1327,7 @@ pub fn emit_annotation(
             },
             AnnotationGeometry::Arrow { from, to },
         ) => {
+            let (from, to) = (*from, *to);
             let d = [to[0] - from[0], to[1] - from[1]];
             let len = d[0].hypot(d[1]);
             let head_len = style.head_length.min(len);
@@ -1231,8 +1513,40 @@ impl Resizable<AnnotationLayer> for AnnotationElement {
                 };
                 cfg.nudge(self.with_handle(part), measure, dx, dy)
             }
-            AnnotationKind::Text { .. } => reject,
+            AnnotationKind::Text { .. } | AnnotationKind::Polygon { .. } => reject,
+            // A box shape's handle takes both motion components through one
+            // nudge, as an arrow's endpoint does.
+            AnnotationKind::Rect { .. } | AnnotationKind::Ellipse { .. } => cfg.nudge(
+                self.with_handle(AnnotationHandle::Box(handle)),
+                measure,
+                dx,
+                dy,
+            ),
         }
+    }
+
+    /// A polygon's handles are its vertices ([`AnnotationElement::hit_vertex`]),
+    /// never a compass handle.
+    fn hit_resize_handle(
+        &self,
+        cfg: &AnnotationLayer,
+        _: &dyn MeasureText,
+        x: f32,
+        y: f32,
+    ) -> Option<ResizeHandle> {
+        if matches!(
+            cfg.items.get(self.index).map(|item| &item.kind),
+            Some(AnnotationKind::Polygon { .. })
+        ) {
+            return None;
+        }
+        let mut hit = None;
+        self.handles(cfg, |name, _, centre| {
+            if handle_square(centre).contains(x, y) {
+                hit = Some(name);
+            }
+        });
+        hit
     }
 }
 
@@ -1401,6 +1715,104 @@ impl DragConfig for AnnotationLayer {
                     to: b,
                     style: style.clone(),
                     text: text.clone(),
+                }
+            }
+            (
+                AnnotationKind::Rect { from, to, style }
+                | AnnotationKind::Ellipse { from, to, style },
+                handle,
+            ) => {
+                let (mut a, mut b) = (*from, *to);
+                match handle {
+                    None => {
+                        let (Some(na), Some(nb)) = (moved_anchor(&a), moved_anchor(&b)) else {
+                            return reject;
+                        };
+                        a = na;
+                        b = nb;
+                    }
+                    Some(AnnotationHandle::Box(name)) => {
+                        let (Some(pa), Some(pb)) = (space.anchor_to_px(&a), space.anchor_to_px(&b))
+                        else {
+                            return reject;
+                        };
+                        use ResizeHandle::*;
+                        // The side the handle drags: the anchor at the
+                        // smaller screen coordinate for `W` / `N`, the
+                        // larger for `E` / `S`; none in the other direction
+                        // for an edge-midpoint handle.
+                        let x_on_a = match name {
+                            NW | W | SW => Some(pa[0] <= pb[0]),
+                            NE | E | SE => Some(pa[0] > pb[0]),
+                            N | S => None,
+                        };
+                        let y_on_a = match name {
+                            NW | N | NE => Some(pa[1] <= pb[1]),
+                            SW | S | SE => Some(pa[1] > pb[1]),
+                            W | E => None,
+                        };
+                        let shift = |on_a: Option<bool>, this_is_a: bool, d: f32| {
+                            on_a.is_some_and(|on_a| on_a == this_is_a)
+                                .then_some(d)
+                                .unwrap_or(0.0)
+                        };
+                        // An anchor the handle does not move keeps its
+                        // exact value: no round trip through the space.
+                        let move_by = |anchor: &Anchor, p: [f32; 2], this_is_a: bool| {
+                            let (sx, sy) =
+                                (shift(x_on_a, this_is_a, dx), shift(y_on_a, this_is_a, dy));
+                            if sx == 0.0 && sy == 0.0 {
+                                return Some(*anchor);
+                            }
+                            space.px_to_anchor([p[0] + sx, p[1] + sy], anchor.kind())
+                        };
+                        let (Some(na), Some(nb)) = (move_by(&a, pa, true), move_by(&b, pb, false))
+                        else {
+                            return reject;
+                        };
+                        a = na;
+                        b = nb;
+                    }
+                    Some(_) => return reject,
+                }
+                match &item.kind {
+                    AnnotationKind::Rect { .. } => AnnotationKind::Rect {
+                        from: a,
+                        to: b,
+                        style: style.clone(),
+                    },
+                    _ => AnnotationKind::Ellipse {
+                        from: a,
+                        to: b,
+                        style: style.clone(),
+                    },
+                }
+            }
+            (AnnotationKind::Polygon { vertices, style }, handle) => {
+                let mut next = vertices.clone();
+                match handle {
+                    None => {
+                        for v in &mut next {
+                            let Some(moved) = moved_anchor(v) else {
+                                return reject;
+                            };
+                            *v = moved;
+                        }
+                    }
+                    Some(AnnotationHandle::Vertex(i)) => {
+                        let Some(v) = next.get_mut(i) else {
+                            return reject;
+                        };
+                        let Some(moved) = moved_anchor(v) else {
+                            return reject;
+                        };
+                        *v = moved;
+                    }
+                    Some(_) => return reject,
+                }
+                AnnotationKind::Polygon {
+                    vertices: next,
+                    style: style.clone(),
                 }
             }
             _ => return reject,
@@ -1878,6 +2290,254 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&AnnotationLayer::default()).unwrap(),
             r#"{"visible":true}"#
+        );
+        // A shape round-trips with its default style omitted.
+        let shape = Annotation::new(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Data { x: 1., y: 2. },
+                Anchor::Ratio { x: 0.5, y: 0.5 },
+                Anchor::Data { x: 3., y: 4. },
+            ],
+            style: ShapeStyle::default(),
+        });
+        let json = serde_json::to_value(&shape).unwrap();
+        assert_eq!(
+            json["kind"]["Polygon"]["style"]["fill"],
+            serde_json::Value::Null
+        );
+        assert_eq!(json["kind"]["Polygon"]["style"]["below"], false);
+        let back: Annotation = serde_json::from_value(json).unwrap();
+        assert_eq!(back, shape);
+        let bare: Annotation =
+            serde_json::from_str(r#"{"kind":{"Rect":{"from":{"Ratio":{"x":0.1,"y":0.1}},"to":{"Ratio":{"x":0.4,"y":0.3}}}}}"#)
+                .unwrap();
+        assert_eq!(
+            bare.kind,
+            AnnotationKind::Rect {
+                from: Anchor::Ratio { x: 0.1, y: 0.1 },
+                to: Anchor::Ratio { x: 0.4, y: 0.3 },
+                style: ShapeStyle::default(),
+            }
+        );
+    }
+
+    fn ratio_near(anchor: &Anchor, x: f32, y: f32) -> bool {
+        matches!(anchor, Anchor::Ratio { x: ax, y: ay } if (ax - x).abs() < 1e-5 && (ay - y).abs() < 1e-5)
+    }
+
+    fn shape(kind: AnnotationKind) -> AnnotationLayer {
+        AnnotationLayer {
+            visible: true,
+            items: vec![Annotation::new(kind)],
+        }
+    }
+
+    /// A rectangle and an ellipse place their clipped polygons, a polygon
+    /// its vertices; a shape outside the plot has no geometry; a concave
+    /// shape is grabbed in its arms and not in its notch; the plot clips.
+    #[test]
+    fn shapes_place_clip_and_grab_inside_their_polygon() {
+        let s = space();
+        // The plot is x 50..350, y 20..220. A rectangle from (100, 50) to
+        // (200, 150) in ratio terms.
+        let rect = shape(AnnotationKind::Rect {
+            from: Anchor::Ratio {
+                x: 1. / 6.,
+                y: 0.15,
+            },
+            to: Anchor::Ratio { x: 0.5, y: 0.65 },
+            style: ShapeStyle::default(),
+        });
+        let e = element(0, None);
+        let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&rect) else {
+            panic!("a rectangle places a polygon");
+        };
+        assert_eq!(
+            points,
+            vec![[100., 50.], [200., 50.], [200., 150.], [100., 150.]]
+        );
+        assert!(e.contains(&rect, &NoMeasure, 150., 100.));
+        assert!(!e.contains(&rect, &NoMeasure, 250., 100.));
+        // The bounds reach half the default border (1.5 px) past the box.
+        assert_eq!(
+            e.bounds(&rect, &NoMeasure),
+            Some(RectF {
+                x: 99.25,
+                y: 49.25,
+                width: 101.5,
+                height: 101.5
+            })
+        );
+        // The ellipse in the same box: its centre and its axis ends inside,
+        // the box's corner outside.
+        let ellipse = shape(AnnotationKind::Ellipse {
+            from: Anchor::Ratio {
+                x: 1. / 6.,
+                y: 0.15,
+            },
+            to: Anchor::Ratio { x: 0.5, y: 0.65 },
+            style: ShapeStyle::default(),
+        });
+        let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&ellipse) else {
+            panic!("an ellipse places a polygon");
+        };
+        assert_eq!(points.len(), ELLIPSE_SEGMENTS);
+        assert!(e.contains(&ellipse, &NoMeasure, 150., 100.));
+        assert!(e.contains(&ellipse, &NoMeasure, 150. + 47., 100.));
+        assert!(e.contains(&ellipse, &NoMeasure, 150., 100. - 47.));
+        assert!(!e.contains(&ellipse, &NoMeasure, 103., 53.));
+        // A concave L: the arms hit, the notch does not.
+        let l = shape(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.0, y: 0.0 },
+                Anchor::Ratio { x: 0.5, y: 0.0 },
+                Anchor::Ratio { x: 0.5, y: 0.25 },
+                Anchor::Ratio { x: 0.25, y: 0.25 },
+                Anchor::Ratio { x: 0.25, y: 0.5 },
+                Anchor::Ratio { x: 0.0, y: 0.5 },
+            ],
+            style: ShapeStyle::default(),
+        });
+        assert!(e.contains(&l, &NoMeasure, 60., 30.)); // the top arm
+        assert!(e.contains(&l, &NoMeasure, 60., 110.)); // the left arm
+        assert!(!e.contains(&l, &NoMeasure, 180., 110.)); // the notch
+        // A rectangle straddling the plot's right edge is clipped to it,
+        // one entirely outside places nothing.
+        let straddling = shape(AnnotationKind::Rect {
+            from: Anchor::Ratio { x: 0.8, y: 0.2 },
+            to: Anchor::Ratio { x: 1.3, y: 0.4 },
+            style: ShapeStyle::default(),
+        });
+        let Some(AnnotationGeometry::Polygon(points)) = e.geometry(&straddling) else {
+            panic!("the straddling rectangle places a polygon");
+        };
+        assert!(points.iter().all(|p| p[0] <= 350. + 1e-3));
+        assert!(points.iter().any(|p| (p[0] - 350.).abs() < 1e-3));
+        let outside = shape(AnnotationKind::Rect {
+            from: Anchor::Ratio { x: 1.1, y: 0.2 },
+            to: Anchor::Ratio { x: 1.3, y: 0.4 },
+            style: ShapeStyle::default(),
+        });
+        assert_eq!(e.geometry(&outside), None);
+        // A data anchor on a chart without value axes has no geometry.
+        let mut no_axes = s;
+        no_axes.x = AxisSpace {
+            map: AxisMap::None,
+            inverted: false,
+        };
+        no_axes.y = no_axes.x;
+        let data = shape(AnnotationKind::Rect {
+            from: Anchor::Data { x: 1., y: 10. },
+            to: Anchor::Data { x: 3., y: 100. },
+            style: ShapeStyle::default(),
+        });
+        let on_no_axes = AnnotationElement {
+            space: no_axes,
+            ..element(0, None)
+        };
+        assert_eq!(on_no_axes.geometry(&data), None);
+        assert!(e.geometry(&data).is_some());
+    }
+
+    /// Whole-shape drags move every anchor by the delta through the space,
+    /// a box handle moves its side only, a vertex handle one vertex; a drag
+    /// that would leave nothing inside the plot is rejected unchanged.
+    #[test]
+    fn shape_drags_move_anchors_sides_and_vertices() {
+        let e = element(0, None);
+        let mut rect = shape(AnnotationKind::Rect {
+            from: Anchor::Ratio {
+                x: 1. / 6.,
+                y: 0.15,
+            },
+            to: Anchor::Data { x: 5., y: 10. },
+            style: ShapeStyle::default(),
+        });
+        let before = rect.clone();
+        assert_eq!(
+            e.drag_by(&mut rect, &NoMeasure, 30., 20.),
+            NudgeResult::Moved
+        );
+        let AnnotationKind::Rect { from, to, .. } = &rect.items[0].kind else {
+            unreachable!()
+        };
+        assert!(ratio_near(from, 0.2666667, 0.25), "{from:?}");
+        let Anchor::Data { x, .. } = to else {
+            panic!("the data anchor keeps its kind")
+        };
+        assert!((x - 6.).abs() < 1e-6, "{x}");
+        // The east handle moves the side at the larger x: the data anchor.
+        let mut sided = before.clone();
+        assert_eq!(
+            e.resize_by(&mut sided, &NoMeasure, ResizeHandle::E, 30., 20.),
+            NudgeResult::Moved
+        );
+        let AnnotationKind::Rect { from, to, .. } = &sided.items[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(
+            *from,
+            Anchor::Ratio {
+                x: 1. / 6.,
+                y: 0.15
+            }
+        );
+        let Anchor::Data { x, y } = to else {
+            panic!("the data anchor keeps its kind")
+        };
+        assert!((x - 6.).abs() < 1e-6 && (y - 10.).abs() < 1e-4, "{x} {y}");
+        // The north-west corner moves the ratio anchor in both axes.
+        let mut cornered = before.clone();
+        assert_eq!(
+            e.resize_by(&mut cornered, &NoMeasure, ResizeHandle::NW, 30., 20.),
+            NudgeResult::Moved
+        );
+        let AnnotationKind::Rect { from, to, .. } = &cornered.items[0].kind else {
+            unreachable!()
+        };
+        assert!(ratio_near(from, 0.2666667, 0.25), "{from:?}");
+        assert_eq!(*to, Anchor::Data { x: 5., y: 10. });
+        // A polygon's vertex handle moves that vertex only.
+        let mut poly = shape(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.1, y: 0.1 },
+                Anchor::Ratio { x: 0.5, y: 0.1 },
+                Anchor::Ratio { x: 0.5, y: 0.5 },
+            ],
+            style: ShapeStyle::default(),
+        });
+        assert_eq!(e.hit_vertex(&poly, 200., 120.), Some(2));
+        assert_eq!(e.hit_vertex(&poly, 150., 150.), None);
+        assert_eq!(e.hit_resize_handle(&poly, &NoMeasure, 200., 120.), None);
+        let moved = AnnotationElement {
+            handle: Some(AnnotationHandle::Vertex(2)),
+            ..e.clone()
+        };
+        assert_eq!(poly.nudge(moved, &NoMeasure, 30., 20.), NudgeResult::Moved);
+        let AnnotationKind::Polygon { vertices, .. } = &poly.items[0].kind else {
+            unreachable!()
+        };
+        assert_eq!(vertices[0], Anchor::Ratio { x: 0.1, y: 0.1 });
+        assert!(ratio_near(&vertices[2], 0.6, 0.6), "{:?}", vertices[2]);
+        assert_eq!(poly.validate(), Ok(()));
+        // Off the plot entirely: rejected and unchanged.
+        let mut far = before.clone();
+        assert!(matches!(
+            e.drag_by(&mut far, &NoMeasure, 1000., 0.),
+            NudgeResult::Rejected(_)
+        ));
+        assert_eq!(far, before);
+        // Two vertices are not a polygon.
+        let two = shape(AnnotationKind::Polygon {
+            vertices: vec![
+                Anchor::Ratio { x: 0.1, y: 0.1 },
+                Anchor::Ratio { x: 0.5, y: 0.1 },
+            ],
+            style: ShapeStyle::default(),
+        });
+        assert_eq!(
+            two.validate(),
+            Err("annotation polygon needs at least three vertices")
         );
     }
 }
