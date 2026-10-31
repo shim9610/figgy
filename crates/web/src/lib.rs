@@ -254,6 +254,9 @@ struct SeriesExtentKey {
     /// Orientation decides which resolved matrix dimension belongs to x/y.
     /// It is independent of the cell/sample lattice encoded by `mode`.
     field_orientation: Option<u8>,
+    /// A hexagonal grid fits in the centres-cells mode plus its hexagons'
+    /// overhang (#134), so the layout is part of the identity beyond `mode`.
+    field_hexagonal: bool,
     /// A `Data`-scaled point vector's tips are `anchor + factor * (u, v)`,
     /// so the factor is part of the extent's identity; bits, so the key
     /// stays `Eq`.
@@ -484,6 +487,21 @@ fn series_extent_request_from(
         | renderer::DataRenderType::Parallel { .. }
         | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
+    let field_hexagonal = match &cfg.render_type {
+        renderer::DataRenderType::Heatmap { matrix, .. }
+        | renderer::DataRenderType::Contour { matrix, .. }
+        | renderer::DataRenderType::HeatmapContour { matrix, .. } => {
+            matrix.grid_layout == renderer::data_config::GridLayout::Hexagonal
+        }
+        renderer::DataRenderType::RgbImage { red, .. } => {
+            red.grid_layout == renderer::data_config::GridLayout::Hexagonal
+        }
+        renderer::DataRenderType::Vector {
+            components: renderer::data_config::VectorComponents::Grid { u, .. },
+            ..
+        } => u.grid_layout == renderer::data_config::GridLayout::Hexagonal,
+        _ => false,
+    };
     let vector_factor_bits = match &cfg.render_type {
         renderer::DataRenderType::Vector {
             components: renderer::data_config::VectorComponents::Points { .. },
@@ -503,6 +521,7 @@ fn series_extent_request_from(
             y_error,
             matrix,
             field_orientation,
+            field_hexagonal,
             vector_factor_bits,
         },
         series: cfg.clone(),
