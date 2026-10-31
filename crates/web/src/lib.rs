@@ -2674,6 +2674,905 @@ mod web {
                 );
             }
         }
+
+        // ---- #152 index invariants at their producers ----
+
+        /// One chart a selection is read from: its columns, its box record and
+        /// ragged columns, the config edit and series that draw them, the pick and
+        /// the keys `selection_details` answers with.
+        struct SelectionScene {
+            name: &'static str,
+            columns: Vec<(String, Vec<f64>)>,
+            record: Option<(&'static str, Vec<(&'static str, Vec<f64>)>)>,
+            ragged: Vec<(&'static str, Vec<f64>, Vec<f64>)>,
+            edit: fn(&mut renderer::Config),
+            series: renderer::SeriesConfig,
+            pick: renderer::config::PickedDataRef,
+            keys: Vec<String>,
+        }
+
+        fn selection_scenes() -> Vec<SelectionScene> {
+            use renderer::config::{Category, PickedDataRef};
+            use renderer::data_config::{
+                BarOrientation, BoxPlotSeriesLabels, BoxPlotStyle, CategoryBarLabelFormat,
+                CategoryBarSeriesLabels, CategoryBarStyle, DataBarStyleConfig, FieldFillConfig,
+                FillMode, GridLayout, LineInterpolation, MatrixOrientation, MatrixRef,
+                PointColorMap, PointSizeMap, RangeColor, RangeProgress, RangeStateStyle,
+                RangeWhiskers, Shading, SizeScale, VectorColorMap, VectorComponents, VectorPivot,
+                VectorScale, VectorStyle, Violin, ViolinBody, ViolinHalf, ViolinStyle,
+            };
+            use renderer::{Color, DataRenderType, SeriesConfig};
+
+            const AXES: usize = 20;
+            let column = |id: &str, data: &[f64]| (id.to_string(), data.to_vec());
+            let series = |id: &str, x: &str, y: &str, render_type| SeriesConfig {
+                series_id: id.into(),
+                source_id: None,
+                label: None,
+                x_column: x.into(),
+                y_column: y.into(),
+                z_column: None,
+                render_type,
+            };
+            let point = |id: &str, point_index| PickedDataRef::Point {
+                source_id: None,
+                series_id: id.into(),
+                point_index,
+            };
+            let bin = |id: &str, bin_index| PickedDataRef::HistogramBin {
+                source_id: None,
+                series_id: id.into(),
+                bin_index,
+                half: None,
+            };
+            let cell = |id: &str, x_index, y_index| PickedDataRef::MatrixCell {
+                source_id: None,
+                series_id: id.into(),
+                x_index,
+                y_index,
+            };
+            let keys = |names: &[&str]| names.iter().map(|k| k.to_string()).collect::<Vec<_>>();
+            let scatter = |color_map, size_map| renderer::DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_shape: renderer::ScatterShape::CircleFilled,
+                point_size: 4.0,
+                point_style_table: None,
+                point_style_index_column: None,
+                point_style_overrides: None,
+                point_color_map: color_map,
+                point_size_map: size_map,
+            };
+            let vector_style = |color_map| VectorStyle {
+                color: Color::BLACK,
+                width_px: 2.0,
+                scale: VectorScale::Data { factor: 1.0 },
+                pivot: VectorPivot::Tail,
+                head_length_px: 8.0,
+                head_width_px: 8.0,
+                min_length_px: 0.0,
+                color_map,
+            };
+            let matrix = |ids: &[&str], grid_layout| MatrixRef {
+                columns: ids.iter().map(|id| id.to_string()).collect(),
+                orientation: MatrixOrientation::ColumnsAreX,
+                grid_layout,
+            };
+            let heatmap = |grid_layout| DataRenderType::Heatmap {
+                matrix: matrix(&["z0", "z1"], grid_layout),
+                fill: FieldFillConfig {
+                    mode: FillMode::Continuous,
+                    shading: Shading::Flat,
+                    opacity: 1.0,
+                },
+                surface: None,
+            };
+            let bar_style = || CategoryBarStyle::default();
+            let box_plot = |violin| DataRenderType::BoxPlot {
+                color: Color::from_rgb8(40, 120, 200),
+                style: BoxPlotStyle::default(),
+                labels: BoxPlotSeriesLabels::default(),
+                outliers: None,
+                overrides: None,
+                violin,
+                points: None,
+            };
+            fn colorbar(config: &mut renderer::Config) {
+                config.colorbar = Some(renderer::default::default_colorbar_options());
+            }
+            fn three_categories(config: &mut renderer::Config) {
+                config.bottom_x.categories = Some(
+                    ["a", "b", "c"]
+                        .map(|id| Category::new(id, id.to_uppercase()))
+                        .to_vec(),
+                );
+            }
+            fn ternary(config: &mut renderer::Config) {
+                for axis in [
+                    &mut config.bottom_x,
+                    &mut config.left_y,
+                    &mut config.right_y,
+                ] {
+                    axis.min = 0.0;
+                    axis.max = 100.0;
+                    axis.major_spacing = 20.0;
+                }
+                config.ternary = Some(renderer::ternary::TernaryOptions {});
+            }
+            fn parallel(config: &mut renderer::Config) {
+                use renderer::parallel::{ParallelAxis, ParallelOptions};
+                colorbar(config);
+                config.bottom_x.categories = Some(
+                    (0..AXES)
+                        .map(|i| Category::new(format!("p{i}"), format!("P{i}")))
+                        .collect(),
+                );
+                config.left_y.min = 0.0;
+                config.left_y.max = 1.0;
+                config.left_y.categories = None;
+                config.parallel = Some(ParallelOptions {
+                    axes: (0..AXES).map(|_| ParallelAxis::new(0.0, 10.0)).collect(),
+                });
+            }
+            let record_fields = |names: &[&'static str]| {
+                names
+                    .iter()
+                    .enumerate()
+                    .map(|(k, name)| (*name, vec![k as f64, k as f64 + 1.0, k as f64 + 2.0]))
+                    .collect::<Vec<_>>()
+            };
+            let all_fields = renderer::BOX_PLOT_RECORD
+                .iter()
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>();
+            let required = renderer::BOX_PLOT_RECORD
+                .iter()
+                .filter(|(_, required)| *required)
+                .map(|(name, _)| *name)
+                .collect::<Vec<_>>();
+            let parallel_columns: Vec<String> = (0..AXES).map(|i| format!("pa{i}")).collect();
+            let mut parallel_data: Vec<(String, Vec<f64>)> = parallel_columns
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    (
+                        id.clone(),
+                        vec![i as f64 * 0.25, 5.0, 9.0 - i as f64 * 0.25],
+                    )
+                })
+                .collect();
+            parallel_data.push(column("pcol", &[0.1, 0.5, 0.9]));
+            let mut parallel_line = renderer::DataLineStyleConfig::default();
+            parallel_line.interpolation = LineInterpolation::Linear;
+
+            vec![
+                SelectionScene {
+                    name: "scatter with colour and size maps",
+                    columns: vec![
+                        column("sx", &[0.0, 1.0, 2.0, 3.0]),
+                        column("sy", &[3.0, 1.0, 4.0, 1.0]),
+                        column("sc", &[0.1, 0.2, 0.3, 0.4]),
+                        column("ss", &[1.0, 2.0, 3.0, 4.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: colorbar,
+                    series: series(
+                        "scatter",
+                        "sx",
+                        "sy",
+                        DataRenderType::Scatter {
+                            scatter: scatter(
+                                Some(PointColorMap {
+                                    column: "sc".into(),
+                                }),
+                                Some(PointSizeMap {
+                                    column: "ss".into(),
+                                    domain_min: 1.0,
+                                    domain_max: 4.0,
+                                    min_px: 2.0,
+                                    max_px: 8.0,
+                                    scale: SizeScale::Area,
+                                }),
+                            ),
+                        },
+                    ),
+                    pick: point("scatter", 2),
+                    keys: keys(&["x", "y", "color_value", "size_value"]),
+                },
+                SelectionScene {
+                    name: "point vector with a colour column",
+                    columns: vec![
+                        column("vx", &[0.0, 1.0, 2.0]),
+                        column("vy", &[0.0, 1.0, 2.0]),
+                        column("vu", &[1.0, 0.5, 0.25]),
+                        column("vv", &[0.0, 0.5, 1.0]),
+                        column("vc", &[2.0, 3.0, 4.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: colorbar,
+                    series: series(
+                        "arrows",
+                        "vx",
+                        "vy",
+                        DataRenderType::Vector {
+                            components: VectorComponents::Points {
+                                u: "vu".into(),
+                                v: "vv".into(),
+                            },
+                            style: vector_style(Some(VectorColorMap::Column("vc".into()))),
+                        },
+                    ),
+                    pick: point("arrows", 1),
+                    keys: keys(&["x", "y", "u", "v", "color_value"]),
+                },
+                SelectionScene {
+                    name: "parallel rows over twenty axes with a colour column",
+                    columns: parallel_data,
+                    record: None,
+                    ragged: vec![],
+                    edit: parallel,
+                    series: series(
+                        "rows",
+                        &parallel_columns[0],
+                        &parallel_columns[1],
+                        DataRenderType::Parallel {
+                            columns: parallel_columns.clone(),
+                            line: parallel_line,
+                            color_column: Some("pcol".into()),
+                        },
+                    ),
+                    pick: point("rows", 1),
+                    keys: keys(&["x", "y", "values", "color_value"]),
+                },
+                SelectionScene {
+                    name: "histogram",
+                    columns: vec![
+                        column("edges", &[0.0, 1.0, 2.5, 4.0]),
+                        column("heights", &[1.0, 2.0, 3.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: |_| {},
+                    series: series(
+                        "hist",
+                        "edges",
+                        "heights",
+                        DataRenderType::Histogram {
+                            bar: DataBarStyleConfig {
+                                fill_color: Color::BLACK,
+                                border_color: Color::BLACK,
+                                border_width: 0.0,
+                                baseline: 0.0,
+                                gap_px: 0.0,
+                                width_ratio: 1.0,
+                                orientation: BarOrientation::Vertical,
+                                bar_style_overrides: None,
+                            },
+                        },
+                    ),
+                    pick: bin("hist", 1),
+                    keys: keys(&["bin_start", "bin_end", "value", "orientation"]),
+                },
+                SelectionScene {
+                    name: "category bars",
+                    columns: vec![
+                        column("cpos", &[0.0, 1.0, 2.0]),
+                        column("cval", &[5.0, 6.0, 7.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series(
+                        "bars",
+                        "cpos",
+                        "cval",
+                        DataRenderType::CategoryBars {
+                            color: Color::from_rgb8(40, 120, 200),
+                            style: bar_style(),
+                            labels: CategoryBarSeriesLabels::default(),
+                            label_format: CategoryBarLabelFormat::Value,
+                            overrides: None,
+                        },
+                    ),
+                    pick: bin("bars", 1),
+                    keys: keys(&["category_id", "value", "direction", "mode"]),
+                },
+                SelectionScene {
+                    name: "range bars with every role",
+                    columns: vec![
+                        column("rpos", &[0.0, 1.0, 2.0]),
+                        column("rend", &[4.0, 5.0, 6.0]),
+                        column("rstart", &[1.0, 2.0, 3.0]),
+                        column("rlow", &[0.5, 1.5, 2.5]),
+                        column("rhigh", &[4.5, 5.5, 6.5]),
+                        column("rstate", &[0.0, 1.0, 0.0]),
+                        column("rprogress", &[0.2, 0.5, 1.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series(
+                        "ranges",
+                        "rpos",
+                        "rend",
+                        DataRenderType::RangeBars {
+                            color: Color::from_rgb8(40, 120, 200),
+                            style: bar_style(),
+                            start: "rstart".into(),
+                            whiskers: Some(RangeWhiskers {
+                                low: "rlow".into(),
+                                high: "rhigh".into(),
+                                width: 0.3,
+                                color: None,
+                            }),
+                            color_by: RangeColor::State {
+                                column: "rstate".into(),
+                                styles: vec![
+                                    RangeStateStyle {
+                                        color: Color::from_rgb8(40, 120, 200),
+                                    },
+                                    RangeStateStyle {
+                                        color: Color::from_rgb8(200, 80, 40),
+                                    },
+                                ],
+                            },
+                            progress: Some(RangeProgress {
+                                column: "rprogress".into(),
+                                remaining_opacity: 0.4,
+                            }),
+                            connector: None,
+                            slot_width: None,
+                            labels: CategoryBarSeriesLabels::default(),
+                        },
+                    ),
+                    pick: bin("ranges", 1),
+                    keys: keys(&[
+                        "position",
+                        "end",
+                        "start",
+                        "low",
+                        "high",
+                        "state",
+                        "progress",
+                        "category_id",
+                    ]),
+                },
+                SelectionScene {
+                    name: "box record with every field",
+                    columns: vec![column("bpos", &[0.0, 1.0, 2.0])],
+                    record: Some(("box9", record_fields(&all_fields))),
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series("box9", "bpos", "box9", box_plot(None)),
+                    pick: bin("box9", 1),
+                    keys: {
+                        let mut k = keys(&all_fields);
+                        k.push("category_id".into());
+                        k
+                    },
+                },
+                SelectionScene {
+                    name: "box record with the required fields",
+                    columns: vec![column("bpos", &[0.0, 1.0, 2.0])],
+                    record: Some(("box5", record_fields(&required))),
+                    ragged: vec![],
+                    edit: three_categories,
+                    series: series("box5", "bpos", "box5", box_plot(None)),
+                    pick: bin("box5", 1),
+                    keys: {
+                        let mut k = keys(&required);
+                        k.push("category_id".into());
+                        k
+                    },
+                },
+                SelectionScene {
+                    name: "violin without boxes",
+                    columns: vec![
+                        column("bpos", &[0.0, 1.0, 2.0]),
+                        column("vdensity", &[0.1, 0.5, 0.1, 0.2, 0.6, 0.2, 0.3, 0.7, 0.3]),
+                    ],
+                    record: None,
+                    ragged: vec![(
+                        "vcurve",
+                        vec![1.0, 2.0, 3.0, 1.5, 2.5, 3.5, 2.0, 3.0, 4.0],
+                        vec![0.0, 3.0, 6.0, 9.0],
+                    )],
+                    edit: three_categories,
+                    series: series(
+                        "violin",
+                        "bpos",
+                        "",
+                        box_plot(Some(Violin {
+                            body: ViolinBody::Symmetric(ViolinHalf {
+                                curve: "vcurve".into(),
+                                density: "vdensity".into(),
+                                density_scale: 0.5,
+                                style: ViolinStyle {
+                                    fill: None,
+                                    outline: true,
+                                    outline_width: 1.0,
+                                    outline_color: Color::BLACK,
+                                },
+                            }),
+                            box_width: 0.2,
+                        })),
+                    ),
+                    pick: bin("violin", 1),
+                    keys: keys(&["category_id", "direction"]),
+                },
+                SelectionScene {
+                    name: "heatmap with cell edges",
+                    columns: vec![
+                        column("hx", &[0.0, 1.0, 2.0]),
+                        column("hy", &[0.0, 1.0, 2.0, 3.0]),
+                        column("z0", &[1.0, 2.0, 3.0]),
+                        column("z1", &[4.0, 5.0, 6.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: colorbar,
+                    series: series("edges", "hx", "hy", heatmap(GridLayout::Edges)),
+                    pick: cell("edges", 1, 2),
+                    keys: keys(&["x", "y", "value", "x_index", "y_index"]),
+                },
+                SelectionScene {
+                    name: "hexagonal heatmap",
+                    columns: vec![
+                        column("hx", &[0.0, 1.0]),
+                        column("hy", &[0.0, 1.0, 2.0]),
+                        column("z0", &[1.0, 2.0, 3.0]),
+                        column("z1", &[4.0, 5.0, 6.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: colorbar,
+                    series: series("hex", "hx", "hy", heatmap(GridLayout::Hexagonal)),
+                    pick: cell("hex", 1, 1),
+                    keys: keys(&["x", "y", "value"]),
+                },
+                SelectionScene {
+                    name: "grid vector with a colour grid",
+                    columns: vec![
+                        column("gx", &[0.0, 1.0]),
+                        column("gy", &[0.0, 1.0, 2.0]),
+                        column("gu0", &[1.0, 1.0, 1.0]),
+                        column("gu1", &[0.5, 0.5, 0.5]),
+                        column("gv0", &[0.0, 0.2, 0.4]),
+                        column("gv1", &[0.1, 0.3, 0.5]),
+                        column("gc0", &[1.0, 2.0, 3.0]),
+                        column("gc1", &[4.0, 5.0, 6.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: colorbar,
+                    series: series(
+                        "grid",
+                        "gx",
+                        "gy",
+                        DataRenderType::Vector {
+                            components: VectorComponents::Grid {
+                                u: matrix(&["gu0", "gu1"], GridLayout::Centers),
+                                v: matrix(&["gv0", "gv1"], GridLayout::Centers),
+                            },
+                            style: vector_style(Some(VectorColorMap::Grid(matrix(
+                                &["gc0", "gc1"],
+                                GridLayout::Centers,
+                            )))),
+                        },
+                    ),
+                    pick: cell("grid", 1, 2),
+                    keys: keys(&["x", "y", "u", "v", "color_value"]),
+                },
+                SelectionScene {
+                    name: "ternary point with its third component",
+                    columns: vec![
+                        column("ta", &[20.0, 30.0, 50.0]),
+                        column("tb", &[30.0, 30.0, 25.0]),
+                        column("tc", &[50.0, 40.0, 25.0]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: ternary,
+                    series: series(
+                        "mix",
+                        "ta",
+                        "tb",
+                        DataRenderType::Ternary {
+                            c_column: "tc".into(),
+                            scatter: Some(scatter(None, None)),
+                            line: None,
+                            region: None,
+                        },
+                    ),
+                    pick: point("mix", 2),
+                    keys: keys(&["x", "y", "c"]),
+                },
+                SelectionScene {
+                    name: "rgb image",
+                    columns: vec![
+                        column("ix", &[0.0, 1.0]),
+                        column("iy", &[0.0, 1.0, 2.0]),
+                        column("r0", &[0.1, 0.2, 0.3]),
+                        column("r1", &[0.4, 0.5, 0.6]),
+                        column("g0", &[0.2, 0.3, 0.4]),
+                        column("g1", &[0.5, 0.6, 0.7]),
+                        column("b0", &[0.3, 0.4, 0.5]),
+                        column("b1", &[0.6, 0.7, 0.8]),
+                    ],
+                    record: None,
+                    ragged: vec![],
+                    edit: |_| {},
+                    series: series(
+                        "image",
+                        "ix",
+                        "iy",
+                        DataRenderType::RgbImage {
+                            red: matrix(&["r0", "r1"], GridLayout::Centers),
+                            green: matrix(&["g0", "g1"], GridLayout::Centers),
+                            blue: matrix(&["b0", "b1"], GridLayout::Centers),
+                            range: [0.0, 1.0],
+                            shading: Shading::Flat,
+                            opacity: 1.0,
+                        },
+                    ),
+                    pick: cell("image", 1, 2),
+                    keys: keys(&["x", "y", "red", "green", "blue"]),
+                },
+            ]
+        }
+
+        /// A chart drawing `scene`: its columns, record and ragged columns
+        /// registered through the JS API, then its config and series set.
+        async fn scene_chart(scene: &SelectionScene) -> FiggyChart {
+            let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
+            for (id, data) in &scene.columns {
+                chart
+                    .register_column_f64(id, data)
+                    .unwrap_or_else(|e| panic!("{}: column {id}: {e:?}", scene.name));
+            }
+            if let Some((id, fields)) = &scene.record {
+                let object = js_sys::Object::new();
+                for (name, data) in fields {
+                    js_sys::Reflect::set(
+                        &object,
+                        &JsValue::from_str(name),
+                        &js_sys::Float64Array::from(&data[..]).into(),
+                    )
+                    .unwrap();
+                }
+                chart
+                    .register_record(id, object.into())
+                    .unwrap_or_else(|e| panic!("{}: record: {e:?}", scene.name));
+            }
+            for (id, values, offsets) in &scene.ragged {
+                chart
+                    .register_ragged(id, values, offsets)
+                    .unwrap_or_else(|e| panic!("{}: ragged: {e:?}", scene.name));
+            }
+            let mut config = chart.chart_config().unwrap().clone();
+            (scene.edit)(&mut config);
+            chart
+                .set_config(&serde_json::to_string(&config).unwrap())
+                .unwrap_or_else(|e| panic!("{}: config: {e:?}", scene.name));
+            chart
+                .set_series(&serde_json::to_string(&[scene.series.clone()]).unwrap())
+                .unwrap_or_else(|e| panic!("{}: series: {e:?}", scene.name));
+            chart
+        }
+
+        /// SELECTION_READBACK_LEN (#152): `read_selection_samples` answers
+        /// one value per sample, `values[k]` the registered value of
+        /// `samples[k]`, for none, one and 64 samples over two columns (past
+        /// `MAX_RECORD_FIELDS` and the seven range bar roles); a sample past
+        /// its column or of a missing column is an error.
+        #[wasm_bindgen_test(async)]
+        async fn selection_readback_answers_one_value_per_sample() {
+            const LEN: usize = 32;
+            let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
+            let a: Vec<f64> = (0..LEN).map(|i| i as f64 * 0.25 - 3.0).collect();
+            let b: Vec<f64> = (0..LEN).map(|i| 1000.0 + i as f64 * 0.5).collect();
+            chart.register_column_f64("ra", &a).unwrap();
+            chart.register_column_f64("rb", &b).unwrap();
+            for count in [0usize, 1, 64] {
+                let samples: Vec<(String, usize)> = (0..count)
+                    .map(|k| {
+                        let column = if k % 2 == 0 { "ra" } else { "rb" };
+                        (column.to_string(), (k * 7) % LEN)
+                    })
+                    .collect();
+                let values = chart.read_selection_samples(&samples).await.unwrap();
+                assert_eq!(values.len(), samples.len(), "{count} samples");
+                for (k, (column, index)) in samples.iter().enumerate() {
+                    let registered = if column == "ra" { a[*index] } else { b[*index] };
+                    assert_eq!(values[k], registered, "sample {k} of {count}");
+                }
+            }
+            assert!(
+                chart
+                    .read_selection_samples(&[("ra".into(), LEN)])
+                    .await
+                    .is_err()
+            );
+            assert!(
+                chart
+                    .read_selection_samples(&[("missing".into(), 0)])
+                    .await
+                    .is_err()
+            );
+        }
+
+        /// SELECTION_READBACK_LEN and BOX_RECORD_SCHEMA_FITS (#152): every
+        /// branch of `selection_details` indexes the readback of the samples
+        /// it built, from a box record with all nine fields or the five
+        /// required ones to a violin without boxes (no sample at all),
+        /// twenty parallel axes and every range bar role. Each answers JSON
+        /// with its keys; the box statistics and range bar roles are the
+        /// registered values of the picked row.
+        #[wasm_bindgen_test(async)]
+        async fn selection_details_answers_every_branch() {
+            for scene in selection_scenes() {
+                let mut chart = scene_chart(&scene).await;
+                let mut config = chart.chart_config().unwrap().clone();
+                config.picked_data = Some(renderer::config::DataSelectionsConfig {
+                    refs: vec![scene.pick.clone()],
+                    ..Default::default()
+                });
+                chart
+                    .set_config(&serde_json::to_string(&config).unwrap())
+                    .unwrap_or_else(|e| panic!("{}: pick: {e:?}", scene.name));
+                let json = chart
+                    .selection_details()
+                    .await
+                    .unwrap_or_else(|e| panic!("{}: details: {e:?}", scene.name));
+                let details: serde_json::Value = serde_json::from_str(&json).unwrap();
+                for key in &scene.keys {
+                    assert!(
+                        details.get(key).is_some(),
+                        "{}: no {key} in {details}",
+                        scene.name
+                    );
+                }
+                // Row 1 of a record field `k` holds `k + 1`.
+                if let Some((_, fields)) = &scene.record {
+                    for (k, (name, _)) in fields.iter().enumerate() {
+                        assert_eq!(details[*name], k as f64 + 1.0, "{}: {name}", scene.name);
+                    }
+                    for (name, _) in renderer::BOX_PLOT_RECORD {
+                        if !fields.iter().any(|(field, _)| field == name) {
+                            assert!(details.get(*name).is_none(), "{}: {name}", scene.name);
+                        }
+                    }
+                }
+                if scene.name.starts_with("range bars") {
+                    for (role, value) in [
+                        ("position", 1.0),
+                        ("end", 5.0),
+                        ("start", 2.0),
+                        ("low", 1.5),
+                        ("high", 5.5),
+                        ("state", 1.0),
+                        ("progress", 0.5),
+                    ] {
+                        assert_eq!(details[role], value, "{role}");
+                    }
+                }
+                if scene.name.starts_with("parallel") {
+                    assert_eq!(details["values"].as_array().map(Vec::len), Some(20));
+                }
+            }
+        }
+
+        /// LABELS_MATCH_SERIES (#152): the legacy labels and the GPU styles
+        /// hold one entry per series.
+        fn assert_labels_match(chart: &FiggyChart, at: &str) {
+            let series = chart.chart_series().unwrap().len();
+            assert_eq!(chart.labels.len(), series, "{at}: labels");
+            assert_eq!(chart.styles.len(), series, "{at}: styles");
+        }
+
+        const CATEGORICAL_DOCUMENT: &str = r#"{
+            "categories": [
+                {"id": "q1", "label": "Q1"},
+                {"id": "q2", "label": "Q2"},
+                {"id": "q3", "label": "Q3"}
+            ],
+            "series": [
+                {"id": "north", "label": "North", "values": [12.0, 18.0, 9.0],
+                 "color": {"r": 0.33, "g": 0.56, "b": 0.83, "a": 1.0}},
+                {"id": "south", "label": "South", "values": [18.0, null, 14.0],
+                 "color": {"r": 1.0, "g": 0.65, "b": 0.41, "a": 1.0}}
+            ],
+            "mode": "Stacked",
+            "value_title": "Revenue"
+        }"#;
+
+        const BOXPLOT_DOCUMENT: &str = r#"{
+            "categories": [
+                {"id": "ctl", "label": "Control"},
+                {"id": "low", "label": "Low"},
+                {"id": "high", "label": "High"}
+            ],
+            "series": [
+                {"id": "a", "label": "A", "color": {"r": 0.25, "g": 0.56, "b": 0.82, "a": 1.0},
+                 "values": [
+                    {"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5,
+                     "mean": 3.2, "sample_count": 40, "outliers": [9.0]},
+                    null,
+                    {"whisker_low": 2, "q1": 3, "median": 4, "q3": 5, "whisker_high": 6}
+                 ]},
+                {"id": "b", "label": "B", "color": {"r": 0.9, "g": 0.66, "b": 0.25, "a": 1.0},
+                 "values": [
+                    {"whisker_low": 0, "q1": 1, "median": 2, "q3": 3, "whisker_high": 4},
+                    {"whisker_low": 1, "q1": 2, "median": 2.5, "q3": 3, "whisker_high": 4},
+                    {"whisker_low": 1, "q1": 2, "median": 3, "q3": 4, "whisker_high": 5}
+                 ]}
+            ],
+            "value_title": "Response"
+        }"#;
+
+        const RADAR_DOCUMENT: &str = r#"{
+            "categories": [
+                {"id": "speed", "label": "Speed"},
+                {"id": "range", "label": "Range"},
+                {"id": "cost", "label": "Cost"},
+                {"id": "comfort", "label": "Comfort"}
+            ],
+            "series": [
+                {"id": "a", "label": "A", "values": [4, 3.5, 2, 4.5],
+                 "color": {"r": 0.25, "g": 0.56, "b": 0.82, "a": 1.0}},
+                {"id": "b", "label": "B", "values": [3, 5, 3.25, 3],
+                 "color": {"r": 0.9, "g": 0.66, "b": 0.25, "a": 1.0}}
+            ],
+            "selected": {"series_id": "a", "category_id": "range"}
+        }"#;
+
+        /// Remove every registered column of `chart` in turn, checking the
+        /// labels after each.
+        fn remove_every_column(chart: &mut FiggyChart, at: &str) {
+            let mut ids = chart.columns.keys().cloned().collect::<Vec<_>>();
+            ids.sort();
+            for id in ids {
+                chart.remove_column(&id).unwrap();
+                assert_labels_match(chart, &format!("{at}: remove_column {id}"));
+            }
+        }
+
+        /// LABELS_MATCH_SERIES (#152): `labels` and `styles` hold one entry
+        /// per series after every call that changes the series or the
+        /// labels, successful or rejected: line upserts, label edits,
+        /// series removal, `set_series` with 0, 1 and 200 series, the three
+        /// document loads, `load_demo` twice, and the removal of each column
+        /// a series of every kind reads (a line's, a colour or size map's,
+        /// a ternary component, a box plot's positions and violin density,
+        /// a range bar's extra columns, a matrix grid column, a vector
+        /// component), its record and ragged columns.
+        #[wasm_bindgen_test(async)]
+        async fn labels_and_styles_follow_every_series_change() {
+            let mut chart = FiggyChart::create(canvas()).await.expect("create chart");
+            assert_labels_match(&chart, "create");
+            chart.register_column_f64("lx", &[0.0, 1.0, 2.0]).unwrap();
+            chart.register_column_f64("ly", &[2.0, 3.0, 4.0]).unwrap();
+            chart.add_line_series("a", "lx", "ly", 2.0, "A").unwrap();
+            assert_labels_match(&chart, "add a");
+            chart.add_line_series("a", "lx", "ly", 3.0, "").unwrap();
+            assert_labels_match(&chart, "update a");
+            chart.add_line_series("b", "lx", "ly", 2.0, "B").unwrap();
+            assert_labels_match(&chart, "add b");
+            assert!(
+                chart
+                    .add_line_series("c", "lx", "missing", 2.0, "C")
+                    .is_err()
+            );
+            assert_labels_match(&chart, "rejected add");
+            assert!(chart.set_series_label("a", "Alpha").unwrap());
+            assert_labels_match(&chart, "set label");
+            assert!(chart.set_series_label("a", "").unwrap());
+            assert_labels_match(&chart, "clear label");
+            assert!(!chart.set_series_label("nope", "x").unwrap());
+            assert_labels_match(&chart, "label of a missing series");
+            assert!(chart.remove_series("b").unwrap());
+            assert_labels_match(&chart, "remove b");
+            assert!(!chart.remove_series("nope").unwrap());
+            assert_labels_match(&chart, "remove a missing series");
+
+            let lines = |ids: &mut dyn Iterator<Item = String>| -> String {
+                let series: Vec<SeriesConfig> = ids
+                    .map(|id| SeriesConfig {
+                        series_id: id,
+                        source_id: None,
+                        label: None,
+                        x_column: "lx".into(),
+                        y_column: "ly".into(),
+                        z_column: None,
+                        render_type: DataRenderType::Line {
+                            line: DataLineStyleConfig::default(),
+                        },
+                    })
+                    .collect();
+                serde_json::to_string(&series).unwrap()
+            };
+            for count in [0usize, 1, 200] {
+                chart
+                    .set_series(&lines(&mut (0..count).map(|i| format!("s{i}"))))
+                    .unwrap();
+                assert_labels_match(&chart, &format!("set_series {count}"));
+            }
+            // Survivors keep their labels, new ids join.
+            chart
+                .set_series(&lines(
+                    &mut (0..100)
+                        .map(|i| format!("s{i}"))
+                        .chain((0..10).map(|i| format!("t{i}"))),
+                ))
+                .unwrap();
+            assert_labels_match(&chart, "set_series survivors");
+            assert!(chart.set_series("not json").is_err());
+            assert_labels_match(&chart, "rejected set_series json");
+            let mut unknown: Vec<SeriesConfig> =
+                serde_json::from_str(&chart.get_series().unwrap()).unwrap();
+            unknown[0].y_column = "missing".into();
+            assert!(
+                chart
+                    .set_series(&serde_json::to_string(&unknown).unwrap())
+                    .is_err()
+            );
+            assert_labels_match(&chart, "rejected set_series column");
+            for round in 0..2 {
+                chart.load_demo().unwrap();
+                assert_labels_match(&chart, &format!("load_demo {round}"));
+            }
+
+            chart
+                .set_categorical_document(CATEGORICAL_DOCUMENT)
+                .unwrap();
+            assert_labels_match(&chart, "categorical document");
+            assert!(chart.set_categorical_document("{").is_err());
+            assert_labels_match(&chart, "rejected categorical document");
+            remove_every_column(&mut chart, "categorical document");
+            chart.set_boxplot_document(BOXPLOT_DOCUMENT).unwrap();
+            assert_labels_match(&chart, "box plot document");
+            assert!(chart.set_boxplot_document("{").is_err());
+            assert_labels_match(&chart, "rejected box plot document");
+            remove_every_column(&mut chart, "box plot document");
+            chart.set_radar_document(RADAR_DOCUMENT).unwrap();
+            assert_labels_match(&chart, "radar document");
+            assert!(chart.set_radar_document("{").is_err());
+            assert_labels_match(&chart, "rejected radar document");
+            remove_every_column(&mut chart, "radar document");
+            assert!(!chart.remove_column("missing").unwrap());
+            assert_labels_match(&chart, "remove a missing column");
+
+            // Each column a series of every kind reads, removed and put
+            // back: the series goes with it and comes back with it.
+            for scene in selection_scenes() {
+                let mut chart = scene_chart(&scene).await;
+                assert_labels_match(&chart, scene.name);
+                let series_json = serde_json::to_string(&[scene.series.clone()]).unwrap();
+                for (id, data) in &scene.columns {
+                    assert!(chart.remove_column(id).unwrap(), "{}: {id}", scene.name);
+                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
+                    assert!(
+                        chart.chart_series().unwrap().is_empty(),
+                        "{}: a series reading {id} stays",
+                        scene.name
+                    );
+                    chart.register_column_f64(id, data).unwrap();
+                    chart.set_series(&series_json).unwrap();
+                    assert_labels_match(&chart, &format!("{}: restore {id}", scene.name));
+                }
+                let composites = scene
+                    .record
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .chain(scene.ragged.iter().map(|(id, _, _)| *id));
+                for id in composites {
+                    // A record or ragged id is not a registry column.
+                    let _removed = chart.remove_column(id);
+                    assert_labels_match(&chart, &format!("{}: remove {id}", scene.name));
+                }
+            }
+        }
     }
 }
 

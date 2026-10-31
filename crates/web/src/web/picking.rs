@@ -101,6 +101,11 @@ impl FiggyChart {
         &self,
         samples: &[(String, usize)],
     ) -> Result<Vec<f64>, JsValue> {
+        // Nothing to read (a violin without boxes names no record field): a
+        // zero-sized buffer cannot be mapped, so no GPU work is submitted.
+        if samples.is_empty() {
+            return Ok(Vec::new());
+        }
         let offsets = samples
             .iter()
             .map(|(column, index)| {
