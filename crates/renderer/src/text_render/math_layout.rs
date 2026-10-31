@@ -65,6 +65,10 @@ const SPACING: [[i8; 8]; 8] = [
     [-3, -3, 0, -3, -3, -3, -3, -3],
     [-3, 3, -4, -5, -3, 0, -3, -3],
 ];
+// `SPACING` is indexed by two `Atom` discriminants; every row has the
+// first row's type (#152).
+const _: () = assert!(SPACING.len() == Atom::Inner as usize + 1);
+const _: () = assert!(SPACING[0].len() == Atom::Inner as usize + 1);
 
 /// The width of TeX's null delimiter (`\left.`, the space beside a
 /// fraction), in em.

@@ -51,6 +51,9 @@ const _: () = assert!(std::mem::size_of::<RingScanParamsGpu>() == 16);
 
 /// Rows (or blocks) one scan workgroup covers: `RING_WG` in the shader.
 pub const RING_SCAN_BLOCK: u32 = 256;
+// `scan_ring_starts` keeps its level sizes in a `[u32; 5]`: a `u32` row
+// count shrinks to one block within four levels above the rows (#152).
+const _: () = assert!(RING_SCAN_BLOCK >= 2 && (RING_SCAN_BLOCK as u64).pow(4) >= u32::MAX as u64);
 
 /// Group 1 of the region pipelines: the pool as storage, the params and the
 /// ring starts.

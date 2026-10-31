@@ -150,6 +150,10 @@ const PICK_MODULES: [(&str, Assembled); 5] = [
         ),
     ),
 ];
+// `PICK_MODULES` is indexed by every `PickShader` discriminant, and
+// `PickExactPipelines::modules` by `exact_index`, one less (#152).
+const _: () = assert!(PICK_MODULES.len() == PickShader::Vector as usize + 1);
+const _: () = assert!(PickShader::Gate as usize == 0);
 
 impl PickShader {
     #[cfg(test)]
@@ -217,7 +221,7 @@ impl PickExactKey {
 /// has needed (a handful: module x draw-style paths x marker shape).
 #[derive(Default)]
 pub(crate) struct PickExactPipelines {
-    pub(super) modules: [Option<wgpu::ShaderModule>; 4],
+    pub(super) modules: [Option<wgpu::ShaderModule>; PICK_MODULES.len() - 1],
     pub(super) pipelines: Vec<(PickExactKey, wgpu::ComputePipeline)>,
 }
 

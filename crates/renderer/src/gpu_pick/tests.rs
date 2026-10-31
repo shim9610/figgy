@@ -3430,7 +3430,21 @@ fn unrelated_remove_keeps_gate_storage_while_reused_source_epoch_stales_it() {
 fn assembled_pick_shaders_start_with_the_core_and_use_every_fragment() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/gpu_pick");
     let mut used = std::collections::HashSet::new();
-    for shader in std::iter::once(PickShader::Gate).chain(PickShader::EXACT) {
+    let mut labels = std::collections::HashSet::new();
+    for (position, shader) in std::iter::once(PickShader::Gate)
+        .chain(PickShader::EXACT)
+        .enumerate()
+    {
+        // Every discriminant names its own `PICK_MODULES` entry, and an
+        // exact module's slot in `PickExactPipelines::modules` follows the
+        // gate's (#152).
+        assert_eq!(shader as usize, position, "{shader:?}");
+        assert!(labels.insert(shader.label()), "{shader:?}");
+        assert!(!shader.source().is_empty(), "{shader:?}");
+        match shader {
+            PickShader::Gate => assert!(shader.exact_index().is_err()),
+            _ => assert_eq!(shader.exact_index().unwrap(), position - 1),
+        }
         used.extend(shader.fragments().iter().copied());
         assert_eq!(shader.fragments()[0], "gpu_pick/core.wgsl", "{shader:?}");
         let last = *shader.fragments().last().unwrap();

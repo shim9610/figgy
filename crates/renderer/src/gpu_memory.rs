@@ -229,6 +229,24 @@ impl GpuResourceKind {
     }
 }
 
+// Every `[_; GPU_RESOURCE_KIND_COUNT]` row table is indexed by
+// `GpuResourceKind::index`, and the report walks `ALL` by position: the
+// index of `ALL[i]` is `i`, so `index` maps the listed kinds one to one onto
+// the rows (#152).
+const _: () = assert!(kinds_are_listed_in_row_order());
+
+/// Whether `GpuResourceKind::ALL[i].index() == i` for every `i`.
+const fn kinds_are_listed_in_row_order() -> bool {
+    let mut i = 0;
+    while i < GpuResourceKind::ALL.len() {
+        if GpuResourceKind::ALL[i].index() != i {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
 /// Exact byte cost of a live texture, samples and mip levels included.
 pub fn texture_bytes(texture: &wgpu::Texture) -> u64 {
     texture_extent_bytes(

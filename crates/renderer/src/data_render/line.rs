@@ -249,6 +249,9 @@ const LINE_SLOTS: usize = 6;
 /// value at A and B; the ternary stroke's are the same with the third
 /// component at A and B.
 const LINE_MAPPED_SLOTS: usize = 8;
+// `line_slot_pipeline` takes the first `slots` of its `LINE_MAPPED_SLOTS`
+// vertex buffers, and the line entries pass `LINE_SLOTS` (#152).
+const _: () = assert!(LINE_SLOTS <= LINE_MAPPED_SLOTS);
 
 /// The stroke of a ternary series (`vs_ternary` / `fs_main`): the six line
 /// slots plus the third component at slots 6/7, over the line's groups.
