@@ -1145,6 +1145,23 @@ impl CartesianHost {
                             color(ui, "colour", &mut style.line.color);
                             slider(ui, "head length", &mut style.head_length, 2.0..=30.0);
                         }
+                        // A shape's look: the fill (or none), the border and
+                        // whether it sits under the data.
+                        AnnotationKind::Rect { style, .. }
+                        | AnnotationKind::Ellipse { style, .. }
+                        | AnnotationKind::Polygon { style, .. } => {
+                            let mut filled = style.fill.is_some();
+                            if ui.checkbox(&mut filled, "fill").changed() {
+                                style.fill =
+                                    filled.then_some(Color::new(0.3, 0.5, 0.9, 0.25));
+                            }
+                            if let Some(fill) = &mut style.fill {
+                                color(ui, "fill colour", fill);
+                            }
+                            color(ui, "border colour", &mut style.border.color);
+                            slider(ui, "border width", &mut style.border.width, 0.0..=6.0);
+                            ui.checkbox(&mut style.below, "below the data");
+                        }
                     }
                     if ui.button("Delete annotation").clicked() {
                         config.annotations.items.remove(i);
