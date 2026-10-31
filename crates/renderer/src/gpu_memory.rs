@@ -823,7 +823,7 @@ impl ChargeTally {
 
 /// Create a buffer and tally exactly the size the device was asked for.
 ///
-/// The buffer is created inside wgpu error scopes ([`crate::renderer::gpu_checked`]),
+/// The buffer is created inside wgpu error scopes (`gpu_checked`),
 /// so an out-of-memory or limit failure is an error, not a panic (#152).
 /// The size is tallied only when the buffer was created.
 pub fn charged_buffer(

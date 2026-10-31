@@ -1556,7 +1556,7 @@ mod dashed_rule_tests {
 ///
 /// [`TextAlign::line_offset`]: crate::text::TextAlign::line_offset
 ///
-/// A glyph above [`MAX_GLYPH_PX`] is an error; the glyphs before it are drawn.
+/// A glyph above `MAX_GLYPH_PX` is an error; the glyphs before it are drawn.
 pub fn draw_rich_text(
     canvas: &mut Canvas,
     rt: &RichText,
@@ -1787,7 +1787,7 @@ pub(crate) fn script_placement(position: ScriptPosition, base: f32) -> ScriptPla
 // `glyph_font`.
 
 /// Draw single-style text at `origin` (left, baseline). A glyph above
-/// [`MAX_GLYPH_PX`] is an error.
+/// `MAX_GLYPH_PX` is an error.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_plain_text(
     canvas: &mut Canvas,
