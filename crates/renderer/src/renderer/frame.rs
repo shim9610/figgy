@@ -1640,7 +1640,11 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
         // a single-layer chart draws its chrome and no data there, so a
         // layered one draws its base panel the same way instead of failing
         // the frame. The next larger size expands normally again.
-        Err(_) => {
+        Err(
+            crate::layout::LayoutError::OverflowHorizontal { .. }
+            | crate::layout::LayoutError::OverflowVertical { .. }
+            | crate::layout::LayoutError::EmptyDataArea,
+        ) => {
             let mut panel = config.clone();
             panel.overlays.clear();
             panel.subplots.clear();
@@ -1648,6 +1652,14 @@ pub(crate) fn expand_for_render(config: &Config) -> Result<Vec<Config>> {
             panel.active_layer = crate::LayerRef::Base;
             Ok(vec![panel])
         }
+        Err(crate::layout::LayoutError::TargetOutOfChartArea) => Err(FiggyError::InvalidConfig {
+            field: "subplots",
+            reason: "a layer's area lies outside the chart area",
+        }),
+        Err(crate::layout::LayoutError::Infeasible) => Err(FiggyError::InvalidConfig {
+            field: "overlays",
+            reason: "the layered document has no feasible layout",
+        }),
     }
 }
 
@@ -1687,9 +1699,49 @@ pub(super) fn raster_panel_layers(
         axis_render::raster_panel_layers(config, selection, grid && !(overlay && milkyway))?;
     if grid && overlay && milkyway {
         let (w, h) = (config.chart_area.0.width, config.chart_area.0.height);
-        return Ok((vec![0; (w as usize) * (h as usize) * 4], dec_rgba));
+        let len = (w as usize)
+            .checked_mul(h as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(FiggyError::InvalidChartArea {
+                width: w,
+                height: h,
+            })?;
+        let mut blank = Vec::new();
+        blank
+            .try_reserve_exact(len)
+            .map_err(|error| FiggyError::StateAllocationFailed {
+                resource: "transparent overlay grid raster",
+                reason: error.to_string(),
+            })?;
+        blank.resize(len, 0);
+        return Ok((blank, dec_rgba));
     }
     Ok((grid_rgba, dec_rgba))
+}
+
+/// The texture size of a panel raster laid out from `config` and drawn at
+/// `panel_rect`, checked before anything is rasterised: the raster is sized
+/// from the config's chart area and the texture from the rect, so the two
+/// must agree, and the texture must fit the device (#152).
+pub(super) fn checked_panel_raster_size(
+    caps: RendererDeviceCaps,
+    config: &Config,
+    panel_rect: Rect,
+) -> Result<(u32, u32)> {
+    let area = config.chart_area.0;
+    if (area.width, area.height) != (panel_rect.width, panel_rect.height) {
+        return Err(FiggyError::InvalidChartArea {
+            width: panel_rect.width,
+            height: panel_rect.height,
+        });
+    }
+    validate_texture_extent(
+        caps,
+        "figgy panel texture dimension",
+        panel_rect.width,
+        panel_rect.height,
+    )?;
+    Ok((panel_rect.width, panel_rect.height))
 }
 
 /// Every panel's tick warnings as one list. An overlay panel reports only
@@ -1859,6 +1911,7 @@ impl Renderer {
     /// `chart.config_mut().chart_area` must match `panel_rect` before this
     /// call so the axis raster is drawn correctly.
     pub fn create_chart_view(&self, chart: &Chart, panel_rect: Rect) -> Result<ChartView> {
+        self.health.check()?;
         let panels = expand_for_render(chart.config())?;
         let places = panel_places(chart.config(), &panels, panel_rect);
         let font_generation = crate::text_render::font_generation();
@@ -1874,8 +1927,7 @@ impl Renderer {
         // Annotation layer: two optional textures from one shared raster
         // pass. One layer per document, on the base view, anchored in the
         // parent's own axis space (the group data area).
-        let w = panel_rect.width.max(1);
-        let h = panel_rect.height.max(1);
+        let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
         let annotations = annotation_raster_for_chart(chart, None);
         view.annotation_underlay = annotations
             .underlay
@@ -1904,8 +1956,7 @@ impl Renderer {
         overlay: bool,
         font_generation: u64,
     ) -> Result<ChartView> {
-        let w = panel_rect.width.max(1);
-        let h = panel_rect.height.max(1);
+        let (w, h) = checked_panel_raster_size(self.caps, config, panel_rect)?;
 
         // Both raster layers from one placement pass: the grid (drawn below
         // data) and the decoration (drawn above). An overlay panel in the
@@ -2012,6 +2063,7 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<usize>,
     ) -> Result<()> {
+        self.health.check()?;
         view.annotation_selected = selected;
         if view.panel_rect != panel_rect {
             return self.refresh_axis(view, chart, panel_rect);
@@ -2026,8 +2078,7 @@ impl Renderer {
         chart: &Chart,
         panel_rect: Rect,
     ) -> Result<()> {
-        let w = panel_rect.width.max(1);
-        let h = panel_rect.height.max(1);
+        let (w, h) = checked_panel_raster_size(self.caps, chart.config(), panel_rect)?;
         let raster = annotation_raster_for_chart(chart, view.annotation_selected);
         self.refresh_optional_layer(
             &mut view.annotation_underlay,
@@ -2076,6 +2127,7 @@ impl Renderer {
     /// layers and let [`Self::prepare`] write the transform from the same config;
     /// no separate call to this method is needed.
     pub fn update_transform(&mut self, view: &ChartView, chart: &Chart) -> Result<()> {
+        self.health.check()?;
         let panels = expand_for_render(chart.config())?;
         let views = layer_views(view, panels.len())?;
         view.advance_stream_revision()?;
@@ -2121,6 +2173,7 @@ impl Renderer {
         panel_rect: Rect,
         selected: Option<&str>,
     ) -> Result<()> {
+        self.health.check()?;
         let selection: Vec<crate::select::SelectionBox> = selected
             .and_then(|id| self.selection_box(chart, id))
             .into_iter()
@@ -2202,8 +2255,7 @@ impl Renderer {
         overlay: bool,
         font_generation: u64,
     ) -> Result<()> {
-        let w = panel_rect.width.max(1);
-        let h = panel_rect.height.max(1);
+        let (w, h) = checked_panel_raster_size(self.caps, config, panel_rect)?;
         let key = PanelRasterKey::new(config, selection, font_generation, panel_rect);
         if view.raster_key.as_ref() == Some(&key) {
             // Same raster: the revisions still advance so a token prepared
@@ -2292,7 +2344,10 @@ impl Renderer {
                 rgba,
             });
         }
-        let cache = self.space_bg.as_ref().expect("space_bg baked above");
+        let cache = self
+            .space_bg
+            .as_ref()
+            .ok_or(FiggyError::internal("space_bg baked above"))?;
         if view.grid_space_gen != Some(cache.bake_gen) {
             self.refresh_one_layer(
                 &mut view.grid_texture,
@@ -2317,6 +2372,11 @@ impl Renderer {
         w: u32,
         h: u32,
     ) -> Result<()> {
+        if rgba.len() as u64 != u64::from(w) * u64::from(h) * 4 {
+            return Err(FiggyError::internal(
+                "a panel raster has its texture's size (checked before rasterising)",
+            ));
+        }
         let same_size = tex.width() == w && tex.height() == h;
         if same_size {
             self.queue.write_texture(
@@ -2483,6 +2543,7 @@ impl Renderer {
     /// pool layout change, replacement of any captured column allocation, or
     /// another transform/axis write to a captured `ChartView`.
     pub fn prepare(&mut self, items: &[ChartDrawItem<'_>]) -> Result<PreparedFrame> {
+        self.health.check()?;
         for item in items {
             for series in item.series {
                 self.require_resident_series(series.config)?;
@@ -2502,6 +2563,7 @@ impl Renderer {
         &mut self,
         items: &[RegisteredChartDrawItem<'_>],
     ) -> Result<PreparedFrame> {
+        self.health.check()?;
         self.prepare_registered_mixed(items)
             .map_err(streaming_runtime::StreamRequestError::into_figgy)
     }
@@ -2552,7 +2614,7 @@ impl Renderer {
             let styles = &state
                 .prepared_styles
                 .as_ref()
-                .expect("registered styles were prepared")
+                .ok_or(FiggyError::internal("registered styles were prepared"))?
                 .styles;
             let mut series = Vec::new();
             series
@@ -2723,6 +2785,7 @@ impl Renderer {
         target_size: (u32, u32),
         prepared: &PreparedFrame,
     ) -> Result<()> {
+        self.health.check()?;
         self.validate_prepared(prepared)?;
         self.paint_prepared_items(pass, target_size, &prepared.items, true)
     }
@@ -2874,13 +2937,19 @@ impl Renderer {
         let slice = readback.slice(..);
         let (tx, rx) = futures_channel::oneshot::channel();
         slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
+            if tx.send(result).is_err() {
+                // The receiver was dropped: the waiting call was cancelled.
+            }
         });
         #[cfg(not(target_arch = "wasm32"))]
-        let _ = self.device.poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        });
+        gpu_poll(
+            &self.health,
+            &self.device,
+            wgpu::PollType::Wait {
+                submission_index: None,
+                timeout: None,
+            },
+        )?;
         rx.await
             .map_err(|error| FiggyError::GpuResourceAllocationFailed {
                 resource: "contour label indirect count readback",
@@ -2897,7 +2966,11 @@ impl Renderer {
                     resource: "contour label indirect count readback",
                     reason: format!("get_mapped_range: {error:?}"),
                 })?;
-        let count = u32::from_le_bytes(mapped[..4].try_into().expect("four-byte readback"));
+        let count = u32::from_le_bytes(
+            *mapped
+                .first_chunk::<4>()
+                .ok_or(FiggyError::internal("four-byte readback"))?,
+        );
         drop(mapped);
         readback.unmap();
         Ok(Some(count))
