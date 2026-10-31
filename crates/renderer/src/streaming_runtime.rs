@@ -144,6 +144,7 @@ impl StreamRequestError {
                 resource: "stream chunk upload",
                 reason: format!("{error:?}"),
             },
+            Self::Surface(StreamSurfaceError::Gpu(error)) => error,
             Self::Surface(error) => FiggyError::GpuResourceAllocationFailed {
                 resource: "stream display surface",
                 reason: format!("{error:?}"),
@@ -419,7 +420,37 @@ pub(super) struct StreamRuntime {
     reject_next_completion_reserve: bool,
 }
 
+/// The stream runtime an earlier check in the same call found present.
+fn live_runtime(runtime: &Option<StreamRuntime>) -> Result<&StreamRuntime> {
+    runtime
+        .as_ref()
+        .ok_or(FiggyError::internal("a validated stream job has a runtime"))
+}
+
+/// Mutable [`live_runtime`].
+fn live_runtime_mut(runtime: &mut Option<StreamRuntime>) -> Result<&mut StreamRuntime> {
+    runtime
+        .as_mut()
+        .ok_or(FiggyError::internal("a validated stream job has a runtime"))
+}
+
 impl StreamRuntime {
+    /// The cursor of a job an earlier check in the same call found live.
+    fn live_draw(&self, job: StreamJob) -> Result<&StreamDrawCursor> {
+        self.draws
+            .iter()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))
+    }
+
+    /// Mutable [`StreamRuntime::live_draw`].
+    fn live_draw_mut(&mut self, job: StreamJob) -> Result<&mut StreamDrawCursor> {
+        self.draws
+            .iter_mut()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))
+    }
+
     fn has_data_slots(&self, job: JobId) -> bool {
         self.requests.iter().any(|request| {
             request.ticket.job.id == job
@@ -1103,7 +1134,7 @@ impl Renderer {
         }
         self.chart_states
             .get_mut(&chart)
-            .unwrap()
+            .ok_or(FiggyError::UnknownChart { id: chart })?
             .stream_auto_fit_padding = None;
         Ok(true)
     }
@@ -1153,32 +1184,28 @@ impl Renderer {
         replay: bool,
     ) -> StreamResult<wgpu::SubmissionIndex> {
         self.discard_pending_selection(job)?;
-        let snapshot = {
+        // Every fallible lookup runs before the snapshot leaves its slot, and
+        // each later error path puts it back, so a failed update never leaves
+        // an automatic execution without its snapshot.
+        let (target, clear, fit_preview, snapshot) = {
             let draw = self
                 .stream_runtime
                 .as_mut()
                 .and_then(|runtime| runtime.draws.iter_mut().find(|draw| draw.job == job))
                 .ok_or(StreamError::Stale)?;
+            let clear = draw.surface_clear.ok_or(StreamError::WrongState)?;
+            let target = draw.target.clone();
+            let fit_preview = draw.fit_preview;
             let StreamExecutionMode::Auto { snapshot, .. } = &mut draw.mode else {
                 return Err(StreamError::WrongState.into());
             };
-            snapshot.take().ok_or(StreamError::WrongState)?
+            let snapshot = snapshot.take().ok_or(StreamError::WrongState)?;
+            (target, clear, fit_preview, snapshot)
         };
         let mut snapshot = match Arc::try_unwrap(snapshot) {
             Ok(snapshot) => snapshot,
             Err(snapshot) => {
-                let draw = self
-                    .stream_runtime
-                    .as_mut()
-                    .unwrap()
-                    .draws
-                    .iter_mut()
-                    .find(|draw| draw.job == job)
-                    .unwrap();
-                let StreamExecutionMode::Auto { snapshot: slot, .. } = &mut draw.mode else {
-                    unreachable!()
-                };
-                *slot = Some(snapshot);
+                self.restore_auto_snapshot(job, snapshot)?;
                 return Err(FiggyError::StaleStateToken {
                     reason: "automatic stream snapshot was retained across an axis restart".into(),
                 }
@@ -1196,49 +1223,19 @@ impl Renderer {
                 .and_then(|()| self.update_transform(&snapshot.view, &chart))
         };
         if let Err(error) = updated {
-            let draw = self
-                .stream_runtime
-                .as_mut()
-                .unwrap()
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
-            let StreamExecutionMode::Auto { snapshot: slot, .. } = &mut draw.mode else {
-                unreachable!()
-            };
-            *slot = Some(Arc::new(snapshot));
+            self.restore_auto_snapshot(job, Arc::new(snapshot))?;
             return Err(error.into());
         }
         snapshot.config = config;
         copy_stream_fit_axes(&mut snapshot.document_config, &snapshot.config);
 
-        let draw = self
-            .stream_runtime
-            .as_ref()
-            .unwrap()
-            .draws
-            .iter()
-            .find(|draw| draw.job == job)
-            .unwrap();
-        let target = draw.target.clone();
-        let clear = draw.surface_clear.ok_or(StreamError::WrongState)?;
         let separate_grid = matches!(
             snapshot.config.draw_style,
             crate::config::DrawStyle::Precise
         );
         let target_view = target.create_view(&Default::default());
         let mut encoder = self.device.create_command_encoder(&Default::default());
-        let preview = !replay
-            && self
-                .stream_runtime
-                .as_ref()
-                .unwrap()
-                .draws
-                .iter()
-                .find(|draw| draw.job == job)
-                .unwrap()
-                .fit_preview;
+        let preview = !replay && fit_preview;
         let rescaled = if preview {
             let mapping = preview_pixel_mapping(&previous_config, &snapshot.config);
             let size = (target.width(), target.height());
@@ -1249,89 +1246,29 @@ impl Renderer {
                     .map_or(snapshot.view.panel_rect, |area| area.0),
                 size,
             );
-            let runtime = self.stream_runtime.as_mut().unwrap();
-            let draw = runtime
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
             match (mapping, clip) {
-                (Some(mapping), Some(clip)) => draw
-                    .surface
-                    .as_mut()
-                    .ok_or(StreamError::WrongState)?
-                    .record_rescale(
-                        &self.device,
-                        &self.queue,
-                        &self.gpu_ledger,
-                        runtime.transfer.as_ref().ok_or(StreamError::WrongState)?,
-                        &mut encoder,
-                        &mapping,
-                        [clip.x, clip.y, clip.width, clip.height],
-                        self.memory_budget.unwrap_or(u64::MAX),
-                        self.pool.gpu_bytes() + self.pool.retired_bytes(),
-                    )
-                    .map_err(StreamRequestError::from),
+                (Some(mapping), Some(clip)) => self.record_auto_fit_rescale(
+                    job,
+                    &mut encoder,
+                    &mapping,
+                    [clip.x, clip.y, clip.width, clip.height],
+                ),
                 _ => Ok(()),
             }
         } else {
             Ok(())
         };
-        if replay {
-            let runtime = self.stream_runtime.as_mut().unwrap();
-            let draw = runtime
-                .draws
-                .iter_mut()
-                .find(|draw| draw.job == job)
-                .unwrap();
-            // Keep the upload executor's headroom. If the viewport snapshots
-            // do not fit, retain the previous atomic handoff instead of failing
-            // an otherwise valid stream or exceeding the budget.
-            let budget = self
-                .memory_budget
-                .unwrap_or(u64::MAX)
-                .saturating_sub(runtime.scheduler.limits().max_in_flight_bytes);
-            if let (Some(surface), Some(transfer)) =
-                (draw.surface.as_mut(), runtime.transfer.as_mut())
-            {
-                let panel = data_render::clamp_rect_to_target(
-                    snapshot.view.panel_rect,
-                    (target.width(), target.height()),
-                );
-                let _ = surface.begin_replay(
-                    &self.device,
-                    &self.gpu_ledger,
-                    transfer,
-                    &mut encoder,
-                    clear,
-                    |pass| {
-                        if let Some(panel) = panel {
-                            pass.set_viewport(
-                                panel.x as f32,
-                                panel.y as f32,
-                                panel.width as f32,
-                                panel.height as f32,
-                                0.0,
-                                1.0,
-                            );
-                            pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
-                            pass.set_pipeline(&self.pipelines.axis);
-                            pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
-                            pass.draw(0..3, 0..1);
-                            if let (Some(underlay), _) = snapshot
-                                .view
-                                .annotation_bind_groups(snapshot.annotations_visible())
-                            {
-                                pass.set_bind_group(0, underlay, &[]);
-                                pass.draw(0..3, 0..1);
-                            }
-                        }
-                    },
-                    budget,
-                    self.pool.gpu_bytes() + self.pool.retired_bytes(),
-                );
-            }
-        }
+        let replayed = if replay {
+            self.begin_auto_fit_replay(
+                job,
+                &snapshot,
+                (target.width(), target.height()),
+                &mut encoder,
+                clear,
+            )
+        } else {
+            Ok(())
+        };
         if !preview {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("figgy automatic stream data restart"),
@@ -1379,14 +1316,7 @@ impl Renderer {
         }
         let expected_view_revision = snapshot.view.stream_revision.load(Ordering::Acquire);
         let snapshot = Arc::new(snapshot);
-        let draw = self
-            .stream_runtime
-            .as_mut()
-            .unwrap()
-            .draws
-            .iter_mut()
-            .find(|draw| draw.job == job)
-            .unwrap();
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
         if replay {
             draw.series = 0;
             draw.phase_index = 0;
@@ -1444,13 +1374,133 @@ impl Renderer {
             ..
         } = &mut draw.mode
         else {
-            unreachable!()
+            return Err(
+                FiggyError::internal("an automatic fit restart keeps its execution mode").into(),
+            );
         };
         *slot = Some(snapshot);
         *all_submitted = false;
         *final_display_published = false;
         rescaled?;
+        replayed?;
         Ok(self.queue.submit([encoder.finish()]))
+    }
+
+    /// Put an automatic execution's snapshot back into its slot.
+    fn restore_auto_snapshot(
+        &mut self,
+        job: StreamJob,
+        snapshot: Arc<AutoStreamExecutionSnapshot>,
+    ) -> Result<()> {
+        let draw = live_runtime_mut(&mut self.stream_runtime)?.live_draw_mut(job)?;
+        let StreamExecutionMode::Auto { snapshot: slot, .. } = &mut draw.mode else {
+            return Err(FiggyError::internal(
+                "an automatic stream keeps its execution mode",
+            ));
+        };
+        *slot = Some(snapshot);
+        Ok(())
+    }
+
+    /// Rescale the retained preview of an automatic fit to its new axis window.
+    fn record_auto_fit_rescale(
+        &mut self,
+        job: StreamJob,
+        encoder: &mut wgpu::CommandEncoder,
+        mapping: &[f32; 8],
+        clip: [u32; 4],
+    ) -> StreamResult<()> {
+        let pool_bytes = self.pool.gpu_bytes() + self.pool.retired_bytes();
+        let budget = self.memory_budget.unwrap_or(u64::MAX);
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
+        let draw = runtime
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+        let surface = draw.surface.as_mut().ok_or(StreamError::WrongState)?;
+        let transfer = runtime.transfer.as_ref().ok_or(StreamError::WrongState)?;
+        surface.record_rescale(
+            &self.device,
+            &self.queue,
+            &self.gpu_ledger,
+            transfer,
+            encoder,
+            mapping,
+            clip,
+            budget,
+            pool_bytes,
+        )?;
+        Ok(())
+    }
+
+    /// Begin the exact replay of an automatic fit over its retained preview.
+    fn begin_auto_fit_replay(
+        &mut self,
+        job: StreamJob,
+        snapshot: &AutoStreamExecutionSnapshot,
+        size: (u32, u32),
+        encoder: &mut wgpu::CommandEncoder,
+        clear: wgpu::Color,
+    ) -> StreamResult<()> {
+        let pool_bytes = self.pool.gpu_bytes() + self.pool.retired_bytes();
+        let runtime = live_runtime_mut(&mut self.stream_runtime)?;
+        // Keep the upload executor's headroom.
+        let budget = self
+            .memory_budget
+            .unwrap_or(u64::MAX)
+            .saturating_sub(runtime.scheduler.limits().max_in_flight_bytes);
+        let draw = runtime
+            .draws
+            .iter_mut()
+            .find(|draw| draw.job == job)
+            .ok_or(FiggyError::internal("a validated stream job has a cursor"))?;
+        let (Some(surface), Some(transfer)) = (draw.surface.as_mut(), runtime.transfer.as_mut())
+        else {
+            // No stream surface: the restart redraws without a retained preview.
+            return Ok(());
+        };
+        let panel = data_render::clamp_rect_to_target(snapshot.view.panel_rect, size);
+        let axis = &self.pipelines.axis;
+        let began = surface.begin_replay(
+            &self.device,
+            &self.gpu_ledger,
+            transfer,
+            encoder,
+            clear,
+            |pass| {
+                if let Some(panel) = panel {
+                    pass.set_viewport(
+                        panel.x as f32,
+                        panel.y as f32,
+                        panel.width as f32,
+                        panel.height as f32,
+                        0.0,
+                        1.0,
+                    );
+                    pass.set_scissor_rect(panel.x, panel.y, panel.width, panel.height);
+                    pass.set_pipeline(axis);
+                    pass.set_bind_group(0, &snapshot.view.grid_bind_group, &[]);
+                    pass.draw(0..3, 0..1);
+                    if let (Some(underlay), _) = snapshot
+                        .view
+                        .annotation_bind_groups(snapshot.annotations_visible())
+                    {
+                        pass.set_bind_group(0, underlay, &[]);
+                        pass.draw(0..3, 0..1);
+                    }
+                }
+            },
+            budget,
+            pool_bytes,
+        );
+        match began {
+            // The viewport snapshots do not fit the budget: retain the
+            // previous atomic handoff instead of failing an otherwise valid
+            // stream or exceeding the budget.
+            Ok(()) | Err(StreamSurfaceError::TooLarge) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 
     fn publish_auto_stream_completion(&mut self, job: StreamJob) -> StreamResult<RenderRevision> {
@@ -3379,28 +3429,26 @@ impl Renderer {
         self.sync_external_invalidations()?;
         self.service_stream_requests();
         self.chart_config(chart)?;
+        let pool_bytes = self
+            .pool
+            .gpu_bytes()
+            .checked_add(self.pool.retired_bytes())
+            .ok_or(StreamError::Overflow)?;
         let runtime = self
             .stream_runtime
-            .as_ref()
+            .as_mut()
             .ok_or(StreamError::InvalidLimits)?;
-        if !runtime
-            .transfer
-            .as_ref()
-            .is_some_and(|transfer| transfer.matches(self.surface_format, self.target_sample_count))
-        {
-            let transfer =
-                StreamTransfer::new(&self.device, self.surface_format, self.target_sample_count)?;
-            self.stream_runtime.as_mut().unwrap().transfer = Some(transfer);
-        }
+        let transfer = match runtime.transfer.take() {
+            Some(transfer) if transfer.matches(self.surface_format, self.target_sample_count) => {
+                transfer
+            }
+            _ => StreamTransfer::new(&self.device, self.surface_format, self.target_sample_count)?,
+        };
+        let transfer = &*runtime.transfer.insert(transfer);
         let mut surface = StreamSurface::new(
             &self.device,
             &self.gpu_ledger,
-            self.stream_runtime
-                .as_ref()
-                .unwrap()
-                .transfer
-                .as_ref()
-                .unwrap(),
+            transfer,
             StreamSurfaceSpec {
                 width: size.0,
                 height: size.1,
@@ -3408,38 +3456,26 @@ impl Renderer {
                 sample_count: self.target_sample_count,
             },
             self.memory_budget.unwrap_or(u64::MAX),
-            self.pool
-                .gpu_bytes()
-                .checked_add(self.pool.retired_bytes())
-                .ok_or(StreamError::Overflow)?,
+            pool_bytes,
         )?;
         if fit_preview {
             surface.prepare_rescale(
                 &self.device,
                 &self.gpu_ledger,
-                self.stream_runtime
-                    .as_ref()
-                    .unwrap()
-                    .transfer
-                    .as_ref()
-                    .unwrap(),
+                transfer,
                 self.memory_budget.unwrap_or(u64::MAX),
-                self.pool
-                    .gpu_bytes()
-                    .checked_add(self.pool.retired_bytes())
-                    .ok_or(StreamError::Overflow)?,
+                pool_bytes,
             )?;
         }
         let display_view = surface.resolved().create_view(&Default::default());
-        let display_bind_group = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let display_bind_group = gpu_checked(&self.device, "stream display bind group", || {
             data_render::create_texture_bind_group(
                 &self.device,
                 &self.texture_bgl,
                 &display_view,
                 &self.sampler,
             )
-        }))
-        .map_err(|_| StreamSurfaceError::AllocationFailed)?;
+        })?;
         let job = self.begin_chart_stream_draw_with_sources(
             chart,
             view,

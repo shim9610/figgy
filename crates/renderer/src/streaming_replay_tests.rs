@@ -150,7 +150,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                 let usage = r.gpu_memory_usage();
                 let mut e = r.device.create_command_encoder(&Default::default());
                 let pool = r.pool.gpu_bytes() + r.pool.retired_bytes();
-                assert_eq!(
+                assert!(matches!(
                     surface.begin_replay(
                         &r.device,
                         &r.gpu_ledger,
@@ -162,7 +162,7 @@ fn progressive_replay_selects_one_image_without_double_alpha_or_blank_suffix() {
                         pool
                     ),
                     Err(StreamSurfaceError::TooLarge)
-                );
+                ));
                 assert!(!surface.has_replay());
                 assert_eq!(
                     r.gpu_memory_usage(),
