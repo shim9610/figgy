@@ -4237,3 +4237,170 @@ fn main() {
         &read[INDEX_LANE_PROBES.len()..]
     );
 }
+
+/// BATCH_CHUNK_PLAN (#152): for batches of 0, 1, 2 and 300 columns (past
+/// any former column cap) of 1, 2, 4097 and 100 000 values, under ceilings
+/// below one column, of exactly one column, of three columns and
+/// `u64::MAX`, the plan's chunks partition the columns in order, each with
+/// one offset per column starting at 0 and stepping by the column's
+/// region, ending at the chunk's size, and the chunks tile the region. A
+/// chunk passes the ceiling only when it is one column.
+#[test]
+fn the_staging_plan_partitions_any_batch_under_any_ceiling() {
+    let lengths = [1usize, 2, 4097];
+    let sources: Vec<Column<f64>> = (0..300)
+        .map(|i| {
+            let len = if i == 299 { 100_000 } else { lengths[i % 3] };
+            col_f64((0..len).map(|row| row as f64).collect())
+        })
+        .collect();
+    let names: Vec<String> = (0..300).map(|i| format!("c{i}")).collect();
+    for count in [0usize, 1, 2, 300] {
+        // The last column is the large one in every batch past one column.
+        let picks: Vec<usize> = (0..count)
+            .map(|i| if i + 1 == count && count > 1 { 299 } else { i })
+            .collect();
+        let columns: Vec<(&str, &dyn ColumnSource)> = picks
+            .iter()
+            .map(|&i| (names[i].as_str(), &sources[i] as &dyn ColumnSource))
+            .collect();
+        let region = |i: usize| column_region_bytes(columns[i].1.len()).unwrap();
+        let total: u64 = (0..count).map(region).sum();
+        let one = column_region_bytes(1).unwrap();
+        for ceiling in [one - 1, one, 3 * one, total.max(1), u64::MAX] {
+            let chunks = plan_batch_chunks(&columns, ceiling).unwrap();
+            assert!(!chunks.is_empty());
+            let (mut next, mut region_offset) = (0usize, 0u64);
+            for chunk in &chunks {
+                assert_eq!(chunk.columns.start, next, "{count} columns under {ceiling}");
+                assert!(count == 0 || chunk.columns.start < chunk.columns.end);
+                assert_eq!(chunk.column_offsets.len(), chunk.columns.len());
+                assert_eq!(chunk.region_offset, region_offset);
+                let mut offset = 0u64;
+                for (k, index) in chunk.columns.clone().enumerate() {
+                    assert_eq!(chunk.column_offsets[k] as u64, offset);
+                    offset += region(index);
+                }
+                assert_eq!(offset, chunk.byte_size);
+                assert!(chunk.byte_size <= ceiling || chunk.columns.len() == 1);
+                next = chunk.columns.end;
+                region_offset += chunk.byte_size;
+            }
+            assert_eq!(next, count);
+            assert_eq!(region_offset, total);
+            if total <= ceiling {
+                assert_eq!(chunks.len(), 1);
+            }
+        }
+    }
+}
+
+/// OBSERVER_INDEX_IN_BATCH (#152): the staging write's observer is called
+/// with the batch index of the column it writes, below the batch's
+/// length, for every column, over batches of 1, `MAX_RECORD_FIELDS` and
+/// 300 columns. A record upsert sorts what it observes into the fixed
+/// per-field tables: the full box schema (nine fields), the required five,
+/// a one-field schema and a replacement of a record by fewer fields each
+/// report exactly the fields supplied, and a record missing a required
+/// field is refused.
+#[test]
+fn the_batch_observer_sees_every_column_by_its_batch_index() {
+    let Some((device, queue, mut pool)) = mk_pool(1024 * ALIGN) else {
+        return;
+    };
+    let ctx = || GpuAllocCtx::unbudgeted(&device, &queue);
+    for count in [1usize, MAX_RECORD_FIELDS, 300] {
+        let sources: Vec<Column<f64>> = (0..count)
+            .map(|i| col_f64((0..1 + i % 5).map(|row| row as f64).collect()))
+            .collect();
+        let names: Vec<String> = (0..count).map(|i| format!("b{count}_{i}")).collect();
+        let columns: Vec<(&str, &dyn ColumnSource)> = names
+            .iter()
+            .zip(&sources)
+            .map(|(name, source)| (name.as_str(), source as &dyn ColumnSource))
+            .collect();
+        let mut rows = vec![0usize; count];
+        let mut past = 0usize;
+        let mut observe =
+            |column: usize, _row: usize, _hi: f32, _lo: f32| match rows.get_mut(column) {
+                Some(seen) => *seen += 1,
+                None => past += 1,
+            };
+        pool.begin_add_columns_observed(&columns, ctx(), Some(&mut observe), None)
+            .unwrap()
+            .commit();
+        assert_eq!(past, 0, "{count} columns: an index past the batch");
+        for (i, source) in sources.iter().enumerate() {
+            assert_eq!(rows[i], source.data.len(), "{count} columns: column {i}");
+        }
+    }
+
+    let present = |pool: &ColumnPool, id: &str| pool.record(id).unwrap().stats().present;
+    let expect = |names: &[&str], schema: &RecordSchema| {
+        let mut want = [false; MAX_RECORD_FIELDS];
+        for (slot, (name, _)) in schema.iter().enumerate() {
+            want[slot] = names.contains(name);
+        }
+        want
+    };
+    let nine: Vec<(&str, Column<f64>)> = BOX_PLOT_RECORD
+        .iter()
+        .enumerate()
+        .map(|(k, (name, _))| (*name, col_f64(vec![k as f64, 1.0 + k as f64, 2.0])))
+        .collect();
+    let all = box_fields(&nine);
+    // Supplied out of schema order: the tables are by schema slot.
+    let reversed: Vec<_> = all.iter().rev().copied().collect();
+    let required: Vec<_> = all.iter().take(5).copied().collect();
+    fn names<'a>(fields: &[(&'a str, &dyn ColumnSource)]) -> Vec<&'a str> {
+        fields.iter().map(|(name, _)| *name).collect()
+    }
+    for (id, fields) in [("full", &reversed), ("required", &required)] {
+        let source = RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields,
+        };
+        pool.upsert_record(id, &source, ctx()).unwrap();
+        assert_eq!(
+            present(&pool, id),
+            expect(&names(fields), BOX_PLOT_RECORD),
+            "{id}"
+        );
+    }
+    // Replace the full record by its required fields, then back.
+    for fields in [&required, &all] {
+        let source = RecordSource {
+            schema: BOX_PLOT_RECORD,
+            fields,
+        };
+        pool.upsert_record("full", &source, ctx()).unwrap();
+        assert_eq!(
+            present(&pool, "full"),
+            expect(&names(fields), BOX_PLOT_RECORD)
+        );
+    }
+    let lone = &all[..1];
+    assert!(
+        pool.upsert_record(
+            "lone",
+            &RecordSource {
+                schema: BOX_PLOT_RECORD,
+                fields: lone,
+            },
+            ctx(),
+        )
+        .is_err()
+    );
+    assert!(pool.record("lone").is_none());
+    const ONE: &RecordSchema = &[("median", true)];
+    pool.upsert_record(
+        "one",
+        &RecordSource {
+            schema: ONE,
+            fields: lone,
+        },
+        ctx(),
+    )
+    .unwrap();
+    assert_eq!(present(&pool, "one"), expect(&["median"], ONE));
+}

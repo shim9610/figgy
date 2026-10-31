@@ -1340,3 +1340,45 @@ fn radial_png_preserves_hover_progress_and_persistent_selection() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     pollster::block_on(radial_export::check(gpu()));
 }
+/// RADIAL_CHART_VALIDATED (#152): the layout reads a validated chart only.
+/// A split naming a slice at or past the chart's slices is refused as
+/// invalid by `prepare` and every export, at 1x and 2x, before anything is
+/// laid out, and the renderer still prepares the valid chart afterwards.
+#[test]
+fn a_split_past_the_slices_is_refused_by_prepare_and_every_export() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut r = renderer();
+    let size = (400, 300);
+    for slice_index in [chart().slices.len(), usize::MAX] {
+        let mut c = chart();
+        c.labels = RadialLabels::Outside;
+        c.split = Some(RadialSplit {
+            slice_index,
+            kind: RadialKind::Pie,
+            children: vec![RadialSlice::new("D", 25.0, Color::from_rgb8(0, 200, 150))],
+        });
+        c.format_labels();
+        for scale in [1.0, 2.0] {
+            let context = format!("split.slice_index {slice_index} at {scale}x");
+            let invalid = |e: &RadialError| matches!(e, RadialError::Invalid(_));
+            assert!(
+                invalid(&r.prepare(&c, size, scale).err().unwrap()),
+                "{context}"
+            );
+            assert!(
+                invalid(&r.export_rgba(&c, size, scale).err().unwrap()),
+                "{context}"
+            );
+            assert!(
+                invalid(&r.export_svg(&c, size, scale).unwrap_err()),
+                "{context}"
+            );
+            assert!(
+                invalid(&r.export_pdf(&c, size, scale).unwrap_err()),
+                "{context}"
+            );
+        }
+    }
+    r.prepare(&chart(), size, 1.0).unwrap();
+    drain(&r);
+}
