@@ -1313,6 +1313,18 @@ export class FiggyChartElement extends HTMLElement {
     return this.#runKernelOperation("export", (kernel) => kernel.export_png(scale));
   }
 
+  // The SVG document (a string) and the PDF bytes of a resident chart.
+  // Streaming is not extended to them: a chart shown from a stream rejects.
+  async export_svg(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("SVG export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_svg(scale));
+  }
+
+  async export_pdf(scale = 1.0) {
+    if (this.#streamReplay) throw new Error("PDF export does not support streamed sources");
+    return this.#runKernelOperation("export", (kernel) => kernel.export_pdf(scale));
+  }
+
   async #waitStreamOperation(token, pending, timeoutMs) {
     let timer = 0;
     try {
@@ -2316,6 +2328,9 @@ export class FiggyChartElement extends HTMLElement {
   set_clear_color(r, g, b, a) { return this.#mutateChart("set_clear_color", r, g, b, a); }
   load_demo() { return this.#kernelForCall().load_demo(); }
   on_press(x, y) { return this.#mutateChart("on_press", x, y); }
+  // A value label a pick reported (`hit.label_id`): selects it and starts
+  // its drag; the pointer's moves then move it.
+  press_value_label(labelId) { return this.#mutateChart("press_value_label", labelId); }
   on_move(dx, dy) { return this.#mutateChart("on_move", dx, dy); }
   on_release() { return this.#mutateChart("on_release"); }
   has_selection() { return this.#kernelForCall().has_selection(); }

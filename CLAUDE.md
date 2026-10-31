@@ -6,12 +6,19 @@ break one of them, stop and ask instead of working around it.
 
 ## Design rules
 
-1. **The renderer draws the data it is given.** It never changes the dimension
-   of the data or computes statistics from it: no binning, no density
-   estimates, no gradients from a scalar field, no magnitudes from vectors, no
-   per-axis normalization. Hosts supply data in the dimensions the chart needs.
-   Visual helpers that only choose display parameters from column statistics
-   are allowed, for example `auto_fit_*`, `auto_ticks` or a size-domain fit.
+1. **The host computes data; the renderer computes appearance.** The
+   renderer draws the data it is given and never produces new values the
+   user reads as data: no binning, no density estimates, no integration (such
+   as streamlines), no running totals, no statistics shown as data, and no
+   per-axis normalization of the data. A gradient or magnitude shown as data,
+   such as arrows of ∇f or a color by |v|, is host work. Hosts supply data in
+   the dimensions the chart needs. Values that only decide how the given data
+   looks are the renderer's job: color mapping, antialiasing, shading normals
+   and shadows, projection (including normalizing ternary components only to
+   place them), dash phase, arrowhead direction along a drawn path, jitter,
+   and display parameters chosen from column statistics, for example
+   `auto_fit_*`, the tick plan or a size-domain fit. Per-point appearance
+   values are computed in the shader on every draw and never stored (rule 2).
 2. **No data copies.** Copying is allowed only for SSOT configuration. A
    resident column's only copy is the GPU column pool; the CPU keeps scalar
    statistics only (`column_pool.rs`). Values derived per point, such as mapped
@@ -37,6 +44,19 @@ break one of them, stop and ask instead of working around it.
 9. **Vector fields use a layered shader assembled in Rust** (glyph, input,
    projection and entry fragments), so a later 3D projection can reuse the
    glyph (#25).
+10. **Column-backed series have no count limits.** A series whose data
+    comes through `ColumnSource` draws every registered value. There is no cap
+    on rows, groups, categories, series in a group, members, labels, slots or
+    any other count, and no fixed-size array, uniform or loop bound sized by
+    one. The only failure allowed is at column registration, when the memory
+    cannot be allocated or the device cannot hold the buffer. A cost that
+    grows with the data (vertices, pick work) is the host's to budget: the
+    renderer measures it in tests and documents it, and never caps it. A
+    DataLess chart (defined by the SSOT alone, no `ColumnSource`, such as the
+    radial chart) may have a limit only with the maintainer's approval in the
+    issue before it is written. Limits on things that are not data counts
+    (text length, nesting depth, tick counts) are not covered by this rule,
+    and a new one still needs the plan to name it (#107).
 
 ## Before calling a change done
 
@@ -57,8 +77,15 @@ follow-up.
 - **Allocations (rule 3).** Every new `Vec`, `vec!` or `collect` outside tests
   is one the plan names; list them in the PR.
 - **Copies (rules 1, 2 and 5).** No per-point data is stored or copied on the
-  CPU, nothing is computed from the data beyond display parameters, and new
-  per-point input enters through `ColumnSource`.
+  CPU, the renderer produces no value the user reads as data (rule 1:
+  appearance and display parameters only), and new per-point input enters
+  through `ColumnSource`.
+- **Limits (rule 10).** The diff adds no count limit on a column-backed
+  series: no `MAX_*` check, fixed-size array, uniform array or loop bound
+  sized by a count of data, categories, series or labels, and no cap that
+  fails or stops drawing after registration. Each test that adds a
+  column-backed feature registers past any size the code once capped and
+  draws. A limit on a DataLess chart cites the issue that approved it.
 - **Streaming and new paths (rules 7 and 8).** Streamed sources are rejected
   with an explicit error, and every new path, binding, cache or module has the
   maintainer's approval in the issue.
@@ -69,12 +96,14 @@ follow-up.
   issues and PRs. Keep existing Korean documentation.
 - Follow `CONTRIBUTING.md`: `cargo fmt --all`, `python3 ci/verify.py static`,
   and the PR template in `.github/PULL_REQUEST_TEMPLATE.md`.
-- Shared shader blocks follow `crates/renderer/src/data_render/SHADER_COMMON.md`.
-  Edit the document first, then every synced shader and its CPU twin, then run
-  `tests/shader_consistency.rs`.
+- Shared shader code lives in `crates/renderer/src/data_render/common/`, one
+  fragment per block, spliced into each module by `wgsl_module!`
+  (`shader_assembly.rs`); `SHADER_COMMON.md` documents the contracts. A CPU
+  twin of a shader function is test support, never product code.
 - New serialized fields are additive: `Option` or defaulted, with
   `skip_serializing_if`, so older documents parse and re-serialize
   byte-identically. Breaking Rust literals get a CHANGELOG migration note.
 - Check external facts at the source. Publication state comes from the
   crates.io index, not from wording in the docs.
-- Do not put model identifiers in commits, PRs or code.
+- Do not put model identifiers in code or docs. A commit trailer or PR
+  footer naming the model that wrote it is fine.

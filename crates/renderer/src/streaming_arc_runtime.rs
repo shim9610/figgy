@@ -86,17 +86,19 @@ impl Renderer {
         let cap = self.arc_chunk_override.map_or(cap, |limit| limit.min(cap));
         let chunk =
             ArcReplayChunk::checked(0, n.min(cap), max_workgroups).ok_or(StreamError::TooLarge)?;
-        let top_bytes = u64::from(chunk.block_count()) * 4;
-        let upper_bytes = u64::from(chunk.block_count().div_ceil(WG)) * 4;
+        // Every arc value is an arc pair (SHADER_COMMON.md §5.6, #107).
+        let pair = data_render::line_arc::ARC_PAIR_BYTES;
+        let top_bytes = u64::from(chunk.block_count()) * pair;
+        let upper_bytes = u64::from(chunk.block_count().div_ceil(WG)) * pair;
         let sizes = [
             Y_OFFSET * 2,
-            LEAF_POINTS * 4,
-            4,
+            LEAF_POINTS * pair,
+            pair,
             top_bytes,
             upper_bytes,
-            4,
-            4,
-            4,
+            pair,
+            pair,
+            pair,
             std::mem::size_of::<data_render::ScatterTransform>() as u64,
         ];
         let bytes = sizes.iter().sum::<u64>();
@@ -143,12 +145,12 @@ impl Renderer {
             sizes[1],
             storage | copy | wgpu::BufferUsages::VERTEX,
         ));
-        let sums = buffer("stream canonical arc leaf sum", 4, storage);
+        let sums = buffer("stream canonical arc leaf sum", pair, storage);
         let top = buffer("stream canonical arc sums0", top_bytes, storage);
         let upper = buffer("stream canonical arc sums1", upper_bytes, storage);
-        let sink = buffer("stream canonical arc sum sink", 4, storage);
-        let carry = buffer("stream canonical arc carry", 4, storage);
-        let predecessor = buffer("stream canonical arc predecessor", 4, copy);
+        let sink = buffer("stream canonical arc sum sink", pair, storage);
+        let carry = buffer("stream canonical arc carry", pair, storage);
+        let predecessor = buffer("stream canonical arc predecessor", pair, copy);
         let transform = charged_buffer_init(
             &tally,
             &self.device,
@@ -404,7 +406,9 @@ impl Renderer {
                         y_base: 0,
                         start: 0,
                         mode: 0,
-                        _pad: [0; 3],
+                        c_base: 0,
+                        flags: 0,
+                        _pad: 0,
                     }),
                 )
             });
@@ -417,7 +421,9 @@ impl Renderer {
                         y_base: 0,
                         start: 0,
                         mode: 0,
-                        _pad: [0; 3],
+                        c_base: 0,
+                        flags: 0,
+                        _pad: 0,
                     }),
                 )
             });
@@ -435,7 +441,13 @@ impl Renderer {
             let replay =
                 pipelines.replay_control_bind_group(&self.device, &buffers.top, &replay_params);
             if drawing && leaf.local_start != 0 {
-                encoder.copy_buffer_to_buffer(&buffers.predecessor, 0, &buffers.arc, 0, 4);
+                encoder.copy_buffer_to_buffer(
+                    &buffers.predecessor,
+                    0,
+                    &buffers.arc,
+                    0,
+                    data_render::line_arc::ARC_PAIR_BYTES,
+                );
             }
             {
                 let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
@@ -493,10 +505,10 @@ impl Renderer {
             if drawing {
                 encoder.copy_buffer_to_buffer(
                     &buffers.arc,
-                    u64::from(leaf.supply_len - 1) * 4,
+                    u64::from(leaf.supply_len - 1) * data_render::line_arc::ARC_PAIR_BYTES,
                     &buffers.predecessor,
                     0,
-                    4,
+                    data_render::line_arc::ARC_PAIR_BYTES,
                 );
                 let (states, preparation) = self.preparation_parts();
                 let (config, series, style) = snapshot.as_ref().map_or_else(
@@ -532,7 +544,10 @@ impl Renderer {
                     &buffers.pool,
                     handle(0),
                     handle(Y_OFFSET),
-                    (Arc::clone(&buffers.arc), u64::from(leaf.supply_len) * 4),
+                    (
+                        Arc::clone(&buffers.arc),
+                        u64::from(leaf.supply_len) * data_render::line_arc::ARC_PAIR_BYTES,
+                    ),
                     Arc::clone(&buffers.charge),
                     auxiliary
                         .as_ref()

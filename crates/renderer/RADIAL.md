@@ -1,9 +1,10 @@
 # 원형 차트
 
 `RadialChart`는 소수의 범주와 구성 비율을 보여 주는 파이·도넛 차트다. `RadialRenderer`는
-기존 렌더러와 같은 wgpu 장치·큐를 사용할 수 있다. 축, 컬럼 풀, 자동 fit, 스트리밍 작업은
-사용하지 않는다. 범주 값과 스타일을 모두 담은 모델을 넘기면 불변 프레임을 만든다.
-브라우저에서는 `crates/web` 예제 래퍼의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
+기존 렌더러와 같은 wgpu 장치·큐를 사용할 수 있다. 원형 차트는 DataLess 차트다. 단일 원본(SSOT)만으로
+정의되며 `ColumnSource`, 컬럼 풀, 스트리밍이 없다. 조각의 값은 이름·색·분리 거리처럼 설정한 조각의
+속성이다. 축과 자동 fit도 사용하지 않는다. 범주 값과 스타일을 모두 담은 모델을 넘기면 불변 프레임을 만든다.
+브라우저에서는 브라우저용 제품인 `crates/web`의 `FiggyBoundedChart`가 이 렌더러로 원형 차트를 그리고
 히트맵·선택·드래그·PNG 출력을 노출한다([WASM 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#bounded-chart-host)).
 
 원형 차트 API는 crates.io의 `figgy-renderer` 0.16.1부터 들어 있다. `RadialRenderer::new_async`는
@@ -21,11 +22,12 @@
 | `RadialSlice`, `RadialSplit` | 조각 데이터와 한 조각을 펼친 상세 원 |
 | `RadialStyle`, `RadialOutline` | 재질·입체 형상·질감·외곽선 설정 |
 | `RadialLabels`, `RadialLabelFormat` | 라벨 위치와 표시할 내용 |
+| `RadialChart::format_labels()` | 각 조각의 그릴 라벨 문자열(`RadialSlice::text`)을 편집 시점에 기록 |
 | `RadialTarget`, `RadialInteraction` | 조각 식별과 호버·선택 상태 |
 | `RadialChart::validate()` | 값과 옵션 검사. 실제 라벨 배치는 `prepare`에서 추가 검사 |
 | `RadialRenderer::prepare()` | 모델을 읽고 불변 `Arc<RadialFrame>` 반환 |
 | `RadialFrame::draw()` | 호스트가 연 render pass에 그리기 |
-| `RadialFrame::hit_test()` | 해당 프레임에서 보이는 조각 선택 |
+| `RadialFrame::pick()` | 해당 프레임에서 보이는 조각을 GPU에서 고르는 요청. `RadialPickTicket::resolve()`가 결과를 돌려준다 |
 | `export_rgba_async()` / `export_rgba()` | 현재 모델을 그려 `RasterImage` 반환. 동기판은 네이티브 전용 |
 | `clear_cache()` / `end_frame()` | 내부 캐시 참조 해제 / 제출이 끝난 자원의 회수 예약 |
 
@@ -35,7 +37,7 @@
 
 ```rust,no_run
 use renderer::{
-    Color, RadialChart, RadialKind, RadialLabels, RadialMaterial,
+    Color, Material, RadialChart, RadialKind, RadialLabels,
     RadialRenderer, RadialSlice, RendererDevice, encode_png,
 };
 # fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -59,6 +61,8 @@ let mut chart = RadialChart {
     ..Default::default()
 };
 chart.style = renderer::RadialStyle::three_dimensional();
+// 렌더러는 라벨 문자열을 그리기만 한다. 값이나 표시 형식을 바꾼 뒤에는 다시 기록한다.
+chart.format_labels();
 
 // 논리 크기는 1000×600, 실제 출력은 2000×1200이다.
 // 글자와 도형을 이 해상도로 다시 그린다.
@@ -72,7 +76,7 @@ renderer.end_frame();
 화면에 그릴 때는 `prepare(&chart, logical_size, scale)`로 `Arc<RadialFrame>`을 받은 뒤,
 호스트의 render pass 안에서 `frame.draw(&mut pass)`를 호출한다. 타깃은 생성자에 지정한
 RGBA8/BGRA8 포맷, `frame.size()` 크기, sample count 1이어야 한다. 가장자리 AA는 셰이더가
-픽셀당 네 위치를 평가해 처리한다. `scale`은 0.5~4이며 타깃의 실제 크기도 함께 맞춘다.
+픽셀당 네 위치를 평가해 처리한다. `scale`은 0.5 이상이며 타깃의 실제 크기도 함께 맞춘다. 상한은 없고, 실제 크기가 장치의 텍스처 크기 한도를 넘으면 오류를 돌려준다.
 호스트 render pass의 clear/load 정책은 호스트가 정한다. 투명 배경도 지원한다.
 논리 크기는 가로·세로 각각 최소 160픽셀이다. 실제 크기는 `round(논리 크기 × scale)`이며
 장치의 텍스처 크기 한도를 넘을 수 없다. `draw`는 viewport와 scissor를 타깃 전체로 설정한다.
@@ -98,6 +102,51 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 `slice_index`는 0인 항목까지 포함한 원본 배열 인덱스다. 연결선은 선택한 부모 조각의 두
 각도 경계와 상세 원을 잇는다. 예제처럼 부모 조각을 오른쪽에 두면 두 원의 관계가 잘 보인다.
 
+### 선버스트(중첩 고리)
+
+조각에 `children`([#140](https://github.com/shim9610/figgy/issues/140))을 두면 차트는
+선버스트가 된다. 트리의 깊이 `d`만큼 구멍(`kind.inner_radius()`, 파이는 0이므로 가운데 고리는
+원판)과 바깥 반지름 사이를 같은 두께의 고리 `d`개로 나누고, 깊이 `k`의 노드는 고리 `k` 위에서
+부모의 각도 구간 가운데 자기 몫(부모 값 대비 자기 값, 자식 순서대로)만큼을 차지한다. 자식 값의
+합은 부모 값 이하여야 하며(상대 오차 1e-9), 남는 구간은 자식 고리에서 비워 둔다. `children`은
+비어 있으면 JSON에서 생략한다.
+
+- `RadialTarget { group, index }`에서 `group`은 고리(0이 가운데), `index`는 그 고리의 노드를
+  문서 순서(부모 순서대로 자식들)로 센 위치이며 값이 0인 노드도 포함한다. `slice()`,
+  `slice_mut()`, `step_selection`(가운데 고리부터 바깥쪽으로, 값이 있는 노드만), 라벨의
+  `DecorationId::RadialLabel`과 `radial_label_{group}_{index}` 이름이 모두 이 규칙을 따른다.
+  `group_count()`, `group_len(group)`, `node_count()`, `node_span(target)`가 고리와 구간을
+  알려 준다.
+- 라벨의 백분율은 부모 값 대비 자기 몫이다(가운데 고리는 전체 합 대비). `format_labels()`가
+  모든 고리의 `text`를 쓴다.
+- `Outside` 라벨은 가장 바깥 고리에만 놓인다(기존의 좌우 쌓기, 바깥 반지름의 1.015 지점에서
+  연결선 시작). 안쪽 고리의 `Outside`는 자기 띠 안에 내부 라벨로 그린다. 내부 라벨은 띠의 가운데
+  반지름에 놓이고 띠의 두께와 호 길이에 맞춰 줄어든다.
+- 평면에서만 그린다. 차트 스타일이나 노드 스타일의 `tilt_degrees`·`depth`가 0이 아니면
+  거부한다(`"a sunburst draws flat: no tilt or depth"`). `split`과 함께 쓸 수 없다
+  (`"a sunburst has no detail circle"`).
+- 한계([#140](https://github.com/shim9610/figgy/issues/140)에서 승인): 고리는 최대 8개
+  (`MAX_SUNBURST_DEPTH`), 고리 하나의 노드는 최대 64개(`MAX_RADIAL_SLICES`, 외부 라벨 쌓기
+  배열의 크기). 그 밖의 거부 사유: `"a node's children sum to at most its value"`,
+  `"a sunburst has at most 8 rings"`, `"a sunburst ring has at most 64 nodes"`.
+- 셰이더는 바뀌지 않았다. 고리의 섹터는 기존 `Sector`에 바깥 반지름과 안쪽 비율을 넣은 것이며,
+  피킹·강조·호버·재질(고리마다 다른 결) 모두 조각과 같다.
+
+```rust
+use renderer::radial::*;
+use renderer::Color;
+let mut chart = RadialChart::default();
+let mut ops = RadialSlice::new("Ops", 60.0, Color::from_rgb8(220, 60, 40));
+ops.children = vec![
+    RadialSlice::new("Fleet", 40.0, Color::from_rgb8(60, 120, 220)),
+    RadialSlice::new("Crew", 10.0, Color::from_rgb8(40, 170, 70)),
+]; // 남은 10은 자식 고리에서 빈 구간
+chart.slices = vec![ops, RadialSlice::new("R&D", 40.0, Color::from_rgb8(80, 80, 80))];
+chart.format_labels();
+assert_eq!(chart.group_count(), 2);
+assert_eq!(chart.slice(RadialTarget { group: 1, index: 1 }).map(|s| s.label.as_str()), Some("Crew"));
+```
+
 ## 재질과 입체 표현
 
 모델 기본값은 정면에서 내려다본 평면 파이다. 재질을 바꾸는 것만으로 기울기나 깊이가
@@ -116,6 +165,35 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 | `Pearl` | 곡면 가장자리의 약한 펄 색 변화 |
 | `Paper` | 윗면·옆면에 이어지는 미세한 무광 종이 결 |
 | `Wood` | 굵은 무늬 없이 미세하고 불규칙한 잔결을 가진 거친 무광 합판 |
+
+<a id="materials"></a>
+
+### Materials shared with bars and boxes
+
+`Material` is one enum for sectors (`RadialStyle::material`), bars
+(`CategoryBarStyle::material`) and boxes (`BoxPlotStyle::material`), and a
+name has one look in every family: one shader function draws all three.
+`RadialMaterial`, `CategoryBarMaterial` and `BoxPlotMaterial` are deprecated
+aliases of it. A bar or a box is shaded like a flat (zero depth, zero tilt)
+pie top under the default light. Its normal is constant, so its lighting
+and highlights are uniform over the body; textures (grain, brush, paper,
+wood, hatching) still vary across it.
+
+| Material | Sectors | Bars and boxes |
+|---|---|---|
+| `Flat` | yes | yes; the bar default |
+| `Matte` | yes | yes; the box default |
+| `Ceramic` | yes | yes; `gloss` lifts the whole body by at most 2.5/255 |
+| `SatinMetal`, `BrushedMetal` | yes | yes; a uniform sheen and a brush along the bar; at 1x a `texture_scale` above 0.13 has no visible effect |
+| `Enamel` | yes | yes; `gloss` has no visible effect |
+| `Paper`, `Wood`, `Hatch` | yes | yes |
+| `Toon`, `Pearl` | yes | rejected by `validate`: "material not supported by bars" / "material not supported by boxes" |
+
+`Material::supported_on_flat_body` tells the two apart. Bar and box styles
+have no `roughness`, `light` or `texture_angle_degrees`; they use the
+`RadialStyle` defaults (0.35, `[-0.5, -0.6, 1.0]` and 0°). One bar texture
+unit is 150 logical pixels: a bar's texture matches that of a sector of
+radius 150 px, and Matte grain cells are 1.67 px.
 
 각 필드의 기본값과 허용 범위는 아래 '스타일 옵션 기본값과 범위' 표에 있다. 아주 작은 조각의 시각적 간격은 해당 조각 각도의 20% 이내로 제한한다.
 
@@ -167,7 +245,8 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 
 ## 영역 조정
 
-원형 배치 영역은 `frame.decorations()` 히트맵의 `DecorationId::DataArea`로 선택·이동·리사이즈한다.
+원형 배치 영역은 `frame.decorations()` 히트맵(`HitMap<RadialChart>`)의 `DecorationId::DataArea`로
+선택·이동·리사이즈한다. 이 히트맵의 요소는 넘긴 차트에서 위치를 계산하므로 프레임을 준비한 차트를 함께 넘긴다.
 `decorations.data_area = None`이면 자동 배치하며, 지정한 논리 영역은 PNG에도 적용한다.
 그림을 늘이지 않고 새 영역에서 원·연결선·라벨을 다시 계산한다.
 [8개 핸들, 제약과 호스트 호출 순서](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#그리기-영역-선택과-크기-조정)를 참고한다.
@@ -175,7 +254,8 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 ## 라벨과 갱신
 
 `None`, `Inside`, `Outside`를 지원한다. 내부 라벨은 조각의 위치에, 외부 라벨은 좌우로
-나누어 연결선과 함께 배치한다.
+나누어 연결선과 함께 배치한다. 연결선은 외부 라벨의 일부다. 조각에서 시작해 라벨 글자까지
+이어지며, 라벨을 옮기면 시작점은 조각에 남고 나머지는 글자를 따라간다.
 내부 라벨은 조각 색이 어두우면 흰색을, 그 밖에는 차트의 `label_color`를 사용한다.
 조각의 `label_color`를 지정하면 자동 대비 색보다 우선한다.
 항목 이름은 한 줄, 80자 이내다.
@@ -203,7 +283,7 @@ WASM 생성에는 `RadialRenderer::new_async(gpu, format).await`를 사용해 �
 
 ```rust,no_run
 use renderer::radial::*;
-use renderer::Color;
+use renderer::{Color, Material};
 let mut chart = RadialChart {
     slices: vec![RadialSlice::new("Search", 40.0, Color::from_rgb8(51,132,245))],
     ..Default::default()
@@ -213,7 +293,7 @@ chart.label_decimals = 1; // 0..6, 불필요한 소수점 0은 제거
 chart.value_suffix = " units".into();
 let target = RadialTarget::main(0);
 let override_style = RadialStyle {
-    material: RadialMaterial::SatinMetal,
+    material: Material::SatinMetal,
     inner_corner: 0.05,
     outer_corner: 0.05,
     ..chart.style.clone()
@@ -230,8 +310,20 @@ chart.interaction.selected = Some(target);
 백분율은 원별 합계, 값은 원래 단위를 사용한다. 세부 원의 백분율은 부모 소계를 기준으로 한다.
 표기 변경은 원본 값과 조각 각도를 바꾸지 않는다.
 
-`frame.hit_test([x, y])`는 차트 내부의 **논리 픽셀**을 받아 화면에 실제로 보이는 조각의
-`RadialTarget`을 반환한다. 기울기·둥근 모서리·간격·들림·가림 관계를 반영한다.
+그리는 라벨 문자열은 조각의 `text`(최대 두 줄, `'\n'`으로 연결)에 들어 있는 SSOT 문자열이다.
+렌더러는 이 문자열을 그리기만 하고 값을 형식화하거나 백분율을 계산하지 않는다.
+`format_labels()`가 표시 형식·소수 자릿수·접미사·원별 합계로 모든 조각과 세부 원 조각의 `text`를
+다시 기록한다. 값·이름·표시 형식·자릿수·접미사를 바꾼 뒤에 호출한다. 호스트가 `text`를 직접
+지정해도 되며, `format_labels()`를 다시 호출하면 그 문자열도 덮어쓴다. `text`가 없는 이전 문서는
+`normalize_labels()`로 비어 있는 `text`만 채우면 이전과 같은 문자열을 그린다. 값이 있고 라벨이
+보이는 조각에 `text`가 없으면 `prepare`가 거부한다. 브라우저 래퍼는 문서를 읽을 때
+`normalize_labels()`를 실행한다. 한 줄은 400자 이내이며 제어 문자를 쓸 수 없다.
+
+`frame.pick([x, y])`는 차트 내부의 **논리 픽셀**을 받아 그 위치에 실제로 보이는 조각을
+GPU에서 고르는 요청을 제출하고 `RadialPickTicket`을 돌려준다. `ticket.resolve().await`가
+그 조각의 `RadialTarget`을 돌려주며, 네이티브 호스트는 `resolve_blocking()`을 쓸 수 있다.
+그리기 셰이더와 같은 조각 광선 추적과 가림 규칙으로 고르므로 기울기·둥근 모서리·간격·
+들림·가림 관계가 화면과 같다.
 `group=0`은 큰 원, `group=1`은 세부 원이며 `index`는 값이 0인 항목도 포함한 원본 인덱스다.
 값이 0인 항목, 구멍, 배경은 선택되지 않는다. 배열을 재정렬하거나 항목을 삭제한 호스트는
 선택 인덱스도 함께 갱신해야 한다.
@@ -241,7 +333,7 @@ chart.interaction.selected = Some(target);
 진행한다. 다른 조각으로 이동할 때는 이전 조각이 내려온 뒤 새 조각이 올라간다. duration이
 0이면 즉시 전환한다. 스타일의 `hover_lift`와 `hover_brightness`를 0으로 두면 해당 효과를 끈다.
 클릭 선택은 포인터가 나가도 강조를 유지하며, 다시 선택을 해제하면 복원된다.
-`hit_test_at_rest`는 들리기 전 위치를 조회한다. 호스트는 이 결과가 직전 호버와 같을 때만
+`pick_at_rest`는 들리기 전 위치를 조회한다. 호스트는 이 결과가 직전 호버와 같을 때만
 보조 판정에 사용해 가장자리에서 호버가 반복해서 켜지고 꺼지는 것을 막을 수 있다.
 
 호버 중 외부 라벨은 제자리에 있고, 내부 라벨은 같은 라벨 텍스처를 들림만큼 옮겨 그려
@@ -267,6 +359,14 @@ let png = renderer::encode_png(&image)?;
 모양까지 남기려면 원하는 시점에 모델을 복사하고, 내보내기 전에 `interaction`을 초기화하거나
 `hover_progress`를 0으로 바꾸지 않는다.
 
+`export_svg_async(&chart, size, scale)`와 `export_pdf_async`(네이티브 동기 버전 `export_svg` /
+`export_pdf`)는 같은 스냅샷을 SVG와 PDF 문서로 내보낸다([#48](https://github.com/shim9610/figgy/issues/48)).
+크기와 배율은 `prepare`와 같은 규칙으로 검사한다. 조각과 배경은 라벨 없이 배치한 프레임을 캐시 없이
+만들어 이미지 한 장으로 넣는다. 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 라벨 텍스처를
+그리는 배치 함수에서 벡터로 기록하며 글자는 글리프 윤곽선으로 남긴다. PNG와 다른 점은 두 가지다.
+내부 라벨은 모두 들린 위치에서 모든 조각 위에 그린다(PNG에서는 들린 이웃 조각이 라벨을 가릴 수 있다).
+선택한 장식의 선택 상자는 그리지 않는다. 페이지 크기는 논리 크기를 1 px = 0.75 pt로 환산한 값이다.
+
 
 `style.outline`의 `rim`(바깥·구멍 윤곽), `separators`(조각 경계), `emphasis`(호버·선택 강조)는
 각각 켜고 끌 수 있다. 입체 차트의 `rim`은 보이는 윗면과 바깥·안쪽 벽 사이의 경계도 포함한다.
@@ -284,7 +384,7 @@ UI가 이미 논리 좌표를 제공하면 DPR로 다시 나누지 않는다. �
 use renderer::{RadialChart, RadialError, RadialFrame, RadialRenderer};
 use std::sync::Arc;
 
-fn update_hover(
+async fn update_hover(
     renderer: &mut RadialRenderer,
     chart: &mut RadialChart,
     displayed: &Arc<RadialFrame>,
@@ -293,12 +393,17 @@ fn update_hover(
     logical_size: (u32, u32),
     scale: f32,
 ) -> Result<Arc<RadialFrame>, RadialError> {
-    let target = pointer.and_then(|p| {
-        displayed.hit_test(p).or_else(|| {
-            displayed.hit_test_at_rest(p)
-                .filter(|t| Some(*t) == chart.interaction.hovered)
-        })
-    });
+    let target = match pointer {
+        Some(p) => match displayed.pick(p)?.resolve().await? {
+            Some(hit) => Some(hit),
+            None => displayed
+                .pick_at_rest(p)?
+                .resolve()
+                .await?
+                .filter(|t| Some(*t) == chart.interaction.hovered),
+        },
+        None => None,
+    };
     chart.interaction.animate_hover(target, elapsed_seconds, 0.16);
     renderer.prepare(chart, logical_size, scale)
 }
@@ -306,7 +411,8 @@ fn update_hover(
 
 호스트가 애니메이션 중 프레임을 요청해야 한다. 포인터가 멈춰도 진입·이탈이 끝날 때까지
 진행하며, 렌더러 자체는 타이머를 돌리지 않는다. 클릭 선택은
-`chart.interaction.selected = displayed.hit_test(position)`으로 설정하고 `None`으로 해제한다.
+`chart.interaction.selected = displayed.pick(position)?.resolve().await?`로 설정하고 `None`으로
+해제한다.
 새 프레임을 그린 command buffer를 제출하고 이전 프레임을 놓은 뒤 `end_frame()`을 호출한다.
 크기·DPR·내용 변경도 같은 `prepare` 경로를 사용하며, 단순 UI 편집 때 `clear_cache()`를
 호출하면 재사용 가능한 라벨까지 버리므로 필요하지 않다.
@@ -316,14 +422,16 @@ fn update_hover(
 `figgy-renderer`의 `serde` 기능(모델만 쓸 때는 `figgy-model`의 `serde` 기능)을 켜면 모델을
 직렬화할 수 있다. 조각의 `style`·`labels`·`label_format`·`label_color`와 차트의
 `decorations`·`label_format`·`label_decimals`·`value_suffix`·`interaction`은 이전 스냅샷에 없으면
-기본값으로 읽는다. 차트의 `chart_title`·`active_layer`·`annotations`도 없으면 기본값으로 읽고,
-기본값일 때는 저장하지 않는다. `RadialStyle`의 빠진 필드도 기본값을 사용한다.
+기본값으로 읽는다. 차트의 `chart_title`·`active_layer`·`annotations`와 조각의 `text`도 없으면
+기본값으로 읽고, 기본값일 때는 저장하지 않는다. `chart_title`은 공통 차트 제목
+`ChartTitleOptions`이지만 이전과 같은 `{ "visible", "text" }` 객체로 저장한다. 위치는
+`decorations`에 있으므로 `offset_x`·`offset_y`·`top_margin`은 0이어야 한다. `RadialStyle`의 빠진 필드도 기본값을 사용한다.
 저장된 모델과 복원한 모델은 모두 `validate`로 확인한다. 일시적인 호버·선택을 저장하지
 않으려면 저장용 복사본의 `interaction`을 초기화한다.
 
 JSON의 누락 필드 호환과 Rust 소스 호환은 다르다. 이전 `RadialSlice` 구조체 리터럴은 새 필드가
 필요하므로 `RadialSlice::new`를 사용하는 편이 좋다. 차트·스타일은 `..Default::default()`나
-기존 값의 복사본을 사용한다. `RadialMaterial`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
+기존 값의 복사본을 사용한다. `Material`은 `#[non_exhaustive]`가 아니므로 재질이 늘어나면
 빠짐없이 분기하는 `match`는 컴파일되지 않는다. 버전을 올릴 때 새 재질을 분기에 추가한다.
 
 ## 네이티브 편집 예제
@@ -343,7 +451,8 @@ cargo run -p figgy-renderer --example radial_editor --features egui_demo
 ## 자원 수명과 검증
 
 기본 GPU 예산은 256 MiB이며 `set_memory_budget`으로 바꾼다. 프레임마다 112바이트 uniform,
-보이는 조각당 160바이트 표를 사용한다. 라벨 배치가 바뀌면 실제 출력 크기의 RGBA 라벨
+보이는 조각당 176바이트 표를 사용한다. 조각 선택(`pick`)마다 16바이트 질의·결과 버퍼와 16바이트
+readback 버퍼를 만들고, 결과를 읽은 뒤 놓는다. 라벨 배치가 바뀌면 실제 출력 크기의 RGBA 라벨
 텍스처를 만들고, 배치가 같으면 공유한다. 내보내기는 출력
 타깃과 정렬된 readback 버퍼를 추가한다. GPU 할당 전에 전체 사용량과 예산을 검사한다.
 `gpu_memory_usage()`는 살아 있는 자원과 GPU 완료를 기다리는 자원을 모두 집계한다.
@@ -372,8 +481,13 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 
 ## 제목·라벨 선택과 이동
 
-데이터 도형의 `hit_test`와 별도로 `frame.decorations()`가 렌더러에서 측정한 히트맵을 제공한다.
-기존 `Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+조각 선택(`pick`)과 별도로 `frame.decorations()`가 제목·그리기 영역·조각 라벨의
+`HitMap<RadialChart>`를 제공한다. 각 요소는 넘긴 차트에서 그림과 같은 배치 함수로 부품을 놓으므로
+히트 영역·선택 테두리·드래그 제한·화면의 강조가 모두 같은 배치에서 나온다. 기존
+`Selectable`·`Draggable` 계약으로 `chart.decorations`를 갱신하고 `prepare`한다.
+`frame.decoration_at(&chart, [x, y])`, `drag_decoration(&mut chart, hit, dx, dy)` 같은 프레임
+메서드가 이 호출을 감싼다. 제목은 차트 위쪽의 제목 띠 가운데에 놓이며, 캔버스보다 넓으면
+캔버스에서 잘린다. 이때 히트 영역·선택 테두리·드래그 제한도 캔버스와 겹친 부분이다.
 좌표 단위, 요소별 이동 규칙, 캐시·저장 복원 및 웹 연결은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md)를 참고한다.
 
 
@@ -383,7 +497,7 @@ cargo run -p figgy-renderer --example radial_gallery -- target/radial-gallery
 없으므로 `Anchor::Ratio`(플롯 영역 비율)만 배치할 수 있고, `Anchor::Data`와 기준선·구간은
 건너뛴다. 건너뛴 항목은 `BoundedAnnotationFrame::render_warnings()`에
 `RenderWarning::AnnotationSkipped { index, reason: AnnotationSkip::NoValueAxis }`로 남는다.
-`renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`을
-`draw_underlay` → `frame.draw` → `draw_overlay` 순서로 그리고, 히트 맵은 `annotations()`로
-얻는다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
+`renderer.prepare_annotations(chart, size, scale)`가 돌려주는 `BoundedAnnotationFrame`은
+`frame.draw` 다음에 `draw_overlay`로 그리고, 히트 맵은 `annotations()`로 얻는다. 구간은
+건너뛰므로 조각 아래에 그리는 층은 없다. 주석 편집과 `decorations.selected = Annotation(i)` 선택은 프레임과 라벨 래스터를 다시 만들지
 않는다. 자세한 계약은 [공통 상호작용 가이드](https://github.com/shim9610/figgy/blob/master/crates/renderer/INTERACTION.md#annotation-layer)를 참고한다.

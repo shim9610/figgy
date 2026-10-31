@@ -386,6 +386,7 @@ fn prepare_cost_is_independent_of_series_length() {
             label: None,
             x_column: x.to_string(),
             y_column: y.to_string(),
+            z_column: None,
             render_type: renderer::DataRenderType::Line {
                 line: renderer::DataLineStyleConfig {
                     line_style: renderer::line::LineStylePreset::Solid,

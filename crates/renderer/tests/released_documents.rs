@@ -3,9 +3,11 @@
 //! exact bytes the release wrote. `tests/fixtures/released/README.md` says
 //! which releases wrote the fixtures and how. No GPU is needed.
 #![cfg(feature = "serde")]
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
 
 use renderer::config::DrawStyle;
-use renderer::{BoxPlotChart, CategoricalChart, Config, RadialChart, SeriesConfig};
+use renderer::{BoxPlotChart, CategoricalChart, Config, RadarChart, RadialChart, SeriesConfig};
 
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/released");
 
@@ -30,6 +32,15 @@ macro_rules! released_documents {
 }
 
 released_documents! {
+    model_0_12_1_radial_default: RadialChart = "model-0.12.1-radial-default.json";
+    model_0_12_1_radial_edited: RadialChart = "model-0.12.1-radial-edited.json";
+    model_0_12_1_categorical_default: CategoricalChart = "model-0.12.1-categorical-default.json";
+    model_0_12_1_categorical_edited: CategoricalChart = "model-0.12.1-categorical-edited.json";
+    model_0_12_1_boxplot_default: BoxPlotChart = "model-0.12.1-boxplot-default.json";
+    model_0_12_1_boxplot_edited: BoxPlotChart = "model-0.12.1-boxplot-edited.json";
+    model_0_12_1_radar_default: RadarChart = "model-0.12.1-radar-default.json";
+    model_0_12_1_radar_edited: RadarChart = "model-0.12.1-radar-edited.json";
+
     model_0_11_0_config_default: Config = "model-0.11.0-config-default.json";
     model_0_11_0_config_series: Config = "model-0.11.0-config-series.json";
     model_0_11_0_config_edited: Config = "model-0.11.0-config-edited.json";
@@ -61,6 +72,96 @@ released_documents! {
     model_0_10_0_categorical_edited: CategoricalChart = "model-0.10.0-categorical-edited.json";
     model_0_10_0_boxplot_default: BoxPlotChart = "model-0.10.0-boxplot-default.json";
     model_0_10_0_boxplot_edited: BoxPlotChart = "model-0.10.0-boxplot-edited.json";
+}
+
+/// Every released categorical document opens as a Cartesian chart: the
+/// reader's config and series validate as category bars, survive a serde
+/// round trip, and its uploads cover every series.
+#[test]
+fn released_categorical_documents_convert_to_category_bars() {
+    for file in FIXTURES.iter().filter(|f| f.contains("categorical")) {
+        let fixture = std::fs::read_to_string(format!("{FIXTURE_DIR}/{file}")).unwrap();
+        let doc: CategoricalChart = serde_json::from_str(&fixture).unwrap();
+        let (config, series, uploads) = Config::from_categorical(&doc);
+        assert_eq!(series.len(), doc.series.len(), "{file}");
+        assert_eq!(uploads.len(), doc.series.len() + 1, "{file}");
+        if !doc.categories.is_empty() && !doc.series.is_empty() {
+            assert_eq!(config.validate_category_bars(&series), Ok(()), "{file}");
+        }
+        let config_json = serde_json::to_string(&config).unwrap();
+        let again: Config = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(again, config, "{file}: the config round trips");
+        let series_json = serde_json::to_string(&series).unwrap();
+        let again: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(again, series, "{file}: the series round trip");
+    }
+}
+
+/// Every released box plot document opens as a Cartesian chart: the
+/// reader's config and series validate as box plots, survive a serde round
+/// trip, and its uploads cover every series' record, its outliers when it
+/// has any, and the positions.
+#[test]
+fn released_box_plot_documents_convert_to_box_plot_series() {
+    for file in FIXTURES.iter().filter(|f| f.contains("boxplot")) {
+        let fixture = std::fs::read_to_string(format!("{FIXTURE_DIR}/{file}")).unwrap();
+        let doc: BoxPlotChart = serde_json::from_str(&fixture).unwrap();
+        let (config, series, uploads) = Config::from_boxplot(&doc);
+        assert_eq!(series.len(), doc.series.len(), "{file}");
+        let with_outliers = doc
+            .series
+            .iter()
+            .filter(|s| s.values.iter().flatten().any(|v| !v.outliers.is_empty()))
+            .count();
+        assert_eq!(
+            uploads.len(),
+            1 + doc.series.len() + with_outliers,
+            "{file}"
+        );
+        if !doc.categories.is_empty() && !doc.series.is_empty() {
+            assert_eq!(config.validate_box_plots(&series), Ok(()), "{file}");
+        }
+        let config_json = serde_json::to_string(&config).unwrap();
+        let again: Config = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(again, config, "{file}: the config round trips");
+        let series_json = serde_json::to_string(&series).unwrap();
+        let again: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(again, series, "{file}: the series round trip");
+    }
+}
+
+/// Every released radar document opens as a polar chart: the reader's
+/// config and series validate as radar series on a categorical angle axis,
+/// survive a serde round trip, and its uploads are the category indices and
+/// one value column per series.
+#[test]
+fn released_radar_documents_convert_to_radar_series() {
+    for file in FIXTURES.iter().filter(|f| f.contains("radar")) {
+        let fixture = std::fs::read_to_string(format!("{FIXTURE_DIR}/{file}")).unwrap();
+        let doc: RadarChart = serde_json::from_str(&fixture).unwrap();
+        let (config, series, uploads) = Config::from_radar(&doc);
+        assert_eq!(series.len(), doc.series.len(), "{file}");
+        assert_eq!(uploads.len(), doc.series.len() + 1, "{file}");
+        assert!(config.polar.is_some(), "{file}");
+        assert_eq!(
+            config.bottom_x.category_count(),
+            Some(doc.categories.len()),
+            "{file}"
+        );
+        if !doc.categories.is_empty() && !doc.series.is_empty() {
+            assert_eq!(config.validate_polar(), Ok(()), "{file}");
+            assert_eq!(config.validate_radar(&series), Ok(()), "{file}");
+        }
+        for (s, upload) in doc.series.iter().zip(&uploads[1..]) {
+            assert_eq!(upload.values.len(), s.values.len(), "{file}");
+        }
+        let config_json = serde_json::to_string(&config).unwrap();
+        let again: Config = serde_json::from_str(&config_json).unwrap();
+        assert_eq!(again, config, "{file}: the config round trips");
+        let series_json = serde_json::to_string(&series).unwrap();
+        let again: Vec<SeriesConfig> = serde_json::from_str(&series_json).unwrap();
+        assert_eq!(again, series, "{file}: the series round trip");
+    }
 }
 
 /// A fixture added to the directory without a test above would be silently

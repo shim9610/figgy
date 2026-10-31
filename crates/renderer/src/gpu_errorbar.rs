@@ -21,14 +21,18 @@ use crate::gpu_memory::{
 };
 use crate::init::{InitEvent, finished, observe_value, started};
 
+/// The assembled fit-bounds reduction module.
+pub(crate) const ERRORBAR_FIT_SHADER: crate::shader_assembly::Assembled =
+    crate::shader_assembly::assembled!("data_render/common/grid_pair.wgsl", "gpu_errorbar.wgsl",);
+
 const INIT_SCOPE: &str = "renderer.errorbar_extent";
 
 const WORKGROUP_SIZE: u32 = 64;
 const LEGACY_AXIS_MODE: u32 = 5;
-const FIELD_EDGES_CELLS_MODE: u32 = 6;
-const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
-const FIELD_CENTERS_CELLS_MODE: u32 = 8;
-const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
+pub(crate) const FIELD_EDGES_CELLS_MODE: u32 = 6;
+pub(crate) const FIELD_EDGES_SAMPLES_MODE: u32 = 7;
+pub(crate) const FIELD_CENTERS_CELLS_MODE: u32 = 8;
+pub(crate) const FIELD_CENTERS_SAMPLES_MODE: u32 = 9;
 const EMPTY_MINIMUM_BOUND: [f32; 2] = [f32::MAX, f32::MAX];
 const EMPTY_MAXIMUM_BOUND: [f32; 2] = [-f32::MAX, -f32::MAX];
 
@@ -142,17 +146,39 @@ impl GpuSeriesFitMode {
         }
         use crate::data_config::{GridLayout, Shading};
         let (matrix, samples) = match render_type {
-            DataRenderType::Heatmap { matrix, fill } => {
-                (matrix, matches!(fill.shading, Shading::Interpolated))
-            }
+            DataRenderType::Heatmap {
+                matrix,
+                fill,
+                surface: _,
+            } => (matrix, matches!(fill.shading, Shading::Interpolated)),
             DataRenderType::Contour { matrix, .. } => (matrix, true),
+            // An image fits as a heatmap of its red grid's layout.
+            DataRenderType::RgbImage { red, shading, .. } => {
+                (red, matches!(shading, Shading::Interpolated))
+            }
             DataRenderType::HeatmapContour { matrix, fill, .. } => {
                 // The fit covers the union of fill and isolines. A flat fill
                 // reaches cell edges; an interpolated fill and the contour both
                 // stop at sample points.
                 (matrix, matches!(fill.shading, Shading::Interpolated))
             }
-            DataRenderType::Histogram { .. } => return None,
+            // Category bars fit from column and stack statistics, box plots
+            // from record and ragged statistics.
+            DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. } => {
+                return None;
+            }
+            // A radar series and streamlines fit as the line they draw (the
+            // extent mode above answers them first).
+            DataRenderType::Radar { .. } | DataRenderType::Streamlines { .. } => return None,
+            // A ternary chart's axes are the triangle, not a data extent.
+            DataRenderType::Ternary { .. } => return None,
+            // A parallel chart's axes are the categorical positions and the
+            // normalized band; each parallel axis fits from its column's
+            // statistics (`Chart::auto_fit_parallel_axes`).
+            DataRenderType::Parallel { .. } => return None,
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -181,6 +207,9 @@ impl GpuSeriesFitMode {
             (GridLayout::Edges, true) => GpuFieldExtentMode::EdgesSamples,
             (GridLayout::Centers, false) => GpuFieldExtentMode::CentersCells,
             (GridLayout::Centers, true) => GpuFieldExtentMode::CentersSamples,
+            // A hexagonal grid's centres reach half a pitch out as centres
+            // cells do; the ticket adds the hexagons' overhang (#134).
+            (GridLayout::Hexagonal, _) => GpuFieldExtentMode::CentersCells,
         };
         Some(Self::Field(mode))
     }
@@ -210,7 +239,11 @@ impl GpuSeriesExtentMode {
     /// rather than either coordinate column's raw minimum and maximum.
     pub fn from_render_type(render_type: &DataRenderType) -> Option<Self> {
         match render_type {
-            DataRenderType::Line { .. } => Some(Self::Line),
+            // A radar outline is a line through (position, value) pairs;
+            // streamlines are polylines whose NaN rows hold no extent.
+            DataRenderType::Line { .. }
+            | DataRenderType::Radar { .. }
+            | DataRenderType::Streamlines { .. } => Some(Self::Line),
             DataRenderType::Scatter { .. } | DataRenderType::ScatterLine { .. } => {
                 Some(Self::Points)
             }
@@ -235,7 +268,16 @@ impl GpuSeriesExtentMode {
                 ..
             }
             | DataRenderType::Histogram { .. }
+            | DataRenderType::CategoryBars { .. }
+            | DataRenderType::BoxPlot { .. }
+            | DataRenderType::RangeBars { .. }
+            // A ternary chart's axes are the triangle, not a data extent.
+            | DataRenderType::Ternary { .. }
+            // A parallel chart's are the categorical positions and the
+            // normalized band.
+            | DataRenderType::Parallel { .. }
             | DataRenderType::Heatmap { .. }
+            | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. }
             | DataRenderType::HeatmapContour { .. } => None,
         }
@@ -423,7 +465,7 @@ async fn warm_extent_pipelines_js(device: &wgpu::Device) -> Result<(), GpuErrorb
     crate::init::prewarm_compute_entries_js(
         device,
         "gpu.extent.async",
-        include_str!("gpu_errorbar.wgsl"),
+        ERRORBAR_FIT_SHADER.source,
         &[
             ("reduce_values", "reduce_values"),
             ("reduce_states", "reduce_states"),
@@ -479,7 +521,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
             },
         );
 
@@ -583,7 +625,7 @@ impl GpuErrorbarExtentEngine {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: Some("figgy series fit-bound shader"),
-                source: wgpu::ShaderSource::Wgsl(include_str!("gpu_errorbar.wgsl").into()),
+                source: wgpu::ShaderSource::Wgsl(ERRORBAR_FIT_SHADER.source.into()),
             },
         );
 
@@ -731,7 +773,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [y_lower.len, y_upper.len, input_len, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Reduce a `Data`-scaled point vector series: every finite anchor plus
@@ -769,7 +814,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [0, v.len, input_len, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Resolve the exact outer bounds of a field's rendered coordinate lattice.
@@ -799,7 +847,10 @@ impl GpuErrorbarExtentEngine {
             lengths_1: [columns.x_cells, columns.y_cells, 1, 0],
         };
         self.begin_raw(device, queue, pool_buffer, params)
-            .map(|core| GpuSeriesExtentTicket { core })
+            .map(|core| GpuSeriesExtentTicket {
+                core,
+                overhang: None,
+            })
     }
 
     /// Preserve the original three-column errorbar reducer contract.
@@ -1074,9 +1125,66 @@ impl GpuExtentTicketCore {
 /// Owned one-shot readback for a drawable-series extent.
 pub struct GpuSeriesExtentTicket {
     core: GpuExtentTicketCore,
+    /// A hexagonal grid's overhang past its centres-cells bounds (#134).
+    overhang: Option<HexOverhang>,
+}
+
+/// How far a flat-topped hexagonal grid reaches past the `CentersCells`
+/// bounds of its coordinates (#134): a hexagon's half width is two thirds
+/// of the column pitch, a sixth past the half pitch on each side, and the
+/// raised odd columns reach half a row pitch past the top (the bottom when
+/// the rows descend). From the coordinate columns' uniform steps, so the
+/// fit draws every hexagon whole.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct HexOverhang {
+    x: f64,
+    y_min: f64,
+    y_max: f64,
+}
+
+impl HexOverhang {
+    fn new(x_step: f64, y_step: f64) -> Self {
+        Self {
+            x: x_step.abs() / 6.0,
+            y_min: (-y_step).max(0.0) * 0.5,
+            y_max: y_step.max(0.0) * 0.5,
+        }
+    }
+
+    fn widen(self, extent: GpuSeriesExtent) -> GpuSeriesExtent {
+        GpuSeriesExtent {
+            x: GpuErrorbarExtent {
+                min: extent.x.min - self.x,
+                max: extent.x.max + self.x,
+                min_positive: extent.x.min_positive,
+            },
+            y: GpuErrorbarExtent {
+                min: extent.y.min - self.y_min,
+                max: extent.y.max + self.y_max,
+                min_positive: extent.y.min_positive,
+            },
+        }
+    }
 }
 
 impl GpuSeriesExtentTicket {
+    /// The ticket of a hexagonal grid: its result reaches past the
+    /// centres-cells bounds by the hexagons' overhang (#134).
+    pub(crate) fn with_hexagonal_overhang(mut self, x_step: f64, y_step: f64) -> Self {
+        self.overhang = Some(HexOverhang::new(x_step, y_step));
+        self
+    }
+
+    fn widened(
+        overhang: Option<HexOverhang>,
+        extent: Option<GpuSeriesExtent>,
+    ) -> Option<GpuSeriesExtent> {
+        match overhang {
+            Some(overhang) => extent.map(|extent| overhang.widen(extent)),
+            None => extent,
+        }
+    }
+
     pub(crate) const FIELD_BYTES: u64 =
         SERIES_STATE_BYTES * 3 + std::mem::size_of::<ParamsGpu>() as u64;
 
@@ -1103,11 +1211,13 @@ impl GpuSeriesExtentTicket {
         let state = bytemuck::pod_read_unaligned::<SeriesStateGpu>(&mapped);
         drop(mapped);
         self.core.readback.unmap();
-        decode_series_state(state).map(Some)
+        decode_series_state(state).map(|extent| Some(Self::widened(self.overhang, extent)))
     }
 
     pub async fn resolve(self) -> Result<Option<GpuSeriesExtent>, GpuErrorbarError> {
+        let overhang = self.overhang;
         decode_series_state(self.core.resolve().await?)
+            .map(|extent| Self::widened(overhang, extent))
     }
 }
 
@@ -1357,7 +1467,7 @@ mod tests {
         assert_eq!(std::mem::size_of::<AxisStateGpu>(), 3 * 8);
         assert_eq!(std::mem::size_of::<SeriesStateGpu>(), 6 * 8);
 
-        let shader = include_str!("gpu_errorbar.wgsl");
+        let shader = ERRORBAR_FIT_SHADER.source;
         for forbidden in [
             "struct Endpoint",
             "source_index",

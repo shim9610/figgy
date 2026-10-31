@@ -28,8 +28,9 @@ shown below.
 
 Use the renderer's optional `serde` feature for serialization of its re-exported
 model types; no direct model dependency is needed for that. Direct host GPU
-sharing requires wgpu 30. The WASM wrapper remains a separate consumer and is
-excluded from Rust registry publishing.
+sharing requires wgpu 30. The WASM wrapper (`figgy`, the browser product) is a
+separate package with `publish = false`; its publication target is
+[open](https://github.com/shim9610/figgy/issues/57).
 See [Rust API contracts](API.md) for ownership, frame lifetimes,
 render targets and compatibility policy.
 
@@ -137,7 +138,7 @@ let size = window.inner_size();
 let mut renderer = Renderer::for_window(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // 16 MiB GPU column pool
+    16 * 1024 * 1024,   // initial GPU column pool, 16 MiB; grows on demand
 ).unwrap();
 
 // renderer.add_column takes `&dyn ColumnSource`.
@@ -167,7 +168,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
@@ -322,7 +323,7 @@ Each example shows:
 - Legends
 - DPI input + Save PNG button (egui) or `S` key (winit) → per-panel PNG bytes in memory → written by the example to `/tmp/figgy_*_panel_{i}.png`
 
-### Browser integration example — timestamp axes
+### Browser timestamp axes demo
 
 `crates/web/timestamp-demo.html` exercises the browser timestamp path with
 absolute Unix time values uploaded through `register_column_f64(Float64Array)`
@@ -456,7 +457,7 @@ Beyond lines, scatter, error bars, histograms, heatmaps and contours:
 - **Overlay axes, subplots and annotations**: each overlay layer draws its series
   against its own right-hand Y axis; subplots arrange whole charts in a grid with
   linked or twin axes; the annotation layer adds reference lines, spans,
-  text and arrows. Polar, radar and radial charts have no value axes: they draw
+  text and arrows. Polar charts (radar charts included) and radial charts have no value axes: they draw
   ratio-anchored text and arrows only and skip reference lines, spans and
   data-anchored items with `RenderWarning::AnnotationSkipped`. A document has
   one annotation layer, drawn in the parent chart's area; subplots have none of
@@ -474,21 +475,28 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### Box plots
 
-`BoxPlotRenderer` draws precomputed quartiles, medians, whiskers, means and outliers
-with matte/satin surfaces, individual styles, grouped layouts and either direction.
-Notches use explicit median confidence intervals. See the [box plot guide](BOXPLOT.md)
-or run `cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`.
-Titles, axes, labels and legends use the [shared interaction API](INTERACTION.md).
+A `DataRenderType::BoxPlot` series draws precomputed quartiles, medians,
+whiskers, means and outliers over a categorical axis, read from a record of box
+statistics and a ragged outlier column, with matte/satin surfaces, individual
+styles, grouped layouts and either direction. Notches use explicit median
+confidence intervals. `Config::from_boxplot` opens a legacy `BoxPlotChart`
+document. See the [box plot guide](BOXPLOT.md) or run
+`cargo run -p figgy-renderer --example boxplot_gallery`. Picking, selection,
+titles, axes, labels and legends are the Cartesian chart's
+([interaction guide](INTERACTION.md)).
 
 ### Radar charts
 
-`RadarRenderer` compares 1 to 16 series over 3 to 64 categories: one spoke
-per category, one shared value axis, closed polygons with fills, outlines and
-vertex markers on a polygon or circular grid. The host supplies one value per
-category and series; per-spoke normalization is not computed. See the
+A radar chart is a polar chart with a categorical angle axis: one spoke per
+category, one shared numeric radius axis, and `DataRenderType::Radar` series
+drawn as closed outlines with fills and vertex markers on a polygon
+(`PolarOptions.grid_shape`) or circular grid. The host supplies one value per
+category and series as columns; per-spoke normalization is not computed.
+`Config::from_radar` opens a legacy `RadarChart` document. See the
 [radar guide](RADAR.md) or run
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`.
-Titles, labels and legends use the [shared interaction API](INTERACTION.md).
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`.
+Picking, selection, titles, axes, labels and legends are the polar chart's
+([interaction guide](INTERACTION.md)).
 
 ### Polar plots
 
@@ -508,13 +516,15 @@ error. See the [polar guide](POLAR.md) or run
 
 ### Categorical bars
 
-`CategoricalRenderer` draws grouped, stacked and 100% stacked bars in either direction.
-`CategoricalChart` holds the category IDs, series and optional values itself; bar
-charts do not go through `ColumnSource`, the column pool or streaming.
-Per-bar colors, materials, rounding, outlines, label formats and selection are
-edited directly on that model.
-See the [categorical API guide](CATEGORICAL.md) (in Korean) or run
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`.
+The Cartesian `Renderer` draws grouped, stacked and 100% stacked bars in
+either direction as `DataRenderType::CategoryBars` series over a categorical
+axis, laid out by `Config.bar_groups`. Their positions and values are columns
+uploaded through `ColumnSource`; streamed sources are rejected. Per-bar
+colours, materials, rounding and outlines are per-bar overrides on the
+series, and a bar is picked and selected like a histogram bin.
+`Config::from_categorical` opens a legacy `CategoricalChart` document as such
+a chart. See the [bar guide](CATEGORICAL.md) or run
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`.
 
 ### Radial charts
 
@@ -556,12 +566,54 @@ colour as a fourth argument, for example
 `subplots`, `export_document_png_bytes_async` / `export_document_rgba_async`
 (and their `_with_clear` and blocking variants) take the same arguments and
 draw every layer and subplot into one image covering all chart areas.
-`scale` bounds: `renderer::MIN_EXPORT_SCALE` (0.25) ~ `renderer::MAX_EXPORT_SCALE` (8.0), automatically clamped.
+`scale` is at least `renderer::MIN_EXPORT_SCALE` (0.25; NaN and values at or below zero become it) and has no upper bound: the scaled image must fit the device's texture limit (`max_texture_dimension_2d`, commonly 8192 or 16384 px per side), and a larger export fails with `FiggyError::GpuResourceLimit` before anything is allocated.
 Convert from standard 96 DPI via `renderer::dpi_to_scale(dpi)`.
 
 When scaling, every pixel-based dimension (font, line, margin, grid, legend)
 scales by the same factor, so the layout matches the on-screen chart at a
 higher pixel density (or a lower one below 1.0).
+
+### SVG and PDF export
+
+```rust
+let svg: String = renderer
+    .export_document_svg_async(&chart, &series_configs, scale)
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_document_pdf_async(&chart, &series_configs, scale)
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+The two documents hold the same picture as `export_document_png_bytes_async`
+with the same arguments ([#48](https://github.com/shim9610/figgy/issues/48)).
+The decorations are vector content, written from the placement the PNG
+draws with: axes, ticks, tick labels, grid, polar rings and spokes, axis and
+chart titles, legend, the colourbar's border, axis and labels, and the
+annotation layer. Text is written as glyph outlines, so no font is embedded
+and the text cannot be selected or searched. The data layer (fills, lines,
+markers, bars, fields, contours, vectors, picked highlights and value
+labels) is drawn by the GPU, so each panel group's data is one image at
+`scale ×` resolution, the PNG export's own pixels: one image for a chart and
+its overlays, one more for each subplot. The colourbar ramp and the
+Milkyway backdrop are images too; the Milkyway glow is not drawn. Selection
+boxes are never drawn, as in the PNG export.
+
+The SVG's `viewBox` is in physical pixels and its `width` / `height`, like
+the PDF page, are the logical size in points (1 px = 0.75 pt), so a 2x export
+has the same page size with twice the image resolution. `scale` is clamped
+as for the PNG export, the `_with_clear_async` variants paint the clear
+colour as a rectangle under everything, and the native blocking wrappers are
+`export_document_svg` / `export_document_pdf`. `WindowedRenderer` has the same
+six methods. A series with a streamed source is rejected with
+`FiggyError::ColumnNotResident`, as by the PNG export.
+
+The radial chart exports with `RadialRenderer::export_svg_async(&chart, size,
+scale)` and `export_pdf_async` (blocking: `export_svg` / `export_pdf`): the
+slices and background are one image, the title, labels, leader lines, split
+connectors and annotations are vector content. Every inside label is drawn
+above every slice at its place in the PNG, and no selection box is drawn.
 
 ---
 
@@ -587,7 +639,7 @@ Cargo 패키지 이름은 `figgy-renderer`·`figgy-model`이고 Rust 라이브�
 
 렌더러의 `serde` 기능을 켜면 재노출된 모델 타입을 직렬화할 수 있다. 이를 위해 모델을
 직접 의존할 필요는 없다. GPU를 직접 공유하려면 호스트도 wgpu 30을 사용해야 한다.
-WASM 래퍼는 별도 소비 예제로 유지하고 Rust registry 게시에서는 제외한다.
+브라우저용 제품인 WASM 래퍼(`figgy`)는 별도 패키지이며 `publish = false`다. 배포 대상은 [아직 정하지 않았다](https://github.com/shim9610/figgy/issues/57).
 소유권·프레임 수명·출력 타깃·호환성은 [API 계약](API.md)을 참고한다.
 
 ```toml
@@ -683,7 +735,7 @@ let size = window.inner_size();
 let mut renderer = Renderer::for_window(
     Arc::clone(&window),
     (size.width, size.height),
-    16 * 1024 * 1024,   // GPU column pool 16 MiB
+    16 * 1024 * 1024,   // GPU column pool 초기 16 MiB, 필요하면 늘어난다
 ).unwrap();
 
 // renderer.add_column은 `&dyn ColumnSource`를 받는다.
@@ -713,7 +765,7 @@ chart.auto_fit_y(renderer.pool(), "y", 0.10).unwrap();
 let cfg = SeriesConfig {
     series_id: "sin".into(), label: None,
     source_id: None,
-    x_column: "x".into(), y_column: "y".into(),
+    x_column: "x".into(), y_column: "y".into(), z_column: None,
     render_type: DataRenderType::Line {
         line: DataLineStyleConfig {
             line_style: LineStylePreset::Solid,
@@ -841,7 +893,7 @@ cargo run -p figgy-renderer --example egui_embed --features egui_demo
 
 <a id="브라우저-timestamp-축-데모"></a>
 
-### 브라우저 통합 예제 — 시간축
+### 브라우저 시간축 데모
 
 `crates/web/timestamp-demo.html`은 Unix 시간 값을 `register_column_f64(Float64Array)`로 등록하고 `update_register_column_f64`로 교체하는 예제다. 시간 범위, 데이터 단위, 시간대, 소수 초 표시, 라벨 형식, 차트 너비, 출력 배율을 바꿔 볼 수 있다. X축에는 `LabelFormat::Timestamp`와 `AutoCalendar`를 사용해 눈금 간격을 자동으로 조절한다.
 
@@ -928,7 +980,7 @@ winit 루프나 WASM 래퍼처럼 프레임 동안 렌더러를 단독으로 사
   [설정](CONFIG.md#벡터장)과 `vector_field` 예제.
 - **보조 Y축·서브플롯·주석**: 오버레이 레이어는 두 번째 Y축에 시리즈를 그리고, 서브플롯은 차트
   여러 개를 연결 축·쌍둥이 축과 함께 격자로 배치하며, 주석 층은 기준선·구간·텍스트·화살표를
-  더한다. 극좌표·레이더·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
+  더한다. 극좌표(레이더 포함)·원형 차트에는 값 축이 없으므로 비율 좌표로 둔 텍스트와 화살표만 그리고,
   기준선·구간과 데이터 좌표 항목은 `RenderWarning::AnnotationSkipped` 경고를 내고 건너뛴다.
   주석 층은 문서마다 하나이며 부모 차트 영역에 그린다. 서브플롯에는 따로 없다.
   [오버레이](INTERACTION.md#overlay-layers), [서브플롯](INTERACTION.md#subplots),
@@ -944,20 +996,22 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 박스플롯
 
-`BoxPlotRenderer`는 미리 집계한 사분위수·중앙값·수염·평균·이상치를 그린다.
+`DataRenderType::BoxPlot` 시리즈는 범주형 축 위에 미리 집계한 사분위수·중앙값·수염·평균·이상치를
+상자 통계 레코드와 이상치 가변 길이 컬럼에서 읽어 그린다.
 가로·세로 및 그룹 배치, 무광·금속 질감, 개별 색·스타일과 선택을 지원한다.
-노치는 입력받은 중앙값 신뢰구간으로 그린다. [사용법](BOXPLOT.md)을 참고하거나
-`cargo run -p figgy-renderer --example boxplot_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·축·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+노치는 입력받은 중앙값 신뢰구간으로 그린다. 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다.
+[사용법](BOXPLOT.md)을 참고하거나 `cargo run -p figgy-renderer --example boxplot_gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 직교 좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 레이더 차트
 
-`RadarRenderer`는 고정된 범주 집합 위에서 몇 개의 시리즈를 비교한다. 범주마다 스포크 하나,
-값 축은 하나를 공유하며, 각 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 다각형이다. 고리는
-다각형(거미줄) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가 넣으며 스포크별 정규화는
-계산하지 않는다. [사용법](RADAR.md)을 참고하거나
-`cargo run -p figgy-renderer --example radar_editor --features egui_demo`로 편집 예제를 실행한다.
-제목·라벨·범례 편집은 [공통 선택·이동 API](INTERACTION.md)를 사용한다.
+레이더 차트는 각도 축이 범주형인 극좌표 차트다. 범주마다 스포크 하나, 숫자 반지름 축 하나를
+공유하며, `DataRenderType::Radar` 시리즈는 채움·외곽선·꼭짓점 마커가 있는 닫힌 외곽선이다. 고리는
+다각형(거미줄, `PolarOptions.grid_shape`) 또는 원으로 그린다. 범주·시리즈마다 값 하나를 호스트가
+컬럼으로 넣으며 스포크별 정규화는 계산하지 않는다. 예전 `RadarChart` 문서는 `Config::from_radar`로 연다.
+[사용법](RADAR.md)을 참고하거나
+`cargo run -p figgy-renderer --example radar_gallery -- target/radar-gallery`로 예제를 실행한다.
+선택과 제목·축·라벨·범례 편집은 극좌표 차트와 같다([공통 선택·이동 API](INTERACTION.md)).
 
 ### 극좌표 플롯
 
@@ -974,11 +1028,11 @@ cargo run --locked -p figgy-renderer --example subplots -- target/subplots
 
 ### 범주형 막대
 
-`CategoricalRenderer`는 가로·세로 묶음, 누적, 100% 누적 막대를 그린다. 범주·시리즈·값은
-`CategoricalChart` 모델에 직접 담으며 `ColumnSource`, 컬럼 풀, 스트리밍을 사용하지 않는다.
-막대별 색·재질·모서리·외곽선·표기와 선택 상태도 이 모델에서 편집한다.
+범주형 막대는 직교 좌표 `Renderer`가 범주형 축 위에 그리는 `DataRenderType::CategoryBars` 시리즈다.
+가로·세로 묶음, 누적, 100% 누적은 `Config.bar_groups`로 정하고, 위치와 값은 `ColumnSource`로 올린
+컬럼에서 읽는다. 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다.
 [API 사용법](CATEGORICAL.md)을 참고하거나
-`cargo run -p figgy-renderer --example categorical_editor --features egui_demo`로 편집기를 실행한다.
+`cargo run -p figgy-renderer --example categorical_gallery -- target/categorical-gallery`로 예제 PNG를 만든다.
 
 ### 원형 차트
 
@@ -1017,8 +1071,29 @@ let img = renderer
 `export_panel_*`는 기본 차트 영역만 그린다. `overlays`나 `subplots`가 있는 차트는 같은 인자를 받는
 `export_document_png_bytes_async` / `export_document_rgba_async`(`_with_clear` 버전과 동기 버전 포함)로
 레이어와 서브플롯을 이미지 한 장에 모두 그린다. 이 이미지는 모든 차트 영역을 합친 크기다.
-`scale`의 범위는 `renderer::MIN_EXPORT_SCALE`(0.25)부터 `renderer::MAX_EXPORT_SCALE`(8.0)까지다. 범위를 벗어난 값은 오류 없이 가까운 경계값으로 바꾸고, NaN이나 0 이하의 값은 0.25로 바꾼다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
+`scale`의 최솟값은 `renderer::MIN_EXPORT_SCALE`(0.25)이고 NaN이나 0 이하의 값은 0.25로 바꾼다. 상한은 없다. 배율을 적용한 이미지가 장치의 텍스처 크기 한도(`max_texture_dimension_2d`, 보통 한 변 8192 또는 16384픽셀) 안에 들어와야 하며, 넘으면 메모리를 잡기 전에 `FiggyError::GpuResourceLimit` 오류를 돌려준다. DPI에서 배율을 구하려면 표준값 96 DPI를 기준으로 계산하는 `renderer::dpi_to_scale(dpi)`를 사용한다.
 
 폰트, 선, 여백, 격자, 범례의 픽셀 크기가 모두 같은 비율로 바뀌므로 화면과 같은 배치를 더 높은 해상도로 얻는다. 1.0보다 작은 배율은 해상도를 낮춘다.
+
+### SVG와 PDF 내보내기
+
+```rust
+let svg: String = renderer
+    .export_document_svg_async(&chart, &series_configs, scale)
+    .await?;
+let pdf: Vec<u8> = renderer
+    .export_document_pdf_async(&chart, &series_configs, scale)
+    .await?;
+std::fs::write("/tmp/out.svg", svg)?;
+std::fs::write("/tmp/out.pdf", pdf)?;
+```
+
+두 문서에는 같은 인자로 `export_document_png_bytes_async`를 호출했을 때와 같은 그림이 담긴다([#48](https://github.com/shim9610/figgy/issues/48)).
+장식 요소는 PNG를 그릴 때와 같은 배치에서 벡터로 기록한다. 축, 눈금, 눈금 라벨, 격자, 극좌표의 원과 방사선, 축 제목과 차트 제목, 범례, 색상 막대의 테두리·축·라벨, 주석 층이 여기에 해당한다. 글자는 글리프 윤곽선으로 기록하므로 글꼴을 포함하지 않으며, 글자를 선택하거나 검색할 수 없다.
+데이터 층(채움, 선, 마커, 막대, 필드, 등고선, 벡터, 선택 강조, 값 라벨)은 GPU가 그리므로 패널 묶음마다 `scale`배 해상도의 이미지 한 장으로 넣는다. 이미지의 픽셀은 PNG 출력의 픽셀과 같다. 차트와 그 오버레이가 이미지 한 장이고, 서브플롯마다 한 장씩 더해진다. 색상 막대의 색 띠와 Milkyway 배경도 이미지로 넣으며, Milkyway의 발광 효과는 그리지 않는다. PNG 출력과 마찬가지로 선택 상자는 그리지 않는다.
+
+SVG의 `viewBox`는 실제 픽셀 단위이고 `width`·`height`는 PDF 페이지처럼 논리 크기를 포인트로 나타낸다(1 px = 0.75 pt). 따라서 2배 출력은 페이지 크기가 같고 이미지 해상도만 두 배가 된다. `scale`은 PNG 출력과 같은 범위로 제한한다. `_with_clear_async` 버전은 배경색 사각형을 맨 아래에 그리고, 네이티브 동기 래퍼의 이름은 `export_document_svg` / `export_document_pdf`다. `WindowedRenderer`에도 같은 메서드 여섯 개가 있다. 스트리밍 원본을 쓰는 시리즈는 PNG 출력처럼 `FiggyError::ColumnNotResident`로 거부한다.
+
+원형 차트는 `RadialRenderer::export_svg_async(&chart, size, scale)`와 `export_pdf_async`(동기 버전 `export_svg` / `export_pdf`)로 내보낸다. 조각과 배경은 이미지 한 장이고, 제목, 라벨과 그 지시선, 분할 원을 잇는 선, 주석은 벡터로 기록한다. 내부 라벨은 모두 PNG에서와 같은 위치에 모든 조각 위로 그리며, 선택 상자는 그리지 않는다.
 
 ---

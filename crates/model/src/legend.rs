@@ -24,7 +24,7 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::data_config::{DataRenderType, ScatterShape, SeriesConfig};
 use crate::line::LineStylePreset;
-use crate::text::{RichSegment, RichText, rich_segments_from_text};
+use crate::text::{CharSet, RichSegment, RichText, rich_segments_from_text};
 use std::ops::Range;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -116,6 +116,7 @@ mod legend_update_tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style,
@@ -365,9 +366,59 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
             line_symbol(contour.line.line_color, contour.line.line_style, None)
         }
         DataRenderType::Heatmap { .. } => colormap.map_or_else(blank_symbol, colormap_symbol),
+        // An image's colours are its data: no mark stands for them.
+        DataRenderType::RgbImage { .. } => blank_symbol(),
         // An arrow: a rule for the shaft and the right-pointing head glyph,
         // in the series colour. A colour map's colours belong to the colourbar.
         DataRenderType::Vector { style, .. } => vector_symbol(style.color),
+        // Streamlines read as their line; with arrowheads, as an arrow in
+        // the line colour. A colour map's colours belong to the colourbar.
+        DataRenderType::Streamlines { line, arrows, .. } => match arrows {
+            Some(_) => vector_symbol(line.line_color),
+            None => line_symbol(line.line_color, line.line_style, None),
+        },
+        // A parallel series reads as its rows' line; a colour column's
+        // colours belong to the colourbar.
+        DataRenderType::Parallel { line, .. } => {
+            line_symbol(line.line_color, line.line_style, None)
+        }
+        // A category bar is a filled swatch like a histogram bar.
+        DataRenderType::CategoryBars { color, .. } => {
+            scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
+        // A box is a filled swatch in the box colour, like a bar.
+        DataRenderType::BoxPlot { color, .. } => {
+            scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
+        // A range bar is a filled swatch in the series colour, like a bar;
+        // direction and state colours are read from the bars.
+        DataRenderType::RangeBars { color, .. } => {
+            scatter_symbol(&ScatterShape::SquareFilled, *color)
+        }
+        // A radar series reads as the line it is drawn with: its outline
+        // over its fill band, with its vertex marker when it has one.
+        DataRenderType::Radar {
+            color,
+            style,
+            labels,
+        } => {
+            let radar = crate::data_config::RadarRef {
+                color: *color,
+                style,
+                labels,
+            };
+            let line = radar.line_style();
+            let band = line_fill_band(&line);
+            match radar.scatter_style() {
+                Some(scatter) => line_scatter_symbol_with_style(
+                    &scatter.point_shape,
+                    radar.color,
+                    LineStylePreset::Solid,
+                    band,
+                ),
+                None => line_symbol(radar.color, LineStylePreset::Solid, band),
+            }
+        }
         DataRenderType::Scatter { scatter }
         | DataRenderType::ScatterErrorbarX { scatter, .. }
         | DataRenderType::ScatterErrorbarY { scatter, .. }
@@ -384,6 +435,43 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
                 line.line_style,
                 line_fill_band(line),
             )
+        }
+        // A ternary series reads as what it draws: markers, a line, or both,
+        // over its region fill's band when it has one; a fill alone is a
+        // band under an invisible rule.
+        DataRenderType::Ternary {
+            scatter,
+            line,
+            region,
+            ..
+        } => {
+            let band = region.as_ref().map(|region| {
+                let [r, g, b, a] = region.color_premul();
+                if a > 0.0 {
+                    Color::new(r / a, g / a, b / a, a)
+                } else {
+                    Color::new(0.0, 0.0, 0.0, 0.0)
+                }
+            });
+            match (scatter, line) {
+                (Some(scatter), Some(line)) => line_scatter_symbol_with_style(
+                    &scatter.point_shape,
+                    line.line_color,
+                    line.line_style,
+                    band,
+                ),
+                (Some(scatter), None) => scatter_symbol(&scatter.point_shape, scatter.point_color),
+                (None, Some(line)) => line_symbol(line.line_color, line.line_style, band),
+                (None, None) => match band {
+                    Some(band) => {
+                        vec![
+                            RichSegment::rule(SYMBOL_FIELD_EM, Some(band))
+                                .with_rule_band(Some(band)),
+                        ]
+                    }
+                    None => blank_symbol(),
+                },
+            }
         }
     }
 }
@@ -437,7 +525,7 @@ fn is_plain_space(seg: &RichSegment) -> bool {
         && !seg.underline
         && !seg.superscript
         && !seg.subscript
-        && !seg.greek
+        && seg.char_set == CharSet::Text
         && seg.color.is_none()
         && seg.font_size.is_none()
         && seg.field_em.is_none()
@@ -597,6 +685,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Line {
                 line: DataLineStyleConfig {
                     line_style,
@@ -813,6 +902,7 @@ mod tests {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type,
         }
     }
@@ -886,6 +976,7 @@ mod tests {
                 matrix: matrix(),
                 fill: fill(),
                 contour: contour(level_color),
+                surface: None,
             },
         ] {
             let mark = series_symbol_segments(&field_series(render_type), None);
@@ -910,6 +1001,7 @@ mod tests {
                 opacity: 0.5,
                 ..fill()
             },
+            surface: None,
         });
         let map = ColorMap::Viridis;
         let mark = series_symbol_segments(&heatmap, Some(&map));
@@ -958,6 +1050,7 @@ mod tests {
         let heatmap = field_series(DataRenderType::Heatmap {
             matrix: matrix(),
             fill: fill(),
+            surface: None,
         });
         let mark = series_symbol_segments(&heatmap, None);
         assert_eq!(mark.len(), 1);

@@ -8,10 +8,10 @@ pub mod annotation;
 pub mod axis_render;
 #[cfg(target_arch = "wasm32")]
 mod browser_compile;
-pub mod categorical;
 pub mod chart;
 pub mod data;
 pub mod data_render;
+mod decoration_render;
 pub mod demo;
 pub mod error;
 mod gpu_compile;
@@ -23,11 +23,14 @@ mod gpu_pick;
 pub mod init;
 pub(crate) mod line_step;
 pub mod pick;
-pub(crate) mod polar_projection;
 pub mod radial;
 pub mod raster;
 mod render_warning;
 pub mod renderer;
+/// Compile-time WGSL module assembly (`wgsl_module!`) and the table of
+/// assembled modules, for the renderer's own tests.
+#[doc(hidden)]
+pub mod shader_assembly;
 // Hand-drawn geometry helpers + the `DecoStroker` strategy — consumed by the
 // deco layer (`axis_render`) when `Config::draw_style` selects a stylized
 // mode (`DrawStyle::Sketch`, …).
@@ -37,20 +40,27 @@ pub mod streaming_source;
 mod streaming_upload;
 pub mod text_render;
 mod time_axis;
+mod vector_export;
+/// Test support: the parts the vector export writes (`cpu-twin` only).
+#[cfg(feature = "cpu-twin")]
+#[doc(hidden)]
+pub use vector_export::{WrittenPart, written_document_parts};
 
 // Model layer (chart option SSoT, data containers, preset policies) lives in
 // the sibling `model` crate. Re-exported module-by-module so every path keeps
 // its single-crate spelling: `renderer::config::…`, `renderer::layout::…`, etc.
 // (`chart` and `data` are renderer modules: dirty-flag tracking and the
 // `ColumnSource` upload adapter are render-side machinery.)
+pub use ::model::bounded_sources::{BoxColumn, BoxField};
+pub use ::model::{SeriesUpload, UploadValues};
 pub use ::model::{
-    color, colormap, config, data_config, default, drag, expand, format, layout, legend, line,
-    preset, resize, select, text, tick,
+    bounded_sources, boxplot, categorical, color, colormap, config, data_config, default, drag,
+    expand, format, layout, legend, line, preset, resize, select, sink, text, tick,
 };
 
 // Public API re-exports.
-pub use annotation::{AnnotationMap, BoundedAnnotationFrame, FrameBackground, LayerHit};
-pub use chart::{Chart, FitExtent, errorbar_extent};
+pub use annotation::{AnnotationMap, BoundedAnnotationFrame, LayerHit};
+pub use chart::{Chart, FitExtent};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
@@ -64,12 +74,13 @@ pub use data::{
 pub use data_config::{
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
-    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS,
-    ScatterShape, SeriesConfig, SeriesRef,
+    DataScatterStyleConfig, ErrorRef, LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, RadarRef,
+    RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, StreamlineArrows,
 };
 pub use data_render::{
-    AllocError, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx, GpuBudget,
-    GrowthPolicy,
+    AllocError, BOX_PLOT_RECORD, ColumnHandle, ColumnId, ColumnPool, DefragPolicy, GpuAllocCtx,
+    GpuBudget, GrowthPolicy, MAX_RECORD_FIELDS, RaggedId, RaggedRef, RaggedSlot, RaggedSource,
+    RaggedStats, RecordId, RecordRef, RecordSchema, RecordSlot, RecordSource, RecordStats,
 };
 pub use drag::Draggable;
 pub use error::{FiggyError, Result};
@@ -85,28 +96,30 @@ pub use gpu_memory::{
 };
 pub use gpu_pick::{GpuPickError, GpuPickTicket};
 pub use init::{INIT_EVENT_SCHEMA_VERSION, InitEvent, InitPhase};
-pub use pick::{PickedData, PickedPoint, PointColumnLookup, PointPickOptions, pick_nearest_point};
+pub use pick::{PickedData, PickedPoint};
 pub use preset::{AxisPreset, ColorCycle};
 pub use render_warning::{
     AnnotationSkip, RenderWarning, SpacingRejection, SubplotAxis, WarningAxis,
 };
 pub use renderer::{
     AxisViewState, ChartDrawItem, ChartId, ChartRenderStamp, ChartStyle, ChartView,
-    ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MAX_EXPORT_SCALE,
-    MIN_EXPORT_SCALE, PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines,
-    RasterImage, RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice,
-    RendererLoadDemo, RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation,
-    StreamingSelectionRequest, StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp,
-    WindowedRenderer, clamp_export_scale, display_config_for_surface, dpi_to_scale,
-    draw_style_supports, encode_png, fit_display_panel, place_document,
+    ChartViewLayerStamps, ChartViewState, FitCommitToken, GpuPickRequest, MIN_EXPORT_SCALE,
+    PipelinePreparation, PreparationFeature, PreparedFrame, PreparedPipelines, RasterImage,
+    RegisteredChartDrawItem, RenderRevision, Renderer, RendererDevice, RendererLoadDemo,
+    RendererVisualStamp, Series, SeriesDrawInfo, StreamingOperation, StreamingSelectionRequest,
+    StreamingSelectionTicket, WebDerivedSnapshot, WebDerivedStamp, WindowedRenderer,
+    clamp_export_scale, display_config_for_surface, dpi_to_scale, draw_style_supports, encode_png,
+    fit_display_panel, place_document,
 };
 pub use resize::{Resizable, ResizeHandle};
 pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionOutline, SubplotElement,
+    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
+    SubplotElement,
 };
+pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use streaming_source::{
     AutoStreamRange, AutoStreamSourceVersion, AutoStreamingProgress, AutoStreamingRangeRequest,
     AutoStreamingRequest, LogicalColumn, RenderInterruptStatus, StreamBounds, StreamColumn,
@@ -117,19 +130,22 @@ pub use streaming_source::{
 pub use text::{MeasureText, TextAlign};
 pub use text_render::{CpuTextMeasure, FontPolicy};
 
+/// The surface material shared by bars, boxes and sectors.
+pub use model::Material;
 pub use radial::{
     RadialChart, RadialError, RadialFrame, RadialInteraction, RadialKind, RadialLabelFormat,
-    RadialLabels, RadialMaterial, RadialOutline, RadialRenderer, RadialSlice, RadialSplit,
+    RadialLabels, RadialOutline, RadialPickTicket, RadialRenderer, RadialSlice, RadialSplit,
     RadialStyle, RadialTarget,
 };
+// The deprecated name stays importable from the crate root.
+#[allow(deprecated)]
+pub use radial::RadialMaterial;
 
-pub use categorical::{CategoricalError, CategoricalFrame, CategoricalRenderer};
+#[allow(deprecated)]
 pub use model::categorical::*;
 
-pub mod boxplot;
-pub use boxplot::{BoxPlotError, BoxPlotFrame, BoxPlotPart, BoxPlotPick, BoxPlotRenderer};
+#[allow(deprecated)]
 pub use model::boxplot::*;
-pub mod radar;
 /// Polar coordinates for the Cartesian chart: `PolarOptions` for
 /// `Config.polar`, the angle unit and segment interpolation it reads, and the
 /// `PolarGeometry` circle the chart draws into.
@@ -137,9 +153,39 @@ pub mod polar {
     #![doc = include_str!("../POLAR.md")]
     pub use model::polar::*;
 }
-pub use model::polar::{AngleUnit, PolarGeometry, PolarInterpolation, PolarOptions};
+pub use model::polar::{
+    AngleMap, AngleUnit, GridShape, PolarGeometry, PolarInterpolation, PolarOptions,
+};
+/// Ternary coordinates for the Cartesian chart: `TernaryOptions` for
+/// `Config.ternary` and the `TernaryGeometry` triangle the chart draws into.
+pub mod ternary {
+    #![doc = include_str!("../TERNARY.md")]
+    pub use model::ternary::*;
+}
+pub use model::ternary::{TernaryGeometry, TernaryOptions, TernaryRegionStyle};
+/// 3D charts: `View3d` for `Config.view_3d`, the camera a heatmap is drawn
+/// through as a surface, and `SurfaceStyle`, the surface's look.
+pub mod view3d {
+    #![doc = include_str!("../SURFACE.md")]
+    pub use model::view3d::*;
+}
+pub use model::view3d::{SurfaceStyle, View3d};
+/// Parallel coordinates for the Cartesian chart (#141): `ParallelOptions`
+/// for `Config.parallel`, one `ParallelAxis` range per category of the
+/// bottom axis.
+pub mod parallel {
+    pub use model::parallel::*;
+}
+pub use model::parallel::{ParallelAxis, ParallelOptions};
+/// Radar charts: radar series on a polar chart with a categorical angle
+/// axis, and the legacy `RadarChart` document `Config::from_radar` reads.
+pub mod radar {
+    #![doc = include_str!("../RADAR.md")]
+    #[allow(deprecated)]
+    pub use model::radar::*;
+}
+#[allow(deprecated)]
 pub use model::radar::*;
-pub use radar::{RadarError, RadarFrame, RadarPart, RadarPick, RadarRenderer};
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "../tests/support/gpu.rs"]
@@ -150,9 +196,8 @@ pub use model::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLayer, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap,
     AxisSpace, BoxStyle, CellRef, ExpandedPanel, Expansion, LayerRef, OverlayLayer, PixelSpace,
-    Subplot,
+    ShapeStyle, Subplot,
 };
 pub mod decoration;
 
-mod bounded_title;
 pub use model::BoundedTitleOptions;

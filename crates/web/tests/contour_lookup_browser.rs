@@ -90,6 +90,7 @@ fn contour_series(levels: Vec<f64>, colors: Vec<Color>) -> SeriesConfig {
         label: None,
         x_column: "gx".into(),
         y_column: "gy".into(),
+        z_column: None,
         render_type: DataRenderType::Contour {
             matrix: matrix(&["p0", "p1", "p2"], GridLayout::Centers),
             contour: ContourConfig {
@@ -116,6 +117,7 @@ fn band_series(levels: Vec<f64>) -> SeriesConfig {
         label: None,
         x_column: "bx".into(),
         y_column: "by".into(),
+        z_column: None,
         render_type: DataRenderType::HeatmapContour {
             matrix: matrix(&["bz"], GridLayout::Edges),
             fill: FieldFillConfig {
@@ -136,6 +138,7 @@ fn band_series(levels: Vec<f64>) -> SeriesConfig {
                 per_level_color: None,
                 labels: None,
             },
+            surface: None,
         },
     }
 }

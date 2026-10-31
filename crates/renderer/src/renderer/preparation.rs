@@ -51,11 +51,16 @@ impl PreparationFeature {
             Self::Basic => matches!(
                 field,
                 "line"
+                    | "line_mapped"
+                    | "line_parallel"
+                    | "line_parallel_selection"
                     | "area"
                     | "scatter"
                     | "scatter_mapped"
                     | "pick_ring"
                     | "pick_ring_mapped"
+                    | "ternary"
+                    | "parallel"
                     | "errorbar"
                     | "errorbar_mapped"
             ),
@@ -97,13 +102,20 @@ impl PreparationFeature {
         }
         for item in series {
             let group = match item.render_type {
-                DataRenderType::Histogram { .. } => Self::Bars,
+                DataRenderType::Histogram { .. }
+                | DataRenderType::CategoryBars { .. }
+                | DataRenderType::BoxPlot { .. }
+                | DataRenderType::RangeBars { .. } => Self::Bars,
                 // Vectors prepare with the fields: both read the pool as
                 // storage and share the colourbar.
                 DataRenderType::Heatmap { .. }
+                | DataRenderType::RgbImage { .. }
                 | DataRenderType::Contour { .. }
                 | DataRenderType::HeatmapContour { .. }
-                | DataRenderType::Vector { .. } => Self::Fields,
+                | DataRenderType::Vector { .. }
+                // Streamline lines draw through the line pipelines (always
+                // prepared) and their arrowheads through a vector pipeline.
+                | DataRenderType::Streamlines { .. } => Self::Fields,
                 DataRenderType::Scatter { .. }
                 | DataRenderType::Line { .. }
                 | DataRenderType::ScatterLine { .. }
@@ -112,7 +124,14 @@ impl PreparationFeature {
                 | DataRenderType::ScatterErrorbarXY { .. }
                 | DataRenderType::LineScatterErrorbarX { .. }
                 | DataRenderType::LineScatterErrorbarY { .. }
-                | DataRenderType::LineScatterErrorbarXY { .. } => Self::Basic,
+                | DataRenderType::LineScatterErrorbarXY { .. }
+                // A radar series draws through the line and scatter pipelines.
+                | DataRenderType::Radar { .. }
+                // So does a ternary series, through its ternary entries, and
+                // a parallel series through the line module's parallel
+                // entries.
+                | DataRenderType::Ternary { .. }
+                | DataRenderType::Parallel { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);
@@ -141,6 +160,8 @@ pub struct PipelinePreparation {
     field: wgpu::BindGroupLayout,
     star: wgpu::BindGroupLayout,
     vector: wgpu::BindGroupLayout,
+    category_bar: wgpu::BindGroupLayout,
+    parallel: wgpu::BindGroupLayout,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -178,11 +199,14 @@ impl PipelinePreparation {
                         bar: &self.pipelines.shaders.bar,
                         field: &self.pipelines.shaders.field,
                         vector_grid: &self.pipelines.shaders.vector_grid,
+                        line: &self.pipelines.shaders.line,
                     },
                     &self.transform,
                     &self.field,
                     &self.mapped,
                     &self.vector,
+                    &self.category_bar,
+                    &self.parallel,
                     observer,
                 )
                 .await
@@ -203,7 +227,7 @@ impl PipelinePreparation {
                 crate::init::prewarm_compute_entries_js(
                     &self.device,
                     "contour.label.async",
-                    include_str!("../contour_anchor.wgsl"),
+                    crate::gpu_contour::CONTOUR_ANCHOR_SHADER.source,
                     &[
                         ("anchor_project", "anchor_seed"),
                         ("anchor_project", "anchor_step"),
@@ -230,6 +254,8 @@ impl PipelinePreparation {
                     &self.selection,
                     &self.field,
                     &self.vector,
+                    &self.category_bar,
+                    &self.parallel,
                     &self.star,
                     contour.as_ref(),
                     Some(self.feature),
@@ -270,10 +296,14 @@ impl Renderer {
         match feature {
             PreparationFeature::Basic => {
                 p.line.is_some()
+                    && p.line_mapped.is_some()
+                    && p.line_parallel.is_some()
+                    && p.line_parallel_selection.is_some()
                     && p.scatter.is_some()
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
                     && p.pick_ring_mapped.is_some()
+                    && p.ternary.iter().all(Option::is_some)
                     && p.errorbar.is_some()
                     && p.errorbar_mapped.is_some()
                     && self.arc_pipelines.is_some()
@@ -284,6 +314,19 @@ impl Renderer {
                     && p.bar_envelope.is_some()
                     && p.bar_mapped.is_some()
                     && p.bar_selection.is_some()
+                    && p.bar_selection_mapped.is_some()
+                    && p.bar_category.is_some()
+                    && p.bar_category_selection.is_some()
+                    && p.bar_box_plot.is_some()
+                    && p.bar_box_plot_selection.is_some()
+                    && p.bar_range.is_some()
+                    && p.bar_range_selection.is_some()
+                    && p.bar_violin.is_some()
+                    && p.bar_violin_selection.is_some()
+                    && p.bar_box_points.is_some()
+                    && p.bar_box_point_selection.is_some()
+                    && p.bar_value_label.is_some()
+                    && p.bar_value_label_selection.is_some()
             }
             PreparationFeature::Fields => {
                 p.field.is_some()
@@ -294,6 +337,7 @@ impl Renderer {
                     && p.contour_label.is_some()
                     && p.vector_points.is_some()
                     && p.vector_grid.is_some()
+                    && p.vector_path.is_some()
                     && self.contour_label_pipelines.is_some()
             }
             PreparationFeature::Picking => matches!(
@@ -326,6 +370,8 @@ impl Renderer {
             field: self.field_bgl.clone(),
             star: self.star_data_bgl.clone(),
             vector: self.vector_bgl.clone(),
+            category_bar: self.category_bar_data_bgl.clone(),
+            parallel: self.parallel_bgl.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
@@ -375,17 +421,41 @@ impl TargetPipelines {
             sample_count: source.sample_count,
             styled: HashMap::new(),
             line: None,
+            line_mapped: None,
+            line_parallel: None,
+            line_parallel_selection: None,
             area: None,
             scatter: None,
             scatter_mapped: None,
             pick_ring: None,
             pick_ring_mapped: None,
+            ternary: Default::default(),
+            view3d: Default::default(),
+            surface_shader: source.surface_shader.clone(),
+            surface: Default::default(),
+            ternary_region_shader: source.ternary_region_shader.clone(),
+            ternary_region: Default::default(),
+            // Compute pipelines: the target's format does not enter them.
+            ternary_region_scan: source.ternary_region_scan.clone(),
             errorbar: None,
             errorbar_mapped: None,
             bar: None,
             bar_envelope: None,
             bar_mapped: None,
             bar_selection: None,
+            bar_selection_mapped: None,
+            bar_category: None,
+            bar_category_selection: None,
+            bar_box_plot: None,
+            bar_box_plot_selection: None,
+            bar_range: None,
+            bar_range_selection: None,
+            bar_violin: None,
+            bar_violin_selection: None,
+            bar_box_points: None,
+            bar_box_point_selection: None,
+            bar_value_label: None,
+            bar_value_label_selection: None,
             field: None,
             field_selection: None,
             field_selection_labelled: None,
@@ -394,11 +464,24 @@ impl TargetPipelines {
             contour_label: None,
             vector_points: None,
             vector_grid: None,
+            vector_path: None,
         }
     }
     fn merge_preparation(&mut self, other: Self) {
+        if self.ternary_region_scan.is_none() {
+            self.ternary_region_scan = other.ternary_region_scan.clone();
+        }
         if self.line.is_none() {
             self.line = other.line;
+        }
+        if self.line_mapped.is_none() {
+            self.line_mapped = other.line_mapped;
+        }
+        if self.line_parallel.is_none() {
+            self.line_parallel = other.line_parallel;
+        }
+        if self.line_parallel_selection.is_none() {
+            self.line_parallel_selection = other.line_parallel_selection;
         }
         if self.area.is_none() {
             self.area = other.area;
@@ -414,6 +497,24 @@ impl TargetPipelines {
         }
         if self.pick_ring_mapped.is_none() {
             self.pick_ring_mapped = other.pick_ring_mapped;
+        }
+        for (slot, other) in self.ternary.iter_mut().zip(other.ternary) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        for (slot, other) in self.view3d.iter_mut().zip(other.view3d) {
+            if slot.is_none() {
+                *slot = other;
+            }
+        }
+        if self.surface_shader.is_none() {
+            self.surface_shader = other.surface_shader;
+        }
+        for (slot, other) in self.surface.iter_mut().zip(other.surface) {
+            if slot.is_none() {
+                *slot = other;
+            }
         }
         if self.errorbar.is_none() {
             self.errorbar = other.errorbar;
@@ -433,11 +534,53 @@ impl TargetPipelines {
         if self.bar_selection.is_none() {
             self.bar_selection = other.bar_selection;
         }
+        if self.bar_selection_mapped.is_none() {
+            self.bar_selection_mapped = other.bar_selection_mapped;
+        }
+        if self.bar_category.is_none() {
+            self.bar_category = other.bar_category;
+        }
+        if self.bar_category_selection.is_none() {
+            self.bar_category_selection = other.bar_category_selection;
+        }
+        if self.bar_box_plot.is_none() {
+            self.bar_box_plot = other.bar_box_plot;
+        }
+        if self.bar_box_plot_selection.is_none() {
+            self.bar_box_plot_selection = other.bar_box_plot_selection;
+        }
+        if self.bar_range.is_none() {
+            self.bar_range = other.bar_range;
+        }
+        if self.bar_range_selection.is_none() {
+            self.bar_range_selection = other.bar_range_selection;
+        }
+        if self.bar_violin.is_none() {
+            self.bar_violin = other.bar_violin;
+        }
+        if self.bar_violin_selection.is_none() {
+            self.bar_violin_selection = other.bar_violin_selection;
+        }
+        if self.bar_box_points.is_none() {
+            self.bar_box_points = other.bar_box_points;
+        }
+        if self.bar_box_point_selection.is_none() {
+            self.bar_box_point_selection = other.bar_box_point_selection;
+        }
+        if self.bar_value_label.is_none() {
+            self.bar_value_label = other.bar_value_label;
+        }
+        if self.bar_value_label_selection.is_none() {
+            self.bar_value_label_selection = other.bar_value_label_selection;
+        }
         if self.vector_points.is_none() {
             self.vector_points = other.vector_points;
         }
         if self.vector_grid.is_none() {
             self.vector_grid = other.vector_grid;
+        }
+        if self.vector_path.is_none() {
+            self.vector_path = other.vector_path;
         }
         if self.field.is_none() {
             self.field = other.field;

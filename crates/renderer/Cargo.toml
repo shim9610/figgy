@@ -33,6 +33,9 @@ concurrent-queue = "2.5"
 # Awaitable buffer-map signal for the async export path (works on wasm too).
 futures-channel = "0.3"
 png = "0.18"
+# Deflates the PDF export's content and image streams (#48); already in the
+# graph through png.
+flate2 = "1"
 wgpu = "30"
 
 # Pure-Rust CPU raster stack (axis chrome + text) — compiles on every target
@@ -40,6 +43,10 @@ wgpu = "30"
 fontdb = "0.24"
 swash = "0.2"
 tiny-skia = "0.12"
+# The OpenType MATH table (constants, italic corrections, accent attachments,
+# glyph variants and assemblies) and the GSUB `ssty` script alternates of the
+# math layout (#45); swash's `read-fonts` has no MATH table.
+ttf-parser = { version = "0.25", default-features = false, features = ["std", "opentype-layout"] }
 
 # Blocking executor for the sync convenience wrappers — never on wasm, where
 # blocking the single thread would deadlock; use the *_async variants there.
@@ -61,11 +68,19 @@ web-sys = { version = "0.3", features = ["Window"] }
 # iced_wgpu = { version = "0.14", optional = true }
 
 [dev-dependencies]
+# The crate's own tests enable `cpu-twin`, so the CPU picker in
+# `tests/support/cpu_twin.rs` compiles for `cargo test` only.
+figgy-renderer = { path = ".", features = ["cpu-twin"] }
 winit = "0.30.13"
 serde_json = "1"
+# The cache-key mutation tests walk serialized documents through a recording
+# deserializer (`src/renderer/config_mutation.rs`).
+serde = { version = "1", features = ["derive"] }
 
 [features]
 serde = ["model/serde"]
+# Test support: the CPU twins of the shader coverage (`renderer::pick::cpu_twin`).
+cpu-twin = []
 egui_demo = ["dep:eframe", "dep:egui", "dep:egui-wgpu"]
 
 [[example]]
@@ -97,20 +112,5 @@ name = "radial_editor"
 path = "examples/radial_editor.rs"
 required-features = ["egui_demo"]
 
-[[example]]
-name = "categorical_editor"
-path = "examples/categorical_editor.rs"
-required-features = ["egui_demo"]
-
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
-
-[[example]]
-name = "boxplot_editor"
-path = "examples/boxplot_editor.rs"
-required-features = ["egui_demo"]
-
-[[example]]
-name = "radar_editor"
-path = "examples/radar_editor.rs"
-required-features = ["egui_demo"]

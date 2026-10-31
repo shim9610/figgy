@@ -17,13 +17,15 @@ use renderer::data_config::{BarOrientation, DataBarStyleConfig, LineFill, LineIn
 use renderer::format::LabelFormat;
 use renderer::layout::{ChartArea, Rect};
 use renderer::line::LineStylePreset;
-use renderer::pick::{PointColumnLookup, PointPickOptions, pick_nearest_point};
+#[cfg(feature = "cpu-twin")]
+use renderer::pick::cpu_twin::{PointColumnLookup, PointPickOptions, pick_nearest_point};
 use renderer::polar::{AngleUnit, PolarInterpolation, PolarOptions};
 use renderer::{
     Chart, Color, Config, DataLineStyleConfig, DataRenderType, DataScatterStyleConfig, FiggyError,
-    GpuPickRequest, OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape,
-    SeriesConfig, Subplot, display_config_for_surface,
+    OverlayLayer, RasterImage, Renderer, RendererDevice, ScatterShape, SeriesConfig, Subplot,
 };
+#[cfg(feature = "cpu-twin")]
+use renderer::{GpuPickRequest, display_config_for_surface};
 
 const WIDTH: u32 = 480;
 const HEIGHT: u32 = 400;
@@ -104,6 +106,7 @@ fn scatter(id: &str, size: f32) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: RED,
@@ -137,6 +140,7 @@ fn line(id: &str, line: DataLineStyleConfig) -> SeriesConfig {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Line { line },
     }
 }
@@ -524,6 +528,7 @@ fn inner_radius_log_radius_and_below_range_samples() {
     assert!((2 * 120..2 * 260).contains(&ink), "{ink} red pixels");
 }
 
+#[cfg(feature = "cpu-twin")]
 fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     let (_, panel, scale) = display_config_for_surface(chart.config(), (WIDTH, HEIGHT));
     assert_eq!(scale, 1.0);
@@ -535,8 +540,10 @@ fn pick_request(chart: &Chart, at: (f64, f64), max: f32) -> GpuPickRequest {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 struct Columns(Vec<(String, Vec<f32>)>);
 
+#[cfg(feature = "cpu-twin")]
 impl PointColumnLookup for Columns {
     fn get_f32_column(&self, id: &renderer::ColumnId) -> Option<&[f32]> {
         self.0
@@ -546,6 +553,7 @@ impl PointColumnLookup for Columns {
     }
 }
 
+#[cfg(feature = "cpu-twin")]
 #[test]
 fn gpu_and_cpu_picking_agree_on_markers_chords_and_arcs() {
     let mut renderer = renderer();
@@ -690,6 +698,7 @@ fn unsupported_series_and_overlays_are_explicit_errors() {
         label: None,
         x_column: "theta".into(),
         y_column: "r".into(),
+        z_column: None,
         render_type: DataRenderType::Histogram {
             bar: DataBarStyleConfig {
                 fill_color: RED,
@@ -1036,17 +1045,17 @@ fn label_offsets_move_labels_along_spokes_and_in_the_ray_frame() {
     // above the ray, at the ink's height, and the hit map answers there.
     let geometry = chart.config().polar_geometry().unwrap();
     let mut outer: Option<renderer::layout::RectF> = None;
-    assert!(renderer::MeasureText::drawn_parts(
+    assert!(renderer::MeasureText::emit(
         &measure,
         chart.config(),
         &renderer::layout::Element::AxisLabel(renderer::layout::Side::Left),
-        &mut |part| {
+        &mut renderer::sink::Parts(&mut |part| {
             if let renderer::layout::DrawnPart::Text(r) = part
                 && outer.is_none_or(|o| r.x > o.x)
             {
                 outer = Some(r);
             }
-        },
+        }),
     ));
     let label = outer.expect("the ray draws labels");
     let probe = (label.x + label.width * 0.5, label.y + label.height * 0.5);
@@ -1089,13 +1098,15 @@ fn radius_labels_survive_rotating_the_ray() {
         let config = chart.config().clone();
         let measure = CpuTextMeasure::for_style(&config.draw_style);
         let mut boxes: Vec<RectF> = Vec::new();
-        assert!(
-            measure.drawn_parts(&config, &Element::AxisLabel(Side::Left), &mut |part| {
+        assert!(measure.emit(
+            &config,
+            &Element::AxisLabel(Side::Left),
+            &mut renderer::sink::Parts(&mut |part| {
                 if let DrawnPart::Text(rect) = part {
                     boxes.push(rect);
                 }
             })
-        );
+        ));
         boxes
     };
     let angles = [0.0, 5.0, 15.0, 30.0, 90.0, 180.0, 270.0, 330.0, 355.0];
@@ -1113,6 +1124,101 @@ fn radius_labels_survive_rotating_the_ray() {
                 assert!(apart, "the ray at {angle}°: {a:?} overlaps {b:?}");
             }
         }
+    }
+}
+
+// An adaptive logarithmic radius (#42): over 3e3..8e5 the rings and the
+// ray's ticks sit on the 1-2-5 ladder, so 2·10^k and 5·10^k draw a ring
+// where the decade ladder draws none, the ray labels a 1-2-5 subset, and
+// a zoom to 1e4..8e4 re-plans the 1..9 ladder with no help from the host.
+// The same rings are drawn at 2x.
+#[test]
+fn adaptive_log_radius_rings_and_ray_sit_on_the_one_two_five_ladder() {
+    use renderer::config::LogTickPolicy;
+    use renderer::layout::{DrawnPart, Element, Side};
+    use renderer::{CpuTextMeasure, MeasureText};
+    let mut renderer = renderer();
+    upload(&mut renderer, vec![0.0], vec![1e4]);
+    let chart_for = |policy: LogTickPolicy, min: f64, max: f64| {
+        let mut chart = bare_chart(PolarOptions::default());
+        chart.config_mut().left_y.scale = AxisScale::Logarithmic;
+        chart.config_mut().left_y.log_ticks = policy;
+        chart.set_y_range(min, max);
+        let config = chart.config_mut();
+        config.grid.show_major_y = true;
+        config.grid.major_y_color = Color::new(0.0, 0.0, 1.0, 1.0);
+        config.grid.major_y_width = 2.0;
+        config.left_y.label_style.visible = true;
+        config.left_y.label_style.label_visible = true;
+        // Small enough for the 1-2-5 labels to fit along the ray; at the
+        // default size they demote to the decades.
+        config.left_y.label_style.font_size = 9.0;
+        config.left_y.line_visible = true;
+        config.left_y.tick = renderer::config::TickVisibility::Outside;
+        chart
+    };
+    let is_blue = |p: &[u8]| p[3] > 180 && p[2] > 150 && p[0] < 120 && p[1] < 120;
+    let ray_labels = |config: &Config| {
+        let measure = CpuTextMeasure::for_style(&config.draw_style);
+        let mut count = 0;
+        assert!(measure.emit(
+            config,
+            &Element::AxisLabel(Side::Left),
+            &mut renderer::sink::Parts(&mut |part| {
+                if let DrawnPart::Text(_) = part {
+                    count += 1;
+                }
+            })
+        ));
+        count
+    };
+    let series = [scatter("points", 4.0)];
+    let adaptive = chart_for(LogTickPolicy::Adaptive, 3e3, 8e5);
+    let decades = chart_for(LogTickPolicy::Decades, 3e3, 8e5);
+    assert_eq!(
+        renderer::tick::major_ticks(&adaptive.config().left_y).collect::<Vec<_>>(),
+        [5e3, 1e4, 2e4, 5e4, 1e5, 2e5, 5e5]
+    );
+    let img = export(&mut renderer, &adaptive, &series);
+    let img_decades = export(&mut renderer, &decades, &series);
+    save("polar-adaptive-log-radius", &img);
+    let config = adaptive.config();
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "ring at {value:e}: {ring:?}");
+        assert!(
+            !is_blue(at(&img_decades, ring)),
+            "the decade ladder has no ring at {value:e}"
+        );
+    }
+    for value in [1e4, 1e5] {
+        let ring = polar_px(config, 200.0, value);
+        assert!(is_blue(at(&img, ring)), "decade ring at {value:e}");
+    }
+    assert!(ray_labels(config) > ray_labels(decades.config()));
+    assert!(ray_labels(config) >= 3);
+
+    // 2x: the same rings, at twice the pixels.
+    let img2 = renderer.export_panel_rgba(&adaptive, &series, 2.0).unwrap();
+    let scaled = adaptive.config().scaled(2.0);
+    for value in [2e4, 5e4, 2e5, 5e5] {
+        let ring = polar_px(&scaled, 200.0, value);
+        assert!(is_blue(at(&img2, ring)), "2x ring at {value:e}");
+    }
+    assert_eq!(ray_labels(&scaled), ray_labels(config));
+
+    // A zoom re-plans: 1e4..8e4 draws a ring at every multiple.
+    let mut zoomed = Chart::new(adaptive.config().clone());
+    zoomed.set_y_range(1e4, 8e4);
+    assert_eq!(
+        zoomed.config().left_y.log_ticks,
+        LogTickPolicy::Adaptive,
+        "a range helper keeps the policy"
+    );
+    let img = export(&mut renderer, &zoomed, &series);
+    for value in [3e4, 4e4, 6e4, 7e4] {
+        let ring = polar_px(zoomed.config(), 200.0, value);
+        assert!(is_blue(at(&img, ring)), "zoomed ring at {value:e}");
     }
 }
 

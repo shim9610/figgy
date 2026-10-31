@@ -1,5 +1,6 @@
 #![doc = include_str!("../README.md")]
 
+pub mod bounded_sources;
 pub mod categorical;
 pub mod color;
 pub mod colormap;
@@ -17,7 +18,7 @@ pub mod layer;
 pub use annotation::{
     Anchor, AnchorKind, Annotation, AnnotationAxis, AnnotationElement, AnnotationHandle,
     AnnotationKind, AnnotationLineStyle, AnnotationSpace, ArrowStyle, AxisMap, AxisSpace, BoxStyle,
-    PixelSpace,
+    MeasuredText, PixelSpace, ShapeStyle,
 };
 pub use layer::{AnnotationLayer, CellRef, LayerRef, OverlayLayer, Subplot};
 pub mod format;
@@ -28,10 +29,12 @@ pub mod preset;
 pub mod radial;
 pub mod resize;
 pub mod select;
+pub mod sink;
 pub mod text;
 pub mod tick;
 
 // Public API re-exports.
+pub use bounded_sources::{SeriesUpload, UploadValues};
 pub use color::Color;
 pub use colormap::{ColorMap, LUT_LEN};
 pub use config::{
@@ -40,11 +43,13 @@ pub use config::{
 };
 pub use data::{Column, ColumnId, DataCell};
 pub use data_config::{
+    BarGroups, BoxPlotRef, BoxPlotSeriesLabels, CategoryBarSeriesLabels, CategoryBarsRef,
     DataBarBinStyleConfig, DataBarStyleOverride, DataErrorBarPointStyleConfig,
     DataErrorBarPointStyleOverride, DataErrorBarStyleConfig, DataLineStyleConfig, DataRenderType,
     DataScatterPointStyleConfig, DataScatterPointStyleOverride, DataScatterStyleConfig, ErrorRef,
-    LineFill, LineInterpolation, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap, ScatterShape,
-    SeriesConfig, SeriesRef, SizeScale, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
+    LineFill, LineInterpolation, LineOffsets, MAX_CONTOUR_LEVELS, PointColorMap, PointSizeMap,
+    RadarRef, RadarSeriesLabels, ScatterShape, SeriesConfig, SeriesRef, SizeScale,
+    StreamlineArrows, StreamlinesRef, VectorColorMap, VectorComponents, VectorPivot, VectorScale,
     VectorStyle,
 };
 pub use drag::Draggable;
@@ -54,22 +59,40 @@ pub use select::{
     AxisElement, AxisLabelElement, AxisTitleElement, ChartTitleElement, ColorBarAxisElement,
     ColorBarElement, ColorBarLabelElement, ColorBarTitleElement, DataAreaElement, HitId, HitMap,
     LegendElement, OverlayAxisElement, OverlayAxisLabelElement, OverlayAxisTitleElement,
-    OverlayLegendElement, Selectable, SelectionBox, SelectionOutline, SubplotElement,
+    OverlayLegendElement, Selectable, SelectionBox, SelectionGeometry, SelectionOutline,
+    SubplotElement,
 };
+pub use sink::{DrawnPart, PlacedText, Sink, Slot};
 pub use text::{MeasureText, TextAlign, TextExtents};
 
-pub use radial::{
-    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialMaterial,
-    RadialOutline, RadialSlice, RadialSplit, RadialStyle, RadialTarget,
-};
+pub mod material;
+pub use material::Material;
 
+pub use radial::{
+    RadialChart, RadialInteraction, RadialKind, RadialLabelFormat, RadialLabels, RadialOutline,
+    RadialSlice, RadialSplit, RadialStyle, RadialTarget,
+};
+// The deprecated name stays importable from the crate root.
+#[allow(deprecated)]
+pub use radial::RadialMaterial;
+
+#[allow(deprecated)]
 pub use categorical::*;
 
 pub mod boxplot;
+#[allow(deprecated)]
 pub use boxplot::*;
+pub mod parallel;
 pub mod polar;
-pub use polar::{AngleUnit, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation, PolarOptions};
+pub mod ternary;
+pub mod view3d;
+pub use parallel::{ParallelAxis, ParallelOptions};
+pub use polar::{
+    AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
+    PolarOptions,
+};
 pub mod radar;
+#[allow(deprecated)]
 pub use radar::*;
 
 pub mod bounded_title;

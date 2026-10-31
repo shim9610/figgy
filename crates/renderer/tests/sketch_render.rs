@@ -14,12 +14,11 @@
 //!
 //! JSON default round-trip coverage is not duplicated here; it lives in
 //! `draw_style_serde_tests` in
-//! `crates/model/src/config.rs` (config_without_draw_style_key_deserializes_to_precise,
+//! `crates/model/src/config.rs` (a_document_without_the_additive_keys_parses_to_their_defaults,
 //! sketch_tag_alone_yields_all_defaults,
 //! partial_sketch_fields_fill_remaining_defaults,
 //! sketch_round_trips_with_inline_fields,
-//! explicit_precise_mode_deserializes_to_precise,
-//! precise_serializes_without_key).
+//! explicit_precise_mode_deserializes_to_precise).
 
 #[path = "support/gpu.rs"]
 mod test_gpu;
@@ -123,6 +122,7 @@ fn line_series(id: &str, x: &str, y: &str, color: Color, style: LineStylePreset)
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: style,
@@ -143,6 +143,7 @@ fn scatter_series(id: &str, x: &str, y: &str, color: Color) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Scatter {
             scatter: DataScatterStyleConfig {
                 point_color: color,
@@ -167,6 +168,7 @@ fn errorbar_series(id: &str, x: &str, y: &str, err: &str, color: Color) -> Serie
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::ScatterErrorbarY {
             scatter: DataScatterStyleConfig {
                 point_color: Color {

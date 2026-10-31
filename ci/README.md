@@ -13,13 +13,13 @@ request that merged it.
 A pull request that changes only standalone Markdown skips the package checks.
 `ci/change_scope.py` compares the PR's merge commit with its base. If every
 changed path is a `.md` file outside `crates/`, for example the root README,
-CHANGELOG or this guide, the three jobs still start and pass but skip every step
-after the scope check. Markdown under `crates/` always runs the checks: it is
-packaged, its links are checked, `include_str!` compiles it as doctests, and
-`tests/shader_consistency.rs` parses `SHADER_COMMON.md`. Any other file in the
-change, an image included, runs the full matrix too. CodeQL is unaffected.
+CHANGELOG or this guide, the matrix and repository jobs still start and pass but
+skip every step after the scope check. Markdown under `crates/` always runs the checks: it is
+packaged, its links are checked, and the guides `include_str!` pulls into the
+crate docs compile as doctests. Any other file in the change, an image
+included, runs the full matrix too. CodeQL is unaffected.
 
-CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in all three jobs, so a
+CI sets `RUSTFLAGS` and `RUSTDOCFLAGS` to `-D warnings` in every job, so a
 compiler or rustdoc warning in the libraries, examples, tests or extracted registry
 packages fails the job. Test-only input adapters and inspection helpers compile
 only with `cfg(test)`; the normal native and WASM libraries do not carry those
@@ -125,8 +125,8 @@ The extracted-archive audit reuses the same link rules after packaging.
 4. Extraction outside the checkout, followed by model/renderer unit tests, integration
    tests and doctests with `serde` enabled. This includes native GPU pixel, SSOT edit,
    cache reuse, streaming, picking and memory regressions, plus radial, categorical,
-   boxplot, radar, polar, vector-field, area/step-line, overlay-layer, subplot and
-   annotation-layer rendering tests. Bounded interaction regressions select and drag
+   boxplot, radar series, polar, vector-field, area/step-line, overlay-layer, subplot and
+   annotation-layer rendering tests. Radial interaction regressions select and drag
    renderer-measured titles, axes, labels and legends, verify changed pixels and
    unchanged data geometry, and check serialization, scale and cache reuse. The
    normal suite also requests an unsupported device limit to test the device-error
@@ -147,23 +147,65 @@ target. These builds do not initialize a graphics adapter. docs.rs builds its
 pages from each published crate version after publication, not from master.
 Local rustdoc builds do not check what docs.rs hosts.
 
-Logs and generated diagnostic PNGs are uploaded as `verification-<runner>-<backend>`
-artifacts, including on failure, and retained for seven days. The logs identify which
+Each backend's package tests run as three jobs at once (`--shard`, `SHARDS` in
+`verify.py`): `main` runs the library tests, every integration test no other shard
+owns, the doctests, the GPU numeric and missing-adapter checks and, before them,
+`verify.py static`; `picks` runs `pick_draw_agreement`; `decorations` runs
+`decoration_oracle` and `vector_export`. Every integration test binary runs in
+exactly one shard, and a shard binary missing from the packages fails the job, so a
+renamed suite cannot drop out. `--shard all` (the default) runs everything in one
+job. Test builds optimize dependencies at `opt-level = 3` and the workspace crates
+at `opt-level = 1` (`[profile.test]` in the root manifest, and the same profile in
+the extracted workspace); debug assertions and overflow checks stay on. The jobs
+extract the packages to a fixed `FIGGY_PACKAGE_DIR` beside the checkout and cache
+the dependencies' build outputs there and in `target/` with `Swatinem/rust-cache`,
+keyed by the lockfile and toolchain; the `main` shard saves the cache.
+
+Logs and generated diagnostic PNGs are uploaded as
+`verification-<runner>-<backend>-<shard>` artifacts, including on failure, and
+retained for seven days. The logs identify which
 checks actually completed. The configured matrix alone is not evidence of a pass;
 consult the Actions run of the PR that tested the commit and the
 [recorded backend results](STATUS.md).
-Independent test binaries, doctests and missing-adapter checks continue after a test
-failure, while the final job still fails. This prevents one failing suite from hiding
-the rest of the backend results.
+The GPU numeric tests run first, right after the adapter record: the CPU/GPU
+placement agreement at every magnitude, the f64 residual pick, the projection
+oracles and the shader consistency suite (`NUMERIC_TESTS` in `verify.py`). A red
+one fails the job at once, so a precision regression shows within minutes instead
+of after the hour of remaining tests; every listed test must produce its result
+line, so a renamed test cannot drop out of the set. The extracted tests run with
+the renderer's `cpu-twin` feature named explicitly, because `cargo package` strips
+the path dev-dependency that enables it in the workspace. After that step, independent
+test binaries, doctests and missing-adapter checks continue after a test failure,
+while the final job still fails. This prevents one failing suite from hiding the
+rest of the backend results.
 Test output is streamed immediately, so a cancellation or timeout does not hide
 panic details until the end of a large test binary.
+
+## Repository checks
+
+The package jobs test what is published: the extracted model and renderer
+archives. A separate `repository` job, on Ubuntu with Vulkan (lavapipe when the
+runner has no render device), tests the checkout itself under the same triggers
+and scope check:
+
+1. `cargo test --locked --workspace --features figgy-renderer/serde --no-fail-fast
+   -- --test-threads=1`: every workspace member, including `figgy-web`
+   (`publish = false`, so the package jobs never build it), with the renderer's
+   workspace-only test helpers.
+2. `cargo run --locked -- --selftest` in `tools/playground`, which is not a
+   workspace member: it commits every layer edit through the registry and
+   exports each step as a PNG, failing on a rejected config.
+
+The selftest PNGs are uploaded as the `playground-selftest` artifact, including
+on failure, and kept for seven days, so a rendering change can be reviewed by
+comparing them with a previous run.
 
 ## Shader compilation regressions
 
 The renderer unit suite measures the real shader and pipeline constructors with
 `Instant`. It covers every shipped WGSL module and entry point, Cartesian pipelines
-at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical,
-boxplot and radar renderers. A missing source or entry fails coverage. Repeating
+at sample counts 1 and 4, streaming/replay, picking/fit, and the radial, categorical
+and boxplot renderers. A missing source or entry fails coverage. Repeating
 `prewarm_all` must create no shaders or pipelines; a single-pipeline builder must
 load only its own shader. No timing instrumentation is included in native release
 builds.
@@ -235,7 +277,7 @@ export BROWSER_ARGS='--enable-features=Vulkan --use-angle=vulkan --enable-unsafe
 The test runs real window initialization and full prewarm, checks that a second
 prewarm creates nothing, renders automatic contour labels, and decodes the exported
 PNG to check its pixels. Change `--test` to run another renderer browser test the
-same way, for example `bounded_interaction_browser` or `radar_browser`. The `figgy`
+same way, for example `radial_interaction_browser` or `radial_area_browser`. The `figgy`
 wrapper's `startup_progress_browser` (`-p figgy`) checks initialization event
 compatibility. See [optimization measurements and limitations](shader-compilation.md).
 
@@ -256,13 +298,17 @@ python3 ci/verify.py static
 python3 ci/verify.py packages
 ```
 
+The repository job's checks run from the checkout root and from
+`tools/playground` as listed in [Repository checks](#repository-checks).
+
 On Windows, use `python` if `python3` is unavailable. Select a supported native backend
 with `WGPU_BACKEND=vulkan`, `dx12` or `metal`. Without that variable, wgpu chooses from
 available backends. A working adapter and device are required; no window is needed.
 Production adapter selection is not changed by this test configuration.
 
 Each extraction gets its own build directory so cached binaries cannot retain paths
-to a deleted extraction. The extracted workspace patches the renderer's `figgy-model`
+to a deleted extraction; with `FIGGY_PACKAGE_DIR` set, the path is fixed, the sources
+are replaced and its `target/` is kept, so a cached build stays valid. The extracted workspace patches the renderer's `figgy-model`
 dependency (`[patch.crates-io]`) to the extracted model package, so the tests never
 use the crates.io copy; external dependency versions remain locked. `cargo package`
 refuses uncommitted changes, so commit first or, to review local edits only, run
@@ -277,7 +323,14 @@ can use their installed driver instead; the setup script is specific to GitHub r
 CI는 공개 저장소에서 초안이 아닌 PR을 열거나 갱신하거나 다시 열 때, 그리고 초안 PR을
 검토 준비 상태로 바꿀 때만 실행한다. 브랜치, master, 태그 push로는 시작하지 않는다.
 로컬에서는 저장소 루트에서 `python3 ci/verify.py static`과 `python3 ci/verify.py packages`를
-실행한다.
+실행한다. CI는 백엔드마다 패키지 테스트를 세 작업(`main`, `picks`, `decorations`)으로
+나눠 동시에 돌리고, 테스트 빌드는 의존성을 최적화하며 의존성 빌드 결과를 캐시한다.
+
+패키지 작업은 배포되는 압축본만 검사한다. 별도의 `repository` 작업은 Ubuntu와
+Vulkan(렌더 장치가 없으면 lavapipe)에서 체크아웃 자체를 검사한다. `figgy-web`을 포함한
+워크스페이스 전체 테스트를 실행하고, 워크스페이스에 속하지 않는 `tools/playground`의
+selftest를 실행한다. selftest가 단계마다 내보낸 PNG는 실패해도 `playground-selftest`
+아티팩트로 7일간 남으므로 이전 실행과 비교해 렌더링 변화를 확인할 수 있다.
 
 세 운영체제에서 네이티브 빌드와 WASM 컴파일(브라우저 테스트 대상 포함, 실행은 하지 않음), API 문서 링크 검사, 압축을 푼 패키지의
 단위·통합·문서 테스트를 실행한다. Linux는 GPU가 없을 때 lavapipe를 쓰고,
@@ -290,8 +343,10 @@ macOS / Metal은 아직 불안정한 실험 단계다. 정밀 Metal 셰이더 �
 PR의 Actions 실행 아티팩트에서 확인할 수 있다. master 커밋은 따로 실행하지 않으므로 그 커밋을
 병합한 PR의 마지막 실행 결과를 본다. 이 검사는 실제 GPU 제조사별 드라이버 검증이나
 브라우저 실행 검사를 대신하지 않는다. [실행 결과와 확인된 문제](STATUS.md)도 함께 확인한다.
-한 테스트가 실패해도 다른 테스트 바이너리와 문서 테스트는 계속 실행하며, 최종 CI 결과는
-실패로 남는다.
+GPU 수치 테스트(모든 자릿수에서의 CPU·GPU 배치 일치, f64 잔차 픽, 투영 오라클,
+셰이더 일관성)는 어댑터 기록 직후 가장 먼저 실행하며, 하나라도 실패하면 즉시 작업을
+실패로 끝낸다. 그 뒤로는 한 테스트가 실패해도 다른 테스트 바이너리와 문서 테스트는 계속
+실행하며, 최종 CI 결과는 실패로 남는다.
 
 셰이더 컴파일 시간도 실제 생성 경로에서 잰다. 모든 WGSL 진입점이 검사에 포함됐는지,
 예열을 한 번 더 해도 셰이더를 새로 만들지 않는지 확인한다. 각 컴파일이 기본 제한인 30초를 넘으면

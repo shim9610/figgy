@@ -1,19 +1,20 @@
 //! Native SSOT editor. Click a slice, change its color/style/label, or edit the chart.
 //! cargo run -p figgy-renderer --example radial_editor --features egui_demo
 use eframe::egui_wgpu::RenderState;
-use renderer::{Color, RendererDevice, radial::*};
+use renderer::{Color, Material, RendererDevice, radial::*};
 use std::sync::Arc;
-const MATERIALS: &[RadialMaterial] = &[
-    RadialMaterial::Flat,
-    RadialMaterial::Matte,
-    RadialMaterial::Ceramic,
-    RadialMaterial::SatinMetal,
-    RadialMaterial::Toon,
-    RadialMaterial::Enamel,
-    RadialMaterial::BrushedMetal,
-    RadialMaterial::Paper,
-    RadialMaterial::Hatch,
-    RadialMaterial::Pearl,
+const MATERIALS: &[Material] = &[
+    Material::Flat,
+    Material::Matte,
+    Material::Ceramic,
+    Material::SatinMetal,
+    Material::Toon,
+    Material::Enamel,
+    Material::BrushedMetal,
+    Material::Paper,
+    Material::Wood,
+    Material::Hatch,
+    Material::Pearl,
 ];
 const FORMATS: &[RadialLabelFormat] = &[
     RadialLabelFormat::Name,
@@ -194,6 +195,10 @@ impl Editor {
         Ok(())
     }
 }
+/// A radial pick request resolved on the spot; a failed pick reads as a miss.
+fn resolved(ticket: Result<renderer::RadialPickTicket, RadialError>) -> Option<RadialTarget> {
+    ticket.ok()?.resolve_blocking().ok()?
+}
 impl eframe::App for Editor {
     fn ui(&mut self, ui: &mut egui::Ui, _: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -320,22 +325,23 @@ impl eframe::App for Editor {
                 egui::vec2(logical.0 as f32, logical.1 as f32),
                 egui::Sense::click_and_drag(),
             );
-            // Prepare before picking: resize and inspector edits must not use old bounds.
+            // The inspector may have edited names, values or formats: write the
+            // drawn label strings, then prepare before picking so resize and
+            // inspector edits never use old bounds.
+            self.chart.format_labels();
             if let Err(e) = self.draw(logical, ctx.pixels_per_point()) {
                 self.error = e.to_string();
             }
             let decoration = response.interact_pointer_pos().and_then(|p| {
                 let frame = self.frame.as_ref()?;
-                let map = frame.decorations();
-                let hit = map.hit_test([p.x - rect.left(), p.y - rect.top()])?;
-                let key = map.element(hit)?.id.clone();
+                let hit =
+                    frame.decoration_at(&self.chart, [p.x - rect.left(), p.y - rect.top()])?;
+                let key = frame.decoration_id(&self.chart, hit)?;
                 // Foreground labels win; otherwise data wins over the area
                 // until the user explicitly selects the area for editing.
                 if key == renderer::DecorationId::DataArea
                     && self.chart.decorations.selected != Some(key.clone())
-                    && frame
-                        .hit_test([p.x - rect.left(), p.y - rect.top()])
-                        .is_some()
+                    && resolved(frame.pick([p.x - rect.left(), p.y - rect.top()])).is_some()
                 {
                     return None;
                 }
@@ -343,10 +349,13 @@ impl eframe::App for Editor {
             });
             if response.drag_started() {
                 self.resize_handle = ctx.input(|i| i.pointer.press_origin()).and_then(|p| {
-                    let map = self.frame.as_ref()?.decorations();
-                    let selected = self.chart.decorations.selected.as_ref()?;
-                    let (id, _) = map.entries().find(|(_, e)| &e.id == selected)?;
-                    map.hit_resize_handle(id, [p.x - rect.left(), p.y - rect.top()])
+                    let frame = self.frame.as_ref()?;
+                    let id = frame.decoration(self.chart.decorations.selected.as_ref()?)?;
+                    frame.decoration_resize_handle(
+                        &self.chart,
+                        id,
+                        [p.x - rect.left(), p.y - rect.top()],
+                    )
                 });
             }
             if (response.clicked() || response.drag_started()) && self.resize_handle.is_none() {
@@ -356,20 +365,13 @@ impl eframe::App for Editor {
                 if let (Some(frame), Some(selected)) =
                     (&self.frame, &self.chart.decorations.selected.clone())
                 {
-                    let map = frame.decorations();
-                    if let Some((id, _)) = map.entries().find(|(_, e)| &e.id == selected) {
+                    if let Some(id) = frame.decoration(selected) {
                         let delta = ctx.input(|i| i.pointer.delta());
                         let previous = self.chart.decorations.clone();
                         if let Some(handle) = self.resize_handle {
-                            map.resize_by(
-                                &mut self.chart.decorations,
-                                id,
-                                handle,
-                                delta.x,
-                                delta.y,
-                            );
+                            frame.resize_decoration(&mut self.chart, id, handle, delta.x, delta.y);
                         } else {
-                            map.drag_by(&mut self.chart.decorations, id, delta.x, delta.y);
+                            frame.drag_decoration(&mut self.chart, id, delta.x, delta.y);
                         }
                         // Keep the last feasible model when text no longer fits.
                         if self
@@ -391,9 +393,10 @@ impl eframe::App for Editor {
                 .and_then(|p| {
                     let frame = self.frame.as_ref()?;
                     let point = [p.x - rect.left(), p.y - rect.top()];
-                    frame.hit_test(point).or_else(|| {
-                        frame
-                            .hit_test_at_rest(point)
+                    // The GPU pick, read back at once: the editor redraws
+                    // from the answer in the same frame.
+                    resolved(frame.pick(point)).or_else(|| {
+                        resolved(frame.pick_at_rest(point))
                             .filter(|t| Some(*t) == self.chart.interaction.hovered)
                     })
                 });

@@ -29,6 +29,10 @@
 //!
 //! WebGPU guarantees writes from one dispatch are visible to later dispatches
 //! in the same pass, which is what orders the scan chain and the carry hops.
+//!
+//! Every arc value is an arc pair, a 64-bit fixed-point count of 1/65536 px
+//! held as two `u32` words, `ARC_PAIR_BYTES` each (SHADER_COMMON.md §5.6 arc
+//! pairs, #107).
 
 use std::sync::Arc;
 
@@ -40,7 +44,22 @@ use crate::init::{InitEvent, finished, observe_value, started};
 
 use super::ScatterTransform;
 
+/// The assembled arc-length scan module.
+pub(crate) const LINE_ARC_SHADER: crate::shader_assembly::Assembled = crate::shader_assembly::assembled!(
+    "data_render/common/transform.wgsl",
+    "data_render/common/projection.wgsl",
+    "data_render/common/sample_validity.wgsl",
+    "data_render/common/project_3d.wgsl",
+    "data_render/common/line_step.wgsl",
+    "data_render/common/arc_pair.wgsl",
+    "data_render/line_arc.wgsl",
+);
+
 const INIT_SCOPE: &str = "renderer.arc_scan";
+
+/// Bytes of one arc value in every arc buffer (the prefix, the block sums,
+/// the carry): a `(hi, lo)` f32 pair.
+pub(crate) const ARC_PAIR_BYTES: u64 = 8;
 
 /// Workgroup width of every kernel in `line_arc.wgsl`. Public so the
 /// renderer can refuse downlevel adapters that cannot run 256-wide
@@ -179,8 +198,9 @@ mod tests {
         let mut sizes = Vec::new();
         plan.visit_sizes(|bytes| sizes.push(bytes));
         assert_eq!(sizes.len(), plan.buffer_count());
-        assert_eq!(sizes[0], 513 * 4);
-        assert_eq!(&sizes[1..6], &[8, 4, 4, 4, 144]);
+        assert_eq!(sizes[0], 513 * ARC_PAIR_BYTES);
+        // The last is the transform, `ScatterTransform`'s 176 bytes.
+        assert_eq!(&sizes[1..6], &[16, 8, 8, 8, 176]);
         assert_eq!(&sizes[6..12], &[32; 6]);
         assert_eq!(&sizes[12..], &[16, 8, 16]);
 
@@ -195,7 +215,13 @@ pub struct ArcScanPipelines {
     storage_bgl: wgpu::BindGroupLayout,
     replay_bgl: wgpu::BindGroupLayout,
     star_args_bgl: wgpu::BindGroupLayout,
+    /// Group 3 of `seg_init_3d`: the camera of a 3D line (#132), the
+    /// surface data layout.
+    view3d_bgl: wgpu::BindGroupLayout,
     seg_init: wgpu::ComputePipeline,
+    /// `seg_init` for a 3D chart's line: the segment lengths of the
+    /// projected chords, with the camera bound as group 3.
+    seg_init_3d: wgpu::ComputePipeline,
     scan_block: wgpu::ComputePipeline,
     add_offsets: wgpu::ComputePipeline,
     apply_carry: wgpu::ComputePipeline,
@@ -209,11 +235,6 @@ pub struct ArcScanPipelines {
 /// CPU twin of the star vertex shader's `cons_star_pitch` — the indirect
 /// dispatch count and the VS slot mapping must agree on the pitch.
 pub const STAR_SLOT_PITCH_FACTOR: f32 = 0.5;
-
-/// Hard ceiling on candidate star slots per series — a render budget
-/// backstop (≈12M quad vertices), far above any chart-scale arc, NOT a data
-/// limit: the polyline itself stays unlimited-n via the chunked scan.
-pub const STAR_MAX_SLOTS: u32 = 2_000_000;
 
 pub fn create_arc_scan_pipelines(device: &wgpu::Device) -> ArcScanPipelines {
     let mut noop = |_| {};
@@ -229,7 +250,7 @@ pub fn create_arc_scan_pipelines_observed(
         &device,
         wgpu::ShaderModuleDescriptor {
             label: Some("figgy line arc scan shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("line_arc.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(LINE_ARC_SHADER.source.into()),
         },
     );
 
@@ -334,6 +355,40 @@ pub fn create_arc_scan_pipelines_observed(
             immediate_size: 0,
         },
     );
+    // The surface data layout's bindings (the camera and params, 4 and 5)
+    // visible to the compute stage: `seg_init_3d` reads the camera.
+    let view3d_bgl = {
+        let uniform = |binding| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy arc view3d bgl"),
+                entries: &[uniform(4), uniform(5)],
+            },
+        )
+    };
+    let layout_3d = crate::gpu_compile::pipeline_layout(
+        &device,
+        &wgpu::PipelineLayoutDescriptor {
+            label: Some("figgy arc scan 3D layout"),
+            bind_group_layouts: &[
+                Some(&transform_bgl),
+                Some(&storage_bgl),
+                None,
+                Some(&view3d_bgl),
+            ],
+            immediate_size: 0,
+        },
+    );
     let replay_layout = crate::gpu_compile::pipeline_layout(
         &device,
         &wgpu::PipelineLayoutDescriptor {
@@ -379,6 +434,9 @@ pub fn create_arc_scan_pipelines_observed(
         seg_init: observe_value(observer, INIT_SCOPE, "seg_init", || {
             pipeline(&layout, "seg_init")
         }),
+        seg_init_3d: observe_value(observer, INIT_SCOPE, "seg_init_3d", || {
+            pipeline(&layout_3d, "seg_init_3d")
+        }),
         scan_block: observe_value(observer, INIT_SCOPE, "scan_block", || {
             pipeline(&layout, "scan_block")
         }),
@@ -404,6 +462,7 @@ pub fn create_arc_scan_pipelines_observed(
         storage_bgl,
         replay_bgl,
         star_args_bgl,
+        view3d_bgl,
     }
 }
 
@@ -415,9 +474,10 @@ pub async fn create_arc_scan_pipelines_observed_async(
     crate::init::prewarm_compute_entries_js(
         device,
         "line.arc.async",
-        include_str!("line_arc.wgsl"),
+        LINE_ARC_SHADER.source,
         &[
             ("seg_init", "seg_init"),
+            ("seg_init_3d", "seg_init_3d"),
             ("scan_block", "scan_block"),
             ("add_offsets", "add_offsets"),
             ("apply_carry", "apply_carry"),
@@ -610,6 +670,8 @@ pub struct ArcScratch {
     // (transform_buf, carry_buf) needs a named field.
     bg_transform: wgpu::BindGroup,
     chunks: Vec<ChunkBinds>,
+    /// A 3D line's camera (#132): `seg_init_3d` runs with it as group 3.
+    view3d: Option<super::surface_mesh::View3dBinding>,
     /// Constellation star pass state — built only for styles that draw the
     /// arc-driven star pass (`build`'s `star_data_bgl` argument).
     pub star: Option<StarPass>,
@@ -641,8 +703,19 @@ pub(crate) struct ArcParams {
     /// stepped pieces' pixel lengths. Zero for the sums windows and for
     /// streamed lines, which reject step modes.
     pub(crate) mode: u32,
-    pub(crate) _pad: [u32; 3],
+    /// A ternary line's third component's element offset in the pool;
+    /// `seg_init` measures the chord `vs_ternary` draws when the transform's
+    /// ternary flag is set. A 3D line's height column's (`ARC_FLAG_3D`),
+    /// measured by `seg_init_3d` through the camera. Zero otherwise.
+    pub(crate) c_base: u32,
+    /// `ARC_FLAG_*`.
+    pub(crate) flags: u32,
+    pub(crate) _pad: u32,
 }
+
+/// `ArcParams.flags`: the line is a 3D chart's, its height at `c_base`
+/// (#132). Pinned to the WGSL constant by `shader_consistency`.
+pub(crate) const ARC_FLAG_3D: u32 = 1;
 
 const _: () = assert!(std::mem::size_of::<ArcParams>() == 32);
 
@@ -728,7 +801,9 @@ impl ArcReplayLeaf {
             y_base,
             start: self.local_start,
             mode: 0,
-            _pad: [0; 3],
+            c_base: 0,
+            flags: 0,
+            _pad: 0,
         }
     }
 
@@ -755,7 +830,7 @@ pub(crate) struct ArcReplayParams {
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct StarIndirectParams {
     slot_pitch_px: f32,
-    max_slots: u32,
+    _pad: u32,
 }
 
 #[repr(C)]
@@ -791,11 +866,11 @@ impl ArcBufferPlan {
     #[cfg(test)]
     pub(crate) fn visit_sizes(self, mut visit: impl FnMut(u64)) {
         // arc, sums0, sums1, sums2, carry, transform
-        visit(u64::from(self.n.max(1)) * 4);
-        visit(u64::from(self.first_level_blocks.max(1)) * 4);
-        visit(u64::from(self.second_level_blocks.max(1)) * 4);
-        visit(4);
-        visit(4);
+        visit(u64::from(self.n.max(1)) * ARC_PAIR_BYTES);
+        visit(u64::from(self.first_level_blocks.max(1)) * ARC_PAIR_BYTES);
+        visit(u64::from(self.second_level_blocks.max(1)) * ARC_PAIR_BYTES);
+        visit(ARC_PAIR_BYTES);
+        visit(ARC_PAIR_BYTES);
         visit(std::mem::size_of::<ScatterTransform>() as u64);
 
         // Each scan chunk owns main/sums0/sums1 ArcParams uniforms.
@@ -872,7 +947,21 @@ impl ArcScratch {
         chunk_capacity_override: Option<u32>,
         star_data_bgl: Option<&wgpu::BindGroupLayout>,
         step_mode: u32,
+        c_base: u32,
+        view3d: Option<&super::surface_mesh::View3dGpu>,
     ) -> Option<Self> {
+        let arc_flags = if view3d.is_some() { ARC_FLAG_3D } else { 0 };
+        let view3d = view3d.map(|camera| {
+            super::surface_mesh::create_view3d_binding(
+                ledger,
+                device,
+                &pipelines.view3d_bgl,
+                camera,
+                1.0,
+                0,
+                None,
+            )
+        });
         let plan = buffer_plan(
             n,
             max_workgroups_per_dimension,
@@ -903,7 +992,7 @@ impl ArcScratch {
                 device,
                 &wgpu::BufferDescriptor {
                     label: Some(label),
-                    size: u64::from(len.max(1)) * 4,
+                    size: u64::from(len.max(1)) * ARC_PAIR_BYTES,
                     usage,
                     mapped_at_creation: false,
                 },
@@ -920,7 +1009,7 @@ impl ArcScratch {
             device,
             &wgpu::BufferDescriptor {
                 label: Some("figgy arc carry"),
-                size: 4,
+                size: ARC_PAIR_BYTES,
                 usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             },
@@ -1003,7 +1092,9 @@ impl ArcScratch {
                     y_base,
                     start,
                     mode: step_mode,
-                    _pad: [0; 3],
+                    c_base,
+                    flags: arc_flags,
+                    _pad: 0,
                 },
             );
             let p_s0 = params_buf(
@@ -1014,7 +1105,9 @@ impl ArcScratch {
                     y_base: 0,
                     start: 0,
                     mode: 0,
-                    _pad: [0; 3],
+                    c_base: 0,
+                    flags: 0,
+                    _pad: 0,
                 },
             );
             let p_s1 = params_buf(
@@ -1025,7 +1118,9 @@ impl ArcScratch {
                     y_base: 0,
                     start: 0,
                     mode: 0,
-                    _pad: [0; 3],
+                    c_base: 0,
+                    flags: 0,
+                    _pad: 0,
                 },
             );
             chunks.push(ChunkBinds {
@@ -1121,6 +1216,7 @@ impl ArcScratch {
             carry_buf,
             bg_transform,
             chunks,
+            view3d,
             star,
             charge: shared_charge(tally, ledger, GpuResourceKind::ArcScan),
         })
@@ -1146,7 +1242,7 @@ impl ArcScratch {
         if self.chunks.len() > 1 {
             // Reset the running total; write_buffer lands before this
             // encoder's commands at submit time.
-            queue.write_buffer(&self.carry_buf, 0, &0f32.to_le_bytes());
+            queue.write_buffer(&self.carry_buf, 0, &[0u8; ARC_PAIR_BYTES as usize]);
         }
         if let (Some(star), Some(pitch)) = (self.star.as_ref(), star_pitch_px) {
             queue.write_buffer(
@@ -1154,7 +1250,7 @@ impl ArcScratch {
                 0,
                 bytemuck::bytes_of(&StarIndirectParams {
                     slot_pitch_px: pitch.max(1e-3),
-                    max_slots: STAR_MAX_SLOTS,
+                    _pad: 0,
                 }),
             );
         }
@@ -1172,7 +1268,13 @@ impl ArcScratch {
             let b0 = blocks(chunk.len);
             let b1 = blocks(b0);
 
-            pass.set_pipeline(&pipelines.seg_init);
+            match &self.view3d {
+                Some(view3d) => {
+                    pass.set_pipeline(&pipelines.seg_init_3d);
+                    pass.set_bind_group(3, &view3d.bind_group, &[]);
+                }
+                None => pass.set_pipeline(&pipelines.seg_init),
+            }
             pass.set_bind_group(1, &chunk.bg_arc, &[]);
             pass.dispatch_workgroups(b0, 1, 1);
 
@@ -1225,6 +1327,132 @@ impl ArcScratch {
     }
 }
 
+/// The arc pair arithmetic of `common/arc_pair.wgsl` (SHADER_COMMON.md §5.6
+/// arc pairs) run on the GPU against the same fixed-point arithmetic in u64.
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod arc_pair_tests {
+    const ENTRY: &str = r#"
+@group(0) @binding(0) var<storage, read> inputs: array<f32>;
+@group(0) @binding(1) var<storage, read_write> out: array<u32>;
+
+@compute @workgroup_size(1)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    let px = inputs[i];
+    let a = arc_from_px(px);
+    let step = arc_divisor(12.0);
+    let division = arc_divide(a, step);
+    let slot = arc_slot_position(u32(i) * 2654435761u, 0.25, 0.5);
+    let base = i * 9u;
+    out[base] = a.x;
+    out[base + 1u] = a.y;
+    out[base + 2u] = division.quotient.x;
+    out[base + 3u] = division.quotient.y;
+    out[base + 4u] = division.remainder;
+    out[base + 5u] = bitcast<u32>(arc_delta(arc_add(a, arc_from_px(3.25)), a));
+    out[base + 6u] = slot.x;
+    out[base + 7u] = slot.y;
+    out[base + 8u] = select(0u, 1u, arc_less(a, arc_add(a, vec2<u32>(1u, 0u))));
+}
+"#;
+
+    #[test]
+    fn arc_pairs_add_divide_and_place_slots_exactly() {
+        let Some((device, queue)) = crate::data_render::shared_device() else {
+            return;
+        };
+        let inputs: [f32; 8] = [
+            0.0,
+            0.75,
+            12.0,
+            16_777_217.0,
+            39_166_270.0,
+            400_000_000.0,
+            4.0e9,
+            1.0e12,
+        ];
+        let source = format!("{}\n{ENTRY}", include_str!("common/arc_pair.wgsl"));
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("arc pair test"),
+            source: wgpu::ShaderSource::Wgsl(source.into()),
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("arc pair test"),
+            layout: None,
+            module: &module,
+            entry_point: Some("main"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        use wgpu::util::DeviceExt;
+        let input = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("arc pair test inputs"),
+            contents: bytemuck::cast_slice(&inputs),
+            usage: wgpu::BufferUsages::STORAGE,
+        });
+        let bytes = (inputs.len() * 9 * 4) as u64;
+        let out = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("arc pair test out"),
+            size: bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let readback = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("arc pair test readback"),
+            size: bytes,
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("arc pair test"),
+            layout: &pipeline.get_bind_group_layout(0),
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: input.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: out.as_entire_binding(),
+                },
+            ],
+        });
+        let mut encoder = device.create_command_encoder(&Default::default());
+        {
+            let mut pass = encoder.begin_compute_pass(&Default::default());
+            pass.set_pipeline(&pipeline);
+            pass.set_bind_group(0, &bind_group, &[]);
+            pass.dispatch_workgroups(inputs.len() as u32, 1, 1);
+        }
+        encoder.copy_buffer_to_buffer(&out, 0, &readback, 0, bytes);
+        queue.submit([encoder.finish()]);
+        readback.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        let _ = device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: Some(std::time::Duration::from_secs(30)),
+        });
+        let words: Vec<u32> =
+            bytemuck::cast_slice(&readback.slice(..).get_mapped_range().unwrap()).to_vec();
+        let step = 12u64 * 65_536;
+        for (i, &px) in inputs.iter().enumerate() {
+            let w = &words[i * 9..i * 9 + 9];
+            let units = (f64::from(px) * 65_536.0).round_ties_even() as u64;
+            let got = u64::from(w[0]) | u64::from(w[1]) << 32;
+            assert_eq!(got, units, "arc_from_px({px})");
+            let quotient = u64::from(w[2]) | u64::from(w[3]) << 32;
+            assert_eq!(quotient, units / step, "quotient of {px}");
+            assert_eq!(u64::from(w[4]), units % step, "remainder of {px}");
+            let delta = f32::from_bits(w[5]);
+            assert_eq!(delta, 3.25, "arc_delta at {px}");
+            let slot = u64::from((i as u32).wrapping_mul(2_654_435_761));
+            let placed = u64::from(w[6]) | u64::from(w[7]) << 32;
+            assert_eq!(placed, slot * 32_768 + 8_192, "slot {slot} at pitch 0.5");
+            assert_eq!(w[8], 1, "arc_less at {px}");
+        }
+    }
+}
+
 #[cfg(test)]
 #[cfg(not(target_arch = "wasm32"))]
 mod replay_product_tests {
@@ -1266,7 +1494,7 @@ mod replay_product_tests {
         source: &wgpu::Buffer,
         n: u32,
     ) -> Vec<u32> {
-        let bytes = u64::from(n) * 4;
+        let bytes = u64::from(n) * ARC_PAIR_BYTES;
         let readback = buffer(
             device,
             bytes,
@@ -1341,6 +1569,8 @@ mod replay_product_tests {
             style_params: [[0.0; 4]; 3],
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         };
         let transform_buf = init(&device, &transform);
         let transform_bg = pipelines.replay_transform_bind_group(&device, &transform_buf);
@@ -1388,6 +1618,8 @@ mod replay_product_tests {
                 Some(cap),
                 None,
                 0,
+                0,
+                None,
             )
             .expect("resident oracle build");
             let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -1409,21 +1641,21 @@ mod replay_product_tests {
             );
             let leaf_arc = buffer(
                 &device,
-                257 * 4,
+                257 * ARC_PAIR_BYTES,
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
             );
-            let leaf_sums = buffer(&device, 4, wgpu::BufferUsages::STORAGE);
+            let leaf_sums = buffer(&device, ARC_PAIR_BYTES, wgpu::BufferUsages::STORAGE);
             let carry = buffer(
                 &device,
-                4,
+                ARC_PAIR_BYTES,
                 wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
             );
             let output = buffer(
                 &device,
-                u64::from(n) * 4,
+                u64::from(n) * ARC_PAIR_BYTES,
                 wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
             );
-            queue.write_buffer(&carry, 0, &0f32.to_le_bytes());
+            queue.write_buffer(&carry, 0, &[0u8; ARC_PAIR_BYTES as usize]);
             let mut chunk_start = 0u32;
             while chunk_start < n {
                 let chunk_len = (n - chunk_start).min(cap);
@@ -1431,15 +1663,15 @@ mod replay_product_tests {
                     .expect("checked canonical chunk");
                 let top = buffer(
                     &device,
-                    u64::from(chunk.block_count()) * 4,
+                    u64::from(chunk.block_count()) * ARC_PAIR_BYTES,
                     wgpu::BufferUsages::STORAGE,
                 );
                 let top_sums = buffer(
                     &device,
-                    u64::from(blocks(chunk.block_count())) * 4,
+                    u64::from(blocks(chunk.block_count())) * ARC_PAIR_BYTES,
                     wgpu::BufferUsages::STORAGE,
                 );
-                let sink = buffer(&device, 4, wgpu::BufferUsages::STORAGE);
+                let sink = buffer(&device, ARC_PAIR_BYTES, wgpu::BufferUsages::STORAGE);
                 for block in 0..chunk.block_count() {
                     let leaf = chunk.leaf(block).expect("checked leaf");
                     upload_leaf(&queue, &leaf_pool, &x, &y, leaf);
@@ -1482,7 +1714,9 @@ mod replay_product_tests {
                             y_base: 0,
                             start: 0,
                             mode: 0,
-                            _pad: [0; 3],
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
                         },
                     );
                     let upper_params = init(
@@ -1493,7 +1727,9 @@ mod replay_product_tests {
                             y_base: 0,
                             start: 0,
                             mode: 0,
-                            _pad: [0; 3],
+                            c_base: 0,
+                            flags: 0,
+                            _pad: 0,
                         },
                     );
                     let top_storage = pipelines.replay_storage_bind_group(
@@ -1567,10 +1803,10 @@ mod replay_product_tests {
                     }
                     encoder.copy_buffer_to_buffer(
                         &leaf_arc,
-                        u64::from(leaf.local_start) * 4,
+                        u64::from(leaf.local_start) * ARC_PAIR_BYTES,
                         &output,
-                        u64::from(leaf.global_start) * 4,
-                        u64::from(leaf.len) * 4,
+                        u64::from(leaf.global_start) * ARC_PAIR_BYTES,
+                        u64::from(leaf.len) * ARC_PAIR_BYTES,
                     );
                     submit(&device, &queue, encoder);
                 }
@@ -1583,8 +1819,8 @@ mod replay_product_tests {
             );
             if n > cap {
                 assert_ne!(
-                    actual[(cap - 1) as usize],
-                    actual[cap as usize],
+                    actual[2 * (cap - 1) as usize],
+                    actual[2 * cap as usize],
                     "carry fixture must cross a nonzero boundary"
                 );
             }

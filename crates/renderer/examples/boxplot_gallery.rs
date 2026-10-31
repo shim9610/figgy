@@ -1,6 +1,20 @@
-//! Native box plot outputs corresponding to the approved visual concepts.
-use renderer::{Category, Color, RendererDevice, boxplot::*, data_render, encode_png};
-use std::{path::PathBuf, sync::Arc};
+//! Box plot documents drawn as Cartesian box plot series: each
+//! `BoxPlotChart` is opened with `Config::from_boxplot`, its positions,
+//! records and outliers uploaded from the borrowed summaries, and exported by
+//! the Cartesian renderer at 960 x 640 without post-render scaling. Every
+//! case labels each box with its median (`BoxPlotLabels::Median`, written
+//! into `labels.text` by the reader).
+// Legacy documents are read through their deprecated reader types.
+#![allow(deprecated)]
+use renderer::{
+    BOX_PLOT_RECORD, Category, Chart, Color, ColumnSource, LayerRef, Material, RaggedSource,
+    RecordSource, Renderer, RendererDevice, UploadValues, boxplot::*, config::Config, data_render,
+    encode_png,
+};
+use std::{path::Path, path::PathBuf, sync::Arc};
+
+type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
+
 fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Option<BoxSummary> {
     let mut v = BoxSummary::new(low, q1, med, q3, high);
     v.outliers = vec![outlier];
@@ -9,7 +23,76 @@ fn summary(low: f64, q1: f64, med: f64, q3: f64, high: f64, outlier: f64) -> Opt
     v.mean = Some(med + 2.);
     Some(v)
 }
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+
+/// `document` as a Cartesian chart of box plot series, exported to
+/// `name.png`.
+fn save(r: &mut Renderer, document: &BoxPlotChart, directory: &Path, name: &str) -> Result {
+    document.validate()?;
+    let (mut config, series, uploads) = Config::from_boxplot(document);
+    config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect {
+        x: 0,
+        y: 0,
+        width: 960,
+        height: 640,
+    });
+    for upload in &uploads {
+        match &upload.values {
+            UploadValues::BoxRecord(_) => {
+                let fields = upload.values.box_fields().ok_or("record fields")?;
+                let pairs: [(&str, &dyn ColumnSource); 9] = std::array::from_fn(|k| {
+                    (BOX_PLOT_RECORD[k].0, &fields[k] as &dyn ColumnSource)
+                });
+                r.upsert_record(
+                    upload.column.clone(),
+                    &RecordSource {
+                        schema: BOX_PLOT_RECORD,
+                        fields: &pairs,
+                    },
+                )?;
+            }
+            UploadValues::BoxOutliers(_) => {
+                let (values, offsets) = upload.values.box_outliers().ok_or("outliers")?;
+                r.upsert_ragged(
+                    upload.column.clone(),
+                    &RaggedSource {
+                        values: &values,
+                        offsets: &offsets,
+                    },
+                )?;
+            }
+            values => {
+                r.remove_column(&upload.column)?;
+                r.add_column(upload.column.clone(), values)?;
+            }
+        }
+    }
+    // The fixed `value_range` of the documents is the value axis; a
+    // document without one fits the records' and outliers' statistics.
+    let chart = if document.value_range.is_some() {
+        Chart::new(config)
+    } else {
+        let mut chart = Chart::new(config);
+        chart.auto_fit_layer_union(r.pool(), LayerRef::Base, &series, 0.1)?;
+        chart
+    };
+    let image = r.export_panel_rgba(&chart, &series, 1.0)?;
+    let colored = image
+        .rgba
+        .chunks_exact(4)
+        .filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 40)
+        .count();
+    if colored < 1000 {
+        return Err("missing box plot pixels".into());
+    }
+    std::fs::write(directory.join(format!("{name}.png")), encode_png(&image)?)?;
+    println!(
+        "{name}: {}x{}, {colored} colored pixels",
+        image.width, image.height
+    );
+    Ok(())
+}
+
+fn main() -> Result {
     let dir = PathBuf::from(
         std::env::args()
             .nth(1)
@@ -21,7 +104,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     eprintln!("Boxplot adapter: {:?}", adapter.get_info());
     let (d, q) = data_render::request_device(&adapter)?;
     let gpu = RendererDevice::new(Arc::new(d), Arc::new(q));
-    let mut r = BoxPlotRenderer::new(gpu.clone(), wgpu::TextureFormat::Rgba8Unorm)?;
+    let mut r = Renderer::try_new(gpu, wgpu::TextureFormat::Rgba8Unorm, 8 << 20)?;
     let mut c = BoxPlotChart {
         title: "Classic matte".into(),
         categories: ["Control", "Low", "High"]
@@ -42,6 +125,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         value_title: "Response".into(),
         font_size: 18.,
         legend: false,
+        // The median above every box, in every case below.
+        labels: BoxPlotLabels::Median,
         ..Default::default()
     };
     for (id, color) in [
@@ -52,40 +137,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         o.color = Some(color);
         c.overrides.push(o);
     }
-    let save = |r: &mut BoxPlotRenderer,
-                c: &BoxPlotChart,
-                name: &str|
-     -> Result<(), Box<dyn std::error::Error>> {
-        let image = r.export_rgba(c, (960, 640), 1.)?;
-        let colored = image
-            .rgba
-            .chunks_exact(4)
-            .filter(|p| p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]) > 40)
-            .count();
-        if colored < 1000 {
-            return Err("missing box plot pixels".into());
-        }
-        std::fs::write(dir.join(format!("{name}.png")), encode_png(&image)?)?;
-        r.end_frame();
-        gpu.device().poll(wgpu::PollType::Wait {
-            submission_index: None,
-            timeout: None,
-        })?;
-        println!(
-            "{name}: {}x{}, {colored} colored pixels",
-            image.width, image.height
-        );
-        Ok(())
-    };
-    save(&mut r, &c, "01-classic-matte")?;
+    save(&mut r, &c, &dir, "01-classic-matte")?;
     c.title = "Satin finish".into();
-    c.style.material = BoxPlotMaterial::SatinMetal;
+    c.style.material = Material::SatinMetal;
     c.style.gloss = 0.6;
-    save(&mut r, &c, "02-satin")?;
+    save(&mut r, &c, &dir, "02-satin")?;
     c.title = "Horizontal comparison".into();
     c.direction = BoxPlotDirection::Horizontal;
-    c.style.material = BoxPlotMaterial::Matte;
-    save(&mut r, &c, "03-horizontal")?;
+    c.style.material = Material::Matte;
+    save(&mut r, &c, &dir, "03-horizontal")?;
     c.title = "Grouped + notch".into();
     c.direction = BoxPlotDirection::Vertical;
     c.style.notched = true;
@@ -107,11 +167,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ],
         Color::from_rgb8(42, 168, 162),
     ));
-    save(&mut r, &c, "04-grouped-notch")?;
+    save(&mut r, &c, &dir, "04-grouped-notch")?;
     c.title = "Mean and individual styling".into();
     c.style.show_mean = true;
     c.style.outline = false;
     c.selected = Some(BoxPlotTarget::new("B", "after"));
-    save(&mut r, &c, "05-mean-selection")?;
+    save(&mut r, &c, &dir, "05-mean-selection")?;
     Ok(())
 }

@@ -36,10 +36,36 @@ mod source_cache;
 mod view_residency;
 pub use selection::{StreamingSelectionRequest, StreamingSelectionTicket};
 
+/// Why a streamed streamline series is rejected: streaming is not extended
+/// to them (CLAUDE.md rule 8).
+pub(crate) const STREAMED_RANGE_BARS_REASON: &str =
+    "range bar series require GPU-resident columns; streamed sources are not supported";
+
+pub(crate) const STREAMED_STREAMLINES_REASON: &str =
+    "streamline series require GPU-resident columns; streamed sources are not supported";
+
+/// Why a streamed hexagonal grid is rejected (CLAUDE.md rule 8, #134).
+pub(crate) const STREAMED_HEXAGONAL_REASON: &str =
+    "hexagonal grids require GPU-resident columns; streamed sources are not supported";
+
+/// Why a streamed ternary series is rejected (CLAUDE.md rule 8).
+pub(crate) const STREAMED_TERNARY_REASON: &str =
+    "ternary series require GPU-resident columns; streamed sources are not supported";
+
+/// Why a streamed image series is rejected (CLAUDE.md rule 8, #139).
+pub(crate) const STREAMED_IMAGE_REASON: &str =
+    "image series require GPU-resident columns; streamed sources are not supported";
+
+/// Why a streamed parallel coordinates series is rejected (CLAUDE.md rule 8,
+/// #141): every row reads one value per axis from the resident pool.
+pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series require GPU-resident columns; streamed sources are not \
+     supported";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Heatmap { .. } => true,
-        DataRenderType::Scatter { .. }
+        DataRenderType::RgbImage { .. }
+        | DataRenderType::Scatter { .. }
         | DataRenderType::Line { .. }
         | DataRenderType::ScatterLine { .. }
         | DataRenderType::ScatterErrorbarX { .. }
@@ -51,7 +77,14 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::Histogram { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
-        | DataRenderType::Vector { .. } => false,
+        | DataRenderType::Vector { .. }
+        | DataRenderType::CategoryBars { .. }
+        | DataRenderType::BoxPlot { .. }
+        | DataRenderType::RangeBars { .. }
+        | DataRenderType::Radar { .. }
+        | DataRenderType::Streamlines { .. }
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => false,
     }
 }
 
@@ -543,8 +576,13 @@ pub(super) fn stream_phase_columns(
     }
     let data_count = count;
     let style_index = match phase {
-        StreamDrawPhase::Scatter => extract_scatter(&series.render_type)
-            .and_then(|style| style.point_style_index_column.as_deref()),
+        StreamDrawPhase::Scatter => {
+            extract_scatter(&series.render_type).and_then(|style| match style {
+                std::borrow::Cow::Borrowed(style) => style.point_style_index_column.as_deref(),
+                // A derived (radar) marker style reads no style-index column.
+                std::borrow::Cow::Owned(_) => None,
+            })
+        }
         StreamDrawPhase::Errorbar => extract_errorbar_style(&series.render_type)
             .and_then(|style| style.error_bar_style_index_column.as_deref()),
         StreamDrawPhase::Line | StreamDrawPhase::Histogram | StreamDrawPhase::Field => None,
@@ -600,6 +638,14 @@ fn stream_draw_phases(
         } else {
             &[]
         }),
+        // Streaming is not extended to images; `validate_stream_series`
+        // rejects them before a cursor exists, so this is a backstop.
+        DataRenderType::RgbImage { .. } if primitives.field => Err(FiggyError::InvalidSeriesConfig {
+            series_id: series.series_id.clone(),
+            reason: STREAMED_IMAGE_REASON.into(),
+        }
+        .into()),
+        DataRenderType::RgbImage { .. } => Ok(&[]),
         // Streaming is not extended to vectors; `validate_stream_series`
         // rejects them before a cursor exists, so this is a backstop.
         DataRenderType::Vector { .. } if primitives.vector => {
@@ -612,6 +658,84 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Vector { .. } => Ok(&[]),
+        // Streaming is not extended to category bars either: rejected
+        // before a cursor exists, so this is a backstop too.
+        DataRenderType::CategoryBars { .. } if primitives.category_bars => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "category bar series require GPU-resident columns; streamed sources are not supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::CategoryBars { .. } => Ok(&[]),
+        // Nor to box plots: a box reads a resident record and ragged
+        // column. Rejected before a cursor exists; this is a backstop.
+        DataRenderType::BoxPlot { .. } if primitives.box_plot => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "box plot series require a GPU-resident record, outlier column, violin \
+                         curves and raw point columns; streamed sources are not supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::BoxPlot { .. } => Ok(&[]),
+        // Nor to range bars. Rejected before a cursor exists; this is a
+        // backstop.
+        DataRenderType::RangeBars { .. } if primitives.range_bars => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_RANGE_BARS_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::RangeBars { .. } => Ok(&[]),
+        // Nor to radar series: a polygon closes on its first vertex. Rejected
+        // before a cursor exists; this is a backstop.
+        DataRenderType::Radar { .. } if primitives.line || primitives.scatter => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: "radar series require GPU-resident columns; streamed sources are not \
+                         supported"
+                    .into(),
+            }
+            .into())
+        }
+        DataRenderType::Radar { .. } => Ok(&[]),
+        // Nor to streamlines: their arrowheads walk the resident arc prefix
+        // and their colour column is read index-aligned. Rejected before a
+        // cursor exists; this is a backstop.
+        DataRenderType::Streamlines { .. } if primitives.line => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_STREAMLINES_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Streamlines { .. } => Ok(&[]),
+        // Nor to ternary series: a sample reads its third component from
+        // the resident pool. Rejected before a cursor exists; this is a
+        // backstop.
+        DataRenderType::Ternary { .. } if primitives.line || primitives.scatter => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_TERNARY_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Ternary { .. } => Ok(&[]),
+        // Nor to parallel series: a row reads every axis column from the
+        // resident pool. Rejected before a cursor exists; this is a
+        // backstop.
+        DataRenderType::Parallel { .. } if primitives.parallel => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_PARALLEL_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Parallel { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {
@@ -906,7 +1030,7 @@ fn resolve_stream_range_source<'a>(
 }
 
 /// The nonresident stream pass draws one panel. A document with overlay
-/// layers or subplots composites several, and a streamed series on another
+/// layers, subplots or line offset members composites several, and a streamed series on another
 /// panel is an explicit error (not a planned feature), so streaming rejects the document
 /// as a whole before any resource is allocated.
 pub(crate) fn reject_layered_streaming(config: &Config) -> Result<()> {
@@ -920,6 +1044,12 @@ pub(crate) fn reject_layered_streaming(config: &Config) -> Result<()> {
         return Err(FiggyError::InvalidConfig {
             field: "subplots",
             reason: "nonresident streaming is not supported for a document with subplots",
+        });
+    }
+    if config.has_offset_members() {
+        return Err(FiggyError::InvalidConfig {
+            field: "line_offsets",
+            reason: "nonresident streaming is not supported for a document with line offsets",
         });
     }
     Ok(())
@@ -4035,9 +4165,13 @@ impl Renderer {
                 &self.style_bgl,
                 &self.per_point_style_map_bgl,
                 &self.point_value_map_bgl,
+                [&self.surface_bgl, &self.view3d_value_map_bgl],
                 &self.data_selection_bgl,
                 &self.field_bgl,
                 &self.vector_bgl,
+                &self.star_data_bgl,
+                &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {

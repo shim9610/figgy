@@ -70,6 +70,7 @@ pub fn render(r: &mut Renderer, out: &Path) -> Result {
                 opacity: 1.0,
             },
             contour,
+            surface: None,
         },
     )];
     let mut c = chart("A smooth field, exact contour levels", "x", "y", (960, 640));

@@ -3,7 +3,7 @@
 //! with the final state, never an invalidation predicate from the implementation.
 use super::*;
 use crate::annotation::{Anchor, Annotation, AnnotationAxis, AnnotationKind};
-use crate::config::{AxisScale, DrawStyle, TickVisibility};
+use crate::config::{AxisScale, DrawStyle, LogTickPolicy, TickVisibility};
 use crate::gpu_memory::GpuResourceKind;
 use crate::layout::Side;
 use crate::text::RichText;
@@ -100,6 +100,14 @@ fn edits() -> Vec<Edit> {
         streams: true,
     });
     edit!(bottom_x.label_style.significant_digits, 5, Prefix);
+    edit!(
+        bottom_x.label_style.format,
+        crate::format::LabelFormat::Plain(crate::format::PlainNumberFormat {
+            decimals: Some(1),
+            trim_zeros: true,
+        }),
+        Prefix
+    );
     macro_rules! grid {
         ($show:ident, $color:ident, $width:ident, $style:ident) => {
             edit!(grid.$show, false, Prefix);
@@ -154,12 +162,63 @@ fn edits() -> Vec<Edit> {
             edit!($axis.title_option.offset_y, 4.0, Prefix);
             edit!($axis.out_margin, 42.0, Packed);
             edit!($axis.major_tick_length, 8.0, Packed);
+            // Only the axis line moves; the data area does not.
+            edit!($axis.cross_at, Some(0.5), Prefix);
+            // A linear axis ignores the log tick policy: the axis raster is
+            // redone (its config changed) and draws the same pixels. The
+            // log axes of `log_tick_edits` draw new ones.
+            cases.push(Edit {
+                name: concat!(stringify!($axis), ".log_ticks"),
+                apply: |c| c.$axis.log_ticks = LogTickPolicy::Adaptive,
+                work: Work::Prefix,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::Unchanged,
+                streams: true,
+            });
         };
     }
     axis!(bottom_x);
     axis!(left_y);
     axis!(top_x);
     axis!(right_y);
+    // A categorical axis on the plain baseline: chrome on the top and right
+    // axes, the data range on the bottom and left ones. The stream pass
+    // rejects categorical axes, so these are resident only.
+    for (name, apply, work) in [
+        (
+            "top_x.categories (None -> Some)",
+            (|c: &mut Config| c.top_x.categories = three_categories()) as fn(&mut Config),
+            Work::Prefix,
+        ),
+        (
+            "right_y.categories (None -> Some)",
+            |c| c.right_y.categories = three_categories(),
+            Work::Prefix,
+        ),
+        (
+            "bottom_x.categories (None -> Some)",
+            |c| c.bottom_x.categories = three_categories(),
+            Work::Replay,
+        ),
+        (
+            "left_y.categories (None -> Some)",
+            |c| c.left_y.categories = three_categories(),
+            Work::Replay,
+        ),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            streams: false,
+        });
+    }
     edit!(bottom_x.inverted, true, Replay);
     edit!(left_y.inverted, true, Replay);
     edit!(top_x.inverted, true, Prefix);
@@ -190,6 +249,85 @@ fn edits() -> Vec<Edit> {
         Prefix
     );
     edit!(chart_title.text.font_size, 16.0, Prefix);
+    // The math tree of the title (#45): each field of the math nodes is part
+    // of the raster key. The baseline title holds `x^2_i` and `\frac{a}{b}`.
+    fn math(c: &mut Config, f: fn(&mut crate::text::RichSegment)) {
+        c.chart_title.text.segments.iter_mut().for_each(f);
+        assert_eq!(c.chart_title.text.validate_math(), Ok(()));
+    }
+    cases.push(Edit {
+        name: "chart_title.text math_node.kind",
+        apply: |c| {
+            math(c, |s| {
+                if let Some(n) = &mut s.math_node
+                    && matches!(n.kind, crate::text::MathKind::Frac(_))
+                {
+                    n.kind = crate::text::MathKind::Binom(crate::text::FracStyle::Auto);
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        name: "chart_title.text math_parent.slot",
+        apply: |c| {
+            // The superscript becomes a second subscript.
+            math(c, |s| {
+                if s.text == '2'
+                    && let Some(p) = &mut s.math_parent
+                {
+                    p.slot = 2;
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        name: "chart_title.text math slot child text",
+        apply: |c| {
+            math(c, |s| {
+                if s.text == 'b' && s.math_parent.is_some() {
+                    s.text = 'c';
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Changed,
+        streams: true,
+    });
+    cases.push(Edit {
+        // A valid renumbering is a different document with the same layout.
+        name: "chart_title.text math ids renumbered",
+        apply: |c| {
+            math(c, |s| {
+                if let Some(n) = &mut s.math_node {
+                    n.id += 10;
+                }
+                if let Some(p) = &mut s.math_parent {
+                    p.id += 10;
+                }
+            })
+        },
+        work: Work::Prefix,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
+    });
     edit!(chart_title.offset_x, 8.0, Prefix);
     edit!(chart_title.offset_y, 4.0, Prefix);
     edit!(chart_title.top_margin, 30.0, Packed);
@@ -269,6 +407,38 @@ fn edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: false,
     });
+    // How category bars share a slot: the baseline has no category bar
+    // series, so the bodies, the chrome and the data area all stay.
+    cases.push(Edit {
+        name: "bar_groups (None -> Some)",
+        apply: |c| c.bar_groups = Some(crate::data_config::BarGroups::default()),
+        work: Work::Prefix,
+        differs: true,
+        raster: false,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: true,
+    });
+    // A line offset group moves its members into panels of their own: a
+    // relayout like adding an overlay, so the view and the raster follow.
+    // The one member is the stack's first, unshifted, so the frame is the
+    // same picture; the stream pass rejects line offsets (rule 8).
+    cases.push(Edit {
+        name: "line_offsets (None -> Some)",
+        apply: |c| {
+            c.line_offsets = Some(crate::data_config::LineOffsets {
+                series: vec!["s".into()],
+                step_y: 0.5,
+                step_x: 0.25,
+            })
+        },
+        work: Work::Packed,
+        differs: true,
+        raster: true,
+        annotation: false,
+        pixels: Pixels::Unchanged,
+        streams: false,
+    });
     // Adding a colourbar reserves its band, so the data area moves.
     cases.push(Edit {
         name: "colorbar (None -> Some)",
@@ -280,6 +450,114 @@ fn edits() -> Vec<Edit> {
         pixels: Pixels::Changed,
         streams: true,
     });
+    cases
+}
+
+/// Three categories, for the categorical axis edits.
+fn three_categories() -> Option<Vec<crate::config::Category>> {
+    Some(vec![
+        crate::config::Category::new("a", "Alpha"),
+        crate::config::Category::new("b", "Beta"),
+        crate::config::Category::new("c", "Gamma"),
+    ])
+}
+
+/// The baseline with categorical top and bottom axes (three categories
+/// each). The stream pass rejects categorical axes, so every case here is
+/// resident only.
+fn baseline_with_categories() -> Config {
+    let mut c = baseline();
+    c.top_x.categories = three_categories();
+    c.bottom_x.categories = three_categories();
+    c
+}
+
+/// Every field of `AxisOptions::categories`, one edit each. A label is tick
+/// text (raster only); an id is drawn nowhere, but it is part of the axis the
+/// raster key compares, so the raster is redone with unchanged pixels; the
+/// category count is the bottom axis' data range, so it moves the data.
+fn category_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    macro_rules! category {
+        ($name:literal, $apply:expr, $work:ident, $pixels:ident) => {
+            cases.push(Edit {
+                name: $name,
+                apply: $apply,
+                work: Work::$work,
+                differs: true,
+                raster: true,
+                annotation: false,
+                pixels: Pixels::$pixels,
+                streams: false,
+            });
+        };
+    }
+    category!(
+        "top_x.categories[1].label",
+        |c| c.top_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        Prefix,
+        Changed
+    );
+    category!(
+        "top_x.categories[1].id",
+        |c| c.top_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        Prefix,
+        Unchanged
+    );
+    category!(
+        "top_x.categories (one more)",
+        |c| c
+            .top_x
+            .categories
+            .as_mut()
+            .unwrap()
+            .push(crate::config::Category::new("d", "Delta")),
+        Prefix,
+        Changed
+    );
+    category!(
+        "top_x.categories (Some -> None)",
+        |c| c.top_x.categories = None,
+        Prefix,
+        Changed
+    );
+    category!(
+        "bottom_x.categories[1].label",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].label = "Changed".into(),
+        Prefix,
+        Changed
+    );
+    category!(
+        "bottom_x.categories[1].id",
+        |c| c.bottom_x.categories.as_mut().unwrap()[1].id = "changed".into(),
+        Prefix,
+        Unchanged
+    );
+    category!(
+        "bottom_x.categories (one more)",
+        |c| c
+            .bottom_x
+            .categories
+            .as_mut()
+            .unwrap()
+            .push(crate::config::Category::new("d", "Delta")),
+        Replay,
+        Changed
+    );
+    category!(
+        "bottom_x.categories (Some -> None)",
+        |c| c.bottom_x.categories = None,
+        Replay,
+        Changed
+    );
+    // `min` / `max` are ignored on a categorical axis: a written range is
+    // configuration only.
+    category!(
+        "bottom_x.max (categorical)",
+        |c| c.bottom_x.max = 2.0,
+        Prefix,
+        Unchanged
+    );
     cases
 }
 
@@ -380,6 +658,51 @@ fn colorbar_edits() -> Vec<Edit> {
     );
     bar!(axis.title_option.offset_x, 4.0, Prefix, Any);
     bar!(axis.title_option.offset_y, 4.0, Prefix, Any);
+    // The baseline bar is linear, which ignores the log tick policy.
+    bar!(axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
+    cases
+}
+
+/// The colourbar baseline with logarithmic top, right and colourbar axes
+/// over 0.1..1, whose decade ladder labels 0.1 and 1 only: the adaptive
+/// policy draws the 1-2-5 ladder there, a chrome edit of each axis (#42).
+fn baseline_with_log_axes() -> Config {
+    let mut c = baseline_with_colorbar();
+    let bar = c.colorbar.as_mut().unwrap();
+    for axis in [&mut c.top_x, &mut c.right_y, &mut bar.axis] {
+        axis.scale = AxisScale::Logarithmic;
+        axis.major_spacing = 1.0;
+        axis.minor_count = 8;
+    }
+    c
+}
+
+fn log_tick_edits() -> Vec<Edit> {
+    let mut cases = Vec::new();
+    for (name, apply) in [
+        (
+            "top_x.log_ticks (log axis)",
+            (|c: &mut Config| c.top_x.log_ticks = LogTickPolicy::Adaptive) as fn(&mut Config),
+        ),
+        ("right_y.log_ticks (log axis)", |c| {
+            c.right_y.log_ticks = LogTickPolicy::Adaptive
+        }),
+        ("colorbar.axis.log_ticks (log axis)", |c| {
+            c.colorbar.as_mut().unwrap().axis.log_ticks = LogTickPolicy::Adaptive
+        }),
+    ] {
+        cases.push(Edit {
+            name,
+            apply,
+            work: Work::Prefix,
+            differs: true,
+            raster: true,
+            annotation: false,
+            pixels: Pixels::Changed,
+            // Axis chrome only: the stream pass accepts the policy.
+            streams: true,
+        });
+    }
     cases
 }
 
@@ -497,6 +820,8 @@ fn overlay_edits() -> Vec<Edit> {
     );
     overlay!(y_axis.title_option.offset_x, 4.0, Prefix, Changed);
     overlay!(y_axis.title_option.offset_y, 4.0, Prefix, Changed);
+    // The baseline overlay axis is linear, which ignores the policy.
+    overlay!(y_axis.log_ticks, LogTickPolicy::Adaptive, Prefix, Unchanged);
     cases.push(Edit {
         name: "overlays[0].legend (None -> Some)",
         apply: |c| {
@@ -626,7 +951,8 @@ fn baseline() -> Config {
         width: 320,
         height: 240,
     });
-    c.chart_title.text = RichText::plain("SSOT baseline", Color::BLACK, 12.0, "");
+    c.chart_title.text =
+        RichText::from_tex(r"SSOT $x^2_i + \frac{a}{b}$", Color::BLACK, 12.0, "").unwrap();
     c.chart_title.top_margin = 20.0;
     c.legend.visible = true;
     c.legend.content = RichText::plain("Curve", Color::BLACK, 10.0, "");
@@ -1005,6 +1331,8 @@ fn matrix(resident: bool, cache: bool) {
         (baseline_with_overlay(), overlay_edits()),
         (baseline_with_subplot(), subplot_edits()),
         (baseline_with_annotations(), annotation_edits()),
+        (baseline_with_categories(), category_edits()),
+        (baseline_with_log_axes(), log_tick_edits()),
     ];
     eprintln!(
         "SSOT: {} single-property cases, resident={resident}, cache={cache}",
@@ -1172,10 +1500,15 @@ fn config_fields_are_classified() {
         colorbar,         // colorbar_edits(): band fields Packed, the rest Prefix
         draw_style: _,    // Sketch / Milkyway / Constellation: Replay
         polar: _,         // the coordinate system: geometry (Packed/Replay) and raster
-        overlays,         // overlay_edits(): range/series/band Packed, the rest Prefix
-        subplots,         // subplot_edits(): geometry/series/links Packed, chrome Prefix
-        active_layer: _,  // layer only: no raster, no pixels
-        annotations: _,   // annotation_edits(): annotation revision only
+        ternary: _,       // the coordinate system: geometry (Packed/Replay) and raster
+        view_3d: _, // the camera: geometry and raster; the baseline series are not 3D kinds, so tests/surface_render.rs covers a camera edit redrawing the composite
+        parallel: _, // the parallel axes: the rows' placement (resident display key) and the axes' raster; the baseline series are not parallel kinds, so tests/parallel_render.rs covers them
+        overlays,    // overlay_edits(): range/series/band Packed, the rest Prefix
+        subplots,    // subplot_edits(): geometry/series/links Packed, chrome Prefix
+        active_layer: _, // layer only: no raster, no pixels
+        annotations: _, // annotation_edits(): annotation revision only
+        bar_groups: _, // "bar_groups (None -> Some)" + resident display mutations
+        line_offsets: _, // "line_offsets (None -> Some)" + resident display mutations
     } = baseline_with_colorbar();
     let AxisOptions {
         scale: _,
@@ -1195,6 +1528,9 @@ fn config_fields_are_classified() {
         line_style: _,
         major_tick_length: _,
         minor_tick_length: _,
+        categories: _, // categories (None -> Some) + category_edits(): Prefix / Replay
+        cross_at: _,   // axis!(...).cross_at: Prefix
+        log_ticks: _,  // axis!(...).log_ticks + log_tick_edits(): Prefix
     } = top_x;
     let LabelStyle {
         visible: _,
@@ -1499,6 +1835,94 @@ fn line_fill_and_step_edits_refresh_first_frame_without_reupload() {
     );
 }
 
+/// SSOT invalidation of a streamline series' `arrows` and `color_map`: each
+/// edit is a data declaration change whose first frame matches a fresh
+/// renderer's, is visible, re-uploads nothing, and an identical
+/// re-declaration keeps the frame.
+#[test]
+fn streamline_arrow_and_colour_map_edits_refresh_first_frame_without_reupload() {
+    use crate::data_config::{DataLineStyleConfig, PointColorMap, StreamlineArrows};
+    let _fonts = crate::text_render::FONT_REGISTRATION_TEST_LOCK
+        .lock()
+        .unwrap();
+    let mut config = baseline_with_colorbar();
+    config.legend.visible = false;
+    let mut series = declaration("s", "x", "a");
+    series.render_type = DataRenderType::Streamlines {
+        line: DataLineStyleConfig {
+            line_width: 1.5,
+            ..DataLineStyleConfig::default()
+        },
+        arrows: None,
+        color_map: None,
+    };
+    let (mut r, id) = fixture(&config, true, false);
+    r.set_chart_series(id, vec![series.clone()]).unwrap();
+    let (mut previous, _) = frame(&mut r, id, true);
+    let generation = r.pool.generation();
+    let used_bytes = r.pool.used_bytes();
+    type Edit = fn(&mut Option<StreamlineArrows>, &mut Option<PointColorMap>);
+    let edits: [(&str, Edit); 6] = [
+        ("arrows", |arrows, _| {
+            *arrows = Some(StreamlineArrows {
+                spacing_px: 40.0,
+                head_length_px: 9.0,
+                head_width_px: 8.0,
+            });
+        }),
+        ("arrow spacing", |arrows, _| {
+            if let Some(arrows) = arrows {
+                arrows.spacing_px = 25.0;
+            }
+        }),
+        ("head width", |arrows, _| {
+            if let Some(arrows) = arrows {
+                arrows.head_width_px = 12.0;
+            }
+        }),
+        ("colour map", |_, color_map| {
+            *color_map = Some(PointColorMap { column: "a".into() });
+        }),
+        ("no arrows", |arrows, _| *arrows = None),
+        ("no colour map", |_, color_map| *color_map = None),
+    ];
+    for (name, apply) in edits {
+        let DataRenderType::Streamlines {
+            arrows, color_map, ..
+        } = &mut series.render_type
+        else {
+            unreachable!()
+        };
+        apply(arrows, color_map);
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        let updated = r.chart_states[&id].revisions;
+        assert_ne!(
+            updated.data, revisions.data,
+            "{name}: a render_type edit is a data declaration change"
+        );
+        assert_eq!(updated.view, revisions.view, "{name}: no view replay");
+        let (actual, _) = frame(&mut r, id, true);
+        let (mut fresh, fresh_id) = fixture(&config, true, false);
+        fresh
+            .set_chart_series(fresh_id, vec![series.clone()])
+            .unwrap();
+        let (expected, _) = frame(&mut fresh, fresh_id, true);
+        assert_eq!(
+            actual, expected,
+            "{name}: first frame must match a fresh renderer"
+        );
+        assert_ne!(actual, previous, "{name}: the edit must be visible");
+        previous = actual;
+        assert_eq!(r.pool.generation(), generation, "{name}: no re-upload");
+        assert_eq!(r.pool.used_bytes(), used_bytes, "{name}");
+        let revisions = r.chart_states[&id].revisions;
+        r.set_chart_series(id, vec![series.clone()]).unwrap();
+        assert_eq!(r.chart_states[&id].revisions.data, revisions.data, "{name}");
+        assert_eq!(frame(&mut r, id, true).0, expected, "{name}: stable");
+    }
+}
+
 #[test]
 fn ssot_edits_refresh_stream_first_frame_without_excess_work() {
     matrix(false, false);
@@ -1508,6 +1932,13 @@ fn ssot_edits_reuse_packed_rows_only_when_valid() {
     matrix(false, true);
 }
 
+/// Every selection edit reaches the first frame through the selection
+/// suffix alone, on the resident path and the stream path with and without
+/// the packed cache. One renderer per path takes every case: each starts
+/// from the baseline selection, redrawn and equal to the first baseline
+/// frame, and is compared with a fresh-render oracle: a chart registered
+/// with the final state on one shared oracle renderer per data path, whose
+/// first frame has no invalidation history.
 #[test]
 fn ssot_selection_edits_replace_only_the_overlay() {
     use crate::config::{PickedPointRef, PickedPointsConfig};
@@ -1524,47 +1955,87 @@ fn ssot_selection_edits_replace_only_the_overlay() {
         ("point_index", |s| s.refs[0].point_index = 5),
         ("refs.clear", |s| s.refs.clear()),
     ];
+    let mut base = baseline();
+    base.picked_points = Some(PickedPointsConfig {
+        refs: vec![PickedPointRef {
+            source_id: None,
+            series_id: "s".into(),
+            point_index: 2,
+        }],
+        ..Default::default()
+    });
+    let edited = |name: &str, edit: fn(&mut PickedPointsConfig)| {
+        let mut c = base.clone();
+        edit(c.picked_points.as_mut().unwrap());
+        assert_ne!(c, base, "{name} must edit the selection");
+        c
+    };
+    let series = || {
+        let mut series = declaration("s", "x", "a");
+        let line = super::super::extract_line(&series.render_type)
+            .unwrap()
+            .into_owned();
+        series.render_type = DataRenderType::ScatterLine {
+            line,
+            scatter: DataScatterStyleConfig {
+                point_color: Color::BLACK,
+                point_size: 4.0,
+                point_shape: ScatterShape::CircleFilled,
+                point_style_index_column: None,
+                point_style_table: None,
+                point_style_overrides: None,
+                point_color_map: None,
+                point_size_map: None,
+            },
+        };
+        series
+    };
+    let setup = |c: &Config, resident: bool, cache: bool| {
+        let (mut r, id) = fixture(c, resident, cache);
+        r.set_chart_series(id, vec![series()]).unwrap();
+        (r, id)
+    };
+    // The oracle frames of every final state, per data path.
+    let oracle = |resident: bool| -> Vec<Vec<u8>> {
+        let (mut fresh, unused) = fixture(&base, resident, false);
+        fresh.remove_chart(unused).unwrap();
+        cases
+            .iter()
+            .map(|&(name, edit)| {
+                let id = fresh
+                    .register_chart(edited(name, edit), vec![series()])
+                    .unwrap();
+                let (expected, _) = frame(&mut fresh, id, resident);
+                fresh.remove_chart(id).unwrap();
+                expected
+            })
+            .collect()
+    };
+    let resident_oracle = oracle(true);
+    let stream_oracle = oracle(false);
     for (resident, cache) in [(true, false), (false, false), (false, true)] {
-        for &(name, edit) in cases {
-            let mut c = baseline();
-            c.picked_points = Some(PickedPointsConfig {
-                refs: vec![PickedPointRef {
-                    source_id: None,
-                    series_id: "s".into(),
-                    point_index: 2,
-                }],
-                ..Default::default()
-            });
-            let setup = |c: &Config, cache: bool| {
-                let (mut r, id) = fixture(c, resident, cache);
-                let mut series = declaration("s", "x", "a");
-                let line = super::super::extract_line(&series.render_type)
-                    .unwrap()
-                    .clone();
-                series.render_type = DataRenderType::ScatterLine {
-                    line,
-                    scatter: DataScatterStyleConfig {
-                        point_color: Color::BLACK,
-                        point_size: 4.0,
-                        point_shape: ScatterShape::CircleFilled,
-                        point_style_index_column: None,
-                        point_style_table: None,
-                        point_style_overrides: None,
-                        point_color_map: None,
-                        point_size_map: None,
-                    },
-                };
-                r.set_chart_series(id, vec![series]).unwrap();
-                (r, id)
-            };
-            let (mut r, id) = setup(&c, cache);
+        let expected_frames = if resident {
+            &resident_oracle
+        } else {
+            &stream_oracle
+        };
+        let (mut r, id) = setup(&base, resident, cache);
+        let (baseline_frame, _) = frame(&mut r, id, resident);
+        for (&(name, edit), expected) in cases.iter().zip(expected_frames) {
+            if r.chart_config(id).unwrap() != &base {
+                r.set_chart_config(id, base.clone()).unwrap();
+            }
             let (before, _) = frame(&mut r, id, resident);
+            assert_eq!(
+                before, baseline_frame,
+                "{name}: the baseline selection did not redraw, resident={resident} cache={cache}"
+            );
             let job = r.active_stream_job(id);
             let prefix = job.map(|j| r.chart_stream_prefix_for_test(j).unwrap());
             let data_pixels = prefix.as_ref().map(|t| read_draw_target(&r, t));
-            edit(c.picked_points.as_mut().unwrap());
+            let c = edited(name, edit);
             let revisions = r.chart_states[&id].revisions;
-            r.set_chart_config(id, c.clone()).unwrap();
+            r.set_chart_config(id, c).unwrap();
             let updated = r.chart_states[&id].revisions;
             assert_ne!(updated.desired, revisions.desired, "{name}: no draw");
             assert_ne!(
@@ -1580,10 +2051,8 @@ fn ssot_selection_edits_replace_only_the_overlay() {
                 "{name}: selection changed the view"
             );
             let (actual, reads) = frame(&mut r, id, resident);
-            let (mut fresh, fresh_id) = setup(&c, false);
-            let (expected, _) = frame(&mut fresh, fresh_id, resident);
             assert_eq!(
-                actual, expected,
+                &actual, expected,
                 "{name}: stale selection, resident={resident} cache={cache}"
             );
             assert_ne!(actual, before, "{name}: selection oracle unchanged");
@@ -1639,3 +2108,7 @@ fn ssot_cached_fit_restores_secondary_axes_without_replaying_data() {
 
 #[path = "source_cache_invalidation_tests.rs"]
 mod source_cache_invalidation;
+
+#[cfg(feature = "serde")]
+#[path = "ssot_mutation_tests.rs"]
+mod mutation;

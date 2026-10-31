@@ -39,6 +39,8 @@ mod tests {
             style_params: params,
             polar_angle: [0.0; 4],
             polar_extent: [0.0; 4],
+            ternary_lt: [0.0; 4],
+            ternary_r: [0.0; 4],
         }
     }
 
@@ -132,8 +134,8 @@ fn probe_identity(@builtin(global_invocation_id) gid: vec3<u32>) {
             bases.len() as u64 * STREAM_POINT_TRANSFORM_BYTES
         );
         for source in [
-            include_str!("scatter_columnar.wgsl"),
-            include_str!("errorbar_columnar.wgsl"),
+            crate::data_render::SCATTER_SHADER.source,
+            crate::data_render::ERRORBAR_SHADER.source,
         ] {
             let shader = crate::gpu_compile::shader_module(
                 &device,

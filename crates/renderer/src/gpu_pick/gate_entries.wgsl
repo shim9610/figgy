@@ -130,16 +130,25 @@ fn pick_gate_y(
 fn pick_reduce_candidates(@builtin(local_invocation_index) local_index: u32) {
     figgy_zero_workgroup(local_index);
     var best = pick_invalid_candidate(0u);
+    // A region series' entries (`PICK_KIND_REGION`) are folded beside the
+    // candidates; the per-series reduction alone sees them.
+    var region = PICK_REGION_NONE;
     let count = arrayLength(&pick_reduce_inputs);
     var index = local_index;
     while index < count {
         let candidate = pick_reduce_inputs[index];
-        if pick_candidate_is_better(candidate, best) {
+        if candidate.primitive_kind == PICK_KIND_REGION {
+            region = pick_region_fold(
+                region,
+                vec3<u32>(candidate.valid & 1u, candidate.point_index, candidate.series_order),
+            );
+        } else if pick_candidate_is_better(candidate, best) {
             best = candidate;
         }
         index = index + PICK_WORKGROUP_SIZE;
     }
     pick_shared_candidates[local_index] = best;
+    pick_shared_region[local_index] = region;
     workgroupBarrier();
     for (var stride = PICK_WORKGROUP_SIZE / 2u; stride > 0u; stride = stride / 2u) {
         if local_index < stride {
@@ -147,10 +156,26 @@ fn pick_reduce_candidates(@builtin(local_invocation_index) local_index: u32) {
             if pick_candidate_is_better(candidate, pick_shared_candidates[local_index]) {
                 pick_shared_candidates[local_index] = candidate;
             }
+            pick_shared_region[local_index] = pick_region_fold(
+                pick_shared_region[local_index],
+                pick_shared_region[local_index + stride],
+            );
         }
         workgroupBarrier();
     }
     if local_index == 0u {
-        pick_reduce_output = pick_shared_candidates[0];
+        var out = pick_shared_candidates[0];
+        let fold = pick_shared_region[0];
+        // An odd crossing count puts the cursor inside a region: a fill hit
+        // at distance zero, which beats every farther candidate and loses
+        // every tie to a marker or a stroke.
+        if fold.x == 1u && fold.y != 0xffffffffu {
+            let hit = pick_region_hit(fold.y, fold.z);
+            if pick_candidate_is_better(hit, out) {
+                out = hit;
+            }
+        }
+        pick_reduce_output = out;
     }
 }
+

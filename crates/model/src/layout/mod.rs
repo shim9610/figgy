@@ -7,28 +7,17 @@ mod rect;
 
 pub use fit::FitStrategy;
 pub use geometry::{
-    LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, TitleBand, TitlePlacement, axis_anchor,
-    axis_offset, axis_title_offset_to_screen, axis_title_placement, axis_visibility_extent,
-    axis_visibility_rect, chart_title_placement, colorbar_rect, colorbar_title_placement,
-    fit_chart_title_margin, label_origin, label_rect, legend_rect, point_on_rect_side,
-    rect_axis_visibility_rect, screen_offset_to_axis_title,
+    LABEL_GAP, LEGEND_BORDER_WIDTH, LEGEND_INSET, LOG_RANGE_FALLBACK_MIN, TitleBand,
+    TitlePlacement, auto_layout, axis_anchor, axis_cross, axis_fraction, axis_offset,
+    axis_title_offset_to_screen, axis_title_placement, chart_title_placement,
+    chart_title_placement_in, colorbar_rect, colorbar_title_placement, fit_chart_title_margin,
+    guarded_log_range, label_origin, label_rect, legend_rect, point_on_rect_side,
+    screen_offset_to_axis_title, span_fraction, visible_colorbar_rect,
 };
 pub use nudge::{Element, NudgeReject, NudgeResult};
 pub use rect::{ChartArea, DataArea, Rect, RectF};
 
-/// One part of a decoration as a renderer draws it, in the chart frame:
-/// what [`crate::text::MeasureText::drawn_parts`] reports.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub enum DrawnPart {
-    /// A block of glyphs: one tick label.
-    Text(RectF),
-    /// A stroked segment `width` across: an axis line or one tick.
-    Segment {
-        a: [f32; 2],
-        b: [f32; 2],
-        width: f32,
-    },
-}
+pub use crate::sink::DrawnPart;
 
 // Support types.
 
@@ -348,7 +337,8 @@ impl Config {
 /// positive is a renderer-side rule (`validate_renderer_config`), which is
 /// where the reason string lives.
 fn axis_dims_feasible(axis: &AxisOptions) -> Result<(), LayoutError> {
-    if axis.max <= axis.min {
+    let (min, max) = axis.data_range();
+    if max <= min {
         return Err(LayoutError::Infeasible);
     }
     if axis.out_margin < 0.0
@@ -369,6 +359,7 @@ mod tests {
     use crate::config::Config;
     use crate::default::{default_colorbar_options, default_config};
     use crate::layout::{ChartArea, LayoutError, Rect};
+    use crate::select::tests::LaysOut;
 
     fn config_with_colorbar(side: Side) -> Config {
         let mut cfg = default_config();
@@ -666,7 +657,7 @@ mod tests {
         cfg.overlays.push(OverlayLayer::default());
         let before = cfg.data_area().unwrap().0;
         assert_eq!(
-            cfg.nudge(Element::DataAreaEdge(Side::Right), 20.0, 0.0),
+            cfg.nudge(Element::DataAreaEdge(Side::Right), &LaysOut, 20.0, 0.0),
             crate::layout::NudgeResult::Moved
         );
         let after = cfg.data_area().unwrap().0;
@@ -762,10 +753,10 @@ mod tests {
                 let before = cfg.clone();
                 match (next() * 6.0) as u32 {
                     0 | 1 => {
-                        let _ = cfg.nudge(Element::DataAreaEdge(side), dx, dy);
+                        let _ = cfg.nudge(Element::DataAreaEdge(side), &LaysOut, dx, dy);
                     }
                     2 => {
-                        let _ = cfg.nudge(Element::DataArea, dx, dy);
+                        let _ = cfg.nudge(Element::DataArea, &LaysOut, dx, dy);
                     }
                     3 => {
                         let _ = cfg.set_side_margin(side, next() * 300.0);

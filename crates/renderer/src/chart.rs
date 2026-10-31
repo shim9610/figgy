@@ -29,15 +29,20 @@ pub(crate) fn apply_axis_range(
     max: f64,
     log: bool,
 ) {
+    // A categorical axis keeps its category range: every range helper (the
+    // `set_*_range` and `auto_fit_*` families, a view state) leaves it as is.
+    if axis.categories.is_some() {
+        return;
+    }
     axis.min = min;
     axis.max = max;
     if log {
-        axis.major_spacing = log_decade_step(min, max);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Logarithmic, min, max);
         axis.minor_count = 8;
         axis.label_style.format = LabelFormat::Power;
         axis.label_style.significant_digits = 1;
     } else {
-        axis.major_spacing = nice_spacing(max - min);
+        axis.major_spacing = crate::tick::axis_major_spacing(&AxisScale::Linear, min, max);
         axis.minor_count = 4;
         if !matches!(axis.label_style.format, LabelFormat::Timestamp(_)) {
             axis.label_style.format = LabelFormat::Decimal;
@@ -51,54 +56,7 @@ fn fill_plain_segments(rt: &mut RichText, s: &str) {
     rt.segments = rich_segments_from_text(s);
 }
 
-/// Major spacing for a logarithmic axis, in decades.
-///
-/// `min`/`max` are in linear space; both shader and axis raster interpret
-/// `major_spacing` as "decades per major tick". Branches aim for 5–8 labels.
-pub(crate) fn log_decade_step(min: f64, max: f64) -> f64 {
-    if !min.is_finite() || !max.is_finite() || min <= 0.0 || max <= min {
-        return 1.0;
-    }
-    let log_min = min.log10().floor();
-    let log_max = max.log10().ceil();
-    let decades = (log_max - log_min).max(1.0);
-    if decades <= 6.0 {
-        1.0
-    } else if decades <= 12.0 {
-        2.0
-    } else {
-        (decades / 6.0).ceil()
-    }
-}
-
-/// Fallback lower bound for invalid manual log-axis ranges.
-pub(crate) const LOG_RANGE_FALLBACK_MIN: f64 = 1.0e-12;
-
-/// Renderer-side guard for log-axis ranges.
-pub(crate) fn guarded_log_range(min: f64, max: f64) -> (f64, f64) {
-    let min = if min.is_finite() && min > 0.0 {
-        min
-    } else {
-        LOG_RANGE_FALLBACK_MIN
-    };
-    if max.is_finite() && max > min {
-        return (min, max);
-    }
-
-    let upper = min * 10.0;
-    if upper.is_finite() && upper > min {
-        return (min, upper);
-    }
-
-    // `min` is at the top of f64 and one decade upward overflowed. Preserve a
-    // finite, ordered fallback by putting the synthetic decade below it.
-    let lower = min / 10.0;
-    if lower.is_finite() && lower > 0.0 && lower < min {
-        return (lower, min);
-    }
-
-    (LOG_RANGE_FALLBACK_MIN, LOG_RANGE_FALLBACK_MIN * 10.0)
-}
+pub(crate) use crate::layout::guarded_log_range;
 
 /// Positive-preserving padding for a log-scale axis: pad by
 /// `padding_ratio · span` in log space on each side, then back to linear.
@@ -111,35 +69,6 @@ pub(crate) fn log_padded(min: f64, max: f64, padding_ratio: f64) -> (f64, f64) {
     let span = lmax - lmin;
     let pad = span * padding_ratio.max(0.0);
     (10f64.powf(lmin - pad), 10f64.powf(lmax + pad))
-}
-
-/// "Nice" tick spacing for a given data span — aims for 5–10 major ticks
-/// using the 1·2·5 × 10^k sequence common in scientific plots.
-///
-/// Examples: span=72 → 10, span=8 → 1, span=0.7 → 0.1.
-pub(crate) fn nice_spacing(span: f64) -> f64 {
-    if !span.is_finite() || span <= 0.0 {
-        return 1.0;
-    }
-    let exp = span.log10().floor();
-    let base = 10f64.powf(exp);
-    if !base.is_finite() || base <= 0.0 {
-        return span;
-    }
-    let frac = span / base;
-    // frac is in [1, 10); the 1·2·5 branches keep tick count in 5..=10.
-    let spacing = if frac >= 5.0 {
-        base
-    } else if frac >= 2.0 {
-        0.5 * base
-    } else {
-        0.2 * base
-    };
-    if spacing.is_finite() && spacing > 0.0 {
-        spacing
-    } else {
-        span
-    }
 }
 
 /// One axis' fit input: the union of everything that must stay visible.
@@ -174,23 +103,42 @@ impl FitExtent {
         };
     }
 
-    /// Widen to also cover the single bound `v`.
-    fn include(&mut self, v: f64) {
-        if v < self.min {
-            self.min = v;
-        }
-        if v > self.max {
-            self.max = v;
-        }
-        if v > 0.0 && self.min_positive.is_none_or(|p| v < p) {
-            self.min_positive = Some(v);
-        }
-    }
-
     /// A fit is only meaningful over a finite, non-degenerate span — the
     /// same gate the column-union fitters have always applied.
     fn is_fittable(&self) -> bool {
         self.min.is_finite() && self.max.is_finite() && self.max > self.min
+    }
+
+    /// The extent of the same values drawn `by` further along the axis: `by`
+    /// data units on a linear axis, `by` decades (a factor of `10^by`) on a
+    /// logarithmic one. A display shift of a line offset member
+    /// (`Config::line_offset_of`); the values themselves are not moved.
+    fn shifted(&self, by: f64, logarithmic: bool) -> Self {
+        if by == 0.0 {
+            return *self;
+        }
+        if logarithmic {
+            let factor = 10f64.powf(by);
+            return Self {
+                min: self.min * factor,
+                max: self.max * factor,
+                min_positive: self.min_positive.map(|value| value * factor),
+            };
+        }
+        let min = self.min + by;
+        Self {
+            min,
+            max: self.max + by,
+            // A positive bound the shifted values keep: the shifted minimum,
+            // else the shifted floor.
+            min_positive: if min > 0.0 {
+                Some(min)
+            } else {
+                self.min_positive
+                    .map(|value| value + by)
+                    .filter(|value| *value > 0.0)
+            },
+        }
     }
 }
 
@@ -213,6 +161,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // colourbar with a non-positive lower bound has no `t` for its lowest
     // colour, which is the same defect as a log x axis starting at zero.
     let colorbar_axis = config.colorbar.as_ref().map(|bar| &bar.axis);
+    if colorbar_axis.is_some_and(|axis| axis.categories.is_some()) {
+        return Err(FiggyError::InvalidConfig {
+            field: "colorbar.axis",
+            reason: "a colourbar axis cannot be categorical",
+        });
+    }
     for (field, axis) in [
         ("top_x", &config.top_x),
         ("bottom_x", &config.bottom_x),
@@ -222,6 +176,19 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     .into_iter()
     .chain(colorbar_axis.map(|axis| ("colorbar.axis", axis)))
     {
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig { field, reason })?;
+        if axis.cross_at.is_some_and(|v| !v.is_finite()) {
+            return Err(FiggyError::InvalidConfig {
+                field,
+                reason: "an axis crossing (`cross_at`) must be finite",
+            });
+        }
+        // A categorical axis maps its category range; `min` / `max` are
+        // ignored there.
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field,
@@ -246,6 +213,14 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
     // must be unambiguous before a series is drawn on one panel.
     for overlay in &config.overlays {
         let axis = &overlay.y_axis;
+        axis.validate_categories()
+            .map_err(|reason| FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                reason,
+            })?;
+        if axis.categories.is_some() {
+            continue;
+        }
         if !axis.min.is_finite() || !axis.max.is_finite() {
             return Err(FiggyError::InvalidConfig {
                 field: "overlays.y_axis",
@@ -284,6 +259,39 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         field: "layout",
         reason: "margins and visual dimensions must produce a non-empty data area",
     })?;
+    // A malformed math segment tree in a title, axis title or legend is
+    // rejected like any other config field (a JSON document already fails
+    // to parse); annotation texts are checked with the annotations below.
+    let axes = [
+        ("top_x", &config.top_x),
+        ("bottom_x", &config.bottom_x),
+        ("left_y", &config.left_y),
+        ("right_y", &config.right_y),
+    ];
+    let texts = [
+        ("chart_title", &config.chart_title.text),
+        ("legend", &config.legend.content),
+    ]
+    .into_iter()
+    .chain(axes.map(|(field, axis)| (field, &axis.title_option.text)))
+    .chain(colorbar_axis.map(|axis| ("colorbar.axis", &axis.title_option.text)))
+    .chain(config.overlays.iter().flat_map(|overlay| {
+        [("overlays.y_axis", &overlay.y_axis.title_option.text)]
+            .into_iter()
+            .chain(
+                overlay
+                    .legend
+                    .as_ref()
+                    .map(|l| ("overlays.legend", &l.content)),
+            )
+    }));
+    for (field, text) in texts {
+        text.validate_math()
+            .map_err(|e| FiggyError::InvalidConfig {
+                field,
+                reason: e.as_str(),
+            })?;
+    }
     // Malformed annotation styles are rejected like any other config field;
     // non-finite values and anchors are not malformed, the raster skips them.
     config
@@ -291,6 +299,12 @@ pub(crate) fn validate_renderer_config(config: &Config) -> Result<()> {
         .validate()
         .map_err(|reason| FiggyError::InvalidConfig {
             field: "annotations",
+            reason,
+        })?;
+    config
+        .validate_line_offset_layout()
+        .map_err(|reason| FiggyError::InvalidConfig {
+            field: "line_offsets",
             reason,
         })?;
     if !config.overlays.is_empty() {
@@ -347,6 +361,12 @@ pub(crate) fn apply_auto_fit_all(
     y_extent: &FitExtent,
     padding_ratio: f64,
 ) {
+    // A ternary chart's axes span the whole triangle, not a data extent; a
+    // parallel chart's are the categorical positions and the normalized band
+    // (`Chart::auto_fit_parallel_axes` fits its axes).
+    if config.ternary.is_some() || config.parallel.is_some() {
+        return;
+    }
     if let Some((min, max)) = fitted_axis_range(&config.bottom_x, x_extent, padding_ratio) {
         let log = matches!(config.bottom_x.scale, AxisScale::Logarithmic);
         apply_axis_range(&mut config.bottom_x, min, max, log);
@@ -359,38 +379,222 @@ pub(crate) fn apply_auto_fit_all(
     }
 }
 
-/// Pairwise fit extent of a value column with errorbar offsets, matching the
-/// GPU arithmetic exactly (`errorbar_columnar.wgsl`: `lo = v - err_lo`,
-/// `hi = v + err_hi`). This cannot be derived from per-column min/max — the
-/// widest bound is not necessarily at a value extreme — so it needs one pass
-/// over the actual pairs. Non-finite values are skipped (NaN-gap
-/// convention); a non-finite error entry contributes the bare value (the
-/// shader draws no bar there but the marker still shows). Offsets past the
-/// error columns' length default to 0, mirroring "no bar". Returns `None`
-/// when no finite value exists.
-pub fn errorbar_extent(vals: &[f32], err_lo: &[f32], err_hi: &[f32]) -> Option<FitExtent> {
-    let mut ext = FitExtent::EMPTY;
-    let mut any = false;
-    for (i, &v) in vals.iter().enumerate() {
-        let v = v as f64;
-        if !v.is_finite() {
-            continue;
-        }
-        let lo_off = err_lo
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        let hi_off = err_hi
-            .get(i)
-            .map(|&e| e as f64)
-            .filter(|e| e.is_finite())
-            .unwrap_or(0.0);
-        ext.include(v - lo_off);
-        ext.include(v + hi_off);
-        any = true;
+/// The value-axis extent of the category bars `layer` of `config` draws,
+/// from the pool's statistics, with its bar direction.
+///
+/// The bars grow from zero, so zero is always in it. Grouped bars span the
+/// union of their value columns' ranges. Stacked bars span
+/// `[Σ min(0, min_i), Σ max(0, max_i)]` over the group's value columns,
+/// `min_i` and `max_i` being each column's own statistics
+/// ([`ColumnSlot::min`] and [`ColumnSlot::max`]): positive values stack up
+/// from zero and negative ones down, so no category's stack reaches past the
+/// sum of the series' extremes, and a series with both signs adds its
+/// positive part up and its negative part down. This is an upper bound,
+/// exact when every series has its extremes in one category and wider when
+/// they sit in different categories (two series peaking at 30 and 40 in
+/// different categories fit 70 however low their other bars are). The
+/// exact per-category totals are the shader's, computed from the pool on
+/// every draw; the fit reads no value back, so the group's columns may be
+/// uploaded in any batches. Percent stacks span `0..=100`: the shader draws
+/// a category's shares from 0 to 100, and a percent group with a negative
+/// value is refused when it is drawn. A layer without category bars gives
+/// the empty extent.
+///
+/// [`ColumnSlot::min`]: crate::data_render::ColumnSlot::min
+/// [`ColumnSlot::max`]: crate::data_render::ColumnSlot::max
+pub fn category_bar_value_extent(
+    pool: &ColumnPool,
+    config: &Config,
+    layer: LayerRef,
+    series: &[SeriesConfig],
+) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
+    use crate::data_config::CategoryBarMode;
+    let groups = config.bar_groups_of(layer);
+    let members = || {
+        series.iter().filter(move |s| {
+            s.render_type.category_bars().is_some() && config.layer_of_series(&s.series_id) == layer
+        })
+    };
+    let zero = FitExtent {
+        min: 0.0,
+        max: 0.0,
+        min_positive: None,
+    };
+    let mut extent = FitExtent::EMPTY;
+    if members().next().is_none() {
+        return Ok((extent, groups.direction));
     }
-    any.then_some(ext)
+    extent.union(&zero);
+    match groups.mode {
+        CategoryBarMode::Grouped => {
+            for item in members() {
+                extent.union(&Chart::slot_extent(
+                    pool,
+                    item.category_bar_columns(groups.direction).1,
+                )?);
+            }
+        }
+        CategoryBarMode::Stacked => {
+            // Each column adds its positive extreme up from zero and its
+            // negative extreme down; its smallest positive value bounds the
+            // lowest positive bar end from below, the log-axis floor.
+            let mut stack = zero;
+            for item in members() {
+                let column =
+                    Chart::slot_extent(pool, item.category_bar_columns(groups.direction).1)?;
+                if column.min.is_finite() {
+                    stack.min += column.min.min(0.0);
+                }
+                if column.max.is_finite() {
+                    stack.max += column.max.max(0.0);
+                }
+                stack.min_positive = match (stack.min_positive, column.min_positive) {
+                    (Some(a), Some(b)) => Some(a.min(b)),
+                    (a, b) => a.or(b),
+                };
+            }
+            extent.union(&stack);
+        }
+        CategoryBarMode::PercentStacked => extent.union(&FitExtent {
+            min: 0.0,
+            max: 100.0,
+            min_positive: Some(100.0),
+        }),
+    }
+    Ok((extent, groups.direction))
+}
+
+/// The extents a range bar series `item` of `config` draws over, from the
+/// pool's scalar statistics, with its direction: its value axis spans the
+/// finite range of its start and end columns and, with whiskers, of its
+/// low and high ones, zero not forced (a bar floats, and a price axis may
+/// be logarithmic); its position axis, when it is numeric (the series has
+/// a `slot_width`), spans its positions grown by half a slot on each side,
+/// and is empty on a categorical axis, which no fit moves. Nothing per bar
+/// is read back.
+pub fn range_bar_extents(
+    pool: &ColumnPool,
+    config: &Config,
+    item: &SeriesConfig,
+) -> Result<(
+    FitExtent,
+    FitExtent,
+    crate::data_config::CategoryBarDirection,
+)> {
+    let groups = config.bar_groups_of(config.layer_of_series(&item.series_id));
+    let mut value = FitExtent::EMPTY;
+    let mut position = FitExtent::EMPTY;
+    let Some(bars) = item.render_type.range_bars() else {
+        return Ok((value, position, groups.direction));
+    };
+    value.union(&Chart::slot_extent(pool, &item.y_column)?);
+    value.union(&Chart::slot_extent(pool, bars.start)?);
+    if let Some(w) = bars.whiskers {
+        value.union(&Chart::slot_extent(pool, &w.low)?);
+        value.union(&Chart::slot_extent(pool, &w.high)?);
+    }
+    if let Some(width) = bars.slot_width {
+        let positions = Chart::slot_extent(pool, &item.x_column)?;
+        if positions.min.is_finite() && positions.max.is_finite() {
+            let (min, max) = (positions.min - width * 0.5, positions.max + width * 0.5);
+            position.union(&FitExtent {
+                min,
+                max,
+                min_positive: if min > 0.0 {
+                    Some(min)
+                } else {
+                    (max > 0.0).then_some(max)
+                },
+            });
+        }
+    }
+    Ok((value, position, groups.direction))
+}
+
+/// The value-axis extent of the box plots `layer` of `config` draws, from
+/// the pool's scalar statistics, with their direction.
+///
+/// Each box plot series spans the finite range of its record's value fields
+/// (every field but `sample_count`: the summary, the mean and the
+/// confidence interval, as the former box plot fitted every supplied value)
+/// and of its outlier column, hidden means and outliers included, so a style
+/// toggle never moves the axis. The statistics are the ones the pool
+/// measured when the record and the outliers were written; nothing per box
+/// is read back. A layer without box plots gives the empty extent.
+pub fn box_plot_value_extent(
+    pool: &ColumnPool,
+    config: &Config,
+    layer: LayerRef,
+    series: &[SeriesConfig],
+) -> Result<(FitExtent, crate::data_config::CategoryBarDirection)> {
+    let groups = config.bar_groups_of(layer);
+    let mut extent = FitExtent::EMPTY;
+    let mut include = |min: f64, max: f64| {
+        if min.is_finite() && max.is_finite() && min <= max {
+            let min_positive = if min > 0.0 {
+                Some(min)
+            } else if max > 0.0 {
+                Some(max)
+            } else {
+                None
+            };
+            extent.union(&FitExtent {
+                min,
+                max,
+                min_positive,
+            });
+        }
+    };
+    for item in series.iter().filter(|s| {
+        s.render_type.box_plot().is_some() && config.layer_of_series(&s.series_id) == layer
+    }) {
+        let (_, record_id) = item.box_plot_columns();
+        // A violin without boxes names no record.
+        if !record_id.is_empty() {
+            let record = pool
+                .record(record_id)
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "box plot record {record_id:?} is not resident: upload it with \
+                             `upsert_record`"
+                    ),
+                })?;
+            let stats = record.stats();
+            for (k, (name, _)) in crate::data_render::BOX_PLOT_RECORD.iter().enumerate() {
+                if *name != "sample_count" && stats.present[k] && stats.finite[k] > 0 {
+                    include(stats.min[k], stats.max[k]);
+                }
+            }
+        }
+        let boxes = item
+            .render_type
+            .box_plot()
+            .expect("filtered to box plot series");
+        // The outliers and the violin curves: ragged columns of values.
+        for id in boxes.ragged_columns() {
+            let ragged = pool
+                .ragged(id)
+                .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                    series_id: item.series_id.clone(),
+                    reason: format!(
+                        "box plot ragged column {id:?} is not resident: upload it with \
+                         `upsert_ragged`"
+                    ),
+                })?;
+            let stats = ragged.stats();
+            if stats.finite > 0 {
+                include(stats.min, stats.max);
+            }
+        }
+        // The raw points' values.
+        if let Some(points) = boxes.points
+            && let Some(slot) = pool.slot(&points.values)
+        {
+            include(slot.min, slot.max);
+        }
+    }
+    Ok((extent, groups.direction))
 }
 
 /// A single figgy chart panel: a `Config` plus dirty-flag tracking.
@@ -554,12 +758,15 @@ impl Chart {
     /// [`Self::with_axis_range_change`] instead.
     ///
     /// Branches on the bottom axis's scale:
-    /// - **Linear**: `major_spacing = nice_spacing(max - min)` (1·2·5 sequence),
-    ///   `minor_count = 4`, `format = Decimal` (an existing timestamp format
-    ///   is retained), `sig_digits = 3`.
-    /// - **Logarithmic**: `major_spacing = log_decade_step(min, max)`
-    ///   (1 / 2 / N decades), `minor_count = 8` (2..9 within each decade),
-    ///   `format = Power` (10ⁿ superscript), `sig_digits = 1`.
+    /// - **Linear**: `major_spacing` is
+    ///   [`crate::tick::axis_major_spacing`] of the range: 0.2, 0.5 or 1 ×
+    ///   10^k of the span, for 5 to 10 major intervals (span 72 → 10,
+    ///   8 → 1, 0.7 → 0.1, 10 → 2). `minor_count = 4`, `format = Decimal`
+    ///   (an existing timestamp format is retained), `sig_digits = 3`.
+    /// - **Logarithmic**: `major_spacing` is the same function's decade step
+    ///   (1 up to 6 decades, 2 up to 12, then `ceil(decades / 6)`),
+    ///   `minor_count = 8` (2..9 within each decade), `format = Power` (10ⁿ
+    ///   superscript), `sig_digits = 1`.
     pub fn set_x_range(&mut self, min: f64, max: f64) {
         let log = matches!(self.config.bottom_x.scale, AxisScale::Logarithmic);
         self.with_axis_range_change(|c| {
@@ -679,6 +886,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
+            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
             .and_then(|chart| fitted_axis_range(&chart.bottom_x, ext, padding_ratio))
         else {
             return;
@@ -692,6 +900,7 @@ impl Chart {
         let Some((min, max)) = self
             .config
             .subplot_config(index)
+            .filter(|chart| chart.ternary.is_none() && chart.parallel.is_none())
             .and_then(|chart| fitted_axis_range(&chart.left_y, ext, padding_ratio))
         else {
             return;
@@ -771,7 +980,11 @@ impl Chart {
     /// A successful fit calls [`Self::set_x_range`], so it also chooses ticks
     /// and label formatting for both X axes. For range-only edits, write the
     /// chosen bounds through [`Self::with_axis_range_change`] instead.
+    /// A ternary chart is left as it is: its axes span the triangle.
     pub fn auto_fit_x_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if self.config.ternary.is_some() || self.config.parallel.is_some() {
+            return;
+        }
         let Some((min, max)) = fitted_axis_range(&self.config.bottom_x, ext, padding_ratio) else {
             return;
         };
@@ -781,6 +994,9 @@ impl Chart {
     /// Fit the Y axis to a prepared [`FitExtent`] — see
     /// [`Self::auto_fit_x_extent`].
     pub fn auto_fit_y_extent(&mut self, ext: &FitExtent, padding_ratio: f64) {
+        if self.config.ternary.is_some() || self.config.parallel.is_some() {
+            return;
+        }
         let Some((min, max)) = fitted_axis_range(&self.config.left_y, ext, padding_ratio) else {
             return;
         };
@@ -878,6 +1094,9 @@ impl Chart {
     /// the series whose extents to union with [`Config::series_fit_roles`];
     /// [`Self::auto_fit_layer_union`] does both from cached column
     /// statistics.
+    ///
+    /// A ternary chart's axes span the whole triangle, not a data extent
+    /// (`Config.ternary`): every fit leaves them as they are.
     pub fn auto_fit_layer_extent(
         &mut self,
         layer: LayerRef,
@@ -920,6 +1139,10 @@ impl Chart {
     /// tips are not in the column statistics: for those, measure the series
     /// with `Renderer::begin_series_fit_extent` and fit with
     /// [`Self::auto_fit_layer_extent`].
+    ///
+    /// A line offset member (`Config::line_offsets`) contributes its extents
+    /// as it is drawn, moved by its shift ([`Self::line_offset_fit_extents`]).
+    /// A ternary chart is left as it is ([`Self::auto_fit_layer_extent`]).
     pub fn auto_fit_layer_union(
         &mut self,
         pool: &ColumnPool,
@@ -927,15 +1150,82 @@ impl Chart {
         series: &[SeriesConfig],
         padding_ratio: f64,
     ) -> Result<()> {
+        // A parallel chart fits each of its axes to its columns (#141); the
+        // categorical positions and the normalized band stay.
+        if self.config.parallel.is_some() && matches!(layer, LayerRef::Base | LayerRef::Annotations)
+        {
+            return self.auto_fit_parallel_axes(pool, series, padding_ratio);
+        }
         let mut x = FitExtent::EMPTY;
         let mut y = FitExtent::EMPTY;
         for cfg in series {
             let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
-            if fit_x {
-                x.union(&Self::slot_extent(pool, &cfg.x_column)?);
+            // A category bar series fits its value axis to its group's bars;
+            // its category positions sit on a categorical axis no fit moves.
+            if cfg.render_type.category_bars().is_some() {
+                let own = self.config.layer_of_series(&cfg.series_id);
+                let (extent, direction) =
+                    category_bar_value_extent(pool, &self.config, own, series)?;
+                match direction {
+                    crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
+                    crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                        x.union(&extent)
+                    }
+                    _ => {}
+                }
+                continue;
             }
-            if fit_y {
-                y.union(&Self::slot_extent(pool, &cfg.y_column)?);
+            // A range bar series fits its value axis to its ends and
+            // whiskers, and a numeric position axis to its slots.
+            if cfg.render_type.range_bars().is_some() {
+                let (value, position, direction) = range_bar_extents(pool, &self.config, cfg)?;
+                let (along_x, along_y) = match direction {
+                    crate::data_config::CategoryBarDirection::Vertical => (position, value),
+                    crate::data_config::CategoryBarDirection::Horizontal => (value, position),
+                };
+                if fit_x {
+                    x.union(&along_x);
+                }
+                if fit_y {
+                    y.union(&along_y);
+                }
+                continue;
+            }
+            // A box plot series fits its value axis to its records' and
+            // outliers' statistics; its positions sit on a categorical axis.
+            if cfg.render_type.box_plot().is_some() {
+                let own = self.config.layer_of_series(&cfg.series_id);
+                let (extent, direction) =
+                    box_plot_value_extent(pool, &self.config, own, std::slice::from_ref(cfg))?;
+                match direction {
+                    crate::data_config::CategoryBarDirection::Vertical if fit_y => y.union(&extent),
+                    crate::data_config::CategoryBarDirection::Horizontal if fit_x => {
+                        x.union(&extent)
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+            if fit_x || fit_y {
+                let extent = |fit: bool, column: &str| {
+                    if fit {
+                        Self::slot_extent(pool, column)
+                    } else {
+                        Ok(FitExtent::EMPTY)
+                    }
+                };
+                let (member_x, member_y) = Self::line_offset_fit_extents(
+                    &self.config,
+                    &cfg.series_id,
+                    extent(fit_x, &cfg.x_column)?,
+                    extent(fit_y, &cfg.y_column)?,
+                );
+                if fit_x {
+                    x.union(&member_x);
+                }
+                if fit_y {
+                    y.union(&member_y);
+                }
             }
             if let DataRenderType::Histogram { bar } = &cfg.render_type {
                 let baseline = FitExtent {
@@ -951,7 +1241,147 @@ impl Chart {
             }
         }
         self.auto_fit_layer_extent(layer, &x, &y, padding_ratio);
+        self.auto_fit_view_3d_z(pool, layer, series, padding_ratio)?;
         Ok(())
+    }
+
+    /// On a parallel chart (`Config.parallel`, #141), fit each parallel
+    /// axis's range to the union of the cached statistics of the column
+    /// every parallel series names for it, padded by `padding_ratio` (a
+    /// logarithmic axis from the columns' smallest positive value): a
+    /// display parameter from column statistics (rule 1), nothing read back.
+    /// An axis no series names, or whose columns' extent is degenerate, is
+    /// left as it is; a flat chart is left as it is.
+    pub fn auto_fit_parallel_axes(
+        &mut self,
+        pool: &ColumnPool,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let axes = match self.config.parallel.as_ref() {
+            Some(parallel) => parallel.axes.len(),
+            None => return Ok(()),
+        };
+        for i in 0..axes {
+            let mut ext = FitExtent::EMPTY;
+            for cfg in series {
+                if let Some(column) = cfg.render_type.parallel().and_then(|p| p.columns.get(i)) {
+                    ext.union(&Self::slot_extent(pool, column)?);
+                }
+            }
+            let Some(axis) = self
+                .config
+                .parallel
+                .as_ref()
+                .map(|parallel| parallel.axes[i].axis_options(&self.config.left_y))
+            else {
+                return Ok(());
+            };
+            let Some((min, max)) = fitted_axis_range(&axis, &ext, padding_ratio) else {
+                continue;
+            };
+            self.with_axis_range_change(|c| {
+                if let Some(axis) = c.parallel.as_mut().and_then(|p| p.axes.get_mut(i)) {
+                    axis.min = min;
+                    axis.max = max;
+                }
+            });
+        }
+        Ok(())
+    }
+
+    /// On a 3D chart (`Config.view_3d`), fit the z axis (`right_y`) to the
+    /// union of the height columns' cached statistics of the layer's
+    /// heatmaps and contours and of the `z_column` of its scatter and line
+    /// series (#132). A display parameter from column statistics (rule 1):
+    /// nothing is read back. A flat chart is left as it is.
+    pub fn auto_fit_view_3d_z(
+        &mut self,
+        pool: &ColumnPool,
+        layer: LayerRef,
+        series: &[SeriesConfig],
+        padding_ratio: f64,
+    ) -> Result<()> {
+        let chart = match layer {
+            LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                match self.config.subplots.get(index) {
+                    Some(subplot) => &subplot.config,
+                    None => return Ok(()),
+                }
+            }
+            _ => &self.config,
+        };
+        if chart.view_3d.is_none() {
+            return Ok(());
+        }
+        let mut z = FitExtent::EMPTY;
+        for cfg in series {
+            let (fit_x, fit_y) = self.config.series_fit_roles(layer, &cfg.series_id);
+            if !(fit_x || fit_y) {
+                continue;
+            }
+            let matrix = match &cfg.render_type {
+                DataRenderType::Heatmap { matrix, .. }
+                | DataRenderType::Contour { matrix, .. }
+                | DataRenderType::HeatmapContour { matrix, .. } => matrix,
+                _ => {
+                    if let Some(id) = cfg.z_column.as_deref() {
+                        z.union(&Self::slot_extent(pool, id)?);
+                    }
+                    continue;
+                }
+            };
+            for id in &matrix.columns {
+                z.union(&Self::slot_extent(pool, id)?);
+            }
+        }
+        let Some((min, max)) = fitted_axis_range(&chart.right_y, &z, padding_ratio) else {
+            return Ok(());
+        };
+        let log = matches!(chart.right_y.scale, AxisScale::Logarithmic);
+        self.with_axis_range_change(|c| {
+            let chart = match layer {
+                LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) => {
+                    &mut c.subplots[index].config
+                }
+                _ => c,
+            };
+            apply_axis_range(&mut chart.right_y, min, max, log);
+        });
+        Ok(())
+    }
+
+    /// The `x` and `y` extents of series `series_id` of `config` as they are
+    /// drawn: moved by its line offset (`Config::line_offset_of`) on the axes
+    /// that draw it, a factor of `10^shift` on a logarithmic axis. A series
+    /// that is not a member keeps both. The fit of a layer unions these, so
+    /// the base range covers every member where it is drawn.
+    pub fn line_offset_fit_extents(
+        config: &Config,
+        series_id: &str,
+        x: FitExtent,
+        y: FitExtent,
+    ) -> (FitExtent, FitExtent) {
+        let Some([dx, dy]) = config.line_offset_of(series_id) else {
+            return (x, y);
+        };
+        let log = |axis: &AxisOptions| matches!(axis.scale, AxisScale::Logarithmic);
+        let (chart, y_axis) = match config.layer_of_series(series_id) {
+            LayerRef::Subplot(index) => {
+                let chart = &config.subplots[index].config;
+                (chart, &chart.left_y)
+            }
+            LayerRef::SubplotOverlay(index, overlay) => {
+                let chart = &config.subplots[index].config;
+                (chart, &chart.overlays[overlay].y_axis)
+            }
+            LayerRef::Overlay(overlay) => (config, &config.overlays[overlay].y_axis),
+            LayerRef::Base | LayerRef::Annotations => (config, &config.left_y),
+        };
+        (
+            x.shifted(dx, log(&chart.bottom_x)),
+            y.shifted(dy, log(y_axis)),
+        )
     }
 }
 
@@ -965,15 +1395,10 @@ mod tests {
     }
 
     #[test]
-    fn chart_dirty_starts_true() {
-        let c = Chart::new(dummy_config());
-        assert!(c.data_dirty());
-        assert!(c.raster_dirty());
-    }
-
-    #[test]
     fn chart_consume_clears_dirty() {
         let mut c = Chart::new(dummy_config());
+        assert!(c.data_dirty());
+        assert!(c.raster_dirty());
         assert!(c.consume_data_dirty());
         assert!(!c.data_dirty());
         assert!(c.consume_raster_dirty());
@@ -1104,42 +1529,6 @@ mod tests {
         assert_eq!(b, 5.0);
     }
 
-    /// The widest bound is not at a value extreme — per-column min/max
-    /// composition would get this wrong (0−5 = −5), the pairwise pass right.
-    #[test]
-    fn errorbar_extent_is_pairwise_not_minmax_composed() {
-        let ext = errorbar_extent(&[0.0, 10.0], &[1.0, 5.0], &[1.0, 5.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.max, 15.0);
-    }
-
-    /// NaN values are gaps (skipped); NaN errors draw no bar, so they
-    /// contribute the bare value. Offsets past the error column's end
-    /// default to zero.
-    #[test]
-    fn errorbar_extent_nan_and_length_conventions() {
-        let nan = f32::NAN;
-        let ext = errorbar_extent(&[nan, 2.0, 4.0], &[100.0, nan], &[100.0, nan]).unwrap();
-        assert_eq!(ext.min, 2.0);
-        assert_eq!(ext.max, 4.0);
-
-        assert!(errorbar_extent(&[nan, nan], &[1.0, 1.0], &[1.0, 1.0]).is_none());
-    }
-
-    #[test]
-    fn errorbar_extent_asymmetric_and_min_positive() {
-        let ext = errorbar_extent(&[10.0], &[2.0], &[7.0]).unwrap();
-        assert_eq!(ext.min, 8.0);
-        assert_eq!(ext.max, 17.0);
-        assert_eq!(ext.min_positive, Some(8.0));
-
-        // Bound dips below zero: min_positive keeps the smallest positive
-        // bound for the log-axis safe floor.
-        let ext = errorbar_extent(&[1.0, 3.0], &[2.0, 1.0], &[0.0, 0.0]).unwrap();
-        assert_eq!(ext.min, -1.0);
-        assert_eq!(ext.min_positive, Some(1.0));
-    }
-
     #[test]
     fn auto_fit_y_extent_linear_pads_both_sides() {
         let mut c = Chart::new(dummy_config());
@@ -1228,6 +1617,82 @@ mod tests {
         assert_eq!(chart.config(), &config);
     }
 
+    // A malformed math segment tree is refused at the renderer boundary in
+    // every text a `Config` draws outside the annotations (which their own
+    // validation checks), with the field that holds it.
+    #[test]
+    fn validate_renderer_config_refuses_a_malformed_math_tree() {
+        use crate::text::{MathKind, MathNode, MathSlot, RichSegment};
+        let mut cfg = dummy_config();
+        cfg.colorbar = Some(crate::default::default_colorbar_options());
+        cfg.overlays.push(crate::OverlayLayer {
+            legend: Some(cfg.legend.clone()),
+            ..Default::default()
+        });
+        assert!(validate_renderer_config(&cfg).is_ok());
+        // A slot child of a node that is not open.
+        let broken = vec![
+            RichSegment {
+                math_node: Some(MathNode {
+                    id: 0,
+                    kind: MathKind::Math(crate::text::MathStyle::Text),
+                }),
+                ..RichSegment::plain('\u{200B}')
+            },
+            RichSegment {
+                math_parent: Some(MathSlot { id: 3, slot: 0 }),
+                ..RichSegment::plain('x')
+            },
+        ];
+        type Pick = fn(&mut Config) -> &mut crate::text::RichText;
+        let fields: [(&str, Pick); 9] = [
+            ("chart_title", |c| &mut c.chart_title.text),
+            ("legend", |c| &mut c.legend.content),
+            ("top_x", |c| &mut c.top_x.title_option.text),
+            ("bottom_x", |c| &mut c.bottom_x.title_option.text),
+            ("left_y", |c| &mut c.left_y.title_option.text),
+            ("right_y", |c| &mut c.right_y.title_option.text),
+            ("colorbar.axis", |c| {
+                &mut c.colorbar.as_mut().unwrap().axis.title_option.text
+            }),
+            ("overlays.y_axis", |c| {
+                &mut c.overlays[0].y_axis.title_option.text
+            }),
+            ("overlays.legend", |c| {
+                &mut c.overlays[0].legend.as_mut().unwrap().content
+            }),
+        ];
+        for (field, pick) in fields {
+            let mut c = cfg.clone();
+            pick(&mut c).segments = broken.clone();
+            match validate_renderer_config(&c) {
+                Err(FiggyError::InvalidConfig { field: f, reason }) => {
+                    assert_eq!(f, field);
+                    assert_eq!(reason, crate::text::MathErrorKind::UnknownParent.as_str());
+                }
+                other => panic!("{field}: {other:?}"),
+            }
+        }
+        let mut c = cfg.clone();
+        c.annotations.items.push(crate::annotation::Annotation::new(
+            crate::annotation::AnnotationKind::Text {
+                anchor: crate::annotation::Anchor::Ratio { x: 0.5, y: 0.5 },
+                text: crate::text::RichText {
+                    segments: broken,
+                    ..crate::text::RichText::plain("", Color::BLACK, 12.0, "")
+                },
+                box_style: None,
+            },
+        ));
+        assert!(matches!(
+            validate_renderer_config(&c),
+            Err(FiggyError::InvalidConfig {
+                field: "annotations",
+                ..
+            })
+        ));
+    }
+
     // Issue #6: every renderer edit entry point (`register_chart`,
     // `set_chart_config`, `set_chart_state`, `set_chart_view_state`) runs this
     // gate before touching state. A negative title margin is a coordinate and
@@ -1258,6 +1723,120 @@ mod tests {
                 "title margin {margin} must be refused at the renderer boundary"
             );
         }
+    }
+
+    fn categories(n: usize) -> Option<Vec<crate::config::Category>> {
+        Some(
+            (0..n)
+                .map(|i| crate::config::Category::new(format!("c{i}"), format!("C{i}")))
+                .collect(),
+        )
+    }
+
+    /// A categorical axis is held to its category rules on every axis the
+    /// renderer reads, its `min` / `max` are not checked, and the axes that
+    /// cannot be categorical yet say so.
+    #[test]
+    fn validate_renderer_config_holds_categorical_axes_to_their_rules() {
+        let with = |edit: &dyn Fn(&mut Config)| {
+            let mut cfg = dummy_config();
+            edit(&mut cfg);
+            validate_renderer_config(&cfg)
+        };
+        assert!(with(&|c| c.bottom_x.categories = categories(3)).is_ok());
+        // No count limit on a categorical axis (CLAUDE.md rule 10, #107).
+        assert!(with(&|c| c.bottom_x.categories = categories(5000)).is_ok());
+        // An inverted categorical axis walks its categories from the far end.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(3);
+                c.left_y.inverted = true;
+            })
+            .is_ok()
+        );
+        // `min` / `max` are ignored on a categorical axis.
+        assert!(
+            with(&|c| {
+                c.left_y.categories = categories(2);
+                c.left_y.min = 5.0;
+                c.left_y.max = f64::NAN;
+            })
+            .is_ok()
+        );
+        for (field, edit) in [
+            (
+                "top_x",
+                (|c: &mut Config| c.top_x.categories = categories(0)) as fn(&mut Config),
+            ),
+            ("bottom_x", |c| {
+                c.bottom_x.categories = categories(2);
+                c.bottom_x.scale = AxisScale::Logarithmic;
+            }),
+            ("left_y", |c| {
+                c.left_y.categories = categories(2);
+                c.left_y.categories.as_mut().unwrap()[0].id = String::new();
+            }),
+            ("right_y", |c| {
+                c.right_y.categories = categories(2);
+                c.right_y.categories.as_mut().unwrap()[1].id = "c0".into();
+            }),
+        ] {
+            assert!(
+                matches!(with(&edit), Err(FiggyError::InvalidConfig { field: f, .. }) if f == field),
+                "{field}"
+            );
+        }
+        let bar = with(&|c| {
+            let mut bar = crate::default::default_colorbar_options();
+            bar.axis.categories = categories(2);
+            c.colorbar = Some(bar);
+        });
+        assert!(matches!(
+            bar,
+            Err(FiggyError::InvalidConfig {
+                field: "colorbar.axis",
+                reason: "a colourbar axis cannot be categorical"
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(0);
+            c.overlays.push(layer);
+        });
+        assert!(matches!(
+            overlay,
+            Err(FiggyError::InvalidConfig {
+                field: "overlays.y_axis",
+                ..
+            })
+        ));
+        let overlay = with(&|c| {
+            let mut layer = crate::OverlayLayer::default();
+            layer.y_axis.categories = categories(4);
+            c.overlays.push(layer);
+        });
+        assert!(overlay.is_ok(), "{overlay:?}");
+    }
+
+    /// The range helpers leave a categorical axis as it is.
+    #[test]
+    fn range_helpers_leave_a_categorical_axis_unchanged() {
+        let mut cfg = dummy_config();
+        cfg.bottom_x.categories = categories(3);
+        let before = cfg.bottom_x.clone();
+        let mut chart = Chart::new(cfg);
+        chart.set_x_range(-10.0, 10.0);
+        chart.auto_fit_x_extent(
+            &FitExtent {
+                min: 1.0,
+                max: 2.0,
+                min_positive: Some(1.0),
+            },
+            0.1,
+        );
+        assert_eq!(chart.config().bottom_x, before);
+        // The numeric top axis of the pair still follows.
+        assert_eq!(chart.config().top_x.min, 1.0 - 0.1);
     }
 
     // The colourbar's z axis goes through the same renderer-side gate as the

@@ -1,6 +1,10 @@
 //! Exact, bounded replay operations independent of the displayed stream.
 use super::*;
 
+/// The upper export scale of a streamed chart, which keeps the bound every
+/// export had before 0.19 (streaming is not extended, rule 8).
+const STREAM_EXPORT_MAX_SCALE: f32 = 8.0;
+
 #[cfg(test)]
 #[path = "streaming_auxiliary_tests.rs"]
 mod tests;
@@ -320,8 +324,8 @@ impl Renderer {
                         .descriptors
                         .iter()
                         .find(|descriptor| {
-                            descriptor.signature.series_id == series.series_id
-                                && descriptor.signature.source_id == series.source_id
+                            descriptor.series_id == series.series_id
+                                && descriptor.source_id == series.source_id
                         })
                         .ok_or(FiggyError::StaleStateToken {
                             reason: "packed view pick descriptor missing".into(),
@@ -784,9 +788,10 @@ impl Renderer {
             .as_ref()
             .unwrap();
         let plan = Arc::clone(&pick.plan);
-        let descriptor = plan.descriptors.iter().find(|desc| {
-            desc.signature.series_id == cfg.series_id && desc.signature.source_id == cfg.source_id
-        });
+        let descriptor = plan
+            .descriptors
+            .iter()
+            .find(|desc| desc.series_id == cfg.series_id && desc.source_id == cfg.source_id);
         let mut descriptor = descriptor.map(OwnedGpuPickSeriesDescriptor::descriptor);
         if let Some(desc) = &mut descriptor {
             match phase {
@@ -987,7 +992,8 @@ impl Renderer {
         let completed = self
             .auto_stream_snapshot(completed_job)
             .ok_or(StreamError::WrongState)?;
-        let scale = clamp_export_scale(scale);
+        // Streaming is frozen (rule 8): its export keeps the 0.18 bound.
+        let scale = clamp_export_scale(scale).min(STREAM_EXPORT_MAX_SCALE);
         let state = &self.chart_states[&chart];
         let document_config = if state.revisions.data == completed.data_revision
             && state.revisions.series == completed.series_revision
@@ -1160,9 +1166,13 @@ impl Renderer {
             &self.style_bgl,
             &self.per_point_style_map_bgl,
             &self.point_value_map_bgl,
+            [&self.surface_bgl, &self.view3d_value_map_bgl],
             &self.data_selection_bgl,
             &self.field_bgl,
             &self.vector_bgl,
+            &self.star_data_bgl,
+            &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             format,
             &[ChartDrawItem {

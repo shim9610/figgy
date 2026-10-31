@@ -980,6 +980,8 @@ mod tests {
                     style_params: [[0.; 4]; 3],
                     polar_angle: [0.; 4],
                     polar_extent: [0.; 4],
+                    ternary_lt: [0.0; 4],
+                    ternary_r: [0.0; 4],
                 };
                 let tb = create_scatter_transform_uniform_buffer(&device, &transform);
                 let tbg = create_scatter_transform_bind_group(&device, &tbgl, &tb);
@@ -1051,13 +1053,20 @@ mod tests {
                                 None => (pool.buffer(), resident_x, resident_y),
                             };
                             let layers = SeriesLayers {
+                                value_labels: None,
                                 area: None,
                                 field: None,
                                 bar: None,
+                                violin: None,
+                                category_bars: None,
+                                box_points: None,
                                 contour: None,
                                 vector: None,
                                 errorbar: None,
                                 line_extra: None,
+                                parallel: None,
+                                line_3d: None,
+                                scatter_3d: None,
                                 line: line.then_some(ColumnLineLayer {
                                     pipeline: &line_pipeline,
                                     transform_bg: &tbg,
@@ -1068,6 +1077,10 @@ mod tests {
                                     arc: None,
                                     verts_per_instance: 4,
                                     texture_bg: None,
+                                    closed: false,
+                                    value_map: None,
+                                    third: None,
+                                    view3d: None,
                                 }),
                                 scatter: (!line).then_some(ColumnScatterLayer {
                                     pipeline: &scatter_pipeline,
@@ -1083,10 +1096,16 @@ mod tests {
                                     color_value: None,
                                     size_value: None,
                                     texture_bg: None,
+                                    third: None,
+                                    view3d: None,
                                 }),
                                 selected_bars: vec![],
                                 selected_fields: vec![],
                                 picked: vec![],
+                                selected_surface: None,
+                                region: None,
+                                surface: None,
+                                floor: None,
                             };
                             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: None,

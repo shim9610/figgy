@@ -175,7 +175,14 @@ impl Capture {
                                 | "pick_exact_candidates"
                                 | "pick_reduce_candidates"
                                 | "pick_histogram_bin"
+                                | "pick_category_bar"
+                                | "pick_box_plot"
+                                | "pick_range_bar"
+                                | "pick_violin"
+                                | "pick_value_labels"
+                                | "pick_parallel"
                                 | "scan_block"
+                                | "ring_scan_block"
                         )
                     )),
             "Benchmark must retain workgroup initialization"
@@ -252,10 +259,29 @@ fn blend(component: wgpu::BlendComponent) -> Value {
 
 pub(crate) fn render(desc: &wgpu::RenderPipelineDescriptor<'_>, elapsed: Duration) {
     record(|c| {
-        assert!(
-            desc.depth_stencil.is_none(),
-            "Add depth/stencil to the benchmark before introducing a new pipeline"
-        );
+        // The 3D panel composite's pipelines test depth (#49): recorded as
+        // the WebGPU descriptor the browser prewarm passes through.
+        // The 3D panel composite's pipelines test depth and the ternary
+        // region fill's test and write the stencil (#49): recorded as the
+        // WebGPU descriptor the browser prewarm passes through.
+        let depth_stencil = desc.depth_stencil.as_ref().map(|d| {
+            assert_eq!(d.bias, wgpu::DepthBiasState::default());
+            let face = |f: wgpu::StencilFaceState| {
+                json!({"compare": web(f.compare), "failOp": web(f.fail_op), "depthFailOp": web(f.depth_fail_op), "passOp": web(f.pass_op)})
+            };
+            let mut value = json!({
+                "format": format!("{:?}", d.format).to_lowercase().replace("depth24plusstencil8", "depth24plus-stencil8"),
+                "depthWriteEnabled": d.depth_write_enabled.unwrap_or(false),
+                "depthCompare": d.depth_compare.map_or("always".into(), web),
+            });
+            if d.stencil != wgpu::StencilState::default() {
+                value["stencilFront"] = face(d.stencil.front);
+                value["stencilBack"] = face(d.stencil.back);
+                value["stencilReadMask"] = json!(d.stencil.read_mask);
+                value["stencilWriteMask"] = json!(d.stencil.write_mask);
+            }
+            value
+        });
         assert!(desc.multiview_mask.is_none());
         assert_eq!(desc.primitive.polygon_mode, wgpu::PolygonMode::Fill);
         assert!(!desc.primitive.conservative);
@@ -286,8 +312,11 @@ pub(crate) fn render(desc: &wgpu::RenderPipelineDescriptor<'_>, elapsed: Duratio
         if let Some(format) = desc.primitive.strip_index_format {
             primitive["stripIndexFormat"] = json!(web(format));
         }
-        let value = json!({"label":desc.label,"layout":c.layout(desc.layout),"vertex":vertex,"fragment":fragment_value,"primitive":primitive,
+        let mut value = json!({"label":desc.label,"layout":c.layout(desc.layout),"vertex":vertex,"fragment":fragment_value,"primitive":primitive,
             "multisample":{"count":desc.multisample.count,"mask":desc.multisample.mask as u32,"alphaToCoverageEnabled":desc.multisample.alpha_to_coverage_enabled}});
+        if let Some(depth_stencil) = depth_stencil {
+            value["depthStencil"] = depth_stencil;
+        }
         c.pipeline("render", value, elapsed);
     });
 }

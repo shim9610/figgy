@@ -78,7 +78,7 @@ where
     F: FnMut(&str) -> f32,
 {
     let cfg = timestamp_format(axis)?;
-    if !uses_calendar_ticks(axis, cfg) || !walkable_linear_range(axis) {
+    if !uses_calendar_ticks(axis, cfg) || !crate::tick::walkable_range(axis) {
         return None;
     }
 
@@ -596,10 +596,6 @@ fn zone_offset_seconds(zone: TimestampZone) -> i64 {
         TimestampZone::Utc => 0,
         TimestampZone::FixedOffsetMinutes(minutes) => minutes as i64 * 60,
     }
-}
-
-fn walkable_linear_range(axis: &AxisOptions) -> bool {
-    axis.min.is_finite() && axis.max.is_finite() && axis.max > axis.min
 }
 
 fn range_epsilon(min: f64, max: f64) -> f64 {

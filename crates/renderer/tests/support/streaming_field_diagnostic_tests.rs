@@ -353,6 +353,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
             label: None,
             x_column: "x".into(),
             y_column: "y".into(),
+            z_column: None,
             render_type: DataRenderType::Heatmap {
                 matrix: crate::data_config::MatrixRef {
                     columns: vec!["z0".into(), "z1".into(), "z0".into()],
@@ -364,6 +365,7 @@ fn heatmap_browser_fixture_backend_diagnostic() {
                     shading: crate::data_config::Shading::Interpolated,
                     opacity: 0.63,
                 },
+                surface: None,
             },
         }];
         let mut resident = make();

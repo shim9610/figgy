@@ -3,11 +3,16 @@
 //! its labels around it, and the ray at `radial_label_angle_degrees` as the
 //! radius axis with its labels beside it. Rings and arcs are polylines on
 //! the canvas, with a segment count that follows the radius so an export at
-//! a higher scale stays round. The geometry is `Config::polar_geometry`, the
-//! same circle the GPU transform draws against.
+//! a higher scale stays round; a polygon grid (`GridShape::Polygon`) joins
+//! each ring at the categories of a categorical angle axis instead. The
+//! geometry is `Config::polar_geometry`, the same circle the GPU transform
+//! draws against, and the angles are `Config::polar_angle_map`, the same
+//! mapping: a categorical angle axis puts its spokes and labels at its
+//! categories.
 
 use super::*;
-use crate::polar::{PolarGeometry, PolarOptions};
+use crate::polar::{AngleMap, GridShape, PolarGeometry, PolarOptions};
+use crate::sink::{PlacedText, Sink, Slot, StrokeStyle, TextRef};
 use crate::text_render::TextMetrics;
 
 /// Arcs are flattened into chords of about this length in pixels.
@@ -15,21 +20,57 @@ const ARC_CHORD_PX: f32 = 3.0;
 const MIN_ARC_SEGMENTS: usize = 12;
 const MAX_ARC_SEGMENTS: usize = 2048;
 
-/// The screen sweep an angular range covers: start angle and signed sweep in
+/// The screen sweep the angle axis covers: start angle and signed sweep in
 /// radians, counter-clockwise positive, y up.
-fn sweep(polar: &PolarOptions, axis: &AxisOptions) -> (f64, f64) {
-    match polar.sector {
+fn sweep(map: &AngleMap) -> (f64, f64) {
+    match map.window {
         Some([start, end]) => {
-            let a0 = polar.screen_angle(start);
-            (a0, polar.screen_angle(end) - a0)
+            let a0 = map.screen_angle(start);
+            (a0, map.screen_angle(end) - a0)
         }
-        None => {
-            let _ = axis;
-            (
-                polar.screen_angle(0.0),
-                std::f64::consts::TAU * polar.direction(),
-            )
-        }
+        None => (
+            map.screen_angle(0.0),
+            std::f64::consts::TAU * map.direction(),
+        ),
+    }
+}
+
+/// The ring shape of a polar chart: `Some(n)` to join every ring at the `n`
+/// categories of its angle axis (a polygon grid), `None` for circles.
+fn polygon_corners(polar: &PolarOptions, axis: &AxisOptions) -> Option<usize> {
+    (polar.grid_shape() == GridShape::Polygon)
+        .then(|| axis.category_count())
+        .flatten()
+        .filter(|n| *n > 0)
+}
+
+/// Place the ring of `radius` over the angle axis: the arc of the sweep
+/// (`stroke_arc`), or with `corners` the chords between the category angles
+/// `0, 1, ..., n` (the last one back on the first on a full circle, on the
+/// sector end in a sector).
+#[allow(clippy::too_many_arguments)]
+fn stroke_ring(
+    sink: &mut dyn Sink,
+    slot: Slot,
+    geometry: &PolarGeometry,
+    map: &AngleMap,
+    corners: Option<usize>,
+    radius: f32,
+    style: &StrokeStyle<'_>,
+) {
+    let Some(n) = corners else {
+        let (start, sweep) = sweep(map);
+        stroke_arc(sink, slot, geometry, radius, start, sweep, style);
+        return;
+    };
+    if radius <= 0.0 {
+        return;
+    }
+    let mut previous = point(geometry, map.screen_angle(0.0), radius);
+    for k in 1..=n {
+        let next = point(geometry, map.screen_angle(k as f64), radius);
+        sink.stroke(slot, [previous.0, previous.1], [next.0, next.1], style);
+        previous = next;
     }
 }
 
@@ -41,17 +82,16 @@ fn point(geometry: &PolarGeometry, angle: f64, radius: f32) -> (f32, f32) {
     )
 }
 
-/// Stroke the arc of `radius` over `(start, sweep)` as chords.
+/// Place the arc of `radius` over `(start, sweep)` as chords.
 #[allow(clippy::too_many_arguments)]
 fn stroke_arc(
-    canvas: &mut Canvas,
+    sink: &mut dyn Sink,
+    slot: Slot,
     geometry: &PolarGeometry,
     radius: f32,
     start: f64,
     sweep: f64,
-    paint: &Paint,
-    stroker: &DecoStroker,
-    tag: &str,
+    style: &StrokeStyle<'_>,
 ) {
     if radius <= 0.0 || sweep == 0.0 {
         return;
@@ -63,7 +103,7 @@ fn stroke_arc(
     for i in 1..=segments {
         let angle = start + sweep * i as f64 / segments as f64;
         let next = point(geometry, angle, radius);
-        stroker.stroke_segment(canvas, previous, next, paint, tag);
+        sink.stroke(slot, [previous.0, previous.1], [next.0, next.1], style);
         previous = next;
     }
 }
@@ -82,14 +122,14 @@ fn ring_radius(
 
 /// Whether an angle-axis `value` draws: inside the sector, and on a full
 /// circle not on the same spoke as an earlier value in `earlier`.
-fn angle_drawn(polar: &PolarOptions, value: f64, earlier: &[f64]) -> bool {
-    if !polar.contains_angle(value) {
+fn angle_drawn(map: &AngleMap, value: f64, earlier: &[f64]) -> bool {
+    if !map.contains(value) {
         return false;
     }
-    if polar.sector.is_some() {
+    if map.window.is_some() {
         return true;
     }
-    let turn = std::f64::consts::TAU / polar.angle_unit.radians_per_unit();
+    let turn = map.values_per_turn();
     !earlier.iter().any(|other| {
         let turns = (value - other) / turn;
         (turns - turns.round()).abs() * turn < 1e-6 * turn.max(1.0)
@@ -97,79 +137,121 @@ fn angle_drawn(polar: &PolarOptions, value: f64, earlier: &[f64]) -> bool {
 }
 
 /// Rings at the radius ticks and spokes at the angle ticks, from the grid
-/// options: `*_y` fields are rings, `*_x` fields are spokes.
-pub(super) fn draw_polar_grid(canvas: &mut Canvas, config: &Config, da: &DataArea, fp: FontPolicy) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+/// options: `*_y` fields are rings, `*_x` fields are spokes. Below the data.
+pub(super) fn emit_polar_grid(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+    let (Some(polar), Some(geometry), Some(map)) = (
+        &config.polar,
+        config.polar_geometry(),
+        config.polar_angle_map(),
+    ) else {
         return;
     };
     let g = &config.grid;
-    let stroker = DecoStroker::from_style(&config.draw_style);
-    let (start, sweep) = sweep(polar, &config.bottom_x);
+    let corners = polygon_corners(polar, &config.bottom_x);
     let inner = geometry.radius * polar.inner_radius_fraction;
-    let rings = |canvas: &mut Canvas, values: Vec<f64>, paint: Paint, prefix: &str| {
+    let rings = |sink: &mut dyn Sink,
+                 values: Vec<f64>,
+                 color: &Color,
+                 width: f32,
+                 style: &LineStylePreset,
+                 prefix: &str| {
         for (i, value) in values.into_iter().enumerate() {
             let radius = ring_radius(polar, &geometry, &config.left_y, value);
             if radius > inner + 0.5 && radius <= geometry.radius + 0.5 {
                 let tag = format!("{prefix}_{i}");
-                stroke_arc(
-                    canvas, &geometry, radius, start, sweep, &paint, &stroker, &tag,
+                stroke_ring(
+                    sink,
+                    Slot::Below,
+                    &geometry,
+                    &map,
+                    corners,
+                    radius,
+                    &StrokeStyle {
+                        width,
+                        color: *color,
+                        dash: style.pattern(),
+                        tag: &tag,
+                    },
                 );
             }
         }
     };
-    let spokes = |canvas: &mut Canvas, values: Vec<f64>, paint: Paint, prefix: &str| {
+    let spokes = |sink: &mut dyn Sink,
+                  values: Vec<f64>,
+                  color: &Color,
+                  width: f32,
+                  style: &LineStylePreset,
+                  prefix: &str| {
         for (i, value) in values.iter().enumerate() {
-            if !angle_drawn(polar, *value, &values[..i]) {
+            if !angle_drawn(&map, *value, &values[..i]) {
                 continue;
             }
-            let angle = polar.screen_angle(*value);
+            let angle = map.screen_angle(*value);
             let tag = format!("{prefix}_{i}");
-            stroker.stroke_segment(
-                canvas,
-                point(&geometry, angle, inner),
-                point(&geometry, angle, geometry.radius),
-                &paint,
-                &tag,
+            let a = point(&geometry, angle, inner);
+            let b = point(&geometry, angle, geometry.radius);
+            sink.stroke(
+                Slot::Below,
+                [a.0, a.1],
+                [b.0, b.1],
+                &StrokeStyle {
+                    width,
+                    color: *color,
+                    dash: style.pattern(),
+                    tag: &tag,
+                },
             );
         }
     };
     // Minor first so major paints over it, like the rectangular grid.
     if g.show_minor_x {
         spokes(
-            canvas,
-            minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp),
-            stroke_paint(&g.minor_x_color, g.minor_x_width, &g.minor_x_style),
+            sink,
+            minor_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
+            &g.minor_x_color,
+            g.minor_x_width,
+            &g.minor_x_style,
             "grid_minor_x",
         );
     }
     if g.show_minor_y {
         rings(
-            canvas,
-            minor_tick_values_for_axis(&config.left_y, Side::Left, da, fp),
-            stroke_paint(&g.minor_y_color, g.minor_y_width, &g.minor_y_style),
+            sink,
+            minor_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
+            &g.minor_y_color,
+            g.minor_y_width,
+            &g.minor_y_style,
             "grid_minor_y",
         );
     }
     if g.show_major_x {
         spokes(
-            canvas,
-            major_tick_values_for_axis(&config.bottom_x, Side::Bottom, da, fp),
-            stroke_paint(&g.major_x_color, g.major_x_width, &g.major_x_style),
+            sink,
+            major_tick_values_for_axis(&config.bottom_x, Side::Bottom, &data_area_rect(da), fp),
+            &g.major_x_color,
+            g.major_x_width,
+            &g.major_x_style,
             "grid_major_x",
         );
     }
     if g.show_major_y {
         rings(
-            canvas,
-            major_tick_values_for_axis(&config.left_y, Side::Left, da, fp),
-            stroke_paint(&g.major_y_color, g.major_y_width, &g.major_y_style),
+            sink,
+            major_tick_values_for_axis(&config.left_y, Side::Left, &data_area_rect(da), fp),
+            &g.major_y_color,
+            g.major_y_width,
+            &g.major_y_style,
             "grid_major_y",
         );
     }
 }
 
 /// One tick label's text and extents, in the axis' label format.
-fn tick_text(axis: &AxisOptions, value: f64, fp: FontPolicy) -> (NumericTickText, TextMetrics) {
+pub(super) fn tick_text(
+    axis: &AxisOptions,
+    value: f64,
+    fp: FontPolicy,
+) -> (NumericTickText, TextMetrics) {
     let ls = &axis.label_style;
     if matches!(ls.format, LabelFormat::Power) {
         let text = format_tick_power(value, ls.significant_digits, ls);
@@ -190,78 +272,96 @@ fn tick_text(axis: &AxisOptions, value: f64, fp: FontPolicy) -> (NumericTickText
     }
 }
 
-/// Draw `text` centred on `center` plus `offset`: the label offset fields
-/// are read in polar frames (`PolarOptions::angle_label_offset`,
-/// `PolarOptions::radius_label_offset`), not as screen x / y.
-fn draw_centered(
-    canvas: &mut Canvas,
-    text: &NumericTickText,
+/// The baseline origin of `text` centred on `center`: the one formula the
+/// polar labels are placed, boxed and pruned with.
+fn centered_origin(center: (f32, f32), m: TextMetrics) -> (f32, f32) {
+    (
+        center.0 - m.width * 0.5,
+        center.1 + (m.ascent - m.descent) * 0.5,
+    )
+}
+
+/// The box of `text` centred on `center` ([`label_rect`] at its origin).
+fn centered_rect(center: (f32, f32), m: TextMetrics) -> RectF {
+    label_rect(centered_origin(center, m), m)
+}
+
+/// Place `text` centred on `center`: the label offset fields are read in
+/// polar frames (`PolarOptions::angle_label_offset`,
+/// `PolarOptions::radius_label_offset`) by the walks, not as screen x / y.
+pub(super) fn place_centered(
+    sink: &mut dyn Sink,
+    text: TickText<'_>,
     center: (f32, f32),
-    offset: (f32, f32),
     m: TextMetrics,
     ls: &LabelStyle,
-    fp: FontPolicy,
 ) {
-    let origin = (
-        center.0 - m.width * 0.5 + offset.0,
-        center.1 + (m.ascent - m.descent) * 0.5 + offset.1,
-    );
-    match text {
-        NumericTickText::Plain(text) => draw_plain_text(
-            canvas,
-            text,
-            origin,
-            ls.color,
-            &ls.label_font,
-            ls.font_size,
-            false,
-            false,
-            fp,
-        ),
-        NumericTickText::Power(text) => draw_rich_text(canvas, text, origin, fp),
-    }
+    let placed = PlacedText {
+        text: match text {
+            TickText::Plain(text) => TextRef::Plain {
+                text,
+                family: &ls.label_font,
+                size: ls.font_size,
+                color: ls.color,
+            },
+            TickText::Power(rt) => TextRef::Rich(rt),
+        },
+        origin: centered_origin(center, m),
+        extents: m,
+        rotation: None,
+    };
+    sink.text(Slot::Above, &placed);
 }
 
 /// The outward tick extent of an axis: how far its ticks reach past the
 /// line, which is where its labels start.
-fn outward_tick(axis: &AxisOptions) -> f32 {
+pub(super) fn outward_tick(axis: &AxisOptions) -> f32 {
     match axis.tick {
         TickVisibility::None | TickVisibility::Inside => 0.0,
         TickVisibility::Outside | TickVisibility::Both => axis.major_tick_length.max(0.0),
     }
 }
 
-/// The angle axis (`bottom_x`) as the outer ring with its ticks and labels,
-/// and the radius axis (`left_y`) as the ray at the radial label angle.
-pub(super) fn draw_polar_axes(
-    canvas: &mut Canvas,
-    config: &Config,
-    da: &DataArea,
-    stroker: &DecoStroker,
-    fp: FontPolicy,
-) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+/// The polar chrome above the data: the angle axis (`bottom_x`) as the outer
+/// ring with its ticks, its labels, then the radius axis (`left_y`) as the
+/// ray at the radial label angle with its ticks and labels.
+pub(super) fn emit_polar_axes(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+    emit_polar_ring(config, da, fp, sink);
+    emit_polar_angle_labels(config, da, fp, sink);
+    emit_polar_radius_strokes(config, da, fp, sink);
+    emit_polar_radius_labels(config, da, fp, sink);
+}
+
+/// The outer ring and its ticks: the data boundary, which no element owns
+/// (the angle axis is not selectable).
+fn emit_polar_ring(config: &Config, da: &DataArea, fp: FontPolicy, sink: &mut dyn Sink) {
+    let (Some(polar), Some(geometry), Some(map)) = (
+        &config.polar,
+        config.polar_geometry(),
+        config.polar_angle_map(),
+    ) else {
         return;
     };
-    let (start, sweep) = sweep(polar, &config.bottom_x);
-
-    // Angle axis.
     let axis = &config.bottom_x;
-    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
+    let dash = axis.line_style.pattern();
     if axis.line_visible {
-        stroke_arc(
-            canvas,
+        stroke_ring(
+            sink,
+            Slot::Above,
             &geometry,
+            &map,
+            polygon_corners(polar, axis),
             geometry.radius,
-            start,
-            sweep,
-            &paint,
-            stroker,
-            "axis_bottom",
+            &StrokeStyle {
+                width: axis.line_width,
+                color: axis.line_color,
+                dash,
+                tag: "axis_bottom",
+            },
         );
     }
-    let majors = major_tick_values_for_axis(axis, Side::Bottom, da, fp);
-    let minors = minor_tick_values_for_axis(axis, Side::Bottom, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
+    let minors = minor_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
     if axis.tick != TickVisibility::None {
         for (i, (value, length)) in majors
             .iter()
@@ -274,10 +374,10 @@ pub(super) fn draw_polar_axes(
             } else {
                 &minors[..i - majors.len()]
             };
-            if !angle_drawn(polar, value, earlier) {
+            if !angle_drawn(&map, value, earlier) {
                 continue;
             }
-            let angle = polar.screen_angle(value);
+            let angle = map.screen_angle(value);
             let (inside, outside) = match axis.tick {
                 TickVisibility::None => continue,
                 TickVisibility::Outside => (geometry.radius, geometry.radius + length),
@@ -285,61 +385,148 @@ pub(super) fn draw_polar_axes(
                 TickVisibility::Both => (geometry.radius - length, geometry.radius + length),
             };
             let tag = format!("tick_bottom_{i}");
-            stroker.stroke_segment(
-                canvas,
-                point(&geometry, angle, inside),
-                point(&geometry, angle, outside),
-                &paint,
-                &tag,
+            let a = point(&geometry, angle, inside);
+            let b = point(&geometry, angle, outside);
+            sink.stroke(
+                Slot::Above,
+                [a.0, a.1],
+                [b.0, b.1],
+                &StrokeStyle {
+                    width: axis.line_width,
+                    color: axis.line_color,
+                    dash,
+                    tag: &tag,
+                },
             );
         }
     }
-    let ls = &axis.label_style;
-    each_angle_label(
-        polar,
-        &geometry,
-        axis,
-        &majors,
-        sweep,
-        fp,
-        |text, center, m| {
-            draw_centered(canvas, text, center, (0.0, 0.0), m, ls, fp);
-        },
-    );
+}
 
-    // Radius axis along the radial label ray, from the walk
-    // `polar_axis_segments` reports.
+/// The angle axis' tick labels (`Element::AxisLabel(Side::Bottom)`).
+pub(super) fn emit_polar_angle_labels(
+    config: &Config,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let (Some(geometry), Some(map)) = (config.polar_geometry(), config.polar_angle_map()) else {
+        return;
+    };
+    let axis = &config.bottom_x;
+    let majors = major_tick_values_for_axis(axis, Side::Bottom, &data_area_rect(da), fp);
+    let ls = &axis.label_style;
+    each_angle_label(&map, &geometry, axis, &majors, fp, |text, center, m| {
+        place_centered(sink, text, center, m, ls);
+    });
+}
+
+/// The radius axis' ray and ticks (`Element::Axis(Side::Left)`), from the
+/// walk [`each_radius_axis_stroke`] reports.
+pub(super) fn emit_polar_radius_strokes(
+    config: &Config,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+        return;
+    };
     let axis = &config.left_y;
-    let paint = stroke_paint(&axis.line_color, axis.line_width, &axis.line_style);
-    let majors = major_tick_values_for_axis(axis, Side::Left, da, fp);
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
+    let dash = axis.line_style.pattern();
     each_radius_axis_stroke(polar, &geometry, axis, da, fp, &majors, |tick, a, b| {
         let tag = match tick {
             None => "axis_left".to_string(),
             Some(i) => format!("tick_left_{i}"),
         };
-        stroker.stroke_segment(canvas, a, b, &paint, &tag);
-    });
-    let ls = &axis.label_style;
-    each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
-        draw_centered(canvas, text, center, (0.0, 0.0), m, ls, fp);
+        sink.stroke(
+            Slot::Above,
+            [a.0, a.1],
+            [b.0, b.1],
+            &StrokeStyle {
+                width: axis.line_width,
+                color: axis.line_color,
+                dash,
+                tag: &tag,
+            },
+        );
     });
 }
 
-/// The angle axis' tick labels as [`draw_polar_axes`] draws them: `place`
-/// gets each kept label's text, its centre on screen and its extents.
+/// The radius axis' tick labels (`Element::AxisLabel(Side::Left)`).
+pub(super) fn emit_polar_radius_labels(
+    config: &Config,
+    da: &DataArea,
+    fp: FontPolicy,
+    sink: &mut dyn Sink,
+) {
+    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
+        return;
+    };
+    let axis = &config.left_y;
+    let majors = major_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
+    let ls = &axis.label_style;
+    each_radius_label(polar, &geometry, axis, &majors, fp, |text, center, m| {
+        place_centered(sink, text.as_tick_text(), center, m, ls);
+    });
+}
+
+/// The text of the angle-axis label at `value`, with its extents: the
+/// category label of a categorical axis (`None` past its categories), else
+/// the value in the axis' label format.
+fn angle_label_text<'a>(
+    axis: &'a AxisOptions,
+    value: f64,
+    fp: FontPolicy,
+) -> Option<(AngleLabelText<'a>, TextMetrics)> {
+    let ls = &axis.label_style;
+    match axis.categories.as_deref() {
+        Some(categories) => {
+            let label = categories.get(value as usize)?.label.as_str();
+            let m = measure_plain_text(label, &ls.label_font, ls.font_size, false, false, fp);
+            Some((AngleLabelText::Category(label), m))
+        }
+        None => {
+            let (text, m) = tick_text(axis, value, fp);
+            Some((AngleLabelText::Numeric(text), m))
+        }
+    }
+}
+
+/// An angle label's text: a category's label, borrowed, or a formatted
+/// value.
+enum AngleLabelText<'a> {
+    Category(&'a str),
+    Numeric(NumericTickText),
+}
+
+impl AngleLabelText<'_> {
+    fn as_tick_text(&self) -> TickText<'_> {
+        match self {
+            AngleLabelText::Category(label) => TickText::Plain(label),
+            AngleLabelText::Numeric(text) => text.as_tick_text(),
+        }
+    }
+}
+
+/// The angle axis' tick labels as [`emit_polar_angle_labels`] places them: `place`
+/// gets each kept label's text, its centre on screen and its extents. A
+/// categorical axis' labels are its category labels at the categories (its
+/// major ticks); an empty label keeps its slot in the stride and draws
+/// nothing.
 fn each_angle_label(
-    polar: &PolarOptions,
+    map: &AngleMap,
     geometry: &PolarGeometry,
     axis: &AxisOptions,
     majors: &[f64],
-    sweep: f64,
     fp: FontPolicy,
-    mut place: impl FnMut(&NumericTickText, (f32, f32), TextMetrics),
+    mut place: impl FnMut(TickText<'_>, (f32, f32), TextMetrics),
 ) {
     let ls = &axis.label_style;
     if !(ls.visible && ls.label_visible) {
         return;
     }
+    let (_, sweep) = sweep(map);
     // Keep every k-th label when the labels would overlap around the
     // ring: the same 1/2/5 stride rule the straight axes use.
     let gap = ls.font_size * 0.5;
@@ -347,8 +534,10 @@ fn each_angle_label(
     let mut total = 0.0f32;
     let mut count = 0usize;
     for (i, value) in majors.iter().enumerate() {
-        if angle_drawn(polar, *value, &majors[..i]) {
-            total += tick_text(axis, *value, fp).1.width + gap;
+        if angle_drawn(map, *value, &majors[..i])
+            && let Some((_, m)) = angle_label_text(axis, *value, fp)
+        {
+            total += m.width + gap;
             count += 1;
         }
     }
@@ -365,15 +554,21 @@ fn each_angle_label(
     let radial = PolarOptions::angle_label_offset(ls);
     let mut drawn = 0usize;
     for (i, value) in majors.iter().enumerate() {
-        if !angle_drawn(polar, *value, &majors[..i]) {
+        if !angle_drawn(map, *value, &majors[..i]) {
             continue;
         }
+        let Some((text, m)) = angle_label_text(axis, *value, fp) else {
+            continue;
+        };
         drawn += 1;
         if (drawn - 1) % stride != 0 {
             continue;
         }
-        let (text, m) = tick_text(axis, *value, fp);
-        let angle = polar.screen_angle(*value);
+        let text = text.as_tick_text();
+        if matches!(text, TickText::Plain("")) {
+            continue;
+        }
+        let angle = map.screen_angle(*value);
         let (dx, dy) = (angle.cos() as f32, -(angle.sin() as f32));
         // The label box sits just outside the ring along the spoke.
         let reach = band + dx.abs() * m.width * 0.5 + dy.abs() * m.height() * 0.5;
@@ -382,11 +577,11 @@ fn each_angle_label(
             geometry.center[1] + dy * (geometry.radius + reach),
         );
         // Along the spoke, so every label keeps its distance to the ring.
-        place(&text, (center.0 + dx * radial, center.1 + dy * radial), m);
+        place(text, (center.0 + dx * radial, center.1 + dy * radial), m);
     }
 }
 
-/// The radius axis' tick labels as [`draw_polar_axes`] draws them, beside
+/// The radius axis' tick labels as [`emit_polar_radius_labels`] places them, beside
 /// the ray: `place` gets each label's text, centre and extents.
 fn each_radius_label(
     polar: &PolarOptions,
@@ -398,8 +593,10 @@ fn each_radius_label(
 ) {
     let inner = geometry.inner_radius;
     let ray = polar.radial_label_angle_degrees.to_radians();
-    let dir = (ray.cos() as f32, -(ray.sin() as f32));
-    let side = (dir.1, -dir.0);
+    let [dx, dy] = polar.ray_direction();
+    let dir = (dx, dy);
+    let [sx, sy] = polar.ray_side();
+    let side = (sx, sy);
     let ls = &axis.label_style;
     if !(ls.visible && ls.label_visible) {
         return;
@@ -423,15 +620,7 @@ fn each_radius_label(
         fp,
         majors,
         |value| point(geometry, ray, ring_radius(polar, geometry, axis, value)),
-        |position, m| {
-            let (x, y) = center(position, m);
-            RectF {
-                x: x - m.width * 0.5,
-                y: y - m.height() * 0.5,
-                width: m.width,
-                height: m.height(),
-            }
-        },
+        |position, m| centered_rect(center(position, m), m),
     );
     for label in &labels {
         let (dx, dy) = (
@@ -449,8 +638,7 @@ fn each_radius_label(
 
 /// Every segment the radius axis is stroked along: the ray from the inner
 /// radius to the rim (`None`), then tick `i` across it on the label side
-/// (`Some(i)`, majors first). Drawing and [`polar_axis_segments`] both walk
-/// this.
+/// (`Some(i)`, majors first).
 fn each_radius_axis_stroke(
     polar: &crate::polar::PolarOptions,
     geometry: &crate::polar::PolarGeometry,
@@ -462,9 +650,10 @@ fn each_radius_axis_stroke(
 ) {
     let inner = geometry.inner_radius;
     let ray = polar.radial_label_angle_degrees.to_radians();
-    let dir = (ray.cos() as f32, -(ray.sin() as f32));
-    // Labels sit on the left of the ray seen from the centre.
-    let side = (dir.1, -dir.0);
+    // Labels sit on the left of the ray seen from the centre
+    // (`PolarOptions::ray_side`).
+    let [sx, sy] = polar.ray_side();
+    let side = (sx, sy);
     if axis.line_visible {
         each(
             None,
@@ -475,7 +664,7 @@ fn each_radius_axis_stroke(
     if axis.tick == TickVisibility::None {
         return;
     }
-    let minors = minor_tick_values_for_axis(axis, Side::Left, da, fp);
+    let minors = minor_tick_values_for_axis(axis, Side::Left, &data_area_rect(da), fp);
     for (i, (value, length)) in majors
         .iter()
         .map(|v| (*v, axis.major_tick_length))
@@ -498,73 +687,6 @@ fn each_radius_axis_stroke(
             (at.0 + side.0 * a, at.1 + side.1 * a),
             (at.0 + side.0 * b, at.1 + side.1 * b),
         );
-    }
-}
-
-/// The segments `draw_polar_axes` strokes for the axis on `side`, with their
-/// stroke width: the radius axis' ray and ticks for `Left`; nothing for the
-/// angle axis, whose ring is not a selectable segment.
-pub(super) fn polar_axis_segments(
-    config: &Config,
-    side: Side,
-    fp: FontPolicy,
-    mut each: impl FnMut((f32, f32), (f32, f32), f32),
-) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
-        return;
-    };
-    let Ok(da) = config.data_area() else {
-        return;
-    };
-    if side != Side::Left {
-        return;
-    }
-    let axis = &config.left_y;
-    let majors = major_tick_values_for_axis(axis, Side::Left, &da, fp);
-    each_radius_axis_stroke(polar, &geometry, axis, &da, fp, &majors, |_, a, b| {
-        each(a, b, axis.line_width);
-    });
-}
-
-/// The box of each tick label on `side` of a polar chart, laid out exactly
-/// as [`draw_polar_axes`] draws it: the angle labels for `Bottom`, the radius
-/// labels for `Left`. A selection of those labels outlines these boxes;
-/// nothing is reported off polar mode or for another side.
-pub(super) fn polar_tick_label_rects(
-    config: &Config,
-    side: Side,
-    fp: FontPolicy,
-    mut each: impl FnMut(RectF),
-) {
-    let (Some(polar), Some(geometry)) = (&config.polar, config.polar_geometry()) else {
-        return;
-    };
-    let Ok(da) = config.data_area() else {
-        return;
-    };
-    let rect = |center: (f32, f32), m: TextMetrics| RectF {
-        x: center.0 - m.width * 0.5,
-        y: center.1 - m.height() * 0.5,
-        width: m.width,
-        height: m.height(),
-    };
-    match side {
-        Side::Bottom => {
-            let axis = &config.bottom_x;
-            let majors = major_tick_values_for_axis(axis, Side::Bottom, &da, fp);
-            let (_, sweep) = sweep(polar, axis);
-            each_angle_label(polar, &geometry, axis, &majors, sweep, fp, |_, c, m| {
-                each(rect(c, m))
-            });
-        }
-        Side::Left => {
-            let axis = &config.left_y;
-            let majors = major_tick_values_for_axis(axis, Side::Left, &da, fp);
-            each_radius_label(polar, &geometry, axis, &majors, fp, |_, c, m| {
-                each(rect(c, m))
-            });
-        }
-        Side::Top | Side::Right => {}
     }
 }
 

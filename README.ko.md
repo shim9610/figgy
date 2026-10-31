@@ -115,14 +115,14 @@
 | 보조 Y축·서브플롯·주석 | 오른쪽 보조 Y축, 한 문서 안의 차트 격자, 기준선·구간·텍스트·화살표 | [오버레이](crates/renderer/INTERACTION.md#overlay-layers) · [서브플롯](crates/renderer/INTERACTION.md#subplots) · [주석](crates/renderer/INTERACTION.md#annotation-layer) |
 | 극좌표 플롯 | (각도, 반지름) 컬럼과 `Config.polar` | [극좌표](crates/renderer/POLAR.md#한국어-사용법) |
 | 파이·도넛 | `RadialChart` 값 | [원형](crates/renderer/RADIAL.md) |
-| 범주형 막대 | `CategoricalChart` 범주와 시리즈 | [막대](crates/renderer/CATEGORICAL.md) |
-| 박스플롯 | `BoxPlotChart` 요약 통계 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |
-| 레이더 차트 | `RadarChart` 범주와 시리즈별 범주당 값 하나 | [레이더](crates/renderer/RADAR.md#한국어-사용법) |
+| 범주형 막대 | 범주형 축과 범주 위치·막대 시리즈별 값 컬럼(`CategoryBars`), 예전 `CategoricalChart` 문서는 `Config::from_categorical`로 연다 | [막대](crates/renderer/CATEGORICAL.md) |
+| 박스플롯 | 범주형 축과 범주 위치 컬럼, 시리즈별 상자 통계 레코드와 이상치 가변 길이 컬럼(`BoxPlot`), 예전 `BoxPlotChart` 문서는 `Config::from_boxplot`으로 연다 | [박스플롯](crates/renderer/BOXPLOT.md#한국어-사용법) |
+| 레이더 차트 | 극좌표 차트의 범주형 각도 축과 범주 위치·레이더 시리즈별 값 컬럼(`Radar`), 예전 `RadarChart` 문서는 `Config::from_radar`로 연다 | [레이더](crates/renderer/RADAR.md#한국어-사용법) |
 
 컬럼 기반 차트는 렌더러·GPU 컬럼 풀·피킹·내보내기 경로를 공유하며, 오버레이와 서브플롯은 이
 차트에서 씁니다. 단, 극좌표 차트에는 보조 Y축(오버레이)을 둘 수 없습니다. GPU 메모리보다 큰
 데이터를 나눠 그리는 스트리밍은 선·산점도·오차 막대·히스토그램·히트맵을 지원합니다. 극좌표·면 채움·계단선·벡터장·점 색·크기 매핑·등고선 시리즈나 오버레이·서브플롯이 있는
-문서에 스트리밍 소스를 쓰면 오류를 반환합니다. 파이·도넛·범주형 막대·박스플롯·레이더는 각자 소량 데이터
+문서에 스트리밍 소스를 쓰면 오류를 반환하며, 범주형 막대·박스플롯·레이더 시리즈도 마찬가지입니다. 파이·도넛은 소량 데이터
 모델과 전용 렌더러를 쓰며 컬럼이나 스트리밍 API를 거치지 않습니다. 주석 레이어는 두 종류의 차트에서
 모두 쓸 수 있습니다.
 
@@ -181,12 +181,13 @@ config.bottom_x.major_spacing = 30.0; // 30°마다 스포크
 config.bottom_x.label_style.format = LabelFormat::Degrees;
 ```
 
-레이더 차트는 `RadarChart` 모델을 만들고 전용 `RadarRenderer`로 그립니다.
+레이더 차트는 각도 축이 범주형인 극좌표 차트이며 `DataRenderType::Radar` 시리즈로 그립니다.
+`RadarChart` 문서는 `Config::from_radar`로 열며, 이 함수가 차트와 시리즈, 문서에서 빌려 올릴
+컬럼을 돌려줍니다.
 
 ```rust,ignore
-use renderer::radar::{RadarChart, RadarRenderer, RadarSeries};
-use renderer::{Category, Color, RendererDevice, encode_png};
-use std::sync::Arc;
+use renderer::radar::{RadarChart, RadarSeries};
+use renderer::{Category, Chart, Color, config::Config, encode_png};
 
 let mut chart = RadarChart::default();
 chart.categories = ["속도", "안전", "크기", "문서", "테스트"]
@@ -198,13 +199,16 @@ chart.series = vec![
     RadarSeries::new("v1", "Release 1", vec![6.0, 8.0, 4.0, 5.0, 7.0], Color::from_rgb8(60, 110, 200)),
     RadarSeries::new("v2", "Release 2", vec![8.0, 7.0, 6.0, 8.0, 9.0], Color::from_rgb8(220, 90, 70)),
 ];
-// device와 queue는 빠른 시작처럼 request_device로 얻습니다.
-let gpu = RendererDevice::new(Arc::new(device), Arc::new(queue));
-let mut radar = RadarRenderer::new(gpu, wgpu::TextureFormat::Rgba8Unorm)?;
-let image = radar.export_rgba(&chart, (720, 520), 1.0)?;
+chart.value_range = Some([0.0, 10.0]);
+chart.validate()?;
+// renderer는 빠른 시작의 Renderer입니다.
+let (mut config, series, uploads) = Config::from_radar(&chart);
+config.chart_area = renderer::layout::ChartArea(renderer::layout::Rect { x: 0, y: 0, width: 720, height: 520 });
+for upload in &uploads {
+    renderer.add_column(upload.column.clone(), &upload.values)?;
+}
+let image = renderer.export_panel_rgba(&Chart::new(config), &series, 1.0)?;
 std::fs::write("radar.png", encode_png(&image)?)?;
-// 창에 그릴 때는 radar.prepare(&chart, (720, 520), 1.0)?로 프레임을 만들고
-// 호스트의 렌더 패스에서 frame.draw(&mut pass)를 호출합니다.
 ```
 
 한글 범주 이름을 그리려면 시스템에 한글 글꼴이 있거나
@@ -246,26 +250,31 @@ cargo run --locked -p figgy-renderer --example polar_plot -- target/polar-plot
 |---|---|
 | 독립 창에서 그리기 | [winit_simple.rs](crates/renderer/examples/winit_simple.rs) |
 | egui 화면에 넣기 | [egui_embed.rs](crates/renderer/examples/egui_embed.rs) — `egui_demo` 기능 사용 |
-| 원형·막대·박스플롯·레이더 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-examples) |
+| 원형 차트 편집 | [네이티브 편집 예제](crates/renderer/examples/README.md#interactive-examples) |
 | 극좌표로 선·산점도 그리기 | [극좌표 사용법](crates/renderer/POLAR.md#한국어-사용법) |
 | 선택·이동·영역 크기 조정 연결 | [상호작용 사용법](crates/renderer/INTERACTION.md) |
+| 라벨과 제목이 겹치지 않게 여백·제목 오프셋·라벨 형식 맞추기 | [편의 함수](crates/renderer/API.md#direct-ssot-edits-and-convenience-helpers)의 `layout::auto_layout`, 브라우저에서는 `autoLayout(configJson)` |
 | GPU 메모리보다 큰 데이터 그리기 | [스트리밍과 상주 전환](crates/renderer/ARCHITECTURE.md#원본-데이터-스트리밍과-상주-전환) |
 
 기존 프로그램과 GPU 장치를 공유할 때는 **wgpu 30**을 사용합니다.
 기본 기능에는 특정 GUI 프레임워크가 필요하지 않습니다.
 
-## WebAssembly 예제
+## WebAssembly와 브라우저
 
 Rust 렌더러는 `wasm32-unknown-unknown`으로도 컴파일되며 브라우저에서는 WebGPU를 사용합니다.
-[`crates/web`](crates/web/README.md)은 wasm-bindgen으로 렌더러를 감싸고 캔버스·이벤트·비동기
-호출을 연결하는 브라우저 통합 예제이며, Rust 라이브러리의 API와는 별개입니다.
-직교 차트(극좌표·오버레이·서브플롯 포함)는 `FiggyChart`로, 파이·도넛·범주형 막대·박스플롯·레이더는
-`FiggyBoundedChart`로 그립니다. `<figgy-chart>` 요소는 `FiggyChart`만 감싸므로 `FiggyBoundedChart`를
+[`crates/web`](crates/web/README.md)은 figgy의 **브라우저용 제품**입니다. wasm-bindgen 래퍼와
+`<figgy-chart>` 사용자 정의 요소가 캔버스·이벤트·비동기 호출을 연결합니다. 렌더러와 함께 관리하므로
+렌더러에 기능이 추가되면 래퍼 메서드도 함께 추가됩니다. JavaScript API는 래퍼가 따로 정의하며
+Rust 라이브러리의 API와는 별개입니다.
+직교 차트(극좌표·레이더·오버레이·서브플롯·범주형 막대·박스플롯 포함)는 `FiggyChart`로, 파이·도넛은
+`FiggyBoundedChart`로 그립니다. 레이더 문서는 `FiggyChart.set_radar_document`로 엽니다. `<figgy-chart>` 요소는 `FiggyChart`만 감싸므로 `FiggyBoundedChart`를
 쓰는 호스트는 캔버스 이벤트와 프레임 예약을 직접 맡습니다.
+래퍼는 Cargo 패키지 `figgy`이며 이 저장소에서 빌드합니다(`publish = false`). crates.io의 `figgy`
+크레이트와 npm의 `figgy` 패키지는 이 프로젝트와 관계없습니다.
 
-[브라우저 예제 빌드·실행 방법](crates/web/README.md).
+[브라우저용 figgy 빌드·실행 방법](crates/web/README.md).
 [figgyplot.com Studio](https://figgyplot.com/)는 렌더러를 사용하는 별도 웹 애플리케이션이며
-`figgy-renderer` 크레이트나 브라우저 예제에 포함되지 않습니다.
+`figgy-renderer` 크레이트나 브라우저용 제품에 포함되지 않습니다.
 
 ## 문서
 
@@ -291,5 +300,5 @@ Linux/Vulkan과 Windows/DX12에서 네이티브 렌더링·픽셀 검사를 수�
 ## 라이선스
 
 코드: [MIT](LICENSE-MIT) 또는 [Apache-2.0](LICENSE-APACHE).
-내장 글꼴에는 각 OFL 고지가 적용됩니다.
-[Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt) · [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt).
+내장 글꼴에는 각 OFL·GUST 고지가 적용됩니다.
+[Liberation Sans](crates/renderer/fonts/LICENSE-LiberationSans.txt) · [Comic Neue](crates/renderer/fonts/LICENSE-ComicNeue.txt)(SIL OFL 1.1) · [New Computer Modern Math](crates/renderer/fonts/LICENSE-NewCMMath.txt)(GUST Font License, 수식용 글꼴).

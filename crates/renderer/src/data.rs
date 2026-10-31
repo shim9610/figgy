@@ -18,6 +18,9 @@ pub const COLUMN_VALUE_BYTES: usize = std::mem::size_of::<f32>() * COLUMN_VALUE_
 pub struct ColumnPairWriter<'a> {
     dst: wgpu::WriteOnly<'a, [u8]>,
     observer: Option<&'a mut dyn FnMut(usize, f32, f32)>,
+    /// Store each pair as a `u32` index lane instead of the f32 pair: a
+    /// ragged column's offsets (`SHADER_COMMON.md` §5.14).
+    index_lanes: bool,
 }
 
 impl<'a> ColumnPairWriter<'a> {
@@ -30,7 +33,19 @@ impl<'a> ColumnPairWriter<'a> {
         Self {
             dst,
             observer: None,
+            index_lanes: false,
         }
+    }
+
+    /// Store every pair as an index: the integer `hi + lo`, summed in f64,
+    /// as `u32` bits in the first lane and 0 in the second, so a shader reads
+    /// it as `bitcast<u32>` and every index up to `u32::MAX` is exact. The
+    /// observer still sees the pair the source wrote. A value that is not an
+    /// integer in `0..=u32::MAX` stores a saturated index; the caller rejects
+    /// such a column before it is published.
+    pub(crate) fn with_index_lanes(mut self, index_lanes: bool) -> Self {
+        self.index_lanes = index_lanes;
+        self
     }
 
     pub(crate) fn new_observed(
@@ -68,8 +83,11 @@ impl<'a> ColumnPairWriter<'a> {
             self.len()
         );
         let start = index * COLUMN_VALUE_BYTES;
-        let hi_bytes = hi.to_le_bytes();
-        let lo_bytes = lo.to_le_bytes();
+        let (hi_bytes, lo_bytes) = if self.index_lanes {
+            (index_lane(hi, lo).to_le_bytes(), [0; 4])
+        } else {
+            (hi.to_le_bytes(), lo.to_le_bytes())
+        };
         self.dst
             .slice(start..start + COLUMN_VALUE_BYTES)
             .copy_from_slice(&[
@@ -86,6 +104,13 @@ impl<'a> ColumnPairWriter<'a> {
             observer(index, hi, lo);
         }
     }
+}
+
+/// The `u32` index lane of a `(hi, lo)` pair: `hi + lo` summed in f64,
+/// exact for every integer up to `u32::MAX`, saturated outside that range
+/// (NaN stores 0).
+pub(crate) fn index_lane(hi: f32, lo: f32) -> u32 {
+    (hi as f64 + lo as f64) as u32
 }
 
 /// Scalar statistics collected while a source writes its GPU pair encoding.
@@ -112,6 +137,66 @@ impl ColumnRangeWriteError {
             Self::InvalidRange => "requested source range is invalid",
             Self::SourceFailed => "source failed while writing the requested range",
         }
+    }
+}
+
+/// The uniform step of a column's values, measured while they are written
+/// (#134): `Some(step)` when at least two values were written in index
+/// order, every one finite, and every consecutive difference equals the
+/// first within 1e-6 relative; `None` otherwise, including a zero step. A
+/// hexagonal grid's coordinate columns are held to it at registration; the
+/// pool keeps the one scalar, never the values (rule 2).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UniformStep {
+    next: usize,
+    prev: f64,
+    step: f64,
+    count: usize,
+    uniform: bool,
+}
+
+impl UniformStep {
+    pub(crate) fn new() -> Self {
+        Self {
+            next: 0,
+            prev: 0.0,
+            step: 0.0,
+            count: 0,
+            uniform: true,
+        }
+    }
+
+    pub(crate) fn record(&mut self, index: usize, hi: f32, lo: f32) {
+        if !self.uniform {
+            return;
+        }
+        let value = hi as f64 + lo as f64;
+        if index != self.next || !value.is_finite() {
+            self.uniform = false;
+            return;
+        }
+        match self.count {
+            0 => {}
+            1 => {
+                self.step = value - self.prev;
+                if self.step == 0.0 || !self.step.is_finite() {
+                    self.uniform = false;
+                }
+            }
+            _ => {
+                let step = value - self.prev;
+                if (step - self.step).abs() > 1e-6 * self.step.abs() {
+                    self.uniform = false;
+                }
+            }
+        }
+        self.prev = value;
+        self.count += 1;
+        self.next += 1;
+    }
+
+    pub(crate) fn finish(self) -> Option<f64> {
+        (self.uniform && self.count >= 2).then_some(self.step)
     }
 }
 
@@ -355,10 +440,13 @@ impl ColumnSource for Column<f64> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The (hi, lo) split, written straight into the destination: an f64
+        // column keeps about 48 bits on the GPU, not f32's 24 (#107).
         for (index, &value) in self.data.iter().enumerate() {
-            let value = value as f32;
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            // The value the GPU reads: a magnitude below f32 range is 0 there.
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
@@ -369,10 +457,12 @@ impl ColumnSource for Column<f64> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The same split for streamed windows (#107, the maintainer's
+        // exception to rule 8 for upload precision).
         for (index, &value) in self.data[range].iter().enumerate() {
-            let hi = value as f32;
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }
@@ -500,6 +590,81 @@ impl HiLoColumnSource for Column<f32> {
     }
 }
 
+/// The borrowed values of a converted legacy document
+/// (`Config::from_categorical`'s uploads): written straight from the
+/// document into the staging pairs, as `(hi, lo)` so the document's f64
+/// values keep their precision. A missing value uploads NaN. A box plot's
+/// record and outlier uploads are not one column and hold no values here:
+/// they upload through their [`BoxColumn`](::model::bounded_sources::BoxColumn)
+/// adapters.
+impl ColumnSource for ::model::bounded_sources::UploadValues<'_> {
+    fn len(&self) -> usize {
+        ::model::bounded_sources::UploadValues::len(self)
+    }
+    fn min(&self) -> f64 {
+        ::model::bounded_sources::UploadValues::min(self)
+    }
+    fn max(&self) -> f64 {
+        ::model::bounded_sources::UploadValues::max(self)
+    }
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self) * 4);
+        for i in 0..ColumnSource::len(self) {
+            dst[i * 4..i * 4 + 4].copy_from_slice(&(self.value(i) as f32).to_le_bytes());
+        }
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self));
+        let mut stats = ColumnUploadStats { min_positive: None };
+        for index in 0..ColumnSource::len(self) {
+            let (hi, lo) = split_f64_to_f32_pair(self.value(index));
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        }
+        stats
+    }
+}
+
+/// One column of a converted box plot document (`Config::from_boxplot`'s
+/// record fields, outlier values and offsets): every value is computed from
+/// the borrowed summaries while it is written into the staging pairs, as
+/// `(hi, lo)` so the document's f64 values keep their precision and every
+/// offset reaches the pool's `u32` index lanes exactly. A missing box writes
+/// NaN.
+impl ColumnSource for ::model::bounded_sources::BoxColumn<'_> {
+    fn len(&self) -> usize {
+        ::model::bounded_sources::BoxColumn::len(self)
+    }
+    fn min(&self) -> f64 {
+        ::model::bounded_sources::BoxColumn::min(self)
+    }
+    fn max(&self) -> f64 {
+        ::model::bounded_sources::BoxColumn::max(self)
+    }
+    fn write_f32_le_into(&self, dst: &mut [u8]) {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self) * 4);
+        self.for_each(|i, value| {
+            dst[i * 4..i * 4 + 4].copy_from_slice(&(value as f32).to_le_bytes());
+        });
+    }
+    fn write_f32_pair_le_into_with_stats(
+        &self,
+        mut dst: ColumnPairWriter<'_>,
+    ) -> ColumnUploadStats {
+        debug_assert_eq!(dst.len(), ColumnSource::len(self));
+        let mut stats = ColumnUploadStats { min_positive: None };
+        self.for_each(|index, value| {
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            record_min_positive(&mut stats, hi as f64 + lo as f64);
+        });
+        stats
+    }
+}
+
 impl ColumnSource for Column<Option<f64>> {
     fn len(&self) -> usize {
         self.data.len()
@@ -531,10 +696,14 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> ColumnUploadStats {
         debug_assert_eq!(dst.len(), self.data.len());
         let mut stats = ColumnUploadStats { min_positive: None };
+        // The (hi, lo) split, written straight into the destination (about
+        // 48 bits); a missing value is NaN (#107).
         for (index, value) in self.data.iter().enumerate() {
-            let value = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            dst.write_pair(index, value, 0.0);
-            record_min_positive(&mut stats, value as f64);
+            let value = value.unwrap_or(f64::NAN);
+            let (hi, lo) = split_f64_to_f32_pair(value);
+            dst.write_pair(index, hi, lo);
+            // The value the GPU reads: a magnitude below f32 range is 0 there.
+            record_min_positive(&mut stats, f64::from(hi) + f64::from(lo));
         }
         stats
     }
@@ -545,10 +714,12 @@ impl ColumnSource for Column<Option<f64>> {
     ) -> std::result::Result<Option<crate::StreamBounds>, ColumnRangeWriteError> {
         let range = checked_source_range(self.data.len(), start, dst.len())?;
         let mut bounds = EncodedBounds::default();
+        // The same split for streamed windows (#107, the maintainer's
+        // exception to rule 8 for upload precision); a missing value is NaN.
         for (index, value) in self.data[range].iter().enumerate() {
-            let hi = value.map(|value| value as f32).unwrap_or(f32::NAN);
-            dst.write_pair(index, hi, 0.0);
-            bounds.record(hi, 0.0);
+            let (hi, lo) = split_f64_to_f32_pair(value.unwrap_or(f64::NAN));
+            dst.write_pair(index, hi, lo);
+            bounds.record(hi, lo);
         }
         Ok(bounds.finish())
     }

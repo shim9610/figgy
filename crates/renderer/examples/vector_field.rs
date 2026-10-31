@@ -115,6 +115,7 @@ fn wind(r: &mut Renderer, out: &Path) -> Result {
                     shading: Shading::Interpolated,
                     opacity: 1.,
                 },
+                surface: None,
             },
         ),
         series(
@@ -327,6 +328,7 @@ fn gradient(r: &mut Renderer, out: &Path) -> Result {
                 shading: Shading::Interpolated,
                 opacity: 0.35,
             },
+            surface: None,
         },
     );
     let arrows = series(

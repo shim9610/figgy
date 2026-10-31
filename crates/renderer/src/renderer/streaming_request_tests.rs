@@ -49,6 +49,7 @@ fn declaration(id: &str, x: &str, y: &str) -> SeriesConfig {
         label: None,
         x_column: x.into(),
         y_column: y.into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -2520,8 +2521,16 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::ScatterLine { .. }
                     | DataRenderType::Histogram { .. }
                     | DataRenderType::Heatmap { .. }
+                    | DataRenderType::RgbImage { .. }
                     | DataRenderType::Contour { .. }
                     | DataRenderType::HeatmapContour { .. }
+                    | DataRenderType::CategoryBars { .. }
+                    | DataRenderType::BoxPlot { .. }
+                    | DataRenderType::RangeBars { .. }
+                    | DataRenderType::Radar { .. }
+                    | DataRenderType::Ternary { .. }
+                    | DataRenderType::Parallel { .. }
+                    | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }
             }
@@ -6366,7 +6375,9 @@ fn packed_view_resize_reuses_rows_and_matches_fresh_stream() {
         let (mut r, id, _) = renderer(2);
         if markers {
             let mut series = r.chart_series(id).unwrap().to_vec();
-            let line = super::extract_line(&series[0].render_type).unwrap().clone();
+            let line = super::extract_line(&series[0].render_type)
+                .unwrap()
+                .into_owned();
             series[0].render_type = DataRenderType::ScatterLine {
                 line,
                 scatter: DataScatterStyleConfig {
@@ -6632,7 +6643,9 @@ fn progressive_replay_styled_fit_finishes_exactly_and_cancel_retires_snapshots()
                 point_size_map: None,
             };
             if matches!(style, DrawStyle::Constellation(_)) {
-                let line = super::extract_line(&series.render_type).unwrap().clone();
+                let line = super::extract_line(&series.render_type)
+                    .unwrap()
+                    .into_owned();
                 series.render_type = DataRenderType::ScatterLine { line, scatter };
             } else {
                 series.render_type = DataRenderType::Scatter { scatter };

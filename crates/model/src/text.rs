@@ -1,8 +1,23 @@
 use crate::color::Color;
 
+pub mod math;
+pub mod tex;
+
+pub use math::{
+    AccentKind, FracStyle, Limits, MAX_MATH_DEPTH, MathClass, MathCursor, MathError, MathErrorKind,
+    MathKind, MathNode, MathSlot, MathStyle, OverUnder, math_alphanumeric, math_class,
+};
+
 /// A rich text value composed of styled segments.
+///
+/// Its segments may hold math layout nodes ([`math`]); a document whose
+/// segment tree is malformed ([`RichText::validate_math`]) fails to parse.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Serialize, serde::Deserialize),
+    serde(try_from = "rich_text_serde::RichTextIn")
+)]
 pub struct RichText {
     pub segments: Vec<RichSegment>,
     pub color: Color,
@@ -64,8 +79,55 @@ impl TextAlign {
     }
 }
 
+/// The character set a [`RichSegment`]'s `text` is drawn from.
+///
+/// One value per segment, so meaningless combinations (Greek and math at
+/// once) cannot be written. Serialized as the `greek` flag the documents
+/// have always carried, plus a `math` flag written only for [`CharSet::Math`]
+/// (see [`RichSegment`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CharSet {
+    /// The character as given, from the text font: the layout of every
+    /// segment written with `"greek": false`.
+    #[default]
+    Text,
+    /// Latin `a`–`z` / `A`–`Z` drawn as the Greek letter of the Adobe Symbol
+    /// mapping ([`greek_char`]); other characters pass through. The layout of
+    /// a segment written with `"greek": true`.
+    Greek,
+    /// A math character, given as itself (`∑`, `≤`, `∂`, `∇`, `x`, …), drawn
+    /// from the math font ([`math`]): with `italic` and `bold` through the
+    /// Mathematical Alphanumeric Symbols ([`math_alphanumeric`]), and inside
+    /// a math node spaced by its Unicode math class ([`math_class`]). A
+    /// consumer that ignores the set draws it as [`CharSet::Text`].
+    Math,
+}
+
+impl CharSet {
+    /// The character drawn for `c` in this set: [`greek_char`] for
+    /// [`CharSet::Greek`], `c` itself for [`CharSet::Text`] and
+    /// [`CharSet::Math`].
+    pub fn glyph_char(self, c: char) -> char {
+        match self {
+            CharSet::Greek => greek_char(c),
+            CharSet::Text | CharSet::Math => c,
+        }
+    }
+}
+
+/// One styled character of a [`RichText`].
+///
+/// Serialized form: the fields in declaration order, with `char_set` written
+/// as `"greek"` (`true` only for [`CharSet::Greek`]) followed by
+/// `"math": true` only for [`CharSet::Math`], so documents written before
+/// `CharSet` existed parse and re-serialize byte for byte. A document that
+/// sets both `"greek": true` and `"math": true` is rejected.
 #[derive(Debug, Clone, PartialEq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(
+    feature = "serde",
+    derive(serde::Deserialize),
+    serde(try_from = "segment_serde::RichSegmentIn")
+)]
 pub struct RichSegment {
     pub text: char,
     pub bold: bool,
@@ -73,52 +135,210 @@ pub struct RichSegment {
     pub underline: bool,
     pub superscript: bool,
     pub subscript: bool,
-    pub greek: bool,
+    /// The character set `text` is drawn from. Replaces the former
+    /// `greek: bool` (`true` is [`CharSet::Greek`], `false` is
+    /// [`CharSet::Text`]).
+    pub char_set: CharSet,
     /// Per-segment ink color. `None` inherits `RichText.color`.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub color: Option<Color>,
     /// Per-segment base font size. `None` inherits `RichText.font_size`;
     /// the sub/superscript ratio applies on top of the effective size.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub font_size: Option<f32>,
     /// Fixed advance in em (× effective font size). The glyph ink is drawn
     /// horizontally centered inside the field; the advance itself ignores
     /// glyph metrics entirely. This is what gives legend marks an exact,
     /// font-size-relative width no glyph combination could guarantee.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub field_em: Option<f32>,
     /// Render as a horizontal rule (drawn bar) spanning the full advance
     /// instead of a glyph — the line part of legend marks. `text` stays as
     /// a fallback character for consumers that ignore the flag.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "std::ops::Not::not")
-    )]
     pub rule: bool,
     /// Optional dash pattern for a rule segment, in em units. Values are
     /// multiplied by the effective segment font size at draw time.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub rule_dash: Option<Vec<f32>>,
     /// Optional band painted under a rule segment, from the rule down to the
     /// baseline: the legend mark of a filled line series. `None` draws the
     /// rule alone. Ignored on glyph segments.
-    #[cfg_attr(
-        feature = "serde",
-        serde(default, skip_serializing_if = "Option::is_none")
-    )]
     pub rule_band: Option<Color>,
+    /// This segment governs a math layout: its group id and what it lays
+    /// out ([`math`]). `None` for every segment of a text without math.
+    pub math_node: Option<MathNode>,
+    /// The math node and slot this segment belongs to: its direct parent.
+    /// `None` outside math nodes.
+    pub math_parent: Option<MathSlot>,
+}
+
+/// The wire form of [`RichSegment`]. `char_set` is two keys on the wire, so
+/// the segment serializes through a borrowed view and deserializes through
+/// an owned mirror that is moved, field by field, into the segment. A field
+/// added to `RichSegment` is added to both, with its `skip_serializing_if`.
+#[cfg(feature = "serde")]
+mod segment_serde {
+    use super::{CharSet, MathNode, MathSlot, RichSegment};
+    use crate::color::Color;
+
+    #[derive(serde::Serialize)]
+    #[serde(rename = "RichSegment")]
+    pub(super) struct RichSegmentOut<'a> {
+        text: char,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        superscript: bool,
+        subscript: bool,
+        greek: bool,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        math: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        color: Option<&'a Color>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        font_size: Option<f32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        field_em: Option<f32>,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        rule: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rule_dash: Option<&'a [f32]>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        rule_band: Option<&'a Color>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        math_node: Option<&'a MathNode>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        math_parent: Option<&'a MathSlot>,
+    }
+
+    impl<'a> From<&'a RichSegment> for RichSegmentOut<'a> {
+        fn from(seg: &'a RichSegment) -> Self {
+            Self {
+                text: seg.text,
+                bold: seg.bold,
+                italic: seg.italic,
+                underline: seg.underline,
+                superscript: seg.superscript,
+                subscript: seg.subscript,
+                greek: seg.char_set == CharSet::Greek,
+                math: seg.char_set == CharSet::Math,
+                color: seg.color.as_ref(),
+                font_size: seg.font_size,
+                field_em: seg.field_em,
+                rule: seg.rule,
+                rule_dash: seg.rule_dash.as_deref(),
+                rule_band: seg.rule_band.as_ref(),
+                math_node: seg.math_node.as_ref(),
+                math_parent: seg.math_parent.as_ref(),
+            }
+        }
+    }
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "RichSegment")]
+    pub(super) struct RichSegmentIn {
+        text: char,
+        bold: bool,
+        italic: bool,
+        underline: bool,
+        superscript: bool,
+        subscript: bool,
+        greek: bool,
+        /// Additive: absent in every document written before `CharSet`.
+        #[serde(default)]
+        math: bool,
+        #[serde(default)]
+        color: Option<Color>,
+        #[serde(default)]
+        font_size: Option<f32>,
+        #[serde(default)]
+        field_em: Option<f32>,
+        #[serde(default)]
+        rule: bool,
+        #[serde(default)]
+        rule_dash: Option<Vec<f32>>,
+        #[serde(default)]
+        rule_band: Option<Color>,
+        /// Additive: absent in every document written before math nodes.
+        #[serde(default)]
+        math_node: Option<MathNode>,
+        #[serde(default)]
+        math_parent: Option<MathSlot>,
+    }
+
+    /// The error for a segment that names two character sets.
+    pub(super) const GREEK_AND_MATH: &str =
+        "a RichSegment cannot set both \"greek\": true and \"math\": true";
+
+    impl TryFrom<RichSegmentIn> for RichSegment {
+        type Error = &'static str;
+
+        fn try_from(wire: RichSegmentIn) -> Result<Self, Self::Error> {
+            let char_set = match (wire.greek, wire.math) {
+                (false, false) => CharSet::Text,
+                (true, false) => CharSet::Greek,
+                (false, true) => CharSet::Math,
+                (true, true) => return Err(GREEK_AND_MATH),
+            };
+            Ok(RichSegment {
+                text: wire.text,
+                bold: wire.bold,
+                italic: wire.italic,
+                underline: wire.underline,
+                superscript: wire.superscript,
+                subscript: wire.subscript,
+                char_set,
+                color: wire.color,
+                font_size: wire.font_size,
+                field_em: wire.field_em,
+                rule: wire.rule,
+                rule_dash: wire.rule_dash,
+                rule_band: wire.rule_band,
+                math_node: wire.math_node,
+                math_parent: wire.math_parent,
+            })
+        }
+    }
+}
+
+/// The deserializing mirror of [`RichText`]: the same fields, moved into the
+/// text once its math segment tree validates, so a malformed tree fails at
+/// parse as a segment naming two character sets does. A field added to
+/// `RichText` is added here too.
+#[cfg(feature = "serde")]
+mod rich_text_serde {
+    use super::{RichSegment, RichText, TextAlign};
+    use crate::color::Color;
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename = "RichText")]
+    pub(super) struct RichTextIn {
+        segments: Vec<RichSegment>,
+        color: Color,
+        font_size: f32,
+        font: String,
+        #[serde(default)]
+        align: TextAlign,
+    }
+
+    impl TryFrom<RichTextIn> for RichText {
+        type Error = super::MathError;
+
+        fn try_from(wire: RichTextIn) -> Result<Self, Self::Error> {
+            let text = RichText {
+                segments: wire.segments,
+                color: wire.color,
+                font_size: wire.font_size,
+                font: wire.font,
+                align: wire.align,
+            };
+            text.validate_math()?;
+            Ok(text)
+        }
+    }
+}
+
+#[cfg(feature = "serde")]
+impl serde::Serialize for RichSegment {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serde::Serialize::serialize(&segment_serde::RichSegmentOut::from(self), serializer)
+    }
 }
 
 impl RichSegment {
@@ -132,13 +352,15 @@ impl RichSegment {
             underline: false,
             superscript: false,
             subscript: false,
-            greek: false,
+            char_set: CharSet::Text,
             color: None,
             font_size: None,
             field_em: None,
             rule: false,
             rule_dash: None,
             rule_band: None,
+            math_node: None,
+            math_parent: None,
         }
     }
 
@@ -183,6 +405,57 @@ impl RichSegment {
 }
 
 impl RichText {
+    /// The limits a rich text a document carries is held to: font size
+    /// 6..160, an RGBA colour of finite components in 0..1, a font name of
+    /// at most 160 characters without control characters, at most 512
+    /// segments and eight lines, no control characters but line breaks and
+    /// tabs, and finite per-segment styles (size 6..160, colour, `field_em`
+    /// 0..32, at most 32 dash entries of 0.01..32; a space inside a math
+    /// node may take a negative `field_em` down to −32, the negative thin
+    /// space `\!`). Chart titles and annotation texts are validated with it,
+    /// after [`RichText::validate_math`].
+    pub fn within_limits(&self) -> bool {
+        fn range(v: f32, lo: f32, hi: f32) -> bool {
+            v.is_finite() && (lo..=hi).contains(&v)
+        }
+        fn color(c: Color) -> bool {
+            [c.r, c.g, c.b, c.a].into_iter().all(|v| range(v, 0., 1.))
+        }
+        range(self.font_size, 6., 160.)
+            && color(self.color)
+            && self.font.chars().count() <= 160
+            && !self.font.chars().any(char::is_control)
+            && self.segments.len() <= 512
+            && self.segments.iter().filter(|s| s.text == '\n').count() <= 7
+            && !self.segments.iter().any(|s| {
+                (s.text.is_control() && !matches!(s.text, '\n' | '\t'))
+                    || s.font_size.is_some_and(|v| !range(v, 6., 160.))
+                    || s.color.is_some_and(|v| !color(v))
+                    || s.field_em.is_some_and(|v| !range(v, -32., 32.))
+                    || s.rule_dash
+                        .as_ref()
+                        .is_some_and(|d| d.len() > 32 || d.iter().any(|v| !range(*v, 0.01, 32.)))
+            })
+            && self.negative_fields_are_math_spaces()
+    }
+
+    /// Every negative `field_em` is on a space inside a `Math` node.
+    fn negative_fields_are_math_spaces(&self) -> bool {
+        if !self
+            .segments
+            .iter()
+            .any(|s| s.field_em.is_some_and(|v| v < 0.))
+        {
+            return true;
+        }
+        let mut cursor = MathCursor::new();
+        self.segments.iter().enumerate().all(|(at, s)| {
+            let step = cursor.step(at, s);
+            s.field_em.is_none_or(|v| v >= 0.)
+                || (s.text == ' ' && s.math_node.is_none() && step.is_ok_and(|p| p.in_math))
+        })
+    }
+
     pub fn plain(text: &str, color: Color, font_size: f32, font: impl Into<String>) -> Self {
         Self {
             segments: rich_segments_from_text(text),
@@ -219,31 +492,32 @@ impl TextExtents {
 pub trait MeasureText {
     fn measure_rich(&self, rt: &RichText) -> TextExtents;
 
-    /// The parts of decoration `element` a renderer draws under `cfg`: call
-    /// `each` with every one, in `cfg`'s chart frame, and return `true`.
-    /// Tick labels ([`Element::AxisLabel`], [`Element::ColorBarLabel`])
-    /// report one [`DrawnPart::Text`] per drawn label; axes
-    /// ([`Element::Axis`], [`Element::ColorBarAxis`]) report their line and
-    /// ticks as [`DrawnPart::Segment`]s.
+    /// Place the parts of decoration `element` a renderer draws under `cfg`
+    /// into `sink`, in `cfg`'s chart frame, and return `true`. Tick labels
+    /// ([`Element::AxisLabel`], [`Element::ColorBarLabel`]) are one
+    /// [`PlacedText`] per drawn label; axes ([`Element::Axis`],
+    /// [`Element::ColorBarAxis`]) are their line and ticks as strokes.
     ///
     /// Tick generation, formatting and pruning belong to the renderer, so the
     /// model cannot know which labels and ticks are drawn. A measure that
-    /// lays them out lets selection and hit testing follow the drawn parts.
-    /// The default lays out nothing and returns `false`; tick labels and axes
-    /// then have no bounds, since nothing tells the model where they are
-    /// drawn.
+    /// lays them out lets selection, hit testing and drag containment follow
+    /// the drawn parts: the renderer's measure runs the same `emit` function
+    /// its raster draws with. The default lays out nothing and returns
+    /// `false`; tick labels and axes then have no bounds, since nothing tells
+    /// the model where they are drawn. The elements the model places itself
+    /// (titles, the legend, the colourbar strip and title, the data area)
+    /// never reach this method: [`crate::select::emit_element`] places them.
     ///
     /// [`Element::AxisLabel`]: crate::layout::Element::AxisLabel
     /// [`Element::ColorBarLabel`]: crate::layout::Element::ColorBarLabel
     /// [`Element::Axis`]: crate::layout::Element::Axis
     /// [`Element::ColorBarAxis`]: crate::layout::Element::ColorBarAxis
-    /// [`DrawnPart::Text`]: crate::layout::DrawnPart::Text
-    /// [`DrawnPart::Segment`]: crate::layout::DrawnPart::Segment
-    fn drawn_parts(
+    /// [`PlacedText`]: crate::sink::PlacedText
+    fn emit(
         &self,
         _cfg: &crate::config::Config,
         _element: &crate::layout::Element,
-        _each: &mut dyn FnMut(crate::layout::DrawnPart),
+        _sink: &mut dyn crate::sink::Sink,
     ) -> bool {
         false
     }
@@ -456,6 +730,101 @@ mod tests {
             !json.contains("font_size"),
             "None font_size must be skipped: {json}"
         );
+    }
+
+    #[test]
+    fn char_set_draws_greek_only_for_greek() {
+        assert_eq!(CharSet::default(), CharSet::Text);
+        assert_eq!(CharSet::Text.glyph_char('a'), 'a');
+        assert_eq!(CharSet::Greek.glyph_char('a'), 'α');
+        assert_eq!(CharSet::Greek.glyph_char('1'), '1');
+        for c in ['a', '∑', '≤', '∂', '∇'] {
+            assert_eq!(CharSet::Math.glyph_char(c), c, "math draws {c} as given");
+        }
+        assert_eq!(RichSegment::plain('a').char_set, CharSet::Text);
+    }
+
+    // `CharSet` keeps the `greek` flag documents have always carried and adds
+    // `math` only for `Math`: `Text` and `Greek` serialize exactly as the
+    // former `greek: false` / `greek: true`, and a segment naming both sets
+    // is an explicit error.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn char_set_serializes_as_the_greek_flag_plus_math_only_for_math() {
+        const HEAD: &str = r#"{"text":"a","bold":false,"italic":false,"underline":false,"superscript":false,"subscript":false,"#;
+        let cases = [
+            (CharSet::Text, r#""greek":false}"#),
+            (CharSet::Greek, r#""greek":true}"#),
+            (CharSet::Math, r#""greek":false,"math":true}"#),
+        ];
+        for (char_set, tail) in cases {
+            let seg = RichSegment {
+                char_set,
+                ..RichSegment::plain('a')
+            };
+            let json = serde_json::to_string(&seg).unwrap();
+            assert_eq!(json, format!("{HEAD}{tail}"), "{char_set:?}");
+            let back: RichSegment = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, seg, "{char_set:?} round-trips");
+        }
+
+        // `math` sits right after `greek`, before the optional overrides.
+        let seg = RichSegment {
+            char_set: CharSet::Math,
+            color: Some(Color::BLACK),
+            ..RichSegment::plain('∑')
+        };
+        let json = serde_json::to_string(&seg).unwrap();
+        assert!(
+            json.contains(r#""greek":false,"math":true,"color":"#),
+            "{json}"
+        );
+        assert_eq!(serde_json::from_str::<RichSegment>(&json).unwrap(), seg);
+
+        // An explicit `"math": false` reads as `Text` and is not written back.
+        let explicit = format!(r#"{HEAD}"greek":false,"math":false}}"#);
+        let seg: RichSegment = serde_json::from_str(&explicit).unwrap();
+        assert_eq!(seg.char_set, CharSet::Text);
+        assert_eq!(
+            serde_json::to_string(&seg).unwrap(),
+            format!("{HEAD}\"greek\":false}}")
+        );
+
+        let both = format!(r#"{HEAD}"greek":true,"math":true}}"#);
+        let err = serde_json::from_str::<RichSegment>(&both)
+            .expect_err("greek and math at once is rejected")
+            .to_string();
+        assert!(err.contains("both"), "{err}");
+
+        // `greek` stays required, as it always was.
+        let missing = r#"{"text":"a","bold":false,"italic":false,"underline":false,"superscript":false,"subscript":false}"#;
+        assert!(serde_json::from_str::<RichSegment>(missing).is_err());
+    }
+
+    // A document holding every optional segment field re-serializes byte for
+    // byte through the wire structs.
+    #[cfg(feature = "serde")]
+    #[test]
+    fn segment_with_every_field_round_trips_byte_for_byte() {
+        let seg = RichSegment {
+            bold: true,
+            italic: true,
+            underline: true,
+            superscript: true,
+            subscript: true,
+            char_set: CharSet::Greek,
+            color: Some(Color::new(0.25, 0.5, 0.75, 1.0)),
+            font_size: Some(13.5),
+            field_em: Some(2.0),
+            rule: true,
+            rule_dash: Some(vec![0.5, 0.25]),
+            rule_band: Some(Color::BLACK),
+            ..RichSegment::plain('q')
+        };
+        let json = serde_json::to_string(&seg).unwrap();
+        let back: RichSegment = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, seg);
+        assert_eq!(serde_json::to_string(&back).unwrap(), json);
     }
 
     // `align` is additive schema too: a document written before it existed

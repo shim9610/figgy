@@ -24,36 +24,39 @@ use futures_channel::oneshot;
 
 const INIT_SCOPE: &str = "renderer.gpu_data_pick";
 const DATA_PICK_CANDIDATE_BYTES: u64 = 32;
-const DATA_PICK_FLAG_FILL: u32 = 1;
-const DATA_PICK_FLAG_CONTOUR: u32 = 2;
+pub(crate) const DATA_PICK_FLAG_FILL: u32 = 1;
+pub(crate) const DATA_PICK_FLAG_CONTOUR: u32 = 2;
 /// Resident fills pick the cell painted at the cursor's pixel centre, and
 /// only where its colour is not clear (`field_pick_cell`).
-const DATA_PICK_FLAG_PAINTED: u32 = 4;
-const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
-const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
-const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
+pub(crate) const DATA_PICK_FLAG_PAINTED: u32 = 4;
+pub(crate) const DATA_PICK_KIND_HISTOGRAM_BIN: u32 = 1;
+pub(crate) const DATA_PICK_KIND_MATRIX_CELL: u32 = 2;
+pub(crate) const DATA_PICK_KIND_CONTOUR_LEVEL: u32 = 3;
+/// A category bar, box plot or radar series' value label
+/// (`value_label.wgsl::pick_value_labels`): `index0` is its category.
+pub(crate) const DATA_PICK_KIND_VALUE_LABEL: u32 = 4;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-struct DataPickQueryGpu {
-    cursor_ndc_t: [f32; 4],
-    limits: [f32; 4],
-    data: [u32; 4],
-    bases: [u32; 4],
-    baseline: [f32; 4],
+pub(crate) struct DataPickQueryGpu {
+    pub(crate) cursor_ndc_t: [f32; 4],
+    pub(crate) limits: [f32; 4],
+    pub(crate) data: [u32; 4],
+    pub(crate) bases: [u32; 4],
+    pub(crate) baseline: [f32; 4],
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct DataPickCandidateGpu {
-    valid: u32,
-    paint_order: u32,
-    kind: u32,
-    index0: u32,
-    index1: u32,
-    index2: u32,
-    distance_px: f32,
-    primitive_order: u32,
+pub(crate) struct DataPickCandidateGpu {
+    pub(crate) valid: u32,
+    pub(crate) paint_order: u32,
+    pub(crate) kind: u32,
+    pub(crate) index0: u32,
+    pub(crate) index1: u32,
+    pub(crate) index2: u32,
+    pub(crate) distance_px: f32,
+    pub(crate) primitive_order: u32,
 }
 
 const _: () = assert!(std::mem::size_of::<DataPickQueryGpu>() == 80);
@@ -71,6 +74,9 @@ struct DataPickIdentity {
     source_id: Option<String>,
     series_id: String,
     paint_order: u32,
+    /// A violin's candidates name the half they hit in `index1`
+    /// (`VIOLIN_SIDE_*`, 0 for a symmetric body).
+    violin: bool,
 }
 
 pub(crate) enum GpuDataPickGeometry {
@@ -103,6 +109,50 @@ pub(crate) enum GpuDataPickGeometry {
     VectorGrid {
         vector_bg: wgpu::BindGroup,
         charge: SharedCharge,
+    },
+    /// A category bar series' bars, picked by the category bar module's own
+    /// entry (`pick_category_bar`) over the draw's group 3 and override
+    /// table at the pick's display scale. A bar answers as a histogram bin
+    /// whose index is its row.
+    CategoryBars {
+        data: crate::data_render::CategoryBarData,
+    },
+    /// A box plot series' boxes, picked by the box plot entry
+    /// (`pick_box_plot`) over the draw's group 3 and style map at the
+    /// pick's display scale: every part of a box (body, whiskers, caps,
+    /// median, mean, outliers) answers its box as a histogram bin whose
+    /// index is its row.
+    BoxPlot {
+        data: crate::data_render::CategoryBarData,
+    },
+    /// A range bar series' bars, picked by the range bar entry
+    /// (`pick_range_bar`) over the draw's group 3 and style map at the
+    /// pick's display scale: the body, the whisker and the connector of a
+    /// bar answer it as a histogram bin whose index is its row.
+    RangeBars {
+        data: crate::data_render::CategoryBarData,
+    },
+    /// A box plot series' violins, picked by the violin entry
+    /// (`pick_violin`) over the violin draw's group 3 and style map at the
+    /// pick's display scale: one test per category and half, answering the
+    /// category as a histogram bin.
+    Violin {
+        data: crate::data_render::CategoryBarData,
+    },
+    /// A series' value labels, picked by the bar module's label entry
+    /// (`pick_value_labels`) over the draw's label uniform, category bar
+    /// group 3 and style map at the pick's display scale. A label answers as
+    /// [`DATA_PICK_KIND_VALUE_LABEL`] whose index is its category.
+    ValueLabels {
+        data: crate::data_render::CategoryBarData,
+        labels: crate::data_render::ValueLabelData,
+    },
+    /// A parallel coordinates series' rows (#141), picked by the line
+    /// module's entry (`pick_parallel`) over the draw's group 3 at the
+    /// pick's display scale: the nearest segment's row answers as a point
+    /// whose index is the row.
+    Parallel {
+        data: crate::data_render::ParallelData,
     },
 }
 
@@ -206,6 +256,7 @@ impl DataPickPipelineBundle {
                     source_id,
                     series_id,
                     paint_order: index as u32,
+                    violin: false,
                 })
                 .collect(),
             transform_bg,
@@ -547,9 +598,27 @@ pub(crate) struct DataPickShaders<'a> {
     pub(crate) field: &'a wgpu::ShaderModule,
     /// The assembled grid vector module (`VectorInput::Grid`).
     pub(crate) vector_grid: &'a wgpu::ShaderModule,
+    /// The line module, whose `pick_parallel` answers parallel rows (#141).
+    pub(crate) line: &'a wgpu::ShaderModule,
 }
 
 /// Immutable pipelines shared by every chart and pick query on one renderer.
+/// The query of a category bar or box plot pick: the cursor, the pick
+/// distance and the paint order; the group 3 params hold the rest.
+fn category_axis_pick_query(
+    cursor_ndc_t: [f32; 4],
+    max_distance_px: f32,
+    paint_order: u32,
+) -> DataPickQueryGpu {
+    DataPickQueryGpu {
+        cursor_ndc_t,
+        limits: [max_distance_px, 0.0, 0.0, 0.0],
+        data: [0, paint_order, 0, 0],
+        bases: [0; 4],
+        baseline: [0.0; 4],
+    }
+}
+
 pub(crate) struct DataPickPipelineBundle {
     device: Arc<wgpu::Device>,
     queue: Arc<wgpu::Queue>,
@@ -558,6 +627,16 @@ pub(crate) struct DataPickPipelineBundle {
     histogram: wgpu::ComputePipeline,
     field: wgpu::ComputePipeline,
     vector_cell: wgpu::ComputePipeline,
+    category_bar: wgpu::ComputePipeline,
+    box_plot: wgpu::ComputePipeline,
+    range_bar: wgpu::ComputePipeline,
+    violin: wgpu::ComputePipeline,
+    /// The parallel row pick over the parallel data layout as group 3.
+    parallel: wgpu::ComputePipeline,
+    /// Group 1 of the value label pick: the query (1, 2, 3), the series'
+    /// label uniform (4) and its label cells (7).
+    value_label_query_bgl: wgpu::BindGroupLayout,
+    value_labels: wgpu::ComputePipeline,
     empty_bar_style_map: wgpu::BindGroup,
     /// Group 3 of the field pick for a contour without labels.
     empty_label_gap: wgpu::BindGroup,
@@ -578,12 +657,15 @@ impl DataPickPipelineBundle {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Arc<Self> {
         let DataPickShaders {
             bar: bar_shader,
             field: field_shader,
             vector_grid: vector_grid_shader,
+            line: line_shader,
         } = shaders;
         started(observer, INIT_SCOPE, "setup");
         let query_bgl = crate::gpu_compile::bind_group_layout(
@@ -630,6 +712,58 @@ impl DataPickPipelineBundle {
                 immediate_size: 0,
             },
         );
+        let category_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy category bar data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    Some(bar_style_bgl),
+                    Some(category_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
+        let parallel_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy parallel data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&query_bgl),
+                    None,
+                    Some(parallel_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
+        let value_label_query_bgl = crate::gpu_compile::bind_group_layout(
+            &device,
+            &wgpu::BindGroupLayoutDescriptor {
+                label: Some("figgy value label pick query bgl"),
+                entries: &[
+                    compute_uniform_entry(1),
+                    compute_storage_entry(2, true),
+                    compute_storage_entry(3, false),
+                    compute_uniform_entry(4),
+                    compute_storage_entry(7, true),
+                ],
+            },
+        );
+        let value_label_layout = crate::gpu_compile::pipeline_layout(
+            &device,
+            &wgpu::PipelineLayoutDescriptor {
+                label: Some("figgy value label data pick layout"),
+                bind_group_layouts: &[
+                    Some(transform_bgl),
+                    Some(&value_label_query_bgl),
+                    Some(bar_style_bgl),
+                    Some(category_bgl),
+                ],
+                immediate_size: 0,
+            },
+        );
         finished(observer, INIT_SCOPE, "setup");
 
         let histogram = observe_value(observer, INIT_SCOPE, "pick_histogram_bin", || {
@@ -667,6 +801,84 @@ impl DataPickPipelineBundle {
                     module: vector_grid_shader,
                     entry_point: Some("pick_vector_cell"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    cache: None,
+                },
+            )
+        });
+        let parallel = observe_value(observer, INIT_SCOPE, "pick_parallel", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy parallel data pick pipeline"),
+                    layout: Some(&parallel_layout),
+                    module: line_shader,
+                    entry_point: Some("pick_parallel"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let category_bar = observe_value(observer, INIT_SCOPE, "pick_category_bar", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy category bar data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_category_bar"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let box_plot = observe_value(observer, INIT_SCOPE, "pick_box_plot", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy box plot data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_box_plot"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let range_bar = observe_value(observer, INIT_SCOPE, "pick_range_bar", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy range bar data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_range_bar"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let violin = observe_value(observer, INIT_SCOPE, "pick_violin", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy violin data pick pipeline"),
+                    layout: Some(&category_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_violin"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
+                    cache: None,
+                },
+            )
+        });
+        let value_labels = observe_value(observer, INIT_SCOPE, "pick_value_labels", || {
+            crate::gpu_compile::compute_pipeline(
+                &device,
+                &wgpu::ComputePipelineDescriptor {
+                    label: Some("figgy value label data pick pipeline"),
+                    layout: Some(&value_label_layout),
+                    module: bar_shader,
+                    entry_point: Some("pick_value_labels"),
+                    compilation_options: crate::gpu_compile::workgroup_options(&device),
                     cache: None,
                 },
             )
@@ -726,6 +938,13 @@ impl DataPickPipelineBundle {
             histogram,
             field,
             vector_cell,
+            category_bar,
+            box_plot,
+            range_bar,
+            violin,
+            parallel,
+            value_label_query_bgl,
+            value_labels,
             empty_bar_style_map,
             empty_label_gap,
             _empty_label_gap_charge: empty_label_gap_charge,
@@ -745,15 +964,33 @@ impl DataPickPipelineBundle {
         field_bgl: &wgpu::BindGroupLayout,
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
+        category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> Result<Arc<Self>, crate::gpu_pick::GpuPickError> {
         #[cfg(target_arch = "wasm32")]
         {
             crate::init::prewarm_compute_entries_js(
                 &device,
+                "gpu.data_pick.line.async",
+                crate::data_render::LINE_SHADER.source,
+                &[("pick_parallel", "pick_parallel")],
+                observer,
+            )
+            .await
+            .map_err(crate::gpu_pick::GpuPickError::AsyncCompileFailed)?;
+            crate::init::prewarm_compute_entries_js(
+                &device,
                 "gpu.data_pick.bar.async",
-                include_str!("data_render/bar_columnar.wgsl"),
-                &[("pick_histogram_bin", "pick_histogram_bin")],
+                crate::data_render::BAR_SHADER.source,
+                &[
+                    ("pick_histogram_bin", "pick_histogram_bin"),
+                    ("pick_category_bar", "pick_category_bar"),
+                    ("pick_box_plot", "pick_box_plot"),
+                    ("pick_range_bar", "pick_range_bar"),
+                    ("pick_violin", "pick_violin"),
+                    ("pick_value_labels", "pick_value_labels"),
+                ],
                 observer,
             )
             .await
@@ -773,7 +1010,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.field.async",
-                include_str!("data_render/field_columnar.wgsl"),
+                crate::data_render::FIELD_SHADER.source,
                 &[("pick_field_data", "pick_field_data")],
                 observer,
             )
@@ -782,9 +1019,7 @@ impl DataPickPipelineBundle {
             crate::init::prewarm_compute_entries_js(
                 &device,
                 "gpu.data_pick.vector.async",
-                &crate::data_render::vector::assemble(
-                    crate::data_render::vector::VectorInput::Grid,
-                ),
+                crate::data_render::vector::assemble(crate::data_render::vector::VectorInput::Grid),
                 &[("pick_vector_cell", "pick_vector_cell")],
                 observer,
             )
@@ -800,6 +1035,8 @@ impl DataPickPipelineBundle {
             field_bgl,
             bar_style_bgl,
             vector_bgl,
+            category_bgl,
+            parallel_bgl,
             observer,
         ))
     }
@@ -926,6 +1163,12 @@ impl DataPickPipelineBundle {
             Histogram(wgpu::BindGroup),
             Field(wgpu::BindGroup, wgpu::BindGroup),
             VectorGrid(wgpu::BindGroup),
+            CategoryBars(crate::data_render::CategoryBarData),
+            BoxPlot(crate::data_render::CategoryBarData),
+            RangeBars(crate::data_render::CategoryBarData),
+            Violin(crate::data_render::CategoryBarData),
+            ValueLabels(crate::data_render::CategoryBarData),
+            Parallel(crate::data_render::ParallelData),
         }
         struct PreparedSeries {
             query_bg: wgpu::BindGroup,
@@ -947,6 +1190,10 @@ impl DataPickPipelineBundle {
         let mut field_charges = Vec::new();
 
         for (index, item) in series.into_iter().enumerate() {
+            // A value label pick binds the series' label uniform beside the
+            // query in group 1.
+            let mut label_params = None;
+            let violin = matches!(item.geometry, GpuDataPickGeometry::Violin { .. });
             let (params, kind) = match item.geometry {
                 GpuDataPickGeometry::Histogram {
                     edges,
@@ -1020,6 +1267,71 @@ impl DataPickPipelineBundle {
                         PreparedKind::VectorGrid(vector_bg),
                     )
                 }
+                GpuDataPickGeometry::CategoryBars { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::CategoryBars(data),
+                    )
+                }
+                GpuDataPickGeometry::BoxPlot { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::BoxPlot(data),
+                    )
+                }
+                GpuDataPickGeometry::RangeBars { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::RangeBars(data),
+                    )
+                }
+                GpuDataPickGeometry::Violin { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::Violin(data),
+                    )
+                }
+                GpuDataPickGeometry::Parallel { data } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::Parallel(data),
+                    )
+                }
+                GpuDataPickGeometry::ValueLabels { data, labels } => {
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&data.charge),
+                        _label: None,
+                    });
+                    field_charges.push(FieldPickHold {
+                        _charge: Arc::clone(&labels.charge),
+                        _label: None,
+                    });
+                    label_params = Some((Arc::clone(&labels.params), Arc::clone(&labels.cells)));
+                    (
+                        category_axis_pick_query(cursor, query.max_distance_px, item.paint_order),
+                        PreparedKind::ValueLabels(data),
+                    )
+                }
             };
             let query_buffer = charged_buffer_init(
                 &scratch_tally,
@@ -1036,32 +1348,56 @@ impl DataPickPipelineBundle {
                 .ok_or(crate::gpu_pick::GpuPickError::AllocationFailed {
                     resource: "typed data pick output offset",
                 })?;
-            let query_bg = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("figgy typed data pick query bg"),
-                layout: &self.query_bgl,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: query_buffer.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: pool.buffer().as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                            buffer: &candidates,
-                            offset,
-                            size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
-                        }),
-                    },
-                ],
-            });
+            let query_entries = [
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: query_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: pool.buffer().as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: &candidates,
+                        offset,
+                        size: NonZeroU64::new(DATA_PICK_CANDIDATE_BYTES),
+                    }),
+                },
+            ];
+            let query_bg = match &label_params {
+                None => self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("figgy typed data pick query bg"),
+                    layout: &self.query_bgl,
+                    entries: &query_entries,
+                }),
+                Some((params, cells)) => {
+                    let [query_entry, pool_entry, output_entry] = query_entries;
+                    self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                        label: Some("figgy value label pick query bg"),
+                        layout: &self.value_label_query_bgl,
+                        entries: &[
+                            query_entry,
+                            pool_entry,
+                            output_entry,
+                            wgpu::BindGroupEntry {
+                                binding: 4,
+                                resource: params.as_entire_binding(),
+                            },
+                            wgpu::BindGroupEntry {
+                                binding: 7,
+                                resource: cells.as_entire_binding(),
+                            },
+                        ],
+                    })
+                }
+            };
             identities.push(DataPickIdentity {
                 source_id: item.source_id,
                 series_id: item.series_id,
                 paint_order: item.paint_order,
+                violin,
             });
             prepared.push(PreparedSeries { query_bg, kind });
         }
@@ -1091,6 +1427,35 @@ impl DataPickPipelineBundle {
                     PreparedKind::VectorGrid(vector_bg) => {
                         pass.set_pipeline(&self.vector_cell);
                         pass.set_bind_group(2, vector_bg, &[]);
+                    }
+                    PreparedKind::CategoryBars(data) => {
+                        pass.set_pipeline(&self.category_bar);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::BoxPlot(data) => {
+                        pass.set_pipeline(&self.box_plot);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::RangeBars(data) => {
+                        pass.set_pipeline(&self.range_bar);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::Violin(data) => {
+                        pass.set_pipeline(&self.violin);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::ValueLabels(data) => {
+                        pass.set_pipeline(&self.value_labels);
+                        pass.set_bind_group(2, &data.style_map, &[]);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
+                    }
+                    PreparedKind::Parallel(data) => {
+                        pass.set_pipeline(&self.parallel);
+                        pass.set_bind_group(3, &data.bind_group, &[]);
                     }
                 }
                 pass.set_bind_group(1, &item.query_bg, &[]);
@@ -1275,6 +1640,15 @@ fn decode_candidate(
             series_id,
             bin_index: candidate.index0 as usize,
             distance_px,
+            half: match (identity.violin, candidate.index1) {
+                (true, crate::data_render::VIOLIN_SIDE_LOW) => {
+                    Some(crate::data_config::ViolinSide::Low)
+                }
+                (true, crate::data_render::VIOLIN_SIDE_HIGH) => {
+                    Some(crate::data_config::ViolinSide::High)
+                }
+                _ => None,
+            },
         },
         DATA_PICK_KIND_MATRIX_CELL => PickedData::MatrixCell {
             source_id,
@@ -1289,6 +1663,12 @@ fn decode_candidate(
             level_index: candidate.index0 as usize,
             x_index: candidate.index1 as usize,
             y_index: candidate.index2 as usize,
+            distance_px,
+        },
+        DATA_PICK_KIND_VALUE_LABEL => PickedData::ValueLabel {
+            source_id,
+            series_id,
+            category_index: candidate.index0 as usize,
             distance_px,
         },
         _ => return Err(crate::gpu_pick::GpuPickError::InvalidGpuResult),
@@ -1327,27 +1707,135 @@ enum GpuDataPickTicketState {
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
         point_orders: Arc<[PointPaintOrder]>,
+        /// The paint order of the first line offset member; `point_orders`'
+        /// length when the layer has none.
+        first_member: usize,
     },
     Stream(DataPickTicket),
+    /// A 3D chart's 1×1 ID render (`Renderer::pick_surface`).
+    Surface(SurfacePickTicket),
+}
+
+/// Who a surface ID names: ID `k` is entry `k − 1`.
+pub(crate) struct SurfacePickIdentity {
+    pub(crate) source_id: Option<String>,
+    pub(crate) series_id: String,
+    /// The grid's constituent columns run along y: the ID's `(c, r)` is
+    /// `(y, x)`.
+    pub(crate) columns_are_y: bool,
+}
+
+/// The kind word a 3D point pick writes (`fs_3d_pick`, #132): the ID's
+/// third word is the point's index.
+pub(crate) const SURFACE_PICK_KIND_POINT: u32 = 1;
+
+/// A pending surface ID pick: the 16 bytes the 1×1 render wrote, read back.
+pub(crate) struct SurfacePickTicket {
+    /// Polled for the readback on native; the browser's device polls itself.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub(crate) device: Arc<wgpu::Device>,
+    pub(crate) readback: wgpu::Buffer,
+    pub(crate) receiver: oneshot::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    pub(crate) identities: Vec<SurfacePickIdentity>,
+    pub(crate) _charges: Vec<crate::gpu_memory::SharedCharge>,
+}
+
+impl SurfacePickTicket {
+    async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = self.device.poll(wgpu::PollType::Wait {
+            submission_index: None,
+            timeout: None,
+        });
+        self.receiver
+            .await
+            .map_err(|_| crate::gpu_pick::GpuPickError::MapChannelClosed)?
+            .map_err(crate::gpu_pick::GpuPickError::MapFailed)?;
+        let slice = self.readback.slice(..16);
+        let mapped = slice
+            .get_mapped_range()
+            .expect("surface pick readback is mapped after map_async");
+        let words: &[u32] = bytemuck::cast_slice(&mapped);
+        let [word, b, c, r] = [words[0], words[1], words[2], words[3]];
+        // The top bit marks a floor contour: `b` its level, `(c, r)` its
+        // cell in x / y order. Otherwise `(c, r)` is a surface sample.
+        let floor = word & 0x8000_0000 != 0;
+        let id = word & 0x7fff_ffff;
+        if id == 0 {
+            return Ok(None);
+        }
+        let identity = self
+            .identities
+            .get(id as usize - 1)
+            .ok_or(crate::gpu_pick::GpuPickError::InvalidGpuResult)?;
+        if floor {
+            return Ok(Some(PickedData::ContourLevel {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                level_index: b as usize,
+                x_index: c as usize,
+                y_index: r as usize,
+                distance_px: 0.0,
+            }));
+        }
+        // A 3D scatter or line series' point (#132): the marker or the
+        // segment end under the cursor, at distance zero as the surface's
+        // sample is.
+        if b == SURFACE_PICK_KIND_POINT {
+            return Ok(Some(PickedData::Point {
+                source_id: identity.source_id.clone(),
+                series_id: identity.series_id.clone(),
+                point_index: c as usize,
+                distance_px: 0.0,
+            }));
+        }
+        let (x, y) = if identity.columns_are_y {
+            (r, c)
+        } else {
+            (c, r)
+        };
+        Ok(Some(PickedData::MatrixCell {
+            source_id: identity.source_id.clone(),
+            series_id: identity.series_id.clone(),
+            x_index: x as usize,
+            y_index: y as usize,
+            distance_px: 0.0,
+        }))
+    }
 }
 
 impl GpuDataPickTicket {
+    /// The last `members` entries of `point_orders` are line offset members
+    /// (`Config::line_offsets`), drawn by panels above every other series of
+    /// the layer: a point hit on one of them inside its painted part
+    /// (distance 0) answers before any data hit under it.
     pub(crate) fn new(
         point: crate::gpu_pick::GpuPickTicket,
         data: DataPickTicket,
         point_orders: Vec<PointPaintOrder>,
+        members: usize,
     ) -> Self {
+        let first_member = point_orders.len().saturating_sub(members);
         Self {
             state: GpuDataPickTicketState::Resident {
                 point,
                 data,
                 point_orders: point_orders.into(),
+                first_member,
             },
         }
     }
 
+    /// A ticket for a 3D chart's ID pick.
+    pub(crate) fn surface(ticket: SurfacePickTicket) -> Self {
+        Self {
+            state: GpuDataPickTicketState::Surface(ticket),
+        }
+    }
+
     pub async fn resolve(self) -> Result<Option<PickedData>, crate::gpu_pick::GpuPickError> {
-        let (point, data, point_orders) = match self.state {
+        let (point, data, point_orders, first_member) = match self.state {
+            GpuDataPickTicketState::Surface(ticket) => return ticket.resolve().await,
             GpuDataPickTicketState::Stream(ticket) => {
                 return ticket
                     .resolve()
@@ -1358,7 +1846,8 @@ impl GpuDataPickTicket {
                 point,
                 data,
                 point_orders,
-            } => (point, data, point_orders),
+                first_member,
+            } => (point, data, point_orders, first_member),
         };
         let point = point.resolve().await?;
         let data = data.resolve().await?;
@@ -1379,6 +1868,14 @@ impl GpuDataPickTicket {
             (None, None) => None,
             (Some(point), None) => Some(point.picked),
             (None, Some(data)) => Some(data.picked),
+            // A line offset member painted under the cursor covers every
+            // data hit, whose panels draw below the members'.
+            (Some(point), Some(_))
+                if point.paint_order as usize >= first_member
+                    && point.picked.distance_px() == 0.0 =>
+            {
+                Some(point.picked)
+            }
             (Some(point), Some(data)) => {
                 let point_distance = point.picked.distance_px();
                 let data_distance = data.picked.distance_px();
@@ -1412,18 +1909,14 @@ mod stream_tests {
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("data_render/bar_columnar.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::BAR_SHADER.source.into()),
             },
         );
         let field = crate::gpu_compile::shader_module(
             &device,
             wgpu::ShaderModuleDescriptor {
                 label: None,
-                source: wgpu::ShaderSource::Wgsl(
-                    include_str!("data_render/field_columnar.wgsl").into(),
-                ),
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::FIELD_SHADER.source.into()),
             },
         );
         let vector_grid =
@@ -1432,6 +1925,15 @@ mod stream_tests {
         let field_bgl = data_render::create_field_data_bind_group_layout(&device);
         let style = data_render::create_per_point_style_map_bind_group_layout(&device);
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
+        let category_bgl = data_render::create_category_bar_data_bind_group_layout(&device);
+        let parallel_bgl = data_render::create_parallel_data_bind_group_layout(&device);
+        let line = crate::gpu_compile::shader_module(
+            &device,
+            wgpu::ShaderModuleDescriptor {
+                label: None,
+                source: wgpu::ShaderSource::Wgsl(crate::data_render::LINE_SHADER.source.into()),
+            },
+        );
         DataPickPipelineBundle::new_observed(
             device,
             queue,
@@ -1440,11 +1942,14 @@ mod stream_tests {
                 bar: &bar,
                 field: &field,
                 vector_grid: &vector_grid,
+                line: &line,
             },
             &transform,
             &field_bgl,
             &style,
             &vector_bgl,
+            &category_bgl,
+            &parallel_bgl,
             &mut |_| {},
         )
     }
@@ -1541,6 +2046,8 @@ mod stream_tests {
                             fill_color_premul: [0.0; 4],
                             border_color_premul: [0.0; 4],
                             params: [0.0, 0.0, 0.0, 16.0],
+                            material: [0.0; 4],
+                            finish: [0.0; 4],
                         }],
                     )
                     .bind_group

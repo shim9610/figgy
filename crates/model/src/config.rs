@@ -2,8 +2,9 @@ use crate::color::Color;
 use crate::colormap::ColorMap;
 use crate::format::LabelFormat;
 use crate::layer::{AnnotationLayer, LayerRef, OverlayLayer, Subplot};
-use crate::layout::{ChartArea, Side};
+use crate::layout::{ChartArea, Rect, Side};
 use crate::line::LineStylePreset;
+use crate::polar::PolarOptions;
 use crate::text::RichText;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -20,6 +21,30 @@ pub struct ChartTitleOptions {
     ///
     /// [`fit_chart_title_margin`]: crate::layout::fit_chart_title_margin
     pub top_margin: f32,
+}
+
+impl ChartTitleOptions {
+    /// A plain title in one style: the characters of `title` in `font`,
+    /// `label_size * 1.5` high, in `color`, left-aligned, visible, with no
+    /// offset and no band of its own (`top_margin` 0). This is the rich
+    /// title the radial chart's legacy plain `title` stands for; once
+    /// installed as its `chart_title` it is authoritative and the legacy
+    /// string is ignored.
+    pub fn from_legacy_plain(title: &str, font: &str, label_size: f32, color: Color) -> Self {
+        Self {
+            text: RichText {
+                segments: title.chars().map(crate::text::RichSegment::plain).collect(),
+                color,
+                font_size: label_size * 1.5,
+                font: font.into(),
+                align: crate::text::TextAlign::Left,
+            },
+            visible: true,
+            offset_x: 0.0,
+            offset_y: 0.0,
+            top_margin: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -51,6 +76,35 @@ pub struct GridOptions {
 pub enum AxisScale {
     Linear,
     Logarithmic,
+}
+
+/// Which major ticks a logarithmic axis draws ([`AxisOptions::log_ticks`]).
+///
+/// The major set is a function of the axis range alone, so linked charts and
+/// every output scale place the same ticks; which of them carry a label is
+/// decided by the renderer's label pruning. A linear axis ignores the policy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum LogTickPolicy {
+    /// Every `major_spacing`-th whole decade (`10^k`), the floored step at
+    /// least 1, as every axis drew before the policy existed.
+    #[default]
+    Decades,
+    /// Majors from the range: whole decades (every `n`-th one on a range of
+    /// more than six decades), or on a narrower range the first of the
+    /// decades, the 1, 2 and 5 × 10^k ladder and the 1 to 9 × 10^k ladder
+    /// that puts at least [`crate::tick::LOG_LADDER_MIN_MAJORS`] majors
+    /// inside it. `major_spacing` is ignored.
+    Adaptive,
+}
+
+impl LogTickPolicy {
+    /// `true` for the default, `Decades`. Used to keep it out of serialized
+    /// JSON.
+    #[cfg(feature = "serde")]
+    fn is_decades(&self) -> bool {
+        *self == LogTickPolicy::Decades
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -116,6 +170,141 @@ pub struct AxisOptions {
     // Tick mark lengths. `margins()` uses `major_tick_length`.
     pub major_tick_length: f32,
     pub minor_tick_length: f32,
+
+    /// The categories of a categorical axis, in axis order; `None` (the
+    /// default) is a numeric axis.
+    ///
+    /// A categorical axis with `n` categories maps the data range
+    /// `[-0.5, n - 0.5]`: category `i` sits at `i`, with a major tick at every
+    /// integer and no minor ticks, and its tick label is `categories[i].label`
+    /// in the axis' `label_style` (font, colour, offsets and visibility),
+    /// thinned to every 2nd, 5th, 10th... label when neighbours crowd, like
+    /// numeric labels. The grid draws its major lines at the category
+    /// positions when that axis' major grid is on.
+    ///
+    /// On a categorical axis `min`, `max`, `major_spacing` and `minor_count`
+    /// are ignored (they keep their values and their numeric meaning for when
+    /// `categories` is removed again), `label_style.format` and
+    /// `label_style.significant_digits` are ignored, the range helpers
+    /// (`Chart::set_x_range`, the `auto_fit_*` family, a view state) leave the
+    /// axis unchanged, and the renderer rejects a logarithmic `scale` and
+    /// lists outside [`AxisOptions::validate_categories`]' limits. `inverted`
+    /// flips the walk: the first category sits at the far end, and the ticks,
+    /// labels, grid, data and picks follow the same `axis_fraction`. A polar chart's angle and radius axes and the colourbar axis
+    /// cannot be categorical yet.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub categories: Option<Vec<Category>>,
+
+    /// Where this axis' line crosses the perpendicular axis, as a value of
+    /// that axis: `Some(0.0)` on `bottom_x` draws the bottom axis line at
+    /// `left_y = 0`, the zero line of a bar chart with negative values, and
+    /// on `left_y` it draws the left line at `bottom_x = 0`. `None` (the
+    /// default) keeps the line on the plot edge. A value outside the
+    /// perpendicular axis' range puts the line on the nearer edge, and the
+    /// line keeps its half-pixel snap. Only the line moves: the ticks, tick
+    /// labels and axis title stay at the edge. A polar chart ignores it; the
+    /// renderer rejects a value that is not finite.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub cross_at: Option<f64>,
+
+    /// Which major ticks the axis draws when it is logarithmic (#42).
+    /// `Decades` (the default, omitted from JSON) walks every
+    /// `major_spacing`-th decade; `Adaptive` chooses decades, the 1-2-5
+    /// ladder or the 1..9 ladder from the range and ignores `major_spacing`
+    /// ([`crate::tick::log_ladder`]). The minors are the multiples 2 to 9
+    /// that are not majors. A linear or categorical axis ignores it; the
+    /// range helpers and a view state leave it as it is, so a zoom re-plans
+    /// the ticks from the new range.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "LogTickPolicy::is_decades")
+    )]
+    pub log_ticks: LogTickPolicy,
+}
+
+/// One category of a categorical axis ([`AxisOptions::categories`]): a stable
+/// `id` that names it in edits and selections, and the `label` its tick
+/// shows.
+///
+/// `crate::categorical::Category` is the same type, re-exported from its
+/// earlier home.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Category {
+    pub id: String,
+    pub label: String,
+}
+
+impl Category {
+    pub fn new(id: impl Into<String>, label: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            label: label.into(),
+        }
+    }
+}
+
+/// The most characters a category id or label may have.
+pub const MAX_CATEGORY_TEXT_CHARS: usize = 80;
+
+/// Whether `text` is one line of at most [`MAX_CATEGORY_TEXT_CHARS`]
+/// characters.
+fn category_text_ok(text: &str) -> bool {
+    text.chars().count() <= MAX_CATEGORY_TEXT_CHARS && !text.chars().any(char::is_control)
+}
+
+impl AxisOptions {
+    /// The number of categories of a categorical axis, `None` for a numeric
+    /// one.
+    pub fn category_count(&self) -> Option<usize> {
+        self.categories.as_ref().map(Vec::len)
+    }
+
+    /// The range the axis maps: `[-0.5, n - 0.5]` on a categorical axis with
+    /// `n` categories, `min..max` on a numeric one.
+    pub fn data_range(&self) -> (f64, f64) {
+        match self.category_count() {
+            Some(n) => (-0.5, n as f64 - 0.5),
+            None => (self.min, self.max),
+        }
+    }
+
+    /// The rules a categorical axis is held to; a numeric axis always passes.
+    /// At least one category, with no upper count (#107), ids non-empty and
+    /// unique, ids and labels single-line and at most
+    /// [`MAX_CATEGORY_TEXT_CHARS`] characters, and a linear scale. An
+    /// inverted categorical axis is valid.
+    pub fn validate_categories(&self) -> Result<(), &'static str> {
+        let Some(categories) = &self.categories else {
+            return Ok(());
+        };
+        if categories.is_empty() {
+            return Err("a categorical axis needs at least one category");
+        }
+        for (index, category) in categories.iter().enumerate() {
+            if category.id.is_empty()
+                || !category_text_ok(&category.id)
+                || categories[..index].iter().any(|c| c.id == category.id)
+            {
+                return Err(
+                    "category ids must be unique, non-empty, single-line and at most 80 characters",
+                );
+            }
+            if !category_text_ok(&category.label) {
+                return Err("category labels must be single-line and at most 80 characters");
+            }
+        }
+        if self.scale == AxisScale::Logarithmic {
+            return Err("a categorical axis cannot be logarithmic");
+        }
+        Ok(())
+    }
 }
 
 /// Hand-drawn ("sketch") render-mode parameters. Every field has a default —
@@ -386,6 +575,14 @@ pub enum PickedDataRef {
         source_id: Option<String>,
         series_id: String,
         bin_index: usize,
+        /// The half of a split violin (`ViolinSide::Low` or `High`) at the
+        /// category `bin_index`; `None` for every other bin, a box, or a
+        /// symmetric violin.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        half: Option<crate::data_config::ViolinSide>,
     },
     MatrixCell {
         #[cfg_attr(
@@ -416,6 +613,22 @@ pub enum PickedDataRef {
         x_index: usize,
         y_index: usize,
     },
+    /// The value label of one category of a category bar, box plot or
+    /// radar series: its `labels.text[category_index]`, drawn at the bar
+    /// end, above the box or outside the vertex. A selected label is
+    /// outlined by its frame and is what a drag moves
+    /// (`SeriesConfig::drag_value_label`); `step_selection` does not step
+    /// it.
+    ValueLabel {
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        source_id: Option<String>,
+        series_id: String,
+        /// The category, in axis order: the index into `labels.text`.
+        category_index: usize,
+    },
 }
 
 impl PickedDataRef {
@@ -424,7 +637,8 @@ impl PickedDataRef {
             Self::Point { source_id, .. }
             | Self::HistogramBin { source_id, .. }
             | Self::MatrixCell { source_id, .. }
-            | Self::ContourLevel { source_id, .. } => source_id.as_deref(),
+            | Self::ContourLevel { source_id, .. }
+            | Self::ValueLabel { source_id, .. } => source_id.as_deref(),
         }
     }
 
@@ -433,7 +647,8 @@ impl PickedDataRef {
             Self::Point { series_id, .. }
             | Self::HistogramBin { series_id, .. }
             | Self::MatrixCell { series_id, .. }
-            | Self::ContourLevel { series_id, .. } => series_id,
+            | Self::ContourLevel { series_id, .. }
+            | Self::ValueLabel { series_id, .. } => series_id,
         }
     }
 }
@@ -705,6 +920,34 @@ pub struct Config {
         serde(default, skip_serializing_if = "Option::is_none")
     )]
     pub polar: Option<crate::polar::PolarOptions>,
+    /// The ternary coordinate system. `None` (default, key absent in JSON)
+    /// is the rectangular chart; `Some` draws a triangle whose corners are
+    /// the 100 % of the three components read on `bottom_x`, `left_y` and
+    /// `right_y`. See [`crate::ternary`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub ternary: Option<crate::ternary::TernaryOptions>,
+    /// The 3D view. `None` (default, key absent in JSON) is the flat chart;
+    /// `Some` draws a box seen through this camera, heatmaps as surfaces
+    /// and contours on its floor, with x on `bottom_x`, y on `left_y` and
+    /// z on `right_y`. See [`crate::view3d`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub view_3d: Option<crate::view3d::View3d>,
+    /// The parallel coordinate system (#141). `None` (default, key absent
+    /// in JSON) is the rectangular chart; `Some` draws one vertical axis per
+    /// category of `bottom_x`, each with its own range, and every
+    /// `Parallel` series as one polyline per row across them. See
+    /// [`crate::parallel`].
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub parallel: Option<crate::parallel::ParallelOptions>,
     /// Overlay layers: secondary Y axes drawn on the right side of the shared
     /// data area, each scaling the series it lists. Empty (key absent in
     /// JSON) is the single-layer chart every document had before the field.
@@ -743,6 +986,33 @@ pub struct Config {
         serde(default, skip_serializing_if = "AnnotationLayer::is_default")
     )]
     pub annotations: AnnotationLayer,
+    /// How the category bar series of a layer share its categorical axis:
+    /// side by side, stacked or stacked to 100 %, the bar direction, the
+    /// group width and the gap
+    /// ([`BarGroups`](crate::data_config::BarGroups)). `None` (key absent in
+    /// JSON) reads as `BarGroups::default()`. It applies to the base layer
+    /// and to every overlay, whose category bar series form groups of their
+    /// own; a subplot has its own field. Charts without
+    /// [`DataRenderType::CategoryBars`](crate::data_config::DataRenderType::CategoryBars)
+    /// series ignore it.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub bar_groups: Option<crate::data_config::BarGroups>,
+    /// Offset spectra: line series drawn shifted from each other by a step
+    /// per member, in stacking order
+    /// ([`LineOffsets`](crate::data_config::LineOffsets)). `None` (key
+    /// absent in JSON) draws every series where its values are. The members
+    /// are series of this chart's base layer or of its overlays; a subplot
+    /// has its own field. The renderer draws each member as an internal
+    /// panel of its own ([`Config::expand`]); the shift is a display
+    /// parameter and reported values stay unshifted.
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
+    pub line_offsets: Option<crate::data_config::LineOffsets>,
 }
 
 impl Config {
@@ -754,87 +1024,229 @@ impl Config {
         c
     }
 
+    /// Every field of the chart is named below, so a new one is a decision
+    /// here: scaled when it is a pixel dimension, written as `name: _` when
+    /// it is a data value, a colour, an enum or a fraction.
     pub fn scale_in_place(&mut self, s: f32) {
-        let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
-        self.chart_area.0.x = scale_u32(self.chart_area.0.x);
-        self.chart_area.0.y = scale_u32(self.chart_area.0.y);
-        self.chart_area.0.width = scale_u32(self.chart_area.0.width);
-        self.chart_area.0.height = scale_u32(self.chart_area.0.height);
-
-        scale_rich_text(&mut self.chart_title.text, s);
-        self.chart_title.top_margin *= s;
-        self.chart_title.offset_x *= s;
-        self.chart_title.offset_y *= s;
-
-        let polar = self.polar.is_some();
-        for (axis, side) in [
-            (&mut self.top_x, Side::Top),
-            (&mut self.bottom_x, Side::Bottom),
-            (&mut self.left_y, Side::Left),
-            (&mut self.right_y, Side::Right),
-        ] {
-            scale_axis_in_place(axis, s);
-            scale_label_gap(axis, &side, polar, s);
+        let Config {
+            chart_area,
+            top_x,
+            bottom_x,
+            left_y,
+            right_y,
+            chart_title,
+            grid,
+            legend,
+            picked_points,
+            picked_data,
+            colorbar,
+            draw_style,
+            polar,
+            // The ternary switch holds no pixel dimension.
+            ternary,
+            // The camera holds angles, a distance in box half-diagonals and
+            // relative lengths: no pixel dimension.
+            view_3d,
+            // The axes' ranges are data; their label offsets are logical
+            // pixels, scaled below.
+            parallel,
+            overlays,
+            subplots,
+            // Which layer receives the pointer: not a dimension.
+            active_layer: _,
+            annotations,
+            bar_groups,
+            // Steps in data units (or decades) and series ids: not a
+            // dimension.
+            line_offsets: _,
+        } = self;
+        // A parallel axis's labels sit to its left with the fixed label gap,
+        // as `left_y`'s: its scaled offset makes up the gap as
+        // `scale_label_gap` does.
+        if let Some(parallel) = parallel {
+            let extra = (s - 1.0) * crate::layout::LABEL_GAP;
+            for axis in &mut parallel.axes {
+                axis.label_offset[0] = axis.label_offset[0] * s - extra;
+                axis.label_offset[1] *= s;
+            }
         }
 
-        self.grid.major_x_width *= s;
-        self.grid.major_y_width *= s;
-        self.grid.minor_x_width *= s;
-        self.grid.minor_y_width *= s;
+        let scale_u32 = |v: u32| ((v as f32) * s).round() as u32;
+        let ChartArea(Rect {
+            x,
+            y,
+            width,
+            height,
+        }) = chart_area;
+        *x = scale_u32(*x);
+        *y = scale_u32(*y);
+        *width = scale_u32(*width);
+        *height = scale_u32(*height);
 
-        self.legend.offset_x *= s;
-        self.legend.offset_y *= s;
-        self.legend.padding *= s;
-        scale_rich_text(&mut self.legend.content, s);
-        scale_legend_inset(&mut self.legend, s);
+        let ChartTitleOptions {
+            text,
+            visible: _,
+            offset_x,
+            offset_y,
+            top_margin,
+        } = chart_title;
+        scale_rich_text(text, s);
+        *top_margin *= s;
+        *offset_x *= s;
+        *offset_y *= s;
+
+        // The polar options are angles, an angle unit and a fraction of the
+        // outer radius: none of them is a pixel dimension.
+        let polar = match polar {
+            Some(PolarOptions {
+                zero_angle_degrees: _,
+                clockwise: _,
+                angle_unit: _,
+                sector: _,
+                inner_radius_fraction: _,
+                interpolation: _,
+                radial_label_angle_degrees: _,
+                // A ring shape, not a pixel dimension.
+                grid_shape: _,
+            }) => true,
+            None => false,
+        };
+        for (axis, side) in [
+            (top_x, Side::Top),
+            (bottom_x, Side::Bottom),
+            (left_y, Side::Left),
+            (right_y, Side::Right),
+        ] {
+            scale_axis_in_place(axis, s);
+            // Ternary and 3D box labels keep a font-relative gap, which
+            // scales with the font: no fixed gap to make up for.
+            if ternary.is_none() && view_3d.is_none() {
+                scale_label_gap(axis, &side, polar, s);
+            }
+        }
+
+        let GridOptions {
+            show_major_x: _,
+            major_x_color: _,
+            major_x_width,
+            major_x_style: _,
+            show_major_y: _,
+            major_y_color: _,
+            major_y_width,
+            major_y_style: _,
+            show_minor_x: _,
+            minor_x_color: _,
+            minor_x_width,
+            minor_x_style: _,
+            show_minor_y: _,
+            minor_y_color: _,
+            minor_y_width,
+            minor_y_style: _,
+        } = grid;
+        *major_x_width *= s;
+        *major_y_width *= s;
+        *minor_x_width *= s;
+        *minor_y_width *= s;
+
+        scale_legend_in_place(legend, s);
 
         // Overlay layers carry their own axis and optional legend; both are
         // pixel-dimensioned like the parent's and scale by the same rules.
-        for overlay in &mut self.overlays {
-            scale_axis_in_place(&mut overlay.y_axis, s);
-            scale_label_gap(&mut overlay.y_axis, &Side::Right, false, s);
-            if let Some(legend) = overlay.legend.as_mut() {
-                legend.offset_x *= s;
-                legend.offset_y *= s;
-                legend.padding *= s;
-                scale_rich_text(&mut legend.content, s);
-                scale_legend_inset(legend, s);
+        for overlay in overlays {
+            let OverlayLayer {
+                y_axis,
+                // Series ids.
+                series: _,
+                legend,
+            } = overlay;
+            scale_axis_in_place(y_axis, s);
+            scale_label_gap(y_axis, &Side::Right, false, s);
+            if let Some(legend) = legend.as_mut() {
+                scale_legend_in_place(legend, s);
             }
         }
 
         // A subplot is a chart of its own, scaled by the same rules; its
         // chart area scales with the same rounding as the parent's.
-        for subplot in &mut self.subplots {
-            subplot.config.scale_in_place(s);
+        for subplot in subplots {
+            let Subplot {
+                config,
+                // Series ids and link targets.
+                series: _,
+                link_x: _,
+                link_y: _,
+            } = subplot;
+            config.scale_in_place(s);
         }
 
-        if let Some(picked_points) = self.picked_points.as_mut() {
-            picked_points.ring_width_px *= s;
-            picked_points.radius_extra_px *= s;
+        if let Some(picked_points) = picked_points.as_mut() {
+            let PickedPointsConfig {
+                visible: _,
+                refs: _,
+                ring_color: _,
+                ring_width_px,
+                radius_extra_px,
+            } = picked_points;
+            *ring_width_px *= s;
+            *radius_extra_px *= s;
         }
-        if let Some(picked_data) = self.picked_data.as_mut() {
-            picked_data.outline_width_px *= s;
-            picked_data.point_radius_extra_px *= s;
-            picked_data.contour_width_extra_px *= s;
+        if let Some(picked_data) = picked_data.as_mut() {
+            let DataSelectionsConfig {
+                visible: _,
+                refs: _,
+                highlight_color: _,
+                outline_width_px,
+                point_radius_extra_px,
+                contour_width_extra_px,
+            } = picked_data;
+            *outline_width_px *= s;
+            *point_radius_extra_px *= s;
+            *contour_width_extra_px *= s;
         }
 
         // Annotation strokes, text and box padding are pixel dims; their
         // values and anchors are data or plot fractions and stay put.
-        self.annotations.scale_in_place(s);
+        annotations.scale_in_place(s);
+
+        // The gap between grouped bars is a pixel dim; the mode, the
+        // direction and the group width (a fraction of the slot) are not.
+        if let Some(crate::data_config::BarGroups {
+            mode: _,
+            direction: _,
+            group_width: _,
+            bar_gap,
+        }) = bar_groups.as_mut()
+        {
+            *bar_gap *= s;
+        }
 
         // The colourbar's axis goes through the same helper as the four chart
         // axes — a new pixel field on `AxisOptions` must not be scalable on the
         // chart axes and silently fixed on the colourbar's. `length_frac` is a
         // fraction of the data area and stays put.
-        if let Some(bar) = self.colorbar.as_mut() {
-            bar.thickness_px *= s;
-            bar.gap_px *= s;
-            bar.border_width *= s;
-            bar.offset_x *= s;
-            bar.offset_y *= s;
-            scale_axis_in_place(&mut bar.axis, s);
-            let side = bar.side.clone();
-            scale_label_gap(&mut bar.axis, &side, false, s);
+        if let Some(bar) = colorbar.as_mut() {
+            let ColorBarOptions {
+                visible: _,
+                side,
+                thickness_px,
+                gap_px,
+                length_frac: _,
+                align: _,
+                offset_x,
+                offset_y,
+                colormap: _,
+                nan_color: _,
+                border_color: _,
+                border_width,
+                axis,
+            } = bar;
+            *thickness_px *= s;
+            *gap_px *= s;
+            *border_width *= s;
+            *offset_x *= s;
+            *offset_y *= s;
+            scale_axis_in_place(axis, s);
+            scale_label_gap(axis, side, false, s);
         }
 
         // Sketch wobble dims are pixel-based visual dims too. Scaled only in
@@ -846,21 +1258,42 @@ impl Config {
         // scale, so dividing keeps the star COUNT per data span identical.
         // Without the division a 2× export doubles the stars and the chains
         // bloat into overexposed blobs (field report).
-        match &mut self.draw_style {
-            DrawStyle::Sketch(sketch) => {
-                sketch.amplitude_px *= s;
-                sketch.wavelength_px *= s;
+        match draw_style {
+            DrawStyle::Sketch(SketchOptions {
+                amplitude_px,
+                wavelength_px,
+                seed: _,
+            }) => {
+                *amplitude_px *= s;
+                *wavelength_px *= s;
             }
-            DrawStyle::Milkyway(c) => {
-                c.ribbon_width_px *= s;
-                c.spread_px *= s;
-                c.star_scale *= s;
-                c.structure_scale *= s;
+            DrawStyle::Milkyway(MilkywayOptions {
+                star_density,
+                ribbon_width_px,
+                ribbon_intensity: _,
+                star_scale,
+                star_brightness: _,
+                spread_px,
+                structure_scale,
+                faint_bias: _,
+                glow: _,
+                nebula: _,
+                dust: _,
+                planet_rim: _,
+                seed: _,
+            }) => {
+                *ribbon_width_px *= s;
+                *spread_px *= s;
+                *star_scale *= s;
+                *structure_scale *= s;
                 if s > 0.0 {
-                    c.star_density /= s;
+                    *star_density /= s;
                 }
             }
-            DrawStyle::Constellation(_) => {}
+            DrawStyle::Constellation(ConstellationOptions {
+                star_opacity: _,
+                line_opacity: _,
+            }) => {}
             DrawStyle::Precise => {}
         }
     }
@@ -869,17 +1302,78 @@ impl Config {
 /// Scale one axis' pixel-based dims. Shared by the four chart axes and the
 /// colourbar's z axis so the set of "which fields are pixels" is written once.
 fn scale_axis_in_place(axis: &mut AxisOptions, s: f32) {
-    axis.label_style.font_size *= s;
-    axis.label_style.label_offset_x *= s;
-    axis.label_style.label_offset_y *= s;
-    scale_rich_text(&mut axis.title_option.text, s);
-    axis.title_option.offset_x *= s;
-    axis.title_option.offset_y *= s;
-    axis.out_margin *= s;
-    axis.line_offset *= s;
-    axis.line_width *= s;
-    axis.major_tick_length *= s;
-    axis.minor_tick_length *= s;
+    let AxisOptions {
+        scale: _,
+        min: _,
+        max: _,
+        major_spacing: _,
+        minor_count: _,
+        inverted: _,
+        label_style,
+        tick: _,
+        title_option,
+        out_margin,
+        line_offset,
+        line_visible: _,
+        line_color: _,
+        line_width,
+        line_style: _,
+        major_tick_length,
+        minor_tick_length,
+        // Configuration, not pixels.
+        categories: _,
+        // A value of the perpendicular axis.
+        cross_at: _,
+        // A tick policy, not pixels.
+        log_ticks: _,
+    } = axis;
+    let LabelStyle {
+        visible: _,
+        color: _,
+        font_size,
+        label_visible: _,
+        label_font: _,
+        label_offset_x,
+        label_offset_y,
+        format: _,
+        significant_digits: _,
+    } = label_style;
+    *font_size *= s;
+    *label_offset_x *= s;
+    *label_offset_y *= s;
+    let AxisTitleOptions {
+        text,
+        visible: _,
+        offset_x,
+        offset_y,
+    } = title_option;
+    scale_rich_text(text, s);
+    *offset_x *= s;
+    *offset_y *= s;
+    *out_margin *= s;
+    *line_offset *= s;
+    *line_width *= s;
+    *major_tick_length *= s;
+    *minor_tick_length *= s;
+}
+
+/// Scale one legend's pixel-based dims: the parent's and every overlay's.
+fn scale_legend_in_place(legend: &mut crate::legend::Legend, s: f32) {
+    let crate::legend::Legend {
+        visible: _,
+        content,
+        corner: _,
+        offset_x,
+        offset_y,
+        padding,
+        bg_color: _,
+        border_color: _,
+    } = legend;
+    *offset_x *= s;
+    *offset_y *= s;
+    *padding *= s;
+    scale_rich_text(content, s);
+    scale_legend_inset(legend, s);
 }
 
 /// The tick-label gap ([`crate::layout::LABEL_GAP`]) is a fixed pixel
@@ -1121,13 +1615,19 @@ pub use crate::legend::{
     set_legend_entry_label, symbol_segments, update_legend_symbols_preserving_text,
 };
 
-// `draw_style` is additive schema: configs serialized before the field
-// existed must still parse (→ `Precise` mode), and `Precise` must not
-// serialize — the same discipline as `RichSegment`'s per-segment overrides
-// (text.rs). The enum is internally tagged (`"mode"`), so a style's
-// parameters sit INLINE next to the tag.
+// The wire form of `Config`: every field added after a release is additive
+// schema, absent at its default so a document written before it parses and
+// re-serializes byte-identically, and round-trips when set. `draw_style` is
+// the pattern: `Precise` must not serialize, the enum is internally tagged
+// (`"mode"`) so a style's parameters sit INLINE next to the tag — the same
+// discipline as `RichSegment`'s per-segment overrides (text.rs).
+//
+// One test runs every check in turn (#47 §3): the renderer's
+// `released_documents.rs` holds the fixture documents, so this module keeps
+// the model's own coverage without a copy of them per field. Each check is a
+// plain function so a failure names it.
 #[cfg(all(test, feature = "serde"))]
-mod draw_style_serde_tests {
+mod serde_tests {
     use super::{
         Config, DataSelectionsConfig, DrawStyle, PickedDataRef, PickedPointRef, PickedPointsConfig,
         SketchOptions,
@@ -1140,12 +1640,54 @@ mod draw_style_serde_tests {
         serde_json::to_value(default_config()).expect("serialize Config")
     }
 
+    // `line_offsets` is additive: absent at its default, so an older document
+    // parses and re-serializes byte-identically; `step_x` is omitted at zero;
+    // set, it round-trips, on the chart and on a subplot's chart.
+    fn line_offsets_round_trip_and_old_documents_unchanged() {
+        use crate::data_config::LineOffsets;
+        let json = default_config_json();
+        assert!(json.get("line_offsets").is_none(), "{json}");
+        let text = serde_json::to_string(&default_config()).unwrap();
+        let old: Config = serde_json::from_str(&text).unwrap();
+        assert_eq!(old.line_offsets, None);
+        assert_eq!(serde_json::to_string(&old).unwrap(), text);
+
+        let mut cfg = default_config();
+        cfg.line_offsets = Some(LineOffsets {
+            series: vec!["a".into(), "b".into()],
+            step_y: 0.5,
+            step_x: 0.0,
+        });
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(
+            json["line_offsets"],
+            serde_json::json!({ "series": ["a", "b"], "step_y": 0.5 })
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        cfg.line_offsets.as_mut().unwrap().step_x = -0.25;
+        let mut subplot = crate::layer::Subplot::default();
+        subplot.config.line_offsets = cfg.line_offsets.clone();
+        cfg.subplots.push(subplot);
+        let json = serde_json::to_value(&cfg).unwrap();
+        assert_eq!(json["line_offsets"]["step_x"], serde_json::json!(-0.25));
+        assert_eq!(
+            json["subplots"][0]["config"]["line_offsets"],
+            json["line_offsets"]
+        );
+        assert_eq!(serde_json::from_value::<Config>(json).unwrap(), cfg);
+        // A partial group reads the missing keys as their defaults.
+        let partial: LineOffsets = serde_json::from_str(r#"{"series":["a"]}"#).unwrap();
+        assert_eq!(partial.step_y, 0.0);
+        // A scaled export keeps the steps: they are data units.
+        assert_eq!(cfg.scaled(2.0).line_offsets, cfg.line_offsets);
+    }
+
     // The layer fields are additive schema in the same way: `active_layer`,
     // `annotations` and `overlays` are absent at their defaults (so every
     // document written before them is byte-identical), parse to the defaults
     // when missing, and round-trip when set. `active_layer` and `annotations`
-    // also exist on every bounded chart struct.
-    #[test]
+    // also exist on the radial chart and the legacy documents.
+    #[allow(deprecated)]
     fn layer_fields_default_and_are_omitted_from_json() {
         use crate::{AnnotationLayer, LayerRef};
         let json = default_config_json();
@@ -1201,14 +1743,22 @@ mod draw_style_serde_tests {
         assert_eq!(back, radial);
     }
 
-    #[test]
-    fn config_without_draw_style_key_deserializes_to_precise() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-sketch document parses");
+    /// The default document is the shape of documents written before
+    /// `draw_style`, `picked_points` and `picked_data` existed: `Precise` is
+    /// not serialized, and each missing key parses to its default.
+    fn a_document_without_the_additive_keys_parses_to_their_defaults() {
+        let json = default_config_json();
+        assert!(
+            json.get("draw_style").is_none(),
+            "Precise draw_style must be skipped in serialization: {json}"
+        );
+        let cfg: Config = serde_json::from_value(json)
+            .expect("pre-sketch, pre-picker and pre-data-pick document parses");
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
+        assert_eq!(cfg.picked_points, None);
+        assert_eq!(cfg.picked_data, None);
     }
 
-    #[test]
     fn sketch_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1223,7 +1773,6 @@ mod draw_style_serde_tests {
         assert_eq!(s.seed, 0);
     }
 
-    #[test]
     fn partial_sketch_fields_fill_remaining_defaults() {
         let mut json = default_config_json();
         json.as_object_mut().unwrap().insert(
@@ -1240,7 +1789,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn sketch_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = DrawStyle::Sketch(SketchOptions {
@@ -1260,7 +1808,6 @@ mod draw_style_serde_tests {
         assert_eq!(back.draw_style, cfg.draw_style);
     }
 
-    #[test]
     fn explicit_precise_mode_deserializes_to_precise() {
         let mut json = default_config_json();
         json.as_object_mut().unwrap().insert(
@@ -1271,23 +1818,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.draw_style, DrawStyle::Precise);
     }
 
-    #[test]
-    fn precise_serializes_without_key() {
-        let json = default_config_json();
-        assert!(
-            json.get("draw_style").is_none(),
-            "Precise draw_style must be skipped in serialization: {json}"
-        );
-    }
-
-    #[test]
-    fn config_without_picked_points_key_deserializes_to_none() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-picker document parses");
-        assert_eq!(cfg.picked_points, None);
-    }
-
-    #[test]
     fn picked_points_empty_object_yields_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1297,7 +1827,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.picked_points, Some(PickedPointsConfig::default()));
     }
 
-    #[test]
     fn picked_point_refs_skip_absent_source_id() {
         let mut cfg = default_config();
         cfg.picked_points = Some(PickedPointsConfig {
@@ -1333,14 +1862,6 @@ mod draw_style_serde_tests {
         assert_eq!(picked.radius_extra_px, 6.0);
     }
 
-    #[test]
-    fn config_without_picked_data_key_deserializes_to_none() {
-        let cfg: Config =
-            serde_json::from_value(default_config_json()).expect("pre-data-pick document parses");
-        assert_eq!(cfg.picked_data, None);
-    }
-
-    #[test]
     fn picked_data_empty_object_yields_defaults() {
         let mut json = default_config_json();
         json.as_object_mut()
@@ -1350,7 +1871,6 @@ mod draw_style_serde_tests {
         assert_eq!(cfg.picked_data, Some(DataSelectionsConfig::default()));
     }
 
-    #[test]
     fn typed_picked_data_round_trips_with_minimal_provenance() {
         let mut cfg = default_config();
         cfg.picked_data = Some(DataSelectionsConfig {
@@ -1364,6 +1884,7 @@ mod draw_style_serde_tests {
                     source_id: Some("source-a".into()),
                     series_id: "hist".into(),
                     bin_index: 4,
+                    half: None,
                 },
                 PickedDataRef::MatrixCell {
                     source_id: None,
@@ -1403,7 +1924,6 @@ mod draw_style_serde_tests {
         assert_eq!(picked.contour_width_extra_px, 4.0);
     }
 
-    #[test]
     fn constellation_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json["draw_style"] = serde_json::json!({ "mode": "constellation" });
@@ -1414,7 +1934,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn milkyway_tag_alone_yields_all_defaults() {
         let mut json = default_config_json();
         json["draw_style"] = serde_json::json!({ "mode": "milkyway" });
@@ -1428,7 +1947,6 @@ mod draw_style_serde_tests {
     /// PARAM_SPECS defaults are literals (const context) — pin them to the
     /// `Default` impls so the two sources cannot drift, and pin every spec
     /// key to a real serde field by writing it through `draw_style` JSON.
-    #[test]
     fn param_specs_match_defaults_and_serde_fields() {
         use super::{ConstellationOptions, MilkywayOptions, SketchOptions};
 
@@ -1500,7 +2018,6 @@ mod draw_style_serde_tests {
         );
     }
 
-    #[test]
     fn constellation_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = super::DrawStyle::Constellation(super::ConstellationOptions {
@@ -1515,7 +2032,6 @@ mod draw_style_serde_tests {
         assert_eq!(back.draw_style, cfg.draw_style);
     }
 
-    #[test]
     fn milkyway_round_trips_with_inline_fields() {
         let mut cfg = default_config();
         cfg.draw_style = super::DrawStyle::Milkyway(super::MilkywayOptions {
@@ -1538,5 +2054,210 @@ mod draw_style_serde_tests {
         assert_eq!(json["draw_style"]["star_density"], 22.0);
         let back: Config = serde_json::from_value(json).expect("parse back");
         assert_eq!(back.draw_style, cfg.draw_style);
+    }
+
+    /// The one serde test of this file: the additive keys of `Config` and its
+    /// draw styles, selections and categorical axes, in turn.
+    #[test]
+    fn serde_round_trips_the_additive_keys_and_parses_old_documents() {
+        line_offsets_round_trip_and_old_documents_unchanged();
+        layer_fields_default_and_are_omitted_from_json();
+        a_document_without_the_additive_keys_parses_to_their_defaults();
+        sketch_tag_alone_yields_all_defaults();
+        partial_sketch_fields_fill_remaining_defaults();
+        sketch_round_trips_with_inline_fields();
+        explicit_precise_mode_deserializes_to_precise();
+        picked_points_empty_object_yields_defaults();
+        picked_point_refs_skip_absent_source_id();
+        picked_data_empty_object_yields_defaults();
+        typed_picked_data_round_trips_with_minimal_provenance();
+        constellation_tag_alone_yields_all_defaults();
+        milkyway_tag_alone_yields_all_defaults();
+        param_specs_match_defaults_and_serde_fields();
+        constellation_round_trips_with_inline_fields();
+        milkyway_round_trips_with_inline_fields();
+        super::category_axis_tests::categories_are_additive_on_the_wire();
+    }
+}
+
+// The categorical axis (`AxisOptions::categories`): its limits, its range
+// and walk, and its additive wire form.
+#[cfg(test)]
+mod category_axis_tests {
+    use super::{AxisOptions, AxisScale, Category};
+    use crate::default::{default_axis_options_x, default_config};
+    use crate::layout::axis_fraction;
+    use crate::tick::{major_ticks, minor_ticks};
+
+    fn categorical(n: usize) -> AxisOptions {
+        let mut axis = default_axis_options_x();
+        axis.categories = Some(
+            (0..n)
+                .map(|i| Category::new(format!("c{i}"), format!("Category {i}")))
+                .collect(),
+        );
+        axis
+    }
+
+    #[test]
+    fn the_old_category_path_is_the_same_type() {
+        let a: crate::categorical::Category = Category::new("a", "A");
+        let b: super::Category = a.clone();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn a_numeric_axis_always_passes_and_maps_its_own_range() {
+        let mut axis = default_axis_options_x();
+        axis.min = 3.0;
+        axis.max = 7.0;
+        axis.scale = AxisScale::Logarithmic;
+        axis.inverted = true;
+        assert_eq!(axis.validate_categories(), Ok(()));
+        assert_eq!(axis.category_count(), None);
+        assert_eq!(axis.data_range(), (3.0, 7.0));
+    }
+
+    #[test]
+    fn any_nonzero_category_count_passes() {
+        // No upper count (#107): the old 64-category cap is gone.
+        for n in [1, 2, 7, 64, 65, 300, 5000] {
+            assert_eq!(categorical(n).validate_categories(), Ok(()), "{n}");
+        }
+        assert_eq!(
+            categorical(0).validate_categories(),
+            Err("a categorical axis needs at least one category")
+        );
+        // Every category keeps its tick past the numeric tick budget.
+        let ticks: Vec<f64> = major_ticks(&categorical(5000)).collect();
+        assert_eq!(ticks.len(), 5000);
+        assert_eq!(ticks.last(), Some(&4999.0));
+    }
+
+    #[test]
+    fn ids_must_be_unique_non_empty_single_line_and_short() {
+        let ids = "category ids must be unique, non-empty, single-line and at most 80 characters";
+        let labels = "category labels must be single-line and at most 80 characters";
+        let edit = |f: &dyn Fn(&mut Vec<Category>)| {
+            let mut axis = categorical(3);
+            f(axis.categories.as_mut().unwrap());
+            axis.validate_categories()
+        };
+        assert_eq!(edit(&|c| c[1].id.clear()), Err(ids));
+        assert_eq!(edit(&|c| c[2].id = "c0".into()), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "a\nb".into()), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "x".repeat(81)), Err(ids));
+        assert_eq!(edit(&|c| c[0].id = "x".repeat(80)), Ok(()));
+        assert_eq!(edit(&|c| c[1].label = "two\nlines".into()), Err(labels));
+        assert_eq!(edit(&|c| c[1].label = "é".repeat(81)), Err(labels));
+        assert_eq!(edit(&|c| c[1].label = "é".repeat(80)), Ok(()));
+        // An empty label is a category without tick text.
+        assert_eq!(edit(&|c| c[1].label.clear()), Ok(()));
+    }
+
+    #[test]
+    fn a_logarithmic_categorical_axis_is_rejected_and_an_inverted_one_is_valid() {
+        let mut axis = categorical(3);
+        axis.scale = AxisScale::Logarithmic;
+        assert_eq!(
+            axis.validate_categories(),
+            Err("a categorical axis cannot be logarithmic")
+        );
+        let mut axis = categorical(3);
+        axis.inverted = true;
+        assert_eq!(axis.validate_categories(), Ok(()));
+    }
+
+    /// An inverted categorical axis walks its categories from the far end:
+    /// category `i` lands where category `n - 1 - i` lands on the upright
+    /// axis, and the range and the major ticks stay the category positions.
+    #[test]
+    fn an_inverted_categorical_axis_walks_from_the_far_end() {
+        let upright = categorical(3);
+        let mut inverted = categorical(3);
+        inverted.inverted = true;
+        assert_eq!(inverted.data_range(), upright.data_range());
+        for i in 0..3 {
+            let a = crate::layout::axis_fraction(i as f64, &inverted);
+            let b = crate::layout::axis_fraction((2 - i) as f64, &upright);
+            assert!((a - b).abs() < 1e-6, "category {i}: {a} vs {b}");
+        }
+        // The first category's slot is the far end of the axis.
+        assert!((crate::layout::axis_fraction(-0.5, &inverted) - 1.0).abs() < 1e-6);
+        assert!((crate::layout::axis_fraction(0.0, &inverted) - 5.0 / 6.0).abs() < 1e-6);
+    }
+
+    /// Category `i` at `i`, majors at every category, no minors, whatever
+    /// `min`, `max`, `major_spacing` and `minor_count` say.
+    #[test]
+    fn the_walk_of_a_categorical_axis_is_its_category_positions() {
+        let mut axis = categorical(7);
+        axis.min = 100.0;
+        axis.max = 50.0;
+        axis.major_spacing = 0.0;
+        axis.minor_count = 9;
+        assert_eq!(axis.data_range(), (-0.5, 6.5));
+        let majors: Vec<f64> = major_ticks(&axis).collect();
+        assert_eq!(majors, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(minor_ticks(&axis).count(), 0);
+        let single = categorical(1);
+        assert_eq!(major_ticks(&single).collect::<Vec<_>>(), vec![0.0]);
+        // An empty list (rejected by validation) walks nothing.
+        assert_eq!(major_ticks(&categorical(0)).count(), 0);
+        // The positions sit in the middle of equal slots.
+        for (i, expected) in [(0, 0.5 / 7.0), (3, 3.5 / 7.0), (6, 6.5 / 7.0)] {
+            let t = axis_fraction(f64::from(i), &axis);
+            assert!((t - expected as f32).abs() < 1e-6, "{i}: {t}");
+        }
+        assert_eq!(axis_fraction(-0.5, &axis), 0.0);
+        assert_eq!(axis_fraction(6.5, &axis), 1.0);
+    }
+
+    #[test]
+    fn removing_the_categories_restores_the_numeric_axis() {
+        let mut axis = categorical(4);
+        axis.min = 2.0;
+        axis.max = 4.0;
+        axis.major_spacing = 1.0;
+        axis.categories = None;
+        assert_eq!(major_ticks(&axis).collect::<Vec<_>>(), vec![2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn scaling_keeps_the_categories() {
+        let mut cfg = default_config();
+        cfg.bottom_x = categorical(5);
+        let scaled = cfg.scaled(2.0);
+        assert_eq!(scaled.bottom_x.categories, cfg.bottom_x.categories);
+    }
+
+    /// Run by `serde_tests`' one test.
+    #[cfg(feature = "serde")]
+    pub(super) fn categories_are_additive_on_the_wire() {
+        let axis = default_axis_options_x();
+        let json = serde_json::to_value(&axis).expect("serialize");
+        assert!(json.get("categories").is_none(), "{json}");
+        let back: AxisOptions = serde_json::from_value(json).expect("parse");
+        assert_eq!(back, axis);
+
+        let axis = categorical(3);
+        let json = serde_json::to_value(&axis).expect("serialize");
+        assert_eq!(
+            json["categories"],
+            serde_json::json!([
+                {"id": "c0", "label": "Category 0"},
+                {"id": "c1", "label": "Category 1"},
+                {"id": "c2", "label": "Category 2"},
+            ])
+        );
+        let back: AxisOptions = serde_json::from_value(json).expect("parse");
+        assert_eq!(back, axis);
+
+        let mut cfg = default_config();
+        cfg.left_y = categorical(2);
+        let text = serde_json::to_string(&cfg).expect("serialize");
+        let back: super::Config = serde_json::from_str(&text).expect("parse");
+        assert_eq!(back, cfg);
+        assert_eq!(serde_json::to_string(&back).expect("serialize"), text);
     }
 }

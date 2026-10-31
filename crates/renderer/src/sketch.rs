@@ -11,7 +11,7 @@
 //! stroke either to plain [`Canvas`] calls (`Precise`) or through the wobble
 //! functions above (`Sketch`).
 
-use crate::config::DrawStyle;
+use crate::config::{DrawStyle, SketchOptions};
 use crate::raster::{Canvas, Paint};
 
 /// Maximum spacing between adjacent subdivision points, in pixels.
@@ -61,7 +61,9 @@ pub(crate) fn noise1(t: f32, seed: u32) -> f32 {
     let i = cell as i64 as u32;
     let a = hash01(i, seed);
     let b = hash01(i.wrapping_add(1), seed);
-    (a + (b - a) * u) * 2.0 - 1.0 // mix(a, b, u) * 2 - 1
+    // WGSL `mix(a, b, u)`, the form the shaders evaluate, so the CPU twin
+    // of the pick shader can share this function bit for bit.
+    (a * (1.0 - u) + b * u) * 2.0 - 1.0
 }
 
 /// FNV-1a 32-bit hash of `tag`'s UTF-8 bytes. The deco layer derives each
@@ -207,6 +209,56 @@ pub(crate) fn sketch_line(
     sketch_polyline(&[p0, p1], amplitude_px, wavelength_px, seed)
 }
 
+/// One segment of a smoothed path: [`smooth_cubics`] hands these out in
+/// path order.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PathSegment {
+    /// Start a subpath.
+    Move((f32, f32)),
+    /// A straight segment to the point.
+    Line((f32, f32)),
+    /// A cubic Bézier segment: two control points, then the end point.
+    Cubic((f32, f32), (f32, f32), (f32, f32)),
+    /// Close the subpath (glyph outlines; a smoothed stroke never closes).
+    Close,
+}
+
+/// The smooth path through `points`: a uniform Catmull–Rom spline as cubic
+/// Bézier segments, the pen-stroke look of the sketch stroker. Non-finite
+/// points split the path into subpaths; a run of one point is a zero-length
+/// segment and a run of two a straight one. The canvas strokes this path
+/// and the vector export writes it, so both draw the same curve.
+pub(crate) fn smooth_cubics(points: &[(f32, f32)], mut out: impl FnMut(PathSegment)) {
+    let finite = |p: &(f32, f32)| p.0.is_finite() && p.1.is_finite();
+    for run in points.split(|p| !finite(p)) {
+        match run.len() {
+            0 => {}
+            1 => {
+                out(PathSegment::Move(run[0]));
+                out(PathSegment::Line(run[0]));
+            }
+            2 => {
+                out(PathSegment::Move(run[0]));
+                out(PathSegment::Line(run[1]));
+            }
+            n => {
+                out(PathSegment::Move(run[0]));
+                for i in 0..n - 1 {
+                    // Uniform Catmull–Rom: tangents from the neighbors,
+                    // end tangents from the duplicated end points.
+                    let p0 = run[i.saturating_sub(1)];
+                    let p1 = run[i];
+                    let p2 = run[i + 1];
+                    let p3 = run[(i + 2).min(n - 1)];
+                    let c1 = (p1.0 + (p2.0 - p0.0) / 6.0, p1.1 + (p2.1 - p0.1) / 6.0);
+                    let c2 = (p2.0 - (p3.0 - p1.0) / 6.0, p2.1 - (p3.1 - p1.1) / 6.0);
+                    out(PathSegment::Cubic(c1, c2, p2));
+                }
+            }
+        }
+    }
+}
+
 /// Closed rectangle outline as one continuous sketched polyline.
 ///
 /// The four edges are chained into a single path that revisits the starting
@@ -239,7 +291,7 @@ pub(crate) fn sketch_rect_outline(
 /// 50/50-blurred AA coverage — it reads as a broken line. Hand-drawn pen
 /// strokes have body; this floor restores it without touching user widths
 /// that are already thicker.
-const SKETCH_MIN_STROKE_PX: f32 = 1.4;
+pub(crate) const SKETCH_MIN_STROKE_PX: f32 = 1.4;
 
 /// Decoration-layer stroke strategy, derived once per raster pass from the
 /// chart's [`DrawStyle`]. `Precise` is a pure passthrough to the plain canvas
@@ -253,6 +305,7 @@ const SKETCH_MIN_STROKE_PX: f32 = 1.4;
 /// `"grid_major_x_2"`, `"legend_box"`) mixed into the global seed as
 /// `seed ^ fnv1a(tag)`, so every element wobbles differently but
 /// identically across re-rasters.
+#[derive(Clone, Copy, Debug)]
 pub(crate) enum DecoStroker {
     Precise,
     Sketch {
@@ -267,12 +320,18 @@ impl DecoStroker {
     /// parameters, every other style strokes precisely.
     pub(crate) fn from_style(style: &DrawStyle) -> Self {
         match style {
-            DrawStyle::Sketch(s) => DecoStroker::Sketch {
-                amplitude_px: s.amplitude_px,
-                wavelength_px: s.wavelength_px,
-                seed: s.seed,
+            DrawStyle::Sketch(SketchOptions {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            }) => DecoStroker::Sketch {
+                amplitude_px: *amplitude_px,
+                wavelength_px: *wavelength_px,
+                seed: *seed,
             },
-            _ => DecoStroker::Precise,
+            DrawStyle::Precise | DrawStyle::Milkyway(_) | DrawStyle::Constellation(_) => {
+                DecoStroker::Precise
+            }
         }
     }
 
@@ -295,6 +354,41 @@ impl DecoStroker {
                 seed,
             } => {
                 let pts = sketch_line(p0, p1, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
+                let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
+                canvas.draw_polyline_smooth(&pts, &paint);
+            }
+        }
+    }
+
+    /// Stroke a closed polygon outline (a shape annotation's border):
+    /// `points` in drawing order, closed on the first. `Precise` is one
+    /// [`Canvas::draw_polyline`] through the closed path, so a dash pattern
+    /// runs around the corners; `Sketch` is one arc-continuous wobble
+    /// polyline through the same path via [`sketch_polyline`].
+    pub(crate) fn stroke_polygon_outline(
+        &self,
+        canvas: &mut Canvas,
+        points: &[(f32, f32)],
+        paint: &Paint,
+        tag: &str,
+    ) {
+        if points.len() < 2 {
+            return;
+        }
+        let closed: Vec<(f32, f32)> = points
+            .iter()
+            .copied()
+            .chain(points.first().copied())
+            .collect();
+        match self {
+            DecoStroker::Precise => canvas.draw_polyline(&closed, paint),
+            DecoStroker::Sketch {
+                amplitude_px,
+                wavelength_px,
+                seed,
+            } => {
+                let pts =
+                    sketch_polyline(&closed, *amplitude_px, *wavelength_px, seed ^ fnv1a(tag));
                 let paint = paint.clone().with_min_stroke_width(SKETCH_MIN_STROKE_PX);
                 canvas.draw_polyline_smooth(&pts, &paint);
             }

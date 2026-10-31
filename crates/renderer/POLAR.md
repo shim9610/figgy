@@ -14,9 +14,10 @@ are unchanged.
 
 Antenna and microphone patterns, phase and direction data, orbits and
 periodic signals over a cycle are the use cases. For a few series over a
-fixed set of categories, drawn as closed polygons, use a
+fixed set of categories, drawn as closed polygons, give the angle axis its
+categories and draw `Radar` series: a
 [radar chart](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
-instead.
+([Categorical angle axis](#categorical-angle-axis)).
 
 ## Input and first render
 
@@ -60,6 +61,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
         label: None,
         x_column: "deg".into(),
         y_column: "gain".into(),
+        z_column: None,
         render_type: DataRenderType::Line {
             line: DataLineStyleConfig {
                 line_style: LineStylePreset::Solid,
@@ -90,9 +92,11 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
   radius. The data area, chart title, legend and margins follow the
   rectangular rules.
 - Scatter, line and scatter-line series draw in polar mode, including line
-  fills (`LineFill`), which draw area charts. Histograms, heatmaps, contours,
-  error bars, vector fields, overlay layers and streamed sources have no
-  polar form and are rejected with an explicit error (`InvalidSeriesConfig` /
+  fills (`LineFill`), which draw area charts; radar series draw their
+  polygons and category bars their wedges (a rose, below) on a categorical
+  angle axis. Histograms, heatmaps, contours, error bars, vector fields,
+  box plots, overlay layers and streamed sources have no polar form and
+  are rejected with an explicit error (`InvalidSeriesConfig` /
   `InvalidConfig`), never drawn as a fallback.
 
 ## Coordinate options
@@ -106,6 +110,7 @@ fn draw(renderer: &mut Renderer) -> Result<(), Box<dyn std::error::Error>> {
 | `inner_radius_fraction` | A hole at the centre, `0.0..=0.9` of the outer radius; `left_y.min` sits on that ring |
 | `interpolation` | `Chord` (default): straight segments between samples. `Arc { pieces }` (`pieces` 1 to 64, otherwise `InvalidConfig`): each segment bends along the data in `pieces` chords, so a constant radius follows its ring and sparse samples still draw a spiral. `Arc` needs a `LineInterpolation::Linear` line: a step line (`StepPre`, `StepPost`, `StepMid`) under `Arc` is rejected with `InvalidSeriesConfig`; `Chord` accepts it |
 | `radial_label_angle_degrees` | The ray the radius axis line and its labels sit on, default 90 (up); dragging the ray turns it |
+| `grid_shape` | `None` or `Some(GridShape::Circle)` (default): circular rings. `Some(GridShape::Polygon)` joins the rings and the outer ring at the categories of a categorical angle axis, the radar look; without one it is `InvalidConfig` |
 
 Every option has a default, so `{ "polar": {} }` in JSON turns a chart
 polar. The full field reference, validation rules and clipping details are
@@ -139,11 +144,51 @@ values come from the same nice-tick computation as rectangular axes, so
 converts units, so pair each with the matching `angle_unit`. `top_x` and
 `right_y` are not drawn.
 
+## Categorical angle axis
+
+`bottom_x.categories` makes the angle axis categorical. Category `i` sits at
+`i / n` of the full turn from `zero_angle_degrees` in the `clockwise`
+direction, or at `i / n` of the `sector` from its start, whatever the angle
+unit: `PolarOptions::angle_map` (and `Config::polar_angle_map`) is that
+mapping, the one the GPU transform, the grid, the labels and the picker
+read. The spokes are the major angle grid at the categories, the labels are
+`categories[i].label` outside the ring along each spoke (thinned by the
+stride rule when they crowd; an empty label keeps its slot and draws
+nothing), and there are no minor angle ticks. `x_column` then holds category
+indices. The radius axis cannot be categorical. With a categorical angle
+axis, `grid_shape: Some(GridShape::Polygon)` joins every ring at the
+category angles; [radar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
+(`DataRenderType::Radar`) draw a closed polygon over it, one vertex per
+category.
+
+### Roses (polar bars)
+
+[Category bar series](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
+(`DataRenderType::CategoryBars`) on a polar chart with a categorical angle
+axis are a rose (#133): each bar is the wedge of its category's angular
+slot between the stack's start and end radii, the value read on the
+radius axis (`left_y`, linear) as `polar_ndc` places it, from the inner
+ring (`inner_radius_fraction`) to the ring; an inverted radius axis grows
+the wedges inward. `Config::bar_groups` keeps its meaning: `Grouped`
+wedges sit side by side in series order inside the centred `group_width`
+share of the slot, `bar_gap` logical pixels apart measured along the ring
+(the gap angle is `bar_gap / radius`, so the gap narrows toward the
+centre), and `Stacked` / `PercentStacked` wedges stack outward from the
+start radius. The group direction is `Vertical` (categories on
+`bottom_x`, values on `left_y`); a `Horizontal` group is refused
+("a rose fans its bars around the centre"). Overrides, materials, the
+corner rounding (on the exposed arc), the value labels (outside: past the
+exposed arc along the wedge's middle direction, inside: at its middle
+radius; `Auto` as for bars), the pick (`PickedData::HistogramBin`, the
+category row), the picked highlight (the wedge's outline) and
+`step_selection` are the bar's. The `Rose` catalogue scene is a wind
+rose: sixteen directions, three stacked speed bands.
+
 ## Picking and selection
 
-`pick_nearest_point` and the GPU pick path project through the same mapping
-as the shaders, so markers, chords and arc pieces are picked where they are
-drawn, and the CPU and GPU pickers agree. A marker outside the sector is not
+The GPU pick path (`pick_chart`, `pick_chart_data`) projects through the same
+mapping as the shaders, so markers, chords and arc pieces are picked where they
+are drawn; the CPU twin in the renderer's test support pins the two together. A marker outside the sector is not
 picked; a line's pieces are pickable where they draw. Hover, click selection
 and the browser wrapper's `FiggyChart.step_selection` work as on a
 rectangular chart.
@@ -210,7 +255,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 그릴지만 정한다. 각도 컬럼은 축 범위와 관계없이 `zero_angle_degrees`에서 시작하는 원 위에 놓인다.
 격자는 고리와 스포크, 각도 축은 바깥 고리, 반지름 축은 라벨이 붙은 반직선이 된다.
 `polar: None`(기본, JSON에서 생략)은 직교 차트이므로 기존 문서는 바뀌지 않는다. 고정된 범주
-위에서 시리즈 몇 개를 닫힌 다각형으로 비교하려면 [레이더 차트](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)를 쓴다.
+위에서 시리즈 몇 개를 닫힌 다각형으로 비교하려면 각도 축에 범주를 주고 `Radar` 시리즈를 그리는
+[레이더 차트](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)를 쓴다.
 
 ### 입력과 첫 렌더링
 
@@ -223,7 +269,8 @@ draws an antenna-like pattern and a three-leaf rose interactively
 축은 로그 스케일이 가능하고, 각도 축은 선형이며 뒤집을 수 없다(방향은 `clockwise`로 정한다).
 플롯은 데이터 영역 안에서 각도 라벨 띠 하나를 남기는 가장 큰 원이며 `Config::polar_geometry`가
 중심과 반지름을 돌려준다. 산점도·선·산점선 시리즈와 면 채움(`LineFill`)을 그리고,
-히스토그램·히트맵·등고선·오차 막대·벡터·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
+범주형 각도 축에서는 레이더 시리즈가 다각형을, 범주 막대 시리즈가 쐐기(로즈, 아래)를 그린다. 히스토그램·히트맵·등고선·오차 막대·벡터·
+박스플롯·오버레이·스트리밍 소스는 명시적 오류로 거부한다.
 
 ### 좌표 옵션
 
@@ -236,6 +283,7 @@ draws an antenna-like pattern and a three-leaf rose interactively
 | `inner_radius_fraction` | 중심 구멍. 바깥 반지름의 `0.0..=0.9`이며 `left_y.min`이 그 고리에 놓인다 |
 | `interpolation` | `Chord`(기본): 표본 사이를 직선으로 잇는다. `Arc { pieces }`(`pieces`는 1~64, 벗어나면 `InvalidConfig`): 각 구간을 (각도, 반지름) 공간에서 `pieces`개의 현으로 나눠 그리므로 반지름이 일정한 구간은 고리를 따르고 표본이 드물어도 나선을 그릴 수 있다. `Arc`는 `LineInterpolation::Linear` 선에만 쓸 수 있고, 계단선(`StepPre`, `StepPost`, `StepMid`)은 `InvalidSeriesConfig`로 거부한다. `Chord`는 계단선도 받는다 |
 | `radial_label_angle_degrees` | 반지름 축 선과 라벨이 놓이는 반직선. 기본 90(위). 반직선을 드래그하면 바뀐다 |
+| `grid_shape` | `None` 또는 `Some(GridShape::Circle)`(기본)은 원형 고리. `Some(GridShape::Polygon)`은 고리와 바깥 고리를 범주형 각도 축의 범주 각도에서 꺾어 다각형으로 그린다(레이더 모양). 범주형 각도 축이 없으면 `InvalidConfig` |
 
 모든 옵션에 기본값이 있어 JSON에서 `{ "polar": {} }`만으로 극좌표가 켜진다. 전체 필드와 검증,
 클립 규칙은 [설정 명세](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#polaroptions-configpolar-1)에
@@ -255,10 +303,37 @@ draws an antenna-like pattern and a three-leaf rose interactively
 쓴다(`π/2`, `3π/4`, `0.4π`). 둘 다 단위를 변환하지 않으므로 같은 단위의 `angle_unit`과 함께 쓴다.
 `top_x`와 `right_y`는 그리지 않는다.
 
+### 범주형 각도 축
+
+`bottom_x.categories`를 주면 각도 축이 범주형이 된다. 각도 단위와 관계없이 범주 `i`는
+`zero_angle_degrees`에서 `clockwise` 방향으로 한 바퀴의 `i / n`, `sector`가 있으면 섹터 시작에서
+섹터의 `i / n`에 놓인다. 이 매핑이 `PolarOptions::angle_map`(`Config::polar_angle_map`)이며 GPU 변환,
+격자, 라벨, 피킹이 모두 같은 매핑을 쓴다. 스포크는 범주 위치의 각도 주 격자, 라벨은 스포크 끝
+바깥의 `categories[i].label`이다. 라벨이 겹치면 다른 축과 같은 간격 규칙으로 솎아 내고, 빈 라벨은
+자리만 차지하고 그리지 않는다. 각도 보조 눈금은 없다. 이때 `x_column`에는 범주 번호를 넣는다.
+반지름 축은 범주형이 될 수 없다. 범주형 각도 축에서 `grid_shape: Some(GridShape::Polygon)`은 모든
+고리를 범주 각도에서 꺾고, [레이더 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/RADAR.md)
+(`DataRenderType::Radar`)는 범주마다 꼭짓점 하나인 닫힌 다각형을 그린다.
+
+#### 로즈(극좌표 막대)
+
+범주형 각도 축을 가진 극좌표 차트의 [범주 막대 시리즈](https://github.com/shim9610/figgy/blob/master/crates/renderer/CATEGORICAL.md)
+(`DataRenderType::CategoryBars`)는 로즈다(#133). 막대 하나는 자기 범주의 각도 칸 안에서 누적
+시작 반지름과 끝 반지름 사이의 쐐기이며, 값은 반지름 축(`left_y`, 선형)에서 `polar_ndc`가 놓는
+자리로 읽는다. 안쪽 고리(`inner_radius_fraction`)에서 바깥 고리까지 자라고, 반지름 축을 뒤집으면
+안쪽으로 자란다. `Config::bar_groups`의 뜻은 그대로다. `Grouped`는 칸의 가운데 `group_width`
+비율 안에 시리즈 순서로 나란히 놓이고 간격 `bar_gap`은 바깥 고리에서 잰 논리 픽셀이다(간격
+각도는 `bar_gap / 반지름`이라 중심으로 갈수록 좁아진다). `Stacked`·`PercentStacked`는 시작
+반지름에서 바깥으로 쌓인다. 묶음 방향은 `Vertical`(범주는 `bottom_x`, 값은 `left_y`)만 되고
+`Horizontal`은 거부한다. 개별 편집, 재질, 모서리 둥글림(노출된 호), 값 라벨(바깥: 노출된 호 너머
+쐐기 가운데 방향, 안쪽: 가운데 반지름, `Auto`는 막대와 같음), 피킹(`PickedData::HistogramBin`,
+범주 행), 선택 강조(쐐기 외곽선), `step_selection`은 막대와 같다. 카탈로그의 `Rose` 장면은
+열여섯 방향에 세 속도 띠를 쌓은 바람 장미다.
+
 ### 피킹과 선택
 
-`pick_nearest_point`와 GPU 피킹은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
-화면에 그려진 자리에서 고르고, CPU와 GPU의 결과가 같다. 섹터 밖 마커는 고르지 않고, 선 조각은
+GPU 피킹(`pick_chart`, `pick_chart_data`)은 셰이더와 같은 매핑으로 투영한다. 그래서 마커·현·호 조각을
+화면에 그려진 자리에서 고르고, 렌더러 테스트 지원의 CPU 트윈이 둘이 같음을 고정한다. 섹터 밖 마커는 고르지 않고, 선 조각은
 그려진 곳에서 고를 수 있다. 호버·클릭 선택과 브라우저 래퍼의 `FiggyChart.step_selection`은 직교
 차트와 같다.
 

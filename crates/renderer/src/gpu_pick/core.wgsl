@@ -1,9 +1,13 @@
 
 // Exact GPU point/segment picking over ColumnPool split-f32 values.
 //
-// This module deliberately uses pick_* names and its own layouts. It is not
-// part of the render-shader common block: the picker consumes the same public
-// data representation but owns a compute-only ABI.
+// The picker owns a compute-only ABI (pick_* names, the pool at group 0
+// binding 0, the transform inside `PickQueryParams`) and splices the draw
+// shaders' projection, sample validity, ramp and step fragments, passing
+// `pick_query_params.transform` where a draw passes its `transform` uniform
+// (SHADER_COMMON.md §1). It does not splice `transform.wgsl`, whose uniform
+// declaration would take the pool's binding; `Transform` below is the same
+// struct.
 //
 // Small queries scan directly. Larger queries use two streaming gates instead
 // of a traversal index. The X pass reads one axis and writes one scatter/line
@@ -25,11 +29,14 @@ const PICK_FLAG_SIZE_AREA: u32 = 32u;
 // A point vector series: its "markers" are the arrows the vector shader
 // draws from each anchor.
 const PICK_FLAG_VECTOR: u32 = 64u;
+// A ternary series' region fill: the cursor inside one of the polygons its
+// samples outline (even-odd) picks the series as a fill hit.
+const PICK_FLAG_REGION: u32 = 128u;
 // `PickQueryParams.vector.w` bit 8: `VectorScale::Pixels` (else `Data`).
 const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 
 // ───── exact-pass variants ─────
-// The point picker is assembled from fragments in Rust (`gpu_pick.rs`,
+// The point picker is assembled from fragments in Rust (`gpu_pick/shader.rs`,
 // `PickShader`): this core, the gate entries for the gate module, and for
 // each exact module the fragments of one primitive class (markers, vector
 // arrows, lines, or markers and lines) with the exact entry. Within an exact
@@ -38,10 +45,15 @@ const PICK_VECTOR_SCALE_PIXELS: u32 = 256u;
 // folds the others away at pipeline creation. The default carries every
 // path, which is what a streamed pick uses.
 const PICK_VARIANT_STYLED_MARKER: u32 = 2u; // sketch, planet and star markers (§5.7)
+const PICK_VARIANT_ERRORBAR: u32 = 4u;      // error-bar stems and caps (§5.11)
+const PICK_VARIANT_AREA: u32 = 8u;          // a line's area fill (§2.2)
 const PICK_VARIANT_DASH: u32 = 16u;         // the dash phase walk
 const PICK_VARIANT_STYLED_LINE: u32 = 32u;  // sketch wobble and Milkyway ribbon
 const PICK_VARIANT_POLAR: u32 = 64u;        // polar projection and clip
-override PICK_VARIANT: u32 = 127u;
+const PICK_VARIANT_PATH_ARROWS: u32 = 128u; // streamline arrowheads (§5.8)
+const PICK_VARIANT_CATEGORY_JITTER: u32 = 256u; // a box plot's raw points (§5.20)
+const PICK_VARIANT_TERNARY: u32 = 512u;         // a ternary series (`ternary_ndc`)
+override PICK_VARIANT: u32 = 1023u;
 
 fn pick_variant(bits: u32) -> bool {
     return (PICK_VARIANT & bits) != 0u;
@@ -50,7 +62,7 @@ fn pick_variant(bits: u32) -> bool {
 const PICK_STYLE_MASK_RADIUS: u32 = 2u;
 const PICK_STYLE_MASK_SHAPE: u32 = 4u;
 
-struct PickQueryTransform {
+struct Transform {
     data_min: vec2<f32>,
     data_max: vec2<f32>,
     data_min_lo: vec2<f32>,
@@ -62,10 +74,12 @@ struct PickQueryTransform {
     style_params: array<vec4<f32>, 3>,
     polar_angle: vec4<f32>,
     polar_extent: vec4<f32>,
+    ternary_lt: vec4<f32>,
+    ternary_r: vec4<f32>,
 };
 
 struct PickQueryParams {
-    transform: PickQueryTransform,
+    transform: Transform,
     // (cursor_x, cursor_y, chart_x, chart_y), all canvas pixels.
     cursor_chart: vec4<f32>,
     // (chart_width, chart_height, maximum pick distance, maximum per-axis
@@ -85,10 +99,13 @@ struct PickQueryParams {
     stream: vec4<u32>,
     // (step interpolation mode: 0 linear, 1 step-pre, 2 step-post,
     //  3 step-mid; 1 when `pick_arc` holds this series' cumulative arc
-    //  prefix; the rest reserved). The step mode mirrors the line shader's
+    //  prefix; 1 when the line is closed, its last point joined back to the
+    //  first; reserved). The step mode mirrors the line shader's
     //  Style.primitive_flags bits 2-3 so a pick lands on the drawn path.
     line: vec4<u32>,
-    // `point_size_map`: (size f32-lane base, size logical length, 0, 0).
+    // `point_size_map`: (size f32-lane base, size logical length, ...); a
+    // ternary series (`PICK_VARIANT_TERNARY`): (..., the third component's
+    // f32-lane base, its logical length).
     size_map: vec4<u32>,
     // (domain_min hi, domain_min lo, domain_max hi, domain_max lo).
     size_domain: vec4<f32>,
@@ -110,16 +127,43 @@ struct PickQueryParams {
     // pivot | `PICK_VECTOR_SCALE_PIXELS`).
     vector: vec4<u32>,
     // (scale — the `Data` factor, or `px_per_unit` times the display scale —,
-    //  shaft width, head length, head width), canvas pixels.
+    //  shaft width, head length, head width), canvas pixels. A streamline
+    //  series' arrowheads (`PICK_VARIANT_PATH_ARROWS`): (head length, 0,
+    //  head length, head width).
     vector_px: vec4<f32>,
-    // (minimum length, 0, 0, 0), canvas pixels.
+    // (minimum length, arrowhead spacing along the drawn arc — zero without
+    //  streamline arrowheads —, 0, 0), canvas pixels.
     vector_min: vec4<f32>,
+    // The error bars drawn with the markers (`gpu_pick/errorbar.wgsl`): (bar
+    // count — the shortest of the six columns the error-bar shader reads,
+    // zero without error bars —, the `ERRORBAR_HAS_*` directions,
+    // error-bar style-index f32-lane base, style-index logical length; zero
+    // without an index column).
+    errorbar: vec4<u32>,
+    // The error columns' f32-lane bases: (y lower, y upper, x lower, x upper).
+    errorbar_lanes: vec4<u32>,
+    // The error-bar style rows, after the marker rows in `pick_style_slots`
+    // and `pick_style_overrides`: (first slot row, slot count, first
+    // override row, override count).
+    errorbar_rows: vec4<u32>,
+    // (stem width, cap half length, cap width, 1 when the base colour
+    // paints else 0), logical pixels; the display scale is applied with the
+    // other sizes.
+    errorbar_px: vec4<f32>,
+    // The line's area fill (`gpu_pick/area.wgsl`): (second y column's f32-lane
+    // base, filled segment count — zero without a fill —, 1 when it fills to
+    // that series else to the baseline, 0).
+    area: vec4<u32>,
+    // (baseline hi, baseline lo, 0, 0): `Style.dash[1].xy` of the fill.
+    area_baseline: vec4<f32>,
+    // A box plot's raw points (`PICK_VARIANT_CATEGORY_JITTER`,
+    // `category_jitter.wgsl`): (group width, member gap in logical pixels,
+    // jitter share, offset share).
+    category: vec4<f32>,
+    // (member, members — zero without raw points —, 1 when the categories
+    // run along y, series seed).
+    category_slot: vec4<u32>,
 };
-
-const PICK_STEP_LINEAR: u32 = 0u;
-const PICK_STEP_PRE: u32 = 1u;
-const PICK_STEP_POST: u32 = 2u;
-const PICK_STEP_MID: u32 = 3u;
 
 struct PickScatterStyleSlot {
     color_premul: vec4<f32>,
@@ -142,7 +186,7 @@ struct PickCandidate {
     valid: u32,
     series_order: u32,
     point_index: u32,
-    primitive_kind: u32, // scatter=0, line=1 (CPU traversal order)
+    primitive_kind: u32, // `PICK_KIND_*`
     primitive_index: u32,
     distance_sq: f32,
     distance_px: f32,
@@ -164,12 +208,28 @@ struct PickCandidate {
 @group(1) @binding(2) var<storage, read> pick_style_overrides: array<PickScatterStyleOverride>;
 @group(1) @binding(3) var<storage, read_write> pick_series_output: PickCandidate;
 
-// The exact pass only: the line's cumulative arc length per point, the
-// buffer the line shader's dash phase and sketch wobble were drawn with
-// (`line_arc.wgsl`), or a one-value placeholder when `line.y` is zero.
-@group(2) @binding(0) var<storage, read> pick_arc: array<f32>;
+// The exact pass only: the line's cumulative arc length per point as arc
+// pairs (SHADER_COMMON.md §5.6), the buffer the line shader's dash phase and
+// sketch wobble were drawn with (`line_arc.wgsl`), or a one-pair placeholder
+// when `line.y` is zero.
+@group(2) @binding(0) var<storage, read> pick_arc: array<vec2<u32>>;
+// A region series' ring starts (`PICK_FLAG_REGION`): per row, the row of its
+// ring's first vertex, as the draw's ring-start scan wrote it
+// (`ternary_region.wgsl`, #49). A placeholder for every other series.
+@group(2) @binding(1) var<storage, read> pick_ring_start: array<u32>;
 
 var<workgroup> pick_shared_candidates: array<PickCandidate, PICK_WORKGROUP_SIZE>;
+// The region fold beside the candidates: (crossing parity, lowest crossing
+// index, series order).
+var<workgroup> pick_shared_region: array<vec3<u32>, PICK_WORKGROUP_SIZE>;
+
+// Fold two region partials: parities add modulo two, the lowest index and
+// the one series order carry.
+fn pick_region_fold(a: vec3<u32>, b: vec3<u32>) -> vec3<u32> {
+    return vec3<u32>(a.x ^ b.x, min(a.y, b.y), max(a.z, b.z));
+}
+
+const PICK_REGION_NONE: vec3<u32> = vec3<u32>(0u, 0xffffffffu, 0u);
 
 // Windows DX12: bounded per-invocation zeroing avoids aggregate DXIL stores.
 // Keep this override paired with gpu_compile::workgroup_options.
@@ -178,6 +238,7 @@ override FIGGY_EXPLICIT_WORKGROUP_ZERO: bool = false;
 fn figgy_zero_workgroup(local_index: u32) {
     if FIGGY_EXPLICIT_WORKGROUP_ZERO {
         pick_shared_candidates[local_index] = PickCandidate();
+        pick_shared_region[local_index] = vec3<u32>();
         workgroupBarrier();
     }
 }
@@ -207,123 +268,156 @@ fn pick_coordinate_is_valid(v: vec2<f32>, axis: u32) -> bool {
         && (pick_query_params.transform.scale_log[axis] == 0.0 || v.x + v.y > 0.0);
 }
 
-fn pick_log10(v: f32) -> f32 {
-    return log(max(v, 1e-30)) / log(10.0);
-}
-
-fn pick_axis_pair_to_t(v: vec2<f32>, axis: u32) -> f32 {
-    let raw = v.x + v.y;
-    let min_hi = pick_query_params.transform.data_min[axis];
-    let max_hi = pick_query_params.transform.data_max[axis];
-    let min_lo = pick_query_params.transform.data_min_lo[axis];
-    let max_lo = pick_query_params.transform.data_max_lo[axis];
-    let linear_num = fma(1.0, v.x - min_hi, v.y - min_lo);
-    let range = fma(1.0, max_hi - min_hi, max_lo - min_lo);
-    let log_num = (pick_log10(raw) - min_hi) - min_lo;
-    if pick_query_params.transform.scale_log[axis] > 0.5 {
-        return fma(log_num / range, pick_query_params.transform.data_to_panel_scale[axis],
-            pick_query_params.transform.data_to_panel_offset[axis]);
-    }
-    let data_t = mix(linear_num / range, log_num / range, pick_query_params.transform.scale_log[axis]);
-    return fma(data_t, pick_query_params.transform.data_to_panel_scale[axis],
-        pick_query_params.transform.data_to_panel_offset[axis]);
-}
-
 fn pick_project_axis_pair(v: vec2<f32>, axis: u32) -> f32 {
-    let t = pick_axis_pair_to_t(v, axis);
+    let tr = pick_query_params.transform;
+    let t = axis_pair_to_t(v, tr.data_min[axis], tr.data_max[axis], tr.data_min_lo[axis], tr.data_max_lo[axis],
+        tr.scale_log[axis], tr.data_to_panel_scale[axis], tr.data_to_panel_offset[axis]);
     if axis == 0u {
         return pick_query_params.cursor_chart.z + t * pick_query_params.chart_limits.x;
     }
     return pick_query_params.cursor_chart.w + (1.0 - t) * pick_query_params.chart_limits.y;
 }
 
+// A ternary series (`PICK_VARIANT_TERNARY` on a ternary chart): each sample
+// has a third component, read from the pool at `size_map.z`, and is placed
+// by `ternary_ndc`, the function its draw entries place it with.
+fn pick_ternary() -> bool {
+    return pick_variant(PICK_VARIANT_TERNARY) && pick_query_params.transform.ternary_r.z > 0.5;
+}
+
+// The third component of sample `i`, NaN past its column.
+fn pick_ternary_c(i: u32) -> vec2<f32> {
+    if i >= pick_query_params.size_map.w {
+        return vec2<f32>(bitcast<f32>(0x7fc00000u));
+    }
+    return pick_read_pair(pick_query_params.size_map.z, i);
+}
+
+fn pick_ternary_valid(i: u32, x: vec2<f32>, y: vec2<f32>) -> bool {
+    return ternary_sample_valid(x, y, pick_ternary_c(i));
+}
+
+// Sample `i` in the draw's pixel frame (y up), as `vs_ternary` places it.
+fn pick_ternary_px(i: u32, x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    let t = pick_query_params.transform;
+    return ternary_ndc(t, x, y, pick_ternary_c(i)) / t.pixel_to_ndc;
+}
+
+// ───── ternary region fill ─────
+// A region series' exact pass counts, over every edge of every polygon
+// its samples outline, the crossings of the ray from the cursor towards +x
+// (the even-odd rule the stencil fill draws with, `ternary_region.wgsl`).
+// Each workgroup folds its crossings to a parity and the lowest index of a
+// crossing edge, written as a region entry (`PICK_KIND_REGION`) after its
+// best candidate; `pick_reduce_candidates` folds the entries of a series
+// and turns an odd parity into a fill hit at distance zero on that index,
+// which loses every tie as a line fill does.
+fn pick_region() -> bool {
+    return pick_ternary() && (pick_query_params.style.x & PICK_FLAG_REGION) != 0u;
+}
+
+// Whether vertex `i` can be placed: inside the columns and a valid sample.
+fn pick_region_valid(i: u32) -> bool {
+    if i >= pick_query_params.data.x {
+        return false;
+    }
+    let x = pick_read_pair(pick_query_params.data.y, i);
+    let y = pick_read_pair(pick_query_params.data.z, i);
+    return pick_ternary_valid(i, x, y);
+}
+
+fn pick_region_px(i: u32) -> vec2<f32> {
+    let x = pick_read_pair(pick_query_params.data.y, i);
+    let y = pick_read_pair(pick_query_params.data.z, i);
+    return pick_ternary_px(i, x, y);
+}
+
+// The first vertex of the ring that holds vertex `i`, read from the draw's
+// ring-start scan as `region_ring_start` reads it.
+fn pick_region_ring_start(i: u32) -> u32 {
+    return pick_ring_start[i];
+}
+
+// The vertex edge `i` runs to: the next, or the ring's first past the
+// ring's last; `0xffffffff` when `i` starts no edge.
+fn pick_region_edge_end(i: u32) -> u32 {
+    if !pick_region_valid(i) {
+        return 0xffffffffu;
+    }
+    if pick_region_valid(i + 1u) {
+        return i + 1u;
+    }
+    let first = pick_region_ring_start(i);
+    if first == i {
+        return 0xffffffffu;
+    }
+    return first;
+}
+
+// Whether the ray from `p` towards +x crosses edge (a, b): the edge
+// straddles p.y (half-open, so a vertex on the ray counts once) and meets
+// the ray to the right of p.
+fn pick_region_edge_crosses(a: vec2<f32>, b: vec2<f32>, p: vec2<f32>) -> bool {
+    if (a.y > p.y) == (b.y > p.y) {
+        return false;
+    }
+    let x = a.x + (p.y - a.y) / (b.y - a.y) * (b.x - a.x);
+    return x > p.x;
+}
+
+// Whether the edge starting at vertex `i` crosses the cursor's ray.
+fn pick_region_crossing(i: u32) -> bool {
+    let end = pick_region_edge_end(i);
+    if end == 0xffffffffu {
+        return false;
+    }
+    return pick_region_edge_crosses(pick_region_px(i), pick_region_px(end), pick_cursor_px());
+}
+
 fn pick_polar() -> bool {
     return pick_variant(PICK_VARIANT_POLAR) && pick_query_params.transform.polar_angle.x > 0.5;
 }
 
-// Twin of `polar_ndc` in the data shaders, in canvas pixels.
-fn pick_project_pair_polar(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
-    let t = pick_query_params.transform;
-    let ty = pick_axis_pair_to_t(y, 1u);
-    let angle = t.polar_angle.y + t.polar_angle.z * (x.x + x.y);
-    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    let r = mix(t.polar_angle.w, 1.0, max(rt, 0.0));
-    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    let ndc = center + vec2<f32>(cos(angle), sin(angle)) * r * t.polar_extent.w * t.pixel_to_ndc;
+// NDC into canvas pixels (y down) on this query's chart rectangle.
+fn pick_ndc_to_canvas(ndc: vec2<f32>) -> vec2<f32> {
     return vec2<f32>(
         pick_query_params.cursor_chart.z + (ndc.x + 1.0) * 0.5 * pick_query_params.chart_limits.x,
         pick_query_params.cursor_chart.w + (1.0 - ndc.y) * 0.5 * pick_query_params.chart_limits.y,
     );
 }
 
-fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
-    if pick_polar() {
-        return pick_project_pair_polar(x, y);
-    }
-    return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
-}
-
-// Twin of `polar_sample_valid`: a radius below the axis start is not drawn,
-// so it is not picked. The sector, the outer ring and the hole cut the drawn
-// primitive per fragment instead; `pick_polar_clip_distance` applies that
-// clip at the cursor.
-fn pick_polar_valid(x: vec2<f32>, y: vec2<f32>) -> bool {
-    if !pick_polar() {
-        return true;
-    }
-    let t = pick_query_params.transform;
-    let ty = pick_axis_pair_to_t(y, 1u);
-    let rt = (ty - t.data_to_panel_offset.y) / t.data_to_panel_scale.y;
-    return rt >= 0.0;
-}
-
-// The polar fragment clip of the draw shaders (SHADER_COMMON.md, coordinate
-// sample validity). `polar_fragment_visible` is copied byte-for-byte; the
-// three inputs it takes are computed from this shader's transform exactly
-// as `polar_clip_offset` / `polar_clip_limits` / `polar_clip_sector` compute
-// them from the draw transform.
-fn polar_fragment_visible(px: vec2<f32>, limits: vec4<f32>, sector: vec4<f32>) -> bool {
-    if (limits.x < 0.5) {
-        return true;
-    }
-    let r = length(px);
-    if (r > limits.y + 0.5 || r < limits.z - 0.5) {
-        return false;
-    }
-    if (limits.w < 0.5) {
-        return true;
-    }
-    // The data angle of the fragment, brought into the turn that starts at
-    // the sector start.
-    let turn = 6.283185307179586 / abs(sector.y);
-    var a = (atan2(px.y, px.x) - sector.x) / sector.y;
-    a = a - floor((a - sector.z) / turn) * turn;
-    return a <= sector.w + 1e-6 * turn;
-}
-
-// The cursor's offset from the polar centre in pixels, y up: what
-// `polar_clip_offset` interpolates to at the fragment under the cursor.
-fn pick_polar_cursor_offset() -> vec2<f32> {
-    let t = pick_query_params.transform;
+// The draw's projection in canvas pixels. A polar sample goes through the
+// draw's NDC (`data_to_ndc`); a rectangular one maps each axis' panel `t`
+// straight to pixels, which keeps the precision `t * 2 - 1` would round off.
+// The cursor in NDC on this query's chart rectangle.
+fn pick_cursor_ndc() -> vec2<f32> {
     let cursor = pick_query_params.cursor_chart;
-    let ndc = vec2<f32>(
+    return vec2<f32>(
         (cursor.x - cursor.z) / pick_query_params.chart_limits.x * 2.0 - 1.0,
         1.0 - (cursor.y - cursor.w) / pick_query_params.chart_limits.y * 2.0,
     );
-    let center = (t.data_to_panel_offset + t.data_to_panel_scale * 0.5) * 2.0 - 1.0;
-    return (ndc - center) / t.pixel_to_ndc;
 }
 
-fn pick_polar_clip_limits() -> vec4<f32> {
-    let p = pick_query_params.transform.polar_angle;
-    let e = pick_query_params.transform.polar_extent;
-    return vec4<f32>(p.x, e.w, e.w * p.w, select(0.0, 1.0, e.y > e.x));
+// The cursor in the draw's pixel frame (`data_to_px`: render pixels from the
+// target's centre, y up). The exact pass measures every primitive in this
+// frame from `pick_data_px`, the draw's own projection, so a primitive's
+// pixels are the values its vertex stage computed (#114).
+fn pick_cursor_px() -> vec2<f32> {
+    return pick_cursor_ndc() / pick_query_params.transform.pixel_to_ndc;
 }
 
-fn pick_polar_clip_sector() -> vec4<f32> {
-    let p = pick_query_params.transform.polar_angle;
-    let e = pick_query_params.transform.polar_extent;
-    return vec4<f32>(p.y, p.z, e.x, e.y);
+// A data point in the draw's pixel frame, with the draw's projection.
+fn pick_data_px(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    return data_to_px(pick_query_params.transform, x, y);
+}
+
+// Canvas pixels for the axis gates, which only prefilter (the exact pass
+// uses `pick_data_px`).
+fn pick_project_pair(x: vec2<f32>, y: vec2<f32>) -> vec2<f32> {
+    if pick_polar() {
+        return pick_ndc_to_canvas(data_to_ndc(pick_query_params.transform, x, y));
+    }
+    return vec2<f32>(pick_project_axis_pair(x, 0u), pick_project_axis_pair(y, 1u));
 }
 
 // Distance from the ray at screen angle `angle` (from the polar centre) to
@@ -346,9 +440,12 @@ fn pick_polar_clip_distance() -> f32 {
     if !pick_polar() {
         return 0.0;
     }
-    let px = pick_polar_cursor_offset();
-    let limits = pick_polar_clip_limits();
-    let sector = pick_polar_clip_sector();
+    // The cursor in NDC: where the draw's `polar_clip_offset` is
+    // interpolated at the fragment under the cursor.
+    let t = pick_query_params.transform;
+    let px = polar_clip_offset(t, pick_cursor_ndc());
+    let limits = polar_clip_limits(t);
+    let sector = polar_clip_sector(t);
     if polar_fragment_visible(px, limits, sector) {
         return 0.0;
     }
@@ -392,10 +489,10 @@ fn pick_scatter_projected_may_hit(projected: f32, axis: u32) -> bool {
 
 fn pick_polar_scatter_may_hit(point_index: u32, y: vec2<f32>) -> bool {
     let x = pick_read_pair(pick_query_params.data.y, point_index);
-    if !pick_pair_is_valid(x) || !pick_polar_valid(x, y) {
+    if !pick_pair_is_valid(x) || !polar_sample_valid(pick_query_params.transform, x, y) {
         return false;
     }
-    let projected = pick_project_pair_polar(x, y);
+    let projected = pick_project_pair(x, y);
     if !pick_is_finite(projected.x) || !pick_is_finite(projected.y) {
         return false;
     }
@@ -421,6 +518,24 @@ fn pick_line_projected_may_hit(a_px: f32, b_px: f32, axis: u32) -> bool {
         && cursor <= max(a_px, b_px) + threshold;
 }
 
+// The point after `point_index` along the drawn line: the next one, or the
+// first after the last on a closed line (`line.z`, a radar outline), whose
+// closing segment the line shader draws as one more instance.
+fn pick_next_point(point_index: u32) -> u32 {
+    let next = point_index + 1u;
+    if pick_query_params.line.z != 0u && next >= pick_query_params.data.x {
+        return 0u;
+    }
+    return next;
+}
+
+// Whether `point_index` starts a drawn segment: every point but the last,
+// and the last too on a closed line.
+fn pick_starts_segment(point_index: u32) -> bool {
+    let count = pick_query_params.data.x;
+    return point_index + 1u < count || (pick_query_params.line.z != 0u && count > 1u);
+}
+
 fn pick_linear_workgroup_id(workgroup_id: vec3<u32>) -> u32 {
     return workgroup_id.x + workgroup_id.y * pick_query_params.series.w;
 }
@@ -443,14 +558,35 @@ fn pick_styled_index(point_index: u32) -> u32 {
 // What a line series' pipeline draws under the chart's draw style
 // (`PickQueryParams.styled.y`). Constellation lines are the precise quads.
 const PICK_LINE_PRECISE: u32 = 0u;
-// `vs_sketch`: a subdivided strip displaced by `sketch_line_offset`.
+// `vs_sketch`: a subdivided strip displaced by `sketch_line_offset_from`.
 const PICK_LINE_SKETCH: u32 = 1u;
 // Milkyway: the ribbon strip and the star field scattered along it.
 const PICK_LINE_RIBBON: u32 = 2u;
 
-// Canvas pixels (y down) into the draw shaders' pixel frame (y up).
-fn pick_flip(v: vec2<f32>) -> vec2<f32> {
-    return vec2<f32>(v.x, -v.y);
+
+// `PickCandidate.primitive_kind`, numbered so that within one series a lower
+// kind is painted over a higher one: markers over the line over the error
+// bars (`issue_series_data`). Fills are painted before every series' body
+// (`issue_series_fill`).
+const PICK_KIND_MARKER: u32 = 0u;
+const PICK_KIND_LINE: u32 = 1u;
+const PICK_KIND_ERRORBAR: u32 = 2u;
+const PICK_KIND_FILL: u32 = 3u;
+// Not a candidate: a workgroup's region entry (`valid` its crossing parity,
+// `point_index` the lowest crossing edge's start), folded by the per-series
+// reduction into a `PICK_KIND_FILL` hit when the parity is odd.
+const PICK_KIND_REGION: u32 = 4u;
+
+// A region entry of `parity` and lowest crossing index `index` for the
+// series `order`.
+fn pick_region_entry(parity: u32, index: u32, order: u32) -> PickCandidate {
+    return PickCandidate(parity, order, index, PICK_KIND_REGION, 0u, 0.0, 0.0, 0u);
+}
+
+// The fill hit a region entry fold with odd parity becomes: distance zero
+// on the lowest crossing edge's start, as a line fill names a point.
+fn pick_region_hit(index: u32, order: u32) -> PickCandidate {
+    return PickCandidate(1u, order, index, PICK_KIND_FILL, index, 0.0, 0.0, 0u);
 }
 
 fn pick_invalid_candidate(series_order: u32) -> PickCandidate {
@@ -476,10 +612,18 @@ fn pick_candidate_is_better(candidate: PickCandidate, incumbent: PickCandidate) 
     if candidate.distance_sq != incumbent.distance_sq {
         return candidate.distance_sq < incumbent.distance_sq;
     }
-    // An exact tie goes to whatever is painted on top. Series paint in
-    // order, so a later series covers an earlier one; within a series the
-    // markers paint over the line; and instances paint in index order, so a
-    // higher marker or segment index covers a lower one.
+    // An exact tie goes to whatever is painted on top. Every fill paints
+    // before every series' body, so a fill loses a tie to anything else;
+    // series paint in order, so a later series covers an earlier one (a
+    // later fill an earlier fill too); within a series the markers paint
+    // over the line and the line over the error bars; and instances paint
+    // in index order, so a higher marker, bar or segment index covers a
+    // lower one.
+    let candidate_fill = candidate.primitive_kind == PICK_KIND_FILL;
+    let incumbent_fill = incumbent.primitive_kind == PICK_KIND_FILL;
+    if candidate_fill != incumbent_fill {
+        return incumbent_fill;
+    }
     if candidate.series_order != incumbent.series_order {
         return candidate.series_order > incumbent.series_order;
     }
