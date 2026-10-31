@@ -183,6 +183,17 @@ impl FiggyChart {
         if ternary {
             return Ok(());
         }
+        // A parallel chart fits each axis to its columns' statistics (#141).
+        if self.chart_config().parallel.is_some() {
+            let series = self.chart_series().to_vec();
+            let mut chart = Chart::new(self.chart_config().clone());
+            chart
+                .auto_fit_parallel_axes(self.renderer.pool(), &series, padding)
+                .map_err(js_err)?;
+            self.replace_chart_config(chart.config().clone())?;
+            self.request_host_redraw();
+            return Ok(());
+        }
         let series = self.chart_series().to_vec();
         if series
             .iter()
@@ -380,6 +391,12 @@ impl FiggyChart {
                 DataRenderType::Streamlines { color_map, .. } => {
                     if let Some(map) = color_map {
                         union(&map.column)?;
+                    }
+                }
+                // A parallel series' colour column maps through the colourbar.
+                DataRenderType::Parallel { color_column, .. } => {
+                    if let Some(column) = color_column {
+                        union(column)?;
                     }
                 }
                 // An image's colours are its data: the colourbar maps none

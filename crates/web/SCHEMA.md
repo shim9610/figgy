@@ -59,6 +59,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 - 텍스트 구간의 선택 키와 `Config`의 `draw_style` / `picked_points` / `picked_data` / `colorbar`도 생략할 수 있다. `draw_style`은 기본 정밀 모드일 때, `picked_points` / `picked_data` / `colorbar`는 `None`일 때 생략한다. `picked_points: {}`와 `picked_data: {}`는 각각 기본 선택 표시 설정으로 해석한다.
 - **`Plain` 라벨 형식**은 `{ "Plain": {} }`처럼 쓰며, `decimals`는 `None`이면, `trim_zeros`는 `false`이면 생략한다. 값만으로 라벨을 정하므로 축 스케일·눈금 간격·`significant_digits`의 영향을 받지 않는다. `decimals`를 생략하면 0은 `0`으로, 절댓값이 1e6 이상이거나 0.001 미만인 값은 `1.23e6`처럼 지수 표기로, 나머지는 소수 여섯째 자리까지 적은 뒤 끝의 0과 소수점을 지운다. `decimals`를 주면 그 자릿수로 적고, `trim_zeros`가 `true`이면 소수 끝의 0과 소수점을 지운다. figgy-model 0.12.1 이하는 이 값을 거부한다.
 - **극좌표 키** `polar`는 `None`이면 생략한다. `{ "polar": { "zero_angle_degrees": 0.0, "clockwise": false, "angle_unit": "Degrees", "sector": null, "inner_radius_fraction": 0.0, "interpolation": "Chord", "radial_label_angle_degrees": 90.0 } }`가 전체 형태이며(`grid_shape`는 기본값 `"Circle"`이면 생략하고, `"Polygon"`이면 범주형 각도 축의 범주마다 고리를 현으로 잇는다) 모든 필드에 기본값이 있어 `{ "polar": {} }`만으로 극좌표를 켠다. `angle_unit`은 `"Degrees"` / `"Radians"`, `sector`는 `[start, end]` 또는 `null`, `interpolation`은 `"Chord"` 또는 `{ "Arc": { "pieces": 8 } }`다. 켜면 `bottom_x`가 각도 축, `left_y`가 반지름 축이고 산점도·선(채움 포함)과 레이더 시리즈만 그린다. `bottom_x.categories`가 있으면 각도 축은 범주형이며, `n`개 중 `i`번째 범주가 한 바퀴의 `i / n` 자리에 놓인다. 각도는 `x_column` 값을 `angle_unit` 단위의 각도로 보고 `zero_angle_degrees`에서부터 재므로 원은 항상 한 바퀴(360° 또는 2π)다. `bottom_x`의 `min` / `max`는 각도 매핑을 바꾸지 않고 그릴 각도 눈금·스포크·라벨만 정하며, 원의 일부만 그리려면 `sector`를 쓴다. 히스토그램·행렬·오차 막대·벡터 시리즈, `overlays`, 스트리밍 소스는 오류로 거부한다. 필드 의미와 검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#polaroptions-configpolar-1)에 있다.
+- **평행 좌표 키** `parallel`([#141](https://github.com/shim9610/figgy/issues/141))은 `None`이면 생략한다. `{ "parallel": { "axes": [{ "min": 0.0, "max": 10.0 }, { "min": 1.0, "max": 1000.0, "scale": "Logarithmic" }] } }` 형태이며 축마다 `inverted`(기본 `false`), `scale`(기본 `"Linear"`), `label_offset`(기본 `[0, 0]`, 라벨을 끌어 옮긴 거리)은 기본값이면 생략한다. 켜면 `bottom_x`의 범주마다 그 범주 자리에 자기 범위의 세로 축을 세우고 `Parallel` 시리즈만 그린다. `bottom_x`는 축 수만큼의 범주를 가진 범주형이고 `left_y`는 선형 `0..1`이어야 하며 극좌표·삼각·3D·`overlays`·`line_offsets`와 함께 쓸 수 없다. 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#paralleloptions-configparallel)에 있다.
 - **선버스트**([#140](https://github.com/shim9610/figgy/issues/140)): 원형 차트 문서의 조각에 `"children": [slice, …]`를 두면 트리의 고리를 바깥쪽으로 그린다(비어 있으면 생략). 자식 값의 합은 부모 값 이하이며, 선택·호버·`step_selection`의 `{ "group", "index" }`는 고리와 그 고리 안의 문서 순서 위치다. `split`, `tilt_degrees`·`depth`와 함께 쓸 수 없다. 규칙은 [원형 차트 가이드](../renderer/RADIAL.md#선버스트중첩-고리)에 있다.
 - **레이어 키 4개**인 `overlays`, `subplots`, `active_layer`, `annotations`도 기본값이면 생략한다. 원형 차트는 `FiggyBoundedChart`가 그리는 `radial` 문서로(범주형 막대·박스플롯·레이더 문서는 `FiggyChart`의 `set_categorical_document`·`set_boxplot_document`·`set_radar_document`로 연다), 컬럼 대신 문서 안에 값을 담는다. 원형 차트 문서에는 네 레이어 키 가운데 `active_layer`와 `annotations`만 있고 `overlays`와 `subplots`는 없다. `active_layer`와 `annotations`의 필드 의미·기본값·검증 규칙은 [설정 레퍼런스](../renderer/CONFIG.md#layerref--annotationlayer-1)에 있다.
 - **활성 레이어 키** `active_layer`는 `"Base"`(기본), `{ "Overlay": 0 }`, `"Annotations"`, `{ "Subplot": 0 }`, `{ "SubplotOverlay": [0, 0] }` 중 하나다. 데이터와 장식의 그림은 바꾸지 않고 히트 맵 등록과 선택 표시, `auto_fit_all`이 맞출 축에만 영향을 준다. 범위 밖의 `Overlay`·`Subplot` 인덱스와 서브플롯 인덱스가 범위 밖인 `SubplotOverlay`는 `"Base"`로, 서브플롯은 있지만 그 오버레이가 없는 `SubplotOverlay`는 해당 `{ "Subplot": i }`로 저장한다. `set_active_layer(json)` / `active_layer()`가 이 키만 바꾸고 읽는다. 저수준 `FiggyChart`는 저장된 값을 JSON 문자열로, `<figgy-chart>`는 파싱한 값으로 돌려준다. `auto_fit_all(pad)`는 활성 레이어의 축만 맞춘다. `"Base"`와 `"Annotations"`는 부모의 `bottom_x`·`left_y`를, `{ "Subplot": i }`는 서브플롯 `i`의 `bottom_x`·`left_y`를, `{ "Overlay": n }`과 `{ "SubplotOverlay": [i, n] }`은 그 오버레이의 `y_axis`를 맞춘다. 각 축은 그 축에 그려지는 시리즈로 맞추므로 오버레이 시리즈는 자기 차트의 X 축에는 들어가고 `left_y`에는 들어가지 않는다. 링크된 축(`link_x`, `link_y`)은 X와 Y를 따로 따져 링크 묶음 전체의 시리즈로 맞추고 묶음 전체를 움직인다. 자세한 규칙은 [WASM 가이드의 범위 맞춤](https://github.com/shim9610/figgy/blob/master/crates/renderer/WASM.md#5-빌드-산출물cratesweb--pkg)을 참고한다. `"Annotations"`이면 포인터 처리(`hit_test`, `on_press`, 원형 차트의 `hit_decoration`)가 주석 항목을 가장 먼저 검사해 `annotation_<n>`을 반환하고, 다른 값이면 클릭이 주석을 통과한다. 원형 차트에는 오버레이와 서브플롯이 없으므로 `Overlay`·`Subplot`·`SubplotOverlay` 값을 `"Base"`로 읽고 저장하며, 값이 바뀌면 `decorations.selected`를 지운다.
@@ -140,7 +141,7 @@ GPU 컬럼 풀에 올리지 않는 비상주(스트리밍) 컬럼 등록, 원본
 | `line_style` (LineStylePreset) | `"Solid"` `"Dash"` `"Dot"` `"DashDot"` `"DashDotDot"` `"ShortDash"` `"ShortDot"` `"ShortDashDot"` `"LongDash"` `"LongDashDot"` `"LongDashDotDot"` |
 | `corner` (LegendCorner) | `"TopLeft"` `"TopRight"` `"BottomLeft"` `"BottomRight"` |
 | `point_shape` (ScatterShape) | `"Circle"` `"Square"` `"Triangle"` `"Diamond"` `"Cross"` `"CircleFilled"` `"SquareFilled"` `"TriangleFilled"` `"DiamondFilled"` `"TriangleDown"` `"TriangleLeft"` `"TriangleRight"` `"Plus"` `"Pentagon"` `"Hexagon"` `"Octagon"` `"Star"` `"TriangleDownFilled"` `"TriangleLeftFilled"` `"TriangleRightFilled"` `"PlusFilled"` `"CrossFilled"` `"PentagonFilled"` `"HexagonFilled"` `"OctagonFilled"` `"StarFilled"` |
-| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` `"RgbImage"` |
+| `render_type` (DataRenderType, 태그) | `"Scatter"` `"Line"` `"ScatterLine"` `"ScatterErrorbarX"` `"ScatterErrorbarY"` `"ScatterErrorbarXY"` `"LineScatterErrorbarX"` `"LineScatterErrorbarY"` `"LineScatterErrorbarXY"` `"Histogram"` `"Heatmap"` `"Contour"` `"HeatmapContour"` `"Vector"` `"CategoryBars"` `"Streamlines"` `"RgbImage"` `"Parallel"` |
 | `err_x` / `err_y` (ErrorRef, 태그) | `"Symmetric"` (`{column}`) / `"Asymmetric"` (`{lower, upper}`) |
 | `side` (Side) | `"Top"` `"Bottom"` `"Left"` `"Right"` |
 | `align` (BarAlign, 색상 막대) | `"Start"` `"Center"` `"End"` |
@@ -1332,6 +1333,41 @@ A picked point's `selection_details()` carries `index`, `x`, `y` and `c` (the
 uploaded components, never fractions), plus `color_value` or `size_value`
 when mapped. A region fill picks as a point of the series: the lowest index
 of a polygon edge the cursor's rightward ray crosses.
+
+<a id="parallel-render_type"></a>
+
+## `Parallel` render_type
+
+A parallel coordinates series ([#141](https://github.com/shim9610/figgy/issues/141))
+draws on a parallel chart (`"parallel": { "axes": [..] }` on the config, one
+axis per category of `bottom_x`). `columns` names one registered column per
+axis in the axes' order, and `x_column` / `y_column` are its first two;
+`line` is the rows' colour and width (solid, linear, no `fill`), and
+`color_column` (omitted when absent) colours each row by that column's
+value through `colorbar`. Row `r` is the polyline through each column's
+value placed on its axis's range; a row with a non-finite value breaks at
+that axis.
+
+```json
+{
+  "series_id": "flowers",
+  "x_column": "sepal_l",
+  "y_column": "sepal_w",
+  "render_type": {
+    "Parallel": {
+      "columns": ["sepal_l", "sepal_w", "petal_l", "petal_w"],
+      "line": { "line_style": "Solid", "line_color": { "r": 0.12, "g": 0.47, "b": 0.71, "a": 1.0 }, "line_width": 1.2 },
+      "color_column": "species"
+    }
+  }
+}
+```
+
+A picked row's `selection_details()` carries `index` (the row), `x`, `y`
+(the first two columns' values), `values` (one value per axis, in order)
+and `color_value` when mapped; `step_selection(dx, 0)` walks the rows.
+Each axis's tick labels are the element `parallel_axis_labels_<i>`, dragged
+into the axis's `label_offset`.
 
 <a id="radar-render_type"></a>
 

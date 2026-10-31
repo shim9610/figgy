@@ -68,10 +68,11 @@ pub enum SceneKind {
     Rose,
     Image,
     Sunburst,
+    Parallel,
 }
 
 impl SceneKind {
-    pub const ALL: [SceneKind; 31] = [
+    pub const ALL: [SceneKind; 32] = [
         SceneKind::Lines,
         SceneKind::Scatter,
         SceneKind::ValueMaps,
@@ -103,6 +104,7 @@ impl SceneKind {
         SceneKind::Rose,
         SceneKind::Image,
         SceneKind::Sunburst,
+        SceneKind::Parallel,
     ];
 
     pub fn label(self) -> &'static str {
@@ -138,6 +140,7 @@ impl SceneKind {
             SceneKind::Rose => "Rose (polar bars)",
             SceneKind::Image => "Image (RGB test card)",
             SceneKind::Sunburst => "Sunburst (nested rings)",
+            SceneKind::Parallel => "Parallel coordinates",
         }
     }
 
@@ -269,6 +272,12 @@ impl SceneKind {
                 "A budget as three nested rings: departments, their teams and the \
                  teams' projects, each ring over its parent's span. Click a node; \
                  step ring by ring with the arrows; drag the outer labels."
+            }
+            SceneKind::Parallel => {
+                "150 flowers of three species over four measurements, one polyline \
+                 per flower across four axes with their own ranges, coloured by \
+                 species through the colourbar. Pick a row and step with the \
+                 arrows; drag an axis's labels."
             }
         }
     }
@@ -469,6 +478,7 @@ pub fn build(
         SceneKind::Hexbin => hexbin(r),
         SceneKind::Rose => rose(r),
         SceneKind::Image => image(r),
+        SceneKind::Parallel => parallel(r),
         SceneKind::BigData => big_data::build(r, big_data_points),
         SceneKind::Radial | SceneKind::Sunburst => {
             unreachable!("a radial scene is built by `radial::document`")
@@ -3425,6 +3435,106 @@ fn hexbin(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
     )];
     Ok(CartesianScene {
         config: chart.config().clone(),
+        series,
+    })
+}
+
+/// Parallel coordinates (#141): 150 synthetic flowers of three species over
+/// four measurements, an iris-like mixture, one row per flower across four
+/// axes with their own ranges, coloured by the species column through the
+/// colourbar.
+fn parallel(r: &mut Renderer) -> Result<CartesianScene, FiggyError> {
+    use renderer::config::{Category, TickVisibility};
+    use renderer::parallel::{ParallelAxis, ParallelOptions};
+    // (centre, spread) per measurement, per species.
+    let species: [[(f64, f64); 4]; 3] = [
+        [(5.0, 0.35), (3.4, 0.38), (1.5, 0.17), (0.25, 0.1)],
+        [(5.9, 0.5), (2.8, 0.3), (4.3, 0.47), (1.3, 0.2)],
+        [(6.6, 0.64), (3.0, 0.32), (5.5, 0.55), (2.0, 0.27)],
+    ];
+    let names = ["pc_sepal_l", "pc_sepal_w", "pc_petal_l", "pc_petal_w"];
+    let mut columns: [Vec<f64>; 4] = Default::default();
+    let mut class = Vec::new();
+    for (k, spread) in species.iter().enumerate() {
+        for i in 0..50 {
+            for (j, (centre, sigma)) in spread.iter().enumerate() {
+                let seed = 301 + 7 * k as u64 + j as u64;
+                columns[j].push((centre + noise(seed, i) * 2.0 * sigma).max(0.1));
+            }
+            class.push(k as f64);
+        }
+    }
+    let ranges: Vec<(f64, f64)> = columns
+        .iter()
+        .map(|c| {
+            c.iter()
+                .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| {
+                    (lo.min(*v), hi.max(*v))
+                })
+        })
+        .collect();
+    for (name, column) in names.iter().zip(columns) {
+        upload(r, name, column)?;
+    }
+    upload(r, "pc_species", class)?;
+    let series = vec![series(
+        "flowers",
+        names[0],
+        names[1],
+        DataRenderType::Parallel {
+            columns: names.iter().map(|n| (*n).to_owned()).collect(),
+            line: line_style(Color::from_rgb8(31, 119, 180), 1.2),
+            color_column: Some("pc_species".into()),
+        },
+    )];
+    let mut config = base_config("Iris measurements", "", "");
+    config.bottom_x.categories = Some(
+        [
+            ("sepal_l", "Sepal length"),
+            ("sepal_w", "Sepal width"),
+            ("petal_l", "Petal length"),
+            ("petal_w", "Petal width"),
+        ]
+        .iter()
+        .map(|(id, label)| Category::new(*id, *label))
+        .collect(),
+    );
+    config.bottom_x.tick = TickVisibility::None;
+    config.bottom_x.line_visible = false;
+    config.left_y.min = 0.0;
+    config.left_y.max = 1.0;
+    config.left_y.major_spacing = 0.25;
+    config.left_y.title_option.visible = false;
+    config.grid.show_major_x = false;
+    config.grid.show_major_y = false;
+    config.grid.show_minor_x = false;
+    config.grid.show_minor_y = false;
+    // Each axis spans its measurement with a little room past the data.
+    config.parallel = Some(ParallelOptions {
+        axes: ranges
+            .iter()
+            .map(|(lo, hi)| {
+                let pad = (hi - lo) * 0.05;
+                let lo = ((lo - pad) * 10.0).floor() / 10.0;
+                let hi = ((hi + pad) * 10.0).ceil() / 10.0;
+                ParallelAxis::new(lo, hi)
+            })
+            .collect(),
+    });
+    let mut bar = default::default_colorbar_options();
+    bar.colormap = ColorMap::Viridis;
+    bar.axis.min = 0.0;
+    bar.axis.max = 2.0;
+    bar.axis.major_spacing = 1.0;
+    bar.axis.title_option.text = RichText::plain(
+        "Species",
+        bar.axis.title_option.text.color,
+        bar.axis.title_option.text.font_size,
+        bar.axis.title_option.text.font.clone(),
+    );
+    config.colorbar = Some(bar);
+    Ok(CartesianScene {
+        config: with_legend(config, &series),
         series,
     })
 }

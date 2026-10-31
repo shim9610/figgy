@@ -1066,6 +1066,7 @@ impl RendererPicker {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1097,6 +1098,7 @@ impl RendererPicker {
                     bar_style_bgl,
                     vector_bgl,
                     category_bgl,
+                    parallel_bgl,
                     observer,
                 );
                 self.pipeline_state = PickerPipelineState::Ready { point, data };
@@ -1121,6 +1123,7 @@ impl RendererPicker {
         bar_style_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         observer: &mut dyn FnMut(InitEvent),
     ) -> std::result::Result<(), crate::gpu_pick::GpuPickError> {
         match &self.pipeline_state {
@@ -1154,6 +1157,7 @@ impl RendererPicker {
                     bar_style_bgl,
                     vector_bgl,
                     category_bgl,
+                    parallel_bgl,
                     observer,
                 )
                 .await
@@ -1625,12 +1629,14 @@ impl Renderer {
                 bar: &self.pipelines.shaders.bar,
                 field: &self.pipelines.shaders.field,
                 vector_grid: &self.pipelines.shaders.vector_grid,
+                line: &self.pipelines.shaders.line,
             },
             &self.transform_bgl,
             &self.field_bgl,
             &self.per_point_style_map_bgl,
             &self.vector_bgl,
             &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             observer,
         )
     }
@@ -1655,12 +1661,14 @@ impl Renderer {
                     bar: &self.pipelines.shaders.bar,
                     field: &self.pipelines.shaders.field,
                     vector_grid: &self.pipelines.shaders.vector_grid,
+                    line: &self.pipelines.shaders.line,
                 },
                 &self.transform_bgl,
                 &self.field_bgl,
                 &self.per_point_style_map_bgl,
                 &self.vector_bgl,
                 &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 observer,
             )
             .await
@@ -2128,6 +2136,36 @@ impl Renderer {
                                 style_map,
                             )?,
                         },
+                    });
+                }
+                continue;
+            }
+
+            if primitives.parallel {
+                // The rows the parallel entries draw at the pick's display
+                // transform, over the same lane and range tables (#141);
+                // the colour is not read, so the neutral value map binds.
+                let lookup = |id: &str| {
+                    self.pool
+                        .handle_for(id)
+                        .ok_or_else(|| FiggyError::UnknownColumn { id: id.into() })
+                };
+                let data = build_parallel_data(
+                    &self.device,
+                    &self.gpu_ledger,
+                    &self.parallel_bgl,
+                    self.pool.buffer(),
+                    &self.neutral_point_value_map_buffers,
+                    &display_config,
+                    cfg,
+                    lookup,
+                )?;
+                if data.instances() != 0 {
+                    data_series.push(crate::gpu_data_pick::GpuDataPickSeries {
+                        source_id: cfg.source_id.clone(),
+                        series_id: cfg.series_id.clone(),
+                        paint_order,
+                        geometry: crate::gpu_data_pick::GpuDataPickGeometry::Parallel { data },
                     });
                 }
                 continue;

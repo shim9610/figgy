@@ -16,7 +16,9 @@ pub(crate) const LINE_SHADER: crate::shader_assembly::Assembled = crate::shader_
     "data_render/common/line_step.wgsl",
     "data_render/common/area_piece.wgsl",
     "data_render/common/arc_walk.wgsl",
+    "data_render/common/data_pick.wgsl",
     "data_render/line_columnar.wgsl",
+    "data_render/parallel_columnar.wgsl",
 );
 
 /// Columnar line pipeline. slots: 0=x_a, 1=y_a, 2=x_b, 3=y_b (per-instance).
@@ -609,6 +611,374 @@ pub(super) fn draw_area_closing(
     pass.set_vertex_buffer(4, a.pool_buffer.slice(at_last(base.clone())));
     pass.set_vertex_buffer(5, a.pool_buffer.slice(base));
     pass.draw(0..a.verts_per_instance, 0..1);
+}
+
+// ───────────── parallel coordinates (#141) ─────────────
+
+/// What a parallel coordinates series draws with beside `Transform` and
+/// `Style`: its row and axis counts and its colour column's lane. The axis
+/// lanes and ranges are the group's tables, sized by the axis count, so no
+/// field here bounds the number of axes (#107 R3).
+///
+/// GPU twin: `parallel_columnar.wgsl::ParallelParams`, 16 B.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ParallelParamsGpu {
+    /// Rows drawn: the shortest axis column (and colour column).
+    pub rows: u32,
+    /// Axes: the lane table's entries. At least two.
+    pub axes: u32,
+    /// The colour column's f32 lane base when [`PARALLEL_COLOR`] is set.
+    pub color_lane: u32,
+    pub flags: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<ParallelParamsGpu>() == 16);
+
+/// `ParallelParamsGpu::flags`: a row's colour is its colour column's value
+/// through the colourbar ramp.
+pub const PARALLEL_COLOR: u32 = 1;
+
+/// One parallel axis's range as the shader places a value on it: `lo` is
+/// the axis minimum (`log10` of it on a logarithmic axis) as a `(hi, lo)`
+/// pair, `span_inv` the reciprocal of the span in the same space, `mode`
+/// the [`PARALLEL_AXIS_INVERTED`] and [`PARALLEL_AXIS_LOG`] bits.
+///
+/// GPU twin: `parallel_columnar.wgsl::ParallelAxis`, 16 B.
+#[repr(C)]
+#[derive(Copy, Clone, Debug, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct ParallelAxisGpu {
+    pub lo: [f32; 2],
+    pub span_inv: f32,
+    pub mode: u32,
+}
+
+const _: () = assert!(std::mem::size_of::<ParallelAxisGpu>() == 16);
+
+/// `ParallelAxisGpu::mode`: values grow downward.
+pub const PARALLEL_AXIS_INVERTED: u32 = 1;
+/// `ParallelAxisGpu::mode`: values are placed in `log10`.
+pub const PARALLEL_AXIS_LOG: u32 = 2;
+
+impl ParallelAxisGpu {
+    /// The GPU range of a model axis (`ParallelAxis`), which validated its
+    /// range as finite with a smaller minimum (positive when logarithmic).
+    pub fn from_axis(axis: &crate::parallel::ParallelAxis) -> Self {
+        let log = axis.scale == crate::config::AxisScale::Logarithmic;
+        let (min, max) = if log {
+            (axis.min.log10(), axis.max.log10())
+        } else {
+            (axis.min, axis.max)
+        };
+        let (hi, lo) = crate::data::split_f64_to_f32_pair(min);
+        let span = max - min;
+        Self {
+            lo: [hi, lo],
+            span_inv: if span.is_finite() && span != 0.0 {
+                (1.0 / span) as f32
+            } else {
+                0.0
+            },
+            mode: (if axis.inverted {
+                PARALLEL_AXIS_INVERTED
+            } else {
+                0
+            }) | (if log { PARALLEL_AXIS_LOG } else { 0 }),
+        }
+    }
+}
+
+/// Bind group layout of a parallel coordinates series' own data (group 3
+/// of the line module's parallel entries): the point value map the row
+/// colours read (bindings 0 and 1, the line module's `line_value_map` /
+/// `line_value_stops`), the column pool as read-only storage (binding 2),
+/// its params (binding 3), its axis lane table (binding 4, `array<u32>`)
+/// and its axis range table (binding 5, `array<ParallelAxis>`). The pick
+/// (`pick_parallel`) binds the same group.
+pub fn create_parallel_data_bind_group_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let visibility = wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE;
+    let uniform = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Uniform,
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    let storage = |binding| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    crate::gpu_compile::bind_group_layout(
+        device,
+        &wgpu::BindGroupLayoutDescriptor {
+            label: Some("figgy parallel data bgl"),
+            entries: &[
+                uniform(0),
+                storage(1),
+                storage(2),
+                uniform(3),
+                storage(4),
+                storage(5),
+            ],
+        },
+    )
+}
+
+/// What a parallel coordinates series draws with besides its style: its
+/// group 3, the charge of its params and tables, and the counts the draw
+/// and the pick walk.
+#[derive(Clone)]
+pub struct ParallelData {
+    pub bind_group: wgpu::BindGroup,
+    pub charge: crate::gpu_memory::SharedCharge,
+    /// Rows drawn (`ParallelParamsGpu::rows`).
+    pub rows: u32,
+    /// Axes (`ParallelParamsGpu::axes`).
+    pub axes: u32,
+}
+
+impl ParallelData {
+    /// Segments one row draws.
+    pub fn segments(&self) -> u32 {
+        self.axes.max(2) - 1
+    }
+
+    /// Instances the draw issues: every row's segments.
+    pub fn instances(&self) -> u32 {
+        self.rows.saturating_mul(self.segments())
+    }
+}
+
+/// Bind the value map, the pool, `params` and the series' axis tables into
+/// the parallel data layout.
+///
+/// `write` pushes one `(lane, range)` per axis in order; they go straight
+/// into the mappings of the two tables at creation, so nothing is staged on
+/// the CPU and the tables are sized by the axis count. Pushes past
+/// `params.axes` are dropped; an axis `write` does not push reads as lane 0
+/// over an empty range. An error from `write` is returned as is. The
+/// buffers are owned by the bind group and charged as a uniform.
+#[allow(clippy::too_many_arguments)]
+pub fn create_parallel_data_bind_group(
+    device: &wgpu::Device,
+    ledger: &std::sync::Arc<crate::gpu_memory::GpuLedger>,
+    layout: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    value_map: &PointValueMapBuffers,
+    params: &ParallelParamsGpu,
+    write: impl FnOnce(&mut dyn FnMut(u32, ParallelAxisGpu)) -> crate::Result<()>,
+) -> crate::Result<ParallelData> {
+    use crate::gpu_memory::{ChargeTally, charged_buffer, charged_buffer_init};
+    const LANE: usize = std::mem::size_of::<u32>();
+    const RANGE: usize = std::mem::size_of::<ParallelAxisGpu>();
+    let axes = params.axes as usize;
+    let tally = ChargeTally::new();
+    let params_buf = charged_buffer_init(
+        &tally,
+        device,
+        &wgpu::util::BufferInitDescriptor {
+            label: Some("figgy parallel params"),
+            contents: bytemuck::bytes_of(params),
+            usage: wgpu::BufferUsages::UNIFORM,
+        },
+    );
+    let table = |label, entry: usize| -> crate::Result<wgpu::Buffer> {
+        let bytes = (axes.max(1) as u64).checked_mul(entry as u64).ok_or(
+            crate::FiggyError::GpuResourceLimit {
+                resource: "parallel axis table",
+                requested: axes as u64,
+                limit: u64::MAX / entry as u64,
+            },
+        )?;
+        Ok(charged_buffer(
+            &tally,
+            device,
+            &wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes,
+                usage: wgpu::BufferUsages::STORAGE,
+                mapped_at_creation: true,
+            },
+        ))
+    };
+    let lane_buf = table("figgy parallel lane table", LANE)?;
+    let range_buf = table("figgy parallel axis range table", RANGE)?;
+    let written = {
+        let mut lanes = lane_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the lane table is mapped at creation");
+        let mut ranges = range_buf
+            .slice(..)
+            .get_mapped_range_mut()
+            .expect("the axis range table is mapped at creation");
+        let mut written = 0usize;
+        let result = write(&mut |lane, range| {
+            if written < axes {
+                lanes
+                    .slice(written * LANE..(written + 1) * LANE)
+                    .copy_from_slice(bytemuck::bytes_of(&lane));
+                ranges
+                    .slice(written * RANGE..(written + 1) * RANGE)
+                    .copy_from_slice(bytemuck::bytes_of(&range));
+                written += 1;
+            }
+        });
+        result.map(|()| written)
+    };
+    lane_buf.unmap();
+    range_buf.unmap();
+    written?;
+    let charge = crate::gpu_memory::shared_charge(
+        tally,
+        ledger,
+        crate::gpu_memory::GpuResourceKind::Uniform,
+    );
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("figgy parallel data bg"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: value_map.params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: value_map.stops.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: pool_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: params_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: lane_buf.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: range_buf.as_entire_binding(),
+            },
+        ],
+    });
+    Ok(ParallelData {
+        bind_group,
+        charge,
+        rows: params.rows,
+        axes: params.axes,
+    })
+}
+
+/// The rows of a parallel coordinates series (`vs_parallel` /
+/// `fs_parallel`), or the picked row's redraw in the selection's style
+/// (`vs_parallel_selected` / `fs_parallel`): groups 0 transform, 1 style,
+/// 3 the series' parallel data; no vertex buffers, one quad per segment
+/// instance.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn create_line_parallel_pipeline_with_sample_count(
+    device: &wgpu::Device,
+    shader: &wgpu::ShaderModule,
+    transform_bgl: &wgpu::BindGroupLayout,
+    style_bgl: &wgpu::BindGroupLayout,
+    parallel_bgl: &wgpu::BindGroupLayout,
+    target_format: wgpu::TextureFormat,
+    sample_count: u32,
+    selection: bool,
+) -> wgpu::RenderPipeline {
+    let (vs, label) = if selection {
+        (
+            "vs_parallel_selected",
+            "figgy selected parallel row pipeline",
+        )
+    } else {
+        ("vs_parallel", "figgy line parallel pipeline")
+    };
+    line_slot_pipeline(
+        device,
+        shader,
+        &[
+            Some(transform_bgl),
+            Some(style_bgl),
+            None,
+            Some(parallel_bgl),
+        ],
+        0,
+        target_format,
+        sample_count,
+        vs,
+        "fs_parallel",
+        wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING,
+        wgpu::PrimitiveTopology::TriangleStrip,
+        label,
+        None,
+    )
+}
+
+/// The picked row of a parallel coordinates series, redrawn over every
+/// series body in the selection's colour and width.
+pub struct ParallelSelection<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub style_bg: wgpu::BindGroup,
+    pub row: u32,
+}
+
+/// Bundle of handles for drawing one parallel coordinates series.
+pub struct ColumnParallelLayer<'a> {
+    pub pipeline: &'a wgpu::RenderPipeline,
+    pub transform_bg: &'a wgpu::BindGroup,
+    pub style_bg: &'a wgpu::BindGroup,
+    pub data: ParallelData,
+    pub selected: Option<ParallelSelection<'a>>,
+}
+
+/// Issue the rows of one parallel coordinates series: one quad per
+/// segment instance over the series' group 3.
+pub(crate) fn draw_parallel_layer(pass: &mut wgpu::RenderPass<'_>, l: &ColumnParallelLayer<'_>) {
+    let instances = l.data.instances();
+    if instances == 0 {
+        return;
+    }
+    pass.set_pipeline(l.pipeline);
+    pass.set_bind_group(0, l.transform_bg, &[]);
+    pass.set_bind_group(1, l.style_bg, &[]);
+    pass.set_bind_group(3, &l.data.bind_group, &[]);
+    pass.draw(0..LINE_PRECISE_VERTICES_PER_INSTANCE, 0..instances);
+}
+
+/// Issue the picked row's segments of one parallel coordinates series in
+/// the selection's style: the row's instances only.
+pub(crate) fn draw_parallel_selection(
+    pass: &mut wgpu::RenderPass<'_>,
+    l: &ColumnParallelLayer<'_>,
+) {
+    let Some(selected) = &l.selected else {
+        return;
+    };
+    if selected.row >= l.data.rows {
+        return;
+    }
+    let segments = l.data.segments();
+    let first = selected.row * segments;
+    pass.set_pipeline(selected.pipeline);
+    pass.set_bind_group(0, l.transform_bg, &[]);
+    pass.set_bind_group(1, &selected.style_bg, &[]);
+    pass.set_bind_group(3, &l.data.bind_group, &[]);
+    pass.draw(
+        0..LINE_PRECISE_VERTICES_PER_INSTANCE,
+        first..first + segments,
+    );
 }
 
 #[cfg(test)]

@@ -165,6 +165,18 @@ pub(super) fn referenced_columns(cfg: &SeriesConfig) -> Vec<&str> {
                 push_scatter_ref(&mut ids, scatter);
             }
         }
+        // A parallel series reads one column per axis (the first two are its
+        // x and y columns) and, mapped, a colour column (#141).
+        DataRenderType::Parallel {
+            columns,
+            color_column,
+            ..
+        } => {
+            ids.extend(columns.iter().skip(2).map(String::as_str));
+            if let Some(column) = color_column {
+                ids.push(column);
+            }
+        }
         // Streamlines read their polylines and, mapped, a colour column.
         DataRenderType::Streamlines { color_map, .. } => {
             if let Some(map) = color_map {

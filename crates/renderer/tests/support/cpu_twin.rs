@@ -577,8 +577,10 @@ fn extract_line(rt: &DataRenderType) -> Option<&DataLineStyleConfig> {
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         // The twin does not model the ternary placement either; its GPU
-        // pick is held to the paint by `pick_draw_agreement`.
-        | DataRenderType::Ternary { .. } => None,
+        // pick is held to the paint by `pick_draw_agreement`. A parallel
+        // row is a typed data pick (`pick_parallel`), never a point.
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -605,7 +607,8 @@ fn extract_scatter(rt: &DataRenderType) -> Option<&DataScatterStyleConfig> {
         // Radar vertex markers and ternary markers: see `extract_line`.
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 

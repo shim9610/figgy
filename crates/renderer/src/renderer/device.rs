@@ -474,6 +474,13 @@ pub(super) struct TargetPipelines {
     /// streamline series with a colour column: the line slots plus the value
     /// column, group 3 the point value map.
     pub(super) line_mapped: Option<wgpu::RenderPipeline>,
+    /// The rows of a parallel coordinates series (`vs_parallel` /
+    /// `fs_parallel`, #141): no vertex slots, group 3 the series' parallel
+    /// data.
+    pub(super) line_parallel: Option<wgpu::RenderPipeline>,
+    /// The picked row's redraw over the same layout
+    /// (`vs_parallel_selected`).
+    pub(super) line_parallel_selection: Option<wgpu::RenderPipeline>,
     /// The line shader's `vs_area` / `fs_area` fill, compiled when a line
     /// series declares a fill. Used in every draw style: the fill is a flat
     /// precise primitive under whatever the style draws for the line.
@@ -800,10 +807,13 @@ impl TargetPipelines {
         vector_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
         category_bar_data_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         surface_format: wgpu::TextureFormat,
         items: &[ChartDrawItem<'_>],
     ) {
+        let mut need_parallel = false;
+        let mut need_parallel_selection = false;
         let mut need_vector_points = false;
         let mut need_vector_grid = false;
         let mut need_vector_path = false;
@@ -906,6 +916,11 @@ impl TargetPipelines {
                         .is_some_and(|streamlines| streamlines.color_map.is_some());
                 need_contour_label |=
                     primitives.contour && series_wants_contour_labels(&series.config.render_type);
+                // A parallel series' rows, and the picked row's redraw when
+                // a point is picked (#141).
+                need_parallel |= primitives.parallel;
+                need_parallel_selection |= primitives.parallel
+                    && (item.chart_config.picked_points.is_some() || typed_point);
                 need_scatter |= primitives.scatter;
                 need_bar |= primitives.bar;
                 need_category_bars |= primitives.category_bars;
@@ -1025,6 +1040,29 @@ impl TargetPipelines {
                 surface_format,
                 self.sample_count,
             ));
+        }
+        for (need, slot, selection) in [
+            (need_parallel, &mut self.line_parallel, false),
+            (
+                need_parallel_selection,
+                &mut self.line_parallel_selection,
+                true,
+            ),
+        ] {
+            if need && slot.is_none() {
+                *slot = Some(
+                    data_render::create_line_parallel_pipeline_with_sample_count(
+                        device,
+                        &self.shaders.line,
+                        transform_bgl,
+                        style_bgl,
+                        parallel_bgl,
+                        surface_format,
+                        self.sample_count,
+                        selection,
+                    ),
+                );
+            }
         }
         if need_scatter && self.scatter.is_none() {
             self.scatter = Some(
@@ -1445,6 +1483,7 @@ impl TargetPipelines {
         field_bgl: &wgpu::BindGroupLayout,
         vector_bgl: &wgpu::BindGroupLayout,
         category_bar_data_bgl: &wgpu::BindGroupLayout,
+        parallel_bgl: &wgpu::BindGroupLayout,
         star_data_bgl: &wgpu::BindGroupLayout,
         label_pipelines: Option<&crate::gpu_contour::ContourLabelPipelines>,
         feature: Option<PreparationFeature>,
@@ -1498,6 +1537,34 @@ impl TargetPipelines {
                 style_bgl,
                 surface_format,
                 self.sample_count,
+            )
+        );
+        ensure!(
+            line_parallel,
+            "parallel rows",
+            data_render::create_line_parallel_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                parallel_bgl,
+                surface_format,
+                self.sample_count,
+                false,
+            )
+        );
+        ensure!(
+            line_parallel_selection,
+            "selected parallel row",
+            data_render::create_line_parallel_pipeline_with_sample_count(
+                device,
+                &self.shaders.line,
+                transform_bgl,
+                style_bgl,
+                parallel_bgl,
+                surface_format,
+                self.sample_count,
+                true,
             )
         );
         ensure!(
@@ -2063,6 +2130,8 @@ pub(super) fn create_target_pipelines_observed(
         ),
         line: None,
         line_mapped: None,
+        line_parallel: None,
+        line_parallel_selection: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -2157,6 +2226,8 @@ pub(super) async fn create_target_pipelines_observed_async(
         vector_path: None,
         line: None,
         line_mapped: None,
+        line_parallel: None,
+        line_parallel_selection: None,
         area: None,
         scatter: None,
         scatter_mapped: None,
@@ -2680,6 +2751,7 @@ impl Renderer {
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
+        let parallel_bgl = data_render::create_parallel_data_bind_group_layout(&device);
         let value_label_bgl = data_render::create_value_label_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
@@ -2743,6 +2815,7 @@ impl Renderer {
             region_bgl,
             vector_bgl,
             category_bar_data_bgl,
+            parallel_bgl,
             value_label_bgl,
             field_cell_tables,
             pipelines,
@@ -2839,6 +2912,7 @@ impl Renderer {
         let vector_bgl = data_render::vector::create_vector_data_bind_group_layout(&device);
         let category_bar_data_bgl =
             data_render::create_category_bar_data_bind_group_layout(&device);
+        let parallel_bgl = data_render::create_parallel_data_bind_group_layout(&device);
         let value_label_bgl = data_render::create_value_label_bind_group_layout(&device);
         let field_cell_tables = data_render::create_field_cell_tables(&device, &gpu_ledger)?;
 
@@ -2902,6 +2976,7 @@ impl Renderer {
             region_bgl,
             vector_bgl,
             category_bar_data_bgl,
+            parallel_bgl,
             value_label_bgl,
             field_cell_tables,
             pipelines,
@@ -3099,6 +3174,8 @@ impl Renderer {
         // change does not re-eager unused data/mapped/ring pipelines.
         let had_line = self.pipelines.line.is_some();
         let had_line_mapped = self.pipelines.line_mapped.is_some();
+        let had_line_parallel = self.pipelines.line_parallel.is_some();
+        let had_line_parallel_selection = self.pipelines.line_parallel_selection.is_some();
         let had_area = self.pipelines.area.is_some();
         let had_scatter = self.pipelines.scatter.is_some();
         let had_errorbar = self.pipelines.errorbar.is_some();
@@ -3142,6 +3219,28 @@ impl Renderer {
                     surface_format,
                     target_sample_count,
                 ));
+        }
+        for (had, selection) in [
+            (had_line_parallel, false),
+            (had_line_parallel_selection, true),
+        ] {
+            if had {
+                let pipeline = data_render::create_line_parallel_pipeline_with_sample_count(
+                    &self.device,
+                    &self.pipelines.shaders.line,
+                    &self.transform_bgl,
+                    &self.style_bgl,
+                    &self.parallel_bgl,
+                    surface_format,
+                    target_sample_count,
+                    selection,
+                );
+                if selection {
+                    self.pipelines.line_parallel_selection = Some(pipeline);
+                } else {
+                    self.pipelines.line_parallel = Some(pipeline);
+                }
+            }
         }
         if had_area {
             self.pipelines.area = Some(data_render::create_line_area_pipeline_with_sample_count(
@@ -3413,6 +3512,7 @@ impl Renderer {
                 &self.field_bgl,
                 &self.vector_bgl,
                 &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 &self.star_data_bgl,
                 self.contour_label_pipelines.as_ref(),
                 None,

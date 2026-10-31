@@ -175,6 +175,10 @@ impl GpuSeriesFitMode {
             DataRenderType::Radar { .. } | DataRenderType::Streamlines { .. } => return None,
             // A ternary chart's axes are the triangle, not a data extent.
             DataRenderType::Ternary { .. } => return None,
+            // A parallel chart's axes are the categorical positions and the
+            // normalized band; each parallel axis fits from its column's
+            // statistics (`Chart::auto_fit_parallel_axes`).
+            DataRenderType::Parallel { .. } => return None,
             // A grid vector's anchors are the grid's sample points: the
             // coordinates under `Centers`, the cell centres under `Edges`.
             // Data-mode tips over a grid are not part of the fit.
@@ -269,6 +273,9 @@ impl GpuSeriesExtentMode {
             | DataRenderType::RangeBars { .. }
             // A ternary chart's axes are the triangle, not a data extent.
             | DataRenderType::Ternary { .. }
+            // A parallel chart's are the categorical positions and the
+            // normalized band.
+            | DataRenderType::Parallel { .. }
             | DataRenderType::Heatmap { .. }
             | DataRenderType::RgbImage { .. }
             | DataRenderType::Contour { .. }

@@ -623,7 +623,15 @@ impl HitMap<Config> {
     pub fn for_active_layer(cfg: &Config) -> Self {
         let layer = cfg.active_layer();
         if layer == LayerRef::Base {
-            return Self::standard_chart();
+            let mut map = Self::standard_chart();
+            // A parallel chart's axes (#141), each its own label band, over
+            // the shared elements.
+            if let Some(parallel) = &cfg.parallel {
+                for axis in 0..parallel.axes.len() {
+                    map.register(ParallelAxisLabelElement { axis });
+                }
+            }
+            return map;
         }
         if let LayerRef::Subplot(index) | LayerRef::SubplotOverlay(index, _) = layer {
             return Self::for_subplot(cfg, index, layer);
@@ -733,6 +741,7 @@ impl SubplotElement {
                 polar,
                 ternary,
                 view_3d,
+                parallel,
                 overlays,
                 subplots,
                 // `subplot_config` resets these two; the stored ones stay.
@@ -757,6 +766,7 @@ impl SubplotElement {
                 polar,
                 ternary,
                 view_3d,
+                parallel,
                 overlays,
                 subplots,
                 active_layer: stored.active_layer,
@@ -893,6 +903,15 @@ pub struct AxisLabelElement {
     pub side: Side,
 }
 
+/// The tick-label band of parallel axis `axis` of a parallel chart
+/// (`Config.parallel`, #141): the labels the renderer draws along that
+/// axis, outlined and hit label by label, dragged into the axis's
+/// `label_offset`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ParallelAxisLabelElement {
+    pub axis: usize,
+}
+
 /// The chart title in the top band.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChartTitleElement;
@@ -1024,7 +1043,8 @@ pub fn emit_element(
         Element::AxisLabel(_)
         | Element::Axis(_)
         | Element::ColorBarAxis
-        | Element::ColorBarLabel => {
+        | Element::ColorBarLabel
+        | Element::ParallelAxisLabel(_) => {
             return measure.emit(cfg, element, sink);
         }
         // Resize targets: nothing of their own is drawn.
@@ -1257,6 +1277,28 @@ impl Selectable for AxisLabelElement {
     /// each label is outlined and hit where it is drawn.
     fn outlines_parts(&self, cfg: &Config) -> bool {
         cfg.polar.is_some() || cfg.ternary.is_some() || cfg.view_3d.is_some()
+    }
+
+    fn as_draggable(&self) -> Option<&dyn Draggable> {
+        Some(self)
+    }
+}
+
+impl Selectable for ParallelAxisLabelElement {
+    fn element_id(&self) -> String {
+        format!("parallel_axis_labels_{}", self.axis)
+    }
+
+    /// The labels the renderer draws along the axis ([`MeasureText::emit`]).
+    fn emit(&self, cfg: &Config, measure: &dyn MeasureText, sink: &mut dyn Sink) -> bool {
+        on_drawn_panel(cfg, |panel| {
+            emit_element(panel, &Element::ParallelAxisLabel(self.axis), measure, sink)
+        })
+    }
+
+    /// Each label is outlined and hit where it is drawn along its axis.
+    fn outlines_parts(&self, _: &Config) -> bool {
+        true
     }
 
     fn as_draggable(&self) -> Option<&dyn Draggable> {

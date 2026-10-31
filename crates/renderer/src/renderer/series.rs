@@ -82,6 +82,11 @@ pub(super) fn extract_line(rt: &DataRenderType) -> Option<Cow<'_, DataLineStyleC
         DataRenderType::Streamlines { line, .. } => Some(Cow::Borrowed(line)),
         // A ternary line, placed by its three components.
         DataRenderType::Ternary { line, .. } => line.as_ref().map(Cow::Borrowed),
+        // A parallel series' line is not this line: its rows are drawn by
+        // the parallel entries through every axis column, never as the
+        // polyline through `(x_column, y_column)`. Its style is read
+        // through `ParallelRef::line` where the parallel layer is built.
+        DataRenderType::Parallel { .. } => None,
         DataRenderType::Scatter { .. }
         | DataRenderType::ScatterErrorbarX { .. }
         | DataRenderType::ScatterErrorbarY { .. }
@@ -121,6 +126,8 @@ pub(super) fn extract_scatter(rt: &DataRenderType) -> Option<Cow<'_, DataScatter
             .map(Cow::Owned),
         // Ternary markers, placed by their three components.
         DataRenderType::Ternary { scatter, .. } => scatter.as_ref().map(Cow::Borrowed),
+        // A parallel series draws no markers.
+        DataRenderType::Parallel { .. } => None,
         // None of these draw points. This is the predicate `has_scatter` is
         // derived from, so answering otherwise is what put black 4 px dots at
         // every data point — see the note above.
@@ -194,7 +201,8 @@ pub(super) fn extract_bar(rt: &DataRenderType) -> Option<&crate::data_config::Da
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -235,7 +243,8 @@ pub(super) fn extract_field_fill(
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -273,7 +282,8 @@ pub(crate) fn extract_contour(rt: &DataRenderType) -> Option<&crate::data_config
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -308,7 +318,8 @@ pub(super) fn extract_vector(
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -379,6 +390,36 @@ pub(super) fn series_draw_info_from_pool(
             let (count, truncated) = paired(&[x, y, len(c_column)]);
             SeriesDrawInfo {
                 drawn_count: count,
+                cols: None,
+                rows: None,
+                truncated,
+            }
+        }
+        // One polyline per row where every axis column (and the colour
+        // column) has a value: `axes - 1` segments each, the shortest column
+        // deciding, so the row count is folded over the columns rather than
+        // gathered (rule 3).
+        DataRenderType::Parallel {
+            columns,
+            color_column,
+            ..
+        } => {
+            let lengths = columns
+                .iter()
+                .map(|id| len(id))
+                .chain(color_column.iter().map(|id| len(id)));
+            let (rows, truncated) = lengths.fold((u64::MAX, false), |(low, _), value| {
+                let low = low.min(value);
+                (low, false)
+            });
+            let rows = if columns.is_empty() { 0 } else { rows };
+            let truncated = truncated
+                || columns
+                    .iter()
+                    .chain(color_column.iter())
+                    .any(|id| len(id) > rows);
+            SeriesDrawInfo {
+                drawn_count: rows.saturating_mul(columns.len().saturating_sub(1) as u64),
                 cols: None,
                 rows: None,
                 truncated,
@@ -576,7 +617,8 @@ pub(super) fn extract_matrix(rt: &DataRenderType) -> Option<&crate::data_config:
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -612,7 +654,8 @@ pub(super) fn extract_errorbar_style(rt: &DataRenderType) -> Option<&DataErrorBa
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -638,7 +681,8 @@ pub(super) fn extract_err_y(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -664,7 +708,8 @@ pub(super) fn extract_err_x(rt: &DataRenderType) -> Option<&ErrorRef> {
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => None,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => None,
     }
 }
 
@@ -813,6 +858,83 @@ fn visit_category_bar_members<'c>(
 /// ([`data_render::create_category_bar_data_bind_group`] writes them into
 /// the table's mapping). [`category_bar_params`] has checked the same
 /// members.
+/// The group 3 of a parallel coordinates series (#141): its params (the
+/// rows drawn, the axis count and the colour lane), its axis lane table
+/// and its axis range table over the chart's `parallel` axes, bound with
+/// `value_map` (the series' colourbar map when a colour column is named,
+/// the renderer's neutral map otherwise). The rows are the shortest axis
+/// column (and colour column): a row with a value missing in one column
+/// is not drawn past the shortest, as a line's `min(x, y)` is. The columns
+/// are data, so they are resolved through `lookup` and read on the GPU;
+/// nothing per row is here.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn build_parallel_data(
+    device: &wgpu::Device,
+    ledger: &Arc<GpuLedger>,
+    layout: &wgpu::BindGroupLayout,
+    pool_buffer: &wgpu::Buffer,
+    value_map: &data_render::PointValueMapBuffers,
+    config: &Config,
+    series: &SeriesConfig,
+    mut lookup: impl FnMut(&str) -> Result<ColumnHandle>,
+) -> Result<data_render::ParallelData> {
+    let invalid = |reason: &str| FiggyError::InvalidSeriesConfig {
+        series_id: series.series_id.clone(),
+        reason: reason.to_owned(),
+    };
+    let (Some(parallel), Some(options)) = (series.render_type.parallel(), config.parallel.as_ref())
+    else {
+        return Err(invalid(
+            "a parallel series is drawn on a parallel chart (Config.parallel)",
+        ));
+    };
+    if parallel.columns.len() != options.axes.len() || parallel.columns.len() < 2 {
+        return Err(invalid("a parallel series names one column per axis"));
+    }
+    let lane = |handle: ColumnHandle| -> Result<u32> {
+        if !handle.offset.is_multiple_of(4) {
+            return Err(invalid("parallel column byte offset is not f32-aligned"));
+        }
+        u32::try_from(handle.offset / 4).map_err(|_| invalid("parallel column lane past u32"))
+    };
+    let mut rows = usize::MAX;
+    for column in parallel.columns {
+        rows = rows.min(lookup(column)?.len_values);
+    }
+    let (color_lane, flags) = match parallel.color_column {
+        Some(column) => {
+            let handle = lookup(column)?;
+            rows = rows.min(handle.len_values);
+            (lane(handle)?, data_render::PARALLEL_COLOR)
+        }
+        None => (0, 0),
+    };
+    let params = data_render::ParallelParamsGpu {
+        rows: u32::try_from(rows).map_err(|_| invalid("parallel row count past u32"))?,
+        axes: u32::try_from(parallel.columns.len())
+            .map_err(|_| invalid("parallel axis count past u32"))?,
+        color_lane,
+        flags,
+    };
+    data_render::create_parallel_data_bind_group(
+        device,
+        ledger,
+        layout,
+        pool_buffer,
+        value_map,
+        &params,
+        |push| {
+            for (column, axis) in parallel.columns.iter().zip(&options.axes) {
+                push(
+                    lane(lookup(column)?)?,
+                    data_render::ParallelAxisGpu::from_axis(axis),
+                );
+            }
+            Ok(())
+        },
+    )
+}
+
 pub(super) fn category_bar_lanes<'c>(
     config: &Config,
     group: impl IntoIterator<Item = &'c SeriesConfig>,

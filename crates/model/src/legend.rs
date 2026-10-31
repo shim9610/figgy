@@ -377,6 +377,11 @@ pub fn series_symbol_segments(cfg: &SeriesConfig, colormap: Option<&ColorMap>) -
             Some(_) => vector_symbol(line.line_color),
             None => line_symbol(line.line_color, line.line_style, None),
         },
+        // A parallel series reads as its rows' line; a colour column's
+        // colours belong to the colourbar.
+        DataRenderType::Parallel { line, .. } => {
+            line_symbol(line.line_color, line.line_style, None)
+        }
         // A category bar is a filled swatch like a histogram bar.
         DataRenderType::CategoryBars { color, .. } => {
             scatter_symbol(&ScatterShape::SquareFilled, *color)

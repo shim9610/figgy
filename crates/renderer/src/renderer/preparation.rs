@@ -52,12 +52,15 @@ impl PreparationFeature {
                 field,
                 "line"
                     | "line_mapped"
+                    | "line_parallel"
+                    | "line_parallel_selection"
                     | "area"
                     | "scatter"
                     | "scatter_mapped"
                     | "pick_ring"
                     | "pick_ring_mapped"
                     | "ternary"
+                    | "parallel"
                     | "errorbar"
                     | "errorbar_mapped"
             ),
@@ -124,8 +127,11 @@ impl PreparationFeature {
                 | DataRenderType::LineScatterErrorbarXY { .. }
                 // A radar series draws through the line and scatter pipelines.
                 | DataRenderType::Radar { .. }
-                // So does a ternary series, through its ternary entries.
-                | DataRenderType::Ternary { .. } => Self::Basic,
+                // So does a ternary series, through its ternary entries, and
+                // a parallel series through the line module's parallel
+                // entries.
+                | DataRenderType::Ternary { .. }
+                | DataRenderType::Parallel { .. } => Self::Basic,
             };
             if !result.contains(&group) {
                 result.push(group);
@@ -155,6 +161,7 @@ pub struct PipelinePreparation {
     star: wgpu::BindGroupLayout,
     vector: wgpu::BindGroupLayout,
     category_bar: wgpu::BindGroupLayout,
+    parallel: wgpu::BindGroupLayout,
 }
 /// Opaque actual GPU objects. Installation neither replays data nor changes Config.
 pub struct PreparedPipelines {
@@ -192,12 +199,14 @@ impl PipelinePreparation {
                         bar: &self.pipelines.shaders.bar,
                         field: &self.pipelines.shaders.field,
                         vector_grid: &self.pipelines.shaders.vector_grid,
+                        line: &self.pipelines.shaders.line,
                     },
                     &self.transform,
                     &self.field,
                     &self.mapped,
                     &self.vector,
                     &self.category_bar,
+                    &self.parallel,
                     observer,
                 )
                 .await
@@ -246,6 +255,7 @@ impl PipelinePreparation {
                     &self.field,
                     &self.vector,
                     &self.category_bar,
+                    &self.parallel,
                     &self.star,
                     contour.as_ref(),
                     Some(self.feature),
@@ -287,6 +297,8 @@ impl Renderer {
             PreparationFeature::Basic => {
                 p.line.is_some()
                     && p.line_mapped.is_some()
+                    && p.line_parallel.is_some()
+                    && p.line_parallel_selection.is_some()
                     && p.scatter.is_some()
                     && p.scatter_mapped.is_some()
                     && p.pick_ring.is_some()
@@ -359,6 +371,7 @@ impl Renderer {
             star: self.star_data_bgl.clone(),
             vector: self.vector_bgl.clone(),
             category_bar: self.category_bar_data_bgl.clone(),
+            parallel: self.parallel_bgl.clone(),
         })
     }
     pub fn install_preparation(&mut self, prepared: PreparedPipelines) -> Result<()> {
@@ -409,6 +422,8 @@ impl TargetPipelines {
             styled: HashMap::new(),
             line: None,
             line_mapped: None,
+            line_parallel: None,
+            line_parallel_selection: None,
             area: None,
             scatter: None,
             scatter_mapped: None,
@@ -456,6 +471,12 @@ impl TargetPipelines {
         }
         if self.line_mapped.is_none() {
             self.line_mapped = other.line_mapped;
+        }
+        if self.line_parallel.is_none() {
+            self.line_parallel = other.line_parallel;
+        }
+        if self.line_parallel_selection.is_none() {
+            self.line_parallel_selection = other.line_parallel_selection;
         }
         if self.area.is_none() {
             self.area = other.area;

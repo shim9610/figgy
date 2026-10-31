@@ -1502,8 +1502,9 @@ fn config_fields_are_classified() {
         polar: _,         // the coordinate system: geometry (Packed/Replay) and raster
         ternary: _,       // the coordinate system: geometry (Packed/Replay) and raster
         view_3d: _, // the camera: geometry and raster; the baseline series are not 3D kinds, so tests/surface_render.rs covers a camera edit redrawing the composite
-        overlays,   // overlay_edits(): range/series/band Packed, the rest Prefix
-        subplots,   // subplot_edits(): geometry/series/links Packed, chrome Prefix
+        parallel: _, // the parallel axes: the rows' placement (resident display key) and the axes' raster; the baseline series are not parallel kinds, so tests/parallel_render.rs covers them
+        overlays,    // overlay_edits(): range/series/band Packed, the rest Prefix
+        subplots,    // subplot_edits(): geometry/series/links Packed, chrome Prefix
         active_layer: _, // layer only: no raster, no pixels
         annotations: _, // annotation_edits(): annotation revision only
         bar_groups: _, // "bar_groups (None -> Some)" + resident display mutations

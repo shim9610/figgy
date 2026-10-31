@@ -1526,6 +1526,7 @@ fn render_type_name(t: &DataRenderType) -> &'static str {
         DataRenderType::HeatmapContour { .. } => "heatmap+contour",
         DataRenderType::Vector { .. } => "vector",
         DataRenderType::Streamlines { .. } => "streamlines",
+        DataRenderType::Parallel { .. } => "parallel",
     }
 }
 
@@ -1801,6 +1802,9 @@ fn series_controls(
 ) {
     match &mut s.render_type {
         DataRenderType::Line { line } => line_controls(ui, line),
+        // A parallel series' rows: their line (its colour stands when no
+        // colour column maps them).
+        DataRenderType::Parallel { line, .. } => line_controls(ui, line),
         // The markers and the line of a ternary series, whichever it draws.
         DataRenderType::Ternary { scatter, line, .. } => {
             if let Some(scatter) = scatter {

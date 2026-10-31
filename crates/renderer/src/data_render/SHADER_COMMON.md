@@ -48,7 +48,7 @@ To change shared shader code:
 | `area_piece.wgsl` (§2.2 trapezoids) | line, the pick line modules |
 | `errorbar_segment.wgsl` (§5.11) | errorbar, bar (box plot whiskers, caps and medians, §5.15), the pick marker modules |
 | `arrow.wgsl` (§5.8) | vector, the pick vector and line modules |
-| `data_pick.wgsl` | bar, field, grid vector |
+| `data_pick.wgsl` | bar, field, grid vector, line (the parallel row pick, §5.23) |
 | `material.wgsl` (§5.9) | bar (category bars, box plots, range bars), radial, the radial pick module |
 | `radial_sector.wgsl` (§5.12) | radial, the radial pick module |
 | `bounded_shading.wgsl` (§5.9 bars) | bar (category bars, box plots, range bars) |
@@ -103,6 +103,10 @@ with a conservative pad, and the exact pass decides.
 단계 전까지 외부에서 읽지 않으므로 중간 좌표를 위한 별도 버퍼나 바인딩이 없다.
 
 `fullscreen_textured.wgsl`은 텍스처·샘플러용 별도 바인드 레이아웃을 사용하므로 이 문서의 공통 정의를 사용하지 않는다.
+
+The line module splices [`parallel_columnar.wgsl`](parallel_columnar.wgsl)
+after `line_columnar.wgsl`: the parallel coordinates entries (§5.23), which
+reuse the line stroke and its fragment stage.
 
 ---
 
@@ -1720,6 +1724,59 @@ parity, compares `pick_region_hit` (a `PICK_KIND_FILL` candidate at
 distance zero on that index) with the best candidate, so the fill beats
 every farther candidate and loses every tie to a marker or a stroke, as a
 line fill does. The cross-series reduction sees finished candidates only.
+
+### 5.23 Parallel coordinates (group 3, bindings 0 to 5)
+
+[`parallel_columnar.wgsl`](parallel_columnar.wgsl), spliced into the line
+module after `line_columnar.wgsl`, draws the rows of a parallel coordinates
+series (`DataRenderType::Parallel`, `Config.parallel`, #141) and picks
+them. Group 3 is the series' parallel data
+(`line.rs::create_parallel_data_bind_group_layout`): the point value map
+the row colours read (bindings 0 and 1, the line module's `line_value_map`
+and `line_value_stops` of §5.2, the series' colourbar map when a colour
+column is named and the renderer's neutral map otherwise), the column pool
+as read-only storage (binding 2, `parallel_pool: array<f32>`),
+`ParallelParams` (binding 3; CPU twin `line.rs::ParallelParamsGpu`, 16 B:
+`rows`, `axes`, `color_lane`, `flags` with `PARALLEL_COLOR = 1`), the axis
+lane table (binding 4, `parallel_lanes: array<u32>`, each axis's column
+f32 lane base in axis order) and the axis range table (binding 5,
+`parallel_axes: array<ParallelAxis>`; CPU twin `line.rs::ParallelAxisGpu`,
+16 B: `lo` the axis minimum (`log10` of it on a logarithmic axis) as a
+`(hi, lo)` pair, `span_inv` the reciprocal of the span in the same space,
+`mode` with `PARALLEL_AXIS_INVERTED = 1` and `PARALLEL_AXIS_LOG = 2`).
+Both tables are sized by the axis count and written straight into their
+mappings (`create_parallel_data_bind_group`): nothing per row is on the
+CPU, and no field bounds the number of axes (#107 R3). No vertex slot is
+bound.
+
+`vs_parallel` draws instance `inst` as segment `i = inst mod (axes − 1)` of
+row `r = inst / (axes − 1)`: both ends are read from the pool through the
+lanes (`parallel_value`), placed by their axes (`parallel_fraction`: `(v −
+lo) · span_inv`, the high parts' difference first so close f64 values keep
+their distance, in `log10` on a logarithmic axis, flipped when inverted;
+NaN for a non-finite value or a non-positive one on a logarithmic axis),
+and the quad is `line_stroke_vertex` (§5.6) between `(i, f_a)` and
+`(i + 1, f_b)` in the chart's data space (the categorical `bottom_x`
+positions, the normalized band of `left_y`), with no arc prefix (the
+stroke is solid). An end without a value masks the segment. The row's
+colour is a flat varying: `line_value_color` of the colour lane's value
+under `PARALLEL_COLOR` (`nan_color` where non-finite), `style.color_premul`
+otherwise; `fs_parallel` is `line_fragment_color` with it.
+`vs_parallel_selected` is the same geometry in `style.color_premul` (the
+selection's style as group 1): the picked row's segments are redrawn over
+every series body. The pipelines are `TargetPipelines.line_parallel` /
+`line_parallel_selection` (`create_line_parallel_pipeline_with_sample_count`,
+layouts `[transform, style, —, parallel]`).
+
+`pick_parallel` (compute, the data pick query of `data_pick.wgsl` as
+group 1, bindings 1 to 3, and the same group 3) walks every segment with
+its workgroup: a segment whose ends are placeable is a candidate at the
+pixel distance from the cursor (in the draw's pixel frame, `data_to_px`)
+to the segment, within `limits.x`; nearer wins and the earlier row on a
+tie. The candidate is kind 0 (a point) with `index0` the row and `index1`
+the nearer axis, so the pick answers `PickedData::Point { point_index }`.
+The bundle's pipeline is `DataPickPipelineBundle.parallel`
+(`GpuDataPickGeometry::Parallel`).
 
 ## Checklist
 

@@ -345,6 +345,11 @@ impl ColorCycle {
             DataRenderType::Streamlines { line, .. } => {
                 line.line_color = c;
             }
+            // The rows join the cycle; a colour column, when set, still
+            // draws from the colourbar.
+            DataRenderType::Parallel { line, .. } => {
+                line.line_color = c;
+            }
         }
     }
 

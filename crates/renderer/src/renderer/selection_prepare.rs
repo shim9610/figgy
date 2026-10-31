@@ -90,6 +90,7 @@ impl<'a> SelectionLayers<'a> {
             vector: None,
             errorbar: None,
             line: None,
+            parallel: None,
             line_extra: None,
             scatter: None,
             line_3d: None,
@@ -107,14 +108,16 @@ impl<'a> SelectionLayers<'a> {
 }
 
 #[derive(Debug)]
-struct PointSelectionVisual {
-    point_index: usize,
-    color: Color,
-    width_px: f32,
-    radius_extra_px: f32,
+pub(super) struct PointSelectionVisual {
+    pub(super) point_index: usize,
+    pub(super) color: Color,
+    pub(super) width_px: f32,
+    pub(super) radius_extra_px: f32,
 }
 
-fn point_selection_visuals(
+/// The point selections of `cfg` (the legacy ring refs and the typed point
+/// refs) with the colour and width each is drawn in.
+pub(super) fn point_selection_visuals(
     chart_config: &Config,
     cfg: &SeriesConfig,
     refs: SelectionRefFilter,

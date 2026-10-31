@@ -25,6 +25,8 @@ pub(super) fn scatter_style(rt: &DataRenderType) -> Option<&renderer::DataScatte
         | DataRenderType::Radar { .. }
         // A streamline has no markers; its colour column colours the line.
         | DataRenderType::Streamlines { .. }
+        // Nor has a parallel series; its colour column colours the rows.
+        | DataRenderType::Parallel { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::RgbImage { .. }
         | DataRenderType::Contour { .. }
@@ -315,6 +317,25 @@ impl FiggyChart {
                     result["v"] = serde_json::json!(values[next + 1]);
                     if colour_mapped {
                         result["color_value"] = serde_json::json!(values[next + 2]);
+                    }
+                }
+                // A parallel row reports every axis's value (`values`, in
+                // axis order) and, mapped, its colour value, read from the
+                // GPU columns the draw used (#141).
+                if let Some(parallel) = series.render_type.parallel() {
+                    let mut samples: Vec<(String, usize)> = parallel
+                        .columns
+                        .iter()
+                        .map(|column| (column.clone(), *point_index))
+                        .collect();
+                    if let Some(column) = parallel.color_column {
+                        samples.push((column.to_owned(), *point_index));
+                    }
+                    let read = self.read_selection_samples(&samples).await?;
+                    let axes = parallel.columns.len();
+                    result["values"] = serde_json::json!(read[..axes]);
+                    if parallel.color_column.is_some() {
+                        result["color_value"] = serde_json::json!(read[axes]);
                     }
                 }
             }

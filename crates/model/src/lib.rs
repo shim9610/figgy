@@ -82,9 +82,11 @@ pub use categorical::*;
 pub mod boxplot;
 #[allow(deprecated)]
 pub use boxplot::*;
+pub mod parallel;
 pub mod polar;
 pub mod ternary;
 pub mod view3d;
+pub use parallel::{ParallelAxis, ParallelOptions};
 pub use polar::{
     AngleMap, AngleUnit, GridShape, MAX_POLAR_ARC_PIECES, PolarGeometry, PolarInterpolation,
     PolarOptions,

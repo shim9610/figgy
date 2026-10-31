@@ -255,6 +255,10 @@ pub struct Renderer {
     /// Category bar data layout (pool + `CategoryBarParams`), group 3 of the
     /// category bar pipelines and pick.
     category_bar_data_bgl: wgpu::BindGroupLayout,
+    /// Parallel data layout (value map + pool + `ParallelParams` + the axis
+    /// lane and range tables), group 3 of the line module's parallel entries
+    /// and pick (#141).
+    parallel_bgl: wgpu::BindGroupLayout,
     /// Value label layout (uniform + atlas + sampler), group 1 of the value
     /// label pipelines of the bar module.
     value_label_bgl: wgpu::BindGroupLayout,

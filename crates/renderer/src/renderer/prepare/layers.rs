@@ -1311,6 +1311,76 @@ impl PrepareContext<'_> {
                     vertices,
                 }
             });
+            // A parallel coordinates series' rows (#141): the axis lane and
+            // range tables over the chart's parallel axes, the rows coloured
+            // through the value map `ensure_value_map_scratch` resolved when
+            // a colour column is named. Resident and precise only; the
+            // picked row (a point selection of this series) is redrawn in
+            // the selection's style over every body.
+            let parallel = if primitives.parallel && phase.is_none() {
+                let value_map = match rt.parallel().and_then(|p| p.color_column) {
+                    Some(_) => {
+                        &self
+                            .value_map_cache
+                            .get(cfg.series_id.as_str())
+                            .ok_or_else(|| FiggyError::InvalidSeriesConfig {
+                                series_id: cfg.series_id.clone(),
+                                reason: "a colour-mapped parallel series needs its value map \
+                                         prepared; recreate the chart's preparation"
+                                    .into(),
+                            })?
+                            .buffers
+                    }
+                    None => self.neutral_point_value_map_buffers,
+                };
+                let data = build_parallel_data(
+                    &self.device,
+                    self.gpu_ledger,
+                    self.parallel_bgl,
+                    column_buffer,
+                    value_map,
+                    chart_config,
+                    cfg,
+                    &mut lookup,
+                )?;
+                let selected = selection_prepare::point_selection_visuals(
+                    chart_config,
+                    cfg,
+                    selection_prepare::SelectionRows::RESIDENT.refs,
+                )
+                .into_iter()
+                .next()
+                .zip(pipelines.line_parallel_selection.as_ref())
+                .and_then(|(visual, pipeline)| {
+                    let row = u32::try_from(visual.point_index).ok()?;
+                    let style = PrimitiveStyle::from_color_with_width(
+                        visual.color,
+                        visual.width_px * series.style.display_scale,
+                    );
+                    let buffer = data_render::create_style_uniform_buffer(&self.device, &style);
+                    Some(data_render::ParallelSelection {
+                        pipeline,
+                        style_bg: data_render::create_style_bind_group(
+                            &self.device,
+                            self.style_bgl,
+                            &buffer,
+                        ),
+                        row,
+                    })
+                });
+                Some(data_render::ColumnParallelLayer {
+                    pipeline: pipelines
+                        .line_parallel
+                        .as_ref()
+                        .expect("prepare ensured the parallel pipeline"),
+                    transform_bg: &view.transform_bg,
+                    style_bg: &series.style.line_bg,
+                    data,
+                    selected,
+                })
+            } else {
+                None
+            };
             // A 3D series' line and markers draw with the surfaces, not
             // among the flat bodies.
             let (line, line_3d) = match z_3d {
@@ -1332,6 +1402,7 @@ impl PrepareContext<'_> {
                 vector,
                 errorbar,
                 line,
+                parallel,
                 line_extra,
                 scatter,
                 line_3d,

@@ -332,6 +332,7 @@ fn err_refs(
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
         | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. }
         | DataRenderType::Heatmap { .. }
         | DataRenderType::Contour { .. }
         | DataRenderType::HeatmapContour { .. }
@@ -478,6 +479,9 @@ fn series_extent_request_from(
         | renderer::DataRenderType::Radar { .. }
         // A ternary chart's axes are the triangle: the fit reads no column.
         | renderer::DataRenderType::Ternary { .. }
+        // A parallel chart's axes fit from their columns' statistics
+        // (`Chart::auto_fit_parallel_axes`), not from this reducer.
+        | renderer::DataRenderType::Parallel { .. }
         | renderer::DataRenderType::Streamlines { .. } => (Vec::new(), None),
     };
     let vector_factor_bits = match &cfg.render_type {
@@ -896,7 +900,8 @@ fn prepare_demo_declarations(
                     cycle.color(index)
                 }
                 DataRenderType::Vector { style, .. } => style.color,
-                DataRenderType::Streamlines { line, .. } => line.line_color,
+                DataRenderType::Streamlines { line, .. }
+                | DataRenderType::Parallel { line, .. } => line.line_color,
                 DataRenderType::Ternary { scatter, line, .. } => scatter
                     .as_ref()
                     .map(|s| s.point_color)

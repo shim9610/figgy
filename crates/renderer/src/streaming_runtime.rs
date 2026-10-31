@@ -56,6 +56,11 @@ pub(crate) const STREAMED_TERNARY_REASON: &str =
 pub(crate) const STREAMED_IMAGE_REASON: &str =
     "image series require GPU-resident columns; streamed sources are not supported";
 
+/// Why a streamed parallel coordinates series is rejected (CLAUDE.md rule 8,
+/// #141): every row reads one value per axis from the resident pool.
+pub(crate) const STREAMED_PARALLEL_REASON: &str = "parallel coordinates series require GPU-resident columns; streamed sources are not \
+     supported";
+
 pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
     match rt {
         DataRenderType::Heatmap { .. } => true,
@@ -78,7 +83,8 @@ pub(super) fn is_stream_heatmap(rt: &DataRenderType) -> bool {
         | DataRenderType::RangeBars { .. }
         | DataRenderType::Radar { .. }
         | DataRenderType::Streamlines { .. }
-        | DataRenderType::Ternary { .. } => false,
+        | DataRenderType::Ternary { .. }
+        | DataRenderType::Parallel { .. } => false,
     }
 }
 
@@ -719,6 +725,17 @@ fn stream_draw_phases(
             .into())
         }
         DataRenderType::Ternary { .. } => Ok(&[]),
+        // Nor to parallel series: a row reads every axis column from the
+        // resident pool. Rejected before a cursor exists; this is a
+        // backstop.
+        DataRenderType::Parallel { .. } if primitives.parallel => {
+            Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: STREAMED_PARALLEL_REASON.into(),
+            }
+            .into())
+        }
+        DataRenderType::Parallel { .. } => Ok(&[]),
         DataRenderType::Contour { .. } | DataRenderType::HeatmapContour { .. }
             if primitives.field || primitives.contour =>
         {
@@ -4154,6 +4171,7 @@ impl Renderer {
                 &self.vector_bgl,
                 &self.star_data_bgl,
                 &self.category_bar_data_bgl,
+                &self.parallel_bgl,
                 self.contour_label_pipelines.as_ref(),
                 self.surface_format,
                 &[ChartDrawItem {

@@ -1064,6 +1064,7 @@ mod tests {
                                 vector: None,
                                 errorbar: None,
                                 line_extra: None,
+                                parallel: None,
                                 line_3d: None,
                                 scatter_3d: None,
                                 line: line.then_some(ColumnLineLayer {

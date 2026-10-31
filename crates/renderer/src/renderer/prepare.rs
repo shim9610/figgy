@@ -44,6 +44,8 @@ pub(super) struct PrepareContext<'a> {
     pub(super) region_bgl: &'a wgpu::BindGroupLayout,
     pub(super) vector_bgl: &'a wgpu::BindGroupLayout,
     pub(super) category_bar_data_bgl: &'a wgpu::BindGroupLayout,
+    /// Group 3 of the parallel entries (`create_parallel_data_bind_group_layout`).
+    pub(super) parallel_bgl: &'a wgpu::BindGroupLayout,
     /// Group 1 of the value label pipelines (`create_value_label_bind_group_layout`).
     pub(super) value_label_bgl: &'a wgpu::BindGroupLayout,
     pub(super) field_cell_tables: &'a data_render::FieldCellTables,
@@ -140,6 +142,7 @@ impl PrepareContext<'_> {
             self.vector_bgl,
             self.star_data_bgl,
             self.category_bar_data_bgl,
+            self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             self.surface_format,
             items,

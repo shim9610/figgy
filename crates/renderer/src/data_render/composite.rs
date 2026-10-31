@@ -43,6 +43,9 @@ pub struct SeriesLayers<'a> {
     pub vector: Option<vector::ColumnVectorLayer<'a>>,
     pub errorbar: Option<ColumnErrorBarDraw<'a>>,
     pub line: Option<ColumnLineLayer<'a>>,
+    /// The rows of a parallel coordinates series (#141), drawn where a line
+    /// is; its picked row is redrawn with the picked highlights.
+    pub parallel: Option<ColumnParallelLayer<'a>>,
     /// Constellation star pass over the same polyline as `line` — drawn
     /// right after it, before `scatter`. `None` everywhere else.
     pub line_extra: Option<ColumnStarLayer<'a>>,
@@ -265,6 +268,9 @@ pub(crate) fn issue_series_data(pass: &mut wgpu::RenderPass<'_>, series: &Series
     if let Some(l) = series.line.as_ref() {
         draw_line_layer(pass, l);
     }
+    if let Some(p) = series.parallel.as_ref() {
+        draw_parallel_layer(pass, p);
+    }
     if let Some(s) = series.line_extra.as_ref() {
         // Constellation star pass: indirect draw — the instance count was
         // computed on the GPU from the polyline's total arc (line_arc.wgsl
@@ -378,6 +384,11 @@ pub(crate) fn issue_series_picked(pass: &mut wgpu::RenderPass<'_>, series: &Seri
             0..BAR_SELECTION_VERTICES,
             selection.instance..selection.instance + 1,
         );
+    }
+
+    // The picked row of a parallel coordinates series, over every row.
+    if let Some(p) = series.parallel.as_ref() {
+        draw_parallel_selection(pass, p);
     }
 
     for selection in series.selected_fields.iter().filter(|layer| layer.drawable) {

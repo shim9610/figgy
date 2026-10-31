@@ -1172,6 +1172,7 @@ impl Renderer {
             &self.vector_bgl,
             &self.star_data_bgl,
             &self.category_bar_data_bgl,
+            &self.parallel_bgl,
             self.contour_label_pipelines.as_ref(),
             format,
             &[ChartDrawItem {

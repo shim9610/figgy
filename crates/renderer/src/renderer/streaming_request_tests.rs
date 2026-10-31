@@ -2529,6 +2529,7 @@ fn ordered_stream_draw_matches_resident_pixels_across_chunk_boundaries() {
                     | DataRenderType::RangeBars { .. }
                     | DataRenderType::Radar { .. }
                     | DataRenderType::Ternary { .. }
+                    | DataRenderType::Parallel { .. }
                     | DataRenderType::Streamlines { .. }
                     | DataRenderType::Vector { .. } => {}
                 }

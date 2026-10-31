@@ -39,6 +39,14 @@ impl PrepareContext<'_> {
                     .into(),
             });
         }
+        // Streaming is not extended to parallel coordinates (rule 8, #141):
+        // every row reads one value per axis from the resident pool.
+        if series.render_type.parallel().is_some() {
+            return Err(FiggyError::InvalidSeriesConfig {
+                series_id: series.series_id.clone(),
+                reason: streaming_runtime::STREAMED_PARALLEL_REASON.into(),
+            });
+        }
         // Streaming is not extended to streamlines (rule 8).
         if series.render_type.streamlines().is_some() {
             return Err(FiggyError::InvalidSeriesConfig {

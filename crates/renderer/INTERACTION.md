@@ -171,6 +171,23 @@ triangle refits. The annotation layer places ratio anchors only, ternary
 subplots carry their own triangle, and overlays and streamed sources are
 rejected.
 
+Parallel coordinates (`Config.parallel`, `DataRenderType::Parallel`,
+[configuration](https://github.com/shim9610/figgy/blob/master/crates/renderer/CONFIG.md#parallel-coordinates))
+keep the rectangular chart's interactions and add the axes' own. A row is
+picked by `pick_chart_data` as `PickedData::Point { point_index }` where its
+nearest segment is within the distance; the picked row is redrawn in the
+selection's colour and width over every row; `step_selection` walks the
+rows (bounded by the shortest column); `selection_details()` reports
+`values` (one per axis) and, mapped, `color_value`. Each parallel axis's
+tick labels are their own element (`Element::ParallelAxisLabel(i)`, hit id
+`parallel_axis_labels_{i}`) and drag into the axis's `label_offset`; the
+categorical `bottom_x` (its labels, drag and title), the chart title, the
+legend and the plot area behave as on any rectangular chart, and `left_y`
+registers its elements but draws nothing. The annotation layer places
+ratio anchors and `bottom_x` data anchors (the y axis is the normalized
+band `0..1`); parallel subplots carry their own axes; overlays and streamed
+sources are rejected.
+
 3D charts (`Config.view_3d`, a heatmap drawn as a surface,
 [surface guide](https://github.com/shim9610/figgy/blob/master/crates/renderer/SURFACE.md))
 pick with a 1×1 ID pick that renders what the cursor's pixel shows with the

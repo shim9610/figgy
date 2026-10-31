@@ -53,6 +53,7 @@ pub(super) fn annotation_raster_for_chart(
         polar: _,
         ternary: _,
         view_3d: _,
+        parallel: _,
         overlays: _,
         subplots: _,
         active_layer: _,
@@ -216,6 +217,45 @@ pub(super) struct PreparedAreaLayer {
     pub(super) base: ColumnHandle,
     pub(super) verts_per_instance: u32,
     pub(super) closed: bool,
+}
+
+/// A parallel coordinates series' rows and its picked row's redraw (#141).
+pub(super) struct PreparedParallelLayer {
+    pub(super) pipeline: wgpu::RenderPipeline,
+    pub(super) transform_bg: wgpu::BindGroup,
+    pub(super) style_bg: wgpu::BindGroup,
+    pub(super) data: data_render::ParallelData,
+    pub(super) selected: Option<(wgpu::RenderPipeline, wgpu::BindGroup, u32)>,
+}
+
+impl PreparedParallelLayer {
+    fn own(layer: data_render::ColumnParallelLayer<'_>) -> Self {
+        Self {
+            pipeline: layer.pipeline.clone(),
+            transform_bg: layer.transform_bg.clone(),
+            style_bg: layer.style_bg.clone(),
+            data: layer.data,
+            selected: layer
+                .selected
+                .map(|selected| (selected.pipeline.clone(), selected.style_bg, selected.row)),
+        }
+    }
+
+    fn borrow(&self) -> data_render::ColumnParallelLayer<'_> {
+        data_render::ColumnParallelLayer {
+            pipeline: &self.pipeline,
+            transform_bg: &self.transform_bg,
+            style_bg: &self.style_bg,
+            data: self.data.clone(),
+            selected: self.selected.as_ref().map(|(pipeline, style_bg, row)| {
+                data_render::ParallelSelection {
+                    pipeline,
+                    style_bg: style_bg.clone(),
+                    row: *row,
+                }
+            }),
+        }
+    }
 }
 
 pub(super) struct PreparedLineLayer {
@@ -603,6 +643,7 @@ pub(super) struct PreparedSeries {
     pub(super) vector: Option<PreparedVectorLayer>,
     pub(super) errorbar: Option<PreparedErrorBarLayer>,
     pub(super) line: Option<PreparedLineLayer>,
+    pub(super) parallel: Option<PreparedParallelLayer>,
     pub(super) line_extra: Option<PreparedStarLayer>,
     pub(super) scatter: Option<PreparedScatterLayer>,
     pub(super) line_3d: Option<PreparedLineLayer>,
@@ -767,6 +808,9 @@ pub(super) struct ResidentDisplayKey {
     pub(super) transform: data_render::ScatterTransform,
     pub(super) draw_style: crate::config::DrawStyle,
     pub(super) polar: Option<crate::polar::PolarOptions>,
+    /// The parallel axes' ranges (`Config::parallel`): every row is placed
+    /// by them (#141).
+    pub(super) parallel: Option<crate::parallel::ParallelOptions>,
     pub(super) colorbar: Option<crate::config::ColorBarOptions>,
     /// How category bars share a slot (`Config::bar_groups`): group width,
     /// gap and stacking are drawn into the bodies.
@@ -836,6 +880,7 @@ impl ResidentDisplayKey {
             && self.stencil == probe.stencil
             && self.draw_style == probe.chart_config.draw_style
             && self.polar == probe.chart_config.polar
+            && self.parallel == probe.chart_config.parallel
             && self.colorbar == probe.chart_config.colorbar
             && self.bar_groups == probe.chart_config.bar_groups
             && match &self.categories {
@@ -864,6 +909,7 @@ impl ResidentDisplayKey {
             transform: probe.transform,
             draw_style: probe.chart_config.draw_style,
             polar: probe.chart_config.polar.clone(),
+            parallel: probe.chart_config.parallel.clone(),
             colorbar: probe.chart_config.colorbar.clone(),
             bar_groups: probe.chart_config.bar_groups.clone(),
             categories: has_category_bars(probe.series).then(|| {
@@ -1037,6 +1083,7 @@ impl PreparedSeries {
                 style_index: layer.style_index,
             }),
             line: layers.line.map(PreparedLineLayer::own),
+            parallel: layers.parallel.map(PreparedParallelLayer::own),
             line_3d: layers.line_3d.map(PreparedLineLayer::own),
             scatter_3d: layers.scatter_3d.map(PreparedScatterLayer::own),
             line_extra: layers.line_extra.map(|layer| PreparedStarLayer {
@@ -1211,6 +1258,7 @@ impl PreparedSeries {
                 style_index: layer.style_index,
             }),
             line: self.line.as_ref().map(PreparedLineLayer::borrow),
+            parallel: self.parallel.as_ref().map(PreparedParallelLayer::borrow),
             line_3d: self.line_3d.as_ref().map(PreparedLineLayer::borrow),
             scatter_3d: self.scatter_3d.as_ref().map(PreparedScatterLayer::borrow),
             line_extra: self
@@ -2365,6 +2413,7 @@ impl Renderer {
                 region_bgl: &self.region_bgl,
                 vector_bgl: &self.vector_bgl,
                 category_bar_data_bgl: &self.category_bar_data_bgl,
+                parallel_bgl: &self.parallel_bgl,
                 value_label_bgl: &self.value_label_bgl,
                 field_cell_tables: &self.field_cell_tables,
                 transform_bgl: &self.transform_bgl,

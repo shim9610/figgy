@@ -52,6 +52,9 @@ pub enum Element {
     /// other way round. The element stays orientation-free because the handle
     /// that produced it only knows screen directions.
     ColorBarEdge(Side),
+    /// The tick-label band of parallel axis `i` (`Config.parallel`, #141).
+    /// A drag updates that axis's `label_offset`.
+    ParallelAxisLabel(usize),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -121,6 +124,10 @@ impl Config {
                     bar.axis.title_option.offset_y,
                 )
             }
+            Element::ParallelAxisLabel(i) => {
+                let axis = self.parallel.as_ref()?.axes.get(*i)?;
+                (axis.label_offset[0], axis.label_offset[1])
+            }
             Element::Axis(_)
             | Element::ColorBarAxis
             | Element::DataAreaEdge(_)
@@ -167,6 +174,11 @@ impl Config {
                 if let Some(bar) = self.colorbar.as_mut() {
                     bar.axis.title_option.offset_x = offset.0;
                     bar.axis.title_option.offset_y = offset.1;
+                }
+            }
+            Element::ParallelAxisLabel(i) => {
+                if let Some(axis) = self.parallel.as_mut().and_then(|p| p.axes.get_mut(*i)) {
+                    axis.label_offset = [offset.0, offset.1];
                 }
             }
             Element::Axis(_)

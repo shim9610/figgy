@@ -57,6 +57,31 @@ additive.
   Migration: code that relied on "category bars are not drawn on polar
   axes" now gets a drawn rose or the horizontal reason. Nothing on the
   wire changes.
+- **Parallel coordinates**
+  ([#141](https://github.com/shim9610/figgy/issues/141), #58).
+  `Config.parallel: Option<ParallelOptions>` (`ParallelOptions { axes }`,
+  `ParallelAxis { min, max, inverted, scale, label_offset }`, module
+  `parallel`): one vertical axis per category of `bottom_x`, each with its
+  own range; `ParallelAxis::fraction` places a value on its axis and
+  `axis_options` gives the tick planner its options.
+  `DataRenderType::Parallel { columns, line, color_column }` draws one
+  polyline per row across the axes; `DataRenderType::parallel()` answers
+  `ParallelRef`. `Config::validate_parallel` (two or more axes with finite
+  ordered ranges, a categorical `bottom_x` with one category per axis,
+  `left_y` linear over `0..1`, not polar, ternary or 3D, no overlays or
+  line offsets, the `Precise` style, no subplot axis links) and
+  `Config::validate_parallel_series` (only parallel series on a parallel
+  chart and vice versa, one column per axis with `x_column` / `y_column`
+  the first two, a solid linear unfilled line, a colour column with
+  `Config.colorbar`); `validate_view3d_series` rejects it too.
+  `Element::ParallelAxisLabel(usize)` and `ParallelAxisLabelElement`
+  (`parallel_axis_labels_{i}`) are each axis's tick labels, registered by
+  `HitMap::for_active_layer` on a parallel chart and dragged into the
+  axis's `label_offset` (`nudge`). `step_selection` walks the rows bounded
+  by every axis column; the legend symbol is the line's. Additive on the
+  wire (`parallel` omitted when `None`, `"Parallel"`); a `Config` literal
+  adds `parallel`, an exhaustive `DataRenderType` or `Element` match adds
+  the arm.
 - **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
   `RadialSlice.children: Vec<RadialSlice>` (omitted when empty): a chart
   whose slices have children is a sunburst, its tree's rings drawn outward
@@ -859,6 +884,42 @@ additive.
   in the categories' order, `bar_gap` pixels apart along the ring. The
   `Rose` catalogue scene is a wind rose of sixteen directions and three
   stacked speed bands.
+- **Parallel coordinates**
+  ([#141](https://github.com/shim9610/figgy/issues/141), #58). A
+  `Parallel` series draws through the line module's new
+  `parallel_columnar.wgsl` entries: `vs_parallel` / `fs_parallel` draw one
+  stroke quad per segment instance with no vertex slot, both ends read
+  from the column pool through the series' axis lane table and placed by
+  its axis range table (group 3: the point value map, the pool,
+  `ParallelParams`, the lane table and the range table;
+  `create_parallel_data_bind_group_layout` /
+  `create_parallel_data_bind_group`, `ParallelParamsGpu`,
+  `ParallelAxisGpu`), the normalization computed on every draw and never
+  stored; a row's colour is its colour column's value through the
+  colourbar ramp or the series colour; `vs_parallel_selected` redraws the
+  picked row in the selection's style over every body; `pick_parallel`
+  answers the nearest segment's row as a point (`GpuDataPickGeometry::Parallel`,
+  `DataPickPipelineBundle.parallel`, `DataPickShaders.line`).
+  `TargetPipelines.line_parallel` / `line_parallel_selection`,
+  `ColumnParallelLayer` / `ParallelSelection` / `draw_parallel_layer` /
+  `draw_parallel_selection`, `SeriesLayers.parallel`,
+  `EffectiveSeriesPrimitives.parallel`, the parallel layout in
+  `Renderer`, `PrepareContext` and the pick bundle; the resident display
+  key carries `Config::parallel`. `parallel_axes.rs` draws each axis's
+  line, ticks (`paxis_{i}`, `ptick_{i}_{k}`) and tick labels in `left_y`'s
+  style over its range; `Element::ParallelAxisLabel(i)` places them, the
+  chart's `left_y` and `right_y` draw nothing, and the grid is not drawn.
+  `Chart::auto_fit_parallel_axes` fits each axis's range from the columns'
+  statistics (`auto_fit_layer_union` on a parallel chart too); the x and y
+  fits leave a parallel chart alone. Registration validates the model's
+  rules, every axis column and the colour column's colourbar; a polar
+  chart and a streamed source are rejected (`STREAMED_PARALLEL_REASON`).
+  `series_draw_info` reports the rows' segments. The `Parallel` catalogue
+  scene is 150 iris-like flowers over four axes coloured by species.
+  Migration: `ensure_precise_variants_for_items`, `prewarm_all_observed`
+  and `DataPickPipelineBundle::new_observed` take the parallel layout, and
+  `DataPickShaders` the line module; an exhaustive `DataRenderType` match
+  adds the arm.
 - **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140), #58).
   The radial layout lays a sunburst's rings as equal bands between the hole
   and the rim (`ring_band`), a node's sector the existing `Sector` with its
@@ -1850,6 +1911,14 @@ additive.
   answers a polygon's vertex handle (`"v3"`) and `drag_annotation` takes a
   vertex name beside the compass names, on `FiggyChart` and
   `FiggyBoundedChart` alike.
+- **Parallel coordinates** ([#141](https://github.com/shim9610/figgy/issues/141)).
+  `parallel` reads and writes in the config JSON and `"Parallel"` in
+  `set_series` JSON (SCHEMA.md); the axis columns past the first two and
+  the colour column are referenced columns; `auto_fit_all` fits each
+  parallel axis from its columns' statistics; a picked row's
+  `selection_details()` reports `values` (one per axis) and, mapped,
+  `color_value`; each axis's tick labels hit and drag as
+  `parallel_axis_labels_<i>`.
 - **Sunbursts** ([#140](https://github.com/shim9610/figgy/issues/140)).
   A radial document's slices carry `children` (SCHEMA.md); `pick`, hover
   and `step_selection` answer the `{ group, index }` of a ring's node.

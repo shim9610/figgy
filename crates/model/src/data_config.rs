@@ -543,6 +543,38 @@ pub enum DataRenderType {
         )]
         color_map: Option<PointColorMap>,
     },
+    /// Parallel coordinates (#141): one polyline per row across the axes of
+    /// a parallel chart (`Config.parallel`), row `r` through
+    /// `(axis i, (v_i − min_i) / (max_i − min_i))` for every axis, the
+    /// normalization only to place the sample (rule 1). `columns` names one
+    /// column per axis, in the axes' order; `x_column` and `y_column` are
+    /// its first two. A row with a non-finite value breaks at that axis.
+    /// With `color_column`, each row's polyline takes the colour of that
+    /// column's value through `Config.colorbar`; without, the line's
+    /// colour. Drawn in the precise draw style only, solid and linear
+    /// without a fill; the columns must be GPU resident. See
+    /// [`Config::validate_parallel_series`](crate::config::Config::validate_parallel_series).
+    Parallel {
+        /// One column id per axis of the parallel chart, in order (a `Vec`
+        /// of configuration: SSOT, rule 3).
+        columns: Vec<ColumnId>,
+        /// The rows' line: its colour (without `color_column`) and width.
+        line: DataLineStyleConfig,
+        /// Colour each row by a host column through `Config.colorbar`.
+        #[cfg_attr(
+            feature = "serde",
+            serde(default, skip_serializing_if = "Option::is_none")
+        )]
+        color_column: Option<ColumnId>,
+    },
+}
+
+/// A [`DataRenderType::Parallel`] series' fields, borrowed.
+#[derive(Clone, Copy, Debug)]
+pub struct ParallelRef<'a> {
+    pub columns: &'a [ColumnId],
+    pub line: &'a DataLineStyleConfig,
+    pub color_column: Option<&'a str>,
 }
 
 /// The arrowheads of a [`DataRenderType::Streamlines`] series: the vector
@@ -2211,7 +2243,9 @@ impl DataRenderType {
             // A field's streamlines share its axes; they are not a member.
             | DataRenderType::Streamlines { .. }
             // A ternary chart has no line offsets.
-            | DataRenderType::Ternary { .. } => false,
+            | DataRenderType::Ternary { .. }
+            // Nor has a parallel chart.
+            | DataRenderType::Parallel { .. } => false,
         }
     }
 
@@ -3146,6 +3180,23 @@ impl DataRenderType {
     pub fn ternary_c_column(&self) -> Option<&str> {
         match self {
             DataRenderType::Ternary { c_column, .. } => Some(c_column),
+            _ => None,
+        }
+    }
+
+    /// A parallel series' columns, line and colour column (#141), or
+    /// `None` for every other kind.
+    pub fn parallel(&self) -> Option<ParallelRef<'_>> {
+        match self {
+            DataRenderType::Parallel {
+                columns,
+                line,
+                color_column,
+            } => Some(ParallelRef {
+                columns,
+                line,
+                color_column: color_column.as_deref(),
+            }),
             _ => None,
         }
     }
@@ -4344,7 +4395,9 @@ impl DataRenderType {
             // Its samples, as a scatter or a line series'.
             | DataRenderType::Ternary { .. }
             // Its vertices, NaN separators included, as a line's (D4).
-            | DataRenderType::Streamlines { .. } => true,
+            | DataRenderType::Streamlines { .. }
+            // Its rows (#141).
+            | DataRenderType::Parallel { .. } => true,
             DataRenderType::Vector { components, .. } => {
                 matches!(components, VectorComponents::Points { .. })
             }
@@ -4462,6 +4515,12 @@ impl crate::config::Config {
                 // A ternary sample needs its third component too.
                 if let DataRenderType::Ternary { c_column, .. } = &next.render_type {
                     count = count.min(len(c_column));
+                }
+                // A parallel row needs every axis column (#141).
+                if let DataRenderType::Parallel { columns, .. } = &next.render_type {
+                    for column in columns {
+                        count = count.min(len(column));
+                    }
                 }
                 Some(PickedDataRef::Point {
                     series_id: next.series_id.clone(),
